@@ -5,12 +5,18 @@
  * NFR-009（只出现相对路径）、NFR-012（成本类数字必须标注"估算"——M5 起）。
  */
 import { DIMENSIONS } from '../types.js'
-import type { ChangeRequest, FeasibilityAssessment, GateEvaluation, GrillQuestion, Requirement, RiskItem, SdoProject } from '../types.js'
+import type { DeliveryManifest } from '../domain/records.js'
+import type { Adr, ChangeRequest, Contract, DesignElement, DesignView, FeasibilityAssessment, GateEvaluation, GrillQuestion, QualityAssessment, QualityScenario, Requirement, RiskItem, SdoProject, TaskCard, TraceReport } from '../types.js'
 import type { BaselineOutcome, InitResult, StatusSnapshot } from '../office.js'
 import { processOfProject } from '../office.js'
 import type { DorResult } from '../domain/dor.js'
 import { TELOS_DIMENSIONS, TELOS_LABEL } from '../domain/feasibility.js'
 import { riskStats } from '../domain/risks.js'
+import { VIEW_KINDS } from '../types.js'
+import { VIEW_LABEL } from '../domain/architecture.js'
+import { planStats } from '../domain/plan.js'
+import type { PlanIssue } from '../domain/plan.js'
+import type { DispatchRequest } from '../integration/orchestrator.js'
 
 /** `sdo_init` 的回执。 */
 export function describeInit(result: InitResult, dataDirName: string): string {
@@ -178,6 +184,216 @@ export function describeChange(result: { change: ChangeRequest; applied: boolean
   lines.push(`  （${change.impact.note}）`)
   lines.push(`- 决策人：${change.decidedBy}`)
   lines.push(result.applied ? '- ✅ 变更已应用（需求状态 changed，版本 +0.1）' : `- ⚠️ 未应用：${result.reason ?? change.decision}`)
+  return lines.join('\n')
+}
+
+/** `sdo_design action=view` 的回执：五视图 + 契约覆盖。 */
+export function describeDesign(views: DesignView[], contracts: Contract[]): string {
+  if (views.length === 0) return '还没有任何架构视图。用 `sdo_design action=create kind=context name=…` 开始。'
+  const lines: string[] = [`架构视图 ${views.length}/5：`]
+  for (const view of views) {
+    lines.push(`- ${VIEW_LABEL[view.kind]}（${view.kind}）：${view.elements.length} 个元素${view.summary === '' ? '' : `　${view.summary}`}`)
+    for (const element of view.elements) {
+      lines.push(`    · ${element.id} ${element.name}　[${element.kind}]${element.dependsOn.length === 0 ? '' : `　依赖：${element.dependsOn.join('、')}`}`)
+    }
+  }
+  const missing = VIEW_KINDS.filter((kind) => !views.some((view) => view.kind === kind))
+  if (missing.length > 0) lines.push(`- 缺视图：${missing.join(' ')}（G3 会拒绝）`)
+  lines.push(`- 契约：${contracts.length} 份`)
+  return lines.join('\n')
+}
+
+/** 写入设计元素的回执。 */
+export function describeDesignElement(result: { element: DesignElement; view: DesignView; created: boolean }): string {
+  const { element, view, created } = result
+  const lines: string[] = [`已${created ? '创建' : '更新'}设计元素 ${element.id} ${element.name}（${VIEW_LABEL[view.kind]}）`]
+  lines.push(`- 类型：${element.kind}　职责：${element.responsibility === '' ? '（未写）' : element.responsibility}`)
+  if (element.dependsOn.length > 0) {
+    lines.push(`- 依赖：${element.dependsOn.join('、')}（每条跨组件依赖都需要契约：G4 的 design.contracts 会核对）`)
+  }
+  lines.push(`- 下一步：\`sdo_trace action=link from=REQ-001 to=${element.id} kind=req-des\` 把它挂到需求上（否则是孤儿设计）。`)
+  return lines.join('\n')
+}
+
+/** 契约记录的回执。 */
+export function describeContract(contract: Contract, coverage: { totalEdges: number; covered: number; missing: { consumer: string; producer: string }[]; incompleteSemantics: string[] }): string {
+  const lines = [`已记录契约 ${contract.id}　${contract.name}（${contract.kind}）`]
+  lines.push(`- 失败语义：超时 ${contract.failureSemantics.timeout || '（未写）'} ｜ 重试 ${contract.failureSemantics.retry || '（未写）'} ｜ 幂等 ${contract.failureSemantics.idempotency || '（未写）'}`)
+  lines.push(`- 契约覆盖：${coverage.covered}/${coverage.totalEdges} 条跨组件交互`)
+  if (coverage.missing.length > 0) {
+    lines.push(`- 仍缺契约：${coverage.missing.map((edge) => `${edge.consumer}→${edge.producer}`).join(' ')}`)
+  }
+  if (coverage.incompleteSemantics.length > 0) {
+    lines.push(`- 失败语义不全：${coverage.incompleteSemantics.join(' ')}（G4 会拒绝）`)
+  }
+  return lines.join('\n')
+}
+
+/** ADR 的回执。 */
+export function describeAdr(adr: Adr, supersedes?: string | undefined): string {
+  const lines = [`已记录 ${adr.id}：${adr.title}（${adr.status}）`]
+  if (supersedes !== undefined) lines.push(`- 已取代 ${supersedes}（原记录标记为 superseded，内容不改）`)
+  lines.push(`- 备选方案 ${adr.alternatives.length} 项 ｜ 后果 ${adr.consequences.length} 项`)
+  lines.push(`- 决策：${adr.decision}`)
+  return lines.join('\n')
+}
+
+/** ADR 列表。 */
+export function describeAdrList(adrs: Adr[]): string {
+  if (adrs.length === 0) return '还没有 ADR。用 `sdo_adr action=record` 记录关键决策（必须含备选与后果）。'
+  const lines = [`ADR ${adrs.length} 条：`]
+  for (const adr of adrs) {
+    lines.push(`- ${adr.id}　[${adr.status}]　${adr.title}　备选 ${adr.alternatives.length} ｜ 后果 ${adr.consequences.length}`)
+  }
+  return lines.join('\n')
+}
+
+/** 质量场景的回执。 */
+export function describeScenario(scenario: QualityScenario): string {
+  return [
+    `已记录质量场景 ${scenario.id}（${scenario.attribute}／${scenario.priority}）`,
+    `- 刺激 → 响应：${scenario.stimulus} → ${scenario.response}`,
+    `- 度量：${scenario.measure}`,
+    scenario.targets.length === 0 ? '- ⚠️ 未关联设计元素（`targets`）：ATAM 时难以定位敏感点' : `- 关联元素：${scenario.targets.join(' ')}`,
+  ].join('\n')
+}
+
+/** 质量场景列表。 */
+export function describeScenarioList(scenarios: QualityScenario[]): string {
+  if (scenarios.length === 0) return '还没有质量场景。用 `sdo_quality action=scenario` 记录（度量必须可测）。'
+  const lines = [`质量场景 ${scenarios.length} 条：`]
+  for (const scenario of scenarios) {
+    const measurable = /\d/u.test(scenario.measure) || /[≥≤<>]=?/u.test(scenario.measure)
+    lines.push(`- ${scenario.id}　[${scenario.attribute}/${scenario.priority}]　${scenario.measure}${measurable ? '' : '　⚠️ 度量不可测'}`)
+  }
+  return lines.join('\n')
+}
+
+/** ATAM-lite 回执。 */
+export function describeAssessment(assessment: QualityAssessment): string {
+  const lines = ['ATAM-lite 评估已记录：']
+  lines.push(`- 风险点 ${assessment.risks.length} 条${assessment.risks.length === 0 ? '（空 —— 请如实指出可能不达标的场景）' : ''}`)
+  for (const risk of assessment.risks) lines.push(`    · ${risk}`)
+  lines.push(`- 敏感点 ${assessment.sensitivities.length} 条`)
+  for (const item of assessment.sensitivities) lines.push(`    · ${item}`)
+  lines.push(`- 权衡点 ${assessment.tradeoffs.length} 条`)
+  for (const item of assessment.tradeoffs) lines.push(`    · ${item}`)
+  lines.push(`- 评估人：${assessment.by}`)
+  return lines.join('\n')
+}
+
+/** 追溯查询回执。 */
+export function describeTrace(data: TraceReport): string {
+  const lines = ['追溯报告：']
+  lines.push(`- 追溯边 ${data.total} 条 ｜ 需求覆盖率（有设计元素）${Math.round(data.coverage * 100)}%`)
+  lines.push(`- 孤儿设计元素：${data.orphans.design.length === 0 ? '无' : data.orphans.design.join(' ')}`)
+  lines.push(`- 无需求来源的任务：${data.orphans.tasks.length === 0 ? '无' : data.orphans.tasks.join(' ')}`)
+  lines.push(`- 无需求来源的测试用例：${data.orphans.tests.length === 0 ? '无' : data.orphans.tests.join(' ')}`)
+  lines.push(`- must 需求缺测试用例：${data.uncoveredMust.length === 0 ? '无' : data.uncoveredMust.join(' ')}`)
+  for (const item of data.perRequirement) {
+    lines.push(`- ${item.id}：设计 ${item.design.join(' ') || '（无）'} ｜ 任务 ${item.tasks.join(' ') || '（无）'} ｜ 测试 ${item.tests.join(' ') || '（无）'}`)
+  }
+  return lines.join('\n')
+}
+
+/** 拆分结果：卡片 + 六条机械校验结果。 */
+export function describePlan(tasks: TaskCard[], issues: PlanIssue[]): string {
+  const stats = planStats(tasks)
+  const lines: string[] = [`任务卡 ${stats.total} 张：${Object.entries(stats.byStatus).map(([status, count]) => `${status} ${count}`).join('，') || '（空）'}`]
+  for (const task of tasks) {
+    lines.push(`- ${task.id}　[${task.role}/${task.size}]　${task.status}${task.owner === undefined ? '' : `（${task.owner}）`}　${task.title}`)
+    lines.push(`    · DoD：${task.dod.join('；') || '（空）'}`)
+    lines.push(`    · 写范围：${task.writeScopes.join('、') || '（未限定）'}${task.blockedBy.length === 0 ? '' : `　依赖：${task.blockedBy.join(' ')}`}`)
+    lines.push(`    · 证据要求：${task.evidenceRequired.join('/')}　追溯：${task.requirements.join(' ') || '（无）'}`)
+  }
+  if (issues.length === 0) {
+    lines.push('- 六条机械校验：全部通过（单角色 / DoD / 无环 / 规模 / 写范围互斥 / 证据要求）')
+  } else {
+    lines.push(`- ❌ 六条机械校验未通过 ${issues.length} 项：`)
+    for (const issue of issues) lines.push(`    · [${issue.code}] ${issue.taskId}：${issue.detail}　→ ${issue.remedy}`)
+  }
+  return lines.join('\n')
+}
+
+/** 单张任务卡。 */
+export function describeTask(task: TaskCard): string {
+  const lines = [`${task.id}　[${task.role}/${task.size}]　${task.status}${task.owner === undefined ? '' : `（owner=${task.owner}）`}　r${task.revision}`]
+  lines.push(`- 目标：${task.goal}`)
+  lines.push(`- DoD：${task.dod.join('；') || '（空）'}`)
+  lines.push(`- 写范围：${task.writeScopes.join('、') || '（未限定）'}`)
+  if (task.evidence.length > 0) {
+    lines.push(`- 证据 ${task.evidence.length} 条：${task.evidence.map((item) => `${item.kind}:${item.detail}`).join('；')}`)
+  }
+  if (task.blockedReason !== undefined) lines.push(`- 阻塞原因：${task.blockedReason}`)
+  return lines.join('\n')
+}
+
+/** 认领冲突（CAS 失败等）。 */
+export function describeTaskConflict(detail: string, current: TaskCard | undefined, code: string): string {
+  const lines = [`认领失败（${code}）：${detail}`]
+  if (current !== undefined) {
+    lines.push(`- 当前状态：${current.status}　r${current.revision}${current.owner === undefined ? '' : `　owner=${current.owner}`}`)
+    lines.push(`- 重新读卡后用 \`expectedRevision=${current.revision}\` 再试；被别人占着就先别抢（可 \`sdo_task action=reassign\` 显式改派）。`)
+  }
+  return lines.join('\n')
+}
+
+/** 任务看板（文本）。 */
+export function describeTaskBoard(input: {
+  tasks: TaskCard[]
+  ready: TaskCard[]
+  stale: TaskCard[]
+  issues: PlanIssue[]
+  iteration?: { number: number; goal: string; status: string } | undefined
+}): string {
+  const { tasks, ready, stale, issues, iteration } = input
+  if (tasks.length === 0) return '还没有任务卡。用 `sdo_plan action=decompose` 拆分。'
+  const stats = planStats(tasks)
+  const lines = [`任务卡 ${stats.total} 张 ｜ 完成 ${stats.done} ｜ 进行中 ${stats.byStatus['in-progress'] ?? 0} ｜ 阻塞 ${stats.byStatus['blocked'] ?? 0}`]
+  if (iteration !== undefined) lines.push(`- 迭代 ${iteration.number}（${iteration.status}）：${iteration.goal}`)
+  lines.push(`- 可派发 ${ready.length} 张：${ready.map((task) => task.id).join(' ') || '（无）'}`)
+  for (const task of tasks) {
+    lines.push(`- ${task.id}　[${task.role}/${task.size}]　${task.status}${task.owner === undefined ? '' : `（${task.owner}）`}　${task.title}`)
+  }
+  if (stale.length > 0) {
+    lines.push(`- ⚠️ 疑似失联 ${stale.length} 张：${stale.map((task) => task.id).join(' ')}（**不会自动释放**，请显式 release/reassign）`)
+  }
+  if (issues.length > 0) lines.push(`- ❌ 拆分校验未通过 ${issues.length} 项（详见 \`sdo_plan action=decompose\`）`)
+  return lines.join('\n')
+}
+
+/** 派发请求（宿主后端）。 */
+export function describeDispatch(request: DispatchRequest, degradedReason?: string | undefined): string {
+  const lines = [`派发请求已生成：${request.task.id} → ${request.owner}（后端 ${request.backend}，persona ${request.persona}）`]
+  lines.push(
+    '- ⚠️ 宿主调用（`SubagentRuntime.start`）**尚未接线**：这一步会真正起一次模型运行，需要凭据与可用装配。'
+    + '在此之前请由流程官用 `send_message` 把下面的提示词交给执行者，或按 inline 方式由主模型就地执行。',
+  )
+  if (degradedReason !== undefined) lines.push(`- ⚠️ ${degradedReason}`)
+  lines.push(`- 工具面：${request.toolFilter.join(' ')}　｜ 写范围：${request.writeScopes.join('、') || '（未限定）'}`)
+  lines.push(`- 认领需带 \`expectedRevision=${request.expectedRevision}\``)
+  lines.push('')
+  lines.push(request.prompt)
+  return lines.join('\n')
+}
+
+/** 就地执行（inline 降级）：把任务卡交给主模型。 */
+export function describeInlineHandoff(request: DispatchRequest, degradedReason?: string | undefined): string {
+  const lines = [`就地执行 ${request.task.id}（后端 inline${degradedReason === undefined ? '' : `：${degradedReason}`}）`]
+  lines.push(`- owner 记为 ${request.owner}；完成后必须用 \`sdo_task action=done id=${request.task.id} owner=${request.owner} evidence=…\` 回报。`)
+  lines.push('')
+  lines.push(request.prompt)
+  return lines.join('\n')
+}
+
+/** 交付清单。 */
+export function describeManifest(manifest: DeliveryManifest): string {
+  const lines = [`交付包 ${manifest.id}（by ${manifest.by}，${manifest.at}）`]
+  lines.push(`- 产物 ${manifest.artifacts.length} 项：`)
+  for (const artifact of manifest.artifacts) lines.push(`    · ${artifact.path}　[${artifact.kind}]　${artifact.sha256.slice(0, 12)}…`)
+  lines.push(`- 验收矩阵 ${manifest.acceptance.length} 行：${manifest.acceptance.map((row) => `${row.requirement}:${row.verdict}`).join(' ')}`)
+  lines.push(`- 回滚点：${manifest.rollbackPoint}`)
+  lines.push(`- 原型内容已排除：${manifest.prototypeExcluded ? '是' : '否（G7 会拒绝）'}`)
   return lines.join('\n')
 }
 

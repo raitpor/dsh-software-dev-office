@@ -320,6 +320,181 @@ export interface ChangeRequest {
   at: string
 }
 
+/** 架构视图的种类（设计 §6.1 的五视图）。 */
+export const VIEW_KINDS = ['context', 'component', 'runtime', 'data', 'deployment'] as const
+export type ViewKind = (typeof VIEW_KINDS)[number]
+
+/** 视图里的一个设计元素（`DES-*`）。 */
+export interface DesignElement {
+  id: string
+  name: string
+  /** 元素类型：system / service / store / queue / external … 自由取值 */
+  kind: string
+  responsibility: string
+  /** 它依赖的元素 id（用于契约完整性与追溯） */
+  dependsOn: string[]
+}
+
+/** 一张架构视图（设计 §6.1）。 */
+export interface DesignView {
+  kind: ViewKind
+  summary: string
+  elements: DesignElement[]
+  updatedAt: string
+}
+
+/** 架构决策记录（设计 §6.3）。 */
+export interface Adr {
+  id: string
+  title: string
+  status: 'proposed' | 'accepted' | 'superseded' | 'rejected'
+  context: string
+  decision: string
+  alternatives: { option: string; pros: string; cons: string }[]
+  consequences: string[]
+  supersededBy?: string | undefined
+  at: string
+}
+
+/** 质量属性场景（设计 §6.2）。 */
+export interface QualityScenario {
+  id: string
+  /** 质量属性：性能/安全/可用性/可维护性/易用性… */
+  attribute: string
+  stimulus: string
+  response: string
+  /** 可测的度量（指标 + 条件 + 阈值） */
+  measure: string
+  priority: 'high' | 'medium' | 'low'
+  /** 相关设计元素 id */
+  targets: string[]
+  at: string
+}
+
+/** ATAM-lite 评估结论（设计 §6.2）。 */
+export interface QualityAssessment {
+  at: string
+  by: string
+  /** 风险点：哪些场景在现有设计下可能不达标 */
+  risks: string[]
+  /** 敏感点：影响该场景的关键设计决策 */
+  sensitivities: string[]
+  /** 权衡点：为满足 A 而牺牲 B 的取舍 */
+  tradeoffs: string[]
+}
+
+/** 接口契约（设计 §6.4，Schema-first）。 */
+export interface Contract {
+  id: string
+  name: string
+  kind: 'http' | 'event' | 'rpc' | 'schema'
+  producer: string
+  consumer: string
+  /** 契约正文（结构、字段、示例） */
+  schema: string
+  failureSemantics: {
+    timeout: string
+    retry: string
+    idempotency: string
+  }
+  at: string
+}
+
+/** 追溯链接（`.sdo/trace/links.jsonl` 的一行，设计 §4.4 / §10.1b）。 */
+export interface TraceLink {
+  from: string
+  to: string
+  /** 边的语义：req→des、req→task、req→tc、des→task … */
+  kind: string
+  at: string
+}
+
+/** 追溯报告（覆盖率与孤儿检测）。 */
+export interface TraceReport {
+  total: number
+  /** 每条需求的覆盖情况 */
+  perRequirement: { id: string; design: string[]; tasks: string[]; tests: string[]; covered: boolean }[]
+  orphans: {
+    /** 没有任何 REQ 来源的 DES */
+    design: string[]
+    /** 没有任何 REQ 来源的 TASK */
+    tasks: string[]
+    /** 没有任何 REQ 来源的 TC */
+    tests: string[]
+  }
+  /** must 需求里还没有测试用例的 */
+  uncoveredMust: string[]
+  coverage: number
+}
+
+/** 任务卡规模（设计 §8.6：一张卡至少是一个可独立验证的增量）。 */
+export type TaskSize = 'small' | 'medium' | 'large'
+
+/** 任务卡状态。 */
+export type TaskStatus = 'planned' | 'ready' | 'in-progress' | 'blocked' | 'done' | 'verified' | 'dropped'
+
+/** 证据项（设计 §9.1 的三档证据）。 */
+export interface EvidenceItem {
+  /** ① 命令+输出摘要 ② 产物路径+哈希 ③ workspace/changes 的 (sessionId, seq) */
+  kind: 'command' | 'artifact' | 'workspace-changes'
+  detail: string
+  at: string
+}
+
+/** 任务卡（`.sdo/tasks/TASK-*.yml`，设计 §8.6）。 */
+export interface TaskCard {
+  id: string
+  title: string
+  goal: string
+  /** 输入契约（要读什么） */
+  inputs: string[]
+  /** 输出契约（要产出什么） */
+  outputs: string[]
+  /** 完成定义（可判定） */
+  dod: string[]
+  /** 证据要求（最低档） */
+  evidenceRequired: EvidenceItem['kind'][]
+  /** 依赖的任务卡（DAG） */
+  blockedBy: string[]
+  /** 写范围（互斥用；相对工作区的路径前缀） */
+  writeScopes: string[]
+  /** 负责角色（§8.1 的 8 个角色） */
+  role: string
+  size: TaskSize
+  /** 乐观并发版本：每次状态变更 +1（claim 走 CAS） */
+  revision: number
+  status: TaskStatus
+  /** 当前 owner（子代理/teammate 名或 'cockpit'） */
+  owner?: string | undefined
+  /** 追溯：来源需求 */
+  requirements: string[]
+  /** 迭代号（敏捷/螺旋） */
+  iteration?: number | undefined
+  evidence: EvidenceItem[]
+  blockedReason?: string | undefined
+  createdAt: string
+  updatedAt: string
+}
+
+/** 派发记录（`.sdo/dispatch/*.yml` 的投影形态；真源在 journal）。 */
+export interface DispatchRecord {
+  taskId: string
+  backend: 'subagent' | 'native-team' | 'inline'
+  owner: string
+  at: string
+  /** 降级原因（例如宿主机没有可用后端） */
+  degradedReason?: string | undefined
+}
+
+/** 迭代（设计 §7.2 敏捷/螺旋）。 */
+export interface Iteration {
+  number: number
+  goal: string
+  status: 'planned' | 'active' | 'closed'
+  startedAt: string
+  closedAt?: string | undefined
+}
+
 /** journal 事件类型（真源的唯一写入形态）。 */
 export type SdoEventType =
   | 'project/created'
@@ -341,11 +516,42 @@ export type SdoEventType =
   | 'change/requested'
   | 'change/decided'
   | 'tailoring/updated'
+  | 'design/updated'
+  | 'adr/recorded'
+  | 'quality/recorded'
+  | 'contract/recorded'
+  | 'trace/linked'
+  | 'plan/mode'
+  | 'plan/review-blocked'
+  | 'task/created'
+  | 'task/updated'
+  | 'task/claimed'
+  | 'task/released'
+  | 'task/done'
+  | 'task/blocked'
+  | 'dispatch/decided'
+  | 'iteration/updated'
+  | 'review/recorded'
+  | 'test/recorded'
+  | 'defect/recorded'
+  | 'delivery/packaged'
   | 'gate/result'
   | 'evidence/recorded'
   | 'cost/sample'
   | 'budget/decision'
   | 'plan/review-blocked'
+  | 'task/created'
+  | 'task/updated'
+  | 'task/claimed'
+  | 'task/released'
+  | 'task/done'
+  | 'task/blocked'
+  | 'dispatch/decided'
+  | 'iteration/updated'
+  | 'review/recorded'
+  | 'test/recorded'
+  | 'defect/recorded'
+  | 'delivery/packaged'
 
 /** journal 中的一条事件。 */
 export interface JournalEvent {

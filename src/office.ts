@@ -12,7 +12,53 @@ import { basename, join, relative, resolve, sep } from 'node:path'
 import type { BoardRequirement } from './board/render.js'
 import type { ProjectConfig, Settings } from './config.js'
 import { defaultProjectConfig, readProjectConfig, writeProjectConfig } from './config.js'
+import { listViews, upsertElement } from './domain/architecture.js'
+import type { UpsertElementInput } from './domain/architecture.js'
+import { listAdrs, recordAdr, supersedeAdr } from './domain/adr.js'
+import type { RecordAdrInput } from './domain/adr.js'
+import { listContracts, recordContract } from './domain/contracts.js'
+import type { RecordContractInput } from './domain/contracts.js'
+import { readAssessment, listScenarios, recordScenario, writeAssessment } from './domain/quality.js'
+import type { RecordScenarioInput } from './domain/quality.js'
+import { linkMany, renderTraceReport, report } from './domain/trace.js'
+import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
+import { claim, reassign, release, report as reportTask, staleClaims } from './domain/collab.js'
+import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
+import {
+  closeIteration,
+  decompose,
+  listTasks,
+  readIteration,
+  readyTasks,
+  startIteration,
+  validatePlan,
+} from './domain/plan.js'
+import type { DecomposeInput, PlanIssue } from './domain/plan.js'
+import {
+  listDefects,
+  listReviews,
+  listTestCases,
+  packageDelivery,
+  readManifest,
+  recordDefect,
+  recordReview,
+  recordTestCase,
+  recordTestResult,
+  renderDelivery,
+  renderTestPlan,
+  updateDefect,
+  verificationStats,
+} from './domain/records.js'
+import type {
+  DeliveryManifest,
+  Defect,
+  PackageInput,
+  Review,
+  TestCase,
+  TestResult,
+} from './domain/records.js'
 import { createChange, listChanges } from './domain/change.js'
+import { renderHeader } from './infra/render.js'
 import type { CreateChangeInput } from './domain/change.js'
 import { evaluateDor } from './domain/dor.js'
 import type { DorResult } from './domain/dor.js'
@@ -43,7 +89,16 @@ import { nextId } from './infra/ids.js'
 import { renderSrs } from './infra/render.js'
 import { SdoStore } from './infra/store.js'
 import type {
+  Adr,
   ChangeRequest,
+  Iteration,
+  TaskCard,
+  Contract,
+  DesignElement,
+  DesignView,
+  QualityAssessment,
+  QualityScenario,
+  TraceReport,
   FeasibilityAssessment,
   GateEvaluation,
   GrillQuestion,
@@ -141,6 +196,11 @@ export interface StatusSnapshot {
 /** 一次工具/命令调用携带的上下文。 */
 export interface OfficeCall {
   sessionId?: string | undefined
+  /**
+   * 宿主 agent 的不透明引用：只用于 plan mode 适配器（`planMode.get/set(agent)`），
+   * office 自身不解读它。
+   */
+  agent?: unknown
 }
 
 /** 门禁判定结果（工具层用）。 */
@@ -649,6 +709,7 @@ export class SoftwareDevOffice {
     const config = readProjectConfig(store).config
     const context: GateContext = {
       workspace,
+      store,
       project,
       requirements: listRequirements(store),
       questions: listQuestions(store),
@@ -846,6 +907,336 @@ export class SoftwareDevOffice {
     writeRequirement(store, next)
     journal.append('requirement/updated', { id: next.id, via: change.id, version: next.version })
     return { change, applied: true }
+  }
+
+  // —————————————————————— M2：架构工程 ——————————————————————
+
+  views(call: OfficeCall): DesignView[] {
+    return listViews(this.storeFor(this.workspaceFor(call)))
+  }
+
+  /** 新增/更新设计元素（`sdo_design action=create`）。 */
+  upsertElement(call: OfficeCall, input: UpsertElementInput): { element: DesignElement; view: DesignView; created: boolean } {
+    const { store, journal } = this.contextFor(call)
+    return upsertElement(store, journal, input)
+  }
+
+  adrs(call: OfficeCall): Adr[] {
+    return listAdrs(this.storeFor(this.workspaceFor(call)))
+  }
+
+  recordAdr(call: OfficeCall, input: RecordAdrInput & { supersedes?: string | undefined }): Adr {
+    const { store, journal } = this.contextFor(call)
+    return input.supersedes === undefined
+      ? recordAdr(store, journal, input)
+      : supersedeAdr(store, journal, { ...input, supersedes: input.supersedes })
+  }
+
+  scenarios(call: OfficeCall): QualityScenario[] {
+    return listScenarios(this.storeFor(this.workspaceFor(call)))
+  }
+
+  recordScenario(call: OfficeCall, input: RecordScenarioInput): QualityScenario {
+    const { store, journal } = this.contextFor(call)
+    return recordScenario(store, journal, input)
+  }
+
+  assessQuality(call: OfficeCall, input: { risks: string[]; sensitivities: string[]; tradeoffs: string[]; by: string }): QualityAssessment {
+    const { store, journal } = this.contextFor(call)
+    return writeAssessment(store, journal, input)
+  }
+
+  qualityAssessment(call: OfficeCall): QualityAssessment | undefined {
+    return readAssessment(this.storeFor(this.workspaceFor(call)))
+  }
+
+  contracts(call: OfficeCall): Contract[] {
+    return listContracts(this.storeFor(this.workspaceFor(call)))
+  }
+
+  recordContract(call: OfficeCall, input: RecordContractInput): Contract {
+    const { store, journal } = this.contextFor(call)
+    return recordContract(store, journal, input)
+  }
+
+  /** 建立追溯边（`sdo_trace action=link`）。 */
+  linkTrace(call: OfficeCall, inputs: { from: string; to: string; kind: string }[]): { created: number } {
+    const { store, journal } = this.contextFor(call)
+    return linkMany(store, journal, inputs)
+  }
+
+  /** 追溯报告（覆盖率 + 孤儿）。 */
+  traceReport(call: OfficeCall): TraceReport {
+    const { store } = this.contextFor(call)
+    return report(store, listRequirements(store))
+  }
+
+  /** 渲染 `docs/TRACE.md`（派生视图）。 */
+  renderTrace(call: OfficeCall): string {
+    const { store, journal, workspace } = this.contextFor(call)
+    const seq = journal.read().events.length
+    const text = renderTraceReport({
+      report: report(store, listRequirements(store)),
+      seq,
+      header: renderHeader('.sdo/trace/links.jsonl', seq),
+    })
+    const target = new SdoStore(workspace).writeText(['docs', 'TRACE.md'], text)
+    journal.append('evidence/recorded', { kind: 'render', doc: 'TRACE.md', seq })
+    return this.relativize(workspace, target)
+  }
+
+  // —————————————————————— M2-06：架构阶段的计划评审（两道门） ——————————————————————
+
+  /** 计划评审状态（源自 journal：`plan/mode` 与 `plan/review-blocked`）。 */
+  planState(call: OfficeCall): { entered: boolean; reviewed: boolean; blockedReason?: string | undefined } {
+    const events = this.journalFor(this.workspaceFor(call)).read().events
+    const modes = events.filter((event) => event.type === 'plan/mode')
+    const firstEnter = modes.findIndex((event) => event.data['active'] === true)
+    const entered = firstEnter >= 0
+    const reviewed = entered && modes.slice(firstEnter + 1).some((event) => event.data['active'] === false)
+    const blocked = [...events].reverse().find((event) => event.type === 'plan/review-blocked')
+    const reason = blocked?.data['reason']
+    return {
+      entered,
+      reviewed,
+      ...(typeof reason === 'string' ? { blockedReason: reason } : {}),
+    }
+  }
+
+  /** SDO 主动驱动进入 plan mode 后留痕。 */
+  markPlanEntered(call: OfficeCall): void {
+    this.journalFor(this.workspaceFor(call)).append('plan/mode', { active: true, by: 'sdo' })
+  }
+
+  /** 观察到计划评审已结束（离开 plan mode）→ 留痕。 */
+  markPlanReviewed(call: OfficeCall): void {
+    this.journalFor(this.workspaceFor(call)).append('plan/mode', { active: false, by: 'human' })
+  }
+
+  /** 无交互评审通道：按 Q-20 阻塞（留痕 `plan/review-blocked`，不触达 G3）。 */
+  markPlanBlocked(call: OfficeCall, reason: string): void {
+    this.journalFor(this.workspaceFor(call)).append('plan/review-blocked', { reason, at: new Date().toISOString() })
+  }
+
+  /**
+   * 架构阶段的前置判定（设计 §8.5 / Q-17 / Q-20）：
+   *   G2 未过 → gate-blocked；无评审通道 → blocked-no-reviewer；未进 plan mode → needs-plan-mode；
+   *   仍在 plan mode → plan-review-pending；评审完成 → ready。
+   */
+  designPrecondition(
+    call: OfficeCall,
+    plan: { available: boolean; active: boolean },
+  ):
+    | { kind: 'no-project' }
+    | { kind: 'gate-blocked'; check: ReturnType<SoftwareDevOffice['designCheck']> }
+    | { kind: 'blocked-no-reviewer'; reason: string }
+    | { kind: 'needs-plan-mode' }
+    | { kind: 'plan-review-pending' }
+    | { kind: 'ready' } {
+    const check = this.designCheck(call)
+    if (check.reason.includes('没有任何需求')) return { kind: 'gate-blocked', check }
+    if (!plan.available) {
+      const reason = 'plan review requires an interactive reviewer'
+      if (this.planState(call).blockedReason !== reason) this.markPlanBlocked(call, reason)
+      return { kind: 'blocked-no-reviewer', reason }
+    }
+    const state = this.planState(call)
+    if (!state.entered) return { kind: 'needs-plan-mode' }
+    if (plan.active) return { kind: 'plan-review-pending' }
+    if (!state.reviewed) this.markPlanReviewed(call)
+    if (!check.allowed) return { kind: 'gate-blocked', check }
+    return { kind: 'ready' }
+  }
+
+  // —————————————————————— M4：拆分、协同与验证 ——————————————————————
+
+  /** 拆分任务（结构通道 + 模型建议）。 */
+  planDecompose(call: OfficeCall, input: DecomposeInput = {}): { tasks: TaskCard[]; issues: PlanIssue[] } {
+    const { store, journal } = this.contextFor(call)
+    const current = readIteration(store)
+    // 已经有进行中的迭代时，拆出来的卡自动归入该迭代（否则迭代门禁无从判定）
+    return decompose(store, journal, listRequirements(store), {
+      ...input,
+      ...(input.iteration === undefined && current !== undefined ? { iteration: current.number } : {}),
+    })
+  }
+
+  tasks(call: OfficeCall): TaskCard[] {
+    return listTasks(this.storeFor(this.workspaceFor(call)))
+  }
+
+  taskById(call: OfficeCall, id: string): TaskCard | undefined {
+    return this.tasks(call).find((task) => task.id === id)
+  }
+
+  planIssues(call: OfficeCall): PlanIssue[] {
+    return validatePlan(this.tasks(call))
+  }
+
+  readyForDispatch(call: OfficeCall, limit = 4): TaskCard[] {
+    return readyTasks(this.tasks(call), limit)
+  }
+
+  /** 认领（CAS）。 */
+  claimTask(call: OfficeCall, input: ClaimInput): ClaimResult {
+    const { store, journal } = this.contextFor(call)
+    return claim(store, journal, input)
+  }
+
+  /** 回报（done 必须带证据）。 */
+  reportTask(call: OfficeCall, input: ReportInput): ReportResult {
+    const { store, journal } = this.contextFor(call)
+    const result = reportTask(store, journal, input)
+    if (result.ok && input.status === 'done') {
+      // 完成的卡自动挂上"任务→需求"的追溯边（覆盖率与影响分析都靠它）
+      const task = result.task
+      if (task.requirements.length > 0) {
+        linkMany(
+          store,
+          journal,
+          task.requirements.map((requirement) => ({ from: requirement, to: task.id, kind: 'req-task' })),
+        )
+      }
+    }
+    return result
+  }
+
+  releaseTask(call: OfficeCall, input: { taskId: string; actor: string; reason: string }): TaskCard | undefined {
+    const { store, journal } = this.contextFor(call)
+    return release(store, journal, input)
+  }
+
+  reassignTask(call: OfficeCall, input: { taskId: string; actor: string; owner: string; reason: string }): TaskCard | undefined {
+    const { store, journal } = this.contextFor(call)
+    return reassign(store, journal, input)
+  }
+
+  /** 疑似失联（只报告，不自动释放）。 */
+  staleTasks(call: OfficeCall, ttlMs = 15 * 60_000): TaskCard[] {
+    return staleClaims(this.tasks(call), ttlMs)
+  }
+
+  /** 容量预算内的派发计划。 */
+  dispatchPlan(call: OfficeCall, maxParallel = this.settings.maxParallelDispatch): { dispatch: TaskCard[]; queued: TaskCard[] } {
+    const tasks = this.tasks(call)
+    const inProgress = tasks.filter((task) => task.status === 'in-progress').length
+    return capacityPlan(readyTasks(tasks, 64), inProgress, maxParallel)
+  }
+
+  /** 记录派发决策（含后端与降级原因）。 */
+  recordDispatch(call: OfficeCall, input: { taskId: string; backend: string; owner: string; degradedReason?: string | undefined }): void {
+    const { journal } = this.contextFor(call)
+    journal.append('dispatch/decided', {
+      task: input.taskId,
+      backend: input.backend,
+      owner: input.owner,
+      degradedReason: input.degradedReason ?? '',
+    })
+  }
+
+  /** 迭代。 */
+  iteration(call: OfficeCall): Iteration | undefined {
+    return readIteration(this.storeFor(this.workspaceFor(call)))
+  }
+
+  startIteration(call: OfficeCall, goal: string): Iteration {
+    const { store, journal } = this.contextFor(call)
+    return startIteration(store, journal, goal)
+  }
+
+  closeIteration(call: OfficeCall): Iteration | undefined {
+    const { store, journal } = this.contextFor(call)
+    return closeIteration(store, journal)
+  }
+
+  // 验证与评审
+
+  testCases(call: OfficeCall): TestCase[] {
+    return listTestCases(this.storeFor(this.workspaceFor(call)))
+  }
+
+  addTestCase(call: OfficeCall, input: Omit<TestCase, 'id' | 'at'>): TestCase {
+    const { store, journal } = this.contextFor(call)
+    return recordTestCase(store, journal, input)
+  }
+
+  addTestResult(call: OfficeCall, input: Omit<TestResult, 'id' | 'at'>): TestResult {
+    const { store, journal } = this.contextFor(call)
+    return recordTestResult(store, journal, input)
+  }
+
+  defects(call: OfficeCall): Defect[] {
+    return listDefects(this.storeFor(this.workspaceFor(call)))
+  }
+
+  addDefect(call: OfficeCall, input: Omit<Defect, 'id' | 'at'>): Defect {
+    const { store, journal } = this.contextFor(call)
+    return recordDefect(store, journal, input)
+  }
+
+  setDefectStatus(call: OfficeCall, id: string, status: Defect['status']): Defect | undefined {
+    const { store, journal } = this.contextFor(call)
+    return updateDefect(store, journal, id, status)
+  }
+
+  verification(call: OfficeCall): ReturnType<typeof verificationStats> {
+    return verificationStats(this.storeFor(this.workspaceFor(call)))
+  }
+
+  reviews(call: OfficeCall): Review[] {
+    return listReviews(this.storeFor(this.workspaceFor(call)))
+  }
+
+  addReview(call: OfficeCall, input: Omit<Review, 'id' | 'at'>): Review {
+    const { store, journal } = this.contextFor(call)
+    return recordReview(store, journal, input)
+  }
+
+  /** 评审独立性问题（作者 = 评审者）。 */
+  reviewViolations(call: OfficeCall): { reviewId: string; detail: string }[] {
+    return independenceViolations(this.reviews(call), this.tasks(call))
+  }
+
+  // 交付
+
+  manifest(call: OfficeCall): DeliveryManifest | undefined {
+    return readManifest(this.storeFor(this.workspaceFor(call)))
+  }
+
+  packageDelivery(call: OfficeCall, input: Omit<PackageInput, 'workspace' | 'prototypeDir'>): { manifest: DeliveryManifest; missingArtifacts: string[] } {
+    const { store, journal, workspace } = this.contextFor(call)
+    const config = readProjectConfig(store).config
+    return packageDelivery(store, journal, { ...input, workspace, prototypeDir: config.prototype.dir })
+  }
+
+  /** 渲染 `docs/TESTPLAN.md` 与 `docs/DELIVERY.md`。 */
+  renderVerificationDocs(call: OfficeCall): string[] {
+    const { store, journal, workspace } = this.contextFor(call)
+    const seq = journal.read().events.length
+    const written: string[] = []
+    written.push(
+      this.relativize(
+        workspace,
+        new SdoStore(workspace).writeText(
+          ['docs', 'TESTPLAN.md'],
+          renderTestPlan({
+            cases: listTestCases(store),
+            defects: listDefects(store),
+            header: renderHeader('.sdo/tests/', seq),
+          }),
+        ),
+      ),
+    )
+    const manifest = readManifest(store)
+    if (manifest !== undefined) {
+      written.push(
+        this.relativize(
+          workspace,
+          new SdoStore(workspace).writeText(['docs', 'DELIVERY.md'], renderDelivery(manifest, renderHeader('.sdo/delivery/manifest.yml', seq))),
+        ),
+      )
+    }
+    return written
   }
 
   private projectIds(store: SdoStore): string[] {

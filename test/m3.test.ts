@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
-import { evaluateGate } from '../src/domain/gates.js'
+import { CHECKERS, evaluateGate } from '../src/domain/gates.js'
 import { listIssues } from '../src/domain/issues.js'
 import { exitGates, loadAllProcesses, loadProcess, nextPhase, phaseLabel } from '../src/domain/process.js'
 import { SoftwareDevOffice, processOfProject } from '../src/office.js'
@@ -201,13 +201,50 @@ test('advance：门禁未过即拒绝并给出缺口；通过后推进阶段并�
   assert.equal(office.status(call()).pendingGate, 'G1')
 })
 
-test('未实现的门禁检查器一律判失败：绝不允许"查不到就算过"', () => {
+test('不变量：每个流程的每条门禁准则都有已实现的检查器（不允许"查不到就算过"）', () => {
   setup()
   completeLedger()
-  const evaluation = office.evaluate(call(), 'G3')
-  assert.equal(evaluation.status, 'failed')
-  assert.ok(evaluation.criteria.every((criterion) => criterion.ok === false))
-  assert.match(evaluation.criteria[0]?.detail ?? '', /尚未实现/u)
+  const missing: string[] = []
+  for (const process of loadAllProcesses()) {
+    for (const gate of process.gates) {
+      for (const criterion of gate.criteria) {
+        // DoR 的四条准则由 evaluateDor 复用，其余必须在 CHECKERS 注册表里
+        const viaDor = ['C1-dor-per-requirement', 'C2-open-questions', 'C3-must-has-ac', 'C4-glossary', 'C5-non-goals', 'C6-red-team', 'C7-signoff', 'C8-red-team-closed']
+        if (viaDor.includes(criterion.id)) continue
+        if (CHECKERS[criterion.check] === undefined) missing.push(`${process.id}/${gate.id}/${criterion.id}(${criterion.check})`)
+      }
+    }
+  }
+  assert.deepEqual(missing, [], `缺检查器：${missing.join(' ')}`)
+
+  // 反向：判定时绝不允许再出现"尚未实现"
+  for (const process of loadAllProcesses()) {
+    for (const gate of process.gates) {
+      const evaluation = evaluateGate(process, gate.id, {
+        workspace,
+        store: office.storeFor(workspace),
+        project: office.status(call()).project,
+        requirements: [],
+        questions: [],
+        risks: [],
+        issues: [],
+        feasibility: undefined,
+        redTeamExecuted: false,
+        redTeamDisabled: false,
+        waivedGates: [],
+        prototypeDir: 'prototype',
+        prototypeThrowaway: false,
+        riskConclusion: undefined,
+      })
+      for (const criterion of evaluation.criteria) {
+        assert.equal(
+          /尚未实现/u.test(criterion.detail),
+          false,
+          `${process.id}/${gate.id}/${criterion.id} 仍报未实现：${criterion.detail}`,
+        )
+      }
+    }
+  }
 })
 
 test('waive：显式豁免留痕（tailoring.waivedGates + 门禁记录 waived），随后可推进', () => {
@@ -459,6 +496,7 @@ test('evaluateGate 对未知门禁给出可用门禁清单（不静默通过）'
   assert.ok(process !== undefined)
   const evaluation = evaluateGate(process, 'G99', {
     workspace,
+    store: office.storeFor(workspace),
     project: office.status(call()).project,
     requirements: [],
     questions: [],

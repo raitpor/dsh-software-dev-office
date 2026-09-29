@@ -25,7 +25,15 @@ export interface OfficeToolDeps {
   requirement(call: OfficeCall, args: RequirementArgs): Promise<string>
   redteam(call: OfficeCall, args: RedTeamArgs): Promise<string>
   render(call: OfficeCall, args: { target?: string | undefined }): Promise<string>
-  design(call: OfficeCall, args: { action?: string | undefined }): Promise<string>
+  design(call: OfficeCall, args: DesignArgs): Promise<string>
+  adr(call: OfficeCall, args: AdrArgs): Promise<string>
+  quality(call: OfficeCall, args: QualityArgs): Promise<string>
+  trace(call: OfficeCall, args: TraceArgs): Promise<string>
+  plan(call: OfficeCall, args: PlanArgs): Promise<string>
+  task(call: OfficeCall, args: TaskArgs): Promise<string>
+  test(call: OfficeCall, args: TestArgs): Promise<string>
+  review(call: OfficeCall, args: ReviewArgs): Promise<string>
+  deliver(call: OfficeCall, args: DeliverArgs): Promise<string>
 }
 
 export interface InitArgs {
@@ -91,6 +99,127 @@ export interface RiskArgs {
   rationale?: string | undefined
 }
 
+export interface DesignArgs {
+  action: string
+  /** 视图：context | component | runtime | data | deployment */
+  kind?: string | undefined
+  /** 元素 id（更新既有元素时给） */
+  id?: string | undefined
+  name?: string | undefined
+  elementKind?: string | undefined
+  responsibility?: string | undefined
+  /** 逗号分隔的**元素名**（依赖谁） */
+  dependsOn?: string | undefined
+  summary?: string | undefined
+  /** action=contract */
+  producer?: string | undefined
+  consumer?: string | undefined
+  schema?: string | undefined
+  contractKind?: string | undefined
+  timeout?: string | undefined
+  retry?: string | undefined
+  idempotency?: string | undefined
+}
+
+export interface AdrArgs {
+  action: string
+  id?: string | undefined
+  title?: string | undefined
+  context?: string | undefined
+  decision?: string | undefined
+  /** JSON：[{"option":"…","pros":"…","cons":"…"}] */
+  alternatives?: string | undefined
+  /** JSON：["…"] */
+  consequences?: string | undefined
+  /** 取代哪条 ADR */
+  supersedes?: string | undefined
+}
+
+export interface QualityArgs {
+  action: string
+  attribute?: string | undefined
+  stimulus?: string | undefined
+  response?: string | undefined
+  measure?: string | undefined
+  priority?: 'high' | 'medium' | 'low' | undefined
+  targets?: string | undefined
+  /** action=evaluate：JSON 数组 */
+  risks?: string | undefined
+  sensitivities?: string | undefined
+  tradeoffs?: string | undefined
+  by?: string | undefined
+}
+
+export interface TraceArgs {
+  action: string
+  from?: string | undefined
+  to?: string | undefined
+  /** req-des | req-task | req-tc | des-task | des-ct */
+  kind?: string | undefined
+  /** JSON 数组：一次建多条边 */
+  links?: string | undefined
+}
+
+export interface PlanArgs {
+  action: string
+  /** decompose：只拆这些需求（JSON 数组） */
+  requirements?: string | undefined
+  /** decompose：模型通道的卡片建议（JSON 数组） */
+  suggestions?: string | undefined
+  /** iteration：迭代目标 */
+  goal?: string | undefined
+  /** next：派发几条 */
+  limit?: number | undefined
+  /** next：后端偏好 auto | subagent | native-team | inline */
+  backend?: string | undefined
+}
+
+export interface TaskArgs {
+  action: string
+  id?: string | undefined
+  owner?: string | undefined
+  expectedRevision?: number | undefined
+  /** done 的证据（JSON 数组：[{"kind":"artifact","detail":"…"}]） */
+  evidence?: string | undefined
+  note?: string | undefined
+  reason?: string | undefined
+  actor?: string | undefined
+}
+
+export interface TestArgs {
+  action: string
+  title?: string | undefined
+  kind?: 'unit' | 'integration' | 'e2e' | undefined
+  requirement?: string | undefined
+  steps?: string | undefined
+  expected?: string | undefined
+  caseId?: string | undefined
+  status?: string | undefined
+  evidence?: string | undefined
+  severity?: 'blocker' | 'major' | 'minor' | undefined
+  /** defect：更新既有缺陷的状态时给 id */
+  defectId?: string | undefined
+}
+
+export interface ReviewArgs {
+  action: string
+  taskId?: string | undefined
+  reviewer?: string | undefined
+  verdict?: 'pass' | 'changes-requested' | 'reject' | undefined
+  findings?: string | undefined
+}
+
+export interface DeliverArgs {
+  action: string
+  /** JSON：[{"path":"src/x.ts","kind":"source"}] */
+  artifacts?: string | undefined
+  /** JSON：[{"requirement":"REQ-001","criterion":"…","evidence":"…","verdict":"pass"}] */
+  acceptance?: string | undefined
+  rollbackPoint?: string | undefined
+  by?: string | undefined
+  notes?: string | undefined
+}
+
 export interface RequirementArgs {
   action: string
   id?: string | undefined
@@ -130,10 +259,10 @@ export interface RedTeamArgs {
   reason?: string | undefined
 }
 
-/** 从一次工具执行里取出调用上下文（会话身份）。 */
+/** 从一次工具执行里取出调用上下文（会话身份 + 不透明的 agent 引用，后者供 plan mode 适配器用）。 */
 export function callOf(exec: ToolRunContext): OfficeCall {
   const agent = exec.agent
-  return agent === undefined ? {} : { sessionId: String(agent.id) }
+  return agent === undefined ? {} : { sessionId: String(agent.id), agent }
 }
 
 /** 宽松解析枚举；非法值返回 undefined（由行为层决定是否报错）。 */
@@ -358,6 +487,162 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
     }),
 
     defineTool({
+      name: 'sdo_plan',
+      description:
+        "Task decomposition and dispatch planning. 'decompose' builds cards through two channels — the structural "
+        + 'channel (one card per design element reachable from a baselined requirement, plus one per contract edge) '
+        + "and the model channel (`suggestions`) — and then runs six mechanical checks: single role, non-empty DoD, "
+        + 'acyclic dependencies, size cap (a `large` card means it was not decomposed), write-scope disjointness '
+        + 'between cards that could run in parallel, and at least one evidence requirement. '
+        + "'iteration' opens a new iteration (agile/spiral) with a goal. 'next' picks the dispatchable cards within "
+        + 'the parallel capacity budget and returns the hand-off request (the backend is chosen per §8.3 and degrades '
+        + "to inline execution when no dispatch backend is available).",
+      parameters: {
+        action: { type: 'string', required: true, description: "'decompose' | 'iteration' | 'next'." },
+        requirements: { type: 'string', description: 'decompose: JSON array of requirement ids to decompose (default: all).' },
+        suggestions: { type: 'string', description: 'decompose: JSON array of extra cards from the model channel: [{title, dod:[…], role, writeScopes:[…], size}]' },
+        goal: { type: 'string', description: 'iteration: the goal of this iteration.' },
+        limit: { type: 'number', description: 'next: how many cards to hand off (default 1).' },
+        backend: { type: 'string', description: "next: 'auto' | 'subagent' | 'native-team' | 'inline'." },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.plan(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'next',
+          requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
+          suggestions: typeof args.suggestions === 'string' ? args.suggestions : undefined,
+          goal: typeof args.goal === 'string' ? args.goal : undefined,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
+          backend: typeof args.backend === 'string' ? args.backend : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_task',
+      description:
+        'Task cards and the collaboration protocol. Claiming uses compare-and-set (`expectedRevision`) so two '
+        + 'workers never take the same card; only the owner may report; `done` REQUIRES evidence (command output, an '
+        + 'artifact path, or a workspace-changes reference) — a bare "finished" is not accepted; a stuck card is '
+        + 'reported as `block` with a reason. Stalled owners are never released automatically: use `release` or '
+        + '`reassign`, both of which leave a trace.',
+      parameters: {
+        action: { type: 'string', required: true, description: "'list' | 'claim' | 'done' | 'block' | 'release' | 'reassign'." },
+        id: { type: 'string', description: 'Task id (TASK-001).' },
+        owner: { type: 'string', description: 'Who claims / reports / takes over the card.' },
+        expectedRevision: { type: 'number', description: 'claim: the revision you read (CAS).' },
+        evidence: { type: 'string', description: 'done: JSON array [{"kind":"artifact|command|workspace-changes","detail":"…"}].' },
+        note: { type: 'string', description: 'block: why it is stuck.' },
+        reason: { type: 'string', description: 'release/reassign: the reason (recorded).' },
+        actor: { type: 'string', description: 'release/reassign: who performs the action.' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.task(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'list',
+          id: typeof args.id === 'string' ? args.id : undefined,
+          owner: typeof args.owner === 'string' ? args.owner : undefined,
+          expectedRevision: typeof args.expectedRevision === 'number' ? args.expectedRevision : undefined,
+          evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
+          note: typeof args.note === 'string' ? args.note : undefined,
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
+          actor: typeof args.actor === 'string' ? args.actor : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_test',
+      description:
+        "Test plan, results and defects. 'plan' writes a test case (unit/integration/e2e) and may bind it to a "
+        + "requirement id — gate G4 requires every must requirement to have at least one case. 'record' records a "
+        + "result with evidence; a failing result must be fixed, not waived. 'defect' records or updates a defect "
+        + "(severity blocker/major/minor, status open/fixed/closed/wontfix); an open blocker stops G6.",
+      parameters: {
+        action: { type: 'string', required: true, description: "'plan' | 'record' | 'defect' | 'list'." },
+        title: { type: 'string', description: 'plan: case title. defect: defect title.' },
+        kind: { type: 'string', description: "plan: 'unit' | 'integration' | 'e2e'." },
+        requirement: { type: 'string', description: 'plan: the requirement this case covers (REQ-001).' },
+        steps: { type: 'string', description: 'plan: JSON array of steps.' },
+        expected: { type: 'string', description: 'plan: the expected outcome.' },
+        caseId: { type: 'string', description: 'record: which case ran (TC-001).' },
+        status: { type: 'string', description: "record: 'pass' | 'fail' | 'skip'. defect: 'open' | 'fixed' | 'closed' | 'wontfix'." },
+        evidence: { type: 'string', description: 'record: the evidence (command + output digest, or artifact path).' },
+        severity: { type: 'string', description: "defect: 'blocker' | 'major' | 'minor'." },
+        defectId: { type: 'string', description: 'defect: existing defect id to update.' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.test(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'list',
+          title: typeof args.title === 'string' ? args.title : undefined,
+          kind: parseEnum(args.kind, ['unit', 'integration', 'e2e'] as const),
+          requirement: typeof args.requirement === 'string' ? args.requirement : undefined,
+          steps: typeof args.steps === 'string' ? args.steps : undefined,
+          expected: typeof args.expected === 'string' ? args.expected : undefined,
+          caseId: typeof args.caseId === 'string' ? args.caseId : undefined,
+          status: typeof args.status === 'string' ? args.status : undefined,
+          evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
+          severity: parseEnum(args.severity, ['blocker', 'major', 'minor'] as const),
+          defectId: typeof args.defectId === 'string' ? args.defectId : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_review',
+      description:
+        'Review records for finished task cards. The reviewer must differ from the card owner (independence is '
+        + "checked mechanically, not trusted). 'record' files a verdict (pass / changes-requested / reject) with "
+        + "findings; 'list' shows them. Gate G6 requires every finished card to carry a passing review.",
+      parameters: {
+        action: { type: 'string', required: true, description: "'record' | 'list'." },
+        taskId: { type: 'string', description: 'The task card under review.' },
+        reviewer: { type: 'string', description: 'Who reviews (must differ from the card owner).' },
+        verdict: { type: 'string', description: "'pass' | 'changes-requested' | 'reject'." },
+        findings: { type: 'string', description: 'JSON array of findings.' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.review(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'list',
+          taskId: typeof args.taskId === 'string' ? args.taskId : undefined,
+          reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
+          verdict: parseEnum(args.verdict, ['pass', 'changes-requested', 'reject'] as const),
+          findings: typeof args.findings === 'string' ? args.findings : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_deliver',
+      description:
+        "Delivery package: a manifest with the sha256 of every artifact, the acceptance matrix (one row per must "
+        + 'requirement, with evidence and a verdict), an explicit rollback point, and a statement that no '
+        + '`prototype/` content is included (Q-05). `show` lists the current package. Gate G7 refuses an incomplete '
+        + 'manifest — publishing and operations are deliberately out of scope.',
+      parameters: {
+        action: { type: 'string', required: true, description: "'package' | 'show'." },
+        artifacts: { type: 'string', description: 'JSON array: [{"path":"src/x.ts","kind":"source|docs|config|schema|test"}].' },
+        acceptance: { type: 'string', description: 'JSON array: [{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}].' },
+        rollbackPoint: { type: 'string', description: 'How to roll back (e.g. the git commit or the previous package id).' },
+        by: { type: 'string', description: 'Who packages it (default "human").' },
+        notes: { type: 'string', description: 'Anything the receiver must know.' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.deliver(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'show',
+          artifacts: typeof args.artifacts === 'string' ? args.artifacts : undefined,
+          acceptance: typeof args.acceptance === 'string' ? args.acceptance : undefined,
+          rollbackPoint: typeof args.rollbackPoint === 'string' ? args.rollbackPoint : undefined,
+          by: typeof args.by === 'string' ? args.by : undefined,
+          notes: typeof args.notes === 'string' ? args.notes : undefined,
+        })
+      },
+    }),
+
+    defineTool({
       name: 'sdo_gate',
       description:
         'Gate engine (process is data, gates are checked, never inferred). '
@@ -463,15 +748,143 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
     defineTool({
       name: 'sdo_design',
       description:
-        'Enter architecture/design work. Gated: refuses unless every requirement is baselined at gate G2. '
-        + 'The architecture engine itself lands in M2; in M1 this tool exists to enforce the gate (and to make the '
-        + 'refusal path testable end to end).',
+        'Architecture work, gated twice: gate G2 must have passed AND the plan must have been reviewed by an '
+        + 'interactive reviewer (SDO drives plan mode itself; when no interactive reviewer exists the architecture '
+        + "phase is blocked on purpose and a `plan/review-blocked` event is recorded — design Q-20). "
+        + "Actions: 'create' (upsert a design element in one of the five views: context | component | runtime | data | "
+        + "deployment; elements get DES-* ids and their `dependsOn` edges drive contract completeness), "
+        + "'contract' (record a cross-component contract with its schema and failure semantics: timeout / retry / "
+        + "idempotency), 'view' (read the current views).",
       parameters: {
-        action: { type: 'string', description: "'create' (default) | 'view'." },
+        action: { type: 'string', required: true, description: "'create' | 'contract' | 'view'." },
+        kind: { type: 'string', description: "View: 'context' | 'component' | 'runtime' | 'data' | 'deployment' (required by create)." },
+        id: { type: 'string', description: 'Existing element id (DES-001) to update; omit to create.' },
+        name: { type: 'string', description: 'Element name (create).' },
+        elementKind: { type: 'string', description: "Free-form element kind: 'system' | 'service' | 'store' | 'queue' | 'external' …" },
+        responsibility: { type: 'string', description: 'What this element is responsible for.' },
+        dependsOn: { type: 'string', description: 'Comma-separated element NAMES this element depends on (each edge needs a contract).' },
+        summary: { type: 'string', description: 'View summary (create).' },
+        producer: { type: 'string', description: 'Contract producer element name (contract).' },
+        consumer: { type: 'string', description: 'Contract consumer element name (contract).' },
+        schema: { type: 'string', description: 'Contract body: structure, fields, example payload (contract).' },
+        contractKind: { type: 'string', description: "'http' | 'event' | 'rpc' | 'schema' (contract)." },
+        timeout: { type: 'string', description: 'Failure semantics: timeout behaviour (contract).' },
+        retry: { type: 'string', description: 'Failure semantics: retry policy (contract).' },
+        idempotency: { type: 'string', description: 'Failure semantics: idempotency key / expectation (contract).' },
       },
       output: OUTPUT,
       async execute(args, exec) {
-        return deps.design(callOf(exec), { action: typeof args.action === 'string' ? args.action : 'create' })
+        return deps.design(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'view',
+          kind: typeof args.kind === 'string' ? args.kind : undefined,
+          id: typeof args.id === 'string' ? args.id : undefined,
+          name: typeof args.name === 'string' ? args.name : undefined,
+          elementKind: typeof args.elementKind === 'string' ? args.elementKind : undefined,
+          responsibility: typeof args.responsibility === 'string' ? args.responsibility : undefined,
+          dependsOn: typeof args.dependsOn === 'string' ? args.dependsOn : undefined,
+          summary: typeof args.summary === 'string' ? args.summary : undefined,
+          producer: typeof args.producer === 'string' ? args.producer : undefined,
+          consumer: typeof args.consumer === 'string' ? args.consumer : undefined,
+          schema: typeof args.schema === 'string' ? args.schema : undefined,
+          contractKind: typeof args.contractKind === 'string' ? args.contractKind : undefined,
+          timeout: typeof args.timeout === 'string' ? args.timeout : undefined,
+          retry: typeof args.retry === 'string' ? args.retry : undefined,
+          idempotency: typeof args.idempotency === 'string' ? args.idempotency : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_adr',
+      description:
+        'Architecture decision records. Every ADR must carry the alternatives you rejected (with pros/cons) and the '
+        + 'consequences you accept — gate G3 refuses ADRs that only state a conclusion. '
+        + "Actions: 'record' | 'list' | 'supersede' (records a new ADR and marks the old one superseded without "
+        + 'rewriting history).',
+      parameters: {
+        action: { type: 'string', required: true, description: "'record' | 'list' | 'supersede'." },
+        title: { type: 'string', description: 'Decision title (record).' },
+        context: { type: 'string', description: 'The forces at play: what makes this a decision at all.' },
+        decision: { type: 'string', description: 'What we decided.' },
+        alternatives: { type: 'string', description: 'JSON array: [{"option":"…","pros":"…","cons":"…"}].' },
+        consequences: { type: 'string', description: 'JSON array of accepted consequences (including the bad ones).' },
+        supersedes: { type: 'string', description: 'ADR id this new record supersedes (supersede).' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.adr(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'list',
+          title: typeof args.title === 'string' ? args.title : undefined,
+          context: typeof args.context === 'string' ? args.context : undefined,
+          decision: typeof args.decision === 'string' ? args.decision : undefined,
+          alternatives: typeof args.alternatives === 'string' ? args.alternatives : undefined,
+          consequences: typeof args.consequences === 'string' ? args.consequences : undefined,
+          supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_quality',
+      description:
+        'Quality attribute scenarios and a lightweight ATAM. Each scenario states stimulus → response plus a '
+        + 'MEASURABLE measure (metric + condition + threshold); a scenario without numbers is not a scenario. '
+        + "'evaluate' records the ATAM output as three explicit lists — risks, sensitivities and tradeoffs — which "
+        + 'are what later gates and the risk register consume.',
+      parameters: {
+        action: { type: 'string', required: true, description: "'scenario' | 'evaluate' | 'list'." },
+        attribute: { type: 'string', description: "Quality attribute: 'performance' | 'security' | 'reliability' | 'maintainability' | … (scenario)." },
+        stimulus: { type: 'string', description: 'What arrives (the stimulus).' },
+        response: { type: 'string', description: 'What the system does in response.' },
+        measure: { type: 'string', description: 'Measurable response: metric + condition + threshold, e.g. "单日 100 万条下 P99 < 500 毫秒".' },
+        priority: { type: 'string', description: "'high' | 'medium' | 'low'." },
+        targets: { type: 'string', description: 'Comma-separated design element ids this scenario targets.' },
+        risks: { type: 'string', description: 'JSON array of risks found by the ATAM (evaluate).' },
+        sensitivities: { type: 'string', description: 'JSON array of sensitivities (evaluate).' },
+        tradeoffs: { type: 'string', description: 'JSON array of tradeoffs (evaluate).' },
+        by: { type: 'string', description: 'Who evaluated (default "human").' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.quality(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'list',
+          attribute: typeof args.attribute === 'string' ? args.attribute : undefined,
+          stimulus: typeof args.stimulus === 'string' ? args.stimulus : undefined,
+          response: typeof args.response === 'string' ? args.response : undefined,
+          measure: typeof args.measure === 'string' ? args.measure : undefined,
+          priority: parseEnum(args.priority, ['high', 'medium', 'low'] as const),
+          targets: typeof args.targets === 'string' ? args.targets : undefined,
+          risks: typeof args.risks === 'string' ? args.risks : undefined,
+          sensitivities: typeof args.sensitivities === 'string' ? args.sensitivities : undefined,
+          tradeoffs: typeof args.tradeoffs === 'string' ? args.tradeoffs : undefined,
+          by: typeof args.by === 'string' ? args.by : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_trace',
+      description:
+        'Traceability graph (`.sdo/trace/links.jsonl`) — the engine change-impact analysis and the G3/G5 orphan and '
+        + "coverage checks read from. Actions: 'link' (build edges: req-des | req-task | req-tc | des-task | des-ct; "
+        + "either one edge via from/to/kind or several via a JSON `links` array), 'query' (coverage, orphans, and the "
+        + "must-requirements still missing tests), 'report' (render `docs/TRACE.md`).",
+      parameters: {
+        action: { type: 'string', required: true, description: "'link' | 'query' | 'report'." },
+        from: { type: 'string', description: 'Edge source id, e.g. REQ-001 (link).' },
+        to: { type: 'string', description: 'Edge target id, e.g. DES-001 (link).' },
+        kind: { type: 'string', description: "'req-des' | 'req-task' | 'req-tc' | 'des-task' | 'des-ct'." },
+        links: { type: 'string', description: 'JSON array for batch linking: [{"from":"REQ-001","to":"DES-001","kind":"req-des"}].' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.trace(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'query',
+          from: typeof args.from === 'string' ? args.from : undefined,
+          to: typeof args.to === 'string' ? args.to : undefined,
+          kind: typeof args.kind === 'string' ? args.kind : undefined,
+          links: typeof args.links === 'string' ? args.links : undefined,
+        })
       },
     }),
   ]

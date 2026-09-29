@@ -11,6 +11,7 @@
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
+import type { SdoStore } from '../infra/store.js'
 import type {
   FeasibilityAssessment,
   GateCriterionResult,
@@ -22,14 +23,30 @@ import type {
   RiskItem,
   SdoProject,
 } from '../types.js'
+import { adrCompleteness } from './adr.js'
+import { contractCoverage } from './contracts.js'
+import { viewsCompleteness } from './architecture.js'
 import { evaluateDor } from './dor.js'
 import { issueClosure } from './issues.js'
 import { gateDef, gatePhase } from './process.js'
 import { riskStats } from './risks.js'
+import { report } from './trace.js'
+import { iterationTasks, listTasks, planStats, readIteration, validatePlan } from './plan.js'
+import { independenceViolations } from '../integration/orchestrator.js'
+import {
+  deliveryCompleteness,
+  listDefects,
+  listReviews,
+  listTestCases,
+  listTestResults,
+  verificationStats,
+} from './records.js'
 
 /** 判定所需的全部输入（由 office 组装）。 */
 export interface GateContext {
   workspace: string
+  /** 读盘用（视图、契约、追溯图、ADR 都在文件里） */
+  store: SdoStore
   project: SdoProject | undefined
   requirements: Requirement[]
   questions: GrillQuestion[]
@@ -214,6 +231,166 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
           `缺应对或责任人的风险：${stats.unmitigated.map((risk) => risk.id).join(' ')}`,
           '补 `mitigation` 与 `owner`，或把风险降级/关闭（`sdo_risk action=update`）',
         )
+  },
+
+  'design.views': (ctx) => {
+    const result = viewsCompleteness(ctx.store)
+    if (result.ok) return ok('design.views', `五视图齐备（${result.present.length} 张，均有元素）`)
+    const problems: string[] = []
+    if (result.missing.length > 0) problems.push(`缺 ${result.missing.join(' ')}`)
+    if (result.empty.length > 0) problems.push(`空视图 ${result.empty.join(' ')}`)
+    return fail('design.views', problems.join('；'), '用 `sdo_design action=create` 逐张补齐五视图（上下文/组件/运行时/数据/部署）')
+  },
+
+  'design.adr': (ctx) => {
+    const result = adrCompleteness(ctx.store)
+    if (result.ok) return ok('design.adr', `ADR ${result.total} 条，均含备选与后果`)
+    if (result.total === 0) return fail('design.adr', '还没有 ADR', '用 `sdo_adr action=record` 记录关键决策（必须含备选方案与后果）')
+    return fail('design.adr', `缺备选或后果：${result.incomplete.join(' ')}`, '为这些 ADR 补 `alternatives` 与 `consequences`（设计 §6.3）')
+  },
+
+  'trace.orphans': (ctx) => {
+    const data = report(ctx.store, ctx.requirements)
+    const orphans = [...data.orphans.design, ...data.orphans.tasks, ...data.orphans.tests]
+    if (ctx.requirements.length === 0) return fail('trace.orphans', '没有需求可追溯', '先完成需求基线（G2）')
+    if (orphans.length === 0) return ok('trace.orphans', `无孤儿；需求覆盖率 ${Math.round(data.coverage * 100)}%`)
+    return fail(
+      'trace.orphans',
+      `孤儿元素：${orphans.join(' ')}`,
+      '用 `sdo_trace action=link from=REQ-001 to=DES-001 kind=req-des` 把每个设计元素挂到需求上',
+    )
+  },
+
+  'design.contracts': (ctx) => {
+    const result = contractCoverage(ctx.store)
+    if (result.ok) return ok('design.contracts', `契约覆盖 ${result.covered}/${result.totalEdges} 条跨组件交互`)
+    const problems: string[] = []
+    if (result.totalEdges === 0) problems.push('组件视图没有跨组件依赖边')
+    if (result.missing.length > 0) {
+      problems.push(`缺契约：${result.missing.map((edge) => `${edge.consumer}→${edge.producer}`).join(' ')}`)
+    }
+    if (result.incompleteSemantics.length > 0) problems.push(`失败语义不全：${result.incompleteSemantics.join(' ')}`)
+    return fail('design.contracts', problems.join('；'), '用 `sdo_design action=contract` 为每条交互补契约（含超时/重试/幂等）')
+  },
+
+  'plan.tasks': (ctx) => {
+    const tasks = listTasks(ctx.store)
+    if (tasks.length === 0) {
+      return fail('plan.tasks', '还没有任务卡', '用 `sdo_plan action=decompose` 按追溯图拆分任务卡')
+    }
+    const issues = validatePlan(tasks)
+    if (issues.length === 0) return ok('plan.tasks', `任务卡 ${tasks.length} 张，六条机械校验全过`)
+    return fail(
+      'plan.tasks',
+      `拆分校验不通过：${issues.map((issue) => `${issue.taskId}:${issue.detail}`).join('；')}`,
+      issues[0]?.remedy ?? '修正这些卡再试',
+    )
+  },
+
+  'plan.testplan': (ctx) => {
+    const cases = listTestCases(ctx.store)
+    if (cases.length === 0) return fail('plan.testplan', '还没有测试用例', '用 `sdo_test action=plan` 写用例（覆盖每条 must 需求）')
+    const musts = ctx.requirements.filter((requirement) => requirement.priority === 'must')
+    const uncovered = musts
+      .filter((requirement) => !cases.some((testCase) => testCase.requirement === requirement.id))
+      .map((requirement) => requirement.id)
+    if (uncovered.length === 0) return ok('plan.testplan', `用例 ${cases.length} 条，覆盖全部 must 需求（${musts.length}）`)
+    return fail('plan.testplan', `must 需求缺用例：${uncovered.join(' ')}`, `为 ${uncovered.join(' ')} 各写至少一条用例（\`sdo_test action=plan requirement=…\`）`)
+  },
+
+  'tasks.all_done': (ctx) => {
+    const stats = planStats(listTasks(ctx.store))
+    if (stats.total === 0) return fail('tasks.all_done', '还没有任务卡', '先 `sdo_plan action=decompose`')
+    if (stats.allDone) {
+      const missingEvidence = listTasks(ctx.store).filter((task) => task.evidence.length === 0)
+      return missingEvidence.length === 0
+        ? ok('tasks.all_done', `任务卡 ${stats.total} 张全部完成且有证据`)
+        : fail('tasks.all_done', `完成但无证据：${missingEvidence.map((task) => task.id).join(' ')}`, '补证据（`sdo_task action=done` 必须带 evidence）')
+    }
+    return fail(
+      'tasks.all_done',
+      `未完成：${Object.entries(stats.byStatus)
+        .filter(([status]) => status !== 'done' && status !== 'verified')
+        .map(([status, count]) => `${status} ${count}`)
+        .join('，')}`,
+      '推进或显式放弃剩余任务卡（`sdo_task action=done|block`）',
+    )
+  },
+
+  'trace.coverage': (ctx) => {
+    const data = report(ctx.store, ctx.requirements)
+    const orphans = [...data.orphans.design, ...data.orphans.tasks, ...data.orphans.tests]
+    if (orphans.length > 0) return fail('trace.coverage', `仍有孤儿：${orphans.join(' ')}`, '把孤儿元素挂回需求（`sdo_trace action=link`）')
+    if (data.uncoveredMust.length > 0) return fail('trace.coverage', `must 需求缺测试用例：${data.uncoveredMust.join(' ')}`, '补 req-tc 边')
+    return ok('trace.coverage', `覆盖率 ${Math.round(data.coverage * 100)}%，无孤儿`)
+  },
+
+  'tests.passed': (ctx) => {
+    const stats = verificationStats(ctx.store)
+    if (stats.cases === 0) return fail('tests.passed', '没有测试用例', '用 `sdo_test action=plan` 写用例')
+    if (stats.results === 0) return fail('tests.passed', '用例都没有执行结果', '用 `sdo_test action=record` 记录结果（附证据）')
+    if (stats.failed > 0) return fail('tests.passed', `失败用例：${stats.failedCaseIds.join(' ')}`, '修好并重跑；失败用例不允许带着过门禁')
+    const unrun = listTestCases(ctx.store)
+      .filter((testCase) => !listTestResults(ctx.store).some((result) => result.caseId === testCase.id))
+      .map((testCase) => testCase.id)
+    if (unrun.length > 0) return fail('tests.passed', `有用例没跑：${unrun.join(' ')}`, '把每条用例都跑掉')
+    return ok('tests.passed', `用例 ${stats.cases} 条全部有结果（通过 ${stats.passed}）`)
+  },
+
+  'defects.closed': (ctx) => {
+    const stats = verificationStats(ctx.store)
+    if (stats.blockersOpen > 0) {
+      const open = listDefects(ctx.store)
+        .filter((defect) => defect.severity === 'blocker' && defect.status !== 'closed' && defect.status !== 'wontfix')
+        .map((defect) => defect.id)
+      return fail('defects.closed', `阻塞级缺陷未关闭：${open.join(' ')}`, '修掉并关闭（`sdo_test action=defect id=… status=closed`）')
+    }
+    return ok('defects.closed', `无未关闭的阻塞级缺陷（未关闭总计 ${stats.defectsOpen}）`)
+  },
+
+  'review.independent': (ctx) => {
+    const reviews = listReviews(ctx.store)
+    const tasks = listTasks(ctx.store)
+    const violations = independenceViolations(reviews, tasks)
+    if (violations.length > 0) {
+      return fail('review.independent', violations.map((item) => item.detail).join('；'), '换一个评审者（作者不得评审自己的产出）')
+    }
+    const doneTasks = tasks.filter((task) => task.status === 'done' || task.status === 'verified')
+    const unreviewed = doneTasks.filter((task) => !reviews.some((review) => review.taskId === task.id && review.verdict === 'pass')).map((task) => task.id)
+    if (unreviewed.length > 0) {
+      return fail('review.independent', `已完成但无通过评审：${unreviewed.join(' ')}`, '用 `sdo_review action=record`（评审者 ≠ 作者）')
+    }
+    return ok('review.independent', `评审 ${reviews.length} 条，独立性无违规`)
+  },
+
+  'iteration.increment': (ctx) => {
+    const current = readIteration(ctx.store)
+    if (current === undefined) return fail('iteration.increment', '还没有开迭代', '用 `sdo_plan action=iteration goal=…` 开一个迭代')
+    const tasks = iterationTasks(ctx.store, current.number)
+    if (tasks.length === 0) return fail('iteration.increment', `迭代 ${current.number} 没有任务卡`, '为这个迭代拆出任务卡')
+    const unfinished = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified').map((task) => task.id)
+    if (unfinished.length > 0) return fail('iteration.increment', `迭代内未完成：${unfinished.join(' ')}`, '完成或移出这些卡')
+    return ok('iteration.increment', `迭代 ${current.number} 产出增量（${tasks.length} 张卡全部完成）`)
+  },
+
+  'iteration.dod': (ctx) => {
+    const current = readIteration(ctx.store)
+    if (current === undefined) return fail('iteration.dod', '还没有开迭代', '用 `sdo_plan action=iteration`')
+    if (current.goal.trim() === '') return fail('iteration.dod', '迭代没有目标', '给迭代写目标（否则"完成"无从判定）')
+    const tasks = iterationTasks(ctx.store, current.number)
+    const noEvidence = tasks.filter((task) => task.status === 'done' && task.evidence.length === 0).map((task) => task.id)
+    if (noEvidence.length > 0) return fail('iteration.dod', `完成但无证据：${noEvidence.join(' ')}`, '补证据')
+    const stats = verificationStats(ctx.store)
+    if (stats.results === 0) return fail('iteration.dod', '迭代内没有任何测试结果', '跑用例并记录结果')
+    return ok('iteration.dod', `迭代 ${current.number} 的 DoD 满足（含 ${stats.results} 条测试结果）`)
+  },
+
+  'delivery.manifest': (ctx) => {
+    const result = deliveryCompleteness(ctx.store, ctx.requirements, ctx.prototypeDir)
+    if (result.ok) {
+      return ok('delivery.manifest', `交付清单 ${result.manifest?.id ?? ''}：产物 ${result.manifest?.artifacts.length ?? 0} 项，验收行 ${result.manifest?.acceptance.length ?? 0} 条`)
+    }
+    return fail('delivery.manifest', result.problems.join('；'), '用 `sdo_deliver action=package` 生成完整清单（含 sha256、验收矩阵、回滚点）')
   },
 
   'risks.conclusion': (ctx) =>
