@@ -1,0 +1,64 @@
+# 随包数据：八维歧义评分卡 + 禁词表（设计 §5.2.1 / §5.2.2）
+#
+# ⚠️ 这是**随包数据**，不是项目配置：项目改不动它，也就改不动门禁刻度
+#    （Q-02 评审结论：八维等权、每维 0/1/2、阈值固定，可复现性优先）。
+#
+# 维度键与设计一致：goal / user / scenario / data / interface / constraint / acceptance / boundary
+
+threshold: 14          # DoR 阈值（满分 16）
+max: 16
+requireNoZeroDimension: true
+
+dimensions:
+  goal:
+    label: 目标与价值
+    two: 有可测成功度量
+    one: 有定性目标
+    zero: 只有动作描述
+  user:
+    label: 用户与干系人
+    two: 明确角色 + 权限边界
+    one: 知道有谁用
+    zero: 未提
+  scenario:
+    label: 场景与流程
+    two: 主流程 + 异常流程 + 状态迁移
+    one: 只描述主流程
+    zero: 只有结果
+  data:
+    label: 数据与领域模型
+    two: 实体/关系/生命周期明确
+    one: 提到字段
+    zero: 只有名词
+  interface:
+    label: 接口与集成
+    two: 上下游、协议、失败语义明确
+    one: 知道有对接
+    zero: 未提
+  constraint:
+    label: 约束与非功能
+    two: 量化指标（数值+条件）
+    one: 定性要求
+    zero: 未提
+  acceptance:
+    label: 验收与判定
+    two: Given/When/Then 完整
+    one: 只有期望描述
+    zero: 无
+  boundary:
+    label: 边界与例外
+    two: 非目标 + 降级 + 极端输入明确
+    one: 提到部分
+    zero: 无
+
+# 禁词：命中即生成「强制量化」待问项，并把**对应维度**压到 1 分（硬上限）
+# 设计给出一份扁平清单；这里按"该词在攻击哪个维度"分成两组，便于确定性扣分。
+bannedWords:
+  goal: [高效, 快速, 尽快, 及时, 友好, 易用, 简单, 灵活, 智能, 合理, 完善, 优化]
+  constraint: [稳定, 可靠, 兼容, 大规模, 高性能, 尽可能, 适当, 若干, 等等]
+
+# 问题严重度 → 「阻塞程度」权重（用于提问排序：架构影响 × 不确定性 × 阻塞程度）
+severityWeight:
+  P0: 3
+  P1: 2
+  P2: 1

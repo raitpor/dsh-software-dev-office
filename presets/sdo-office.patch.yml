@@ -1,0 +1,56 @@
+# presets/sdo-office.patch.yml —— 唯一 preset（单会话入口，C-09）
+#
+# 这是本插件的**唯一入口**：插件行只出现在这里，profile 层没有本插件的行。
+# 因此"未选择该 preset 的会话完全不加载 SDO"是装配层保证的（E2E-09 / AC-007）。
+#
+# 覆盖方式（Q-08 实测结论）：patch 的 `config` 是**整体替换**；
+# 要定制请在自己的 profile patch 里写**同 id**（`preset-sdo-office`）的行并给出完整
+# `config.plugins`。**不要**再 `insert` 一行同 id 的 preset——那会在组合树里留下两行。
+- insert:
+    - id: preset-sdo-office
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: sdo-office
+        name: SDO 研发办公室（驾驶舱）
+        description: 研发全流程接管：需求审讯 → 架构 → 拆分派发 → 验证 → 交付（含看板与成本）
+        order: 1
+        plugins:
+          # ① 本插件自身：SDO 引擎（工具/命令/注入/门禁/看板/成本）
+          - id: sdo
+            name: 'dsh-software-dev-office'
+            config:
+              projectDir: .sdo
+              injectStatus: true
+              promptOrder: 240
+              statusChars: 1500
+              gateLevel: enforce                 # suggest | enforce | strict
+              disciplineTools: [write, edit, bash]
+              disciplineAllowPaths: ['.sdo/', 'docs/', 'test/']
+              registerTools: true
+              registerCommands: true
+              orchestrator: subagent             # native-team（实验性，二选一）| subagent | inline
+              maxParallelDispatch: 4
+              captureWorkspaceChanges: true
+              board: { text: true, panel: false } # panel 自 M6 起可用
+              cost: { enabled: true, warnOnBudget: true }
+
+          # ② 驾驶舱所需的通用行（与 standard preset 同源，按需裁剪）
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: '你是 SDO 研发办公室的驾驶舱：按软件工程流程推进项目，先问清楚再动手，门禁未过不得进入下一阶段。'
+              suffix: 'Your working directory is {{cwd}}.'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+          - id: tool-ask-user
+            name: '@deepseek-ai/dsh-tool-ask-user'
+          - id: delegation
+            name: cordis:group
+            group: true
+            isolate: { workflowEngine: true }
+            config:
+              - id: tool-subagent
+                name: '@deepseek-ai/dsh-tool-subagent'
+                config: { provider: spawn, toolName: subagent, backgroundMode: continuable }

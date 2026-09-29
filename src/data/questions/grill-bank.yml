@@ -1,0 +1,192 @@
+# 随包数据：需求审讯问题库（设计 §15.2，按维度；每题都带选项与代价）
+#
+# 字段说明：
+#   dimension            该问题攻击的评分维度
+#   severity             P0 阻塞基线 | P1 影响设计 | P2 改善
+#   impact               架构影响（1..3），与「不确定性 × 阻塞程度」相乘排序（设计 §5.2.3 第 1 条）
+#   why                  为什么问（影响哪条 REQ / 哪个决策）
+#   consequenceIfUnasked 不问的后果
+#   options              2–4 个具体选项，每个都标代价（设计 §5.2.3 第 2 条）
+#   defaultRecommendation 用户答"不知道"时采用的默认值（记为假设）
+questions:
+  - id: goal-metric
+    dimension: goal
+    severity: P0
+    impact: 3
+    text: 这个功能上线后，哪个数字会变化？变化多少算成功？
+    why: 成功度量决定验收标准与优先级（影响 G2 的 must REQ 判定）
+    consequenceIfUnasked: 无法判定完成，验收标准只能写成"能用"
+    options:
+      - { label: 给出可测指标（如差异识别率 ≥ 99%）, cost: 需要能取到基线数据；度量口径要写清 }
+      - { label: 定性目标（如"减少人工核对"）, cost: 无法自动判定，只能人工评审通过 }
+      - { label: 先不定，记为假设稍后补, cost: 记为假设并登记风险；后续变更成本上升 }
+    defaultRecommendation: 给出可测指标
+  - id: goal-half
+    dimension: goal
+    severity: P1
+    impact: 3
+    text: 如果只能做其中一半，先做哪一半？为什么？
+    why: 切分出 must 与 should，决定范围边界
+    consequenceIfUnasked: 范围蔓延，交付时才发现核心没做
+    options:
+      - { label: 先做差异检测，工单后置, cost: 闭环晚一轮；人工处理差异 }
+      - { label: 先做差异工单，检测后置, cost: 工单会被人为塞入假数据 }
+      - { label: 两件都不可拆, cost: 交付体量与风险同时上升 }
+    defaultRecommendation: 先做差异检测
+  - id: user-affected
+    dimension: user
+    severity: P1
+    impact: 2
+    text: 除了直接使用者，谁的工作会因此增加？
+    why: 遗漏干系人会带来隐性成本与抵制
+    consequenceIfUnasked: 上线后出现"额外工作量"的抵触
+    options:
+      - { label: 明确列出受影响角色与增量工作, cost: 需要访谈，耗时 }
+      - { label: 只有直接使用者受影响, cost: 若判断错，后续补流程成本高 }
+    defaultRecommendation: 明确列出受影响角色
+  - id: user-visibility
+    dimension: user
+    severity: P0
+    impact: 3
+    text: 谁不能看到这些数据？越权访问的后果是什么？
+    why: 权限边界决定数据模型与接口鉴权
+    consequenceIfUnasked: 权限模型返工，或上线即合规风险
+    options:
+      - { label: 按角色隔离（列出角色与可见字段）, cost: 需要权限模型与测试用例 }
+      - { label: 全员可见, cost: 合规风险；后续加权限要改数据模型 }
+    defaultRecommendation: 按角色隔离
+  - id: scenario-exceptions
+    dimension: scenario
+    severity: P0
+    impact: 3
+    text: 正常路径之外，最常见的三种异常是什么？分别期望什么行为（重试/降级/阻断）？
+    why: 异常路径决定状态机与失败语义
+    consequenceIfUnasked: 上线后异常靠人工兜底
+    options:
+      - { label: 列出三种异常与期望行为, cost: 需要梳理与测试覆盖 }
+      - { label: 只处理主流程, cost: 异常时行为未定义，事故成本高 }
+    defaultRecommendation: 列出三种异常与期望行为
+  - id: scenario-states
+    dimension: scenario
+    severity: P1
+    impact: 2
+    text: 这个对象有哪些状态？从 A 到 B 的合法路径有哪些？
+    why: 状态迁移是验收与测试用例的来源
+    consequenceIfUnasked: 非法状态迁移无法被检出
+    options:
+      - { label: 列出状态与合法迁移, cost: 需要建模，收益是测试可枚举 }
+      - { label: 状态自由流转, cost: 数据不一致风险 }
+    defaultRecommendation: 列出状态与合法迁移
+  - id: data-lifecycle
+    dimension: data
+    severity: P1
+    impact: 2
+    text: 这个实体的生命周期有多长？删除是物理删除还是标记？
+    why: 删除语义决定存储与审计设计
+    consequenceIfUnasked: 后期补审计与软删改造成本高
+    options:
+      - { label: 软删（标记 + 审计）, cost: 查询都要带过滤；存储增长 }
+      - { label: 物理删除, cost: 无法审计；误删不可恢复 }
+      - { label: 定期归档后物理删除, cost: 需要归档任务与恢复演练 }
+    defaultRecommendation: 软删（标记 + 审计）
+  - id: data-ownership
+    dimension: data
+    severity: P1
+    impact: 2
+    text: 数据从哪来、到哪去？谁拥有它？冲突以谁为准？
+    why: 数据权威源决定集成与对账策略
+    consequenceIfUnasked: 冲突时无法判定，出现"数据打架"
+    options:
+      - { label: 指定唯一权威源, cost: 需要上下游确认 }
+      - { label: 以最新时间戳为准, cost: 时钟不一致时会误判 }
+      - { label: 人工仲裁, cost: 不可扩展 }
+    defaultRecommendation: 指定唯一权威源
+  - id: interface-failure
+    dimension: interface
+    severity: P0
+    impact: 3
+    text: 上游超时或返回脏数据时，你希望：失败重试 / 部分成功 / 整体阻断？
+    why: 失败语义决定接口契约与幂等设计
+    consequenceIfUnasked: 上游抖动导致数据损坏或长时间中断
+    options:
+      - { label: 失败重试（幂等 + 退避）, cost: 需要幂等键与重试上限 }
+      - { label: 部分成功（跳过坏数据并告警）, cost: 需要人工兜底与对账 }
+      - { label: 整体阻断, cost: 可用性下降；需要快速恢复手段 }
+    defaultRecommendation: 失败重试（幂等 + 退避）
+  - id: interface-idempotent
+    dimension: interface
+    severity: P1
+    impact: 2
+    text: 这个调用需要幂等吗？重复执行会发生什么？
+    why: 幂等决定重试是否安全
+    consequenceIfUnasked: 重试产生重复数据
+    options:
+      - { label: 幂等（幂等键 + 去重）, cost: 需要幂等键设计 }
+      - { label: 不幂等，靠调用方保证一次, cost: 任何重试都可能造成脏数据 }
+    defaultRecommendation: 幂等（幂等键 + 去重）
+  - id: constraint-latency
+    dimension: constraint
+    severity: P0
+    impact: 3
+    text: 「快」是多少毫秒、在什么数据量、什么分位（P50/P99）？
+    why: 性能指标决定架构选型与容量规划
+    consequenceIfUnasked: 无法验证性能，也无法做架构决策
+    options:
+      - { label: 给出"毫秒 + 数据量 + 分位"三要素, cost: 需要基线压测 }
+      - { label: 定性要求（如"用户无感"）, cost: 无法验证；争议时无据可依 }
+    defaultRecommendation: 给出"毫秒 + 数据量 + 分位"三要素
+  - id: constraint-peak
+    dimension: constraint
+    severity: P1
+    impact: 2
+    text: 峰值是多少？是日峰值还是秒级突发？
+    why: 峰值形态决定是否需要削峰与限流
+    consequenceIfUnasked: 峰值时段不可用
+    options:
+      - { label: 给出数值与形态（日峰值/秒级突发）, cost: 需要流量数据 }
+      - { label: 按平均值设计, cost: 峰值时段雪崩 }
+    defaultRecommendation: 给出数值与形态
+  - id: acceptance-example
+    dimension: acceptance
+    severity: P0
+    impact: 3
+    text: 你怎么知道它做对了？给我一个能通过/失败的具体例子。
+    why: 直接生成 Given/When/Then 验收标准（G2 硬条件）
+    consequenceIfUnasked: must 需求无 AC，G2 无法通过
+    options:
+      - { label: 给出具体例子（含输入与期望输出）, cost: 需要明确测试数据来源 }
+      - { label: 用"符合预期"描述, cost: 不可判定，验收时扯皮 }
+    defaultRecommendation: 给出具体例子（含输入与期望输出）
+  - id: acceptance-fake-pass
+    dimension: acceptance
+    severity: P1
+    impact: 2
+    text: 什么样的结果你会判定为"看起来对但实际错"？
+    why: 防止验收被伪造通过（可测性攻击）
+    consequenceIfUnasked: 演示通过但生产出错
+    options:
+      - { label: 指出至少一种"假通过"形态并加入反例用例, cost: 需要额外测试用例 }
+      - { label: 暂不定义, cost: 验收可信度低 }
+    defaultRecommendation: 指出至少一种"假通过"形态并加入反例用例
+  - id: boundary-nongoal
+    dimension: boundary
+    severity: P0
+    impact: 2
+    text: 明确不做什么？（列出 3 条非目标）
+    why: 非目标是 G0/G2 的硬条件，防止范围蔓延
+    consequenceIfUnasked: 范围持续膨胀，交付不可控
+    options:
+      - { label: 列出 3 条非目标, cost: 需要与干系人对齐期望 }
+      - { label: 暂不声明, cost: G2 不通过；后续每次讨论都要重新划界 }
+    defaultRecommendation: 列出 3 条非目标
+  - id: boundary-extremes
+    dimension: boundary
+    severity: P1
+    impact: 2
+    text: 极端输入：0 条 / 1 条 / 一亿条 / 重复数据 / 乱码，分别怎么办？
+    why: 极端输入决定降级策略与资源上限
+    consequenceIfUnasked: 极端输入下 OOM 或静默错误
+    options:
+      - { label: 明确每类极端输入的处理与上限, cost: 需要边界测试 }
+      - { label: 交给调用方保证, cost: 线上首例就是事故 }
+    defaultRecommendation: 明确每类极端输入的处理与上限
