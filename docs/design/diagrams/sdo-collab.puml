@@ -1,0 +1,64 @@
+@startuml sdo-collab
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam activity {
+  BackgroundColor #F7F7F7
+  BorderColor #555555
+  DiamondBackgroundColor #FFFFFF
+  DiamondBorderColor #555555
+}
+
+start
+:需求基线（G2 已通过）;
+
+repeat
+  partition "拆分（§8.6）" {
+    :结构通道：按 DES / 契约边界机械切分;
+    :模型通道：补语义切分建议;
+    :机械校验：单卡单角色 / DoD 非空 / 依赖无环 / 规模上限;
+    if (写范围互斥？) then (是)
+      :进入并行队列;
+    else (否)
+      :进入串行队列（重叠的卡不并行）;
+    endif
+    :编排器独占写入 .sdo/tasks/TASK-*.yml;
+  }
+
+  partition "协同（§8.7）" {
+    if (容量预算还有名额？) then (是)
+      :派发（subagent：persona + toolFilter；或 teammate）;
+    else (否)
+      :SDO 自建排队（宿主不排队）;
+    endif
+    :领取任务（CAS expectedRevision）;
+    :回报：status + evidence + blockers;
+    if (证据齐备且 DoD 满足？) then (是)
+      :done（自动写追溯链接）;
+    else (否)
+      :拒绝 done，退回补证据;
+    endif
+    :结算当场采样 cost/sample（NFR-014）;
+  }
+
+  partition "看板与成本（§10.5 / §10.6）" {
+    :聚合投影 sdo 单元（挂在 Lead 会话）;
+    :/sdo:board 文本看板 · /sdo:budget 预算;
+    :越界写复核（workspace/changes vs writeScopes）;
+    if (触达 warnAt 阈值？) then (是)
+      :提醒（状态块 / 看板 / 命令）;
+      note right
+        C-08：只提醒，不阻断
+        · 不注册 llm/stream 拦截
+        · 不拒绝工具、不强制中断子代理
+        · 金额一律标注"估算"（NFR-012）
+      end note
+    else (否)
+    endif
+  }
+repeat while (门禁 G5 / G6 未通过？) is (是) not (否)
+
+:交付包（G7）;
+stop
+
+@enduml

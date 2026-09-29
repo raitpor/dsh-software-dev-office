@@ -1,0 +1,35 @@
+@startuml sdo-gates
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam state {
+  BackgroundColor #F7F7F7
+  BorderColor #555555
+}
+
+[*] --> Intake : /sdo:new
+state "立项 Intake" as Intake
+state "可行性 Feasibility" as Feas
+state "需求 Requirements" as Req
+state "架构 Architecture" as Arch
+state "详细设计/计划 Design&Plan" as Plan
+state "实现 Construction" as Build
+state "验证 Verification" as Verify
+state "交付 Delivery" as Deliver
+state "已交付 Delivered" as Done
+
+Intake --> Feas : G0 范围与非目标已声明
+Feas --> Req : G1 可行性通过 (Go)
+Req --> Arch : G2 需求基线冻结 (DoR)
+Arch --> Plan : G3 架构评审通过 + ADR 齐备
+Plan --> Build : G4 任务分解 + 测试计划就绪
+Build --> Verify : G5 构建通过 + 单测通过 + 追溯无孤儿
+Verify --> Deliver : G6 验证通过 + 缺陷闭环
+Deliver --> Done : G7 交付包完整 + 人类验收签字
+
+Req --> Req : 审讯循环 (grill)
+Build --> Build : 任务循环
+Verify --> Build : 缺陷回修 (S1/S2)
+Arch --> Req : 需求变更 (CCB 批准)
+Done --> [*]
+@enduml

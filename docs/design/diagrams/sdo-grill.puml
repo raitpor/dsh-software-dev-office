@@ -1,0 +1,32 @@
+@startuml sdo-grill
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam ActivityBackgroundColor #F7F7F7
+skinparam ActivityBorderColor #555555
+skinparam activity<<Pass>> {
+  BackgroundColor LightGreen
+  BorderColor DarkGreen
+  FontColor DarkGreen
+}
+
+start
+:接收原始诉求 / 已有需求草案;
+while (评分 < 14 或 存在 0 分维度 或 有 P0/P1 未决?) is (是)
+  :抽取或更新 REQ 条目;
+  :规则通道打分\n(禁词 / 缺 AC / 无优先级 / 无来源);
+  :模型通道打分\n(八维语义; 与规则不一致时取更严者);
+  :按「架构影响 x 不确定性 x 阻塞度」排序;
+  :取前 <=4 问\n每题给 2-4 选项 + 各自代价 + 默认建议;
+  :人类回答 / 选择 / 答"不知道"(记为假设);
+  if (答案仍含糊?) then (是)
+    :升级质询\n反例 -> 极值 -> 角色反转 -> 5 Whys -> 假设显式化;
+  else (否)
+  endif
+  :更新问题账本 + 决策日志;
+endwhile (否)
+:红队对抗式攻击需求集\n产出 REQ-ISSUE;
+:人类确认假设并签字;
+:门禁 G2 通过 / 需求基线冻结; <<Pass>>
+stop
+@enduml

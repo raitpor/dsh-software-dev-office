@@ -1,0 +1,41 @@
+@startuml sdo-trace
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam shadowing false
+skinparam ArrowColor #555555
+left to right direction
+
+(愿景 VISION) as V
+(能力域 Capability) as C
+(需求 REQ) as R
+(验收标准 AC) as AC
+(设计元素 DES) as D
+(决策 ADR) as ADR
+(接口契约) as CT
+(任务 TASK) as T
+(代码) as CODE
+(测试用例 TC) as TC
+(缺陷 DEF) as DEF
+(交付包 DELIVERY) as DEL
+
+V --> C : 度量支撑
+C --> R : 归属
+R --> AC : 可验收
+R --> D : refined_by
+R --> ADR : 决策依据
+D --> CT : 接口定义
+D --> T : implemented_by
+T --> CODE : 产出
+AC --> TC : verified_by
+TC --> DEF : 发现
+DEF --> CODE : 回修
+R --> DEL : 交付范围
+TC --> DEL : 验收矩阵
+
+legend right
+  **孤儿检测（门禁 G3/G5）**
+  无 REQ 来源的 DES → 阻塞
+  无 DES/AC 来源的 TASK → 阻塞
+  无 AC 来源的 TC → 阻塞
+  无 TC 的 must REQ → 阻塞
+end legend
+@enduml

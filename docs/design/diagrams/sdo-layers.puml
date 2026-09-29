@@ -1,0 +1,70 @@
+@startuml sdo-layers
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam componentStyle rectangle
+skinparam shadowing false
+skinparam packageStyle rectangle
+skinparam ArrowColor #555555
+left to right direction
+
+package "dsh 宿主能力（不自建）" as host {
+  [tools 注册表] as H_tools
+  [sessions / 会话日志] as H_sess
+  [subagents 注册表] as H_subs
+  [workflow 引擎] as H_wf
+  [fs / sandbox] as H_fs
+}
+
+package "dsh-software-dev-office" as sdo {
+  package "接口层" as iface {
+    [模型工具面 sdo_*] as I_tools
+    [斜杠命令 /sdo:*] as I_cmds
+    [提示注入 阶段/开环问题/门禁缺口] as I_inject
+  }
+  package "领域层" as domain {
+    [需求工程\n审讯引擎/评分卡/基线/变更] as D_req
+    [架构工程\n视图/ADR/质量场景/契约] as D_arch
+    [流程引擎\n阶段/门禁/角色/裁剪] as D_proc
+    [追溯引擎] as D_trace
+    [编排器\n派发/评审/制衡] as D_orch
+  }
+  package "基础设施层" as infra {
+    [真源存储 .sdo/] as F_store
+    [追加日志 + 投影] as F_journal
+    [文档渲染器] as F_render
+    [门禁守卫] as F_guard
+    [问题库/模板/流程定义\n(纯数据文件)] as F_data
+  }
+}
+
+I_tools --> D_req
+I_tools --> D_arch
+I_tools --> D_proc
+I_tools --> D_trace
+I_tools --> D_orch
+I_cmds --> D_proc
+I_inject --> D_proc
+I_inject --> D_req
+
+D_req --> F_store
+D_arch --> F_store
+D_proc --> F_store
+D_trace --> F_store
+D_orch --> H_subs
+D_orch --> H_wf
+D_proc --> F_guard
+F_guard --> H_tools
+F_store --> F_journal
+F_store --> F_render
+D_req --> F_data
+D_arch --> F_data
+D_proc --> F_data
+
+F_store --> H_fs
+D_proc --> H_sess
+
+note bottom of iface
+  接口层把注册落到宿主注册表：
+  tools / commands / systemPrompt / skills
+  （统一用 ctx.inject 晚绑定注册）
+end note
+@enduml

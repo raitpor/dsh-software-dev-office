@@ -1,0 +1,42 @@
+@startuml sdo-entry
+skinparam defaultFontName "Noto Sans CJK SC"
+skinparam shadowing false
+skinparam ArrowColor #555555
+skinparam state {
+  BackgroundColor #F7F7F7
+  BorderColor #555555
+}
+
+[*] --> Blank : 新建会话（空白）
+
+state "空白会话\n选择 preset" as Blank
+state "SDO 接管中\n（引擎已装载）" as SDO #E8F4EA
+state "原生行为\n（本插件未装载）" as Native #FDF3E3
+
+Blank --> SDO : 选 sdo-office
+Blank --> Native : 选 standard / minimal / cordis / 其他
+
+SDO --> SDO : 全流程在本会话内推进\n每轮注入状态块 · 看板投影 · 成本采样
+
+SDO --> Native : 新会话改用其他 preset
+
+note right of SDO
+  REQ-031 / REQ-032 / REQ-033（C-09）
+  · 未选中的会话：零注入 / 零工具
+    / 零事件 / 零计时（NFR-011）
+  · 选一次就够：全流程同一会话
+  · 角色 = 子代理（persona + toolFilter）
+    而不是另一个会话
+  · 无"会话中途接管开关"（C-07）：
+    已打开的会话不能切换
+  · 只有一个 preset（不再按角色拆分）
+end note
+
+note bottom of Native
+  入口实现：presets/sdo-office.patch.yml 的
+  config.plugins 内含
+  name: 'dsh-software-dev-office' 行
+  （第三方包名引用能否解析 = Q-10，M0 实测）
+end note
+
+@enduml
