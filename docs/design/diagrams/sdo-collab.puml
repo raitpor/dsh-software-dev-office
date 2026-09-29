@@ -46,11 +46,12 @@ repeat
     :/sdo:board 文本看板 · /sdo:budget 预算;
     :越界写复核（workspace/changes vs writeScopes）;
     if (触达 warnAt 阈值？) then (是)
-      :提醒（状态块 / 看板 / 命令）;
+      :提醒；跨阈值档时询问用户（Q-13）;
       note right
-        C-08：只提醒，不阻断
+        C-08：只提醒与询问，不阻断
         · 不注册 llm/stream 拦截
         · 不拒绝工具、不强制中断子代理
+        · 无交互应答者时降级为提醒 + deferred（Q-18）
         · 金额一律标注"估算"（NFR-012）
       end note
     else (否)
