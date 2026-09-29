@@ -25,7 +25,7 @@ test('配置 schema：空对象即得到完整默认值（挂载前就能验证�
   assert.equal(settings.maxParallelDispatch, 4)
   assert.equal(settings.captureWorkspaceChanges, true)
   assert.deepEqual(settings.board, { text: true, panel: false })
-  assert.deepEqual(settings.cost, { enabled: true, warnOnBudget: true })
+  assert.deepEqual(settings.cost, { enabled: true, warnOnBudget: true, prices: {}, currency: 'CNY', perTokens: 1_000_000, tiers: [50, 80, 100] })
 })
 
 test('配置 schema：拒绝非法取值（提前暴露拼错的 preset）', () => {
@@ -43,5 +43,5 @@ test('配置归一化：projectDir 去噪，空值回落 .sdo', () => {
 test('配置：部分覆盖只替换给定字段（preset 行的整体替换是另一回事）', () => {
   const settings = cfg({ board: { text: false }, cost: { enabled: false } })
   assert.deepEqual(settings.board, { text: false, panel: false })
-  assert.deepEqual(settings.cost, { enabled: false, warnOnBudget: true })
+  assert.deepEqual(settings.cost, { enabled: false, warnOnBudget: true, prices: {}, currency: 'CNY', perTokens: 1_000_000, tiers: [50, 80, 100] })
 })

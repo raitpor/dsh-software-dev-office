@@ -535,6 +535,8 @@ export type SdoEventType =
   | 'test/recorded'
   | 'defect/recorded'
   | 'delivery/packaged'
+  | 'cost/updated'
+  | 'budget/decision'
   | 'gate/result'
   | 'evidence/recorded'
   | 'cost/sample'
@@ -552,6 +554,8 @@ export type SdoEventType =
   | 'test/recorded'
   | 'defect/recorded'
   | 'delivery/packaged'
+  | 'cost/updated'
+  | 'budget/decision'
 
 /** journal 中的一条事件。 */
 export interface JournalEvent {

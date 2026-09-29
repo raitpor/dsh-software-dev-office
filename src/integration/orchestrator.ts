@@ -8,7 +8,19 @@
  *
  * 适配层只做**决策与请求构造**，真正的宿主调用在 index.ts 里（拿不到宿主服务就降级到 inline）。
  */
+import { toolAllowList } from '../domain/roles.js'
 import type { TaskCard } from '../types.js'
+
+/** 取某角色的工具白名单：优先随包掩码表，读不到就退回内置兜底（绝不静默给全量工具）。 */
+export function roleToolFilter(role: string): string[] {
+  try {
+    const list = toolAllowList(role as never)
+    if (list.length > 0) return list
+  } catch {
+    /* 数据缺失时退回兜底 */
+  }
+  return TOOL_FILTER_FALLBACK[role] ?? TOOL_FILTER_FALLBACK['developer'] ?? []
+}
 
 export type BackendKind = 'subagent' | 'native-team' | 'inline'
 
@@ -91,8 +103,11 @@ export const PERSONA_BY_ROLE: Record<string, string> = {
   delivery: 'sdo-delivery',
 }
 
-/** 角色的默认工具面（写权限只在开发/测试角色上，其余只读；设计 §8.1 的掩码表）。 */
-export const TOOL_FILTER_BY_ROLE: Record<string, string[]> = {
+/**
+ * 角色工具面的**兜底**表（随包数据读不到时用）。
+ * 正常路径走 `src/data/roles.yml` 的 allow 列表（`domain/roles.ts`），避免两份真相。
+ */
+export const TOOL_FILTER_FALLBACK: Record<string, string[]> = {
   analyst: ['read', 'grep', 'glob', 'write'],
   'red-team': ['read', 'grep', 'glob'],
   architect: ['read', 'grep', 'glob', 'write'],
@@ -124,7 +139,7 @@ export function buildDispatch(input: {
 }): DispatchRequest {
   const { task } = input
   const persona = PERSONA_BY_ROLE[task.role] ?? 'sdo-developer'
-  const toolFilter = TOOL_FILTER_BY_ROLE[task.role] ?? TOOL_FILTER_BY_ROLE['developer'] ?? []
+  const toolFilter = roleToolFilter(task.role)
   const prompt = [
     `你是 ${persona}（角色 ${task.role}），在 SDO 项目「${input.projectName}」里执行任务卡 ${task.id}。`,
     '',

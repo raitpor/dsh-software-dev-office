@@ -1,0 +1,43 @@
+# SDO 角色掩码表（设计 §8.1 / §9.1）：提示层用 skills/role-*.md，硬约束用这里的 allow/deny。
+# 派发时由流程官施加（toolFilter）；allow 之外一律不可见（白名单），deny 里是必须显式挡住的越界工具。
+roles:
+  - code: analyst
+    name: 产品/需求分析师
+    allow: [read, grep, glob, write, sdo_requirement, sdo_project, sdo_trace, ask_user_question]
+    deny: [sdo_redteam, edit, bash, sdo_review]
+    rationale: 不得自跑红队（红队必须独立）；不改实现
+  - code: red-team
+    name: 需求红队
+    allow: [read, grep, glob, sdo_requirement]
+    deny: [write, edit, bash, sdo_design, sdo_review]
+    rationale: 只质询不落笔；不得无追溯地提建议
+  - code: architect
+    name: 架构师
+    allow: [read, grep, glob, write, sdo_design, sdo_adr, sdo_quality, sdo_trace]
+    deny: [edit, bash, sdo_requirement, sdo_deliver]
+    rationale: 设计写入受计划评审约束；不改需求、不打包
+  - code: office
+    name: 流程官/PM
+    allow: [read, grep, glob, write, sdo_init, sdo_status, sdo_project, sdo_gate, sdo_plan, sdo_task, sdo_risk, sdo_cost, sdo_render, sdo_trace, sdo_deliver, sdo_redteam]
+    deny: [edit, bash]
+    rationale: 只有流程官能推门禁与派发；不碰实现
+  - code: developer
+    name: 实现工程师
+    allow: [read, grep, glob, write, edit, bash, sdo_task, sdo_trace]
+    deny: [sdo_review, sdo_gate, sdo_requirement, sdo_design]
+    rationale: 不可见评审（不得自评）；不得改契约与需求（走 CR）
+  - code: tester
+    name: 测试工程师
+    allow: [read, grep, glob, write, bash, sdo_test, sdo_task, sdo_trace]
+    deny: [edit, sdo_review, sdo_requirement]
+    rationale: 无编辑类工具 —— 不得修改被测实现（独立性）；只许新建测试文件
+  - code: reviewer
+    name: 评审员
+    allow: [read, grep, glob, sdo_review, sdo_task, sdo_trace]
+    deny: [write, edit, bash, sdo_test]
+    rationale: 只读评审；不得评审自己的产物
+  - code: delivery
+    name: 交付官
+    allow: [read, grep, glob, write, bash, sdo_deliver, sdo_trace, sdo_render]
+    deny: [edit, sdo_review, sdo_requirement, sdo_design]
+    rationale: 不得发布/上线（非目标）；不得改需求与设计

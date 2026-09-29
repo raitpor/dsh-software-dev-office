@@ -8,7 +8,7 @@
  */
 import type { ProjectConfig } from '../config.js'
 import type { ProjectCounts } from '../office.js'
-import type { GateEvaluation, Phase, Priority, ProcessDef, SdoProject } from '../types.js'
+import type { GateEvaluation, Phase, Priority, ProcessDef, SdoProject, TaskCard } from '../types.js'
 
 /** 看板上一条需求。 */
 export interface BoardRequirement {
@@ -31,6 +31,10 @@ export interface BoardModel {
   process: ProcessDef
   /** 当前阶段待判定的门禁 */
   pendingGate: string | undefined
+  /** 任务卡（M6：看板显示各角色的工作内容） */
+  tasks?: TaskCard[] | undefined
+  /** 当前迭代 */
+  iteration?: { number: number; goal: string; status: string } | undefined
   requirements: BoardRequirement[]
   dataDirName: string
   truncated: boolean
@@ -102,6 +106,9 @@ export function renderBoard(model: BoardModel, options: BoardOptions = {}): stri
   lines.push('## 阶段')
   lines.push('')
   lines.push(`- ${phaseLine(project, model.gates, model.process)}`)
+  if (model.iteration !== undefined) {
+    lines.push(`- 迭代 ${model.iteration.number}（${model.iteration.status}）：${model.iteration.goal}`)
+  }
   lines.push('')
 
   if (model.truncated) {

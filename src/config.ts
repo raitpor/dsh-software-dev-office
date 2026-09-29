@@ -48,6 +48,12 @@ export interface SdoConfig {
     enabled: boolean
     /** 跨阈值档时是否询问用户（Q-13/Q-19）；默认 true */
     warnOnBudget: boolean
+    /** 单价表：`<provider>/<model>` → 每 `perTokens` 个 token 的价格（用户手填） */
+    prices: Record<string, number>
+    currency: string
+    perTokens: number
+    /** 阈值档位（百分比），每档只问一次 */
+    tiers: number[]
   }
 }
 
@@ -72,6 +78,10 @@ export const Config: z<SdoConfig> = z.object({
   cost: z.object({
     enabled: z.boolean().default(true),
     warnOnBudget: z.boolean().default(true),
+    prices: z.dict(z.number()).default({}),
+    currency: z.string().default('CNY'),
+    perTokens: z.natural().min(1).default(1_000_000),
+    tiers: z.array(z.number()).default([50, 80, 100]),
   }),
 })
 

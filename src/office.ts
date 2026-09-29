@@ -22,6 +22,8 @@ import { readAssessment, listScenarios, recordScenario, writeAssessment } from '
 import type { RecordScenarioInput } from './domain/quality.js'
 import { linkMany, renderTraceReport, report } from './domain/trace.js'
 import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
+import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, summarize, usedRatio } from './integration/cost.js'
+import type { Budget, BudgetChoice, UsageRow, UsageSummary } from './integration/cost.js'
 import { claim, reassign, release, report as reportTask, staleClaims } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
 import {
@@ -191,6 +193,10 @@ export interface StatusSnapshot {
   feasibilityVerdict: string | undefined
   /** 变更请求数 */
   changes: number
+  /** 成本行（只有设了预算才出现；没设 total 时只报已消耗） */
+  costLine?: string | undefined
+  /** 超预算提示（不硬停，只提醒） */
+  budgetAdvice?: string | undefined
 }
 
 /** 一次工具/命令调用携带的上下文。 */
@@ -216,6 +222,9 @@ export class SoftwareDevOffice {
   private readonly cwdBySession = new Map<string, string>()
   private lastCwd: string | undefined
   private lastSessionId: string | undefined
+
+  /** 最近一次成本报告里的估算金额（状态块复用，避免重复调用宿主计量） */
+  private lastKnownCost: number | undefined
 
   constructor(readonly settings: Settings) {}
 
@@ -468,6 +477,39 @@ export class SoftwareDevOffice {
       openIssues: openIssues(store, questions, listRisks(store)).length,
       feasibilityVerdict: readFeasibility(store)?.verdict,
       changes: listChanges(store).length,
+      ...(() => {
+        const budget = store.readYaml<{ budget: Budget }>('budget.yml')?.budget
+        if (budget === undefined) return {}
+        // 状态块里不重复调用宿主计量：只显示"预算已设 + 已问档位"
+        const consumed = this.lastKnownCost ?? 0
+        const line = describeBudgetLine(
+          {
+            at: new Date().toISOString(),
+            sessions: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            perModel: [],
+            ...(budget.total === undefined ? {} : { estimatedCost: { amount: consumed, currency: budget.currency, label: '估算' as const } }),
+            unpricedTokens: 0,
+          },
+          budget,
+        )
+        const advice = budgetAdvice(
+          {
+            at: new Date().toISOString(),
+            sessions: 0,
+            promptTokens: 0,
+            completionTokens: 0,
+            totalTokens: 0,
+            perModel: [],
+            estimatedCost: { amount: consumed, currency: budget.currency, label: '估算' as const },
+            unpricedTokens: 0,
+          },
+          budget,
+        )
+        return { costLine: line, ...(advice === undefined ? {} : { budgetAdvice: advice }) }
+      })(),
     }
     if (context.badLine !== undefined) snapshot.badLine = context.badLine
     return snapshot
@@ -1237,6 +1279,88 @@ export class SoftwareDevOffice {
       )
     }
     return written
+  }
+
+  // —————————————————————— M5：成本与预算 ——————————————————————
+
+  /** 预算（`.sdo/budget.yml`）；没设过则为 undefined。 */
+  budget(call: OfficeCall): Budget | undefined {
+    return this.storeFor(this.workspaceFor(call)).readYaml<{ budget: Budget }>('budget.yml')?.budget
+  }
+
+  /** 设置/更新预算（不传 total 就是"只报消耗"）。 */
+  setBudget(call: OfficeCall, input: { total?: number | undefined; currency?: string | undefined; tiers?: number[] | undefined }): Budget {
+    const { store, journal } = this.contextFor(call)
+    const previous = this.budget(call) ?? defaultBudget()
+    const budget: Budget = {
+      ...previous,
+      ...(input.total === undefined ? {} : { total: input.total }),
+      currency: input.currency ?? previous.currency,
+      tiers: input.tiers ?? previous.tiers,
+    }
+    store.writeYaml(['budget.yml'], { budget })
+    journal.append('cost/updated', {
+      total: budget.total ?? null,
+      currency: budget.currency,
+      tiers: budget.tiers,
+    })
+    return budget
+  }
+
+  /**
+   * 成本报告。`source` 由宿主提供（tokenMeter 适配）；拿不到计量时如实说明"不可得"。
+   */
+  costReport(
+    call: OfficeCall,
+    source: { rows: UsageRow[]; available: boolean; note?: string | undefined },
+  ): { summary: UsageSummary; budget: Budget | undefined; line: string; advice?: string | undefined; tier?: { tier: string; message: string } | undefined } {
+    const { store } = this.contextFor(call)
+    const budget = this.budget(call)
+    const summary = summarize(source.rows, {
+      currency: this.settings.cost.currency,
+      perTokens: this.settings.cost.perTokens,
+      prices: this.settings.cost.prices,
+    })
+    const line = describeBudgetLine(summary, budget)
+    const advice = budgetAdvice(summary, budget)
+    this.lastKnownCost = summary.estimatedCost?.amount ?? 0
+    const tier = budget === undefined || summary.estimatedCost === undefined
+      ? undefined
+      : crossingTier(summary.estimatedCost.amount, budget)
+    void store
+    return {
+      summary,
+      budget,
+      line,
+      ...(advice === undefined ? {} : { advice }),
+      ...(tier === undefined ? {} : { tier: { tier: tier.tier, message: tier.message } }),
+    }
+  }
+
+  /** 记录"已问过某档"（每档只问一次）。 */
+  markTierAsked(call: OfficeCall, tier: string): void {
+    const { store, journal } = this.contextFor(call)
+    const budget = this.budget(call) ?? defaultBudget()
+    if (budget.askedTiers.includes(tier)) return
+    const next: Budget = { ...budget, askedTiers: [...budget.askedTiers, tier] }
+    store.writeYaml(['budget.yml'], { budget: next })
+    journal.append('cost/updated', { askedTier: tier })
+  }
+
+  /** 超支三选一（追加预算/继续并记豁免/收敛范围）——留痕，且**绝不自动停**。 */
+  decideBudget(call: OfficeCall, choice: BudgetChoice, note: string, at = new Date().toISOString()): Budget {
+    const { store, journal } = this.contextFor(call)
+    const budget = this.budget(call) ?? defaultBudget()
+    const decision = { at, tier: `${Math.round((usedRatio(0, budget) ?? 0) * 100)}%`, choice, note }
+    const next: Budget = { ...budget, decisions: [...budget.decisions, decision] }
+    store.writeYaml(['budget.yml'], { budget: next })
+    journal.append('budget/decision', { choice, note, at })
+    return next
+  }
+
+  budgetAdviceLine(call: OfficeCall, used: number): string | undefined {
+    const budget = this.budget(call)
+    return budgetAdvice({ at: new Date().toISOString(), sessions: 0, promptTokens: 0, completionTokens: 0, totalTokens: 0, perModel: [], estimatedCost: { amount: used, currency: budget?.currency ?? 'CNY', label: '估算' }, unpricedTokens: 0 }, budget)
   }
 
   private projectIds(store: SdoStore): string[] {

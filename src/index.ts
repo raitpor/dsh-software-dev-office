@@ -60,7 +60,9 @@ import {
 import { renderStatusBlock } from './interface/inject.js'
 import { createOfficeCommands } from './interface/commands.js'
 import { createOfficeTools, parseList } from './interface/tools.js'
+import { disciplineOrAllow } from './domain/discipline.js'
 import { buildDispatch, pickBackend } from './integration/orchestrator.js'
+import type { UsageRow } from './integration/cost.js'
 import type { BackendProbe, BackendKind } from './integration/orchestrator.js'
 import type {
   AdrArgs,
@@ -160,6 +162,59 @@ export function apply(ctx: Context, config: SdoConfig): void {
   })
   let lastBackend: { backend: BackendKind; iteration?: number | undefined } | undefined
 
+  /** 成本适配（M5）：tokenMeter 只给 token，没有货币能力；拿不到就如实说"不可得"。 */
+  interface TokenMeterLike {
+    measure(session: unknown): { promptTokens?: number; completionTokens?: number; inputTokens?: number; outputTokens?: number }
+  }
+  interface SubagentsLike {
+    listDescendants(rootSessionId: unknown, signal?: AbortSignal): Promise<{ sessionId?: unknown }[]>
+  }
+  let tokenMeter: TokenMeterLike | undefined
+  let subagentsApi: SubagentsLike | undefined
+  ctx.inject(['tokenMeter'], (meterCtx) => {
+    tokenMeter = meterCtx.get('tokenMeter') as TokenMeterLike
+  })
+  ctx.inject(['subagents'], (subCtx) => {
+    subagentsApi = subCtx.get('subagents') as SubagentsLike
+  })
+
+  /**
+   * 归集用量（设计 §10.2 / T-M5-01）。
+   * 结算时刻 = **读取时刻**（不做增量累积，避免重复计数）。
+   * 驾驶舱会话可直接测；子代理会话需要 session 树枚举 —— 拿不到就只报驾驶舱，并说明。
+   */
+  const collectUsage = async (agent: unknown): Promise<{ rows: UsageRow[]; available: boolean; note?: string | undefined }> => {
+    if (tokenMeter === undefined) return { rows: [], available: false, note: '宿主没有 tokenMeter 服务' }
+    const session = (agent as { session?: unknown } | undefined)?.session
+    if (session === undefined) return { rows: [], available: false, note: '本次调用拿不到 agent.session，无法计量' }
+    const rows: UsageRow[] = []
+    try {
+      const measured = tokenMeter.measure(session)
+      rows.push({
+        sessionId: String((agent as { id?: unknown }).id ?? 'lead'),
+        model: (settings as { model?: string }).model ?? 'unknown',
+        promptTokens: measured.promptTokens ?? measured.inputTokens ?? 0,
+        completionTokens: measured.completionTokens ?? measured.outputTokens ?? 0,
+      })
+    } catch (error) {
+      return { rows: [], available: false, note: `tokenMeter.measure 失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+    let note: string | undefined = '子代理会话的计量未接线：当前只统计驾驶舱会话'
+    if (subagentsApi !== undefined) {
+      try {
+        const descendants = await subagentsApi.listDescendants((agent as { id?: unknown }).id)
+        if (descendants.length > 0) {
+          note = `发现 ${descendants.length} 个子代理会话，但其 session 对象未暴露给本插件，暂只统计驾驶舱会话`
+        } else {
+          note = undefined
+        }
+      } catch {
+        /* fail-open：枚举失败不影响主流程 */
+      }
+    }
+    return { rows, available: true, ...(note === undefined ? {} : { note }) }
+  }
+
   const planAdapter = {
     status(agent: unknown): { available: boolean; active: boolean } {
       // 没有 plan mode 服务、或这次调用拿不到 agent 引用 ⇒ 我们既不能驱动也不能查询计划评审，
@@ -210,6 +265,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
         requirements: office.boardRequirements(call),
         process: office.process(call),
         pendingGate: status.pendingGate,
+        tasks: office.tasks(call),
+        iteration: office.iteration(call),
         dataDirName: settings.projectDirName,
         truncated: status.truncated,
         ...(status.badLine === undefined ? {} : { badLine: status.badLine }),
@@ -238,6 +295,51 @@ export function apply(ctx: Context, config: SdoConfig): void {
         glossary: args.glossary,
       })
       return describeProjectUpdate(result)
+    },
+
+    setBudget(call: OfficeCall, input: { total?: number | undefined; currency?: string | undefined; tiers?: number[] | undefined }): string {
+      const budget = office.setBudget(call, input)
+      return [
+        `预算已更新：${budget.total === undefined ? '只报消耗（未设 total）' : `${budget.currency} ${budget.total}`}`,
+        `- 阈值档位：${budget.tiers.join(' / ')}%（每档只问一次；**超预算不会自动停**）`,
+        '- 单价表：' + (Object.keys(settings.cost.prices).length === 0 ? '未填（只显示 token，不猜金额）' : Object.entries(settings.cost.prices).map(([model, price]) => `${model}=${price}`).join(' ')),
+      ].join('\n')
+    },
+
+    decideBudget(call: OfficeCall, choice: string, note: string): string {
+      if (choice !== 'add-budget' && choice !== 'waive' && choice !== 'narrow-scope') {
+        return '未知选择：请用 `add-budget` / `waive` / `narrow-scope`。'
+      }
+      const budget = office.decideBudget(call, choice, note)
+      const labels: Record<string, string> = { 'add-budget': '追加预算', waive: '继续并记豁免', 'narrow-scope': '收敛范围' }
+      return `已记录决定：${labels[choice]}（${note}）→ \`budget/decision\` 留痕；开发**继续**（预算只监视+提醒，不硬停）。\n- 累计决定 ${budget.decisions.length} 条`
+    },
+
+    async cost(call: OfficeCall, args: { action: string }): Promise<string> {
+      if (args.action !== 'report') return `未知 action：${args.action}（可用：report）`
+      const source = await collectUsage(call.agent)
+      const report = office.costReport(call, source)
+      const lines = [report.line]
+      if (!source.available) {
+        lines.push(`- ⚠️ 用量不可得：${source.note ?? '（未说明）'}——` + '不会用估算值假装有数据')
+        return lines.join('\n')
+      }
+      if (source.note !== undefined) lines.push(`- 说明：${source.note}`)
+      if (report.summary.perModel.length > 0) {
+        lines.push(`- 分模型：${report.summary.perModel.map((row) => `${row.model} ${row.tokens} tokens${row.priced ? '' : '（未填单价）'}`).join('；')}`)
+      }
+      if (report.budget === undefined) {
+        lines.push('- 预算：未设置（`/sdo-budget --set total=…`；不设就只报消耗，不判超支）')
+      } else {
+        lines.push(`- 预算：${report.budget.total === undefined ? '只报消耗（未设 total）' : `${report.budget.currency} ${report.budget.total}`} ｜ 已问档位：${report.budget.askedTiers.join(' ') || '（无）'}`)
+        lines.push(`- 阈值档位：${report.budget.tiers.join(' / ')}%（每档只问一次）`)
+      }
+      if (report.tier !== undefined) {
+        office.markTierAsked(call, report.tier.tier)
+        lines.push(`- ⚠️ ${report.tier.message}：请选择**追加预算 / 继续并记豁免 / 收敛范围**（用 \`/sdo-budget --decide choice=…\`）。**不会自动停。**`)
+      }
+      if (report.advice !== undefined) lines.push(`- ${report.advice}`)
+      return lines.join('\n')
     },
 
     async plan(call: OfficeCall, args: PlanArgs): Promise<string> {
@@ -949,6 +1051,43 @@ export function apply(ctx: Context, config: SdoConfig): void {
   if (settings.registerTools) {
     ctx.inject(['tools'], (toolCtx) => {
       const tools = toolCtx.get('tools') as ToolRuntime
+
+      /**
+       * L3 阶段纪律守卫（设计 §8.6 / T-M7-03）。
+       * 只在 `gateLevel: strict` 下拦；**fail-open**：钩子自身异常一律放行
+       * （纪律守卫绝不能变成"插件坏了就干不了活"）。
+       */
+      toolCtx.effect(() => {
+        const off = (
+          toolCtx as unknown as {
+            on(event: string, listener: (exec: { name?: string; arguments?: unknown }, next: () => Promise<unknown>) => Promise<unknown>): () => void
+          }
+        ).on('tools/pre-execute', async (exec, next) => {
+          try {
+            const status = office.status(office.currentCall())
+            const args = (exec.arguments ?? {}) as { path?: unknown; file?: unknown; paths?: unknown }
+            const paths = [
+              ...(typeof args.path === 'string' ? [args.path] : []),
+              ...(typeof args.file === 'string' ? [args.file] : []),
+              ...(Array.isArray(args.paths) ? args.paths.filter((item): item is string => typeof item === 'string') : []),
+            ]
+            const decision = disciplineOrAllow({
+              gateLevel: settings.gateLevel,
+              phase: status.project?.phase ?? '',
+              role: 'cockpit',
+              tool: String(exec.name ?? ''),
+              paths,
+              initialized: status.project !== undefined,
+            })
+            if (decision.kind === 'deny') return { kind: 'deny', reason: decision.reason }
+          } catch {
+            /* fail-open：钩子异常一律放行 */
+          }
+          return next()
+        })
+        return () => off()
+      }, 'sdo:discipline-guard')
+
       for (const tool of createOfficeTools(deps)) {
         toolCtx.effect(() => tools.register(tool), `sdo:tool:${tool.name}`)
       }

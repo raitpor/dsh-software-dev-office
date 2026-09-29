@@ -20,6 +20,9 @@ export interface OfficeCommandDeps {
   requirement(call: OfficeCall, args: RequirementArgs): Promise<string>
   redteam(call: OfficeCall, args: RedTeamArgs): Promise<string>
   gate(call: OfficeCall, args: GateArgs): Promise<string>
+  cost(call: OfficeCall, args: { action: string }): Promise<string>
+  setBudget(call: OfficeCall, input: { total?: number | undefined; currency?: string | undefined; tiers?: number[] | undefined }): string
+  decideBudget(call: OfficeCall, choice: string, note: string): string
   render(call: OfficeCall, args: { target?: string | undefined }): Promise<string>
 }
 
@@ -178,6 +181,34 @@ export function createOfficeCommands(deps: OfficeCommandDeps): CommandDefinition
       handler: async (invocation) => {
         try {
           return ok(await deps.gate(callOf(invocation), { action: 'advance' }))
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-budget',
+      description: '成本与预算：`--show`（默认）｜ `--set total=100 [currency=CNY] [tiers=50,80,100]`｜ `--decide choice=add-budget|waive|narrow-scope [note=…]`（决策留痕，**不会自动停**）',
+      handler: async (invocation) => {
+        try {
+          const raw = invocation.rawInput
+          if (flag(raw, 'set')) {
+            const total = option(raw, 'total')
+            const tiers = option(raw, 'tiers')
+            return ok(
+              deps.setBudget(callOf(invocation), {
+                ...(total === undefined ? {} : { total: Number(total) }),
+                currency: option(raw, 'currency'),
+                ...(tiers === undefined ? {} : { tiers: tiers.split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value)) }),
+              }),
+            )
+          }
+          if (flag(raw, 'decide')) {
+            const choice = option(raw, 'choice')
+            if (choice === undefined) return ok('需要 `--choice=add-budget|waive|narrow-scope`。')
+            return ok(deps.decideBudget(callOf(invocation), choice, textOption(raw, 'note') ?? '（未说明）'))
+          }
+          return ok(await deps.cost(callOf(invocation), { action: 'report' }))
         } catch (error) {
           return fail(error)
         }

@@ -34,6 +34,7 @@ export interface OfficeToolDeps {
   test(call: OfficeCall, args: TestArgs): Promise<string>
   review(call: OfficeCall, args: ReviewArgs): Promise<string>
   deliver(call: OfficeCall, args: DeliverArgs): Promise<string>
+  cost(call: OfficeCall, args: { action: string }): Promise<string>
 }
 
 export interface InitArgs {
@@ -639,6 +640,24 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           by: typeof args.by === 'string' ? args.by : undefined,
           notes: typeof args.notes === 'string' ? args.notes : undefined,
         })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_cost',
+      description:
+        'Cost report for this project: tokens consumed, and — only when the user filled in a price table — an '
+        + 'estimated amount, always labelled as an estimate. dsh itself meters tokens only and has no currency '
+        + 'model, so a missing price means tokens are shown and money is not guessed. The budget is optional: '
+        + 'without a `total` the report shows consumption only (no remaining, no percentage, no threshold). '
+        + 'Exceeding a budget never stops work (C-08) — it only asks the human to choose: add budget, waive with a '
+        + 'record, or narrow scope. This tool is READ-ONLY for the model.',
+      parameters: {
+        action: { type: 'string', required: true, description: "'report'." },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.cost(callOf(exec), { action: typeof args.action === 'string' ? args.action : 'report' })
       },
     }),
 
