@@ -42,22 +42,35 @@ test('init：建 .sdo/ 布局、写 config.yml 与真源，幂等', () => {
     assert.ok(existsSync(join(sdo, path)), `应创建 ${path}`)
   }
 
-  // 不给字段：只回执，不改动（幂等）
-  const second = office.init(call(), {})
+  // 只创建：重复 init（即使给了字段）也不改动——台账由 sdo_project 维护（设计 v0.9）
+  const second = office.init(call(), { name: '别的名字' })
   assert.equal(second.created, false)
-  assert.equal(second.updated, false)
   assert.equal(second.project.name, '示例项目')
+})
 
-  // 显式给字段：补齐台账（G2 需要非目标与术语表）
-  const third = office.init(call(), {
-    scopeOut: ['自动调账'],
+test('sdo_project：只写显式字段，可补齐 G2 需要的非目标与术语表', () => {
+  office.init(call(), { name: '示例项目' })
+
+  const nothing = office.updateProject(call(), {})
+  assert.deepEqual(nothing.changed, [], '不给字段就不写')
+
+  const updated = office.updateProject(call(), {
+    scopeOut: ['自动调账', '财务凭证'],
     glossary: { 差异: '同一笔业务在两侧系统的不一致记录' },
+    stakeholders: ['业务方', '开发'],
+    metricsSuccess: ['差异识别率 ≥ 99%'],
   })
-  assert.equal(third.updated, true)
-  assert.deepEqual(third.updatedFields.sort(), ['glossary', 'scope'])
-  assert.deepEqual(third.project.scope.out, ['自动调账'])
-  assert.equal(Object.keys(third.project.glossary).length, 1)
-  assert.equal(third.project.name, '示例项目', '未给的字段不得被改')
+  assert.deepEqual(updated.changed.sort(), ['glossary', 'metrics', 'scope', 'stakeholders'])
+  assert.deepEqual(updated.project.scope.out, ['自动调账', '财务凭证'])
+  assert.equal(Object.keys(updated.project.glossary).length, 1)
+  assert.deepEqual(updated.project.stakeholders.map((s) => s.id), ['STK-01', 'STK-02'])
+  assert.equal(updated.project.name, '示例项目', '未给的字段不得被改')
+
+  const events = office.journalFor(workspace).read().events.filter((event) => event.type === 'project/updated')
+  assert.equal(events.length, 1, '台账变更必须留痕')
+
+  const merged = office.updateProject(call(), { glossary: { 对账周期: 'T 日与 T-1 日' } })
+  assert.equal(Object.keys(merged.project.glossary).length, 2, 'glossary 是合并而非替换')
 })
 
 test('status：阶段、门禁缺口、计数与投影来源', () => {

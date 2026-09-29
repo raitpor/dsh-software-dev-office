@@ -76,11 +76,25 @@ export interface InitOptions {
 export interface InitResult {
   project: SdoProject
   created: boolean
-  /** 项目已存在、但本次补齐/更新了台账字段 */
-  updated: boolean
-  /** 本次实际写入的字段名（供回执展示） */
-  updatedFields: string[]
   dataDir: string
+}
+
+/** 项目台账更新（设计 v0.9 §9.1：第 19 个工具 `sdo_project`）。 */
+export interface ProjectUpdateInput {
+  name?: string | undefined
+  process?: string | undefined
+  scale?: Scale | undefined
+  scopeIn?: string[] | undefined
+  scopeOut?: string[] | undefined
+  stakeholders?: string[] | undefined
+  metricsSuccess?: string[] | undefined
+  glossary?: Record<string, string> | undefined
+}
+
+export interface ProjectUpdateResult {
+  project: SdoProject
+  /** 本次实际写入的字段名；为空表示"什么都没改" */
+  changed: string[]
 }
 
 export interface ProjectCounts {
@@ -207,49 +221,7 @@ export class SoftwareDevOffice {
 
     const existing = journal.loadProject().project
     if (existing !== undefined) {
-      // 已存在：**只补齐显式给出的字段**（幂等；不给字段就什么都不改）。
-      const patch: Partial<SdoProject> = {}
-      if (typeof options.name === 'string' && options.name.trim() !== '' && options.name.trim() !== existing.name) {
-        patch.name = options.name.trim()
-      }
-      if (typeof options.process === 'string' && options.process !== '' && processIdOf(options.process) !== existing.process) {
-        patch.process = processIdOf(options.process)
-      }
-      if (options.scopeIn !== undefined && options.scopeIn.length > 0) {
-        patch.scope = { in: options.scopeIn, out: existing.scope.out }
-      }
-      if (options.scopeOut !== undefined && options.scopeOut.length > 0) {
-        patch.scope = { in: patch.scope?.in ?? existing.scope.in, out: options.scopeOut }
-      }
-      if (options.stakeholders !== undefined && options.stakeholders.length > 0) {
-        patch.stakeholders = options.stakeholders.map((role, index) => ({
-          id: `STK-${String(index + 1).padStart(2, '0')}`,
-          role,
-          concerns: [] as string[],
-        }))
-      }
-      if (options.metricsSuccess !== undefined && options.metricsSuccess.length > 0) {
-        patch.metrics = { success: options.metricsSuccess, guardrail: existing.metrics.guardrail }
-      }
-      if (options.glossary !== undefined && Object.keys(options.glossary).length > 0) {
-        patch.glossary = { ...existing.glossary, ...options.glossary }
-      }
-      if (options.scale !== undefined) {
-        patch.tailoring = {
-          scale: options.scale,
-          waivedGates: options.scale === 'trivial' ? ['G1', 'G4', 'G6'] : [],
-          reason: existing.tailoring?.reason ?? '按规模档调整',
-          approver: existing.tailoring?.approver ?? 'human',
-          at: new Date().toISOString(),
-        }
-      }
-      const fields = Object.keys(patch)
-      if (fields.length === 0) {
-        return { project: existing, created: false, updated: false, updatedFields: [], dataDir: store.root }
-      }
-      journal.append('project/updated', { patch })
-      const refreshed = journal.loadProject().project ?? existing
-      return { project: refreshed, created: false, updated: true, updatedFields: fields, dataDir: store.root }
+      return { project: existing, created: false, dataDir: store.root }
     }
 
     const config: ProjectConfig = defaultProjectConfig()
@@ -287,7 +259,53 @@ export class SoftwareDevOffice {
       },
     }
     journal.append('project/created', { project })
-    return { project, created: true, updated: false, updatedFields: [], dataDir: store.root }
+    return { project, created: true, dataDir: store.root }
+  }
+
+  /** 更新项目台账（`sdo_project action=update`）：**只写显式给出的字段**。 */
+  updateProject(call: OfficeCall, input: ProjectUpdateInput): ProjectUpdateResult {
+    const { journal, project } = this.contextFor(call)
+    if (project === undefined) throw new Error('项目尚未初始化：请先调用 `sdo_init`。')
+    const patch: Partial<SdoProject> = {}
+    if (typeof input.name === 'string' && input.name.trim() !== '' && input.name.trim() !== project.name) {
+      patch.name = input.name.trim()
+    }
+    if (typeof input.process === 'string' && input.process !== '') {
+      const next = processIdOf(input.process)
+      if (next !== project.process) patch.process = next
+    }
+    if (input.scopeIn !== undefined && input.scopeIn.length > 0) {
+      patch.scope = { in: input.scopeIn, out: project.scope.out }
+    }
+    if (input.scopeOut !== undefined && input.scopeOut.length > 0) {
+      patch.scope = { in: patch.scope?.in ?? project.scope.in, out: input.scopeOut }
+    }
+    if (input.stakeholders !== undefined && input.stakeholders.length > 0) {
+      patch.stakeholders = input.stakeholders.map((role, index) => ({
+        id: `STK-${String(index + 1).padStart(2, '0')}`,
+        role,
+        concerns: [] as string[],
+      }))
+    }
+    if (input.metricsSuccess !== undefined && input.metricsSuccess.length > 0) {
+      patch.metrics = { success: input.metricsSuccess, guardrail: project.metrics.guardrail }
+    }
+    if (input.glossary !== undefined && Object.keys(input.glossary).length > 0) {
+      patch.glossary = { ...project.glossary, ...input.glossary }
+    }
+    if (input.scale !== undefined) {
+      patch.tailoring = {
+        scale: input.scale,
+        waivedGates: input.scale === 'trivial' ? ['G1', 'G4', 'G6'] : [],
+        reason: project.tailoring?.reason ?? '按规模档调整',
+        approver: project.tailoring?.approver ?? 'human',
+        at: new Date().toISOString(),
+      }
+    }
+    const changed = Object.keys(patch)
+    if (changed.length === 0) return { project, changed: [] }
+    journal.append('project/updated', { patch })
+    return { project: journal.loadProject().project ?? project, changed }
   }
 
   /** 读取状态快照（必要时重建投影）。 */

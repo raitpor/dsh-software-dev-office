@@ -18,6 +18,7 @@ import type { Priority, RequirementKind, Scale } from '../types.js'
 export interface OfficeToolDeps {
   init(call: OfficeCall, args: InitArgs): Promise<string>
   status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string>
+  project(call: OfficeCall, args: ProjectArgs): Promise<string>
   requirement(call: OfficeCall, args: RequirementArgs): Promise<string>
   redteam(call: OfficeCall, args: RedTeamArgs): Promise<string>
   render(call: OfficeCall, args: { target?: string | undefined }): Promise<string>
@@ -25,6 +26,16 @@ export interface OfficeToolDeps {
 }
 
 export interface InitArgs {
+  name?: string | undefined
+  process?: string | undefined
+  scale?: Scale | undefined
+  scopeIn?: string[] | undefined
+  scopeOut?: string[] | undefined
+  stakeholders?: string[] | undefined
+}
+
+export interface ProjectArgs {
+  action: string
   name?: string | undefined
   process?: string | undefined
   scale?: Scale | undefined
@@ -116,10 +127,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
     defineTool({
       name: 'sdo_init',
       description:
-        'Initialize the software-dev-office project in the current working directory (creates `.sdo/` with an '
-        + 'append-only journal as the single source of truth). Idempotent: with no fields it only returns the existing '
-        + 'record; with explicit fields it fills in / updates exactly those project-ledger fields (name, process, scale, '
-        + 'scope, stakeholders, metrics, glossary). Call this first, and again later to complete the ledger.',
+        'Create the software-dev-office project in the current working directory (creates `.sdo/` with an append-only '
+        + 'journal as the single source of truth). Create-only and idempotent: if the project exists it returns the '
+        + 'existing record and changes nothing. Use `sdo_project` afterwards to maintain the project ledger.',
       parameters: {
         name: { type: 'string', description: 'Project name; defaults to the working directory name.' },
         process: { type: 'string', description: "Process: 'waterfall' (default), 'prototype', 'agile' or 'spiral'." },
@@ -127,8 +137,6 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         scopeIn: { type: 'string', description: 'Comma-separated in-scope items.' },
         scopeOut: { type: 'string', description: 'Comma-separated explicit non-goals (at least one is required at G0/G2).' },
         stakeholders: { type: 'string', description: 'Comma-separated stakeholder roles (become STK-01, STK-02, ...).' },
-        metricsSuccess: { type: 'string', description: 'Comma-separated measurable success metrics (feeds the goal dimension).' },
-        glossary: { type: 'string', description: 'JSON object of domain terms, e.g. {"差异":"同一笔业务在两侧系统的不一致记录"}. Gate G2 requires a non-empty glossary.' },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -139,11 +147,6 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           scopeIn: parseList(args.scopeIn),
           scopeOut: parseList(args.scopeOut),
           stakeholders: parseList(args.stakeholders),
-          metricsSuccess: parseList(args.metricsSuccess),
-          glossary: (() => {
-            const parsed = parseJson<Record<string, string>>(args.glossary)
-            return parsed === undefined ? undefined : parsed
-          })(),
         })
       },
     }),
@@ -159,6 +162,41 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       output: OUTPUT,
       async execute(args, exec) {
         return deps.status(callOf(exec), { rebuild: args.rebuild === true })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_project',
+      description:
+        'Maintain the project ledger (the inputs every gate depends on): in-scope items and explicit non-goals, '
+        + 'stakeholders, the domain glossary, measurable success metrics, and the process/scale. Gate G2 refuses while '
+        + 'the non-goal list or the glossary is empty, so this is the tool that closes those gaps after `sdo_init`. '
+        + "Actions: 'update' (writes exactly the fields you pass; nothing is overwritten implicitly) | 'show'.",
+      parameters: {
+        action: { type: 'string', required: true, description: "'update' | 'show'." },
+        name: { type: 'string', description: 'Project name (update).' },
+        process: { type: 'string', description: "Process: 'waterfall' | 'prototype' | 'agile' | 'spiral'." },
+        scale: { type: 'string', description: "Scale: 'trivial' | 'normal' | 'critical' (drives tailoring and the red-team default)." },
+        scopeIn: { type: 'string', description: 'Comma-separated in-scope items (replaces the list).' },
+        scopeOut: { type: 'string', description: 'Comma-separated explicit non-goals (replaces the list; required by G0/G2).' },
+        stakeholders: { type: 'string', description: 'Comma-separated stakeholder roles (rewrites STK-01, STK-02, ...).' },
+        metricsSuccess: { type: 'string', description: 'Comma-separated measurable success metrics.' },
+        glossary: { type: 'string', description: 'JSON object of domain terms, e.g. {"差异":"同一笔业务在两侧系统的不一致记录"} (merged into the existing glossary).' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        const parsed = parseJson<Record<string, string>>(args.glossary)
+        return deps.project(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'show',
+          name: typeof args.name === 'string' ? args.name : undefined,
+          process: typeof args.process === 'string' ? args.process : undefined,
+          scale: parseScale(args.scale),
+          scopeIn: parseList(args.scopeIn),
+          scopeOut: parseList(args.scopeOut),
+          stakeholders: parseList(args.stakeholders),
+          metricsSuccess: parseList(args.metricsSuccess),
+          glossary: parsed,
+        })
       },
     }),
 

@@ -128,7 +128,10 @@ export function evaluateDor(input: DorInput): DorResult {
     label: '术语表存在且非空（完整覆盖度检查待 M2 追溯引擎）',
     ok: glossaryTerms.length > 0,
     detail: glossaryTerms.length === 0 ? '术语表为空' : `收录 ${glossaryTerms.length} 个术语`,
-    remedy: glossaryTerms.length === 0 ? '在 `.sdo/project.json` 的 glossary 里补领域术语（可先用 `sdo_init` 的干系人/范围推导）' : undefined,
+    remedy:
+      glossaryTerms.length === 0
+        ? '用 `sdo_project action=update glossary={"术语":"定义"}` 补领域术语（G2 硬条件）'
+        : undefined,
   })
 
   // C5：非目标已声明（G0/G2 共用硬条件）
@@ -138,7 +141,7 @@ export function evaluateDor(input: DorInput): DorResult {
     label: '非目标已显式声明（≥1 条）',
     ok: nonGoals.length > 0,
     detail: nonGoals.length === 0 ? '未声明非目标' : `已声明 ${nonGoals.length} 条`,
-    remedy: nonGoals.length === 0 ? '在项目范围里补非目标（`sdo_init` 的 scopeOut，或 `project/updated`）' : undefined,
+    remedy: nonGoals.length === 0 ? '用 `sdo_project action=update scopeOut=…` 补非目标（G0/G2 硬条件）' : undefined,
   })
 
   // C6：红队质询已执行或已显式停用（normal/critical 档默认要求；设计 §15.3 G2 / Q-03）

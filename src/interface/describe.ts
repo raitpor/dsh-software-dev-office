@@ -5,7 +5,7 @@
  * NFR-009（只出现相对路径）、NFR-012（成本类数字必须标注"估算"——M5 起）。
  */
 import { DIMENSIONS } from '../types.js'
-import type { GrillQuestion, Requirement } from '../types.js'
+import type { GrillQuestion, Requirement, SdoProject } from '../types.js'
 import type { BaselineOutcome, InitResult, StatusSnapshot } from '../office.js'
 import { gateAfterPhase } from '../office.js'
 import type { DorResult } from '../domain/dor.js'
@@ -21,12 +21,7 @@ export function describeInit(result: InitResult, dataDirName: string): string {
     if (result.project.scope.out.length === 0) {
       lines.push('- ⚠️ 还没有非目标（out）——G0/G2 的硬条件，请与用户确认后补上。')
     }
-    lines.push('- 下一步：用 `sdo_requirement action=capture` 收集需求（含干系人原话），再 `action=grill` 追问。')
-  } else if (result.updated) {
-    lines.push(`已更新项目台账：${result.project.id} ${result.project.name}`)
-    lines.push(`- 本次写入字段：${result.updatedFields.join('、')}`)
-    lines.push(`- 当前非目标：${result.project.scope.out.length === 0 ? '（无，G2 会拦）' : result.project.scope.out.join('；')}`)
-    lines.push(`- 术语表：${Object.keys(result.project.glossary).length} 个术语`)
+    lines.push('- 下一步：`sdo_project action=update` 补齐非目标/干系人/术语表/成功度量，再 `sdo_requirement action=capture` 收集需求。')
   } else {
     lines.push(`项目已存在，未做改动：${result.project.id} ${result.project.name}`)
     lines.push(`- 当前阶段：${result.project.phase}（${phaseLabel(result.project.phase)}）`)
@@ -76,6 +71,38 @@ export function describeStatus(status: StatusSnapshot, dataDirName: string): str
   lines.push(`  \`${dataDirName}/requirements/*.yml\` 与 \`${dataDirName}/questions/*.yml\`（需求与问题账本）`)
   lines.push(`  \`${dataDirName}/config.yml\`（项目级配置，人类可编辑）`)
 
+  return lines.join('\n')
+}
+
+/** `sdo_project action=update` 的回执。 */
+export function describeProjectUpdate(result: { project: SdoProject; changed: string[] }): string {
+  if (result.changed.length === 0) {
+    return [
+      '本次没有写入任何字段（本工具只写显式给出的字段）。',
+      '- 可用字段：name / process / scale / scopeIn / scopeOut / stakeholders / metricsSuccess / glossary',
+    ].join('\n')
+  }
+  const lines: string[] = [`已更新项目台账：${result.project.id} ${result.project.name}`]
+  lines.push(`- 本次写入字段：${result.changed.join('、')}`)
+  lines.push(`- 范围（in）：${result.project.scope.in.length === 0 ? '（空）' : result.project.scope.in.join('；')}`)
+  lines.push(`- 非目标（out）：${result.project.scope.out.length === 0 ? '（空 —— G2 会拦）' : result.project.scope.out.join('；')}`)
+  lines.push(`- 术语表：${Object.keys(result.project.glossary).length} 个术语`)
+  lines.push(`- 成功度量：${result.project.metrics.success.length === 0 ? '（空）' : result.project.metrics.success.join('；')}`)
+  return lines.join('\n')
+}
+
+/** `sdo_project action=show` 的回执。 */
+export function describeProject(status: StatusSnapshot, dataDirName: string): string {
+  const project = status.project
+  if (project === undefined) return `尚未初始化（没有 \`${dataDirName}/\`）：先调用 \`sdo_init\`。`
+  const lines: string[] = [`项目台账：${project.id} ${project.name}`]
+  lines.push(`- 流程：${project.process} ｜ 规模：${project.tailoring?.scale ?? status.config.scale} ｜ 阶段：${project.phase}`)
+  lines.push(`- 范围（in）：${project.scope.in.length === 0 ? '（空）' : project.scope.in.join('；')}`)
+  lines.push(`- 非目标（out）：${project.scope.out.length === 0 ? '（空 —— 门禁 G0/G2 会拦）' : project.scope.out.join('；')}`)
+  lines.push(`- 干系人：${project.stakeholders.length === 0 ? '（空）' : project.stakeholders.map((item) => `${item.id} ${item.role}`).join('；')}`)
+  lines.push(`- 术语表：${Object.keys(project.glossary).length === 0 ? '（空 —— 门禁 G2 会拦）' : Object.entries(project.glossary).map(([term, definition]) => `${term}：${definition}`).join('；')}`)
+  lines.push(`- 成功度量：${project.metrics.success.length === 0 ? '（空）' : project.metrics.success.join('；')}`)
+  lines.push(`- 裁剪：${project.tailoring === undefined ? '（未设置）' : `${project.tailoring.scale}（豁免 ${project.tailoring.waivedGates.join(' ') || '无'}）`}`)
   return lines.join('\n')
 }
 

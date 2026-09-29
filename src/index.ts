@@ -27,6 +27,8 @@ import {
   describeCapture,
   describeDesignGate,
   describeInit,
+  describeProject,
+  describeProjectUpdate,
   describeQuestions,
   describeRedTeam,
   describeRender,
@@ -36,7 +38,7 @@ import {
 import { renderStatusBlock } from './interface/inject.js'
 import { createOfficeCommands } from './interface/commands.js'
 import { createOfficeTools } from './interface/tools.js'
-import type { InitArgs, RedTeamArgs, RequirementArgs } from './interface/tools.js'
+import type { InitArgs, ProjectArgs, RedTeamArgs, RequirementArgs } from './interface/tools.js'
 import { SoftwareDevOffice } from './office.js'
 import type { OfficeCall } from './office.js'
 import type { AcceptanceCriterion, Dimension } from './types.js'
@@ -121,6 +123,22 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const workspace = office.workspaceFor(call)
       const target = new SdoStore(workspace).writeText(['docs', 'BOARD.md'], text)
       return `${text}\n${describeBoardNote(`已写入 ${office.relativize(workspace, target)}。`)}`
+    },
+
+    async project(call: OfficeCall, args: ProjectArgs): Promise<string> {
+      if (args.action === 'show') return describeProject(office.status(call), settings.projectDirName)
+      if (args.action !== 'update') return `未知 action：${args.action}（可用：update | show）`
+      const result = office.updateProject(call, {
+        name: args.name,
+        process: args.process,
+        scale: args.scale,
+        scopeIn: args.scopeIn,
+        scopeOut: args.scopeOut,
+        stakeholders: args.stakeholders,
+        metricsSuccess: args.metricsSuccess,
+        glossary: args.glossary,
+      })
+      return describeProjectUpdate(result)
     },
 
     async requirement(call: OfficeCall, args: RequirementArgs): Promise<string> {
