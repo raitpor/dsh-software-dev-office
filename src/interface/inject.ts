@@ -8,8 +8,6 @@
  *   · 不泄漏绝对路径（NFR-009）：数据目录只写相对名（如 `.sdo`）。
  */
 import type { StatusSnapshot } from '../office.js'
-import { phaseLabel } from '../board/render.js'
-import { gateAfterPhase } from '../office.js'
 
 const TITLE = '## SDO 研发办公室'
 
@@ -35,9 +33,9 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
   lines.push(TITLE)
   lines.push(
     `- 项目：${project.id} ${project.name} ｜ 流程 ${project.process} ｜ 规模 ${project.tailoring?.scale ?? status.config.scale}`
-    + ` ｜ 阶段 ${project.phase}（${phaseLabel(project.phase)}）`,
+    + ` ｜ 阶段 ${project.phase}`,
   )
-  const pending = status.pendingGate ?? gateAfterPhase(project.phase)
+  const pending = status.pendingGate ?? '（无）'
   lines.push(
     `- 门禁：待判定 ${pending} ｜ 门禁记录 ${status.counts.gates} 条 ｜ 需求 ${status.counts.requirements} 条`
     + ` ｜ 问题账本 ${status.counts.questions} 条`,

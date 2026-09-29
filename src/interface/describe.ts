@@ -5,11 +5,12 @@
  * NFR-009（只出现相对路径）、NFR-012（成本类数字必须标注"估算"——M5 起）。
  */
 import { DIMENSIONS } from '../types.js'
-import type { GrillQuestion, Requirement, SdoProject } from '../types.js'
+import type { ChangeRequest, FeasibilityAssessment, GateEvaluation, GrillQuestion, Requirement, RiskItem, SdoProject } from '../types.js'
 import type { BaselineOutcome, InitResult, StatusSnapshot } from '../office.js'
-import { gateAfterPhase } from '../office.js'
+import { processOfProject } from '../office.js'
 import type { DorResult } from '../domain/dor.js'
-import { phaseLabel } from '../board/render.js'
+import { TELOS_DIMENSIONS, TELOS_LABEL } from '../domain/feasibility.js'
+import { riskStats } from '../domain/risks.js'
 
 /** `sdo_init` 的回执。 */
 export function describeInit(result: InitResult, dataDirName: string): string {
@@ -24,7 +25,8 @@ export function describeInit(result: InitResult, dataDirName: string): string {
     lines.push('- 下一步：`sdo_project action=update` 补齐非目标/干系人/术语表/成功度量，再 `sdo_requirement action=capture` 收集需求。')
   } else {
     lines.push(`项目已存在，未做改动：${result.project.id} ${result.project.name}`)
-    lines.push(`- 当前阶段：${result.project.phase}（${phaseLabel(result.project.phase)}）`)
+    const process = processOfProject(result.project)
+    lines.push(`- 当前阶段：${result.project.phase}（${process.phases.find((item) => item.id === result.project.phase)?.name ?? result.project.phase}）`)
     lines.push(`- 数据目录：\`${dataDirName}/\``)
   }
   return lines.join('\n')
@@ -46,16 +48,20 @@ export function describeStatus(status: StatusSnapshot, dataDirName: string): str
     return lines.join('\n')
   }
 
-  const pending = status.pendingGate ?? gateAfterPhase(project.phase)
+  const pending = status.pendingGate ?? '（无）'
   lines.push(`- 项目：${project.id} ${project.name}`)
   lines.push(
-    `- 流程：${project.process} ｜ 规模：${project.tailoring?.scale ?? status.config.scale} ｜ 阶段：${project.phase}（${phaseLabel(project.phase)}）`,
+    `- 流程：${project.process} ｜ 规模：${project.tailoring?.scale ?? status.config.scale} ｜ 阶段：${project.phase}`,
   )
   lines.push(`- 门禁缺口：待判定 ${pending} ｜ 最近判定：${status.lastGate === undefined ? '（无记录）' : `${status.lastGate.gate} ${status.lastGate.status} @ ${status.lastGate.at}`}`)
   lines.push(
     `- 需求：${status.counts.requirements} 条 ｜ 开环问题：${status.counts.openQuestions}（账本共 ${status.counts.questions} 条）`
     + ` ｜ 追溯覆盖率：—（M2 起提供）`,
   )
+  lines.push(
+    `- 可行性：${status.feasibilityVerdict ?? '（未评估）'} ｜ 风险：${status.risks.total} 条（未关闭 ${status.risks.open}，高 ${status.risks.high}，阻塞 ${status.risks.blockers}）`,
+  )
+  lines.push(`- 红队未闭环议题：${status.openIssues} ｜ 变更请求：${status.changes} 条`)
   lines.push(`- 证据：${status.counts.evidence} 条`)
   lines.push(
     `- 投影：${status.rebuilt ? '已从 journal 重建' : '来自 project.json'} ｜ 真源：`
@@ -103,6 +109,75 @@ export function describeProject(status: StatusSnapshot, dataDirName: string): st
   lines.push(`- 术语表：${Object.keys(project.glossary).length === 0 ? '（空 —— 门禁 G2 会拦）' : Object.entries(project.glossary).map(([term, definition]) => `${term}：${definition}`).join('；')}`)
   lines.push(`- 成功度量：${project.metrics.success.length === 0 ? '（空）' : project.metrics.success.join('；')}`)
   lines.push(`- 裁剪：${project.tailoring === undefined ? '（未设置）' : `${project.tailoring.scale}（豁免 ${project.tailoring.waivedGates.join(' ') || '无'}）`}`)
+  return lines.join('\n')
+}
+
+/** `sdo_gate action=check` 的回执。 */
+export function describeGate(evaluation: GateEvaluation): string {
+  const head = `门禁 ${evaluation.gate}（阶段 ${evaluation.phase}）：${evaluation.status === 'passed' ? '✅ 通过' : evaluation.status === 'waived' ? '⚠️ 已豁免' : '❌ 未通过'}`
+  const lines: string[] = [head]
+  for (const criterion of evaluation.criteria) {
+    lines.push(`- ${criterion.ok ? '✅' : '❌'} ${criterion.id}　${criterion.detail}`)
+    if (criterion.remedy !== undefined) lines.push(`    补救：${criterion.remedy}`)
+  }
+  if (evaluation.status === 'failed') {
+    lines.push(`未满足：${evaluation.criteria.filter((criterion) => !criterion.ok).map((criterion) => criterion.id).join(', ')}（未通过前不得进入下一阶段）`)
+  }
+  lines.push('- 记录已写入 `.sdo/gates/' + evaluation.gate + '.json`。')
+  return lines.join('\n')
+}
+
+/** `sdo_gate action=advance` 的回执。 */
+export function describeAdvance(result: { advanced: boolean; from: string; to?: string | undefined; blockedBy?: string | undefined; remedy?: string[] | undefined }): string {
+  if (result.advanced) return `已从阶段 ${result.from} 推进到 ${result.to ?? '（流程末尾）'}。`
+  if (result.blockedBy === undefined) return `阶段 ${result.from} 已是流程末尾，无可推进。`
+  const lines = [`无法推进：阶段 ${result.from} 的出口门禁 ${result.blockedBy} 尚未通过。`]
+  for (const remedy of result.remedy ?? []) lines.push(`- 补救：${remedy}`)
+  lines.push(`- 先运行 \`sdo_gate action=check gate=${result.blockedBy}\` 看逐条准则；确有正当理由时用 \`sdo_gate action=waive\`（会留痕）。`)
+  return lines.join('\n')
+}
+
+/** `sdo_feasibility action=assess` 的回执。 */
+export function describeFeasibility(assessment: FeasibilityAssessment): string {
+  const lines: string[] = [`可行性评估已记录（${assessment.id}，结论：${assessment.verdict}）`]
+  for (const dimension of TELOS_DIMENSIONS) {
+    const item = assessment.telos[dimension]
+    lines.push(`- ${TELOS_LABEL[dimension]}：${item.verdict}${item.rationale === '' ? '' : `　${item.rationale}`}`)
+  }
+  lines.push(`- 理由：${assessment.rationale}`)
+  if (assessment.poc.length > 0) {
+    lines.push(`- PoC / 验证建议：${assessment.poc.join('；')}`)
+  } else {
+    lines.push('- ⚠️ 未给出 PoC / 验证建议：G1 会因此拒绝（高风险项必须先验证）')
+  }
+  lines.push('- 下一步：`sdo_risk action=log …` 登记风险，然后 `sdo_gate action=check gate=G1`。')
+  return lines.join('\n')
+}
+
+/** 风险登记表。 */
+export function describeRisks(risks: RiskItem[]): string {
+  if (risks.length === 0) return '风险登记为空。用 `sdo_risk action=log title=… level=… mitigation=… owner=…` 登记。'
+  const stats = riskStats(risks)
+  const lines: string[] = [`风险共 ${stats.total} 条（未关闭 ${stats.open}｜高 ${stats.high}｜阻塞 ${stats.blockers}）：`]
+  for (const risk of risks) {
+    lines.push(`- ${risk.id}　[${risk.level}/${risk.probability}]　${risk.status}　${risk.title}${risk.origin === undefined ? '' : `　（来源 ${risk.origin}）`}`)
+    if (risk.mitigation.trim() === '' || risk.owner.trim() === '') {
+      lines.push('    ⚠️ 缺应对或责任人：G1/GR 会因此拒绝')
+    }
+  }
+  return lines.join('\n')
+}
+
+/** `sdo_requirement action=change` 的回执。 */
+export function describeChange(result: { change: ChangeRequest; applied: boolean; reason?: string | undefined }): string {
+  const { change } = result
+  const lines: string[] = [`变更请求 ${change.id}（需求 ${change.requirement}，决策 ${change.decision}）`]
+  lines.push(`- 理由：${change.reason}`)
+  for (const item of change.changes) lines.push(`- 变更：${item}`)
+  lines.push(`- 影响分析：设计 ${change.impact.design.length} 项 ｜ 任务 ${change.impact.tasks.length} 项 ｜ 测试 ${change.impact.tests.length} 项`)
+  lines.push(`  （${change.impact.note}）`)
+  lines.push(`- 决策人：${change.decidedBy}`)
+  lines.push(result.applied ? '- ✅ 变更已应用（需求状态 changed，版本 +0.1）' : `- ⚠️ 未应用：${result.reason ?? change.decision}`)
   return lines.join('\n')
 }
 

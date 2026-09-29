@@ -19,6 +19,9 @@ export interface OfficeToolDeps {
   init(call: OfficeCall, args: InitArgs): Promise<string>
   status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string>
   project(call: OfficeCall, args: ProjectArgs): Promise<string>
+  gate(call: OfficeCall, args: GateArgs): Promise<string>
+  feasibility(call: OfficeCall, args: FeasibilityArgs): Promise<string>
+  risk(call: OfficeCall, args: RiskArgs): Promise<string>
   requirement(call: OfficeCall, args: RequirementArgs): Promise<string>
   redteam(call: OfficeCall, args: RedTeamArgs): Promise<string>
   render(call: OfficeCall, args: { target?: string | undefined }): Promise<string>
@@ -47,6 +50,47 @@ export interface ProjectArgs {
   glossary?: Record<string, string> | undefined
 }
 
+export interface GateArgs {
+  action: string
+  /** check / waive 时的门禁 id（advance 不用） */
+  gate?: string | undefined
+  /** 人类签字（G2 的签字准则；advance 时也用于临时判定） */
+  approvedBy?: string | undefined
+  reason?: string | undefined
+  approver?: string | undefined
+  /** 螺旋流程：本圈风险结论（仅在 gate=GR 时使用） */
+  conclusion?: 'continue' | 'adjust' | 'stop' | undefined
+  /** 结论理由 */
+  rationale?: string | undefined
+}
+
+export interface FeasibilityArgs {
+  action: string
+  /** JSON：[{"dimension":"technical","verdict":"Go","rationale":"…"}] */
+  telos?: string | undefined
+  verdict?: 'go' | 'no-go' | 'conditional' | undefined
+  rationale?: string | undefined
+  /** JSON 字符串数组：PoC / 验证建议 */
+  poc?: string | undefined
+  by?: string | undefined
+}
+
+export interface RiskArgs {
+  action: string
+  id?: string | undefined
+  title?: string | undefined
+  level?: 'low' | 'medium' | 'high' | 'blocker' | undefined
+  probability?: 'low' | 'medium' | 'high' | undefined
+  impact?: string | undefined
+  mitigation?: string | undefined
+  owner?: string | undefined
+  /** 关联来源（例如红队议题 REQ-ISSUE-001） */
+  origin?: string | undefined
+  status?: 'open' | 'mitigated' | 'closed' | undefined
+  conclusion?: 'continue' | 'adjust' | 'stop' | undefined
+  rationale?: string | undefined
+}
+
 export interface RequirementArgs {
   action: string
   id?: string | undefined
@@ -68,6 +112,13 @@ export interface RequirementArgs {
   by?: string | undefined
   /** 基线签字人（人类） */
   approvedBy?: string | undefined
+  /** 来源：`prototype` 表示原型回填；否则视为干系人 id（STK-xx） */
+  source?: string | undefined
+  /** 变更理由（action=change） */
+  reason?: string | undefined
+  /** 变更决策（action=change）：approved 才应用 */
+  decision?: 'approved' | 'rejected' | 'deferred' | undefined
+  decidedBy?: string | undefined
   limit?: number | undefined
   quick?: boolean | undefined
 }
@@ -209,6 +260,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         + 'costs — never an open-ended dump; each question states why it is asked and the consequence of not asking), '
         + "'answer' (record an answer, or `assume:true` to take the recommended default as an explicit assumption), "
         + "'update' (patch fields, attach Given/When/Then acceptance criteria, or apply the semantic dimension scores), "
+        + "'change' (after baselining, every edit goes through a change request with a reason, an automatic impact "
+        + "analysis and a decision — 'approved' applies it, 'rejected'/'deferred' only files it), "
         + "'list', 'baseline' (freeze the requirement set at gate G2 — refuses unless DoR passes: score >= 14/16, no zero "
         + 'dimension, no open P0, must-requirements have Given/When/Then, non-goals declared, red team run, human sign-off).',
       parameters: {
@@ -230,6 +283,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         assume: { type: 'boolean', description: 'The user does not know: take the question\'s recommended default and record it as an explicit assumption.' },
         by: { type: 'string', description: 'Who answered (default "human").' },
         approvedBy: { type: 'string', description: 'Human sign-off name required by `baseline` (gate G2).' },
+        source: { type: 'string', description: "Provenance: 'prototype' marks the requirement as backfilled from a throwaway prototype (design §7.2); any other value is treated as a stakeholder id such as STK-01." },
+        reason: { type: 'string', description: 'Change reason (action=change).' },
+        decision: { type: 'string', description: "Change decision (action=change): 'approved' applies the change; 'rejected'/'deferred' only files the request." },
+        decidedBy: { type: 'string', description: 'Who decided the change (action=change).' },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -250,6 +307,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           assume: args.assume === true,
           by: typeof args.by === 'string' ? args.by : undefined,
           approvedBy: typeof args.approvedBy === 'string' ? args.approvedBy : undefined,
+          source: typeof args.source === 'string' ? args.source : undefined,
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
+          decision: parseEnum(args.decision, ['approved', 'rejected', 'deferred'] as const),
+          decidedBy: typeof args.decidedBy === 'string' ? args.decidedBy : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
           quick: args.quick === true,
         })
@@ -293,6 +354,109 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       output: OUTPUT,
       async execute(args, exec) {
         return deps.render(callOf(exec), { target: typeof args.target === 'string' ? args.target : undefined })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_gate',
+      description:
+        'Gate engine (process is data, gates are checked, never inferred). '
+        + "'check' evaluates one gate's criteria and records the verdict; 'advance' moves to the next phase only when "
+        + "every exit gate of the current phase passed (or was waived); 'waive' records an explicit, attributed waiver "
+        + "(`tailoring.waivedGates` + gate record) instead of silently skipping a gate. Criteria whose checker is not "
+        + 'implemented yet fail on purpose — a gate never passes because nothing could be checked. '
+        + "For the spiral risk quadrant gate (GR) pass `conclusion=continue|adjust|stop` with a `rationale`.",
+      parameters: {
+        action: { type: 'string', required: true, description: "'check' | 'advance' | 'waive'." },
+        gate: { type: 'string', description: "Gate id, e.g. 'G0', 'G1', 'G2', 'G3', 'G7', 'GP' (prototype), 'GI' (agile) or 'GR' (spiral)." },
+        approvedBy: { type: 'string', description: 'Human sign-off used by gates that require it (G2).' },
+        reason: { type: 'string', description: 'Why this gate is waived (required by `waive`).' },
+        approver: { type: 'string', description: 'Who approved the waiver (required by `waive`).' },
+        conclusion: { type: 'string', description: "Spiral GR gate: this round's risk conclusion — 'continue' | 'adjust' | 'stop'." },
+        rationale: { type: 'string', description: 'Rationale for the round conclusion (spiral GR gate).' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.gate(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'check',
+          gate: typeof args.gate === 'string' ? args.gate : undefined,
+          approvedBy: typeof args.approvedBy === 'string' ? args.approvedBy : undefined,
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
+          approver: typeof args.approver === 'string' ? args.approver : undefined,
+          conclusion:
+            args.conclusion === 'continue' || args.conclusion === 'adjust' || args.conclusion === 'stop'
+              ? args.conclusion
+              : undefined,
+          rationale: typeof args.rationale === 'string' ? args.rationale : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_feasibility',
+      description:
+        "TELOS feasibility assessment (technical / economic / legal / operational / schedule) plus the Go/No-Go verdict, "
+        + 'its rationale and the PoC or validation suggestions for the risky parts. Recorded as the truth source for '
+        + 'gate G1, and the risks you log with `sdo_risk` become G1 evidence too.',
+      parameters: {
+        action: { type: 'string', required: true, description: "'assess'." },
+        telos: { type: 'string', description: 'JSON array: [{"dimension":"technical","verdict":"可行","rationale":"…"}, …]; dimensions are technical/economic/legal/operational/schedule.' },
+        verdict: { type: 'string', description: "'go' | 'no-go' | 'conditional'." },
+        rationale: { type: 'string', description: 'Why this verdict (the honest summary, including what remains uncertain).' },
+        poc: { type: 'string', description: 'JSON array of PoC / validation suggestions for the risky parts, e.g. ["用 1 天验证 X 的吞吐上限"].' },
+        by: { type: 'string', description: 'Who assessed (default "human").' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.feasibility(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'assess',
+          telos: typeof args.telos === 'string' ? args.telos : undefined,
+          verdict: parseEnum(args.verdict, ['go', 'no-go', 'conditional'] as const),
+          rationale: typeof args.rationale === 'string' ? args.rationale : undefined,
+          poc: typeof args.poc === 'string' ? args.poc : undefined,
+          by: typeof args.by === 'string' ? args.by : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_risk',
+      description:
+        'Risk register (`.sdo/risks/`). `log` records a risk (level low/medium/high/blocker, probability, impact, '
+        + 'mitigation, owner, and an optional `origin` such as a red-team issue id — a risk whose origin points at an '
+        + 'issue closes that issue). `update` moves a risk to mitigated/closed or fixes its mitigation/owner. `list` '
+        + 'shows the register. Gate G1 requires the register to be non-empty and every high/blocker risk to have a '
+        + 'mitigation and an owner; the spiral gate GR also needs a per-round `conclusion`.',
+      parameters: {
+        action: { type: 'string', required: true, description: "'log' | 'update' | 'list' | 'conclude'." },
+        id: { type: 'string', description: 'Risk id (RISK-001) — required by update.' },
+        title: { type: 'string', description: 'Risk title (log).' },
+        level: { type: 'string', description: "'low' | 'medium' | 'high' | 'blocker'." },
+        probability: { type: 'string', description: "'low' | 'medium' | 'high'." },
+        impact: { type: 'string', description: 'What happens if it materialises.' },
+        mitigation: { type: 'string', description: 'Mitigation / response (required for high and blocker risks at G1).' },
+        owner: { type: 'string', description: 'Who owns the risk (required for high and blocker risks at G1).' },
+        origin: { type: 'string', description: 'Source of the risk, e.g. a red-team issue id (REQ-ISSUE-001) — this closes that issue.' },
+        status: { type: 'string', description: "'open' | 'mitigated' | 'closed' (update)." },
+        conclusion: { type: 'string', description: "Spiral per-round risk conclusion ('conclude'): 'continue' | 'adjust' | 'stop'." },
+        rationale: { type: 'string', description: 'Rationale for the round conclusion.' },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.risk(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'list',
+          id: typeof args.id === 'string' ? args.id : undefined,
+          title: typeof args.title === 'string' ? args.title : undefined,
+          level: parseEnum(args.level, ['low', 'medium', 'high', 'blocker'] as const),
+          probability: parseEnum(args.probability, ['low', 'medium', 'high'] as const),
+          impact: typeof args.impact === 'string' ? args.impact : undefined,
+          mitigation: typeof args.mitigation === 'string' ? args.mitigation : undefined,
+          owner: typeof args.owner === 'string' ? args.owner : undefined,
+          origin: typeof args.origin === 'string' ? args.origin : undefined,
+          status: parseEnum(args.status, ['open', 'mitigated', 'closed'] as const),
+          conclusion: parseEnum(args.conclusion, ['continue', 'adjust', 'stop'] as const),
+          rationale: typeof args.rationale === 'string' ? args.rationale : undefined,
+        })
       },
     }),
 

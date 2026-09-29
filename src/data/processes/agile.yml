@@ -1,0 +1,98 @@
+# 随包数据：敏捷（设计 §7.2）
+#
+# 关键纪律：每迭代必须产出**可运行增量 + 迭代 DoD**；需求进 backlog，迭代内冻结。
+id: agile
+name: 敏捷开发
+description: 迭代循环（1–2 周），backlog + 迭代内冻结；适合需求演进、要早期可用的项目
+phases:
+  - id: intake
+    name: 立项
+    role: office
+    entry: []
+    exit: [G0]
+    artifacts: [VISION.md]
+  - id: feasibility
+    name: 可行性
+    role: analyst
+    entry: [G0]
+    exit: [G1]
+    artifacts: [FEASIBILITY.md]
+  - id: requirements
+    name: 需求
+    role: analyst
+    entry: [G1]
+    exit: [G2]
+    artifacts: [SRS.md, BACKLOG.md]
+    loop: { tool: sdo_requirement, action: grill, until: "backlog.ready" }
+  - id: architecture
+    name: 架构
+    role: architect
+    entry: [G2]
+    exit: [G3]
+    artifacts: [SDD.md]
+  - id: iteration
+    name: 迭代
+    role: developer
+    entry: [G3]
+    exit: [GI]
+    artifacts: [PLAN.md, TESTREPORT.md]
+    loop: { tool: sdo_task, action: next, until: "iteration.dod" }
+  - id: release
+    name: 发布
+    role: delivery
+    entry: [GI]
+    exit: [G6]
+    artifacts: [DELIVERY.md]
+  - id: delivery
+    name: 交付
+    role: delivery
+    entry: [G6]
+    exit: [G7]
+    artifacts: [DELIVERY.md]
+gates:
+  - id: G0
+    name: 立项门禁
+    criteria:
+      - { id: C-01, check: "project.scope.in", desc: "范围（in）非空" }
+      - { id: C-02, check: "project.scope.out", desc: "非目标（out）非空" }
+      - { id: C-03, check: "project.stakeholders", desc: "干系人非空" }
+      - { id: C-04, check: "project.metrics", desc: "成功度量非空" }
+  - id: G1
+    name: 可行性门禁
+    criteria:
+      - { id: C-05, check: "feasibility.verdict", desc: "TELOS 结论为 Go" }
+      - { id: C-06, check: "feasibility.risks", desc: "风险已登记" }
+      - { id: C-07, check: "feasibility.poc", desc: "给出 PoC 建议" }
+  - id: G2
+    name: 需求基线门禁（Backlog 就绪）
+    criteria:
+      - { id: C1-dor-per-requirement, check: "dor.per_requirement", desc: "每条需求满足 §5.2.5" }
+      - { id: C2-open-questions, check: "questions.open_p0", desc: "无 P0 未决" }
+      - { id: C3-must-has-ac, check: "dor.must_has_ac", desc: "must 需求有 Given/When/Then" }
+      - { id: C4-glossary, check: "project.glossary", desc: "术语表非空" }
+      - { id: C5-non-goals, check: "project.scope.out", desc: "非目标已声明" }
+      - { id: C6-red-team, check: "redteam.executed", desc: "红队已执行或留痕停用" }
+      - { id: C7-signoff, check: "human.signoff", desc: "人类签字" }
+      - { id: C8-red-team-closed, check: "redteam.closed", desc: "红队议题已闭环" }
+  - id: G3
+    name: 架构门禁
+    criteria:
+      - { id: C-20, check: "design.views", desc: "五视图齐备" }
+      - { id: C-21, check: "trace.orphans", desc: "无孤儿设计元素" }
+  - id: GI
+    name: 迭代 DoD 门
+    criteria:
+      - { id: C-80, check: "iteration.increment", desc: "本迭代产出可运行增量" }
+      - { id: C-81, check: "iteration.dod", desc: "本迭代任务卡全部完成且带证据" }
+      - { id: C-82, check: "review.independent", desc: "评审独立性" }
+  - id: G6
+    name: 发布前门
+    criteria:
+      - { id: C-50, check: "tests.passed", desc: "must REQ 测试通过" }
+      - { id: C-51, check: "defects.closed", desc: "无未关闭阻塞缺陷" }
+      - { id: C-52, check: "review.independent", desc: "评审独立性" }
+  - id: G7
+    name: 交付门禁
+    criteria:
+      - { id: C-60, check: "delivery.manifest", desc: "交付清单完整" }
+      - { id: C-61, check: "prototype.excluded", desc: "交付包不含 prototype/ 内容" }

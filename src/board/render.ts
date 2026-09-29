@@ -7,9 +7,8 @@
  *   · 任何口径都写清（金额是估算等），M5 起生效。
  */
 import type { ProjectConfig } from '../config.js'
-import type { GateRecord, ProjectCounts } from '../office.js'
-import { PHASE_ORDER, gateAfterPhase } from '../office.js'
-import type { Phase, Priority, SdoProject } from '../types.js'
+import type { ProjectCounts } from '../office.js'
+import type { GateEvaluation, Phase, Priority, ProcessDef, SdoProject } from '../types.js'
 
 /** 看板上一条需求。 */
 export interface BoardRequirement {
@@ -27,7 +26,11 @@ export interface BoardModel {
   project: SdoProject | undefined
   config: ProjectConfig
   counts: ProjectCounts
-  gates: GateRecord[]
+  gates: GateEvaluation[]
+  /** 当前项目所用流程（阶段与门禁由数据决定） */
+  process: ProcessDef
+  /** 当前阶段待判定的门禁 */
+  pendingGate: string | undefined
   requirements: BoardRequirement[]
   dataDirName: string
   truncated: boolean
@@ -41,31 +44,32 @@ export interface BoardOptions {
 
 const PHASE_MARK = { done: '✓', current: '▶', waived: '~', todo: '·' } as const
 
-function phaseLine(project: SdoProject, gates: GateRecord[]): string {
+function phaseLine(project: SdoProject, gates: GateEvaluation[], process: ProcessDef): string {
   const waived = new Set(gates.filter((gate) => gate.status === 'waived').map((gate) => gate.gate))
   const marks: string[] = []
-  for (const phase of PHASE_ORDER) {
-    const record = project.phaseHistory.find((item) => item.phase === phase)
+  for (const definition of process.phases) {
+    const record = project.phaseHistory.find((item) => item.phase === definition.id)
+    const label = definition.name ?? definition.id
     if (record === undefined) {
-      marks.push(`${PHASE_MARK.todo} ${phase}`)
+      marks.push(`${PHASE_MARK.todo} ${label}`)
       continue
     }
     if (record.exited !== undefined) {
-      const gate = gateAfterPhase(phase)
-      marks.push(`${waived.has(gate) ? PHASE_MARK.waived : PHASE_MARK.done} ${phase}`)
+      const waivedHere = definition.exit.some((gate) => waived.has(gate))
+      marks.push(`${waivedHere ? PHASE_MARK.waived : PHASE_MARK.done} ${label}`)
       continue
     }
-    marks.push(`${PHASE_MARK.current} ${phase}`)
+    marks.push(`${PHASE_MARK.current} ${label}`)
   }
   return marks.join(' → ')
 }
 
-function gateSummary(project: SdoProject | undefined, gates: GateRecord[], all: boolean): string {
+function gateSummary(project: SdoProject | undefined, gates: GateEvaluation[], all: boolean, pending: string | undefined): string {
   if (project === undefined) return '（尚未初始化）'
   const passed = gates.filter((gate) => gate.status === 'passed').map((gate) => gate.gate)
   const waived = gates.filter((gate) => gate.status === 'waived').map((gate) => gate.gate)
   const failed = gates.filter((gate) => gate.status === 'failed').map((gate) => gate.gate)
-  const parts = [`待判定 ${gateAfterPhase(project.phase)}`]
+  const parts = [`待判定 ${pending ?? '（无）'}`]
   if (passed.length > 0) parts.push(`已通过 ${passed.join(' ')}`)
   if (waived.length > 0) parts.push(`已豁免 ${waived.join(' ')}`)
   if (failed.length > 0) parts.push(`未通过 ${failed.join(' ')}`)
@@ -92,12 +96,12 @@ export function renderBoard(model: BoardModel, options: BoardOptions = {}): stri
     `流程　${project.process} ｜ 规模　${project.tailoring?.scale ?? model.config.scale} ｜ 阶段　${project.phase}`
     + ` ｜ 需求　${model.counts.requirements} 条`,
   )
-  lines.push(`门禁　${gateSummary(project, model.gates, options.all === true)}`)
+  lines.push(`门禁　${gateSummary(project, model.gates, options.all === true, model.pendingGate)}`)
   lines.push(`审讯　问题账本 ${model.counts.questions} 条（未决 ${model.counts.openQuestions}）｜ 门禁记录 ${model.counts.gates} ｜ 证据 ${model.counts.evidence}`)
   lines.push('')
   lines.push('## 阶段')
   lines.push('')
-  lines.push(`- ${phaseLine(project, model.gates)}`)
+  lines.push(`- ${phaseLine(project, model.gates, model.process)}`)
   lines.push('')
 
   if (model.truncated) {
@@ -145,17 +149,7 @@ export function renderBoard(model: BoardModel, options: BoardOptions = {}): stri
   return `${lines.join('\n')}\n`
 }
 
-/** 阶段的中文名（看板与状态块共用）。 */
-export function phaseLabel(phase: Phase): string {
-  const labels: Record<Phase, string> = {
-    intake: '立项',
-    feasibility: '可行性',
-    requirements: '需求',
-    architecture: '架构',
-    design: '详细设计',
-    construction: '开发',
-    verification: '验证',
-    delivery: '交付',
-  }
-  return labels[phase]
+/** 阶段的中文名：从流程数据取（数据缺失时退回 id）。 */
+export function phaseLabel(process: ProcessDef, phase: Phase): string {
+  return process.phases.find((item) => item.id === phase)?.name ?? phase
 }

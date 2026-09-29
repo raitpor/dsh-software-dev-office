@@ -148,6 +148,8 @@ test('文本看板：确定性（同状态两次逐字节相同）且含阶段�
     counts: status.counts,
     gates: office.gatesFor(call()),
     requirements: office.boardRequirements(call()),
+    process: office.process(call()),
+    pendingGate: status.pendingGate,
     dataDirName: '.sdo',
     truncated: status.truncated,
   }
@@ -164,11 +166,13 @@ test('文本看板：确定性（同状态两次逐字节相同）且含阶段�
     counts: after.counts,
     gates: office.gatesFor(call()),
     requirements: office.boardRequirements(call()),
+    process: office.process(call()),
+    pendingGate: after.pendingGate,
     dataDirName: '.sdo',
     truncated: after.truncated,
   })
   assert.match(board, /项目　PRJ-001 示例项目/u)
-  assert.match(board, /▶ intake/u)
+  assert.match(board, /▶ 立项/u, '阶段名来自流程数据（瀑布：立项/可行性/…）')
   assert.match(board, /门禁　待判定 G0/u)
   assert.equal(board, renderBoard({
     project: after.project,
@@ -176,6 +180,8 @@ test('文本看板：确定性（同状态两次逐字节相同）且含阶段�
     counts: after.counts,
     gates: office.gatesFor(call()),
     requirements: office.boardRequirements(call()),
+    process: office.process(call()),
+    pendingGate: after.pendingGate,
     dataDirName: '.sdo',
     truncated: after.truncated,
   }))

@@ -84,6 +84,8 @@ export interface CaptureInput {
   priority?: Priority | undefined
   sourceStakeholder?: string | undefined
   sourceRaw?: string | undefined
+  /** 该需求来自原型回填（设计 §7.2：`source=prototype`） */
+  prototypeSource?: boolean | undefined
   modelDimensions?: Partial<Record<Dimension, number>> | undefined
 }
 
@@ -109,6 +111,7 @@ export function captureRequirement(
     source: {
       ...(input.sourceStakeholder === undefined ? {} : { stakeholder: input.sourceStakeholder }),
       ...(input.sourceRaw === undefined ? {} : { raw: input.sourceRaw }),
+      ...(input.prototypeSource === true ? { prototype: true } : {}),
     },
     ...(input.priority === undefined ? {} : { priority: input.priority }),
     ambiguity: { score: 0, dimensions: {}, open: [] },

@@ -8,7 +8,7 @@
  * 失败策略：数据是我们随包交付的，缺了就是包装错了——**抛出**而不是静默降级，
  * 否则门禁刻度会被悄悄替换成"默认值"。
  */
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -41,6 +41,15 @@ export function loadPackagedYaml<T>(relativePath: string): T {
   const parsed = parseYaml(text) as T
   cache.set(relativePath, parsed)
   return parsed
+}
+
+/** 列出随包数据目录下的条目名（不含 `node_modules` 之类噪声；目录不存在返回空数组）。 */
+export function listPackagedNames(relativeDir: string): string[] {
+  try {
+    return readdirSync(join(packageRoot(), relativeDir)).sort()
+  } catch {
+    return []
+  }
 }
 
 /** 清空缓存（测试用）。 */

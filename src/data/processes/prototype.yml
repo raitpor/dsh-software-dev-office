@@ -1,0 +1,123 @@
+# 随包数据：快速原型（设计 §7.2）
+#
+# 关键纪律：原型代码必须落在 prototype/（物理隔离，Q-05）且标记 throwaway: true，
+# **不得进入交付产物**；原型结束后必须把发现回填为需求，否则 G7 拒绝交付。
+id: prototype
+name: 快速原型
+description: Timebox 探索 → 可运行原型 → 需求确认 → 转入主流程；适合需求不明、UI/交互密集的项目
+phases:
+  - id: intake
+    name: 立项
+    role: office
+    entry: []
+    exit: [G0]
+    artifacts: [VISION.md]
+  - id: feasibility
+    name: 可行性
+    role: analyst
+    entry: [G0]
+    exit: [G1]
+    artifacts: [FEASIBILITY.md]
+  - id: prototype
+    name: 原型
+    role: developer
+    entry: [G1]
+    exit: [GP]
+    artifacts: [prototype/README.md]
+    loop: { tool: sdo_task, action: next, until: "prototype.accepted" }
+  - id: requirements
+    name: 需求
+    role: analyst
+    entry: [GP]
+    exit: [G2]
+    artifacts: [SRS.md]
+    loop: { tool: sdo_requirement, action: capture, until: "prototype.backfilled" }
+  - id: architecture
+    name: 架构
+    role: architect
+    entry: [G2]
+    exit: [G3]
+    artifacts: [SDD.md, DECISIONS.md, QUALITY.md]
+  - id: design-plan
+    name: 详细设计
+    role: architect
+    entry: [G3]
+    exit: [G4]
+    artifacts: [PLAN.md, TESTPLAN.md]
+  - id: construction
+    name: 开发
+    role: developer
+    entry: [G4]
+    exit: [G5]
+    loop: { tool: sdo_task, action: next, until: "tasks.all_done" }
+  - id: verification
+    name: 验证
+    role: tester
+    entry: [G5]
+    exit: [G6]
+    artifacts: [TESTREPORT.md]
+  - id: delivery
+    name: 交付
+    role: delivery
+    entry: [G6]
+    exit: [G7]
+    artifacts: [DELIVERY.md]
+gates:
+  - id: G0
+    name: 立项门禁
+    criteria:
+      - { id: C-01, check: "project.scope.in", desc: "范围（in）非空" }
+      - { id: C-02, check: "project.scope.out", desc: "非目标（out）非空" }
+      - { id: C-03, check: "project.stakeholders", desc: "干系人非空" }
+      - { id: C-04, check: "project.metrics", desc: "成功度量非空" }
+  - id: G1
+    name: 可行性门禁
+    criteria:
+      - { id: C-05, check: "feasibility.verdict", desc: "TELOS 结论为 Go" }
+      - { id: C-06, check: "feasibility.risks", desc: "风险已登记" }
+      - { id: C-07, check: "feasibility.poc", desc: "给出 PoC 建议" }
+  - id: GP
+    name: 原型验收门
+    criteria:
+      - { id: C-70, check: "prototype.timebox", desc: "原型已产出（prototype/ 非空）且标注 throwaway" }
+      - { id: C-71, check: "prototype.backfilled", desc: "原型结论已回填为需求" }
+  - id: G2
+    name: 需求确认门（DoR）
+    criteria:
+      - { id: C1-dor-per-requirement, check: "dor.per_requirement", desc: "每条需求满足 §5.2.5" }
+      - { id: C2-open-questions, check: "questions.open_p0", desc: "无 P0 未决" }
+      - { id: C3-must-has-ac, check: "dor.must_has_ac", desc: "must 需求有 Given/When/Then" }
+      - { id: C4-glossary, check: "project.glossary", desc: "术语表非空" }
+      - { id: C5-non-goals, check: "project.scope.out", desc: "非目标已声明" }
+      - { id: C6-red-team, check: "redteam.executed", desc: "红队已执行或留痕停用" }
+      - { id: C7-signoff, check: "human.signoff", desc: "人类签字" }
+      - { id: C8-red-team-closed, check: "redteam.closed", desc: "红队议题已闭环" }
+  - id: G3
+    name: 架构门禁
+    criteria:
+      - { id: C-20, check: "design.views", desc: "五视图齐备" }
+      - { id: C-21, check: "trace.orphans", desc: "无孤儿设计元素" }
+      - { id: C-22, check: "design.adr", desc: "ADR 含备选与后果" }
+  - id: G4
+    name: 详细设计门禁
+    criteria:
+      - { id: C-30, check: "design.contracts", desc: "契约齐备" }
+      - { id: C-31, check: "plan.tasks", desc: "任务卡齐备" }
+      - { id: C-32, check: "plan.testplan", desc: "测试计划覆盖 must REQ" }
+  - id: G5
+    name: 开发完成门禁
+    criteria:
+      - { id: C-40, check: "tasks.all_done", desc: "全部任务卡完成" }
+      - { id: C-41, check: "trace.coverage", desc: "追溯覆盖率达标" }
+  - id: G6
+    name: 验证门禁
+    criteria:
+      - { id: C-50, check: "tests.passed", desc: "must REQ 测试通过" }
+      - { id: C-51, check: "defects.closed", desc: "无未关闭阻塞缺陷" }
+      - { id: C-52, check: "review.independent", desc: "评审独立性" }
+  - id: G7
+    name: 交付门禁
+    criteria:
+      - { id: C-60, check: "delivery.manifest", desc: "交付清单完整" }
+      - { id: C-61, check: "prototype.excluded", desc: "交付包不含 prototype/ 内容" }
+      - { id: C-62, check: "prototype.backfilled", desc: "原型结论已回填为需求" }

@@ -11,7 +11,7 @@
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 
 import type { OfficeCall } from '../office.js'
-import type { RedTeamArgs, RequirementArgs } from './tools.js'
+import type { GateArgs, RedTeamArgs, RequirementArgs } from './tools.js'
 
 /** 命令行为依赖，由插件入口注入。 */
 export interface OfficeCommandDeps {
@@ -19,6 +19,7 @@ export interface OfficeCommandDeps {
   board(call: OfficeCall, args: { expand?: boolean | undefined; all?: boolean | undefined; write?: boolean | undefined }): Promise<string>
   requirement(call: OfficeCall, args: RequirementArgs): Promise<string>
   redteam(call: OfficeCall, args: RedTeamArgs): Promise<string>
+  gate(call: OfficeCall, args: GateArgs): Promise<string>
   render(call: OfficeCall, args: { target?: string | undefined }): Promise<string>
 }
 
@@ -147,6 +148,36 @@ export function createOfficeCommands(deps: OfficeCommandDeps): CommandDefinition
               reason: option(raw, 'reason'),
             }),
           )
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-gate',
+      description: '门禁：`--gate=G0` 判定并留痕；`--waive --gate=G2 --reason=… --approver=…` 显式豁免（留痕，不静默跳过）',
+      handler: async (invocation) => {
+        try {
+          const raw = invocation.rawInput
+          const args: GateArgs = {
+            action: flag(raw, 'waive') ? 'waive' : 'check',
+            gate: option(raw, 'gate'),
+            approvedBy: option(raw, 'approved-by') ?? option(raw, 'approvedBy'),
+            reason: textOption(raw, 'reason'),
+            approver: option(raw, 'approver'),
+          }
+          return ok(await deps.gate(callOf(invocation), args))
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-next',
+      description: '推进到下一阶段（当前阶段的出口门禁必须已通过或已豁免；否则给出缺口与补救）',
+      handler: async (invocation) => {
+        try {
+          return ok(await deps.gate(callOf(invocation), { action: 'advance' }))
         } catch (error) {
           return fail(error)
         }

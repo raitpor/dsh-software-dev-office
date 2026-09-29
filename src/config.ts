@@ -103,6 +103,11 @@ export interface ProjectConfig {
     /** 看板投影保留的已完成条目数（Q-12） */
     window: number
   }
+  /** 快速原型：原型目录与「可丢弃」标记（Q-05 / 设计 §7.2） */
+  prototype: {
+    dir: string
+    throwaway: boolean
+  }
 }
 
 /** 默认项目配置。 */
@@ -112,6 +117,7 @@ export function defaultProjectConfig(): ProjectConfig {
     scale: 'normal',
     redTeam: 'auto',
     board: { window: 10 },
+    prototype: { dir: 'prototype', throwaway: false },
   }
 }
 
@@ -129,6 +135,13 @@ export function readProjectConfig(store: SdoStore): { config: ProjectConfig; sou
         typeof raw.board?.window === 'number' && raw.board.window > 0
           ? Math.floor(raw.board.window)
           : defaults.board.window,
+    },
+    prototype: {
+      dir:
+        typeof raw.prototype?.dir === 'string' && raw.prototype.dir.trim() !== ''
+          ? raw.prototype.dir.trim()
+          : defaults.prototype.dir,
+      throwaway: raw.prototype?.throwaway === true,
     },
   }
   return { config, source: 'file' }

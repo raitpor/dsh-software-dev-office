@@ -1,0 +1,111 @@
+# 随包数据：瀑布模型（设计 §7.1 / §7.2）
+#
+# 流程即数据：新增流程只需加一个 YAML，不改代码（NFR-005）。
+# phases[].entry/exit 是门禁 id；gates[].criteria[].check 是**代码里的检查器键**（src/domain/gates.ts）。
+id: waterfall
+name: 瀑布模型
+description: 阶段串行、门禁严格、产物齐备；适合需求稳定、合规要求高的项目
+phases:
+  - id: intake
+    name: 立项
+    role: office
+    entry: []
+    exit: [G0]
+    artifacts: [VISION.md]
+  - id: feasibility
+    name: 可行性
+    role: analyst
+    entry: [G0]
+    exit: [G1]
+    artifacts: [FEASIBILITY.md]
+  - id: requirements
+    name: 需求
+    role: analyst
+    entry: [G1]
+    exit: [G2]
+    artifacts: [SRS.md, TRACE.md]
+    loop: { tool: sdo_requirement, action: grill, until: "dor.project" }
+  - id: architecture
+    name: 架构
+    role: architect
+    entry: [G2]
+    exit: [G3]
+    artifacts: [SDD.md, DECISIONS.md, QUALITY.md]
+  - id: design-plan
+    name: 详细设计
+    role: architect
+    entry: [G3]
+    exit: [G4]
+    artifacts: [PLAN.md, TESTPLAN.md]
+  - id: construction
+    name: 开发
+    role: developer
+    entry: [G4]
+    exit: [G5]
+    loop: { tool: sdo_task, action: next, until: "tasks.all_done" }
+  - id: verification
+    name: 验证
+    role: tester
+    entry: [G5]
+    exit: [G6]
+    artifacts: [TESTREPORT.md]
+  - id: delivery
+    name: 交付
+    role: delivery
+    entry: [G6]
+    exit: [G7]
+    artifacts: [DELIVERY.md]
+gates:
+  - id: G0
+    name: 立项门禁
+    criteria:
+      - { id: C-01, check: "project.scope.in", desc: "范围（in）非空" }
+      - { id: C-02, check: "project.scope.out", desc: "非目标（out）非空 —— 必须显式声明" }
+      - { id: C-03, check: "project.stakeholders", desc: "干系人非空（≥1）" }
+      - { id: C-04, check: "project.metrics", desc: "成功度量非空且可测量" }
+  - id: G1
+    name: 可行性门禁
+    criteria:
+      - { id: C-05, check: "feasibility.verdict", desc: "TELOS 评估完成且结论为 Go" }
+      - { id: C-06, check: "feasibility.risks", desc: "风险已登记（阻塞级风险必须有应对）" }
+      - { id: C-07, check: "feasibility.poc", desc: "给出 PoC / 验证建议（高风险项）" }
+  - id: G2
+    name: 需求基线门禁（DoR）
+    criteria:
+      - { id: C1-dor-per-requirement, check: "dor.per_requirement", desc: "每条需求满足 §5.2.5" }
+      - { id: C2-open-questions, check: "questions.open_p0", desc: "无 P0 未决；P1 未决 ≤2 且转风险" }
+      - { id: C3-must-has-ac, check: "dor.must_has_ac", desc: "每条 must 需求有 Given/When/Then" }
+      - { id: C4-glossary, check: "project.glossary", desc: "术语表存在且非空" }
+      - { id: C5-non-goals, check: "project.scope.out", desc: "非目标已声明" }
+      - { id: C6-red-team, check: "redteam.executed", desc: "红队质询已执行或本会话已留痕停用" }
+      - { id: C7-signoff, check: "human.signoff", desc: "人类基线签字" }
+      - { id: C8-red-team-closed, check: "redteam.closed", desc: "红队议题已闭环（问题答完或转为风险）" }
+  - id: G3
+    name: 架构门禁
+    criteria:
+      - { id: C-20, check: "design.views", desc: "五视图齐备" }
+      - { id: C-21, check: "trace.orphans", desc: "每个 DES 追溯到 ≥1 已基线 REQ（孤儿 = 0）" }
+      - { id: C-22, check: "design.adr", desc: "每条 ADR 含备选方案与后果" }
+  - id: G4
+    name: 详细设计门禁
+    criteria:
+      - { id: C-30, check: "design.contracts", desc: "每个跨组件交互都有契约" }
+      - { id: C-31, check: "plan.tasks", desc: "任务卡齐备（DoD/依赖/写范围）" }
+      - { id: C-32, check: "plan.testplan", desc: "测试计划覆盖全部 must REQ" }
+  - id: G5
+    name: 开发完成门禁
+    criteria:
+      - { id: C-40, check: "tasks.all_done", desc: "全部任务卡完成且带证据" }
+      - { id: C-41, check: "trace.coverage", desc: "追溯覆盖率达标" }
+  - id: G6
+    name: 验证门禁
+    criteria:
+      - { id: C-50, check: "tests.passed", desc: "全部 must REQ 有通过的测试用例" }
+      - { id: C-51, check: "defects.closed", desc: "无未关闭的阻塞级缺陷" }
+      - { id: C-52, check: "review.independent", desc: "评审独立性（作者 ≠ 评审者）" }
+  - id: G7
+    name: 交付门禁
+    criteria:
+      - { id: C-60, check: "delivery.manifest", desc: "交付清单完整（含验收矩阵与回滚点）" }
+      - { id: C-61, check: "prototype.excluded", desc: "交付包不含 prototype/ 内容（Q-05 / REQ-034）" }
+      - { id: C-62, check: "prototype.backfilled", desc: "原型结论已回填为需求" }

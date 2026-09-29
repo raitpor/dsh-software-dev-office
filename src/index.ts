@@ -27,18 +27,23 @@ import {
   describeCapture,
   describeDesignGate,
   describeInit,
+  describeAdvance,
+  describeChange,
+  describeFeasibility,
+  describeGate,
   describeProject,
   describeProjectUpdate,
   describeQuestions,
   describeRedTeam,
   describeRender,
   describeRequirementList,
+  describeRisks,
   describeStatus,
 } from './interface/describe.js'
 import { renderStatusBlock } from './interface/inject.js'
 import { createOfficeCommands } from './interface/commands.js'
 import { createOfficeTools } from './interface/tools.js'
-import type { InitArgs, ProjectArgs, RedTeamArgs, RequirementArgs } from './interface/tools.js'
+import type { FeasibilityArgs, GateArgs, InitArgs, ProjectArgs, RedTeamArgs, RequirementArgs, RiskArgs } from './interface/tools.js'
 import { SoftwareDevOffice } from './office.js'
 import type { OfficeCall } from './office.js'
 import type { AcceptanceCriterion, Dimension } from './types.js'
@@ -111,6 +116,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
         counts: status.counts,
         gates: office.gatesFor(call),
         requirements: office.boardRequirements(call),
+        process: office.process(call),
+        pendingGate: status.pendingGate,
         dataDirName: settings.projectDirName,
         truncated: status.truncated,
         ...(status.badLine === undefined ? {} : { badLine: status.badLine }),
@@ -141,6 +148,101 @@ export function apply(ctx: Context, config: SdoConfig): void {
       return describeProjectUpdate(result)
     },
 
+    async gate(call: OfficeCall, args: GateArgs): Promise<string> {
+      if (args.action === 'advance') {
+        return describeAdvance(office.advance(call))
+      }
+      if (args.action === 'waive') {
+        if (args.gate === undefined) return '豁免门禁需要 `gate`。'
+        if ((args.reason ?? '').trim() === '' || (args.approver ?? '').trim() === '') {
+          return '豁免必须留痕：请同时给出 `reason` 与 `approver`（设计 §7.5 / AC-003）。'
+        }
+        const recorded = office.waiveGate(call, args.gate, args.reason ?? '', args.approver ?? '')
+        return `已豁免门禁 ${recorded.gate}（approver=${args.approver}，理由：${args.reason}）。\n${describeGate(recorded)}`
+      }
+      if (args.action !== 'check') return `未知 action：${args.action}（可用：check | advance | waive）`
+      if (args.gate === undefined) return '判定门禁需要 `gate`（例如 G0 / G1 / G2 / G7）。'
+      // 螺旋流程的风险象限门：先落本圈风险结论，再判定
+      if (args.conclusion !== undefined) {
+        office.concludeRisk(call, args.conclusion, args.rationale ?? args.reason ?? '', args.approvedBy ?? 'human')
+      }
+      return describeGate(office.checkGate(call, args.gate, args.approvedBy))
+    },
+
+    async feasibility(call: OfficeCall, args: FeasibilityArgs): Promise<string> {
+      if (args.action !== 'assess') return `未知 action：${args.action}（可用：assess）`
+      if (args.verdict === undefined) return '可行性评估需要 `verdict`（go / no-go / conditional）。'
+      const telosRows = jsonOr<{ dimension?: string; verdict?: string; rationale?: string }[]>(args.telos, 'telos')
+      if (telosRows.error !== undefined) return telosRows.error
+      const telos: Partial<Record<'technical' | 'economic' | 'legal' | 'operational' | 'schedule', { verdict: string; rationale: string }>> = {}
+      for (const row of telosRows.value ?? []) {
+        const dimension = row.dimension
+        if (dimension === 'technical' || dimension === 'economic' || dimension === 'legal' || dimension === 'operational' || dimension === 'schedule') {
+          telos[dimension] = { verdict: row.verdict ?? '未评估', rationale: row.rationale ?? '' }
+        }
+      }
+      const poc = jsonOr<string[]>(args.poc, 'poc')
+      if (poc.error !== undefined) return poc.error
+      const assessment = office.assessFeasibility(
+        call,
+        {
+          verdict: args.verdict,
+          rationale: args.rationale ?? '',
+          ...(Object.keys(telos).length === 0 ? {} : { telos }),
+          ...(poc.value === undefined ? {} : { poc: poc.value }),
+        },
+        args.by ?? 'human',
+      )
+      return describeFeasibility(assessment)
+    },
+
+    async risk(call: OfficeCall, args: RiskArgs): Promise<string> {
+      switch (args.action) {
+        case 'log': {
+          if ((args.title ?? '').trim() === '' || args.level === undefined) {
+            return '登记风险需要 `title` 与 `level`（low / medium / high / blocker）。'
+          }
+          const risk = office.logRisk(call, {
+            title: args.title ?? '',
+            level: args.level,
+            probability: args.probability ?? 'medium',
+            impact: args.impact ?? '',
+            mitigation: args.mitigation ?? '',
+            owner: args.owner ?? '',
+            ...(args.origin === undefined ? {} : { origin: args.origin }),
+          })
+          const lines = [`已登记风险 ${risk.id}　[${risk.level}]　${risk.title}`]
+          if (risk.mitigation.trim() === '' || risk.owner.trim() === '') {
+            lines.push('- ⚠️ 缺 `mitigation` 或 `owner`：G1/GR 会拒绝（高/阻塞级风险必须有应对与责任人）')
+          }
+          if (risk.origin !== undefined && risk.origin.startsWith('REQ-ISSUE-')) {
+            lines.push(`- 该风险指向红队议题 ${risk.origin}，议题因此视为闭环（设计 §5.4）`)
+          }
+          return lines.join('\n')
+        }
+        case 'update': {
+          if (args.id === undefined) return '更新风险需要 `id`。'
+          const updated = office.updateRisk(call, args.id, {
+            ...(args.status === undefined ? {} : { status: args.status }),
+            ...(args.mitigation === undefined ? {} : { mitigation: args.mitigation }),
+            ...(args.owner === undefined ? {} : { owner: args.owner }),
+            ...(args.level === undefined ? {} : { level: args.level }),
+            ...(args.impact === undefined ? {} : { impact: args.impact }),
+          })
+          if (updated === undefined) return `找不到风险 ${args.id}。`
+          return `已更新风险 ${updated.id}：${updated.status}　[${updated.level}]　${updated.title}`
+        }
+        case 'conclude': {
+          if (args.conclusion === undefined) return '风险结论需要 `conclusion`（continue / adjust / stop）。'
+          const record = office.concludeRisk(call, args.conclusion, args.rationale ?? '', args.owner ?? 'human')
+          return `已记录本圈风险结论：${record.conclusion}（${record.rationale}）`
+        }
+        case 'list':
+        default:
+          return describeRisks(office.risks(call))
+      }
+    },
+
     async requirement(call: OfficeCall, args: RequirementArgs): Promise<string> {
       switch (args.action) {
         case 'capture': {
@@ -149,17 +251,20 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }
           const dims = jsonOr<Partial<Record<Dimension, number>>>(args.dimensions, 'dimensions')
           if (dims.error !== undefined) return dims.error
+          const fromPrototype = args.source === 'prototype'
           const result = office.capture(call, {
             title: args.title ?? args.statement.slice(0, 40),
             statement: args.statement,
             rationale: args.rationale,
             kind: args.kind,
             priority: args.priority,
-            sourceStakeholder: args.sourceStakeholder,
+            sourceStakeholder: fromPrototype ? undefined : (args.source ?? args.sourceStakeholder),
             sourceRaw: args.sourceRaw,
+            prototypeSource: fromPrototype,
             modelDimensions: dims.value,
           })
-          return describeCapture(result)
+          const text = describeCapture(result)
+          return fromPrototype ? `${text}\n- 已标记来源为**原型回填**（source=prototype）。` : text
         }
 
         case 'grill': {
@@ -244,11 +349,39 @@ export function apply(ctx: Context, config: SdoConfig): void {
           return describeBaseline(outcome)
         }
 
+        case 'change': {
+          if (args.id === undefined) return '变更需要 `id`。'
+          if ((args.reason ?? '').trim() === '') return '变更必须给出 `reason`（设计 §5.5：变更内容 + 理由 + 影响分析 + 决策）。'
+          if (args.decision === undefined) return '变更必须给出 `decision`（approved / rejected / deferred）。'
+          const patch = {
+            ...(args.title === undefined ? {} : { title: args.title }),
+            ...(args.statement === undefined ? {} : { statement: args.statement }),
+            ...(args.rationale === undefined ? {} : { rationale: args.rationale }),
+            ...(args.priority === undefined ? {} : { priority: args.priority }),
+            ...(args.kind === undefined ? {} : { kind: args.kind }),
+          }
+          const changes: string[] = []
+          if (args.statement !== undefined) changes.push(`陈述改为：${args.statement}`)
+          if (args.priority !== undefined) changes.push(`优先级改为：${args.priority}`)
+          if (args.title !== undefined) changes.push(`标题改为：${args.title}`)
+          if (changes.length === 0) changes.push('（仅记录变更请求，未给出具体字段）')
+          return describeChange(
+            office.change(call, {
+              requirement: args.id,
+              reason: args.reason ?? '',
+              changes,
+              decision: args.decision,
+              decidedBy: args.decidedBy ?? args.by ?? 'human',
+              ...(Object.keys(patch).length === 0 ? {} : { patch }),
+            }),
+          )
+        }
+
         case 'list':
           return describeRequirementList(office.requirements(call))
 
         default:
-          return `未知 action：${args.action}（可用：capture | grill | answer | update | list | baseline）`
+          return `未知 action：${args.action}（可用：capture | grill | answer | update | change | list | baseline）`
       }
     },
 
