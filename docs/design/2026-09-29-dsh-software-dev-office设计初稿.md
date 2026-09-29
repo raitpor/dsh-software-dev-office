@@ -2,7 +2,7 @@
 
 | 项 | 值 |
 |---|---|
-| 文档版本 | v0.7（dsh `0.2.0-rc.1` 单一基线 + 四条新增需求 + 单会话原则 + 三轮评审落地，待评审） |
+| 文档版本 | v0.8（dsh `0.2.0-rc.1` 单一基线 + 四条新增需求 + 单会话原则 + 三轮评审落地 + Q-08/09/10 实测，待评审） |
 | 日期 | 2026-09-29 |
 | 插件包名 | `dsh-software-dev-office`（简称 SDO，下称「本插件」） |
 | 宿主 | deepseek-harness (dsh) `0.2.0-rc.1`，原生 Cordis 插件（**只支持 0.2.0 线，不做 0.1.5 兼容**） |
@@ -48,6 +48,8 @@
 > **v0.6（2026-09-29，第二轮评审落地）**：Q-15~Q-19 的结论进正文——`trivial` 档红队**默认不开但可按用户要求开**，且启用/停用是**会话内**开关（用户自然语言驱动 `sdo_redteam(action=off|on)`，写 `redteam/mode` 留痕、**可重开**）；**M6 只做"投影 + 面板骨架"，完整交互面板移入 v2**（M6 工期 8–12 → 5–7，总计 **48–72 人日**）；**plan mode 由 SDO 主动驱动进入**，且**用户计划评审与 G3 门禁是两道**；超支询问在**无交互应答者时降级为提醒 + `budget/decision: deferred`**（C-08 在任何环境都成立），并**每跨一个阈值档问一次**。新增待决 **Q-20**（无交互时第一道 plan 评审怎么处理）。
 >
 > **v0.7（2026-09-29，Q-20 落地）**：**Q-20 采用②（阻塞）**——无交互评审通道（headless/ACP）时，SDO **在进入架构阶段之前**检测评审通道；不可用则**不进入 plan mode**、把架构阶段标为 `blocked`、写 `plan/review-blocked` 留痕、**不触达 G3**、**不提供跳过评审的开关**，remedy 指向"在 Web/CLI 会话接续同一 `.sdo/`"。新增 **RISK-22**（headless 下架构阶段无法推进）与 §14.3 第 14 条边界；§13 M2 增该分支负例、§12.2 增 **E2E-16**；**§14.2.3 待决清零**（后续新问题按序续编新 ID）。
+>
+> **v0.8（2026-09-29，Q-08/Q-09/Q-10 实测落地）**：三项待实测全部有了结论——**Q-08** ✅ 数组顺序**严格按数组次序**（非文件名序），后列文件可按行 id 覆盖前列，且**同 id 用 `insert` 重复插入不覆盖**（组合树留两行、挂载取后者），覆盖必须用 id 定向补丁；**Q-09** ⚠️ **能同装但不能混用**（团队工具与旧 subagent 控制工具**同名**：`send_message`/`interrupt_agent`/`list_agents`，官方 profile 用 `disabled: true` 二选一），§8.2 的"可混用"据此修正；**Q-10** ✅ **preset 内以包名引用第三方插件行可解析并挂载**，**RISK-15 关闭、M0 入口假设成立**。**实测同时发现：声明式 preset 机制只由 `dsh-web-app` 提供**（全实例随包 patch 里只有 `dsh-web-app/cordis.patch.yml` 含 `agent-preset-registry`）→ 按用户决策 **SDO 先明确 Web-only**，非 web profile 的入口登记为 **Q-21**（后续再议），Q-18/Q-20/RISK-22/§14.3 第 14 条标注"本期不可达"。另新增 **§11.7 开发与验证环境（已实测）** 与证据文档 [`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md)。
 >
 > **明确不在范围内**：`0.1.5` 线（含 `0.1.5-rc.x`）的兼容、双版本适配、迁移桥。凡出现 `0.1.5` 字样，均为「历史对照/差分证据」，不构成实现约束。
 
@@ -279,7 +281,7 @@ SDO 站在现有能力之上，**不自建**任何已有基础设施：
 
 ### 3.4 约束与假设
 
-**约束**：C-01 目标 dsh 版本线 **`0.2.0-rc.1`（唯一线，不考虑 0.1.5）**；C-02 不得修改 dsh 内核；C-03 不引入第三方运行时依赖（宿主侧；M6 的客户端面板只允许**构建期**依赖）；C-04 preset 只能在空白会话切换；C-05 子代理继承父装配且可续接容量硬限额（默认 8，不排队）；C-06 实验性能力（`ctx.agentTeams`、`dsh-experimental-*`）必须经适配层隔离并可降级，领域逻辑不得直接散落调用；**C-07 入口只做 preset**——本插件不提供会话中途接管开关，接管与否完全由「该会话用了哪个 preset」决定（用户决策）；**C-08 预算不硬停**——超预算只提醒、不阻断模型调用与工具执行（用户决策），因此不注册 `llm/stream` 拦截；**C-09 单会话原则**——一个项目的全部流程在**同一个会话**内完成；preset 只承担入口，角色只在**派发时刻**以 `persona` + `toolFilter` 表达（用户决策）。
+**约束**：C-01 目标 dsh 版本线 **`0.2.0-rc.1`（唯一线，不考虑 0.1.5）**；C-02 不得修改 dsh 内核；C-03 不引入第三方运行时依赖（宿主侧；M6 的客户端面板只允许**构建期**依赖）；C-04 preset 只能在空白会话切换；C-05 子代理继承父装配且可续接容量硬限额（默认 8，不排队）；C-06 实验性能力（`ctx.agentTeams`、`dsh-experimental-*`）必须经适配层隔离并可降级，领域逻辑不得直接散落调用；**C-07 入口只做 preset**——本插件不提供会话中途接管开关，接管与否完全由「该会话用了哪个 preset」决定（用户决策）。**⚠️ 实测补充（2026-09-29）**：声明式 preset 机制**只由 `dsh-web-app` bundle 提供**，因此**本插件目前只在 Web profile 可用**（headless/ACP/SDK 里没有 preset，也就没有入口）——按用户决策**先明确 Web-only**，非 web profile 的入口方式见 **Q-21**（后续再议）；**C-08 预算不硬停**——超预算只提醒、不阻断模型调用与工具执行（用户决策），因此不注册 `llm/stream` 拦截；**C-09 单会话原则**——一个项目的全部流程在**同一个会话**内完成；preset 只承担入口，角色只在**派发时刻**以 `persona` + `toolFilter` 表达（用户决策）。
 
 **假设**：A-01 使用者接受「先问清再动手」；A-02 项目产物可提交进版本库（`.sdo/` 无敏感信息）；A-03 人类在门禁处可用；A-04 使用者能提供单价表（若未提供，预算只能按 token 计量，不显示金额）。
 
@@ -1026,7 +1028,11 @@ gates:
 | `native-team`（实验性） | ⚠️ 只有 `persona`（`SpawnTeammateRequest` 不含 `toolFilter`） | 原生持久 mailbox + 任务板 CAS | 长周期并行实施；**不能用来强制角色边界** |
 | `inline` | —（不派发） | — | 单角色小任务 |
 
-**推荐**：默认 `subagent`；需要跨轮次协作、且状态要活过崩溃时切 `native-team`——但要清楚此时角色只剩提示约束，因此**涉及权限与独立性的任务（评审、测试）必须留在 `subagent` 后端**。三个后端共用同一 `.sdo/` 真源与同一门禁，可混用（例如实现并行用 `native-team`，评审用 `subagent`）。
+**推荐**：默认 `subagent`；需要跨轮次协作、且状态要活过崩溃时切 `native-team`——但要清楚此时角色只剩提示约束，因此**涉及权限与独立性的任务（评审、测试）必须留在 `subagent` 后端**。
+
+> ⚠️ **不得在同一个 preset 内同时启用两套委派工具（Q-09 实测结论）**：`dsh-experimental-tool-agent-team` 与 `dsh-tool-subagent-control` 提供**同名工具** `send_message` / `interrupt_agent` / `list_agents`（另有 `subagent`/`subagent_fork` 被 `spawn_teammate`/`wait_agent`/`team_task_*` 取代）。二者**同装不会报错**（实测：无审计拒绝、注册表级工具面 24/24 且零重名），但**运行期会在 agent 作用域叠加**，谁生效不由 SDO 控制。因此：**每个 preset 二选一**，并按官方 `dsh-experimental-agent-team-profile` 的做法用 `disabled: true` 关掉另一套（该官方 patch 正是关掉 `tool-subagent` / `tool-subagent-control` / `tool-subagent-list-agents` / `tool-subagent-fork` 四行）。
+>
+> 结论改写：三个后端共用同一 `.sdo/` 真源与同一门禁，但**切换发生在装配层（preset），不是运行时混用**。
 
 > 实现注意：`ctx.subagents.start` 返回的 `run.result` **不会因子代理业务失败而 reject**——它以 `stopReason: 'error'` 正常 resolve。派发器必须检查 `stopReason`，否则会把失败当成功。真正 reject 的只有基础设施故障。teammate 路径同理：`spawnTeammate` 的失败以持久 `failed` 成员记录表达（名字永久保留、不复用），不能只看 Promise 是否 resolve。
 
@@ -1607,6 +1613,8 @@ packages/dsh-software-dev-office/
 
 **入口即装配**：本插件**不在 profile 层插入自己**，只出现在 `sdo-office` 这个 preset 的 `config.plugins` 里。由此三条语义自动成立：
 
+> ⚠️ **可用范围：目前仅 Web profile（实测 2026-09-29）**：声明式 preset 机制由 `dsh-web-app` bundle 独占提供——全实例所有随包 patch 文件里，只有 `dsh-web-app/cordis.patch.yml` 含 `agent-preset-registry` 行（headless / ACP / SDK 组合均为 0 处；headless 组合树 379 行内 preset 相关匹配为 0）。因此**非 web profile 没有 preset、也就没有本插件的入口**。按用户决策：**先 Web-only**；将来若要让 headless/ACP/SDK 也能用，需要一条非 preset 入口（profile 级挂载），登记为 **Q-21**。
+
 - 用户在**空白会话**选择 `sdo-office` → 该 preset 装载本插件与驾驶舱所需的行 → **SDO 接管该会话后续**；
 - 用户选择其他 preset（standard / minimal / cordis…）→ **本插件根本没被加载**：无注入、无工具、无事件、无计时（NFR-011）；
 - 回到原生行为 = 换 preset 或新会话不选 SDO（REQ-032）——SDO 不往会话里塞"必须由自己解释"的状态，因此没有残留；
@@ -1908,6 +1916,35 @@ const run = await ctx.subagents.start('spawn', {
 
 **关于 `dsh-storage` 的取舍**：dsh 提供 `ctx.storageDomain.open(defineDomain(...))` + `dsh-storage-json` 后端，可换取 schema 校验、原子持久化、介质路由与 `domain/changed` 事件。本插件**仍选择自管文件**，理由是：`.sdo/` 产物必须**位于项目仓库内**、人类可读、可 diff、可随代码提交与评审、可离线交付——而 storage 后端把状态放在其配置的根目录（如 `/var/lib/dsh/data`），与本插件的产物语义不符。因此本项目沿用 `dsh-memory-layer` 的自管文件路线（原子写 + `0600` 权限），并额外实现追加日志与投影重建。
 
+### 11.7 开发与验证环境（2026-09-29 实测）
+
+**结论：不需要放宽沙箱权限、也不碰真实 profile——用工作区内的临时 `DSH_HOME` 就能做完整验证。**
+
+| 事实 | 实测结果 |
+|---|---|
+| `dsh` 位置 | 不在 PATH；用 shim 绝对路径 `<实例>/dsh/node_modules/.bin/dsh` |
+| 对真实 profile 的写入 | `dsh plugin --profile web …` 直接 `EROFS`（要写 `profiles/web/package.json.lock`）→ **不要往真实 profile 装东西** |
+| `DSH_HOME` 重定向 | ✅ 可行：`DSH_HOME=$PWD/.verify-home dsh plugin --profile probe …` 在工作区内初始化 profile，**写入全部落在工作区** |
+| 组合树查看 | `--dump-config`（另有 `--dump-config-schema` / `--dump-default-config`）——**只组装、不绑定服务**，是查"行是否解析、谁覆盖了谁"的首选工具 |
+| 随附 profile 模板 | `--from-default-profile web\|headless\|tui` 把随附模板实例化为自定义 profile（**不需要联网解析依赖**） |
+| 工具链 | node `v26.10.0`、pnpm `11.26.0`、`tsc 7.0.2`（`@typescript/typescript-linux-x64` 在兄弟包内可直接跑） |
+| 第三方包怎么进 profile | 在 profile 的 `node_modules/` 放同名目录/软链即可被**按包名解析**；`dsh plugin add` 走 pnpm 路径（需联网或缓存），验证时可绕过 |
+| preset 声明的挂载时机 | **不在 profile boot 时挂载**（实测：`--help` 启动后连"必坏的包名"也零诊断）；发生在 registry 被**读取或绑定**时（跑一次会话即触发） |
+| 无凭据时的边界 | `MISSING_CREDENTIAL` 在**会话/agent 创建之前**拦下运行 → 工具面只能拿到注册表级，拿不到 agent 级（`agent/created`、`agent/request` 均未触发） |
+
+**验证台（可整目录删除；路径已被 `.gitignore` 覆盖）**：
+
+```text
+node_modules/.sdo-verify/
+├─ home/                      # 临时 DSH_HOME（你的真实 profile 未被写入）
+│  ├─ profiles/probe          # 复制自真实 web profile（含 preset 注册表）
+│  └─ profiles/hprobe         # --from-default-profile headless
+├─ pkgs/                      # 探针包：bundle 顺序（Q-08）/ 挂载标记（Q-10）/ 工具面（Q-09）
+└─ out/                       # dump 与标记等原始证据
+```
+
+**探针技巧（可复用）**：让探针插件的 `apply()` 往工作区**追加一行 JSON**（收到的 config、PID、可见工具名清单）——比读日志可靠得多，本次三项结论的证据都来自它。详见 [`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md)。
+
 ---
 
 ## 12. 质量保证与验收
@@ -1924,6 +1961,7 @@ const run = await ctx.subagents.start('spawn', {
 | 成本账 | token 归集、单价换算、预算判定、`unattributed` 计数 | 冻结的用量夹具 + 固定单价表；纯函数断言，含"未配单价表只出 token、不出金额" | 开发者 |
 | 看板 | 投影折叠与文本渲染 | 断言无关事件返回**同一引用**；渲染幂等（同状态两次输出逐字节相同，NFR-013） | 开发者 |
 | 接管边界 | **未选 preset 的会话零打扰**（AC-007 / NFR-011） | 在不同 preset 下起会话，断言无 SDO 注入文本、无 `sdo_*` 工具、无 SDO 事件 | 测试者 |
+| 委派工具同名叠加 | **Q-09 的运行期半边**：同一 preset 内两套委派工具并存时，agent 作用域里 `send_message`/`interrupt_agent`/`list_agents` 各几项、谁生效 | 在有凭据的真实会话里读 agent 作用域工具面（本次实测因无凭据只拿到注册表作用域；静态结论见 §14.2.1 Q-09） | 开发者 |
 | 客户端面板（M6） | slot 注册 / locale / 投影消费；未接管时不渲染 | 组件测试（参照 `dsh-experimental-client-ui-agent-team` 的做法）+ 投影夹具 | 开发者 |
 | 安全 | 路径逃逸（`../`）、注入框定、密钥不入文档、权限 `0600` | 独立安全测试工程（参照 `test/` 与 `docs/test/`） | 测试者 |
 
@@ -1972,7 +2010,7 @@ const run = await ctx.subagents.start('spawn', {
 
 | 里程碑 | 交付 | 完成判据（DoD） | 粗估 |
 |---|---|---|---|
-| **M0 骨架与入口** | 包结构、`package.json`（`dsh.bundle.patch` **只列 presets**）、`presets/sdo-office.patch.yml`（含本插件行）、`store`/`journal`（原子写+投影+重建）、提示注入、`sdo_init`/`sdo_status`、文本看板骨架 | **入口实测通过（Q-10 关闭）**；E2E-09 通过（未选 preset 的会话零打扰）；`/sdo:status` 输出正确；journal 重建通过单测 | 4–6 |
+| **M0 骨架与入口** | 包结构、`package.json`（`dsh.bundle.patch` **只列 presets**）、`presets/sdo-office.patch.yml`（含本插件行）、`store`/`journal`（原子写+投影+重建）、提示注入、`sdo_init`/`sdo_status`、文本看板骨架 | **入口假设已实测通过（Q-10 关闭，2026-09-29）**；E2E-09 通过（未选 preset 的会话零打扰）；`/sdo:status` 输出正确；journal 重建通过单测 | 4–6 |
 | **M1 需求工程** | 需求模型、八维评分卡（**权重固定** — Q-02）、禁词、问题账本、`sdo_requirement` 全 action、DoR 门禁（L2）、`sdo_feasibility`、**红队质询 + 默认开启与停用留痕**（Q-03） | E2E-01/02/06 通过；门禁负例全覆盖；AC-017（红队默认执行 / 停用留痕）通过 | 8–12 |
 | **M2 架构工程** | 五视图、ADR、质量场景与 ATAM-lite、契约、追溯引擎与覆盖率报告、**SDO 主动驱动 plan mode 且两道评审（计划评审 → G3）**（Q-07/Q-17）、**无交互通道时入口阻塞 + remedy**（Q-20） | E2E-03 通过；`TRACE.md` 可自动生成；状态块正确显示 `plan: on/off`；两道评审都有负例（计划未批 / G3 未过）；**E2E-16 通过（headless 阻塞且未进入 plan mode、未触达 G3）** | 6–10 |
 | **M3 流程引擎** | 流程定义 schema、瀑布/快速原型/敏捷、门禁状态机、裁剪与 waiver、回退、**`prototype/` 物理隔离与 G7 检查**（Q-05） | E2E-04/08 通过；AC-016（prototype 残留被 G7 拒绝）通过；新增流程只需加 YAML | 5–8 |
@@ -2007,14 +2045,14 @@ const run = await ctx.subagents.start('spawn', {
 | RISK-12 | 可续接子代理容量耗尽（默认 8，**不排队**，`ACTIVATION_LIMIT_REACHED`） | 中 | 中 | 派发前做容量预算；自建排队或降级；状态页显示在飞数量与剩余名额 |
 | RISK-13 | `workspace/changes` 证据在 Host 重启后不可回读 | 中 | 中 | 轮次结束时**立即**把 `(sessionId, seq)` + 摘要紧凑形式落进 `.sdo/`；且不作为唯一证据形态（§10.4） |
 | RISK-14 | preset 声明写错（用目录/`roots`、ID 与内置冲突）导致入口加载失败 | 中 | 中 | 只用 `@deepseek-ai/dsh-agent-preset` 行；只声明**一个** preset；启动自检脚本校验该行可解析；README 给出覆盖内置 preset 的正确写法 |
-| RISK-15 | **入口假设失败**：preset 的 `config.plugins` 内以包名引用第三方插件行不可解析 | 中 | 高 | M0 第一步实测（Q-10）；失败即启用回退方案并回写 §11.2；**未实测通过前不得宣称"入口可用"** |
+| RISK-15 | ~~入口假设失败：preset 的 `config.plugins` 内以包名引用第三方插件行不可解析~~ **已于 2026-09-29 实测关闭** | — | — | **实测通过**：preset 的 `config.plugins` 里以包名引用第三方包能解析并挂载（标记文件记录到 preset 传入的 config，且发生在任何模型调用之前）。证据：[`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md) |
 | RISK-16 | 跨会话用量**漏计**（`ctx.sessions.get` 只返回存活会话） | 中 | 中 | 结算时刻当场采样（NFR-014）；采不到记 `unattributed` 并在看板显示；用"用量采集完整率"指标盯住 |
 | RISK-17 | 客户端面板引入浏览器侧构建与 React，增加供应链与工程面 | 中 | 中 | 只在 M6 引入、只作**构建期**依赖，宿主侧保持零运行时依赖；面板只读且可整体卸载（C-03） |
 | RISK-18 | 成本数字被当成精确账或用于考核 | 中 | 中 | NFR-012 强制「估算」标注与口径脚注；文档写明 token-meter 的启发式误差（CJK/JSON schema 按每 token 四字符会**低估**）；`contextBreakdown` 是近似构成 |
 | RISK-19 | 并行派发放大消耗（N 个 agent 同时燃烧） | 高 | 中 | C-08 决定不硬停，因此**默认 `maxParallelDispatch` 取保守值**、派发前给估算、超阈值提醒并**按 Q-13/Q-19 询问用户**；把"并行度"写成可调旋钮并强调这是主要成本杠杆 |
 | RISK-20 | 任务拆得过细，编排开销超过收益 | 中 | 中 | 设规模下限（一张卡至少是一个可独立验证的增量）；`scale=trivial` 走 `inline` 不派发；用"任务卡一次通过率"度量 |
 | RISK-21 | **单会话原则下角色隔离弱于装配隔离**：子代理继承父装配，角色只能靠 persona + `toolFilter`；提示注入/伪装仍可能让子代理越权 | 中 | 中 | `toolFilter` 硬收窄 + `outputSchema` 校验 + 独立性校验（作者≠评审者）；把"没有装配级隔离"写进 §14.3；评审/测试类任务固定走 `subagent` 后端（teammate 拿不到 `toolFilter`） |
-| RISK-22 | **headless/ACP 下架构阶段无法推进**：Q-20 采用"阻塞"后，没有交互式计划评审的环境走不到 G3 | 高 | 中 | 明确写进 §14.3 与 README（不要让用户半路才发现）；**进入架构阶段前**就检测评审通道并给出 remedy（切到 Web/CLI 接续同一 `.sdo/`）；命令面缺失同时意味着 `/sdo:*` 也不可用，因此 remedy 必须写成"换个环境继续"，而不是"运行某条命令" |
+| RISK-22 | （**本期不适用**）headless/ACP 下架构阶段无法推进：Q-20 采用"阻塞"后，没有交互式计划评审的环境走不到 G3。⚠️ **2026-09-29 实测**：preset 机制只由 `dsh-web-app` 提供 → **SDO 目前只在 Web profile 可用**，非 web profile 连入口都没有，因此该风险**本期不发生**；若将来按 Q-21 支持非 web profile，本条重新生效 | 低（现） | 中（将来） | 保持 Q-20 的阻塞语义不动，并在 §8.5 标注"本期不可达"；将来支持非 web profile 时，**进入架构阶段前**就检测评审通道并给 remedy |
 
 ### 14.2 开放问题与评审结论
 
@@ -2040,19 +2078,22 @@ const run = await ctx.subagents.start('spawn', {
 | Q-17 | plan mode 的触发者与 G3 的关系 | **采用②**：**SDO 主动驱动** `ctx.planMode` 进入（不要求人输 `/plan`）；`exit_plan_mode` 的用户**计划评审**与 **G3 门禁是两道**——先过计划评审，再过 G3 | §8.5 / §9.4 / §13 M2 |
 | Q-18 | 超支询问在无交互应答者时如何降级 | **采用①**：**降级为提醒 + `budget/decision: deferred`**，绝不阻断（C-08 保持有效）。因此 headless/ACP 下超支**不会**变成事实硬停 | §10.6 / §14.3 第 10 条 |
 | Q-19 | 超支询问的频率 | **采用①**：**每跨一个阈值档问一次**（100% / 120% / …，档位由 `warnAt` 定义）；同一档内不重复问 | §10.6 / §9.3 |
-| Q-20 | 无交互评审通道时第一道（plan 评审）怎么处理 | **采用②（阻塞）**：在**进入架构阶段之前**检测评审通道；不可用时**不进入 plan mode**、把架构阶段标为 `blocked`、写 `plan/review-blocked` 留痕、**不触达 G3**、**不提供跳过开关**，remedy 指向"在 Web/CLI 会话继续" | §8.5 / §9.4 / §13 M2 / §14.3 / RISK-22 |
+| Q-20 | 无交互评审通道时第一道（plan 评审）怎么处理 | **采用②（阻塞）**：在**进入架构阶段之前**检测评审通道；不可用时**不进入 plan mode**、把架构阶段标为 `blocked`、写 `plan/review-blocked` 留痕、**不触达 G3**、**不提供跳过开关**，remedy 指向"在 Web/CLI 会话继续"（⚠️ **本期不可达**：SDO 目前只在 Web profile 可用，见 Q-21） | §8.5 / §9.4 / §13 M2 / §14.3 / RISK-22 |
+| Q-08 | `dsh.bundle.patch` 数组内的顺序语义 | **已实测：严格按数组次序**（不是文件名序）。后列文件后应用、可按行 id 覆盖前列，覆盖时 `config` **整体替换**。**附加发现**：同 id 用 `insert` 重复插入**不会覆盖**（组合树留两行、挂载只发生一次且取后者），所以覆盖**必须**用 id 定向补丁（`- id: xxx` + `config:`，不带 `insert`） | §11.2 |
+| Q-09 | 同一 preset 内同时挂 `tool-subagent` 与 team 工具 | **已实测：能同装，但不能混用**。静态：无审计拒绝、注册表级工具面 24/24 且零重名。真正的问题是**同名工具**——`send_message` / `interrupt_agent` / `list_agents` 两边都提供；团队工具在**成员作用域懒安装**，因此叠加发生在运行期。**结论：每个 preset 二选一**，按官方 `dsh-experimental-agent-team-profile` 用 `disabled: true` 关掉另一套 | §8.2 / §11.2 |
+| Q-10 | preset 的 `config.plugins` 内能否以包名引用第三方插件行 | **已实测：通过** ✅。第三方包名被解析并挂载（探针插件的 `apply()` 收到 preset 传入的 config），且发生在**任何模型调用之前**（随后才因无凭据退出，零 token）。**RISK-15 关闭，M0 入口假设成立** | §11.2 / §13 M0 |
 
-#### 14.2.2 待实测（实测后确认）
+#### 14.2.2 待实测
 
-| ID | 待确认 | 验证方式 | 是否阻塞 M0 |
-|---|---|---|---|
-| Q-08 | `dsh.bundle.patch` **数组内的顺序语义**是否严格按数组次序（跨 bundle 的"按序叠加、后列可覆盖前列"已确认） | 装一个自建 bundle，`dsh --profile <p> --dump-config` 观察行 `id` 的最终取值。确认前文档不得声称顺序保证 | 否（只影响"覆盖内置 preset"的写法） |
-| Q-09 | 同一 preset 内**同时**挂 `tool-subagent` 与 team 工具是否有运行时冲突（`dsh-experimental-agent-team-profile` 的做法是禁用旧的 subagent 控制工具） | 组一个最小 profile，验证 `send_message` 等的 scoped 覆盖行为，再决定 `subagent` 与 `native-team` 两种后端能否共存于一个 preset | 否 |
-| Q-10 | **preset 的 `config.plugins` 内能否以包名引用第三方插件行**（入口假设，RISK-15） | 只装这个 preset：`dsh --profile <p> --dump-config` 看行解析 + 空白会话选择它。不通过则启用回退方案 | **是（M0 第一件事）** |
+**无。** Q-08 / Q-09 / Q-10 已于 2026-09-29 实测完毕（结论见 14.2.1，原始证据见 [`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md)）。
+
+唯一遗留的是 **Q-09 的运行期半边**——"同名工具在 agent 作用域叠加时谁生效"：本次实测受限于无凭据（`MISSING_CREDENTIAL` 在会话/agent 创建前就拦下运行，顶层监听零事件），因此**未验**。它已被登记为一条**测试项**（§12.1 "委派工具同名叠加"），在有凭据的真实会话里跑。
 
 #### 14.2.3 待决
 
-**无。** Q-20 于 2026-09-29 评审采纳选项②（无交互评审通道时**阻塞**），结论已落进 §8.5 / §9.4；此前登记的问题均已定或转入待实测（Q-08 ~ Q-10）。**后续新暴露的问题请在本小节按序续编新 ID**（不要复用已定编号）。
+| ID | 问题 | 为什么必须定 | 待选项 | 评审意见 |
+|---|---|---|---|---|
+| Q-21 | **非 web profile 的入口**：`dsh-headless` / `dsh-acp-app` / `dsh-sdk-app` 都不含 preset 机制，本插件在这些 profile 里没有入口 | 实测发现（2026-09-29）。用户已决定"**先 Web-only，后续再考虑 headless**"，因此本期不阻塞；但当有人要在 headless/ACP 里用 SDO 时必须先定这一条 | ① 维持 Web-only，明确写进 README 与 §14.3；② 增加"非 web profile 用 **profile 级挂载**"作为第二入口（需改 C-07 措辞，并说明该 profile 下所有会话都被接管）；③ 由外部（SDK 调用方）自行按需挂载 | 先 Web-only（2026-09-29，用户决定） |
 ### 14.3 能力边界（诚实声明）
 
 1. SDO **不能**保证产品做对——门禁保证的是"过程有据、问题被问、决策留痕"，不是"需求本身正确"。
@@ -2068,7 +2109,8 @@ const run = await ctx.subagents.start('spawn', {
 11. **用量可能漏计**：会话树中已消失的小会话若未在结算时刻采样，只能记 `unattributed`；SDO 不猜数字。
 12. **入口是装配级的**：SDO **不能**在一个已用其他 preset 打开的会话里中途接管（C-07）——需要新会话并选择 SDO preset。
 13. **看板是只读的**，且 Web 交互面板在已打开的会话里晚启用需要**刷新页面**才收到投影。
-14. **headless/ACP 下架构阶段会被阻塞**（Q-20 采用②）：计划评审必须有交互式评审通道，因此无交互环境**走不到 G3**。这是刻意的"宁可不做，也不跳过评审"，代价是 headless 用户必须在 Web/CLI 里完成架构阶段（同一个 `.sdo/` 可直接接续）。注意此时 `/sdo:*` 命令面同样不可用，所以 remedy 只能写成"换个环境继续"（RISK-22）。
+14. **（本期不适用）headless/ACP 下架构阶段会被阻塞**（Q-20 采用②）：计划评审必须有交互式评审通道，因此无交互环境**走不到 G3**——这是刻意的"宁可不做，也不跳过评审"。⚠️ **2026-09-29 实测**：preset 机制只由 `dsh-web-app` 提供，**SDO 目前只在 Web profile 有入口**，所以本条的适用前提（非 web profile 里跑 SDO）本期不存在；若将来按 **Q-21** 支持非 web profile，本条与 RISK-22 一并重新生效（届时 `/sdo:*` 命令面同样不可用，remedy 只能写"换个环境继续"）。
+15. **SDO 目前只在 Web profile 可用**（2026-09-29 实测）：声明式 preset 机制只由 `dsh-web-app` bundle 提供，`dsh-headless` / `dsh-acp-app` / `dsh-sdk-app` 均不含它。因此 headless/ACP/SDK 环境下**本插件没有入口**（用户决策：先 Web-only，见 Q-21）。
 
 ---
 
@@ -2206,3 +2248,4 @@ G7 交付:
 | v0.5 | 2026-09-29 | **评审意见落地**：§14.2 重构为「已定 / 待实测 / 待决」三段并采纳 Q-01~Q-14（含 Q-03 红队默认开启、Q-11 预算限值可选、Q-13 超限询问用户）；§7.5 裁剪矩阵增红队列 + 停用留痕规则；§5.4 补默认启用、§5.2.1 补权重固定；§4.5 增 `prototype/` 隔离区与 `project.json` 入库说明；§7.2/§10.3/§15.3 的 G7 增 prototype 检查、§15.3 的 G2 增红队准则；§9.1 的 `sdo_cost` 收敛为模型只读（仅 `report`）、§9.2 增 `/sdo:budget --set`；§9.3 预算行按填写深度降级；§8.5/§9.4 增"架构阶段强制 plan mode"；§10.5 增投影保留窗口；§10.6 预算模型改为"限值可选 + 超限询问用户并留痕"；§3.2 改写 REQ-007/029/030、新增 **REQ-034**，新增 AC-016~AC-018、§3.6 MVP 相应调整；§13 的 M1/M2/M3/M5/M6 同步；新增待决问题 **Q-15~Q-19** |
 | v0.6 | 2026-09-29 | **第二轮评审落地**：§14.2 把 Q-15~Q-19 移入"已定"、待决段只留新增的 **Q-20**；§7.5/§5.4 红队改为"`trivial` 默认不开但可开 + 会话内自然语言开关（`sdo_redteam(off/on)`、`redteam/mode` 留痕、可重开）"；§9.1 的 `sdo_redteam` 增 `off/on/status`、§9.2 增 `/sdo:redteam`、§9.3 状态块增"红队"条件行；§10.5 改"三步"（M6 骨架 / v2 完整交互）、§10.6 落定 Q-18（无交互降级为提醒 + deferred）与 Q-19（每跨一档问一次）；§8.5/§9.4 落定 Q-17（SDO 主动驱动 + 两道评审）；§13 的 M2/M6 与 §2.2 工期同步（**48–72 人日**），并修掉 §2.2 表格的列数错误；§12.2 增 E2E-13~E2E-15（prototype 门禁 / 红队开关 / 两道评审）并改写 E2E-11 |
 | v0.7 | 2026-09-29 | **Q-20 落地（采用②阻塞）**：§8.5 把"无交互评审通道"从待定改为定稿——**进架构阶段前**检测评审通道，不可用时**不进入 plan mode**、阶段标 `blocked`、写 `plan/review-blocked` 留痕、**不触达 G3**、**不提供跳过开关**，remedy 指向"在 Web/CLI 会话接续同一 `.sdo/`"（并说明为何不在进入后阻塞：那是自造死锁）；§9.4 同步；§14.2 把 Q-20 移入"已定"、**§14.2.3 待决清零**（新问题按序续编新 ID）；§14.1 新增 **RISK-22**、§14.3 新增第 14 条边界（headless 下架构阶段会被阻塞，且命令面同样不可用）；§13 M2 与 §12.2 增 **E2E-16** |
+| v0.8 | 2026-09-29 | **Q-08/Q-09/Q-10 实测落地**：三项移入"已定"并写入结论（Q-08 数组顺序＝严格按数组次序、同 id `insert` 不覆盖而留两行/挂载取后者；Q-09 能同装不能混用、同名工具三条、官方用 `disabled` 二选一；Q-10 通过、第三方包名可解析挂载）；**§14.2.2 待实测清零**，Q-09 的运行期半边转成 §12.1 的测试项；**新增 Q-21**（非 web profile 入口，用户决定先 Web-only）；**实测发现 preset 机制只由 `dsh-web-app` 提供** → §3.4 的 C-07、§11.2、§14.3（新增第 15 条）、RISK-22 全部标注"目前仅 Web profile 可用/本期不可达"；RISK-15 **关闭**；§8.2 修正"三个后端可混用"为"装配层二选一，不得同 preset 混用"；§13 M0 的 DoD 标注"入口假设已实测通过"；新增 **§11.7 开发与验证环境（实测）** 与证据文档 `docs/verification/2026-09-29-q08-q09-q10.md`；另补本包 `.gitignore` |
