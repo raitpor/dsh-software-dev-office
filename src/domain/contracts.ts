@@ -38,6 +38,8 @@ export function writeContract(store: SdoStore, contract: Contract): void {
 export interface RecordContractInput {
   name: string
   kind?: Contract['kind'] | undefined
+  /** 给了 id 则原地更新（D4-3） */
+  id?: string | undefined
   producer: string
   consumer: string
   schema: string
@@ -45,9 +47,21 @@ export interface RecordContractInput {
 }
 
 /** 记录一份契约。 */
+/** 作废一份契约（**回收路径**）：加 `dropped` 标记并留痕，不删除记录（追加式真源）。 */
+export function dropContract(store: SdoStore, journal: Journal, contractId: string, reason: string): Contract | undefined {
+  const existing = listContracts(store).find((item) => item.id === contractId)
+  if (existing === undefined) return undefined
+  const dropped: Contract = { ...existing, dropped: true, droppedReason: reason }
+  writeContract(store, dropped)
+  journal.append('contract/dropped', { id: contractId, reason })
+  return dropped
+}
+
 export function recordContract(store: SdoStore, journal: Journal, input: RecordContractInput): Contract {
+  // D4-3：给了 id 就**原地更新**（否则错记录会永久留存：传 id=CT-001 却新建 CT-010）
+  const existing = input.id === undefined ? undefined : listContracts(store).find((item) => item.id === input.id)
   const contract: Contract = {
-    id: nextId('CT', listContractIds(store)),
+    id: existing?.id ?? nextId('CT', listContractIds(store)),
     name: input.name,
     kind: input.kind ?? 'schema',
     producer: input.producer,
@@ -61,7 +75,12 @@ export function recordContract(store: SdoStore, journal: Journal, input: RecordC
     at: new Date().toISOString(),
   }
   writeContract(store, contract)
-  journal.append('contract/recorded', { id: contract.id, name: contract.name, producer: contract.producer, consumer: contract.consumer })
+  journal.append(existing === undefined ? 'contract/recorded' : 'contract/updated', {
+    id: contract.id,
+    name: contract.name,
+    producer: contract.producer,
+    consumer: contract.consumer,
+  })
   return contract
 }
 
@@ -73,7 +92,8 @@ export function contractCoverage(store: SdoStore): {
   missing: { consumer: string; producer: string }[]
   incompleteSemantics: string[]
 } {
-  const contracts = listContracts(store)
+  // 已作废的契约不参与覆盖判定（否则作废后仍算"已覆盖"，等于没作废）
+  const contracts = listContracts(store).filter((contract) => contract.dropped !== true)
   const edges = componentEdges(store)
   const missing = edges.filter(
     (edge) =>
@@ -83,7 +103,7 @@ export function contractCoverage(store: SdoStore): {
           (contract.consumer === edge.consumer && contract.name.includes(edge.producer)),
       ),
   )
-  const incompleteSemantics = contracts
+  const incompleteSemantics = contracts.filter((contract) => contract.dropped !== true)
     .filter(
       (contract) =>
         contract.failureSemantics.timeout.trim() === '' ||

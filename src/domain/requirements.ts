@@ -87,6 +87,8 @@ export interface CaptureInput {
   /** 该需求来自原型回填（设计 §7.2：`source=prototype`） */
   prototypeSource?: boolean | undefined
   modelDimensions?: Partial<Record<Dimension, number>> | undefined
+  /** 验收标准（D2 修复：旧实现声明了该通道却从不读取，导致静默丢 AC） */
+  acceptance?: AcceptanceCriterion[] | undefined
 }
 
 export interface CaptureResult {
@@ -100,8 +102,21 @@ export function captureRequirement(
   project: SdoProject | undefined,
   input: CaptureInput,
 ): CaptureResult {
+  // **来源硬约束（需求阶段的核心纪律）**：一条需求必须能回答"这是谁说的"。
+  // 实测教训（酒店系统会话）：模型只听到"做房间预定系统"，就自行 capture 了 6 条需求并往下推。
+  const hasRaw = (input.sourceRaw ?? '').trim() !== ''
+  const hasStakeholder = (input.sourceStakeholder ?? '').trim() !== ''
+  // 原型回填也是合法来源（设计 §7.2：原型结论回填为需求）
+  const fromPrototype = input.prototypeSource === true
+  if (!hasRaw && !hasStakeholder && !fromPrototype) {
+    throw new Error(
+      '这条需求没有来源，不能落账：请先用提问工具向用户确认，并把**用户原话**放进 `sourceRaw`'
+      + '（或指明具名干系人 `sourceStakeholder`）。不要替用户发明需求——需求阶段是问人最多的阶段。',
+    )
+  }
   const model = loadScoring()
   const now = new Date().toISOString()
+  const acceptance = input.acceptance ?? []
   const requirement: Requirement = {
     id: nextId('REQ', listRequirementIds(store)),
     title: input.title,
@@ -115,7 +130,7 @@ export function captureRequirement(
     },
     ...(input.priority === undefined ? {} : { priority: input.priority }),
     ambiguity: { score: 0, dimensions: {}, open: [] },
-    acceptance: [],
+    acceptance,
     status: 'draft',
     version: 0.1,
     baseline: null,

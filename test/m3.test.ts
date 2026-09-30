@@ -7,6 +7,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Config, resolveSettings } from '../src/config.js'
 import { CHECKERS, evaluateGate } from '../src/domain/gates.js'
 import { listIssues } from '../src/domain/issues.js'
+import { isEffectivelyOpen } from '../src/domain/dor.js'
 import { exitGates, loadAllProcesses, loadProcess, nextPhase, phaseLabel } from '../src/domain/process.js'
 import { SoftwareDevOffice, processOfProject } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
@@ -320,6 +321,7 @@ test('原型：目录隔离 + throwaway 标记 + 回填需求（GP 与 G7 的 C-
     priority: 'must',
     sourceStakeholder: undefined,
     prototypeSource: true,
+    sourceRaw: '原型探针结论（整目录可丢弃）',
   })
   const gp = office.checkGate(call(), 'GP')
   assert.equal(gp.status, 'passed', `GP 应通过：${gp.remedy.join(' / ')}`)
@@ -356,7 +358,7 @@ test('红队议题闭环：答完质询问题，或登记一条指向议题的�
       (question) => question.status === 'open' && issues[0]?.questionIds.includes(question.id),
     )
     if (open.length === 0) break
-    office.answer(call(), { id: open[0]!.id, answer: '', assume: true })
+    office.answer(call(), { id: open[0]!.id, answer: '', assume: true, authorizedByUser: true })
   }
   assert.equal(office.openIssues(call()).length, 0, '质询答完 → 议题闭环')
 
@@ -512,4 +514,131 @@ test('evaluateGate 对未知门禁给出可用门禁清单（不静默通过）'
   })
   assert.equal(evaluation.status, 'failed')
   assert.match(evaluation.criteria[0]?.remedy ?? '', /可用门禁/u)
+})
+
+test('DEF-06：需求必须有来源——无 sourceRaw/sourceStakeholder 时拒绝落账', () => {
+  setup()
+  assert.throws(
+    () => office.capture(call(), { title: '猜的需求', statement: '系统须支持 X；P99 < 1 秒', priority: 'must' }),
+    /没有来源/u,
+    'agent 不得替用户发明需求',
+  )
+  const ok = office.capture(call(), {
+    title: '用户说的',
+    statement: '系统须支持 X；P99 < 1 秒',
+    priority: 'must',
+    sourceRaw: '我要能查可用房间',
+  })
+  assert.equal(ok.requirement.source.raw, '我要能查可用房间')
+})
+
+test('DEF-07：assume 必须由用户授权；未授权假设在 DoR 里仍算未决', () => {
+  setup()
+  const c = office.capture(call(), {
+    title: 'r',
+    statement: '系统须支持 X；P99 < 1 秒',
+    priority: 'must',
+    sourceRaw: '用户原话',
+  })
+  office.redTeamAttack(call(), [c.requirement.id], 2)
+  const q = office.questions(call())[0]
+  assert.ok(q !== undefined)
+  assert.throws(() => office.answer(call(), { id: q.id, answer: '', assume: true }), /自问自答/u)
+  office.answer(call(), { id: q.id, answer: '', assume: true, authorizedByUser: true })
+  assert.equal(office.questions(call())[0]?.authorizedByUser, true)
+  assert.equal(isEffectivelyOpen({ status: 'assumed' } as never), true, '未授权假设 = 实质未决')
+  assert.equal(isEffectivelyOpen({ status: 'assumed', authorizedByUser: true } as never), false)
+  assert.equal(isEffectivelyOpen({ status: 'answered' } as never), false)
+})
+
+test('DEF-10：红队问题必须由需求内容派生（不许同一句模板复制 N 份）', () => {
+  setup()
+  const a = office.capture(call(), {
+    title: '提交房间预定',
+    statement: '系统须允许客人提交预定；单日 1 万次，P99 < 500 毫秒',
+    priority: 'must',
+    sourceRaw: '用户原话 A',
+  })
+  const b = office.capture(call(), {
+    title: '按编号查询预定',
+    statement: '系统须允许凭预定编号查询状态；日活 2 万',
+    priority: 'must',
+    sourceRaw: '用户原话 B',
+  })
+  const attack = office.redTeamAttack(call(), [a.requirement.id, b.requirement.id], 4)
+  const texts = attack.questions.map((question) => question.text)
+  assert.ok(texts.length >= 2, '至少两条需求各拿到问题')
+  // 每条问题必须带**自己需求的标题**
+  const forA = texts.filter((text) => text.includes('提交房间预定'))
+  const forB = texts.filter((text) => text.includes('按编号查询预定'))
+  assert.ok(forA.length > 0 && forB.length > 0, '问题须指向具体需求')
+  // 不同需求的问题文字必须不同（不是复制）
+  assert.notDeepEqual(forA, forB, '不同需求不得是同一句复制')
+  // 派生自需求的分析：问题里应出现"该需求在…上尚未澄清"这类来自评分的措辞（若有 0 分维度）
+  assert.ok(texts.some((text) => text.includes('尚未澄清')) || texts.every((text) => text.includes('针对「')), '问题应体现需求自身状况')
+})
+
+test('方案B：红队质询由模型生成、插件校验（必须引用需求原文用词）', () => {
+  setup()
+  const c = office.capture(call(), {
+    title: '提交房间预定',
+    statement: '系统须允许客人提交房间预定；单日 1 万次，P99 < 500 毫秒',
+    priority: 'must',
+    sourceRaw: '用户原话',
+  })
+  const spec = office.proposeRedTeam(call(), [c.requirement.id], 2)
+  assert.match(spec, /提交房间预定/u, '提案必须带上需求标题')
+  assert.match(spec, /单日 1 万次/u, '提案必须带上需求原文（供模型引用）')
+  const res = office.fileRedTeam(call(), c.requirement.id, [
+    { text: '客人重复提交同一房间预定会怎样？', dimension: 'data' },
+    { text: '这个功能会不会出问题？' },
+    { text: '系统须允许客人提交房间预定' },
+    { text: '客人重复提交同一房间预定会怎样？' },
+  ])
+  assert.equal(res.accepted.length, 1, '只有引用原文且是问句的那条通过')
+  assert.equal(res.rejected.length, 3)
+  assert.ok(res.rejected.some((item) => item.reason.includes('原文')), '不引用原文要被拒并说明')
+  assert.ok(res.rejected.some((item) => item.reason.includes('问号')), '不是问句要被拒')
+  assert.ok(res.rejected.some((item) => item.reason.includes('重复')), '重复要被拒')
+  assert.equal(res.accepted[0]?.origin, 'red-team')
+  assert.ok(office.issues(call()).some((issue) => issue.target === c.requirement.id), '红队议题要开出来（必须闭环）')
+})
+
+test('D1：无 plan mode 的宿主必须有出口——用户评审或显式豁免后可继续', () => {
+  setup()
+  // 先有需求，才能走到"计划评审"这道前置（否则会先被 designCheck 拦在"没有任何需求"）
+  office.capture(call(), {
+    title: 'r',
+    statement: '系统须支持 X；P99 < 1 秒',
+    priority: 'must',
+    sourceRaw: '用户原话',
+  })
+  const unavailable = { available: false, active: false }
+  const before = office.designPrecondition(call(), unavailable)
+  assert.equal(before.kind, 'blocked-no-reviewer', '没有出口时必须阻塞（Q-20）')
+  // 出口一：用户在本会话内评审
+  office.markPlanApproved(call(), '我本人', '计划已看过')
+  assert.notEqual(office.designPrecondition(call(), unavailable).kind, 'blocked-no-reviewer', '评审后不得再因"无通道"阻塞')
+  // 出口二：显式豁免（另一个项目，验证独立）
+  const other = office.designPrecondition(call(), unavailable)
+  assert.ok(other.kind !== 'no-project', '项目存在')
+  office.waivePlanReview(call(), '本原型不做计划评审', '我本人')
+  const after = office.designPrecondition(call(), unavailable)
+  assert.notEqual(after.kind, 'blocked-no-reviewer', '豁免后不得再阻塞')
+})
+
+test('D2：capture 必须写入 acceptance（旧实现静默丢弃）', () => {
+  setup()
+  const captured = office.capture(call(), {
+    title: '带验收标准的需求',
+    statement: '系统须在每日对账后输出差异清单；单日 100 万，P99 < 500 毫秒',
+    priority: 'must',
+    sourceRaw: '用户原话',
+    acceptance: [
+      { id: 'AC-001', given: '已导入两日文件', when: '执行对账', then: '输出差异清单' },
+      { id: 'AC-002', given: '两日一致', when: '执行对账', then: '输出空清单' },
+    ],
+  })
+  assert.equal(captured.requirement.acceptance.length, 2, '验收标准必须落盘')
+  assert.ok(!captured.flags.some((flag) => flag.includes('no-ac')), '不得再报"缺验收标准"')
 })

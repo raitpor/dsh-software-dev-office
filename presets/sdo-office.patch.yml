@@ -23,7 +23,9 @@
               injectStatus: true
               promptOrder: 240
               statusChars: 1500
+              lang: zh-CN
               gateLevel: enforce                 # suggest | enforce | strict
+              commandEcho: echo
               disciplineTools: [write, edit, bash]
               disciplineAllowPaths: ['.sdo/', 'docs/', 'test/']
               registerTools: true
@@ -46,6 +48,30 @@
             name: '@deepseek-ai/dsh-tool-bash'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
+          # 注：计划评审**不使用** `@deepseek-ai/dsh-plan-mode`。
+          # 实测：该包只随 `dsh-web-app` bundle 解析，本插件的 preset 里引用它会**解析失败**，
+          # 进而导致整个 preset 注册失败（症状：会话里选不到 sdo-office）。Q-17 的"两道评审"
+          # 改由已装配的提问通道承担（见下方 tool-ask-user）：SDO 用提问工具请用户评审计划并留痕。
+          # 上下文压缩与工具结果剪枝（照抄官方 standard preset 的形状）。
+          # 不装这三行 ⇒ SDO 会话上下文只增不减：实测 599 次工具调用后 messages 涨到 ~803k tokens，
+          # 叠加 completion 预算 256k 直接撞上 1,048,576 上限（现象就是"上下文爆了"）。
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
           - id: delegation
             name: cordis:group
             group: true

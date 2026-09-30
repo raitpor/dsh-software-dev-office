@@ -146,7 +146,7 @@ test('回答：answered 与 assumed（采用默认建议并记为假设）', () 
   const assumed = answerQuestion(store, journal, office.status(call()).project, {
     id: second.id,
     answer: '',
-    assume: true,
+    assume: true, authorizedByUser: true,
   })
   assert.equal(assumed?.question.status, 'assumed')
   assert.equal(assumed?.question.answer, second.defaultRecommendation)

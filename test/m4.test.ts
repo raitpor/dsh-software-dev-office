@@ -346,3 +346,203 @@ test('看板数据：任务统计、可派发与疑似失联', () => {
   writeFileSync(path, readFileSync(path, 'utf8').replace(/updatedAt: .*/u, 'updatedAt: 2020-01-01T00:00:00.000Z'))
   assert.deepEqual(office.staleTasks(call(), 60_000).map((item) => item.id), [task.id])
 })
+
+test('红线回归：redTeamAttack 的 limit 是**总问题数上限**（AsterChat 实测曾一次生成 60 问）', () => {
+  seedDesign()
+  const ids: string[] = []
+  for (let i = 0; i < 10; i++) {
+    const captured = office.capture(call(), {
+      title: `需求 ${i + 1}`,
+      statement: `系统须在第 ${i + 1} 项场景下识别差异；单日 100 万，P99 < 500 毫秒`,
+      priority: 'must',
+      sourceStakeholder: 'STK-01',
+    })
+    ids.push(captured.requirement.id)
+  }
+  const attack = office.redTeamAttack(call(), ids, 6)
+  assert.equal(attack.questions.length, 6, `limit=6 应只产生 6 个问题，实际 ${attack.questions.length}`)
+  // 轮转分配：被攻击的前几条需求都应拿到至少 1 个问题（议题才可能闭环）
+  const targets = new Set(attack.questions.flatMap((question) => question.targets))
+  assert.ok(targets.size >= 3, `轮转应覆盖多个目标，实际 ${[...targets].join(' ')}`)
+  // 不能把问题账本灌爆
+  assert.ok(office.questions(call()).length <= 10, '问题总数不应失控')
+})
+
+test('D3-1/D3-3/D4-3（依据 sdo-test 诊断修复）：批内去重、卡可回收、契约可更新', () => {
+  seedDesign()
+  office.planDecompose(call())
+  const before = office.tasks(call()).length
+
+  // D3-1：同一次调用里两条完全相同的建议 → 只建一张卡（旧实现只比对调用前的卡集）
+  office.planDecompose(call(), {
+    suggestions: [
+      { title: '重复建议', dod: ['x'], role: 'developer', writeScopes: ['src/dup/'], size: 'small' },
+      { title: '重复建议', dod: ['x'], role: 'developer', writeScopes: ['src/dup/'], size: 'small' },
+    ],
+  })
+  assert.equal(office.tasks(call()).length, before + 1, '批内重复必须只建一张卡')
+
+  // D3-3：回收路径 —— 卡可置为 dropped，且不再算作计划问题
+  const first = office.tasks(call())[0] as TaskCard
+  const dropped = office.dropTask(call(), first.id, '误拆，作废')
+  assert.equal(dropped?.status, 'dropped')
+  assert.equal((office.tasks(call()).find((task) => task.id === first.id))?.status, 'dropped', '留痕：卡仍在，但状态 dropped')
+  assert.ok(
+    !office.planIssues(call()).some((issue) => issue.taskId === first.id),
+    'dropped 的卡不得再参与校验',
+  )
+
+  // D4-3：契约可原地更新（旧实现传 id 会另建新记录）
+  const base = { producer: 'DES-001', consumer: 'DES-002', schema: 's', failureSemantics: { timeout: '3s', retry: '2', idempotency: 'yes' } }
+  const created = office.recordContract(call(), { ...base, name: 'A → B' })
+  const updated = office.recordContract(call(), { ...base, id: created.id, name: 'A → B（修订）' })
+  assert.equal(updated.id, created.id, '给了 id 必须原地更新，而不是新建')
+  assert.ok(office.contracts(call()).filter((item) => item.id === created.id).length === 1)
+  assert.equal(office.contracts(call()).find((item) => item.id === created.id)?.name, 'A → B（修订）')
+})
+
+test('D5-1/D5-2（依据 sdo-test 复测修复）：dropped 卡不参与成对写范围校验；写范围不残留右括号', async () => {
+  seedDesign()
+  // 两张**写范围完全相同**的建议卡 → 正常应报冲突；把其中一张 drop 掉后不应再报
+  office.planDecompose(call(), {
+    suggestions: [
+      { title: '冲突甲', dod: ['x'], role: 'developer', writeScopes: ['src/same/'], size: 'small' },
+      { title: '冲突乙', dod: ['x'], role: 'developer', writeScopes: ['src/same/'], size: 'small' },
+    ],
+  })
+  const conflict = office.planIssues(call()).filter((issue) => issue.code === 'write-scope-disjoint')
+  assert.ok(conflict.length > 0, '两张同写范围的卡应被判为冲突（用例有判别力）')
+  const victim = office.tasks(call()).find((task) => task.title === '冲突乙') as TaskCard
+  office.dropTask(call(), victim.id, '作废后不应再参与成对校验')
+  const after = office.planIssues(call()).filter((issue) => issue.code === 'write-scope-disjoint')
+  assert.deepEqual(after, [], `dropped 的卡不得再造成写范围冲突：${JSON.stringify(after)}`)
+
+  // D5-2：括号清洗不得残留右括号
+  const { parseWriteScopes } = await import('../src/domain/plan.js')
+  assert.deepEqual(parseWriteScopes('写范围：`**/query/OrderQuery*`（独占）'), ['**/query/OrderQuery*'])
+  assert.deepEqual(parseWriteScopes('写范围：**/api/**）、src/main/resources/static/**）'), ['**/api/**', 'src/main/resources/static/**'])
+})
+
+test('D7（依据 sdo-test 门禁判据诊断修复）：dropped 卡不得计入完成率分母', async () => {
+  const { planStats } = await import('../src/domain/plan.js')
+  // 夹具只关心状态语义，类型用断言收敛（避免为了跑通类型而堆无关字段）
+  const base = {
+    id: 'TASK-001', title: 't', goal: 'g', inputs: [], outputs: [], dod: ['d'],
+    role: 'developer', size: 'small', dependencies: [], blockedBy: [],
+    writeScopes: [], requirements: [], evidenceRequired: ['artifact'], evidence: [],
+    iteration: 1, revision: 1, owner: 'a', createdAt: '', updatedAt: '',
+  } as unknown as TaskCard
+  const done = { ...base, status: 'done', evidence: [{ kind: 'artifact', detail: 'x' }] } as unknown as TaskCard
+  const dropped = { ...base, id: 'TASK-002', status: 'dropped' } as unknown as TaskCard
+  const stats = planStats([done, dropped])
+  assert.equal(stats.total, 2, 'total 仍是全部卡（台账口径）')
+  assert.equal(stats.active, 1, 'active 是未放弃的卡')
+  assert.equal(stats.allDone, true, 'dropped 不得让 allDone 恒为 false（旧实现是死结）')
+
+  // 判别力：没有 dropped 但仍有未完成的卡时，allDone 必须为 false
+  const planned = { ...base, id: 'TASK-003', status: 'planned' } as unknown as TaskCard
+  assert.equal(planStats([done, planned]).allDone, false, '未完成的卡仍应让 allDone 为 false')
+  assert.equal(planStats([dropped]).allDone, false, '只剩放弃卡时不得算"全部完成"')
+})
+
+test('D6-1（依据 sdo-test 构造阶段实测修复）：写范围租约——完成的卡必须释放范围', async () => {
+  const { validatePlan } = await import('../src/domain/plan.js')
+  const base = {
+    id: 'TASK-100', title: 't', goal: 'g', inputs: [], outputs: [], dod: ['d'],
+    role: 'developer', size: 'small', dependencies: [], blockedBy: [],
+    writeScopes: ['pom.xml'], requirements: [], evidenceRequired: ['artifact'], evidence: [],
+    iteration: 1, revision: 1, createdAt: '', updatedAt: '',
+  } as unknown as TaskCard
+  const conflicts = (tasks: TaskCard[]) => validatePlan(tasks).filter((issue) => issue.code === 'write-scope-disjoint').length
+
+  // 判别力基准：两张都在办（planned）且范围相同 → 必须判冲突
+  const plannedA = { ...base, id: 'TASK-101', status: 'planned' } as unknown as TaskCard
+  const plannedB = { ...base, id: 'TASK-102', status: 'planned' } as unknown as TaskCard
+  assert.ok(conflicts([plannedA, plannedB]) > 0, '在办卡之间同范围必须判冲突（用例有判别力）')
+
+  // D6-1：已完成的卡不再占用范围 → 新卡可以复用 pom.xml
+  const done = { ...base, id: 'TASK-103', status: 'done' } as unknown as TaskCard
+  const verified = { ...base, id: 'TASK-104', status: 'verified' } as unknown as TaskCard
+  assert.equal(conflicts([done, plannedA]), 0, 'done 卡必须释放写范围（否则 pom.xml 被永久锁死）')
+  assert.equal(conflicts([verified, plannedA]), 0, 'verified 卡同样释放')
+
+  // blocked 仍占用（它只是等外部条件，随时会继续写同一范围）
+  const blocked = { ...base, id: 'TASK-105', status: 'blocked' } as unknown as TaskCard
+  assert.ok(conflicts([blocked, plannedA]) > 0, 'blocked 视为在办，仍占用范围')
+})
+
+test('D1/D2/D3（依据 sdo-test 15:28 诊断修复）：门禁名归一 / 最近判定按时间 / 原型判据不适用', async () => {
+  const { normalizeGateId, processOfProject } = await import('../src/office.js')
+  const workflow = processOfProject({ process: 'waterfall' } as never)
+
+  // D1：判据描述里的中文全名（带编号）必须被识别
+  assert.equal(normalizeGateId('交付门禁（G7）', workflow), 'G7', '带编号的中文全名必须归一为 id')
+  assert.equal(normalizeGateId('交付门禁(G7)', workflow), 'G7', '半角括号也要认')
+  assert.equal(normalizeGateId('G7', workflow), 'G7')
+  assert.equal(normalizeGateId('交付', workflow), 'G7', '短别名仍可用')
+
+  // D2：先判 G7 再判 G2 → "最近判定"必须是 G2（按时间），而不是文件字典序里的 G7
+  seedDesign()
+  office.checkGate(call(), 'G7')
+  office.checkGate(call(), 'G2')
+  const last = office.status(call()).lastGate
+  assert.equal(last?.gate, 'G2', '最近判定必须按时间取，而不是按文件名排序取最后一条')
+
+  // D3：waterfall 且没有原型目录时，原型类判据判"不适用"而不是红
+  const g7 = office.checkGate(call(), 'G7')
+  // 注意：判据的 `id` 是**流程里的准则编号**（C-61/C-62），检查器名（prototype.*）在流程数据里，
+  // 不在 GateCriterionResult 上 —— 我第一版断言用错字段，当场被测试拦下。
+  const proto = g7.criteria.filter((c) => c.id === 'C-61' || c.id === 'C-62')
+  assert.ok(proto.length > 0, 'G7 应含原型类判据')
+  assert.ok(proto.every((c) => c.ok), `不涉及原型时原型判据不得为红：${JSON.stringify(proto.map((c) => [c.id, c.ok, c.detail]))}`)
+})
+
+test('G-01~G-05（依据 sdo-test 汇总报告修复）：落盘名/建议透传/不复活废卡/风险口径', async () => {
+  seedDesign()
+  // G-01：用中文全名判定 → 落盘必须是规范 id
+  const g3 = office.checkGate(call(), '架构门禁（G3）')
+  assert.equal(g3.gate, 'G3')
+  const gateStore = office.storeFor(office.requireWorkspace(call()))
+  assert.ok(gateStore.listNames('gates').includes('G3.json'), `落盘应为 G3.json，实际：${gateStore.listNames('gates').join(',')}`)
+  assert.ok(!gateStore.listNames('gates').some((name) => name.includes('（G3）')), '不得再用原始入参当文件名')
+
+  // G-03：建议通道必须透传 requirements（旧实现静默丢弃 → 追溯静默漏卡）
+  office.planDecompose(call(), {
+    suggestions: [
+      { title: '带上需求链接的建议卡', dod: ['x'], role: 'developer', writeScopes: ['src/sug/'], size: 'small', requirements: ['REQ-001'] } as never,
+    ],
+  })
+  const sug = office.tasks(call()).find((task) => task.title === '带上需求链接的建议卡') as TaskCard
+  assert.deepEqual(sug.requirements, ['REQ-001'], '建议通道的 requirements 不得被丢弃')
+
+  // G-04：drop 掉结构卡后，再 decompose 不得复活它
+  const structural = office.tasks(call()).find((task) => task.title.includes('DES-001')) as TaskCard
+  office.dropTask(call(), structural.id, 'G-04 用例')
+  const before = office.tasks(call()).length
+  office.planDecompose(call())
+  const revived = office.tasks(call()).filter((task) => task.title.includes('DES-001') && task.status !== 'dropped')
+  assert.deepEqual(revived, [], '已显式放弃的元素不得被重建')
+  assert.ok(office.tasks(call()).length >= before, '其余卡不受影响')
+
+  // G-05：高/阻塞只统计未关闭
+  const closed = { id: 'RISK-9', title: 't', level: 'blocker', status: 'closed', mitigation: 'm', owner: 'o', at: '' } as never
+  const openRisk = { id: 'RISK-8', title: 't2', level: 'high', status: 'open', mitigation: 'm', owner: 'o', at: '' } as never
+  const { riskStats } = await import('../src/domain/risks.js')
+  const stats = riskStats([closed, openRisk])
+  assert.equal(stats.blockers, 0, '已关闭的阻塞不得计入')
+  assert.equal(stats.high, 1, '未关闭的高风险计入')
+})
+
+test('契约回收路径：drop 后不再参与覆盖判定（sdo_design action=drop-contract）', () => {
+  seedDesign()
+  const base = {
+    producer: 'DES-001', consumer: 'DES-002', schema: 's',
+    failureSemantics: { timeout: '3s', retry: '2', idempotency: 'yes' },
+  }
+  const first = office.recordContract(call(), { ...base, name: 'A → B' })
+  const second = office.recordContract(call(), { ...base, name: 'A → B（正确版）' })
+  const dropped = office.dropContract(call(), first.id, '口径踩坑留下的无效记录')
+  assert.equal(dropped?.dropped, true, '作废必须置 dropped 标记（留痕）')
+  assert.ok(office.contracts(call()).some((item) => item.id === first.id), '记录必须保留在真源里')
+  assert.equal(second.dropped, undefined, '其它契约不受影响')
+})

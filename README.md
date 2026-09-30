@@ -60,6 +60,7 @@ SDO **不是**默认加载的插件。它随包提供**一个 preset**，只有�
 |---|---|
 | 派发宿主调用未接线 | `sdo_plan action=next` 会**选后端**（subagent/native-team/inline）、生成带 CAS 版本的派发请求并留痕；宿主 `SubagentRuntime.start` 的**真实调用尚未接线**（起一次模型运行需要凭据）。当前请由流程官用 `send_message` 转交，或按 inline 就地执行 |
 | 子代理用量未归集 | `sdo_cost` 目前只统计驾驶舱会话；子代理会话的 session 对象未暴露给插件，回执里会**明确说明**而不是编数 |
+| 命令结果的渲染（**已解决·插件侧**） | Web 客户端不渲染"轮次之外"的命令节点（上游缺陷，见 `docs/verification/2026-09-29-上游问题-命令结果不渲染.md`）。SDO 用 `commandEcho`（默认 `echo`）把命令结果经 **`agent.inbox.send(msg,'next-step',wakeup=false)`** 投递成一条**插件来源**的消息：**界面可见、不唤醒轮次、不需要模型回复**（真机确认；会话记录里表现为 `agent/inbox/spliced`）。设 `commandEcho: none` 则回到设计 §9.2 的原始语义（结果只回命令面，界面看不到） |
 | 面板未做 | 文本看板（`/sdo-board`，支持 `--expand/--all/--write`，输出幂等）已可用；**Web 面板**（client 插件，`dsh.client = {inject, platform:'web'}`）尚未实现。面板类改动**晚启用需要刷新页面** |
 | L3 纪律守卫 | 策略与钩子已就位（fail-open，只在 `gateLevel: strict` 拦）；deny 分支在本环境**未做实测** |
 | 发布/运维 | 明确非目标：SDO 到"交付包 + 验收矩阵 + 回滚点"为止 |
@@ -77,3 +78,29 @@ presets/         sdo-office.patch.yml（唯一入口）
 ```
 
 真源是 `.sdo/journal.jsonl`（追加式），`.sdo/` 下其余文件都是**派生投影**（可重建：`sdo_status action=…` 会按需重建）。
+
+
+## 运行时依赖口径（D-07，2026-09-30 用户核准）
+
+- 宿主侧运行时依赖**只允许 Node 内置 + `@deepseek-ai/*` 官方包**；**禁止第三方**。
+- **preset 行不得引用官方包**——实测会让整个 preset 注册失败（症状：会话里选不到 `sdo-office`）。
+- 本插件以**代码依赖**装载 `@deepseek-ai/dsh-plan-mode`（+ 其依赖树），用于在 sdo-office 会话内**中途**切进计划评审（§8.5/Q-17）。装载失败不影响其它功能：退回 `sdo_design action=review|waive-plan` 两条出口。
+- **语义注意**：plan-mode 是「引导文本 + 日志协作状态」；物理阻止写操作的是 **sandbox/approval 策略**，plan-mode 本身不读写 plan state。
+
+## 界面语言（`lang`）
+
+插件行配置里加 `lang` 即可切换**界面语言**（工具描述、命令描述、状态块、门禁/判据文案、工具回执）：
+
+```yaml
+# presets/sdo-office.patch.yml 里那一行的 config
+- id: sdo-office
+  name: dsh-software-dev-office
+  config:
+    lang: en          # 默认 zh-CN；随包另有 en
+```
+
+规则（设计取舍）：
+- **`zh-CN` 是基准语言**，永远完整；目标语言**逐键覆盖**它，**缺键回落中文**——因此新增语言包可以渐进补译，绝不会出现空白或键名；
+- **未知语言一律回落基准语言**（显示语言配错不该让会话不可用）；
+- 标识（`G0` / `REQ-001` / `in-progress`）**不翻译**：它们进出 journal、命令参数与追溯图，改名会破坏真源；翻译只发生在显示层（`t()` / `fmt()` / `label()`）；
+- 新增语言 = 放一个 `src/data/lang/<locale>.yml` + 在 `src/domain/i18n.ts` 的 `LANGUAGES` 登记 + 加一条"覆盖全部键"的测试（已有：`test/m7.test.ts` 会断言目标语言**逐键覆盖**基准语言且**不得残留中文**，半翻译会被判红）。

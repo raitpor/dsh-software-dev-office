@@ -8,6 +8,7 @@
  *
  * G2 的 7 条准则直接复用 DoR 实现（`evaluateDor`），保证"需求基线门禁"只有一份判定逻辑。
  */
+import { fmt, t } from './i18n.js'
 import { existsSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -90,251 +91,282 @@ function hasSubstantiveContent(dir: string): boolean {
 }
 
 /** 门禁检查器：键与流程数据里的 `criteria[].check` 一一对应。 */
+/** 原型是否在本项目「在局」：流程是原型流程，或工作区里已有原型目录（**D3**）。 */
+export function prototypeInPlay(ctx: GateContext): boolean {
+  if (ctx.project?.process === 'prototype') return true
+  return existsSync(join(ctx.workspace, ctx.prototypeDir))
+}
+
 export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult> = {
   'project.scope.in': (ctx) =>
     (ctx.project?.scope.in.length ?? 0) > 0
-      ? ok('project.scope.in', `范围（in）${ctx.project?.scope.in.length ?? 0} 条`)
-      : fail('project.scope.in', '范围（in）为空', '用 `sdo_project action=update scopeIn=…` 写明做什么'),
+      ? ok('project.scope.in', fmt('uiGates.k1', { p1: ctx.project?.scope.in.length ?? 0 }))
+      : fail('project.scope.in', t('uiGates.k2'), t('uiGates.k3')),
 
   'project.scope.out': (ctx) =>
     (ctx.project?.scope.out.length ?? 0) > 0
-      ? ok('project.scope.out', `非目标（out）${ctx.project?.scope.out.length ?? 0} 条`)
-      : fail('project.scope.out', '未声明非目标（out）', '用 `sdo_project action=update scopeOut=…` 明确不做什么'),
+      ? ok('project.scope.out', fmt('uiGates.k4', { p1: ctx.project?.scope.out.length ?? 0 }))
+      : fail('project.scope.out', t('uiGates.k5'), t('uiGates.k6')),
 
   'project.stakeholders': (ctx) =>
     (ctx.project?.stakeholders.length ?? 0) > 0
-      ? ok('project.stakeholders', `干系人 ${ctx.project?.stakeholders.length ?? 0} 个`)
-      : fail('project.stakeholders', '干系人为空', '用 `sdo_project action=update stakeholders=…` 列出干系人'),
+      ? ok('project.stakeholders', fmt('uiGates.k7', { p1: ctx.project?.stakeholders.length ?? 0 }))
+      : fail('project.stakeholders', t('uiGates.k8'), t('uiGates.k9')),
 
   'project.metrics': (ctx) => {
     const metrics = ctx.project?.metrics.success ?? []
     if (metrics.length === 0) {
-      return fail('project.metrics', '成功度量为空', '用 `sdo_project action=update metricsSuccess=…` 给出可测指标')
+      return fail('project.metrics', t('uiGates.k10'), t('uiGates.k11'))
     }
     const measurable = metrics.some((metric) => /\d/u.test(metric))
     return measurable
-      ? ok('project.metrics', `成功度量 ${metrics.length} 条（含数值）`)
-      : fail('project.metrics', `成功度量不可测：${metrics.join('；')}`, '把度量写成"指标 + 条件 + 阈值"（含数值）')
+      ? ok('project.metrics', fmt('uiGates.k12', { p1: metrics.length }))
+      : fail('project.metrics', fmt('uiGates.k13', { p1: metrics.join('；') }), t('uiGates.k14'))
   },
 
   'project.glossary': (ctx) => {
     const terms = Object.keys(ctx.project?.glossary ?? {})
     return terms.length > 0
-      ? ok('project.glossary', `术语表 ${terms.length} 条`)
-      : fail('project.glossary', '术语表为空', '用 `sdo_project action=update glossary={"术语":"定义"}` 补术语')
+      ? ok('project.glossary', fmt('uiGates.k15', { p1: terms.length }))
+      : fail('project.glossary', t('uiGates.k16'), t('uiGates.k17'))
   },
 
   'feasibility.verdict': (ctx) => {
     const assessment = ctx.feasibility
-    if (assessment === undefined) return fail('feasibility.verdict', '尚未做可行性评估', '调用 `sdo_feasibility action=assess`')
+    if (assessment === undefined) return fail('feasibility.verdict', t('uiGates.k18'), t('uiGates.k19'))
     return assessment.verdict === 'go'
-      ? ok('feasibility.verdict', 'TELOS 结论：Go')
-      : fail('feasibility.verdict', `TELOS 结论：${assessment.verdict}`, '消解阻塞项后重新评估为 Go，或明确终止项目')
+      ? ok('feasibility.verdict', t('uiGates.k20'))
+      : fail('feasibility.verdict', fmt('uiGates.k21', { p1: assessment.verdict }), t('uiGates.k22'))
   },
 
   'feasibility.risks': (ctx) => {
     const stats = riskStats(ctx.risks)
-    if (stats.total === 0) return fail('feasibility.risks', '风险登记为空', '用 `sdo_risk action=log` 登记风险')
+    if (stats.total === 0) return fail('feasibility.risks', t('uiGates.k23'), t('uiGates.k24'))
     if (stats.unmitigated.length > 0) {
       return fail(
         'feasibility.risks',
-        `高/阻塞级风险缺应对或责任人：${stats.unmitigated.map((risk) => risk.id).join(' ')}`,
-        '为每条高风险补 `mitigation` 与 `owner`',
+        fmt('uiGates.k25', { p1: stats.unmitigated.map((risk) => risk.id).join(' ') }),
+        t('uiGates.k26'),
       )
     }
-    return ok('feasibility.risks', `风险 ${stats.total} 条（高 ${stats.high} / 阻塞 ${stats.blockers}）`)
+    return ok('feasibility.risks', fmt('uiGates.k27', { p1: stats.total, p2: stats.high, p3: stats.blockers }))
   },
 
   'feasibility.poc': (ctx) => {
     const poc = ctx.feasibility?.poc ?? []
     return poc.length > 0
-      ? ok('feasibility.poc', `PoC/验证建议 ${poc.length} 条`)
-      : fail('feasibility.poc', '未给出 PoC 或验证建议', '在 `sdo_feasibility action=assess` 里给出 `poc`（高风险项必须验证）')
+      ? ok('feasibility.poc', fmt('uiGates.k28', { p1: poc.length }))
+      : fail('feasibility.poc', t('uiGates.k29'), t('uiGates.k30'))
   },
 
   'redteam.executed': (ctx) => {
     const scale = ctx.project?.tailoring?.scale ?? 'normal'
-    if (scale === 'trivial') return ok('redteam.executed', '规模档 trivial，默认不要求红队')
-    if (ctx.redTeamExecuted) return ok('redteam.executed', '红队质询已执行')
-    if (ctx.redTeamDisabled) return ok('redteam.executed', '本会话已显式停用（留痕）')
-    return fail('redteam.executed', '红队质询未执行', '调用 `sdo_redteam action=attack`，或明确要求停用（写 `redteam/mode` 留痕）')
+    if (scale === 'trivial') return ok('redteam.executed', t('uiGates.k31'))
+    if (ctx.redTeamExecuted) return ok('redteam.executed', t('uiGates.k32'))
+    if (ctx.redTeamDisabled) return ok('redteam.executed', t('uiGates.k33'))
+    return fail('redteam.executed', t('uiGates.k34'), t('uiGates.k35'))
   },
 
   'redteam.closed': (ctx) => {
     if (ctx.issues.length === 0) {
-      return fail('redteam.closed', '没有红队议题记录', '先执行 `sdo_redteam action=attack`（会为每条需求开议题）')
+      return fail('redteam.closed', t('uiGates.k36'), t('uiGates.k37'))
     }
     const open = ctx.issues.filter((issue) => !issueClosure(issue, ctx.questions, ctx.risks).closed)
-    if (open.length === 0) return ok('redteam.closed', `红队议题 ${ctx.issues.length} 个已全部闭环`)
+    if (open.length === 0) return ok('redteam.closed', fmt('uiGates.k38', { p1: ctx.issues.length }))
     return fail(
       'redteam.closed',
-      `未闭环议题：${open.map((issue) => issue.id).join(' ')}（每条必须回到需求或转为风险）`,
-      '回答议题下的质询问题（`sdo_requirement action=answer`），或登记一条指向该议题的风险：`sdo_risk action=log origin=<议题 id> …`',
+      fmt('uiGates.k39', { p1: open.map((issue) => issue.id).join(' ') }),
+      t('uiGates.k40'),
     )
   },
 
   'human.signoff': (ctx) => {
     const signer = (ctx.approvedBy ?? '').trim()
     return signer === ''
-      ? fail('human.signoff', '缺少人类签字', '基线时提供 `approvedBy`（人类签字，设计 §15.3 硬条件）')
-      : ok('human.signoff', `签字人：${signer}`)
+      ? fail('human.signoff', t('uiGates.k41'), t('uiGates.k42'))
+      : ok('human.signoff', fmt('uiGates.k43', { p1: signer }))
   },
 
   'prototype.timebox': (ctx) => {
     const dir = join(ctx.workspace, ctx.prototypeDir)
     const hasContent = hasSubstantiveContent(dir)
     if (!hasContent) {
-      return fail('prototype.timebox', `原型目录 \`${ctx.prototypeDir}/\` 没有实质内容`, '把可运行原型放进该目录（并保持它可被整目录删除）')
+      return fail('prototype.timebox', fmt('uiGates.k44', { p1: ctx.prototypeDir }), t('uiGates.k45'))
     }
+    // **D3**：本流程不涉及原型（且没有原型目录）时，原型类判据**不适用**——
+    // 否则 waterfall 的 G7 会有一条永远为红、与项目事实无关的判据（"不做原型"没有出路）。
+    if (!prototypeInPlay(ctx)) return ok('prototype.timebox', t('uiGates.k46'))
     return ctx.prototypeThrowaway
-      ? ok('prototype.timebox', `原型已产出且标记 throwaway`)
-      : fail('prototype.timebox', '原型未标记 throwaway', '在 `.sdo/config.yml` 里设置 `prototype: {throwaway: true}`')
+      ? ok('prototype.timebox', t('uiGates.k47'))
+      : fail('prototype.timebox', t('uiGates.k48'), t('uiGates.k49'))
   },
 
   'prototype.backfilled': (ctx) => {
+    if (!prototypeInPlay(ctx)) return ok('prototype.backfilled', t('uiGates.k50'))
     const fromPrototype = ctx.requirements.filter((requirement) => requirement.source.prototype === true)
     if (fromPrototype.length > 0) {
-      return ok('prototype.backfilled', `已从原型回填 ${fromPrototype.length} 条需求`)
+      return ok('prototype.backfilled', fmt('uiGates.k51', { p1: fromPrototype.length }))
     }
     const protoExists = existsSync(join(ctx.workspace, ctx.prototypeDir))
     return fail(
       'prototype.backfilled',
-      protoExists ? '原型存在但没有回填需求' : '尚未从原型回填需求',
-      '用 `sdo_requirement action=capture prototypeSource=true …` 把原型结论回填为需求',
+      protoExists ? t('uiGates.k52') : t('uiGates.k53'),
+      t('uiGates.k54'),
     )
   },
 
   'prototype.excluded': (ctx) => {
     const dir = join(ctx.workspace, ctx.prototypeDir)
-    if (!existsSync(dir)) return ok('prototype.excluded', `没有 \`${ctx.prototypeDir}/\` 目录`)
-    if (!hasSubstantiveContent(dir)) return ok('prototype.excluded', `\`${ctx.prototypeDir}/\` 只剩说明文件`)
+    if (!existsSync(dir)) return ok('prototype.excluded', fmt('uiGates.k55', { p1: ctx.prototypeDir }))
+    if (!hasSubstantiveContent(dir)) return ok('prototype.excluded', fmt('uiGates.k56', { p1: ctx.prototypeDir }))
     return fail(
       'prototype.excluded',
-      `\`${ctx.prototypeDir}/\` 仍有内容，不得进入交付产物（Q-05 / REQ-034）`,
-      `删除 \`${ctx.prototypeDir}/\`（原型是 throwaway），或先把结论回填为需求再删除`,
+      fmt('uiGates.k57', { p1: ctx.prototypeDir }),
+      fmt('uiGates.k58', { p1: ctx.prototypeDir }),
     )
   },
 
   'risks.logged': (ctx) => {
     const stats = riskStats(ctx.risks)
     return stats.total > 0
-      ? ok('risks.logged', `风险 ${stats.total} 条（未关闭 ${stats.open}）`)
-      : fail('risks.logged', '本圈没有风险登记', '用 `sdo_risk action=log` 记录本圈风险')
+      ? ok('risks.logged', fmt('uiGates.k59', { p1: stats.total, p2: stats.open }))
+      : fail('risks.logged', t('uiGates.k60'), t('uiGates.k61'))
   },
 
   'risks.mitigated': (ctx) => {
     const stats = riskStats(ctx.risks)
     return stats.unmitigated.length === 0
-      ? ok('risks.mitigated', '高/阻塞级风险均有应对与责任人')
+      ? ok('risks.mitigated', t('uiGates.k62'))
       : fail(
           'risks.mitigated',
-          `缺应对或责任人的风险：${stats.unmitigated.map((risk) => risk.id).join(' ')}`,
-          '补 `mitigation` 与 `owner`，或把风险降级/关闭（`sdo_risk action=update`）',
+          fmt('uiGates.k63', { p1: stats.unmitigated.map((risk) => risk.id).join(' ') }),
+          t('uiGates.k64'),
         )
   },
 
   'design.views': (ctx) => {
     const result = viewsCompleteness(ctx.store)
-    if (result.ok) return ok('design.views', `五视图齐备（${result.present.length} 张，均有元素）`)
+    if (result.ok) return ok('design.views', fmt('uiGates.k65', { p1: result.present.length }))
     const problems: string[] = []
-    if (result.missing.length > 0) problems.push(`缺 ${result.missing.join(' ')}`)
-    if (result.empty.length > 0) problems.push(`空视图 ${result.empty.join(' ')}`)
-    return fail('design.views', problems.join('；'), '用 `sdo_design action=create` 逐张补齐五视图（上下文/组件/运行时/数据/部署）')
+    if (result.missing.length > 0) problems.push(fmt('uiGates.k66', { p1: result.missing.join(' ') }))
+    if (result.empty.length > 0) problems.push(fmt('uiGates.k67', { p1: result.empty.join(' ') }))
+    return fail('design.views', problems.join('；'), t('uiGates.k68'))
   },
 
   'design.adr': (ctx) => {
     const result = adrCompleteness(ctx.store)
-    if (result.ok) return ok('design.adr', `ADR ${result.total} 条，均含备选与后果`)
-    if (result.total === 0) return fail('design.adr', '还没有 ADR', '用 `sdo_adr action=record` 记录关键决策（必须含备选方案与后果）')
-    return fail('design.adr', `缺备选或后果：${result.incomplete.join(' ')}`, '为这些 ADR 补 `alternatives` 与 `consequences`（设计 §6.3）')
+    if (result.ok) return ok('design.adr', fmt('uiGates.k69', { p1: result.total }))
+    if (result.total === 0) return fail('design.adr', t('uiGates.k70'), t('uiGates.k71'))
+    return fail('design.adr', fmt('uiGates.k72', { p1: result.incomplete.join(' ') }), t('uiGates.k73'))
   },
 
   'trace.orphans': (ctx) => {
     const data = report(ctx.store, ctx.requirements)
     const orphans = [...data.orphans.design, ...data.orphans.tasks, ...data.orphans.tests]
-    if (ctx.requirements.length === 0) return fail('trace.orphans', '没有需求可追溯', '先完成需求基线（G2）')
-    if (orphans.length === 0) return ok('trace.orphans', `无孤儿；需求覆盖率 ${Math.round(data.coverage * 100)}%`)
+    if (ctx.requirements.length === 0) return fail('trace.orphans', t('uiGates.k74'), t('uiGates.k75'))
+    if (orphans.length === 0) return ok('trace.orphans', fmt('uiGates.k76', { p1: Math.round(data.coverage * 100) }))
     return fail(
       'trace.orphans',
-      `孤儿元素：${orphans.join(' ')}`,
-      '用 `sdo_trace action=link from=REQ-001 to=DES-001 kind=req-des` 把每个设计元素挂到需求上',
+      fmt('uiGates.k77', { p1: orphans.join(' ') }),
+      t('uiGates.k78'),
     )
   },
 
   'design.contracts': (ctx) => {
     const result = contractCoverage(ctx.store)
-    if (result.ok) return ok('design.contracts', `契约覆盖 ${result.covered}/${result.totalEdges} 条跨组件交互`)
+    if (result.ok) return ok('design.contracts', fmt('uiGates.k79', { p1: result.covered, p2: result.totalEdges }))
     const problems: string[] = []
-    if (result.totalEdges === 0) problems.push('组件视图没有跨组件依赖边')
+    if (result.totalEdges === 0) problems.push(t('uiGates.k80'))
     if (result.missing.length > 0) {
-      problems.push(`缺契约：${result.missing.map((edge) => `${edge.consumer}→${edge.producer}`).join(' ')}`)
+      problems.push(fmt('uiGates.k81', { p1: result.missing.map((edge) => `${edge.consumer}→${edge.producer}`).join(' ') }))
     }
-    if (result.incompleteSemantics.length > 0) problems.push(`失败语义不全：${result.incompleteSemantics.join(' ')}`)
-    return fail('design.contracts', problems.join('；'), '用 `sdo_design action=contract` 为每条交互补契约（含超时/重试/幂等）')
+    if (result.incompleteSemantics.length > 0) problems.push(fmt('uiGates.k82', { p1: result.incompleteSemantics.join(' ') }))
+    return fail('design.contracts', problems.join('；'), t('uiGates.k83'))
   },
 
   'plan.tasks': (ctx) => {
     const tasks = listTasks(ctx.store)
     if (tasks.length === 0) {
-      return fail('plan.tasks', '还没有任务卡', '用 `sdo_plan action=decompose` 按追溯图拆分任务卡')
+      return fail('plan.tasks', t('uiGates.k84'), t('uiGates.k85'))
     }
     const issues = validatePlan(tasks)
-    if (issues.length === 0) return ok('plan.tasks', `任务卡 ${tasks.length} 张，六条机械校验全过`)
+    if (issues.length === 0) return ok('plan.tasks', fmt('uiGates.k86', { p1: tasks.length }))
     return fail(
       'plan.tasks',
-      `拆分校验不通过：${issues.map((issue) => `${issue.taskId}:${issue.detail}`).join('；')}`,
-      issues[0]?.remedy ?? '修正这些卡再试',
+      fmt('uiGates.k87', { p1: issues.map((issue) => `${issue.taskId}:${issue.detail}`).join('；') }),
+      issues[0]?.remedy ?? t('uiGates.kFixCards'),
     )
   },
 
   'plan.testplan': (ctx) => {
     const cases = listTestCases(ctx.store)
-    if (cases.length === 0) return fail('plan.testplan', '还没有测试用例', '用 `sdo_test action=plan` 写用例（覆盖每条 must 需求）')
+    if (cases.length === 0) return fail('plan.testplan', t('uiGates.k88'), t('uiGates.k89'))
     const musts = ctx.requirements.filter((requirement) => requirement.priority === 'must')
     const uncovered = musts
       .filter((requirement) => !cases.some((testCase) => testCase.requirement === requirement.id))
       .map((requirement) => requirement.id)
-    if (uncovered.length === 0) return ok('plan.testplan', `用例 ${cases.length} 条，覆盖全部 must 需求（${musts.length}）`)
-    return fail('plan.testplan', `must 需求缺用例：${uncovered.join(' ')}`, `为 ${uncovered.join(' ')} 各写至少一条用例（\`sdo_test action=plan requirement=…\`）`)
+    if (uncovered.length === 0) return ok('plan.testplan', fmt('uiGates.k90', { p1: cases.length, p2: musts.length }))
+    return fail('plan.testplan', fmt('uiGates.k91', { p1: uncovered.join(' ') }), fmt('uiGates.k92', { p1: uncovered.join(' ') }))
   },
 
   'tasks.all_done': (ctx) => {
     const stats = planStats(listTasks(ctx.store))
-    if (stats.total === 0) return fail('tasks.all_done', '还没有任务卡', '先 `sdo_plan action=decompose`')
+    if (stats.total === 0) return fail('tasks.all_done', t('uiGates.k93'), t('uiGates.k94'))
     if (stats.allDone) {
-      const missingEvidence = listTasks(ctx.store).filter((task) => task.evidence.length === 0)
+      // **D7**：dropped 卡本就没有证据，不得算进"完成但无证据"
+      const missingEvidence = listTasks(ctx.store).filter(
+        (task) => task.status !== 'dropped' && task.evidence.length === 0,
+      )
+      const droppedNote = stats.total === stats.active ? '' : t('gate.tasksDroppedNote').replace('{n}', String(stats.total - stats.active))
       return missingEvidence.length === 0
-        ? ok('tasks.all_done', `任务卡 ${stats.total} 张全部完成且有证据`)
-        : fail('tasks.all_done', `完成但无证据：${missingEvidence.map((task) => task.id).join(' ')}`, '补证据（`sdo_task action=done` 必须带 evidence）')
+        ? ok('tasks.all_done', `${fmt('gate.tasksAllDone', { n: stats.active })}${droppedNote}`)
+        : fail(
+            'tasks.all_done',
+            `${fmt('gate.tasksMissingEvidence', { ids: missingEvidence.map((task) => task.id).join(' ') })}`,
+            t('gate.tasksMissingEvidenceRemedy'),
+          )
     }
     return fail(
       'tasks.all_done',
-      `未完成：${Object.entries(stats.byStatus)
-        .filter(([status]) => status !== 'done' && status !== 'verified')
-        .map(([status, count]) => `${status} ${count}`)
-        .join('，')}`,
-      '推进或显式放弃剩余任务卡（`sdo_task action=done|block`）',
+      fmt('gate.tasksIncomplete', {
+        list: Object.entries(stats.byStatus)
+          // **D7**：dropped 是显式放弃的终态，不是"未完成"
+          .filter(([status]) => status !== 'done' && status !== 'verified' && status !== 'dropped')
+          .map(([status, count]) => `${t(`taskStatus.${status}`, status)} ${count}`)
+          .join('，'),
+      }),
+      t('gate.tasksAllDoneRemedy'),
     )
   },
 
   'trace.coverage': (ctx) => {
     const data = report(ctx.store, ctx.requirements)
     const orphans = [...data.orphans.design, ...data.orphans.tasks, ...data.orphans.tests]
-    if (orphans.length > 0) return fail('trace.coverage', `仍有孤儿：${orphans.join(' ')}`, '把孤儿元素挂回需求（`sdo_trace action=link`）')
-    if (data.uncoveredMust.length > 0) return fail('trace.coverage', `must 需求缺测试用例：${data.uncoveredMust.join(' ')}`, '补 req-tc 边')
-    return ok('trace.coverage', `覆盖率 ${Math.round(data.coverage * 100)}%，无孤儿`)
+    if (orphans.length > 0) return fail('trace.coverage', fmt('uiGates.k95', { p1: orphans.join(' ') }), t('uiGates.k96'))
+    if (data.uncoveredMust.length > 0) return fail('trace.coverage', fmt('uiGates.k97', { p1: data.uncoveredMust.join(' ') }), t('uiGates.k98'))
+    return ok('trace.coverage', fmt('uiGates.k99', { p1: Math.round(data.coverage * 100) }))
   },
 
   'tests.passed': (ctx) => {
     const stats = verificationStats(ctx.store)
-    if (stats.cases === 0) return fail('tests.passed', '没有测试用例', '用 `sdo_test action=plan` 写用例')
-    if (stats.results === 0) return fail('tests.passed', '用例都没有执行结果', '用 `sdo_test action=record` 记录结果（附证据）')
-    if (stats.failed > 0) return fail('tests.passed', `失败用例：${stats.failedCaseIds.join(' ')}`, '修好并重跑；失败用例不允许带着过门禁')
+    if (stats.cases === 0) return fail('tests.passed', t('uiGates.k100'), t('uiGates.k101'))
+    if (stats.results === 0) return fail('tests.passed', t('uiGates.k102'), t('uiGates.k103'))
+    if (stats.failed > 0) return fail('tests.passed', fmt('uiGates.k104', { p1: stats.failedCaseIds.join(' ') }), t('uiGates.k105'))
     const unrun = listTestCases(ctx.store)
       .filter((testCase) => !listTestResults(ctx.store).some((result) => result.caseId === testCase.id))
       .map((testCase) => testCase.id)
-    if (unrun.length > 0) return fail('tests.passed', `有用例没跑：${unrun.join(' ')}`, '把每条用例都跑掉')
-    return ok('tests.passed', `用例 ${stats.cases} 条全部有结果（通过 ${stats.passed}）`)
+    if (unrun.length > 0) return fail('tests.passed', fmt('uiGates.k106', { p1: unrun.join(' ') }), t('uiGates.k107'))
+    // **G-02**：判据描述承诺「全部 must REQ 有通过的测试用例」，实现却只数用例计数 ——
+    // 于是"删掉一条用例"或"新增 must 需求"都不会让这条判据变红（假保证）。这里补上真覆盖校验。
+    const trace = report(ctx.store, ctx.requirements)
+    if (trace.uncoveredMust.length > 0) {
+      return fail(
+        'tests.passed',
+        fmt('uiGates.k108', { p1: trace.uncoveredMust.join(' ') }),
+        t('uiGates.k109'),
+      )
+    }
+    return ok('tests.passed', fmt('uiGates.k110', { p1: stats.cases, p2: stats.passed }))
   },
 
   'defects.closed': (ctx) => {
@@ -343,9 +375,9 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
       const open = listDefects(ctx.store)
         .filter((defect) => defect.severity === 'blocker' && defect.status !== 'closed' && defect.status !== 'wontfix')
         .map((defect) => defect.id)
-      return fail('defects.closed', `阻塞级缺陷未关闭：${open.join(' ')}`, '修掉并关闭（`sdo_test action=defect id=… status=closed`）')
+      return fail('defects.closed', fmt('uiGates.k111', { p1: open.join(' ') }), t('uiGates.k112'))
     }
-    return ok('defects.closed', `无未关闭的阻塞级缺陷（未关闭总计 ${stats.defectsOpen}）`)
+    return ok('defects.closed', fmt('uiGates.k113', { p1: stats.defectsOpen }))
   },
 
   'review.independent': (ctx) => {
@@ -353,50 +385,50 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     const tasks = listTasks(ctx.store)
     const violations = independenceViolations(reviews, tasks)
     if (violations.length > 0) {
-      return fail('review.independent', violations.map((item) => item.detail).join('；'), '换一个评审者（作者不得评审自己的产出）')
+      return fail('review.independent', violations.map((item) => item.detail).join('；'), t('uiGates.k114'))
     }
     const doneTasks = tasks.filter((task) => task.status === 'done' || task.status === 'verified')
     const unreviewed = doneTasks.filter((task) => !reviews.some((review) => review.taskId === task.id && review.verdict === 'pass')).map((task) => task.id)
     if (unreviewed.length > 0) {
-      return fail('review.independent', `已完成但无通过评审：${unreviewed.join(' ')}`, '用 `sdo_review action=record`（评审者 ≠ 作者）')
+      return fail('review.independent', fmt('uiGates.k115', { p1: unreviewed.join(' ') }), t('uiGates.k116'))
     }
-    return ok('review.independent', `评审 ${reviews.length} 条，独立性无违规`)
+    return ok('review.independent', fmt('uiGates.k117', { p1: reviews.length }))
   },
 
   'iteration.increment': (ctx) => {
     const current = readIteration(ctx.store)
-    if (current === undefined) return fail('iteration.increment', '还没有开迭代', '用 `sdo_plan action=iteration goal=…` 开一个迭代')
+    if (current === undefined) return fail('iteration.increment', t('uiGates.k118'), t('uiGates.k119'))
     const tasks = iterationTasks(ctx.store, current.number)
-    if (tasks.length === 0) return fail('iteration.increment', `迭代 ${current.number} 没有任务卡`, '为这个迭代拆出任务卡')
+    if (tasks.length === 0) return fail('iteration.increment', fmt('uiGates.k120', { p1: current.number }), t('uiGates.k121'))
     const unfinished = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified').map((task) => task.id)
-    if (unfinished.length > 0) return fail('iteration.increment', `迭代内未完成：${unfinished.join(' ')}`, '完成或移出这些卡')
-    return ok('iteration.increment', `迭代 ${current.number} 产出增量（${tasks.length} 张卡全部完成）`)
+    if (unfinished.length > 0) return fail('iteration.increment', fmt('uiGates.k122', { p1: unfinished.join(' ') }), t('uiGates.k123'))
+    return ok('iteration.increment', fmt('uiGates.k124', { p1: current.number, p2: tasks.length }))
   },
 
   'iteration.dod': (ctx) => {
     const current = readIteration(ctx.store)
-    if (current === undefined) return fail('iteration.dod', '还没有开迭代', '用 `sdo_plan action=iteration`')
-    if (current.goal.trim() === '') return fail('iteration.dod', '迭代没有目标', '给迭代写目标（否则"完成"无从判定）')
+    if (current === undefined) return fail('iteration.dod', t('uiGates.k125'), t('uiGates.k126'))
+    if (current.goal.trim() === '') return fail('iteration.dod', t('uiGates.k127'), t('uiGates.k128'))
     const tasks = iterationTasks(ctx.store, current.number)
     const noEvidence = tasks.filter((task) => task.status === 'done' && task.evidence.length === 0).map((task) => task.id)
-    if (noEvidence.length > 0) return fail('iteration.dod', `完成但无证据：${noEvidence.join(' ')}`, '补证据')
+    if (noEvidence.length > 0) return fail('iteration.dod', fmt('uiGates.k129', { p1: noEvidence.join(' ') }), t('uiGates.k130'))
     const stats = verificationStats(ctx.store)
-    if (stats.results === 0) return fail('iteration.dod', '迭代内没有任何测试结果', '跑用例并记录结果')
-    return ok('iteration.dod', `迭代 ${current.number} 的 DoD 满足（含 ${stats.results} 条测试结果）`)
+    if (stats.results === 0) return fail('iteration.dod', t('uiGates.k131'), t('uiGates.k132'))
+    return ok('iteration.dod', fmt('uiGates.k133', { p1: current.number, p2: stats.results }))
   },
 
   'delivery.manifest': (ctx) => {
     const result = deliveryCompleteness(ctx.store, ctx.requirements, ctx.prototypeDir)
     if (result.ok) {
-      return ok('delivery.manifest', `交付清单 ${result.manifest?.id ?? ''}：产物 ${result.manifest?.artifacts.length ?? 0} 项，验收行 ${result.manifest?.acceptance.length ?? 0} 条`)
+      return ok('delivery.manifest', fmt('uiGates.k134', { p1: result.manifest?.id ?? '', p2: result.manifest?.artifacts.length ?? 0, p3: result.manifest?.acceptance.length ?? 0 }))
     }
-    return fail('delivery.manifest', result.problems.join('；'), '用 `sdo_deliver action=package` 生成完整清单（含 sha256、验收矩阵、回滚点）')
+    return fail('delivery.manifest', result.problems.join('；'), t('uiGates.k135'))
   },
 
   'risks.conclusion': (ctx) =>
     ctx.riskConclusion === undefined
-      ? fail('risks.conclusion', '本圈还没有风险结论', '用 `sdo_risk action=conclude conclusion=continue|adjust|stop rationale=…` 给出结论')
-      : ok('risks.conclusion', `本圈结论：${ctx.riskConclusion}`),
+      ? fail('risks.conclusion', t('uiGates.k136'), t('uiGates.k137'))
+      : ok('risks.conclusion', fmt('uiGates.k138', { p1: ctx.riskConclusion })),
 }
 
 /** G2 的 7 条准则复用 DoR 判定（同一份实现，避免两套口径）。 */
@@ -437,11 +469,11 @@ export function evaluateGate(process: ProcessDef, gateId: string, ctx: GateConte
         {
           id: 'gate.unknown',
           ok: false,
-          detail: `流程 ${process.id} 里没有定义门禁 ${gateId}`,
-          remedy: `可用门禁：${process.gates.map((gate) => gate.id).join(' ')}`,
+          detail: fmt('uiGates.k139', { p1: process.id, p2: gateId }),
+          remedy: fmt('uiGates.k140', { p1: process.gates.map((gate) => gate.id).join(' ') }),
         },
       ],
-      remedy: [`流程 ${process.id} 未定义门禁 ${gateId}`],
+      remedy: [fmt('uiGates.k141', { p1: process.id, p2: gateId })],
     }
   }
 
@@ -453,13 +485,19 @@ export function evaluateGate(process: ProcessDef, gateId: string, ctx: GateConte
     if (checker === undefined) {
       return fail(
         criterion.id,
-        `检查器 \`${criterion.check}\` 尚未实现（后续里程碑）`,
-        '该准则的实现排在后续里程碑；在此之前该门禁无法通过（不允许"查不到就算过"）',
+        fmt('uiGates.k142', { p1: criterion.check }),
+        t('uiGates.k143'),
       )
     }
     const result = checker(ctx)
     return { ...result, id: criterion.id }
   })
+  for (const criterion of criteria) {
+    if (criterion.desc === undefined) {
+      const defined = definition.criteria.find((candidate) => candidate.id === criterion.id)
+      if (defined?.desc !== undefined) criterion.desc = defined.desc
+    }
+  }
 
   const waived = ctx.waivedGates.includes(gateId)
   const allOk = criteria.every((criterion) => criterion.ok)

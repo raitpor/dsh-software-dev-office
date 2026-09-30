@@ -8,6 +8,7 @@
  *   uncertainty = 该维度当前得分越低越不确定（0→3、1→2、2→1）
  *   blocking    = severityWeight（P0=3 / P1=2 / P2=1）
  */
+import { t } from './i18n.js'
 import { loadPackagedYaml } from '../infra/data.js'
 import { nextId } from '../infra/ids.js'
 import type { Journal } from '../infra/journal.js'
@@ -72,13 +73,21 @@ export function openQuestionsFor(store: SdoStore, requirementId: string): GrillQ
 }
 
 /** 该模板是否已经就这条需求问过（避免重复追问同一问法）。 */
-function alreadyAsked(questions: GrillQuestion[], templateId: string, requirementId: string): boolean {
-  return questions.some(
-    (question) =>
-      question.why.includes(`#${templateId}`) &&
-      question.targets.includes(requirementId) &&
-      question.status !== 'obsolete',
-  )
+function alreadyAsked(
+  questions: GrillQuestion[],
+  templateId: string,
+  requirementId: string,
+  templateText?: string,
+): boolean {
+  const norm = (text: string): string => text.replace(/\s+/gu, '').replace(/^针对[^：]*：/u, '')
+  return questions.some((question) => {
+    if (question.status === 'obsolete') return false
+    if (!question.targets.includes(requirementId)) return false
+    // ① 同一模板：按 why 里的 #templateId 判重
+    if (question.why.includes(`#${templateId}`)) return true
+    // ② **同一段文字**（实测反馈：两个模板文字相同 / 换个写法又问一遍，用户看到的就是"反复问同一题"）
+    return templateText !== undefined && norm(question.text) === norm(templateText)
+  })
 }
 
 /** 选出一批要问的问题（设计 §5.2.3：批量上限 4、P0 优先、禁止无选项追问）。 */
@@ -235,6 +244,23 @@ export interface AskInput {
 }
 
 /** 把一批模板落成问题账本条目（`question/asked` 留痕）。 */
+/**
+ * 取一条需求**真正薄弱**的维度（歧义评分 0 分）。
+ * 用途：让红队质询由需求的自身状况派生，而不是把同一句模板话复制到每条需求上
+ * （实测反馈：6 条议题文字完全相同，看起来就是把模板复制了 6 份）。
+ */
+export function weakDimensions(requirement: Requirement | undefined): Dimension[] {
+  if (requirement === undefined) return []
+  const holder = requirement.ambiguity as unknown as {
+    dimensions?: Record<string, number>
+    scores?: Record<string, number>
+  }
+  const table = holder.dimensions ?? holder.scores ?? {}
+  return Object.entries(table)
+    .filter(([, score]) => score === 0)
+    .map(([dimension]) => dimension as Dimension)
+}
+
 export function askQuestions(
   store: SdoStore,
   journal: Journal,
@@ -284,12 +310,47 @@ export function askQuestions(
   }
 
   if (input.includeRedTeam === true) {
-    const limit = Math.max(1, Math.min(redTeamQuestions().length, input.limit ?? redTeamQuestions().length))
-    for (const requirement of requirements) {
-      for (const template of redTeamQuestions().slice(0, limit)) {
-        if (alreadyAsked(existing, template.id, requirement.id)) continue
-        templates.push({ template, target: requirement.id })
+    // DEF（AsterChat 实测）：`limit` 曾被当成"每条需求问几个角度"，10 条需求 × 6 角度 = **60 问**，
+    // 一次调用就把上下文与问题账本灌爆（真源：会话 session-ccda9900 出现 Q-0025…Q-0084）。
+    // 正确语义：`limit` 是**本次调用的总问题数上限**，并按目标**轮转分配**，
+    // 这样每条被攻击的需求都能拿到问题（议题才可能闭环），又不会失控。
+    const bank = redTeamQuestions()
+    // 角度排序：先问"正对这条需求薄弱维度"的角度——不同需求得到的问题因此不同，
+    // 而不是每条需求都从同一个角度表头开始复制。
+    const rankBank = (requirement: Requirement): typeof bank => {
+      const weak = weakDimensions(requirement)
+      return [...bank].sort((a, b) => Number(weak.includes(b.dimension)) - Number(weak.includes(a.dimension)))
+    }
+    const pools = requirements
+      .map((requirement) => ({
+        queue: rankBank(requirement)
+          .filter((template) => !alreadyAsked(existing, template.id, requirement.id, template.text))
+          .map((template) => ({ template, target: requirement.id })),
+      }))
+      .filter((pool) => pool.queue.length > 0)
+    const total = Math.max(1, Math.min(12, input.limit ?? 4))
+    let added = 0
+    while (added < total) {
+      let progressed = false
+      for (const pool of pools) {
+        const item = pool.queue.shift()
+        if (item === undefined) continue
+        // **让问题由需求自身派生**：带上需求标题 + 这条需求真正薄弱的维度；
+        // 若该角度正对薄弱维度，措辞会进一步指向它。这样 6 条需求得到的是 6 个**不同**的问题，
+        // 而不是同一句模板话复制 6 份（实测反馈的原话：看起来是同一个模板逐条复制）。
+        const owner = requirements.find((requirement) => requirement.id === item.target)
+        const weak = weakDimensions(owner)
+        const weakLabel = weak.map((dimension) => t(`dimension.${dimension}`, dimension)).join('、')
+        const focused = weak.includes(item.template.dimension)
+        const head = `针对「${owner?.title ?? item.target}」`
+          + (weakLabel === '' ? '' : `（该需求在「${weakLabel}」上尚未澄清）`)
+          + (focused ? `【本问聚焦：${t(`dimension.${item.template.dimension}`, item.template.dimension)}】` : '')
+        templates.push({ template: { ...item.template, text: `${head}：${item.template.text}` }, target: item.target })
+        added += 1
+        progressed = true
+        if (added >= total) break
       }
+      if (!progressed) break
     }
   }
 
@@ -342,6 +403,8 @@ export function askQuestions(
 }
 
 export interface AnswerInput {
+  /** 是否为"用户授权按建议记为假设"（必须真的问过用户） */
+  authorizedByUser?: boolean | undefined
   id: string
   answer: string
   /** 用户选中的选项下标（0 基）；给出时把选项文本一起记入答案 */
@@ -360,6 +423,15 @@ export function answerQuestion(
   project: SdoProject | undefined,
   input: AnswerInput,
 ): { question: GrillQuestion; updated: Requirement[] } | undefined {
+  // **不许自问自答**：把某题记为"假设"必须由用户授权（真的问过、用户说"你定"）。
+  // 未授权就 assume ⇒ 拒绝，并明确要求先去问用户。实测教训：模型曾把自己的推测当答案落账，
+  // 于是"审讯"变成 agent 的自问自答。
+  if (input.assume === true && input.authorizedByUser !== true) {
+    throw new Error(
+      '不允许自问自答：要把问题记为"假设"，必须先由**用户**授权（用户明确说过"按你的建议"之类）。'
+      + '请用提问工具把该问题问给用户；得到授权后再带 `authorizedByUser: true` 调用。',
+    )
+  }
   const question = readQuestion(store, input.id)
   if (question === undefined) return undefined
 
@@ -371,6 +443,7 @@ export function answerQuestion(
     ...question,
     answer: answerText,
     status: input.assume === true ? 'assumed' : 'answered',
+    ...(input.assume === true ? { authorizedByUser: true } : {}),
     answeredBy: input.by ?? 'human',
   }
   writeQuestion(store, next)
@@ -415,4 +488,84 @@ export function sortBySeverity(questions: GrillQuestion[]): GrillQuestion[] {
 /** 便捷：全部需求 id（供工具默认作用域）。 */
 export function allRequirementIds(store: SdoStore): string[] {
   return listRequirementIds(store)
+}
+
+
+/** 需求陈述里的"可用词"：中文取 2-gram，ASCII 取长度≥2 的 token（用于校验"引用原文"）。 */
+export function statementKeywords(statement: string): string[] {
+  const out = new Set<string>()
+  for (const token of statement.match(/[A-Za-z0-9][A-Za-z0-9._-]+/gu) ?? []) out.add(token.toLowerCase())
+  const cjk = statement.replace(/[^\u4e00-\u9fff]/gu, ' ')
+  for (const run of cjk.split(/\s+/u)) {
+    for (let i = 0; i + 2 <= run.length; i += 1) out.add(run.slice(i, i + 2))
+  }
+  return [...out]
+}
+
+export interface ProposedQuestion { text: string; dimension?: string | undefined }
+export type RejectReason = 'empty' | 'tooShort' | 'tooLong' | 'notQuestion' | 'noKeyword' | 'duplicate'
+
+/** **方案 B 的校验闸门**：模型生成的红队问题必须引用需求原文用词，且不得重复。 */
+export function validateProposed(
+  questions: ProposedQuestion[],
+  statement: string,
+  existing: GrillQuestion[],
+  count: number,
+): { accepted: ProposedQuestion[]; rejected: { text: string; reason: RejectReason }[] } {
+  const keywords = statementKeywords(statement)
+  const norm = (text: string): string => text.replace(/\s+/gu, '').replace(/[？?！!。，,、；;：:]/gu, '')
+  const seen = new Set(existing.map((question) => norm(question.text)))
+  const accepted: ProposedQuestion[] = []
+  const rejected: { text: string; reason: RejectReason }[] = []
+  for (const question of questions) {
+    const text = (question.text ?? '').trim()
+    if (text === '') { rejected.push({ text, reason: 'empty' }); continue }
+    if (text.length < 6) { rejected.push({ text, reason: 'tooShort' }); continue }
+    if (text.length > 200) { rejected.push({ text, reason: 'tooLong' }); continue }
+    if (!/[？?]$/u.test(text)) { rejected.push({ text, reason: 'notQuestion' }); continue }
+    const lower = text.toLowerCase()
+    if (!keywords.some((keyword) => lower.includes(keyword))) { rejected.push({ text, reason: 'noKeyword' }); continue }
+    if (seen.has(norm(text))) { rejected.push({ text, reason: 'duplicate' }); continue }
+    seen.add(norm(text))
+    accepted.push({ text, ...(question.dimension === undefined ? {} : { dimension: question.dimension }) })
+    if (accepted.length >= count) break
+  }
+  return { accepted, rejected }
+}
+
+/** 把通过校验的模型提案写成红队问题（origin=red-team，留痕 model-proposed）。 */
+export function writeProposedQuestions(
+  store: SdoStore,
+  journal: Journal,
+  requirementId: string,
+  accepted: ProposedQuestion[],
+): GrillQuestion[] {
+  const existing = listQuestions(store)
+  const usedIds = existing.map((question) => question.id)
+  const askedAt = new Date().toISOString()
+  const created: GrillQuestion[] = []
+  for (const item of accepted) {
+    const id = nextId('Q', usedIds, 4)
+    usedIds.push(id)
+    const question: GrillQuestion = {
+      id,
+      text: item.text,
+      targets: [requirementId],
+      dimension: (item.dimension ?? 'boundary') as Dimension,
+      severity: 'P0',
+      why: `#model-proposed ${item.text}`,
+      consequenceIfUnasked: t('redteam.fileConsequence'),
+      options: [],
+      defaultRecommendation: '',
+      answer: null,
+      status: 'open',
+      askedAt,
+      answeredBy: null,
+      origin: 'red-team',
+    }
+    writeQuestion(store, question)
+    created.push(question)
+  }
+  if (created.length > 0) journal.append('redteam/model-proposed', { target: requirementId, questions: created.map((q) => q.id) })
+  return created
 }

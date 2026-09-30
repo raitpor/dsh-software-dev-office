@@ -69,7 +69,8 @@ test('DoR 负例：要一条条指出未满足项并给 remedy', () => {
     title: '含糊需求',
     statement: '系统要尽快支持对账',
     priority: undefined,
-    sourceRaw: '',
+    // 负例保留"含糊 + 无优先级"即可挂 C1；但**来源必填**是硬纪律，故这里给出来源
+    sourceRaw: '系统要尽快支持对账（用户原话）',
   })
   const requirement = listRequirements(office.storeFor(workspace))[0] as Requirement
   const redTeamRequired = (project().tailoring?.scale ?? 'normal') !== 'trivial'
@@ -101,10 +102,10 @@ test('DoR 负例：P0 未决问题拦住基线', () => {
 
 test('DoR 负例：must 需求缺 AC 挂 C3；无非目标挂 C5', () => {
   const captured = office.capture(call(), {
+    sourceRaw: '用户原话（负例夹具）',
     title: '缺 AC',
     statement: '系统须输出差异清单；单日 100 万条，P99 < 500 毫秒',
     priority: 'must',
-    sourceStakeholder: 'STK-01',
   })
   office.update(call(), {
     id: captured.requirement.id,
@@ -147,7 +148,7 @@ test('基线：答完 P0 + 跑红队 + 签字 → G2 通过并推进到 architec
     office.answer(call(), {
       id: question.id,
       answer: '',
-      assume: true,
+      assume: true, authorizedByUser: true,
       modelDimensions: { goal: 2, user: 2, scenario: 2, data: 2, interface: 2, constraint: 2, acceptance: 2, boundary: 2 },
     })
   }
@@ -191,7 +192,7 @@ test('设计门禁负例：没有任何需求时必须被拒', () => {
 })
 
 test('设计门禁负例：需求未基线时必须被拒', () => {
-  office.capture(call(), { title: 'x', statement: '系统要尽快支持对账' })
+  office.capture(call(), { sourceRaw: '用户原话（负例夹具）', title: 'x', statement: '系统要尽快支持对账' })
   const check = office.designCheck(call())
   assert.equal(check.allowed, false)
   assert.match(check.reason, /尚未基线/u)
@@ -207,7 +208,7 @@ test('设计门禁正例：基线通过后放行（M2 才实现真正的设计�
     office.answer(call(), {
       id: open[0]!.id,
       answer: '',
-      assume: true,
+      assume: true, authorizedByUser: true,
       modelDimensions: { goal: 2, user: 2, scenario: 2, data: 2, interface: 2, constraint: 2, acceptance: 2, boundary: 2 },
     })
   }

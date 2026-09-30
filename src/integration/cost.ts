@@ -137,6 +137,21 @@ export function crossingTier(
   }
 }
 
+/** 成本快照（落 `.sdo/cost.yml`，状态块只读它）。 */
+export interface CostSnapshot {
+  at: string
+  totalTokens: number
+  currency: string
+  unpricedTokens: number
+  /** 只有填了单价才有金额（估算） */
+  amount?: number | undefined
+}
+
+/** 从 `.sdo/` 读成本快照（没有就是没测过）。 */
+export function readCostSnapshot(store: { readYaml<T>(...segments: string[]): T | undefined }): CostSnapshot | undefined {
+  return store.readYaml<{ cost: CostSnapshot }>('cost.yml')?.cost
+}
+
 /** 预算面板行：**没有 total 时不给剩余/百分比**。 */
 export function describeBudgetLine(summary: UsageSummary, budget: Budget | undefined): string {
   const tokens = `${summary.totalTokens} tokens`

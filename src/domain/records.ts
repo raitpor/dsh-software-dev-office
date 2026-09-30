@@ -186,6 +186,16 @@ export function readManifest(store: SdoStore): DeliveryManifest | undefined {
   return store.readYaml<{ manifest: DeliveryManifest }>('delivery', 'manifest.yml')?.manifest
 }
 
+/** 全部历史交付版本（按编号升序）：**G-06** 的证据链 —— 每一版清单都能被取回。 */
+export function listManifests(store: SdoStore): DeliveryManifest[] {
+  return store
+    .listNames('delivery')
+    .filter((name) => /^DLV-\d+\.yml$/u.test(name))
+    .map((name) => store.readYaml<{ manifest: DeliveryManifest }>('delivery', name)?.manifest)
+    .filter((manifest): manifest is DeliveryManifest => manifest !== undefined)
+    .sort((a, b) => a.id.localeCompare(b.id))
+}
+
 /** 计算文件哈希（sha256；文件不存在时返回 `missing`）。 */
 export function hashArtifact(workspace: string, relative: string): string {
   try {
@@ -227,6 +237,10 @@ export function packageDelivery(
     prototypeExcluded: !input.artifacts.some((artifact) => artifact.path.startsWith(`${input.prototypeDir}/`)),
     notes: input.notes ?? '',
   }
+  // **G-06**：按**版本**落盘（`delivery/<DLV-xxx>.yml`），`manifest.yml` 只作为"最新一版"的指针。
+  // 旧实现原地覆盖同一个文件 ⇒ 同一交付号被反复重出包、上一版清单只能去 journal 里翻，
+  // "交付包"的冻结含义被无声削弱（而 C-60 仍报通过）。
+  store.writeYaml(['delivery', `${manifest.id}.yml`], { manifest })
   store.writeYaml(['delivery', 'manifest.yml'], { manifest })
   journal.append('delivery/packaged', {
     id: manifest.id,

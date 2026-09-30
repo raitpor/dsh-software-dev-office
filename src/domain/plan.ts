@@ -10,6 +10,7 @@
  *   ⑤ 可能并行的卡之间写范围互斥 ⑥ 每卡至少一项证据要求
  */
 import { nextId } from '../infra/ids.js'
+import { fmt, t } from './i18n.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { DesignElement, EvidenceItem, Iteration, TaskCard, TaskSize, Requirement } from '../types.js'
@@ -107,41 +108,88 @@ export interface PlanIssue {
   remedy: string
 }
 
-/** 结构通道：按"需求 → 设计元素"生成卡片。 */
-export function structuralDrafts(store: SdoStore, requirements: Requirement[]): TaskDraft[] {
+/** 从设计元素的职责文本里解析写范围（D3-2）：识别职责里的「写范围：<glob> 独占」这类声明。 */
+export function parseWriteScopes(responsibility: string): string[] {
+  const match = /写范围[：:]\s*([^\n。；;]+)/u.exec(responsibility)
+  if (match === null) return []
+  const matched = match[1] ?? ''
+  return matched
+    .split(/[、,，]/u)
+    .map((item) =>
+      item
+        .replace(/`/gu, '')
+        .replace(/[（(][^）)]*[）)]/gu, '')
+        .replace(/[）)]/gu, '')
+        .replace(/独占|只读|可写/gu, '')
+        .trim(),
+    )
+    .filter((item) => item !== '')
+}
+
+/** 结构通道：按「需求 → 设计元素」生成卡片（**每元素一张**，多条需求聚合进同一张卡）。 */
+export function structuralDrafts(
+  store: SdoStore,
+  requirements: Requirement[],
+  derived: string[] = [],
+): TaskDraft[] {
   const links = readLinks(store)
   const elements = new Map(listElements(store).map((element) => [element.id, element]))
   const drafts: TaskDraft[] = []
+  const byElement = new Map<string, { element: DesignElement; requirements: string[] }>()
   for (const requirement of requirements) {
     const designIds = links.filter((item) => item.kind === 'req-des' && item.from === requirement.id).map((item) => item.to)
     for (const designId of designIds) {
       const element: DesignElement | undefined = elements.get(designId)
       if (element === undefined) continue
-      const role: Role = VIEW_KIND_OF_ELEMENT[element.kind] ?? 'developer'
-      const slug = designId.toLowerCase()
-      drafts.push({
-        title: `实现 ${element.name}（${designId}）`,
-        goal: `让 ${element.name} 满足 ${requirement.id} 的验收标准`,
-        inputs: [`${designId} 的职责：${element.responsibility}`, `${requirement.id} 的验收标准`],
-        outputs: [`${element.name} 的实现`, `针对 ${requirement.id} 的测试用例`],
-        dod: [`${requirement.id} 的每条 Given/When/Then 都能通过`, '改动有产物证据（路径 + 哈希）'],
-        evidenceRequired: ['artifact'],
-        writeScopes: [`src/${slug}/`, `test/${slug}/`],
-        role,
-        size: 'medium',
-        requirements: [requirement.id],
-      })
+      const bucket = byElement.get(designId) ?? { element, requirements: [] }
+      if (!bucket.requirements.includes(requirement.id)) bucket.requirements.push(requirement.id)
+      byElement.set(designId, bucket)
     }
+  }
+  for (const [designId, bucket] of byElement) {
+    const element = bucket.element
+    const role: Role = VIEW_KIND_OF_ELEMENT[element.kind] ?? 'developer'
+    // **G-04**：元素已有卡（任何状态）或曾被显式放弃 → 不重建（否则"放弃越多噪声越多"）
+    const marker = `（${designId}）`
+    const history = listTasks(store).filter((task) => task.title.includes(marker))
+    if (history.length > 0) continue
+    const declared = parseWriteScopes(element.responsibility)
+    const slug = designId.toLowerCase()
+    const custom = store.readYaml<{ plan?: { scopeTemplate?: unknown } }>('config.yml')?.plan?.scopeTemplate
+    const derivedScopes =
+      typeof custom === 'string' && custom.trim() !== ''
+        ? custom
+            .split(',')
+            .map((item) => item.replaceAll('{{slug}}', slug).replaceAll('{{id}}', designId).trim())
+            .filter((item) => item !== '')
+        : [`src/${slug}/`, `test/${slug}/`]
+    const scopes = declared.length > 0 ? declared : derivedScopes
+    if (declared.length === 0) derived.push(fmt('uiPlan.t1', { p1: designId, p2: element.name }))
+    drafts.push({
+      title: fmt('uiPlan.t2', { p1: element.name, p2: designId }),
+      goal: fmt('uiPlan.t3', { p1: element.name, p2: bucket.requirements.join('、') }),
+      inputs: [fmt('uiPlan.t4', { p1: designId, p2: element.responsibility }), fmt('uiPlan.t5', { p1: bucket.requirements.join('、') })],
+      outputs: [fmt('uiPlan.t6', { p1: element.name })],
+      dod: [
+        ...bucket.requirements.map((id) => fmt('uiPlan.t7', { p1: id })),
+        t('uiPlan.k1'),
+      ],
+      evidenceRequired: ['artifact'],
+      writeScopes: scopes,
+      role,
+      size: 'medium',
+      requirements: bucket.requirements,
+    })
   }
   // 契约边 → 集成卡片
   const contracts = links.filter((item) => item.kind === 'des-ct')
   for (const edge of contracts) {
     drafts.push({
-      title: `对接契约 ${edge.to}`,
-      goal: `按 ${edge.to} 的契约实现调用与失败语义`,
-      inputs: [`契约 ${edge.to}`],
-      outputs: ['调用方实现', '失败语义（超时/重试/幂等）的测试'],
-      dod: ['契约的失败语义被测试覆盖'],
+      title: fmt('uiPlan.t8', { p1: edge.to }),
+      goal: fmt('uiPlan.t9', { p1: edge.to }),
+      inputs: [fmt('uiPlan.t10', { p1: edge.to })],
+      outputs: [t('uiPlan.k2'), t('uiPlan.k3')],
+      dod: [t('uiPlan.k4')],
       evidenceRequired: ['artifact'],
       writeScopes: [`src/${edge.to.toLowerCase()}/`],
       role: 'developer',
@@ -158,36 +206,38 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
   const byId = new Map(tasks.map((task) => [task.id, task]))
 
   for (const task of tasks) {
+    // **D3-3**：已 drop 的卡不参与校验（它们只是留痕，不是待办）
+    if (task.status === 'dropped') continue
     if (!isRole(task.role)) {
       issues.push({
         code: 'single-role',
         taskId: task.id,
-        detail: `角色 ${task.role} 不在 8 个角色里`,
-        remedy: `改成其中之一：${ROLES.join(' / ')}`,
+        detail: fmt('uiPlan.t11', { p1: task.role }),
+        remedy: fmt('uiPlan.t12', { p1: ROLES.join(' / ') }),
       })
     }
     if (task.dod.length === 0 || task.dod.some((item) => item.trim() === '')) {
       issues.push({
         code: 'dod-nonempty',
         taskId: task.id,
-        detail: 'DoD 为空或含空条目',
-        remedy: '给这张卡写出可判定的完成定义（至少 1 条，能明确通过/失败）',
+        detail: t('uiPlan.k5'),
+        remedy: t('uiPlan.k6'),
       })
     }
     if (task.size === 'large') {
       issues.push({
         code: 'size-cap',
         taskId: task.id,
-        detail: '卡规模为 large（等于没拆完）',
-        remedy: '继续拆成 medium 及以下（一张卡 = 一个可独立验证的增量）',
+        detail: t('uiPlan.k7'),
+        remedy: t('uiPlan.k8'),
       })
     }
     if (task.evidenceRequired.length === 0) {
       issues.push({
         code: 'evidence-required',
         taskId: task.id,
-        detail: '没有证据要求',
-        remedy: "至少给一项（'artifact' 最常用；涉及多文件改动时用 'workspace-changes'）",
+        detail: t('uiPlan.k9'),
+        remedy: t('uiPlan.k10'),
       })
     }
     for (const dependency of task.blockedBy) {
@@ -195,8 +245,8 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
         issues.push({
           code: 'acyclic',
           taskId: task.id,
-          detail: `依赖 ${dependency} 不存在`,
-          remedy: '修正依赖，或先把被依赖的卡建出来',
+          detail: fmt('uiPlan.t13', { p1: dependency }),
+          remedy: t('uiPlan.k11'),
         })
       }
     }
@@ -210,8 +260,8 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
       issues.push({
         code: 'acyclic',
         taskId: id,
-        detail: `依赖成环：${[...path, id].join(' → ')}`,
-        remedy: '打断环（通常意味着这两张卡应该合成一张）',
+        detail: fmt('uiPlan.t14', { p1: [...path, id].join(' → ') }),
+        remedy: t('uiPlan.k12'),
       })
       return
     }
@@ -222,10 +272,14 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
   for (const task of tasks) visit(task.id, [])
 
   // 可能并行的卡之间写范围互斥（同迭代、无依赖关系视为可能并行）
-  for (let i = 0; i < tasks.length; i++) {
-    for (let j = i + 1; j < tasks.length; j++) {
-      const a = tasks[i] as TaskCard
-      const b = tasks[j] as TaskCard
+  // **D5-1**：成对循环只看**未作废**的卡；**D6-1（写范围租约）**：done/verified 也必须释放范围
+  const active = tasks.filter(
+    (task) => task.status !== 'dropped' && task.status !== 'done' && task.status !== 'verified',
+  )
+  for (let i = 0; i < active.length; i++) {
+    for (let j = i + 1; j < active.length; j++) {
+      const a = active[i] as TaskCard
+      const b = active[j] as TaskCard
       const related = a.blockedBy.includes(b.id) || b.blockedBy.includes(a.id)
       if (related) continue
       if (a.iteration !== b.iteration && (a.iteration !== undefined || b.iteration !== undefined)) continue
@@ -236,8 +290,8 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
         issues.push({
           code: 'write-scope-disjoint',
           taskId: a.id,
-          detail: `${a.id} 与 ${b.id} 可能并行，但写范围重叠：${overlap.join('、')}`,
-          remedy: '收窄写范围，或把它们串成依赖（blockedBy）——写范围互斥是并行安全的前提',
+          detail: fmt('uiPlan.t15', { p1: a.id, p2: b.id, p3: overlap.join('、') }),
+          remedy: t('uiPlan.k13'),
         })
       }
     }
@@ -252,19 +306,25 @@ export function decompose(
   journal: Journal,
   requirements: Requirement[],
   input: DecomposeInput = {},
-): { tasks: TaskCard[]; issues: PlanIssue[] } {
+): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined } {
   const selected = input.requirements === undefined
     ? requirements
     : requirements.filter((requirement) => input.requirements?.includes(requirement.id))
+  const derived: string[] = []
   const drafts = [
-    ...structuralDrafts(store, selected),
+    ...structuralDrafts(store, selected, derived),
     ...(input.suggestions ?? []),
   ]
   const existing = listTasks(store)
+  // **D3-1**：去重集合必须**包含本批新建的卡**（旧实现只比对调用前的卡集 → 批内重复照样建）
+  const seen = new Set(
+    existing.filter((task) => task.status !== 'dropped').map((task) => `${task.title}|${task.role}`),
+  )
   const created: TaskCard[] = []
   for (const draft of drafts) {
-    // 去重：同标题同角色不重复建卡
-    if (existing.some((task) => task.title === draft.title && task.role === draft.role)) continue
+    const key = `${draft.title}|${draft.role}`
+    if (seen.has(key)) continue
+    seen.add(key)
     created.push(
       createTask(store, journal, {
         ...draft,
@@ -273,7 +333,17 @@ export function decompose(
     )
   }
   const tasks = listTasks(store)
-  return { tasks, issues: validatePlan(tasks) }
+  return { tasks, issues: validatePlan(tasks), notes: derived }
+}
+
+/** **D3-3 回收路径**：把建错/作废的卡置为 dropped 并留痕（真源仍是追加式，不删除记录）。 */
+export function dropTask(store: SdoStore, journal: Journal, taskId: string, reason: string): TaskCard | undefined {
+  const task = listTasks(store).find((item) => item.id === taskId)
+  if (task === undefined) return undefined
+  const dropped: TaskCard = { ...task, status: 'dropped', revision: task.revision + 1 }
+  writeTask(store, dropped)
+  journal.append('task/dropped', { id: taskId, reason })
+  return dropped
 }
 
 /** 当前迭代（`.sdo/iteration.yml`）。 */
@@ -331,7 +401,10 @@ export function blockedTasks(tasks: TaskCard[]): { task: TaskCard; waitingOn: st
 
 /** 计划概览（看板与门禁用）。 */
 export function planStats(tasks: TaskCard[]): {
+  /** 全部卡（含已放弃，台账口径） */
   total: number
+  /** **未放弃**的卡（门禁判据一律用它） */
+  active: number
   byStatus: Record<string, number>
   done: number
   allDone: boolean
@@ -339,12 +412,15 @@ export function planStats(tasks: TaskCard[]): {
 } {
   const byStatus: Record<string, number> = {}
   for (const task of tasks) byStatus[task.status] = (byStatus[task.status] ?? 0) + 1
-  const done = tasks.filter((task) => task.status === 'done' || task.status === 'verified').length
+  // **D7**：dropped 是显式放弃的终态，不得计入完成率分母（否则放弃越多越不可能过门禁）
+  const activeTasks = tasks.filter((task) => task.status !== 'dropped')
+  const done = activeTasks.filter((task) => task.status === 'done' || task.status === 'verified').length
   return {
     total: tasks.length,
+    active: activeTasks.length,
     byStatus,
     done,
-    allDone: tasks.length > 0 && done === tasks.length,
-    unowned: tasks.filter((task) => task.status === 'in-progress' && task.owner === undefined).length,
+    allDone: activeTasks.length > 0 && done === activeTasks.length,
+    unowned: activeTasks.filter((task) => task.status === 'in-progress' && task.owner === undefined).length,
   }
 }

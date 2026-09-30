@@ -10,6 +10,9 @@ import type { SdoConfig } from '../src/config.js'
 import { describeStatus } from '../src/interface/describe.js'
 import { renderStatusBlock } from '../src/interface/inject.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { callOf, createOfficeTools } from '../src/interface/tools.js'
+import { describeGate } from '../src/interface/describe.js'
+import { findProjectRoot } from '../src/infra/discovery.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/office/', import.meta.url))
 
@@ -115,8 +118,11 @@ test('未初始化：status 与状态块都给出明确下一步，不报错', (
   assert.match(describeStatus(status, '.sdo'), /尚未初始化/u)
 
   const block = renderStatusBlock(status, '.sdo', 1500)
-  assert.match(block, /SDO 研发办公室（尚未初始化）/u)
+  assert.match(block, /尚未初始化/u)
   assert.match(block, /sdo_init/u)
+  // 状态块是**背景**，不能写成指令：否则模型会在"你好"这类寒暄上主动调用 sdo_* 工具
+  assert.match(block, /背景状态/u)
+  assert.match(block, /不需要/u)
 })
 
 test('状态块：含项目行、遵守字符上限、条件行只在偏离默认时出现', () => {
@@ -173,7 +179,8 @@ test('文本看板：确定性（同状态两次逐字节相同）且含阶段�
   })
   assert.match(board, /项目　PRJ-001 示例项目/u)
   assert.match(board, /▶ 立项/u, '阶段名来自流程数据（瀑布：立项/可行性/…）')
-  assert.match(board, /门禁　待判定 G0/u)
+  assert.match(board, /门禁　待判定 立项门禁/u, '门禁要显示中文名，不暴露 G0 这类标识')
+  assert.equal(/待判定 G\d/u.test(board), false, '看板不得出现裸门禁标识')
   assert.equal(board, renderBoard({
     project: after.project,
     config: after.config,
@@ -207,4 +214,173 @@ test('路径沙箱：数据目录名带 .. 也不会写到项目外', () => {
   evil.noteSession('s', workspace)
   const store = evil.storeFor(workspace)
   assert.throws(() => store.path('..', 'x'), /逃出项目目录/u)
+})
+
+test('DEF：新会话 + 新工作区不得显示别的会话的项目（跨会话串味）', () => {
+  const a = join(BASE, 'ws-a')
+  const b = join(BASE, 'ws-b')
+  mkdirSync(a, { recursive: true })
+  mkdirSync(b, { recursive: true })
+
+  // 会话 A：在 ws-a 立项
+  office.noteSession('session-A', a)
+  office.init({ sessionId: 'session-A' }, { name: 'A 项目' })
+  assert.equal(office.status({ sessionId: 'session-A' }).project?.name, 'A 项目')
+
+  // 会话 B：系统还没记录它的 cwd → **明确报错**（不兜底到 A 的工作区，也不用 process.cwd()）
+  const stB = office.status({ sessionId: 'session-B' })
+  assert.equal(stB.workspaceUnknown, true, '工作区未知应友好降级，而不是抛错')
+  assert.equal(stB.project, undefined, '不得看到别的会话的项目')
+
+  // 会话 B 带上自己的 cwd → 只认自己的
+  assert.equal(office.status({ sessionId: 'session-B', cwd: b }).project, undefined, 'ws-b 里没有项目')
+  office.init({ sessionId: 'session-B', cwd: b }, { name: 'B 项目' })
+  assert.equal(office.status({ sessionId: 'session-B', cwd: b }).project?.name, 'B 项目')
+  // A 仍然是 A（互不覆盖）
+  assert.equal(office.status({ sessionId: 'session-A' }).project?.name, 'A 项目')
+
+  rmSync(a, { recursive: true, force: true })
+  rmSync(b, { recursive: true, force: true })
+})
+
+test('DEF：注入路径与成本缓存也按工作区隔离（不得跨会话/跨工作区）', () => {
+  const a = join(BASE, 'iso-a')
+  const b = join(BASE, 'iso-b')
+  mkdirSync(a, { recursive: true })
+  mkdirSync(b, { recursive: true })
+
+  office.noteSession('sA', a)
+  office.noteSession('sB', b)
+  office.init({ sessionId: 'sA' }, { name: 'A 项目' })
+  office.init({ sessionId: 'sB' }, { name: 'B 项目' })
+
+  // 作用域能对上 → 用该会话的工作区
+  assert.equal(office.status(office.callForScope('sA')).project?.name, 'A 项目')
+  assert.equal(office.status(office.callForScope('sB')).project?.name, 'B 项目')
+  // 作用域对不上 → 空上下文（落到进程 cwd），**绝不复用另一个会话**
+  assert.equal(office.callForScope('无关作用域').sessionId, undefined)
+  assert.equal(office.callForScope(undefined).sessionId, undefined)
+  assert.equal(office.callForScope(null).sessionId, undefined)
+
+  // 成本缓存按工作区：给 A 记一个值，B 的状态块不受影响
+  office.costReport({ sessionId: 'sA' }, { rows: [], available: true })
+  office.setBudget({ sessionId: 'sA' }, { total: 10 })
+  const lineA = office.status({ sessionId: 'sA' }).costLine
+  const lineB = office.status({ sessionId: 'sB' }).costLine
+  assert.ok(lineA !== undefined)
+  assert.equal(lineB, undefined, 'B 没设预算，不该出现 A 的成本行')
+
+  rmSync(a, { recursive: true, force: true })
+  rmSync(b, { recursive: true, force: true })
+})
+
+test('真源是 .sdo/：成本快照跨实例可读（不依赖内存缓存）', () => {
+  const ws = join(BASE, 'truth-ws')
+  mkdirSync(ws, { recursive: true })
+  const first = office
+  first.noteSession('s1', ws)
+  first.init({ sessionId: 's1' }, { name: '真源项目' })
+  first.setBudget({ sessionId: 's1' }, { total: 10 })
+  first.costReport({ sessionId: 's1' }, { rows: [], available: true })
+
+  // 全新实例（等价于"重启进程"）：状态块仍能给出成本行 → 说明它读的是 .sdo/ 而不是内存
+  const second = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  const status = second.status({ sessionId: 's1', cwd: ws })
+  assert.ok(status.costLine !== undefined, '成本行应来自 .sdo/cost.yml')
+  assert.ok(existsSync(join(ws, '.sdo', 'cost.yml')), '成本快照必须落在 .sdo/')
+  // journal 仍是真源：有 cost/updated 事件
+  const events = second.journalFor(ws).read().events
+  assert.ok(events.some((event) => event.type === 'cost/updated'), '成本也要进 journal')
+  rmSync(ws, { recursive: true, force: true })
+})
+
+test('DEF：定位只看本层——上层目录有 .sdo/ 也不许命中（"仍串工作区"的根因）', () => {
+  const parent = join(BASE, 'upper')
+  const child = join(parent, 'child')
+  mkdirSync(child, { recursive: true })
+  // 在上层伪造一个别的项目
+  const other = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  other.noteSession('other', parent)
+  other.init({ sessionId: 'other' }, { name: '上层项目' })
+
+  // 子目录里的会话（cwd 明确为 child）→ 本层没有 .sdo/ ⇒ 必须视为未初始化
+  const status = office.status({ sessionId: 'child-session', cwd: child })
+  assert.equal(status.project, undefined, '不得命中上层目录的 .sdo/（那正是串工作区）')
+  assert.match(renderStatusBlock(status, '.sdo', 1500), /尚未初始化|没有/u)
+  rmSync(parent, { recursive: true, force: true })
+})
+
+test('项目发现工具：findProjectRoot 仍可用于显式探测（不参与自动定位）', () => {
+  const root = join(BASE, 'discover')
+  const nested = join(root, 'a', 'b', 'c')
+  mkdirSync(nested, { recursive: true })
+  mkdirSync(join(root, '.sdo'), { recursive: true })
+  assert.equal(findProjectRoot(nested, '.sdo'), root, '应从子目录向上发现含 .sdo/ 的目录')
+  assert.equal(findProjectRoot(join(BASE, 'nowhere'), '.sdo'), undefined, '找不到就返回 undefined，不猜')
+  rmSync(root, { recursive: true, force: true })
+})
+
+test('DEF：工作区未知时明确报错，绝不使用外部目录兜底', () => {
+  const bare = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  // 没有会话、没有 cwd → 工作区未知
+  assert.equal(bare.workspaceFor({}), undefined, '不得回退到 process.cwd()')
+  assert.equal(bare.workspaceFor({ sessionId: '未知会话' }), undefined)
+  assert.throws(() => bare.requireWorkspace({}), /无法确定本会话的工作区/u)
+  // 工作区未知时 → **友好降级**（不抛错）：状态明确说明，且 project 为 undefined
+  const snapshot = bare.status({})
+  assert.equal(snapshot.workspaceUnknown, true)
+  assert.equal(snapshot.project, undefined)
+  // 有 cwd 就正常
+  const ws = join(BASE, 'no-fallback')
+  mkdirSync(ws, { recursive: true })
+  assert.equal(bare.workspaceFor({ cwd: ws }), ws)
+  rmSync(ws, { recursive: true, force: true })
+})
+
+test('全链路：agent 形状的调用（session.header.cwd）应能定位工作区并立项', () => {
+  const ws = join(BASE, 'agent-shaped')
+  mkdirSync(ws, { recursive: true })
+  // 模拟宿主真实形状：Agent 只有 session.header.cwd（这正是原先读错的字段）
+  const shaped = { sessionId: 'agent-1', agent: { id: 'agent-1', session: { header: { cwd: ws } } } } as never
+  const call = callOf(shaped)
+  assert.equal(call.cwd, ws)
+  office.init(call, { name: '形状测试项目', process: 'waterfall', scale: 'normal', stakeholders: ['我'] })
+  assert.equal(office.status(call).project?.name, '形状测试项目', '映射为空也要能靠 agent.session.header.cwd 定位（解冻被固化的缺陷）')
+  rmSync(ws, { recursive: true, force: true })
+})
+
+test('门禁必须用中文名讲给用户（只给 G1 一般用户看不懂）', () => {
+  const ws = join(BASE, 'gate-label')
+  mkdirSync(ws, { recursive: true })
+  office.noteSession('gate-s', ws)
+  office.init({ sessionId: 'gate-s' }, { name: '门禁文案', process: 'waterfall', scale: 'normal', stakeholders: ['我'] })
+  const text = describeGate(office.checkGate({ sessionId: 'gate-s' }, '可行性门禁'))
+  assert.match(text, /可行性门禁/u, '必须出现中文门禁名')
+  assert.match(text, /（G1）/u, '内部编号放在括号里，便于追溯')
+  // 工具参数说明里不得再裸列编号
+  const tools = createOfficeTools({} as never)
+  const gateTool = tools.find((tool) => tool.name === 'sdo_gate')
+  const desc = JSON.stringify(gateTool?.parameters ?? {})
+  assert.match(desc, /可行性门禁/u, '参数描述要给中文名')
+  assert.doesNotMatch(desc, /e\.g\. 'G0', 'G1'/u, '不得再裸列编号')
+  rmSync(ws, { recursive: true, force: true })
+})
+
+test('DEF-08b：红队不许反复问同一题——上一批未答完时拒绝再次攻击', () => {
+  const ws = join(BASE, 'redteam-repeat')
+  mkdirSync(ws, { recursive: true })
+  const o = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  o.noteSession('rt', ws)
+  o.init({ sessionId: 'rt' }, { name: '红队重复', process: 'waterfall', scale: 'normal', stakeholders: ['我'] })
+  const c = o.capture({ sessionId: 'rt' }, {
+    title: 'r', statement: '系统须支持 X；P99 < 1 秒', priority: 'must', sourceRaw: '用户原话',
+  })
+  const first = o.redTeamAttack({ sessionId: 'rt' }, [c.requirement.id], 3)
+  assert.equal(first.questions.length, 3)
+  const second = o.redTeamAttack({ sessionId: 'rt' }, [c.requirement.id], 3)
+  assert.equal(second.questions.length, 0, '上一批未答完不得再生成')
+  assert.match(second.blocked ?? '', /未决/u)
+  // 题目带需求号，跨需求不会看起来是"同一题"
+  assert.match(first.questions[0]?.text ?? '', /针对「/u, '问题须指向具体需求（标题派生）')
+  rmSync(ws, { recursive: true, force: true })
 })

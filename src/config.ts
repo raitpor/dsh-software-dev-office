@@ -24,6 +24,12 @@ export interface SdoConfig {
   /** 状态块字符上限（超出则截断） */
   statusChars: number
   /**
+   * 界面语言：语言包文件名（不含 `.yml`），随包提供 `zh-CN`（基准，永远完整）与 `en`。
+   * 规则：**基准语言是回退链的末端** —— 目标语言缺某个键时回落显示基准文案，
+   * 因此新增/补译语言包不会出现空白或键名。未知语言一律回落到基准语言。
+   */
+  lang: string
+  /**
    * 阶段纪律级别（设计 §9.4）：
    * `suggest`=只提示（L1）；`enforce`=门禁 + 工具前置（L2，默认）；`strict`=L2 + 拦截写类工具（L3）
    */
@@ -40,6 +46,18 @@ export interface SdoConfig {
   maxParallelDispatch: number
   /** 是否采集 `workspace/changes` 证据（M4 起生效） */
   captureWorkspaceChanges: boolean
+  /**
+   * 斜杠命令结果如何回显（设计 §9.2：命令 handler 针对 agent 运行、**不产生模型消息**，
+   * 但结果**要让用户感知**——这个"感知"由命令结果本身承担，不该靠额外产生一轮模型消息来补）：
+   *   · `echo`（**默认**）—— 把命令结果投递成一条用户可见消息：
+   *     优先 `agent.inbox.send(msg, 'next-step', false)`（**不唤醒轮次**），退而 `agent.followup()`。
+   *     **实测可用**：会话 `session-ccda9900` 里 3 条命令各产生一条 `agent/inbox/spliced` 事件
+   *     （seq 5 / 11 / 283），界面正常渲染、不触发模型回复。
+   *   · `none` —— 只回命令面（设计 §9.2 的原始语义）。Web 客户端仍不渲染"轮次之外"的命令节点，
+   *     因此设 `none` 时命令结果在界面上看不到（上游问题见 `docs/verification/`）。
+   * 环境变量 `SDO_COMMAND_ECHO=followup|none` 可覆盖，免得为此重写整个 preset 行。
+   */
+  commandEcho: 'none' | 'echo'
   board: {
     text: boolean
     panel: boolean
@@ -63,6 +81,7 @@ export const Config: z<SdoConfig> = z.object({
   promptOrder: z.number().default(240),
   injectStatus: z.boolean().default(true),
   statusChars: z.natural().min(200).max(4000).default(1500),
+  lang: z.string().default('zh-CN'),
   gateLevel: z.union([z.const('suggest'), z.const('enforce'), z.const('strict')]).default('enforce'),
   disciplineTools: z.array(z.string()).default(['write', 'edit', 'bash']),
   disciplineAllowPaths: z.array(z.string()).default(['.sdo/', 'docs/', 'test/']),
@@ -71,6 +90,7 @@ export const Config: z<SdoConfig> = z.object({
   orchestrator: z.union([z.const('subagent'), z.const('native-team'), z.const('inline')]).default('subagent'),
   maxParallelDispatch: z.natural().min(1).max(8).default(4),
   captureWorkspaceChanges: z.boolean().default(true),
+  commandEcho: z.union([z.const('none'), z.const('echo')]).default('echo'),
   board: z.object({
     text: z.boolean().default(true),
     panel: z.boolean().default(false),
@@ -95,7 +115,12 @@ export interface Settings extends Omit<SdoConfig, 'projectDir'> {
 export function resolveSettings(config: SdoConfig): Settings {
   const cleaned = config.projectDir.replace(/^\.\//, '').replace(/[/\\]+$/, '').trim()
   const { projectDir: _raw, ...rest } = config
-  return { ...rest, projectDirName: cleaned === '' ? '.sdo' : cleaned }
+  // 环境变量优先于配置：SDO_COMMAND_ECHO=followup|none
+  const env = process.env['SDO_COMMAND_ECHO']
+  // `followup` 作为等价写法一并接受：本插件的开发环境里可能残留旧值（未发布，不留兼容承诺）
+  const commandEcho: 'none' | 'echo' =
+    env === 'none' ? 'none' : env === 'echo' || env === 'followup' ? 'echo' : rest.commandEcho
+  return { ...rest, commandEcho, projectDirName: cleaned === '' ? '.sdo' : cleaned }
 }
 
 /**

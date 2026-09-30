@@ -1,0 +1,1010 @@
+# SDO 界面文案（i18n 语言包，zh-CN）
+#
+# 原则：**对外呈现一律用中文**；内部标识（门禁 id、阶段 id、状态码、角色码）保持不变，
+# 因为它们要进出 journal、命令参数与追溯图。显示时用本表把标识翻成中文。
+# 用法：`t('gate.G0')` → 「立项门禁」；`gateIdOf('立项门禁')` → `G0`（命令参数也收中文）。
+locale: zh-CN
+gate:
+  G0: 立项门禁
+  G1: 可行性门禁
+  G2: 需求基线门禁
+  G3: 架构门禁
+  G4: 详细设计与计划门禁
+  G5: 开发完成门禁
+  G6: 验证门禁
+  G7: 交付门禁
+  GP: 原型验收门禁
+  GI: 迭代完成门禁
+  GR: 风险象限评审
+  # 迭代/阶段别名（有些流程用阶段名当门禁语境）
+  tasksAllDone: "任务卡 {n} 张全部完成且有证据"
+  tasksDroppedNote: "（另有 {n} 张已显式放弃，不计入完成率）"
+  tasksMissingEvidence: "完成但无证据：{ids}"
+  tasksMissingEvidenceRemedy: "补证据（`sdo_task action=done` 必须带 evidence）"
+  tasksIncomplete: "未完成：{list}"
+  tasksAllDoneRemedy: "补救：把剩余卡做完（`sdo_task action=done` 且带 evidence），或**显式放弃**（`sdo_task action=drop reason=…`）——已放弃的卡不再计入完成率。"
+dimension:
+  goal: 目标
+  user: 用户
+  scenario: 场景
+  data: 数据
+  interface: 接口
+  constraint: 约束
+  acceptance: 验收
+  boundary: 边界
+criterion:
+  C1-dor-per-requirement: 每条需求满足就绪定义
+  C2-open-questions: 无 P0 未决问题
+  C3-must-has-ac: 每条必须级需求有验收标准
+  C4-glossary: 术语表覆盖领域名词
+  C5-non-goals: 非目标已声明
+  C6-red-team: 红队已执行或留痕停用
+  C7-signoff: 人类签字
+  C8-red-team-closed: 红队议题已闭环
+requirementKind:
+  functional: 功能
+  quality: 质量
+  constraint: 约束
+process:
+  waterfall: 瀑布模型
+  prototype: 快速原型
+  agile: 敏捷开发
+  spiral: 螺旋模型
+phase:
+  intake: 立项
+  feasibility: 可行性
+  prototype: 原型
+  requirements: 需求
+  architecture: 架构
+  design-plan: 详细设计
+  iteration: 迭代
+  release: 发布
+  construction: 开发
+  verification: 验证
+  delivery: 交付
+  risk-quadrant: 风险象限
+scale:
+  trivial: 小（试验）
+  normal: 中（常规）
+  critical: 大（关键）
+iterationStatus:
+  planned: 计划中
+  active: 进行中
+  closed: 已关闭
+role:
+  analyst: 产品/需求分析师
+  red-team: 需求红队
+  architect: 架构师
+  office: 流程官
+  developer: 实现工程师
+  tester: 测试工程师
+  reviewer: 评审员
+  delivery: 交付官
+  cockpit: 驾驶舱
+taskStatus:
+  planned: 待派发
+  ready: 可派发
+  in-progress: 进行中
+  blocked: 已阻塞
+  done: 已完成
+  verified: 已验收
+  dropped: 已放弃
+taskSize:
+  small: 小
+  medium: 中
+  large: 大（未拆完）
+requirementStatus:
+  draft: 草稿
+  grilled: 已审讯
+  baselined: 已基线
+  changed: 已变更
+  dropped: 已放弃
+gateStatus:
+  passed: 通过
+  failed: 未通过
+  waived: 已豁免
+riskLevel:
+  low: 低
+  medium: 中
+  high: 高
+  blocker: 阻塞
+defectSeverity:
+  blocker: 阻塞
+  major: 严重
+  minor: 轻微
+defectStatus:
+  open: 未关闭
+  fixed: 已修复
+  closed: 已关闭
+  wontfix: 不修
+reviewVerdict:
+  pass: 通过
+  changes-requested: 要求修改
+  reject: 驳回
+testKind:
+  unit: 单元
+  integration: 集成
+  e2e: 端到端
+priority:
+  must: 必须
+  should: 应该
+  could: 可以
+  wont: 不做
+verdict:
+  go: 可行
+  no-go: 不可行
+  conditional: 有条件可行
+progress:
+  done: 已完成
+  current: 进行中
+  waived: 已豁免
+  todo: 未开始
+tool:
+  sdo_init: 初始化 SDO 项目（在当前工作目录建 `.sdo/` 台账）。**关键参数缺一不可**：项目名/开发流程/规模档/干系人——缺了不会拿默认值立项，而是先给出一张问询单让你去确认。
+  sdo_status: 查看项目状态：当前阶段、待判定门禁、需求与问题计数、最近一次门禁判定、派生投影是否需要重建。只读。
+  sdo_project: 维护项目台账（第 19 个工具）：范围与**非目标**、干系人、术语表、成功度量、开发流程与规模。`update` 只写显式给出的字段（术语表按 key 合并）；`show` 打印当前台账。
+  sdo_requirement: 需求工程。`capture` 捕获需求（自动做八维歧义评分）、`grill` 审讯提问（每题带选项与代价）、`answer` 记录答复（可标为假设）、`update` 修改或补 Given/When/Then 验收标准、`change` 基线后走变更控制（含影响分析与决策）、`list`、`baseline` 冻结基线并判定需求基线门禁。
+  sdo_redteam: 需求红队：对抗式攻击需求集，产出缺陷式议题（每条必须回到需求或转为风险）。`off`/`on` 切换**本会话**红队开关（留痕）；`status` 查看。
+  sdo_render: 把真源渲染成文档（派生视图，带真源序号与"请勿手改"标注）。目前支持需求规格 `srs`。
+  sdo_plan: 任务拆分与派发。`decompose` 双通道拆卡（结构通道按追溯图、模型通道吃建议）并跑六条机械校验；`iteration` 开一个迭代；`next` 按容量预算挑出可派发的卡并产出派发请求。
+  sdo_task: 任务卡与协同协议：认领走比较交换（版本号对不上即冲突）、只有 owner 能回报、**完成必须带证据**、卡住要说明原因；失联的 owner **不会自动释放**，只能显式释放或改派（都留痕）。
+  sdo_test: 测试计划、结果与缺陷。`plan` 写用例（建议绑定需求 id）、`record` 记录结果（通过也要带证据）、`defect` 登记或更新缺陷（严重度/状态）。未关闭的阻塞级缺陷会拦住验证门禁。
+  sdo_review: 评审记录：记录结论（通过/要求修改/驳回）与发现项；**评审者不得是作者**（独立性是机械校验的，不靠自觉）。
+  sdo_deliver: 交付包：产物清单（含 sha256）、验收矩阵（每条必须级需求一行）、回滚点，并声明不含原型内容。只到"可部署产物"，发布与运维明确不做。
+  sdo_cost: 成本报告：已消耗 token；只有在用户填了单价时才给金额，且**处处标注"估算"**。预算可选——没填总额就只报消耗（不给剩余/百分比、不触发阈值）；超预算**不会自动停**，只提醒人去选追加/豁免/收敛。模型只读。
+  sdo_gate: 门禁引擎（流程即数据，门禁逐条判定，绝不臆测）。`check` 判定并留痕；`advance` 仅在当前阶段出口门禁全部通过或已豁免时推进；`waive` 显式豁免并留痕。**未实现的检查器一律判失败**——绝不允许"查不到就算过"。
+  sdo_feasibility: TELOS 可行性评估（技术/经济/法律/运营/进度）+ 可行结论与理由 + 针对高风险项的 PoC 建议。它和风险登记一起构成可行性门禁的证据。
+  sdo_risk: 风险登记。`log` 登记（等级/概率/影响/缓解/责任人，可带来源，例如某条红队议题——带来源即视为把议题转成了风险）；`update` 更新状态或补缓解与责任人；`list`；`conclude` 写螺旋流程每圈的风险结论。
+  sdo_design: 架构工作，受两道门约束：需求基线门禁已过 + 计划评审已完成（SDO 主动驱动 plan mode；没有交互评审通道时**按设计阻塞**并留痕，不落笔）。`create` 在五视图里新增/更新设计元素；`contract` 记录跨组件契约（含超时/重试/幂等）；`view` 查看当前视图。
+  sdo_adr: 架构决策记录。每条必须给出**被否决的备选方案**（含各自代价）与**接受的后果**——只有结论的决策会被架构门禁拒绝。`record`｜`list`｜`supersede`（新记录取代旧记录，旧记录只加指针、内容不改写）。
+  sdo_quality: 质量属性场景与轻量 ATAM。场景要写刺激→响应 + **可测的度量**（指标+条件+阈值），没有数字的不算场景；`evaluate` 把 ATAM 结论落成三张清单（风险点/敏感点/权衡点）。
+  sdo_trace: 追溯图（`.sdo/trace/links.jsonl`）——变更影响分析、孤儿检测与覆盖率都读它。`link` 建边（需求→设计/任务/用例等，支持批量）、`query` 看覆盖率与孤儿、`report` 渲染追溯报告文档。
+  sdo_lang: "查看或切换界面语言（工具/命令描述、状态块、门禁文案）。`action=show` 看当前语言与语言包覆盖率；`action=set lang=en` 立即切换（**进程内生效**，重启前一直有效）。"
+param:
+  redteamAction: 动作：attack（按题库攻击）｜ propose（请模型针对需求生成质询）｜ file（回填模型生成的质询，插件校验）｜ on/off/status。
+  requirementId: 回填时针对的需求 id（REQ-xxx）。
+  questions: JSON 数组，形如 `[{"text":"…？","dimension":"data"}]`（仅 action=file 使用）。
+  action: 动作
+  id: 标识（如 REQ-001 / TASK-001 / Q-0001）
+  name: 名称
+  owner: 责任人 / 执行者
+  gate: 门禁（可用中文名，如"立项门禁"，也可用标识 G0）
+  approver: 批准人
+  approvedBy: 人类签字人（基线门禁需要）
+  evidence: 证据：命令输出摘要 / 产物路径 / 改动引用（JSON 数组）
+  status: 状态
+  severity: 严重度
+  kind: 类型
+  title: 标题
+  statement: 需求陈述（要写成可判定的"指标+条件+阈值"）
+  priority: 优先级
+  level: 等级
+  probability: 概率
+  impact: 影响
+  mitigation: 缓解措施
+  origin: 来源（例如红队议题 id；带来源即视为把议题转为风险）
+  conclusion: 结论
+  rationale: 理由说明
+  note: 备注 / 说明
+  notes: 备注
+  limit: 条数上限
+  decision: 决策
+  decidedBy: 决策人
+  requirements: 需求 id（JSON 数组）
+  suggestions: 卡片建议（JSON 数组）
+  goal: 目标
+  backend: 派发后端偏好
+  expectedRevision: 你读到的版本号（比较交换，用于认领）
+  stage: 阶段
+  actor: 操作人
+  artifact: 产物
+  artifacts: 产物清单（JSON 数组：路径 + 类型）
+  acceptance: 验收矩阵（JSON 数组）
+  rollbackPoint: 回滚点
+  reviewer: 评审者
+  verdict: 结论
+  findings: 发现项（JSON 数组）
+  steps: 步骤（JSON 数组）
+  expected: 期望结果
+  caseId: 用例 id
+  defectId: 缺陷 id
+  requirement: 需求 id
+  reporter: 报告人
+  designId: 设计元素 id
+  dependsOn: 依赖的元素名（逗号分隔）
+  elementKind: 元素类型
+  responsibility: 职责
+  summary: 摘要
+  schema: 契约正文（结构/字段/示例）
+  contractKind: 契约类型
+  timeout: 超时语义
+  retry: 重试语义
+  idempotency: 幂等语义
+  alternatives: 备选方案（JSON 数组，含各自利弊）
+  consequences: 后果（JSON 数组）
+  supersedes: 取代哪条记录
+  attribute: 质量属性
+  stimulus: 刺激（什么事件触发）
+  response: 响应（系统怎么做）
+  measure: 可测度量（指标+条件+阈值）
+  targets: 关联的设计元素 id（逗号分隔）
+  risks: 风险点（JSON 数组）
+  sensitivities: 敏感点（JSON 数组）
+  tradeoffs: 权衡点（JSON 数组）
+  by: 执行人
+  from: 起点 id
+  to: 终点 id
+  links: 批量边（JSON 数组）
+  telos: TELOS 五维评估（JSON 数组）
+  poc: PoC / 验证建议（JSON 数组）
+  verdictLevel: 结论档位
+  scopeIn: 范围（做什么，逗号分隔）
+  scopeOut: 非目标（明确不做什么，逗号分隔）
+  metricsSuccess: 成功度量（可测，逗号分隔）
+  glossary: 术语表（JSON 对象：术语→定义）
+  stakeholders: 干系人（逗号分隔）
+  process: 开发流程
+  scale: 规模档
+  rebuild: 是否强制从真源重建派生投影
+  expand: 是否展开细节
+  all: 是否显示全部
+  write: 是否写入文件产物
+  answer: 答复内容
+  assume: 是否记为假设（未获用户确认时用）
+  dimensions: 八维评分（JSON 对象）
+  accepted: 是否接受建议选项
+  banned: 是否包含禁词类问题
+  redTeam: 是否包含红队质询
+  quick: 是否只问最关键的问题
+  target: 渲染目标
+  taskId: 任务卡 id
+  sourceStakeholder: "来源干系人 id（如 STK-01）。与 sourceRaw 至少给一个，否则**拒绝落账**（需求必须有来源）。"
+  sourceRaw: "用户原话/文档原文（**需求必须有来源**）。与 sourceStakeholder 至少给一个。"
+  pickedOption: "用户选中的选项序号（从 0 起）。"
+  ids: "需求 id 列表，逗号分隔（默认：全部需求）。"
+  context: "补充上下文（自由文本，会写入留痕）。"
+  producer: "被依赖方：填它的 dependsOn 原串（通常是被依赖设计元素的 id 或 name）。consumer 依赖 producer。"
+  consumer: "依赖方：填**依赖别人的那个设计元素的 name**（组件视图里发起依赖的一方）。"
+  reason: "理由（留痕用；drop 卡时必须说明为什么作废）。"
+  lang: "语言包名（如 `zh-CN` / `en`）"
+  langAction: "'show'（查看当前）｜ 'set'（切换）"
+
+
+redteam:
+  proposeHeader: 红队质询提案（由**模型**针对具体需求生成；插件只负责校验）
+  proposeInstruction: 请为下面每条需求生成 {count} 条攻击性质询，要求：① **必须出现该需求陈述里的词**（原文用词，不要另起说法）；② 每条以问号结尾，6~200 字；③ 不得与已存在的问题重复；④ 给出维度（目标/用户/场景/数据/接口/约束/验收/边界）。
+  proposeMustQuote: 校验规则：不引用原文用词、不以问号结尾、与已有问题重复的，插件会**拒绝**并告出原因。
+  proposeStatement: 需求原文
+  proposeWeak: 该需求尚未澄清的维度
+  proposeWeakNone: （八维均已澄清——请从"实现与运行风险"角度提问）
+  proposeNone: 还没有需求可做红队质询：先用 sdo_requirement action=capture 登记需求。
+  proposeCallHint: 生成后调用 sdo_redteam action=file requirementId=<REQ-xxx> questions=<JSON 数组> 回填，插件校验通过才落库。
+  fileNoRequirement: 找不到需求 {id}
+  fileNeedId: 回填红队质询需要 requirementId。
+  fileAccepted: 已登记 {n} 条红队质询（模型生成，已通过"引用原文"校验）
+  fileRejected: 被拒绝 {n} 条
+  fileAskHint: 下一步：用提问工具把这些质询**问用户**，再 sdo_requirement action=answer 记录答案。
+  fileConsequence: 若这条例需求真的如此脆弱，会在开发/评审阶段暴露为返工或线上故障。
+  fileEmpty: 内容为空
+  fileTooShort: 太短（少于 6 字）
+  fileTooLong: 太长（超过 200 字）
+  fileNotQuestion: 未以问号结尾
+  fileNoKeyword: 未引用需求原文用词（请用需求里出现的词）
+  fileDuplicate: 与已有问题重复
+
+status:
+  title: "## SDO 研发办公室"
+  uninitSuffix: "（本会话已装配；当前目录尚未初始化）"
+  noDir: "- 当前工作目录下没有 `{dir}/`。"
+  background: "- 本块是**背景状态**，不是用户的要求：寒暄、问代码、问插件本身时都**不需要**调用任何 `sdo_*` 工具，直接用你的知识与已有工具回答即可。"
+  initHint: "- **只有当用户提出要做/继续一个研发项目时**，才用 `sdo_init` 开始，然后按阶段推进。"
+  projectLine: "- 项目：{id} {name} ｜ 流程 {process} ｜ 规模 {scale} ｜ 阶段 {phase}"
+  gateLine: "- 门禁：待判定 {gate} ｜ 门禁记录 {gates} 条 ｜ 需求 {requirements} 条 ｜ 问题账本 {questions} 条"
+  noGate: "（无）"
+  redTeamLine: "- 红队：{state}（本会话{reason}）"
+  enabled: "启用"
+  disabled: "停用"
+  truncated: "- ⚠️ 真源尾部损坏（journal.jsonl 第 {line} 行），已截断到最后一致前缀；请人工检查。"
+  configDefault: "- 提示：`{dir}/config.yml` 缺失或不可读，当前用默认项目配置（流程 {process} ｜ 规模 {scale}）。"
+  dataDir: "- 数据目录：`{dir}/`（真源 `journal.jsonl`；`project.json` 是派生视图，可重建）"
+  backgroundShort: "- 本块是背景状态；用户没有要求推进流程时，不要主动调用 `sdo_*` 工具。"
+  commands: "- 命令：`/sdo-status` 看状态 ｜ `/sdo-board` 看看板（命令面只在交互式会话可用）"
+  clampMarker: "- …（状态块已达上限，完整信息请用 `sdo_status` 或 `/sdo-status`）"
+  unknownWorkspace: "（工作区未能确定：不提供外部目录兜底，请用 `sdo-status` 查看本会话工作区的真实状态）"
+
+command:
+  noEchoChannel: "宿主 agent 既没有 inbox.send 也没有 followup"
+  sdo-init: "初始化 SDO 项目：`--name=… [--process=waterfall|prototype|agile|spiral] [--scale=trivial|normal|critical] [--stakeholders=…]`"
+  sdo-status: "查看 SDO 项目状态（阶段、门禁缺口、需求与开环问题计数）；`--rebuild` 强制从 journal 重建投影"
+  sdo-board: "查看 SDO 文本看板；`--expand` 展开明细，`--all` 不受保留窗口限制，`--write` 落盘到 docs/BOARD.md"
+  sdo-list: "列出需求（ID／优先级／状态／歧义评分／未决问题数）"
+  sdo-grill: "就需求生成下一批审讯问题（≤4 问，带选项与代价）；`--id=REQ-001` 限定需求，`--quick` 只问 P0"
+  sdo-answer: "回答问题：`--id=Q-0001 --answer=\"…\" [--option=0]`；用户不知道时用 `--assume`（采用默认建议并记为假设）"
+  sdo-redteam: "红队：`--attack` 生成质询问题；`--off` / `--on` 切换本会话红队（写 redteam/mode 留痕）；默认显示状态"
+  sdo-gate: "门禁：`--gate=G0` 判定并留痕；`--waive --gate=G2 --reason=… --approver=…` 显式豁免（留痕，不静默跳过）"
+  sdo-next: "推进到下一阶段（当前阶段的出口门禁必须已通过或已豁免；否则给出缺口与补救）"
+  sdo-budget: "成本与预算：`--show`（默认）｜ `--set total=100 [currency=CNY] [tiers=50,80,100]`｜ `--decide choice=add-budget|waive|narrow-scope [note=…]`（决策留痕，**不会自动停**）"
+  sdo-render: "把 `.sdo/` 真源渲染成人类文档（M1：`--target=srs` → docs/SRS.md）"
+  sdo-lang: "查看或切换界面语言：`/sdo-lang`（查看）｜ `/sdo-lang en`（切到英文，进程内生效）"
+
+uiTools:
+  k1: "JSON object of domain terms, e.g. {\"差异\":\"同一笔业务在两侧系统的不一致记录\"} (merged into the existing glossary)."
+  k2: "The requirement statement — what must be true (\"系统须…\")."
+  k3: "记为假设时必须为 true：表示**用户授权**按你的建议处理（未授权会被拒绝）"
+  k4: "门禁名（中文名或内部编号都行，例如「可行性门禁（G1）」「需求基线门禁（G2）」「架构门禁（G3）」「交付门禁（G7）」；"
+  k5: "原型/敏捷/螺旋流程另有「原型验收门禁（GP）」「迭代完成门禁（GI）」「风险象限评审（GR）」）。"
+  k6: "对用户讲述时请用中文名，不要只说编号。"
+  k7: "JSON array: [{\"dimension\":\"technical\",\"verdict\":\"可行\",\"rationale\":\"…\"}, …]; dimensions are technical/economic/legal/operational/schedule."
+  k8: "JSON array of PoC / validation suggestions for the risky parts, e.g. [\"用 1 天验证 X 的吞吐上限\"]."
+  k9: "Measurable response: metric + condition + threshold, e.g. \"单日 100 万条下 P99 < 500 毫秒\"."
+
+uiRender:
+  k1: "（尚未初始化）"
+  k2: "已通过 {p1}"
+  k3: "已豁免 {p1}"
+  k4: "未通过 {p1}"
+  k5: "最近 5 条 {p1}"
+  k6: "尚未初始化：当前工作目录下没有 `{p1}/`。"
+  k7: "下一步：调用 `sdo_init`（或在交互式会话里用 `/sdo-status` 查看原因）。"
+  k8: "项目　{p1} {p2}"
+  k9: "流程　{p1} ｜ 规模　{p2}"
+  k10: " ｜ 阶段　{p1}"
+  k11: " ｜ 需求　{p1} 条"
+  k12: "门禁　{p1}"
+  k13: "审讯　问题账本 {p1} 条（未决 {p2}）｜ 门禁记录 {p3} ｜ 证据 {p4}"
+  k14: "## 阶段"
+  k15: "- 迭代 {p1}（{p2}）：{p3}"
+  k16: "> ⚠️ journal 尾部损坏（第 {p1} 行），看板只反映最后一个一致前缀。"
+  k17: "## 任务（谁在做什么）"
+  k18: "（暂无；用 `sdo_plan action=decompose` 拆出任务卡）"
+  k19: "共 {p1} 张：{p2}"
+  k20: "    · 完成定义：{p1}　｜ 写范围：{p2}"
+  k21: "    · 证据：{p1}"
+  k22: "    · 阻塞：{p1}"
+  k23: "## 需求{p1}"
+  k24: "　{p1}　歧义 {p2}/16　未决问题 {p3}"
+  k25: "## 需求"
+  k26: "（暂无；`sdo_requirement action=capture` 开始收集）"
+  k27: "## 展开信息"
+  k28: "- 红队：{p1}（默认 {p2}{p3}）"
+  k29: "- 范围（in）：{p1}"
+  k30: "- 非目标（out）：{p1}"
+  k31: "- 干系人：{p1}"
+  k32: "- 成功度量：{p1}"
+  k33: "- 数据目录：`{p1}/`（真源 journal.jsonl；project.json 为派生视图）"
+  k34: "（空）"
+  k35: "（未限定）"
+  k36: "（前 {p1}/{p2}，--all 看全部）"
+  k37: "停用"
+  k38: "停用"
+  k39: "待判定 {p1}"
+  k40: "# SDO 看板"
+  k41: "（无）"
+  k42: "（未认领）"
+  k43: "（全部）"
+  k44: "启用"
+  k45: "启用"
+
+uiDescribe:
+  contractMissingExact: "- 该填：consumer={p1}；producer={p2}"
+  k6: "进入"
+  k7: "- 当前阶段：{p1}（{p2}）"
+  k8: "- 数据目录：`{p1}/`"
+  k9: "- 尚未初始化：当前工作目录下没有 `{p1}/`。"
+  k10: "- 下一步：调用 `sdo_init`（项目名/流程/规模）。"
+  k11: "（无）"
+  k12: "- 项目：{p1} {p2}"
+  k13: "- 流程：{p1} ｜ 规模：{p2} ｜ 阶段：{p3}"
+  k14: "- 门禁缺口：待判定 {p1} ｜ 最近判定：{p2}"
+  k15: "- 需求：{p1} 条 ｜ 开环问题：{p2}（账本共 {p3} 条）"
+  k16: " ｜ 追溯覆盖率：—（M2 起提供）"
+  k17: "- 可行性：{p1} ｜ 风险：{p2} 条（未关闭 {p3}，高 {p4}，阻塞 {p5}）"
+  k18: "- 红队未闭环议题：{p1} ｜ 变更请求：{p2} 条"
+  k19: "- 证据：{p1} 条"
+  k20: "- 投影：{p1} ｜ 真源："
+  k21: "- 提示：`{p1}/config.yml` 缺失或不可读，当前用默认项目配置（流程 {p2} ｜ 规模 {p3}）。"
+  k22: "- 产物清单："
+  k23: "  `{p1}/journal.jsonl`（真源，追加式）"
+  k24: "  `{p1}/project.json`（派生视图，可重建）"
+  k25: "  `{p1}/requirements/*.yml` 与 `{p2}/questions/*.yml`（需求与问题账本）"
+  k26: "- 可用字段：name / process / scale / scopeIn / scopeOut / stakeholders / metricsSuccess / glossary"
+  k27: "- 本次写入字段：{p1}"
+  k28: "- 范围（in）：{p1}"
+  k29: "- 非目标（out）：{p1}"
+  k30: "- 术语表：{p1} 个术语"
+  k31: "- 成功度量：{p1}"
+  k32: "尚未初始化（没有 `{p1}/`）：先调用 `sdo_init`。"
+  k33: "- 流程：{p1} ｜ 规模：{p2} ｜ 阶段：{p3}"
+  k34: "- 范围（in）：{p1}"
+  k35: "- 非目标（out）：{p1}"
+  k36: "- 干系人：{p1}"
+  k37: "- 术语表：{p1}"
+  k38: "- 成功度量：{p1}"
+  k39: "- 裁剪：{p1}"
+  k40: "门禁「{p1}」（当前阶段：{p2}）：{p3}"
+  k41: "    补救：{p1}"
+  k42: "未满足：{p1}（未通过前不得进入下一阶段）"
+  k43: "- 判定记录已写入 `.sdo/gates/{p1}.json`（文件名保留标识，便于追溯与排查）。"
+  k44: "已从「{p1}」推进到「{p2}」{p3}。"
+  k45: "「{p1}」已是流程末尾，无可推进。"
+  k46: "- 补救：{p1}"
+  k47: "- 先运行 `sdo_gate action=check gate={p1}` 看逐条准则；确有正当理由时用 `sdo_gate action=waive`（会留痕）。"
+  k48: "- 理由：{p1}"
+  k49: "- PoC / 验证建议：{p1}"
+  k50: "- ⚠️ 未给出 PoC / 验证建议：G1 会因此拒绝（高风险项必须先验证）"
+  k51: "- 下一步：`sdo_risk action=log …` 登记风险，然后 `sdo_gate action=check gate=G1`。"
+  k52: "风险登记为空。用 `sdo_risk action=log title=… level=… mitigation=… owner=…` 登记。"
+  k53: "    ⚠️ 缺应对或责任人：G1/GR 会因此拒绝"
+  k54: "- 理由：{p1}"
+  k55: "- 变更：{p1}"
+  k56: "- 影响分析：设计 {p1} 项 ｜ 任务 {p2} 项 ｜ 测试 {p3} 项"
+  k57: "- 决策人：{p1}"
+  k58: "- ⚠️ 未应用：{p1}"
+  k59: "还没有任何架构视图。用 `sdo_design action=create kind=context name=…` 开始。"
+  k60: "- {p1}（{p2}）：{p3} 个元素{p4}"
+  k61: "- 缺视图：{p1}（G3 会拒绝）"
+  k62: "- 契约：{p1} 份"
+  k63: "- 类型：{p1}　职责：{p2}"
+  k64: "- 依赖：{p1}（每条跨组件依赖都需要契约：G4 的 design.contracts 会核对）"
+  k65: "- 下一步：`sdo_trace action=link from=REQ-001 to={p1} kind=req-des` 把它挂到需求上（否则是孤儿设计）。"
+  k66: "- 失败语义：超时 {p1} ｜ 重试 {p2} ｜ 幂等 {p3}"
+  k67: "- 契约覆盖：{p1}/{p2} 条跨组件交互"
+  k68: "- 仍缺契约：{p1}"
+  k69: "- 失败语义不全：{p1}（G4 会拒绝）"
+  k70: "- 已取代 {p1}（原记录标记为 superseded，内容不改）"
+  k71: "- 备选方案 {p1} 项 ｜ 后果 {p2} 项"
+  k72: "- 决策：{p1}"
+  k73: "还没有 ADR。用 `sdo_adr action=record` 记录关键决策（必须含备选与后果）。"
+  k74: "- {p1}　[{p2}]　{p3}　备选 {p4} ｜ 后果 {p5}"
+  k75: "- 刺激 → 响应：{p1} → {p2}"
+  k76: "- 度量：{p1}"
+  k77: "- 关联元素：{p1}"
+  k78: "还没有质量场景。用 `sdo_quality action=scenario` 记录（度量必须可测）。"
+  k79: "- 风险点 {p1} 条{p2}"
+  k80: "- 敏感点 {p1} 条"
+  k81: "- 权衡点 {p1} 条"
+  k82: "- 评估人：{p1}"
+  k83: "- 追溯边 {p1} 条 ｜ 需求覆盖率（有设计元素）{p2}%"
+  k84: "- 孤儿设计元素：{p1}"
+  k85: "- 无需求来源的任务：{p1}"
+  k86: "- 无需求来源的测试用例：{p1}"
+  k87: "- must 需求缺测试用例：{p1}"
+  k88: "- {p1}：设计 {p2} ｜ 任务 {p3} ｜ 测试 {p4}"
+  k89: "    · 写范围：{p1}{p2}"
+  k90: "    · 证据要求：{p1}　追溯：{p2}"
+  k91: "- 六条机械校验：全部通过（单角色 / DoD / 无环 / 规模 / 写范围互斥 / 证据要求）"
+  k92: "- ❌ 六条机械校验未通过 {p1} 项："
+  k93: "- 目标：{p1}"
+  k94: "- 写范围：{p1}"
+  k95: "- 证据 {p1} 条：{p2}"
+  k96: "- 阻塞原因：{p1}"
+  k97: "- 当前状态：{p1}　r{p2}{p3}"
+  k98: "- 重新读卡后用 `expectedRevision={p1}` 再试；被别人占着就先别抢（可 `sdo_task action=reassign` 显式改派）。"
+  k99: "还没有任务卡。用 `sdo_plan action=decompose` 拆分。"
+  k100: "- 迭代 {p1}（{p2}）：{p3}"
+  k101: "- 可派发 {p1} 张：{p2}"
+  k102: "- ⚠️ 疑似失联 {p1} 张：{p2}（**不会自动释放**，请显式 release/reassign）"
+  k103: "- ❌ 拆分校验未通过 {p1} 项（详见 `sdo_plan action=decompose`）"
+  k104: "- ⚠️ 宿主调用（`SubagentRuntime.start`）**尚未接线**：这一步会真正起一次模型运行，需要凭据与可用装配。"
+  k105: "在此之前请由流程官用 `send_message` 把下面的提示词交给执行者，或按 inline 方式由主模型就地执行。"
+  k106: "- 工具面：{p1}　｜ 写范围：{p2}"
+  k107: "- 认领需带 `expectedRevision={p1}`"
+  k108: "- owner 记为 {p1}；完成后必须用 `sdo_task action=done id={p2} owner={p3} evidence=…` 回报。"
+  k109: "- 产物 {p1} 项："
+  k110: "- 验收矩阵 {p1} 行：{p2}"
+  k111: "- 回滚点：{p1}"
+  k112: "- 原型内容已排除：{p1}"
+  k113: "- 类型：{p1} ｜ 优先级：{p2}"
+  k114: " ｜ 状态：{p1} ｜ 歧义评分：{p2}/16"
+  k115: "- 验收标准：{p1} 条"
+  k116: "- 类型：{p1} ｜ 优先级：{p2} ｜ 状态：{p3}"
+  k117: "- 歧义评分：{p1}"
+  k118: "- 硬信号：{p1}（其中 `banned:*` 会生成强制量化问题）"
+  k119: "- 下一步：`sdo_requirement action=grill id={p1}` 追问最弱维度（每轮 ≤4 问）。"
+  k120: "- 跳过的需求（未找到）：{p1}"
+  k121: "- 若需求仍未达 DoR，请用 `sdo_requirement action=update` 补充语义分/验收标准，或直接补全陈述。"
+  k122: "   - 目标：{p1}"
+  k123: "   - 为什么问：{p1}"
+  k124: "   - 不问的后果：{p1}"
+  k125: "   - 选项 {p1}：{p2}（代价：{p3}）"
+  k126: "   - 默认建议（用户答\"不知道\"时采用并记为假设）：{p1}"
+  k127: "回答方式：`sdo_requirement action=answer id=<问题ID> answer=\"…\" pickedOption=<下标>`；若用户说不知道，用 `assume=true`。"
+  k128: "- 答案：{p1}"
+  k129: "- 回答者：{p1}"
+  k130: "- 目标 {p1} 更新后评分：{p2}"
+  k131: "- ⚠️ 记为**假设**（用户答\"不知道\"）：请把该假设登记为风险，并在交付文档中披露。"
+  k132: "还没有需求。用 `sdo_requirement action=capture` 开始收集。"
+  k133: "　{p1}/16　未决 {p2}　{p3}"
+  k134: "- 未达阈值（<14）：{p1}"
+  k135: "- {p1}　v{p2}　签字：{p3}"
+  k136: "- 已写 `gates/G2.json`，并据 `phase/entered` 事件进入 `architecture` 阶段。"
+  k137: "- 下一步：`sdo_design action=create` 开始架构设计（M2 实现）。"
+  k138: "G2 未通过（需求基线被拒）：\n{p1}"
+  k139: "    现状：{p1}"
+  k140: "    补救：{p1}"
+  k141: "未满足：{p1}（未通过前不得进入架构设计）"
+  k142: "红队质询已执行：生成 {p1} 个 P0 问题（攻击角度见设计 §5.4）。"
+  k143: "红队已在**本会话**{p1}（已写 `redteam/mode` 留痕{p2}）。"
+  k144: "- 这是会话级开关：换会话需重新表达（Q-15）。"
+  k145: "红队状态：本会话{p1}；本轮流程{p2}。"
+  k146: "- `sdo_redteam action=attack` 跑一轮；`action=off` 停用本会话（写留痕）。"
+  k147: "- 渲染头包含真源位置与 journal seq {p1}；同一状态重渲染逐字节相同（幂等）。"
+  k148: "- 该文件是**生成物**：请改 `.sdo/` 真源后重新渲染，不要手改产物。"
+  k149: "- 补救：{p1}"
+  k150: "当前 DoR 判定："
+  k151: "- 架构设计引擎在 M2 实现（`sdo_design` 目前只负责把 G2 门禁守住）。"
+  k152: "（未评估）"
+  k153: "来自 project.json"
+  k154: "  `{p1}/config.yml`（项目级配置，人类可编辑）"
+  k155: "无"
+  k156: "{p1}（豁免 {p2}）"
+  k157: "❌ 未通过"
+  k158: "（未写）"
+  k159: "（未写）"
+  k160: "（未写）"
+  k161: "（无）"
+  k162: "（无）"
+  k163: "（无）"
+  k164: "（未限定）"
+  k165: "　依赖：{p1}"
+  k166: "（无）"
+  k167: "（未限定）"
+  k168: "（无）"
+  k169: "（未限定）"
+  k170: "否（G7 会拒绝）"
+  k171: "（未定，DoR 会拦）"
+  k172: "（空）"
+  k173: "启用"
+  k174: "，理由：{p1}"
+  k175: "启用（默认）"
+  k176: "尚未执行攻击"
+  k177: "SDO 状态"
+  k178: "已更新项目台账：{p1} {p2}"
+  k179: "项目台账：{p1} {p2}"
+  k180: "无法推进：「{p1}」的出口门禁「{p2}」尚未通过。"
+  k181: "可行性评估已记录（{p1}，结论：{p2}）"
+  k182: "风险共 {p1} 条（未关闭 {p2}｜高 {p3}｜阻塞 {p4}）："
+  k183: "变更请求 {p1}（需求 {p2}，决策 {p3}）"
+  k184: "架构视图 {p1}/5："
+  k185: "更新"
+  k186: "已{p1}设计元素 {p2} {p3}（{p4}）"
+  k187: "已记录契约 {p1}　{p2}（{p3}）"
+  k188: "已记录 {p1}：{p2}（{p3}）"
+  k189: "ADR {p1} 条："
+  k190: "质量场景 {p1} 条："
+  k191: "ATAM-lite 评估已记录："
+  k192: "追溯报告："
+  k193: "（空）"
+  k194: "任务卡 {p1} 张：{p2}"
+  k195: "认领失败（{p1}）：{p2}"
+  k196: "任务卡 {p1} 张 ｜ 完成 {p2} ｜ 进行中 {p3} ｜ 阻塞 {p4}"
+  k197: "派发请求已生成：{p1} → {p2}（后端 {p3}，persona {p4}）"
+  k198: "就地执行 {p1}（后端 inline{p2}）"
+  k199: "交付包 {p1}（by {p2}，{p3}）"
+  k200: "已更新需求 {p1}：{p2}"
+  k201: "已捕获需求 {p1}：{p2}"
+  k202: "本轮没有问题。"
+  k203: "本轮 {p1} 问（批量上限 4；每题必带选项与代价）："
+  k204: "已记录回答 {p1}（状态：{p2}）"
+  k205: "需求共 {p1} 条："
+  k206: "G2 通过：{p1} 条需求已基线冻结。"
+  k207: "（无记录）"
+  k208: "已从 journal 重建"
+  k209: "（空）"
+  k210: "（空 —— G2 会拦）"
+  k211: "（空）"
+  k212: "（空）"
+  k213: "（空 —— 门禁 G0/G2 会拦）"
+  k214: "（空）"
+  k215: "（空 —— 门禁 G2 会拦）"
+  k216: "（空）"
+  k217: "（未设置）"
+  k218: "✅ 通过"
+  k219: "⚠️ 已豁免"
+  k220: "（流程末尾）"
+  k221: "- ✅ 变更已应用（需求状态 changed，版本 +0.1）"
+  k222: "创建"
+  k223: "（未写）"
+  k224: "- ⚠️ 未关联设计元素（`targets`）：ATAM 时难以定位敏感点"
+  k225: "（空 —— 请如实指出可能不达标的场景）"
+  k226: "无"
+  k227: "无"
+  k228: "无"
+  k229: "无"
+  k230: "是"
+  k231: "（规则/模型不一致，取更严者，需复核）"
+  k232: "停用"
+  k233: "已停用"
+  k234: "已执行过攻击"
+  k235: "journal.jsonl 尾部损坏（第 {p1} 行，已截断）"
+  k236: "journal.jsonl 正常"
+  k237: "{p1}"
+  k238: "　（来源 {p1}）"
+  k239: "- {p1}　[{p2}/{p3}]　{p4}　{p5}{p6}"
+  k240: "　依赖：{p1}"
+  k241: "    · {p1} {p2}　[{p3}]{p4}"
+  k242: "　⚠️ 度量不可测"
+  k243: "- {p1}　[{p2}/{p3}]　{p4}{p5}"
+  k244: "（空）"
+  k245: "    · DoD：{p1}"
+  k246: "（空）"
+  k247: "- DoD：{p1}"
+  k248: "未定"
+  k249: "- {p1}　[{p2}/{p3}]　{p4}"
+  k1: "本次没有写入任何字段（本工具只写显式给出的字段）。"
+  k2: "已记录质量场景 {p1}（{p2}／{p3}）"
+  k3: "已渲染 {p1} → `{p2}`"
+  k4: "{p1}设计被拒：{p2}"
+  k5: "查看"
+  m1: "本次没有写入任何字段（本工具只写显式给出的字段）。"
+  m2: "已记录质量场景 {p1}（{p2}／{p3}）"
+  m3: "已渲染 {p1} → `{p2}`"
+  m4: "{p1}设计被拒：{p2}"
+  m5: "查看"
+  m6: "进入"
+  m7: "门禁通过（{p1}）。"
+
+uiIndex:
+  k2: "宿主没有 tokenMeter 服务"
+  k8: "\n- 干系人若与实际不符（例如你是单人开发却出现多个干系人），请立刻更正：`sdo_project action=update stakeholders=...`。"
+  k9: "未知 action：{p1}（可用：update | show）"
+  k10: "- 阈值档位：{p1}%（每档只问一次；**超预算不会自动停**）"
+  k11: "- 单价表："
+  k12: "未知选择：请用 `add-budget` / `waive` / `narrow-scope`。"
+  k13: "追加预算"
+  k14: "继续并记豁免"
+  k15: "收敛范围"
+  k16: "已记录决定：{p1}（{p2}）→ `budget/decision` 留痕；开发**继续**（预算只监视+提醒，不硬停）。\n- 累计决定 {p3} 条"
+  k17: "未知 action：{p1}（可用：report）"
+  k18: "- ⚠️ 用量不可得：{p1}——"
+  k19: "不会用估算值假装有数据"
+  k20: "- 说明：{p1}"
+  k21: "- 分模型：{p1}"
+  k22: "- 预算：未设置（`/sdo-budget --set total=…`；不设就只报消耗，不判超支）"
+  k23: "- 预算：{p1} ｜ 已问档位：{p2}"
+  k24: "- 阈值档位：{p1}%（每档只问一次）"
+  k25: "- ⚠️ {p1}：请选择**追加预算 / 继续并记豁免 / 收敛范围**（用 `/sdo-budget --decide choice=…`）。**不会自动停。**"
+  k26: "(未命名卡片)"
+  k27: "开迭代需要 `goal`（没有目标的迭代无法判定\"完成\"）。"
+  k28: "已开启迭代 {p1}：{p2}（status={p3}）\n- 下一步：`sdo_plan action=decompose` 拆出本迭代的卡，然后 `sdo_plan action=next` 派发。"
+  k29: "未知 action：{p1}（可用：decompose | iteration | next）"
+  k30: "没有可派发的任务卡（都已认领/完成）。用 `sdo_task action=list` 看全貌。"
+  k31: "容量已满：{p1} 张卡在排队（`maxParallelDispatch` = {p2}）。"
+  k32: "\n- 另有 {p1} 张卡在容量队列里等待。"
+  k33: "认领需要 `id`、`owner` 与 `expectedRevision`（CAS：你读到的版本号）。"
+  k34: "回报需要 `id` 与 `owner`。"
+  k35: "回报被拒（{p1}）：{p2}"
+  k36: "需要 `id`。"
+  k37: "（未说明）"
+  k38: "写用例需要 `title` 与 `expected`。"
+  k39: "已记录用例 {p1}　[{p2}]　{p3}{p4}"
+  k40: "记录结果需要 `caseId` 与 `status`。"
+  k41: "通过也必须带 `evidence`（命令 + 输出摘要，或产物路径）——否则这个\"通过\"没有证据。"
+  k42: "已记录结果 {p1}：{p2} → {p3}\n- 用例 {p4} 条 ｜ 通过 {p5} ｜ 失败 {p6} ｜ 未关闭缺陷 {p7}"
+  k43: "已更新缺陷 {p1} → {p2}"
+  k44: "登记缺陷需要 `title` 与 `severity`（blocker/major/minor）。"
+  k45: "已登记缺陷 {p1}　[{p2}/{p3}]　{p4}"
+  k46: "还没有评审记录。用 `sdo_review action=record`（评审者 ≠ 作者）。"
+  k47: "- ⚠️ 独立性违规：{p1}"
+  k48: "记录评审需要 `taskId`、`reviewer` 与 `verdict`。"
+  k49: "找不到任务卡 {p1}。"
+  k50: "评审独立性违规：{p1} 的作者也是 {p2}。请换一位评审者（设计 §8.7）。"
+  k51: "已记录评审 {p1}：{p2} → {p3}（评审者 {p4}{p5}）"
+  k52: "打包需要 `artifacts`（JSON 数组：相对路径 + 类型）。"
+  k53: "打包需要 `rollbackPoint`（出问题退回到哪个已知状态）。"
+  k54: "- ⚠️ 这些产物在盘上找不到（哈希算不出来）：{p1}"
+  k55: "- 已渲染：{p1}"
+  k56: "豁免门禁需要 `gate`。"
+  k57: "豁免必须留痕：请同时给出 `reason` 与 `approver`（设计 §7.5 / AC-003）。"
+  k58: "已豁免门禁「{p1}」（批准人：{p2}，理由：{p3}）。\n{p4}"
+  k59: "未知 action：{p1}（可用：check | advance | waive）"
+  k60: "判定门禁需要 `gate`（例如 G0 / G1 / G2 / G7）。"
+  k61: "未知 action：{p1}（可用：assess）"
+  k62: "可行性评估需要 `verdict`（go / no-go / conditional）。"
+  k63: "未评估"
+  k64: "登记风险需要 `title` 与 `level`（low / medium / high / blocker）。"
+  k65: "- ⚠️ 缺 `mitigation` 或 `owner`：G1/GR 会拒绝（高/阻塞级风险必须有应对与责任人）"
+  k66: "- 该风险指向红队议题 {p1}，议题因此视为闭环（设计 §5.4）"
+  k67: "更新风险需要 `id`。"
+  k68: "找不到风险 {p1}。"
+  k69: "已更新风险 {p1}：{p2}　[{p3}]　{p4}"
+  k70: "风险结论需要 `conclusion`（continue / adjust / stop）。"
+  k71: "已记录本圈风险结论：{p1}（{p2}）"
+  k72: "捕获需求需要 `statement`（\"系统须…\"这样的可判定陈述）。请先向用户问清楚要做什么。"
+  k73: "还没有需求可追问：先用 `sdo_requirement action=capture` 捕获一条。"
+  k74: "**不得自己代答**（自问自答会被拒绝）。用户明确授权之后，才可带 `authorizedByUser: true` 记为假设。"
+  k75: "回答问题需要 `id`（问题账本里的 Q-xxxx）。"
+  k76: "请给出 `answer`，或用 `assume=true` 表示用户不知道、采用问题的默认建议并记为假设。"
+  k77: "找不到问题 {p1}。"
+  k78: "更新需求需要 `id`。"
+  k79: "找不到需求 {p1}。"
+  k80: "基线需要人类签字：请传 `approvedBy`（设计 §15.3 G2 要求人类签字）。"
+  k81: "变更需要 `id`。"
+  k82: "变更必须给出 `reason`（设计 §5.5：变更内容 + 理由 + 影响分析 + 决策）。"
+  k83: "变更必须给出 `decision`（approved / rejected / deferred）。"
+  k84: "陈述改为：{p1}"
+  k85: "优先级改为：{p1}"
+  k86: "标题改为：{p1}"
+  k87: "（仅记录变更请求，未给出具体字段）"
+  k88: "未知 action：{p1}（可用：capture | grill | answer | update | change | list | baseline）"
+  k89: "还没有需求可攻击：先 `sdo_requirement action=capture`。"
+  k90: "M1 只实现 `srs`；`{p1}` 在后续里程碑提供。"
+  k91: "尚未初始化：先调用 `sdo_init`。"
+  k92: "- 架构阶段要求**先过计划评审**（设计 Q-17：SDO 主动驱动 plan mode），而本环境没有交互式评审通道。"
+  k93: "- 已写 `plan/review-blocked` 留痕；**不进入 plan mode、不触达 G3、不提供跳过开关**（Q-20）。"
+  k94: "- 单会话原则（C-09）：**不要另开会话**。请在**当前会话**内接入交互式评审通道（宿主装配 plan mode），或向用户说明计划并在本会话内确认。"
+  k95: "- 无法评审时：本阶段保持阻塞（不落笔、不触达架构门禁）；可显式豁免并留痕，但不允许用换会话绕过。"
+  k96: "- 已写 `plan/review-blocked` 留痕；不进入 plan mode、不触达 G3（Q-20）。"
+  k97: "- remedy：在 Web/CLI 会话里继续（那里的交互式评审通道可用）。"
+  k98: "- 请用户评审架构计划；通过后由 `exit_plan_mode` 结束计划模式（这是第一道门）。"
+  k99: "- 计划通过后再调 `sdo_design action=create` 写入视图与元素（第二道门是 G3）。"
+  k100: "计划评审尚未完成：仍在 plan mode。请用户评审并用 `exit_plan_mode` 通过后再写入设计。"
+  k101: "记录契约需要 `producer`、`consumer` 与 `schema`（契约正文）。"
+  k102: "未知 action：{p1}（可用：create | contract | view）"
+  k103: "创建元素需要 `kind`（context | component | runtime | data | deployment）。"
+  k104: "创建元素需要 `name`。"
+  k105: "ADR 需要 `title` 与 `decision`。"
+  k106: "ADR 必须给出**备选方案**（`alternatives` JSON 数组，含 pros/cons）——G3 会拒绝只有结论的决策。"
+  k107: "ADR 必须给出**后果**（`consequences` JSON 数组，包含你不喜欢的那些）。"
+  k108: "质量场景需要 `attribute` 与**可测的** `measure`（指标 + 条件 + 阈值）。"
+  k109: "度量不可测：{p1}。请写成\"指标 + 条件 + 阈值\"（含数值或阈值符号）。"
+  k110: "建立追溯边需要 `from`/`to`/`kind`，或用 `links` 传 JSON 数组。"
+  k111: "- 需求覆盖率：{p1}% ｜ 孤儿：设计 {p2} / 任务 {p3} / 测试 {p4}"
+  k112: "- must 需求缺测试用例：{p1}"
+  k113: "已渲染追溯报告 → `{p1}`（派生视图，含覆盖率与孤儿清单）。"
+  k114: "（未说明）"
+  k115: "（无）"
+  k116: "　（覆盖 {p1}）"
+  k117: "，作者 {p1}"
+  k118: "用例 {p1} 条 ｜ 结果 {p2}（通过 {p3} / 失败 {p4} / 跳过 {p5}）｜ 未关闭缺陷 {p6}（阻塞 {p7}）"
+  k119: "已登记风险 {p1}　[{p2}]　{p3}"
+  k120: "未填（只显示 token，不猜金额）"
+  k121: "只报消耗（未设 total）"
+  k122: "找不到缺陷 {p1}。"
+  k123: "还没有交付包。用 `sdo_deliver action=package`。"
+  k124: "{p1}\n- 已标记来源为**原型回填**（source=prototype）。"
+  k125: "无"
+  k126: "已写入 {p1}。"
+  k127: "{p1}\n{p2}"
+  k128: "（未填单价）"
+  k129: "{p1} {p2} tokens{p3}"
+  k130: "改派需要 `owner`。"
+  k131: "找不到任务卡 {p1}。"
+  k132: "{p1}"
+  k133: "已释放"
+  k134: "已改派"
+  k135: "{p1}：{p2}"
+  k136: "　（覆盖 {p1}）"
+  k137: "- {p1}　[{p2}]　{p3}{p4}"
+  k138: "看板写盘被禁用（board.text=false），未写入 docs/BOARD.md。"
+  k139: "{p1}\n{p2}"
+  planReviewed: "已在**本会话内**记录计划评审通过（由 {x} 评审）。可以继续 sdo_design create。"
+  planWaived: "已记录**计划评审豁免**（留痕，理由与豁免人已写入真源）。可以继续 sdo_design create。"
+  planWaiveNoReason: "（未写明理由）"
+  planBlockedHead: "进入设计被阻塞：本宿主没有交互式计划评审通道（plan mode 不可用）。"
+  planExitReview: "出口一：请用户在本会话内评审计划，然后调用 `sdo_design action=review approvedBy=<评审人>`。"
+  planExitWaive: "出口二：确实无法评审时，显式豁免并留痕：`sdo_design action=waive-plan reason=<理由> by=<豁免人>`（SDO 不提供\"跳过\"开关，豁免必须写明理由）。"
+  acWritten: "- 已写入 {n} 条验收标准（来源：本次 capture 的 acceptance）。"
+  note: "评审备注（可选，写入留痕）。"
+  by: "豁免人（谁批准的豁免），默认 human。"
+  planLoadDiag: "- （诊断）自行装载 plan-mode 失败：{p1}"
+  planLoadDeferred: "已尝试装载但服务未注册（多为依赖服务缺失：plan-mode 需要 tools / systemPrompt / sessionProjections）"
+  planLoadNone: "未尝试装载"
+  planChecklist: "计划必须**结构化**，至少覆盖以下 8 项（每项都要具体到本项目的名字，不要写空话）：\n1) 目标与非目标：本轮架构阶段要产出什么、明确不做什么；\n2) 关键设计决策：每个决策给出 **≥2 个备选方案** + 取舍理由 + 后果（G3 要求每条 ADR 含备选与后果）；\n3) 视图清单：要画哪些视图（逻辑/数据/接口/部署/其他），每个视图准备表达什么；\n4) 组件与契约：组件划分、跨组件交互、哪些交互必须落契约、各自的写范围边界；\n5) 追溯计划：哪些需求（REQ-xxx）会映射到哪些设计元素（DES-xxx），如何避免孤儿；\n6) 风险与缓解：高风险条目**必须**带缓解措施与责任人；\n7) 任务拆分预览：卡片粒度、DoD、依赖顺序、每张卡的写范围（避免互相覆盖）；\n8) 测试计划：must 级需求如何被用例覆盖；\n提交前请用 sdo_gate action=check gate=架构门禁 逐条自检；提交时用 exit_plan_mode，并在计划末尾列出**希望用户重点确认的 2~3 个问题**。"
+  dropNoReason: "（未说明理由）"
+  scopeDerivedNote: "- 提示：以下元素的写范围是按元素自动派生的。建议二选一：① 在元素职责里写明「写范围：<glob> 独占」；② 在 `.sdo/config.yml` 写 `plan: { scopeTemplate: \"src/main/java/{{slug}}/,src/test/java/{{slug}}/\" }` 让派生规则贴合本项目的真实布局。：{p1}"
+  defaultRole: "developer"
+  dropContractDone: "契约 {p1}（{p2}）已作废（留痕：不参与覆盖判定，记录保留在真源里）"
+  dropContractMissing: "作废契约需要 id（例如 `sdo_design action=drop-contract id=CT-010 reason=…`）"
+  dropContractNotFound: "没有找到契约 {p1}（可用 `sdo_design action=view` 查看清单）"
+  k1: "预算已更新：{p1}"
+  k3: "评审 {p1} 条："
+  k4: "⚠️ 这些问题是**问用户的**：请用宿主提问工具（`ask_user_question`）逐题问，一次最多 4 题；"
+  k5: "进入设计被阻塞：无法为本次调用驱动 plan mode（缺少 agent 引用或服务异常）。"
+  k6: "已进入 plan mode（{p1}）：先做探索与方案比较，不要落笔实现。"
+  k7: "已建立 {p1} 条追溯边（请求 {p2} 条）。"
+  m1: "预算已更新：{p1}"
+  m2: "只报消耗（未设 total）"
+  m3: "评审 {p1} 条："
+  m4: "⚠️ 这些问题是**问用户的**：请用宿主提问工具（`ask_user_question`）逐题问，一次最多 4 题；"
+  m5: "进入设计被阻塞：无法为本次调用驱动 plan mode（缺少 agent 引用或服务异常）。"
+  m6: "已进入 plan mode（{p1}）：先做探索与方案比较，不要落笔实现。"
+  m7: "已建立 {p1} 条追溯边（请求 {p2} 条）。"
+
+uiCommands:
+  k1: "（SDO 命令 `{p1}` 的结果 · 仅供展示，无需回应）\n\n{p2}"
+  k2: "{p1}\n…（回显已截断，完整体见命令面/文件产物）"
+  k3: "需要 `--choice=add-budget|waive|narrow-scope`。"
+  k4: "（未说明）"
+
+planMode:
+  section: "你正处于【计划模式】：只做只读探索（读文件、搜索、静态分析、跑检查），不要编辑或写入文件、不要改配置、不要提交；用户的口头同意不算批准，必须用 exit_plan_mode 提交计划给用户评审。这是 SDO 架构阶段的评审前置：评审通过前不落设计。【计划要求】计划必须**结构化**，至少覆盖以下 8 项（每项都要具体到本项目的名字，不要写空话）： 1) 目标与非目标：本轮架构阶段要产出什么、明确不做什么； 2) 关键设计决策：每个决策给出 **≥2 个备选方案** + 取舍理由 + 后果（G3 要求每条 ADR 含备选与后果）； 3) 视图清单：要画哪些视图（逻辑/数据/接口/部署/其他），每个视图准备表达什么； 4) 组件与契约：组件划分、跨组件交互、哪些交互必须落契约、各自的写范围边界； 5) 追溯计划：哪些需求（REQ-xxx）会映射到哪些设计元素（DES-xxx），如何避免孤儿； 6) 风险与缓解：高风险条目**必须**带缓解措施与责任人； 7) 任务拆分预览：卡片粒度、DoD、依赖顺序、每张卡的写范围（避免互相覆盖）； 8) 测试计划：must 级需求如何被用例覆盖； 提交前请用 sdo_gate action=check gate=架构门禁 逐条自检；提交时用 exit_plan_mode，并在计划末尾列出**希望用户重点确认的 2~3 个问题**。"
+
+uiClamp:
+  truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"
+
+uiGates:
+  k1: "范围（in）{p1} 条"
+  k2: "范围（in）为空"
+  k3: "用 `sdo_project action=update scopeIn=…` 写明做什么"
+  k4: "非目标（out）{p1} 条"
+  k5: "未声明非目标（out）"
+  k6: "用 `sdo_project action=update scopeOut=…` 明确不做什么"
+  k7: "干系人 {p1} 个"
+  k8: "干系人为空"
+  k9: "用 `sdo_project action=update stakeholders=…` 列出干系人"
+  k10: "成功度量为空"
+  k11: "用 `sdo_project action=update metricsSuccess=…` 给出可测指标"
+  k12: "成功度量 {p1} 条（含数值）"
+  k13: "成功度量不可测：{p1}"
+  k14: "把度量写成\"指标 + 条件 + 阈值\"（含数值）"
+  k15: "术语表 {p1} 条"
+  k16: "术语表为空"
+  k17: "用 `sdo_project action=update glossary={\"术语\":\"定义\"}` 补术语"
+  k18: "尚未做可行性评估"
+  k19: "调用 `sdo_feasibility action=assess`"
+  k20: "TELOS 结论：Go"
+  k21: "TELOS 结论：{p1}"
+  k22: "消解阻塞项后重新评估为 Go，或明确终止项目"
+  k23: "风险登记为空"
+  k24: "用 `sdo_risk action=log` 登记风险"
+  k25: "高/阻塞级风险缺应对或责任人：{p1}"
+  k26: "为每条高风险补 `mitigation` 与 `owner`"
+  k27: "风险 {p1} 条（高 {p2} / 阻塞 {p3}）"
+  k28: "PoC/验证建议 {p1} 条"
+  k29: "未给出 PoC 或验证建议"
+  k30: "在 `sdo_feasibility action=assess` 里给出 `poc`（高风险项必须验证）"
+  k31: "规模档 trivial，默认不要求红队"
+  k32: "红队质询已执行"
+  k33: "本会话已显式停用（留痕）"
+  k34: "红队质询未执行"
+  k35: "调用 `sdo_redteam action=attack`，或明确要求停用（写 `redteam/mode` 留痕）"
+  k36: "没有红队议题记录"
+  k37: "先执行 `sdo_redteam action=attack`（会为每条需求开议题）"
+  k38: "红队议题 {p1} 个已全部闭环"
+  k39: "未闭环议题：{p1}（每条必须回到需求或转为风险）"
+  k40: "回答议题下的质询问题（`sdo_requirement action=answer`），或登记一条指向该议题的风险：`sdo_risk action=log origin=<议题 id> …`"
+  k41: "缺少人类签字"
+  k42: "基线时提供 `approvedBy`（人类签字，设计 §15.3 硬条件）"
+  k43: "签字人：{p1}"
+  k44: "原型目录 `{p1}/` 没有实质内容"
+  k45: "把可运行原型放进该目录（并保持它可被整目录删除）"
+  k46: "本流程不涉及原型（判据不适用）"
+  k47: "原型已产出且标记 throwaway"
+  k48: "原型未标记 throwaway"
+  k49: "在 `.sdo/config.yml` 里设置 `prototype: {throwaway: true}`"
+  k50: "本流程不涉及原型（判据不适用）"
+  k51: "已从原型回填 {p1} 条需求"
+  k52: "原型存在但没有回填需求"
+  k53: "尚未从原型回填需求"
+  k54: "用 `sdo_requirement action=capture prototypeSource=true …` 把原型结论回填为需求"
+  k55: "没有 `{p1}/` 目录"
+  k56: "`{p1}/` 只剩说明文件"
+  k57: "`{p1}/` 仍有内容，不得进入交付产物（Q-05 / REQ-034）"
+  k58: "删除 `{p1}/`（原型是 throwaway），或先把结论回填为需求再删除"
+  k59: "风险 {p1} 条（未关闭 {p2}）"
+  k60: "本圈没有风险登记"
+  k61: "用 `sdo_risk action=log` 记录本圈风险"
+  k62: "高/阻塞级风险均有应对与责任人"
+  k63: "缺应对或责任人的风险：{p1}"
+  k64: "补 `mitigation` 与 `owner`，或把风险降级/关闭（`sdo_risk action=update`）"
+  k65: "五视图齐备（{p1} 张，均有元素）"
+  k66: "缺 {p1}"
+  k67: "空视图 {p1}"
+  k68: "用 `sdo_design action=create` 逐张补齐五视图（上下文/组件/运行时/数据/部署）"
+  k69: "ADR {p1} 条，均含备选与后果"
+  k70: "还没有 ADR"
+  k71: "用 `sdo_adr action=record` 记录关键决策（必须含备选方案与后果）"
+  k72: "缺备选或后果：{p1}"
+  k73: "为这些 ADR 补 `alternatives` 与 `consequences`（设计 §6.3）"
+  k74: "没有需求可追溯"
+  k75: "先完成需求基线（G2）"
+  k76: "无孤儿；需求覆盖率 {p1}%"
+  k77: "孤儿元素：{p1}"
+  k78: "用 `sdo_trace action=link from=REQ-001 to=DES-001 kind=req-des` 把每个设计元素挂到需求上"
+  k79: "契约覆盖 {p1}/{p2} 条跨组件交互"
+  k80: "组件视图没有跨组件依赖边"
+  k81: "缺契约：{p1}"
+  k82: "失败语义不全：{p1}"
+  k83: "用 `sdo_design action=contract` 为每条交互补契约（含超时/重试/幂等）"
+  k84: "还没有任务卡"
+  k85: "用 `sdo_plan action=decompose` 按追溯图拆分任务卡"
+  k86: "任务卡 {p1} 张，六条机械校验全过"
+  k87: "拆分校验不通过：{p1}"
+  k88: "还没有测试用例"
+  k89: "用 `sdo_test action=plan` 写用例（覆盖每条 must 需求）"
+  k90: "用例 {p1} 条，覆盖全部 must 需求（{p2}）"
+  k91: "must 需求缺用例：{p1}"
+  k92: "为 {p1} 各写至少一条用例（`sdo_test action=plan requirement=…`）"
+  k93: "还没有任务卡"
+  k94: "先 `sdo_plan action=decompose`"
+  k95: "仍有孤儿：{p1}"
+  k96: "把孤儿元素挂回需求（`sdo_trace action=link`）"
+  k97: "must 需求缺测试用例：{p1}"
+  k98: "补 req-tc 边"
+  k99: "覆盖率 {p1}%，无孤儿"
+  k100: "没有测试用例"
+  k101: "用 `sdo_test action=plan` 写用例"
+  k102: "用例都没有执行结果"
+  k103: "用 `sdo_test action=record` 记录结果（附证据）"
+  k104: "失败用例：{p1}"
+  k105: "修好并重跑；失败用例不允许带着过门禁"
+  k106: "有用例没跑：{p1}"
+  k107: "把每条用例都跑掉"
+  k108: "must 需求没有测试用例：{p1}"
+  k109: "为每条 must 需求补用例并挂追溯边（`sdo_test action=plan` + `sdo_trace action=link`）"
+  k110: "用例 {p1} 条全部有结果（通过 {p2}），must 需求覆盖齐备"
+  k111: "阻塞级缺陷未关闭：{p1}"
+  k112: "修掉并关闭（`sdo_test action=defect id=… status=closed`）"
+  k113: "无未关闭的阻塞级缺陷（未关闭总计 {p1}）"
+  k114: "换一个评审者（作者不得评审自己的产出）"
+  k115: "已完成但无通过评审：{p1}"
+  k116: "用 `sdo_review action=record`（评审者 ≠ 作者）"
+  k117: "评审 {p1} 条，独立性无违规"
+  k118: "还没有开迭代"
+  k119: "用 `sdo_plan action=iteration goal=…` 开一个迭代"
+  k120: "迭代 {p1} 没有任务卡"
+  k121: "为这个迭代拆出任务卡"
+  k122: "迭代内未完成：{p1}"
+  k123: "完成或移出这些卡"
+  k124: "迭代 {p1} 产出增量（{p2} 张卡全部完成）"
+  k125: "还没有开迭代"
+  k126: "用 `sdo_plan action=iteration`"
+  k127: "迭代没有目标"
+  k128: "给迭代写目标（否则\"完成\"无从判定）"
+  k129: "完成但无证据：{p1}"
+  k130: "补证据"
+  k131: "迭代内没有任何测试结果"
+  k132: "跑用例并记录结果"
+  k133: "迭代 {p1} 的 DoD 满足（含 {p2} 条测试结果）"
+  k134: "交付清单 {p1}：产物 {p2} 项，验收行 {p3} 条"
+  k135: "用 `sdo_deliver action=package` 生成完整清单（含 sha256、验收矩阵、回滚点）"
+  k136: "本圈还没有风险结论"
+  k137: "用 `sdo_risk action=conclude conclusion=continue|adjust|stop rationale=…` 给出结论"
+  k138: "本圈结论：{p1}"
+  k139: "流程 {p1} 里没有定义门禁 {p2}"
+  k140: "可用门禁：{p1}"
+  k141: "流程 {p1} 未定义门禁 {p2}"
+  k142: "检查器 `{p1}` 尚未实现（后续里程碑）"
+  k143: "该准则的实现排在后续里程碑；在此之前该门禁无法通过（不允许\"查不到就算过\"）"
+  kFixCards: "修正这些卡再试"
+
+
+uiPlan:
+  k1: "改动有产物证据（路径 + 哈希）"
+  k2: "调用方实现"
+  k3: "失败语义（超时/重试/幂等）的测试"
+  k4: "契约的失败语义被测试覆盖"
+  k5: "DoD 为空或含空条目"
+  k6: "给这张卡写出可判定的完成定义（至少 1 条，能明确通过/失败）"
+  k7: "卡规模为 large（等于没拆完）"
+  k8: "继续拆成 medium 及以下（一张卡 = 一个可独立验证的增量）"
+  k9: "没有证据要求"
+  k10: "至少给一项（'artifact' 最常用；涉及多文件改动时用 'workspace-changes'）"
+  k11: "修正依赖，或先把被依赖的卡建出来"
+  k12: "打断环（通常意味着这两张卡应该合成一张）"
+  k13: "收窄写范围，或把它们串成依赖（blockedBy）——写范围互斥是并行安全的前提"
+  t1: "{p1}（{p2}）"
+  t2: "实现 {p1}（{p2}）"
+  t3: "让 {p1} 满足 {p2} 的验收标准"
+  t4: "{p1} 的职责：{p2}"
+  t5: "{p1} 的验收标准"
+  t6: "{p1} 的实现"
+  t7: "{p1} 的每条 Given/When/Then 都能通过"
+  t8: "对接契约 {p1}"
+  t9: "按 {p1} 的契约实现调用与失败语义"
+  t10: "契约 {p1}"
+  t11: "角色 {p1} 不在 8 个角色里"
+  t12: "改成其中之一：{p1}"
+  t13: "依赖 {p1} 不存在"
+  t14: "依赖成环：{p1}"
+  t15: "{p1} 与 {p2} 可能并行，但写范围重叠：{p3}"
+
+uiLang:
+  current: "- 当前界面语言：**{p1}**（基准语言 {p2}）"
+  available: "- 随包语言包：{p1}"
+  switched: "- 界面语言已切到 **{p1}**（**进程内生效**，重启前一直有效）。要永久生效：把 preset 行 config 里的 `lang` 改成它，或用环境变量 `SDO_LANG`。"
+  unknown: "- 没有语言包 `{p1}`。可用的有：{p2}"
+  usage: "- 用法：`sdo_lang action=set lang=en`（模型工具）｜ `/sdo-lang en`（斜杠命令）｜ preset 行 `config.lang` 或环境变量 `SDO_LANG`（永久）"
+  coverage: "- 当前语言包覆盖基准语言的 {p1}/{p2} 个键（其余回落中文）"
+  extraKeys: "- 其中 {p1} 个是本语言包**专属**的键（基准语言下这些文案取自流程数据）"

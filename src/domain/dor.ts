@@ -6,6 +6,18 @@
  */
 import { DIMENSIONS } from '../types.js'
 import type { GrillQuestion, Requirement, SdoProject } from '../types.js'
+
+/**
+ * 判定一个问题是否**实质上未决**：
+ *   · `open` —— 未决；
+ *   · `assumed` —— 只有**用户授权过**的假设才算已决；agent 自己填的假设仍算未决（防自问自答）。
+ * 真源里的 `status` 照旧保留，判定用这个函数，二者不混。
+ */
+export function isEffectivelyOpen(question: GrillQuestion): boolean {
+  if (question.status === 'open') return true
+  if (question.status === 'assumed' && question.authorizedByUser !== true) return true
+  return false
+}
 import { loadScoring, meetsThreshold } from './scoring.js'
 
 /** 一条门禁准则的判定结果。 */

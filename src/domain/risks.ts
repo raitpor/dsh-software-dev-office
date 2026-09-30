@@ -116,8 +116,10 @@ export function riskStats(risks: RiskItem[]): {
   return {
     total: risks.length,
     open: risks.filter((risk) => risk.status === 'open').length,
-    blockers: risks.filter((risk) => risk.level === 'blocker').length,
-    high: risks.filter((risk) => risk.level === 'high').length,
+    // **G-05**：与同一行的「未关闭」口径对齐 —— 旧实现按**等级**统计（含已关闭），
+    // 同一行混两种口径，读者会把「阻塞 1」理解成"有 1 条阻塞未解决"（实测已致误报）。
+    blockers: risks.filter((risk) => risk.level === 'blocker' && risk.status === 'open').length,
+    high: risks.filter((risk) => risk.level === 'high' && risk.status === 'open').length,
     unmitigated,
   }
 }

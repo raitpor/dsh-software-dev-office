@@ -6,10 +6,10 @@
  *   · **只在偏离默认时**出现条件行（红队被停用、journal 损坏、未初始化），
  *     不把默认状态写成噪声；
  *   · 不泄漏绝对路径（NFR-009）：数据目录只写相对名（如 `.sdo`）。
+ *   · **所有文案来自 `src/data/lang/zh-CN.yml` 的 `status` 段**（用户要求：面向用户的表述一律走 lang）。
  */
 import type { StatusSnapshot } from '../office.js'
-
-const TITLE = '## SDO 研发办公室'
+import { fmt, gateLabel, label, phaseText, t } from '../domain/i18n.js'
 
 /** 计算红队是否按默认启用（未留痕时按规模档推断）。 */
 export function redTeamDefault(config: StatusSnapshot['config']): boolean {
@@ -23,40 +23,61 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
   const lines: string[] = []
 
   if (status.project === undefined) {
-    lines.push(`${TITLE}（尚未初始化）`)
-    lines.push(`- 当前工作目录下没有 \`${dataDirName}/\`。`)
-    lines.push('- 要开始研发流程：调用 `sdo_init`（项目名/流程/规模），随后按阶段推进。')
+    // **G-07**：工作区**未知**时不得断言"当前目录尚未初始化" ——
+    // 实测该断言与事实相反（同一时刻 `sdo_status` 报的却是 PRJ-001 / 阶段 delivery / G0–G7 全过），
+    // 因为注入路径拿到的工作区为空，代码却把"拿不到"渲染成了"没有账本"，直接误导接手者。
+    lines.push(
+      status.workspaceUnknown === true
+        ? `${t('status.title')}${t('status.unknownWorkspace')}`
+        : `${t('status.title')}${t('status.uninitSuffix')}`,
+    )
+    lines.push(fmt('status.noDir', { dir: dataDirName }))
+    lines.push(t('status.background'))
+    lines.push(t('status.initHint'))
     return clampBlock(lines, limit)
   }
 
   const project = status.project
-  lines.push(TITLE)
-  lines.push(
-    `- 项目：${project.id} ${project.name} ｜ 流程 ${project.process} ｜ 规模 ${project.tailoring?.scale ?? status.config.scale}`
-    + ` ｜ 阶段 ${project.phase}`,
-  )
-  const pending = status.pendingGate ?? '（无）'
-  lines.push(
-    `- 门禁：待判定 ${pending} ｜ 门禁记录 ${status.counts.gates} 条 ｜ 需求 ${status.counts.requirements} 条`
-    + ` ｜ 问题账本 ${status.counts.questions} 条`,
-  )
+  lines.push(t('status.title'))
+  lines.push(fmt('status.projectLine', {
+    id: project.id,
+    name: project.name,
+    process: t(`process.${project.process}`),
+    scale: label('scale', project.tailoring?.scale ?? status.config.scale),
+    phase: phaseText(project.phase),
+  }))
+  const pending = status.pendingGate === undefined ? t('status.noGate') : gateLabel(status.pendingGate)
+  lines.push(fmt('status.gateLine', {
+    gate: pending,
+    gates: status.counts.gates,
+    requirements: status.counts.requirements,
+    questions: status.counts.questions,
+  }))
 
   // 只在偏离默认时出现的条件行
   const redTeamDefaultOn = redTeamDefault(status.config)
   const redTeamNow = project.redTeam?.enabled ?? redTeamDefaultOn
   if (project.redTeam !== undefined && redTeamNow !== redTeamDefaultOn) {
     const reason = project.redTeam.reason === undefined ? '' : `，${project.redTeam.reason}`
-    lines.push(`- 红队：${redTeamNow ? '启用' : '停用'}（本会话${reason}）`)
+    lines.push(fmt('status.redTeamLine', {
+      state: redTeamNow ? t('status.enabled') : t('status.disabled'),
+      reason,
+    }))
   }
   if (status.truncated) {
-    lines.push(`- ⚠️ 真源尾部损坏（journal.jsonl 第 ${status.badLine ?? '?'} 行），已截断到最后一致前缀；请人工检查。`)
+    lines.push(fmt('status.truncated', { line: status.badLine ?? '?' }))
   }
   if (status.configSource === 'default') {
-    lines.push(`- 提示：\`${dataDirName}/config.yml\` 缺失或不可读，当前用默认项目配置（流程 ${status.config.process} ｜ 规模 ${status.config.scale}）。`)
+    lines.push(fmt('status.configDefault', {
+      dir: dataDirName,
+      process: status.config.process,
+      scale: status.config.scale,
+    }))
   }
 
-  lines.push(`- 数据目录：\`${dataDirName}/\`（真源 \`journal.jsonl\`；\`project.json\` 是派生视图，可重建）`)
-  lines.push('- 命令：`/sdo-status` 看状态 ｜ `/sdo-board` 看看板（命令面只在交互式会话可用）')
+  lines.push(fmt('status.dataDir', { dir: dataDirName }))
+  lines.push(t('status.backgroundShort'))
+  lines.push(t('status.commands'))
 
   return clampBlock(lines, limit)
 }
@@ -65,7 +86,7 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
 function clampBlock(lines: string[], limit: number): string {
   const text = lines.join('\n')
   if (text.length <= limit) return text
-  const marker = '\n- …（状态块已达上限，完整信息请用 `sdo_status` 或 `/sdo-status`）'
+  const marker = `\n${t('status.clampMarker')}`
   const keep = Math.max(0, limit - marker.length)
   return `${text.slice(0, keep)}${marker}`
 }

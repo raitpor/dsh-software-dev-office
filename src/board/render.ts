@@ -9,6 +9,7 @@
 import type { ProjectConfig } from '../config.js'
 import type { ProjectCounts } from '../office.js'
 import type { GateEvaluation, Phase, Priority, ProcessDef, SdoProject, TaskCard } from '../types.js'
+import { fmt, gateWithId, label, phaseText, t } from '../domain/i18n.js'
 
 /** 看板上一条需求。 */
 export interface BoardRequirement {
@@ -69,67 +70,95 @@ function phaseLine(project: SdoProject, gates: GateEvaluation[], process: Proces
 }
 
 function gateSummary(project: SdoProject | undefined, gates: GateEvaluation[], all: boolean, pending: string | undefined): string {
-  if (project === undefined) return '（尚未初始化）'
+  if (project === undefined) return t('uiRender.k1')
   const passed = gates.filter((gate) => gate.status === 'passed').map((gate) => gate.gate)
   const waived = gates.filter((gate) => gate.status === 'waived').map((gate) => gate.gate)
   const failed = gates.filter((gate) => gate.status === 'failed').map((gate) => gate.gate)
-  const parts = [`待判定 ${pending ?? '（无）'}`]
-  if (passed.length > 0) parts.push(`已通过 ${passed.join(' ')}`)
-  if (waived.length > 0) parts.push(`已豁免 ${waived.join(' ')}`)
-  if (failed.length > 0) parts.push(`未通过 ${failed.join(' ')}`)
+  const parts = [fmt('uiRender.k39', { p1: pending === undefined || pending === '' ? t('uiRender.k41') : gateWithId(pending) })]
+  if (passed.length > 0) parts.push(fmt('uiRender.k2', { p1: passed.join(' ') }))
+  if (waived.length > 0) parts.push(fmt('uiRender.k3', { p1: waived.join(' ') }))
+  if (failed.length > 0) parts.push(fmt('uiRender.k4', { p1: failed.join(' ') }))
   if (!all && gates.length > 5) {
-    parts.push(`最近 5 条 ${gates.slice(-5).map((gate) => `${gate.gate}:${gate.status}`).join(' ')}`)
+    parts.push(fmt('uiRender.k5', { p1: gates.slice(-5).map((gate) => `${gate.gate}:${gate.status}`).join(' ') }))
   }
   return parts.join(' ｜ ')
 }
 
 /** 渲染文本看板。 */
 export function renderBoard(model: BoardModel, options: BoardOptions = {}): string {
-  const lines: string[] = ['# SDO 看板', '']
+  const lines: string[] = [t('uiRender.k40'), '']
   const { project } = model
 
   if (project === undefined) {
-    lines.push(`尚未初始化：当前工作目录下没有 \`${model.dataDirName}/\`。`)
+    lines.push(fmt('uiRender.k6', { p1: model.dataDirName }))
     lines.push('')
-    lines.push('下一步：调用 `sdo_init`（或在交互式会话里用 `/sdo-status` 查看原因）。')
+    lines.push(t('uiRender.k7'))
     return `${lines.join('\n')}\n`
   }
 
-  lines.push(`项目　${project.id} ${project.name}`)
+  lines.push(fmt('uiRender.k8', { p1: project.id, p2: project.name }))
   lines.push(
-    `流程　${project.process} ｜ 规模　${project.tailoring?.scale ?? model.config.scale} ｜ 阶段　${project.phase}`
-    + ` ｜ 需求　${model.counts.requirements} 条`,
+    fmt('uiRender.k9', { p1: t(`process.${project.process}`, project.process), p2: label('scale', project.tailoring?.scale ?? model.config.scale) })
+    + fmt('uiRender.k10', { p1: phaseText(project.phase) })
+    + fmt('uiRender.k11', { p1: model.counts.requirements }),
   )
-  lines.push(`门禁　${gateSummary(project, model.gates, options.all === true, model.pendingGate)}`)
-  lines.push(`审讯　问题账本 ${model.counts.questions} 条（未决 ${model.counts.openQuestions}）｜ 门禁记录 ${model.counts.gates} ｜ 证据 ${model.counts.evidence}`)
+  lines.push(fmt('uiRender.k12', { p1: gateSummary(project, model.gates, options.all === true, model.pendingGate) }))
+  lines.push(fmt('uiRender.k13', { p1: model.counts.questions, p2: model.counts.openQuestions, p3: model.counts.gates, p4: model.counts.evidence }))
   lines.push('')
-  lines.push('## 阶段')
+  lines.push(t('uiRender.k14'))
   lines.push('')
   lines.push(`- ${phaseLine(project, model.gates, model.process)}`)
   if (model.iteration !== undefined) {
-    lines.push(`- 迭代 ${model.iteration.number}（${model.iteration.status}）：${model.iteration.goal}`)
+    lines.push(fmt('uiRender.k15', { p1: model.iteration.number, p2: label('iterationStatus', model.iteration.status), p3: model.iteration.goal }))
   }
   lines.push('')
 
   if (model.truncated) {
-    lines.push(`> ⚠️ journal 尾部损坏（第 ${model.badLine ?? '?'} 行），看板只反映最后一个一致前缀。`)
+    lines.push(fmt('uiRender.k16', { p1: model.badLine ?? '?' }))
     lines.push('')
   }
+
+  lines.push(t('uiRender.k17'))
+  lines.push('')
+  const boardTasks = model.tasks ?? []
+  if (boardTasks.length === 0) {
+    lines.push(t('uiRender.k18'))
+  } else {
+    const counts: Record<string, number> = {}
+    for (const task of boardTasks) counts[task.status] = (counts[task.status] ?? 0) + 1
+    lines.push(
+      fmt('uiRender.k19', { p1: boardTasks.length, p2: Object.entries(counts).map(([status, count]) => `${label('taskStatus', status)} ${count}`).join('，') }),
+    )
+    lines.push('')
+    for (const task of boardTasks) {
+      const owner = task.owner === undefined || task.owner === '' ? t('uiRender.k42') : task.owner
+      lines.push(`- ${task.id}　${label('role', task.role)}　${label('taskStatus', task.status)}　${owner}　${task.title}`)
+      if (options.expand === true || options.all === true) {
+        lines.push(fmt('uiRender.k20', { p1: task.dod.join('；') || t('uiRender.k34'), p2: task.writeScopes.join('、') || t('uiRender.k35') }))
+        if (task.evidence.length > 0) lines.push(fmt('uiRender.k21', { p1: task.evidence.map((item) => `${item.kind}:${item.detail}`).join('；') }))
+        if (task.blockedReason !== undefined) lines.push(fmt('uiRender.k22', { p1: task.blockedReason }))
+      }
+    }
+  }
+  lines.push('')
 
   const window = model.config.board.window
   const shown = options.all === true ? model.requirements : model.requirements.slice(0, window)
   if (shown.length > 0) {
-    lines.push(`## 需求${options.all === true ? '（全部）' : `（前 ${shown.length}/${model.requirements.length}，--all 看全部）`}`)
+    lines.push(fmt('uiRender.k23', { p1: options.all === true ? t('uiRender.k43') : fmt('uiRender.k36', { p1: shown.length, p2: model.requirements.length }) }))
     lines.push('')
     for (const requirement of shown) {
-      const detail = options.expand === true ? `　${requirement.status}　${requirement.score}/16　未决 ${requirement.open}` : ''
-      lines.push(`- ${requirement.id}　[${requirement.priority}]　${requirement.title}${detail}`)
+      const detail =
+        options.expand === true
+          ? fmt('uiRender.k24', { p1: label('requirementStatus', requirement.status), p2: requirement.score, p3: requirement.open })
+          : ''
+      lines.push(`- ${requirement.id}　[${label('priority', requirement.priority)}]　${requirement.title}${detail}`)
     }
     lines.push('')
   } else {
-    lines.push('## 需求')
+    lines.push(t('uiRender.k25'))
     lines.push('')
-    lines.push('（暂无；`sdo_requirement action=capture` 开始收集）')
+    lines.push(t('uiRender.k26'))
     lines.push('')
   }
 
@@ -138,18 +167,18 @@ export function renderBoard(model: BoardModel, options: BoardOptions = {}): stri
       model.config.redTeam === 'on' ||
       (model.config.redTeam === 'auto' && (project.tailoring?.scale ?? model.config.scale) !== 'trivial')
     const enabled = project.redTeam?.enabled ?? redTeamDefault
-    lines.push('## 展开信息')
+    lines.push(t('uiRender.k27'))
     lines.push('')
     lines.push(
-      `- 红队：${enabled ? '启用' : '停用'}（默认 ${redTeamDefault ? '启用' : '停用'}${project.redTeam?.reason === undefined ? '' : `，${project.redTeam.reason}`}）`,
+      fmt('uiRender.k28', { p1: enabled ? t('uiRender.k44') : t('uiRender.k37'), p2: redTeamDefault ? t('uiRender.k45') : t('uiRender.k38'), p3: project.redTeam?.reason === undefined ? '' : `，${project.redTeam.reason}` }),
     )
-    if (project.scope.in.length > 0) lines.push(`- 范围（in）：${project.scope.in.join('；')}`)
-    if (project.scope.out.length > 0) lines.push(`- 非目标（out）：${project.scope.out.join('；')}`)
+    if (project.scope.in.length > 0) lines.push(fmt('uiRender.k29', { p1: project.scope.in.join('；') }))
+    if (project.scope.out.length > 0) lines.push(fmt('uiRender.k30', { p1: project.scope.out.join('；') }))
     if (project.stakeholders.length > 0) {
-      lines.push(`- 干系人：${project.stakeholders.map((stakeholder) => `${stakeholder.id} ${stakeholder.role}`).join('；')}`)
+      lines.push(fmt('uiRender.k31', { p1: project.stakeholders.map((stakeholder) => `${stakeholder.id} ${stakeholder.role}`).join('；') }))
     }
-    if (project.metrics.success.length > 0) lines.push(`- 成功度量：${project.metrics.success.join('；')}`)
-    lines.push(`- 数据目录：\`${model.dataDirName}/\`（真源 journal.jsonl；project.json 为派生视图）`)
+    if (project.metrics.success.length > 0) lines.push(fmt('uiRender.k32', { p1: project.metrics.success.join('；') }))
+    lines.push(fmt('uiRender.k33', { p1: model.dataDirName }))
     lines.push('')
   }
 

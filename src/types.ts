@@ -190,6 +190,11 @@ export interface GrillQuestion {
   defaultRecommendation: string
   answer: string | null
   status: QuestionStatus
+  /**
+   * 该"假设"是否由**用户**授权。
+   * 未授权的假设 = agent 自问自答：门禁仍按"未决"处理（见 `dor.isEffectivelyOpen`）。
+   */
+  authorizedByUser?: boolean | undefined
   askedAt: string | null
   answeredBy: string | null
   origin: QuestionOrigin
@@ -244,6 +249,8 @@ export interface GateCriterionResult {
   ok: boolean
   detail: string
   remedy?: string | undefined
+  /** 准则中文说明（来自流程定义数据文件；用户可见文案不摆 C-xx 编号） */
+  desc?: string | undefined
 }
 
 /** 门禁判定结果（落 `.sdo/gates/<id>.json`）。 */
@@ -386,6 +393,9 @@ export interface QualityAssessment {
 /** 接口契约（设计 §6.4，Schema-first）。 */
 export interface Contract {
   id: string
+  /** 已作废（口径踩坑/写错留下的记录）：**不参与覆盖判定**，但保留在真源里留痕 */
+  dropped?: boolean | undefined
+  droppedReason?: string | undefined
   name: string
   kind: 'http' | 'event' | 'rpc' | 'schema'
   producer: string
@@ -508,6 +518,9 @@ export type SdoEventType =
   | 'question/answered'
   | 'redteam/mode'
   | 'redteam/attack'
+  | 'redteam/propose'
+  | 'redteam/model-proposed'
+  | 'redteam/file'
   | 'issue/opened'
   | 'issue/closed'
   | 'feasibility/assessed'
@@ -520,9 +533,14 @@ export type SdoEventType =
   | 'adr/recorded'
   | 'quality/recorded'
   | 'contract/recorded'
+  | 'contract/updated'
+  | 'contract/dropped'
   | 'trace/linked'
   | 'plan/mode'
   | 'plan/review-blocked'
+  | 'task/dropped'
+  | 'plan/review-approved'
+  | 'plan/review-waived'
   | 'task/created'
   | 'task/updated'
   | 'task/claimed'
@@ -542,6 +560,8 @@ export type SdoEventType =
   | 'cost/sample'
   | 'budget/decision'
   | 'plan/review-blocked'
+  | 'plan/review-approved'
+  | 'plan/review-waived'
   | 'task/created'
   | 'task/updated'
   | 'task/claimed'

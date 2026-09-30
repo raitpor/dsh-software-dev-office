@@ -1,0 +1,1055 @@
+locale: en
+
+gate:
+  G0: Intake Gate
+  G1: Feasibility Gate
+  G2: Requirements Baseline Gate
+  G3: Architecture Gate
+  G4: Detailed Design & Plan Gate
+  G5: Construction Complete Gate
+  G6: Verification Gate
+  G7: Delivery Gate
+  GP: Prototype Acceptance Gate
+  GI: Iteration Complete Gate
+  GR: Risk Quadrant Review
+  tasksAllDone: "All {n} task cards are complete and carry evidence"
+  tasksDroppedNote: " ({n} more were explicitly dropped and do not count toward completion)"
+  tasksMissingEvidence: "Complete but without evidence: {ids}"
+  tasksMissingEvidenceRemedy: "Add evidence (a `sdo_task action=done` call must carry evidence)"
+  tasksIncomplete: "Not finished: {list}"
+  tasksAllDoneRemedy: "Remedy: finish the remaining cards (`sdo_task action=done` with evidence), or explicitly drop them (`sdo_task action=drop reason=…`) — dropped cards no longer count toward completion."
+
+dimension:
+  goal: Goal
+  user: User
+  scenario: Scenario
+  data: Data
+  interface: Interface
+  constraint: Constraint
+  acceptance: Acceptance
+  boundary: Boundary
+
+criterion:
+  C1-dor-per-requirement: Every requirement satisfies the Definition of Ready
+  C2-open-questions: No open P0 questions
+  C3-must-has-ac: Every must-have requirement has acceptance criteria
+  C4-glossary: The glossary covers the domain nouns
+  C5-non-goals: Non-goals are declared
+  C6-red-team: The red team ran, or was disabled with a recorded trace
+  C7-signoff: Human sign-off
+  C8-red-team-closed: All red-team issues are closed
+  C-01: "Scope (in) is not empty"
+  C-02: "Non-goals (out) are not empty — they must be declared explicitly"
+  C-03: "Stakeholders are not empty (at least 1)"
+  C-04: "Success metrics are non-empty and measurable"
+  C-05: "TELOS assessment complete, verdict is Go"
+  C-06: "Risks are registered (blocker-level risks need a response)"
+  C-07: "PoC / validation suggestions exist for the high risks"
+  C-20: "Five views complete"
+  C-21: "Every design element traces to at least one baselined requirement (orphans = 0)"
+  C-22: "Every ADR states alternatives and consequences"
+  C-30: "Every cross-component interaction has a contract"
+  C-31: "Task cards complete (DoD / dependencies / write scope)"
+  C-32: "Test plan covers every must-have requirement"
+  C-40: "All task cards complete and carrying evidence"
+  C-41: "Traceability coverage meets the target"
+  C-50: "Every must-have requirement has a passing test case"
+  C-51: "No open blocker-level defects"
+  C-52: "Review independence (author ≠ reviewer)"
+  C-60: "Delivery manifest complete (acceptance matrix and rollback point included)"
+  C-61: "Delivery package contains no prototype/ content (Q-05 / REQ-034)"
+  C-62: "Prototype conclusions are backfilled as requirements"
+  C-70: "A prototype exists (prototype/ is non-empty) and is marked throwaway"
+  C-71: "Prototype conclusions are backfilled as requirements"
+  C-80: "This iteration produced a runnable increment"
+  C-81: "All task cards of this iteration are complete and carrying evidence"
+  C-82: "Review independence"
+  C-90: "This round's risks are registered"
+  C-91: "Every high/blocker risk has a response and an owner"
+  C-92: "This round's risk conclusion (continue / adjust / stop)"
+
+requirementKind:
+  functional: Functional
+  quality: Quality
+  constraint: Constraint
+
+process:
+  waterfall: Waterfall
+  prototype: Rapid Prototyping
+  agile: Agile
+  spiral: Spiral
+
+phase:
+  intake: Intake
+  feasibility: Feasibility
+  prototype: Prototype
+  requirements: Requirements
+  architecture: Architecture
+  design-plan: Detailed Design
+  iteration: Iteration
+  release: Release
+  construction: Construction
+  verification: Verification
+  delivery: Delivery
+  risk-quadrant: Risk Quadrant
+
+scale:
+  trivial: Small (experimental)
+  normal: Medium (standard)
+  critical: Large (critical)
+
+iterationStatus:
+  planned: Planned
+  active: Active
+  closed: Closed
+
+role:
+  analyst: Product / Requirements Analyst
+  red-team: Requirements Red Team
+  architect: Architect
+  office: Process Officer
+  developer: Implementation Engineer
+  tester: Test Engineer
+  reviewer: Reviewer
+  delivery: Delivery Officer
+  cockpit: Cockpit
+
+taskStatus:
+  planned: Awaiting dispatch
+  ready: Ready to dispatch
+  in-progress: In progress
+  blocked: Blocked
+  done: Done
+  verified: Verified
+  dropped: Dropped
+
+taskSize:
+  small: Small
+  medium: Medium
+  large: Large (not decomposed yet)
+
+requirementStatus:
+  draft: Draft
+  grilled: Grilled
+  baselined: Baselined
+  changed: Changed
+  dropped: Dropped
+
+gateStatus:
+  passed: Passed
+  failed: Failed
+  waived: Waived
+
+riskLevel:
+  low: Low
+  medium: Medium
+  high: High
+  blocker: Blocker
+
+defectSeverity:
+  blocker: Blocker
+  major: Major
+  minor: Minor
+
+defectStatus:
+  open: Open
+  fixed: Fixed
+  closed: Closed
+  wontfix: Won't fix
+
+reviewVerdict:
+  pass: Pass
+  changes-requested: Changes requested
+  reject: Reject
+
+testKind:
+  unit: Unit
+  integration: Integration
+  e2e: End-to-end
+
+priority:
+  must: Must
+  should: Should
+  could: Could
+  wont: Won't
+
+verdict:
+  go: Go
+  no-go: No-go
+  conditional: Conditional go
+
+progress:
+  done: Done
+  current: In progress
+  waived: Waived
+  todo: Not started
+
+tool:
+  sdo_init: "Initialise an SDO project (creates the `.sdo/` ledger in the current working directory). **No key parameter may be omitted**: project name / process / scale / stakeholders — if one is missing the tool does not guess defaults, it returns a questionnaire for you to confirm first."
+  sdo_status: "Show project status: current phase, gate awaiting decision, requirement and question counts, the latest gate evaluation, and whether derived projections need rebuilding. Read-only."
+  sdo_project: "Maintain the project ledger (19th tool): scope and **non-goals**, stakeholders, glossary, success metrics, development process and scale. `update` writes only the fields you pass explicitly (the glossary merges by key); `show` prints the current ledger."
+  sdo_requirement: "Requirements engineering. `capture` records a requirement (with automatic eight-dimension ambiguity scoring), `grill` produces interview questions (each with options and their cost), `answer` records an answer (optionally marked as an assumption), `update` edits or adds Given/When/Then acceptance criteria, `change` runs change control after baselining (impact analysis plus decision), `list`, `baseline` freezes the baseline and evaluates the requirements baseline gate."
+  sdo_redteam: "Requirements red team: adversarially attacks the requirement set and produces defect-style issues (each must map back to a requirement or be converted into a risk). `off`/`on` toggles the red team for **this session** (recorded); `status` shows the current state."
+  sdo_render: "Render the source of truth into documents (derived views, stamped with the source sequence number and a do-not-edit-by-hand notice). Currently supports the requirements specification `srs`."
+  sdo_plan: "Task decomposition and dispatch. `decompose` runs both channels (the structural channel follows the trace graph, the model channel consumes suggestions) and applies six mechanical checks; `iteration` opens an iteration; `next` picks dispatchable cards within the capacity budget and emits dispatch requests."
+  sdo_task: "Task cards and the collaboration protocol: claiming uses compare-and-swap (a stale revision is a conflict), only the owner may report back, **completion must carry evidence**, and blocked cards must state why. A vanished owner is **never released automatically** — only an explicit release or reassignment (both recorded)."
+  sdo_test: "Test plans, results and defects. `plan` writes test cases (binding them to requirement ids is recommended), `record` records results (even passes need evidence), `defect` files or updates a defect (severity/status). Open blocker-level defects block the verification gate."
+  sdo_review: "Review records: record the verdict (pass / changes requested / reject) and the findings. **A reviewer may not be the author** — independence is checked mechanically, not left to good intentions."
+  sdo_deliver: "Delivery package: artifact manifest (with sha256), acceptance matrix (one row per must-have requirement), rollback point, and an explicit statement that prototype content is excluded. It stops at a deployable artifact; release and operations are explicitly out of scope."
+  sdo_cost: "Cost report: tokens consumed; a monetary amount appears only when the user has supplied unit prices, and it is labelled an **estimate** everywhere. The budget is optional — with no total it reports consumption only (no remaining amount, no percentage, no threshold alerts); exceeding the budget **never stops anything**, it only asks a human to top up, waive, or narrow scope. Model read-only."
+  sdo_gate: "Gate engine (the process is data, every gate is evaluated criterion by criterion, never guessed). `check` evaluates and records; `advance` moves on only when every exit gate of the current phase passed or was waived; `waive` waives explicitly with a trace. **An unimplemented checker always fails** — \"cannot check\" must never mean \"passes\"."
+  sdo_feasibility: "TELOS feasibility assessment (technical / economic / legal / operational / schedule) plus a Go/No-go verdict with reasons and PoC suggestions for the high risks. Together with the risk register it forms the evidence for the feasibility gate."
+  sdo_risk: "Risk register. `log` records a risk (level / probability / impact / mitigation / owner, optionally with an origin such as a red-team issue — an origin converts the issue into a risk); `update` changes status or fills in mitigation and owner; `list`; `conclude` writes the per-round risk conclusion for spiral projects."
+  sdo_design: "Architecture work, guarded by two gates: the requirements baseline gate has passed and the plan review is complete (SDO drives plan mode itself; with no interactive review channel it **blocks by design** and records the block instead of writing). `create` adds or updates design elements across the five views; `contract` records a cross-component contract (timeout / retry / idempotency); `view` shows the current views."
+  sdo_adr: "Architecture decision records. Every record must state the **rejected alternatives** (with their costs) and the **accepted consequences** — a decision that is only a conclusion is refused by the architecture gate. `record` | `list` | `supersede` (the new record supersedes the old one; the old record gains a pointer and is never rewritten)."
+  sdo_quality: "Quality attribute scenarios and lightweight ATAM. A scenario states stimulus → response plus a **measurable** metric (indicator + condition + threshold); without numbers it is not a scenario. `evaluate` turns the ATAM outcome into three lists (risks / sensitivities / trade-offs)."
+  sdo_trace: "Trace graph (`.sdo/trace/links.jsonl`) — change impact analysis, orphan detection and coverage all read it. `link` creates edges (requirement → design / task / test case, batching supported), `query` shows coverage and orphans, `report` renders the traceability report."
+  sdo_lang: "Show or switch the UI language (tool and command descriptions, the status block, gate wording). `action=show` reports the current language and pack coverage; `action=set lang=en` switches immediately (**effective for this process** until restart)."
+
+param:
+  redteamAction: "Action: attack (attack from the question bank) | propose (ask the model to generate challenges for a requirement) | file (write back model-generated challenges; the plugin validates them) | on/off/status."
+  requirementId: "Target requirement id for a write-back (REQ-xxx)."
+  questions: "JSON array shaped like `[{\"text\":\"…?\",\"dimension\":\"data\"}]` (only used with action=file)."
+  action: Action
+  id: Identifier (such as REQ-001 / TASK-001 / Q-0001)
+  name: Name
+  owner: Owner / assignee
+  gate: "Gate (accepts a readable name such as \"Intake Gate\", or the id G0)"
+  approver: Approver
+  approvedBy: Human sign-off (required by the baseline gate)
+  evidence: "Evidence: command output summary / artifact path / change reference (JSON array)"
+  status: Status
+  severity: Severity
+  kind: Kind
+  title: Title
+  statement: "Requirement statement (write it as a decidable indicator + condition + threshold)"
+  priority: Priority
+  level: Level
+  probability: Probability
+  impact: Impact
+  mitigation: Mitigation
+  origin: "Origin (for example a red-team issue id; supplying an origin converts the issue into a risk)"
+  conclusion: Conclusion
+  rationale: Rationale
+  note: Note / explanation
+  notes: Notes
+  limit: Maximum number of rows
+  decision: Decision
+  decidedBy: Decision maker
+  requirements: Requirement ids (JSON array)
+  suggestions: Card suggestions (JSON array)
+  goal: Goal
+  backend: Preferred dispatch backend
+  expectedRevision: The revision you read (compare-and-swap, used when claiming)
+  stage: Stage
+  actor: Actor
+  artifact: Artifact
+  artifacts: "Artifact manifest (JSON array: path + kind)"
+  acceptance: Acceptance matrix (JSON array)
+  rollbackPoint: Rollback point
+  reviewer: Reviewer
+  verdict: Verdict
+  findings: Findings (JSON array)
+  steps: Steps (JSON array)
+  expected: Expected result
+  caseId: Test case id
+  defectId: Defect id
+  requirement: Requirement id
+  reporter: Reporter
+  designId: Design element id
+  dependsOn: "Depended-on element names (comma separated)"
+  elementKind: Element kind
+  responsibility: Responsibility
+  summary: Summary
+  schema: "Contract body (structure / fields / example)"
+  contractKind: Contract kind
+  timeout: Timeout semantics
+  retry: Retry semantics
+  idempotency: Idempotency semantics
+  alternatives: "Alternatives (JSON array, each with its pros and cons)"
+  consequences: Consequences (JSON array)
+  supersedes: Which record this one supersedes
+  attribute: Quality attribute
+  stimulus: Stimulus (what event triggers it)
+  response: Response (what the system does)
+  measure: Measurable metric (indicator + condition + threshold)
+  targets: "Related design element ids (comma separated)"
+  risks: Risks (JSON array)
+  sensitivities: Sensitivities (JSON array)
+  tradeoffs: Trade-offs (JSON array)
+  by: Performed by
+  from: Source id
+  to: Target id
+  links: Edges in bulk (JSON array)
+  telos: TELOS five-dimension assessment (JSON array)
+  poc: PoC / verification suggestions (JSON array)
+  verdictLevel: Verdict level
+  scopeIn: "Scope (what we do; comma separated)"
+  scopeOut: "Non-goals (what we explicitly do not do; comma separated)"
+  metricsSuccess: "Success metrics (measurable; comma separated)"
+  glossary: "Glossary (JSON object: term → definition)"
+  stakeholders: "Stakeholders (comma separated)"
+  process: Development process
+  scale: Scale
+  rebuild: Whether to rebuild derived projections from the source of truth
+  expand: Whether to expand details
+  all: Whether to show everything
+  write: Whether to write file artifacts
+  answer: Answer text
+  assume: Whether to record this as an assumption (use when the user has not confirmed)
+  dimensions: Eight-dimension scoring (JSON object)
+  accepted: Whether the suggested option was accepted
+  banned: Whether banned-word questions are included
+  redTeam: Whether red-team challenges are included
+  quick: Whether to ask only the most critical questions
+  target: Render target
+  taskId: Task card id
+  sourceStakeholder: "Source stakeholder id (such as STK-01). Supply this or sourceRaw — otherwise the requirement is **refused**: every requirement needs a source."
+  sourceRaw: "The user's own words / the source document text (**every requirement needs a source**). Supply this or sourceStakeholder."
+  pickedOption: "Index of the option the user picked (zero-based)."
+  ids: "Requirement id list, comma separated (default: all requirements)."
+  context: "Extra context (free text, recorded in the trace)."
+  producer: "The depended-on side: pass its raw dependsOn string (usually the id or name of the design element being depended on). The consumer depends on the producer."
+  consumer: "The depending side: pass the **name of the design element that depends on another** (the party that initiates the dependency in the component view)."
+  reason: "Reason (recorded for the trace; required when dropping a card, explaining why it is void)."
+  lang: "Language pack name (such as `zh-CN` / `en`)"
+  langAction: "'show' (report) | 'set' (switch)"
+
+redteam:
+  proposeHeader: "Red-team challenge proposals (generated by the **model** for specific requirements; the plugin only validates them)"
+  proposeInstruction: "For each requirement below, generate {count} adversarial challenges. Requirements: (1) **words from that requirement's statement must appear** (quote the original wording, do not paraphrase); (2) each ends with a question mark and is 6–200 characters; (3) no duplicates of existing questions; (4) state the dimension (goal / user / scenario / data / interface / constraint / acceptance / boundary)."
+  proposeMustQuote: "Validation rule: challenges that do not quote the original wording, do not end with a question mark, or duplicate an existing question are **refused** with the reason reported."
+  proposeStatement: Requirement statement
+  proposeWeak: Dimensions still unclarified for this requirement
+  proposeWeakNone: "(all eight dimensions are clarified — ask from an implementation-and-operations risk angle)"
+  proposeNone: "No requirements to challenge yet: record one first with sdo_requirement action=capture."
+  proposeCallHint: "Once generated, call sdo_redteam action=file requirementId=<REQ-xxx> questions=<JSON array> to write them back; they are stored only after validation passes."
+  fileNoRequirement: Requirement {id} not found
+  fileNeedId: Writing back red-team challenges requires requirementId.
+  fileAccepted: Recorded {n} red-team challenges (model-generated, passed the quote-the-source check)
+  fileRejected: Refused {n}
+  fileAskHint: "Next: ask the user these challenges with the question tool, then record the answers with sdo_requirement action=answer."
+  fileConsequence: If this requirement really is that fragile, it will surface as rework or a production incident during construction or review.
+  fileEmpty: Empty content
+  fileTooShort: Too short (under 6 characters)
+  fileTooLong: Too long (over 200 characters)
+  fileNotQuestion: Does not end with a question mark
+  fileNoKeyword: Does not quote the requirement's own wording (use words that appear in the requirement)
+  fileDuplicate: Duplicates an existing question
+
+status:
+  title: "## SDO Software Dev Office"
+  uninitSuffix: " (mounted in this session; the current directory is not initialised yet)"
+  noDir: "- There is no `{dir}/` in the current working directory."
+  background: "- This block is **background state**, not a user request: for greetings, code questions or questions about the plugin itself you do **not** need to call any `sdo_*` tool — answer from your own knowledge and the tools you already have."
+  initHint: "- **Only when the user wants to start or continue a software project** should you begin with `sdo_init`, then move through the phases."
+  projectLine: "- Project: {id} {name} | process {process} | scale {scale} | phase {phase}"
+  gateLine: "- Gates: awaiting decision {gate} | {gates} gate records | {requirements} requirements | {questions} ledger questions"
+  noGate: (none)
+  redTeamLine: "- Red team: {state} (this session: {reason})"
+  enabled: Enabled
+  disabled: Disabled
+  truncated: "- WARNING: the tail of the source of truth is corrupt (journal.jsonl line {line}); it was truncated to the last consistent prefix. Please inspect it by hand."
+  configDefault: "- Note: `{dir}/config.yml` is missing or unreadable; default project configuration is in use (process {process} | scale {scale})."
+  dataDir: "- Data directory: `{dir}/` (source of truth `journal.jsonl`; `project.json` is a derived view and can be rebuilt)"
+  backgroundShort: "- This block is background state; do not call `sdo_*` tools on your own unless the user asks to advance the process."
+  commands: "- Commands: `/sdo-status` for status | `/sdo-board` for the board (the command surface exists only in interactive sessions)"
+  clampMarker: "- … (the status block hit its size limit; use `sdo_status` or `/sdo-status` for the full picture)"
+  unknownWorkspace: " (workspace could not be determined: there is no fallback to an external directory; use `sdo-status` to inspect the real state of this session's workspace)"
+
+command:
+  noEchoChannel: The host agent has neither inbox.send nor followup
+  sdo-init: "Initialise an SDO project: `--name=… [--process=waterfall|prototype|agile|spiral] [--scale=trivial|normal|critical] [--stakeholders=…]`"
+  sdo-status: "Show SDO project status (phase, gate gaps, requirement and open-question counts); `--rebuild` forces a rebuild of projections from the journal"
+  sdo-board: "Show the SDO text board; `--expand` expands details, `--all` ignores the retention window, `--write` writes it to docs/BOARD.md"
+  sdo-list: "List requirements (id / priority / status / ambiguity score / open question count)"
+  sdo-grill: "Generate the next batch of interview questions for a requirement (at most 4, each with options and their cost); `--id=REQ-001` narrows it to one requirement, `--quick` asks P0 only"
+  sdo-answer: "Answer a question: `--id=Q-0001 --answer=\"…\" [--option=0]`; when the user does not know, use `--assume` (adopt the default suggestion and record it as an assumption)"
+  sdo-redteam: "Red team: `--attack` generates challenge questions; `--off` / `--on` toggles the red team for this session (recorded as a redteam/mode event); with no flag it shows the state"
+  sdo-gate: "Gates: `--gate=G0` evaluates and records; `--waive --gate=G2 --reason=… --approver=…` waives explicitly (recorded, never silently skipped)"
+  sdo-next: "Advance to the next phase (every exit gate of the current phase must already be passed or waived; otherwise you get the gaps and their remedies)"
+  sdo-budget: "Cost and budget: `--show` (default) | `--set total=100 [currency=CNY] [tiers=50,80,100]` | `--decide choice=add-budget|waive|narrow-scope [note=…]` (decisions are recorded, **nothing stops automatically**)"
+  sdo-render: "Render the `.sdo/` source of truth into human documents (M1: `--target=srs` → docs/SRS.md)"
+  sdo-lang: "Show or switch the UI language: `/sdo-lang` to show, `/sdo-lang en` to switch (effective for this process)"
+
+uiTools:
+  k1: "JSON object of domain terms, e.g. {\"difference\":\"a record of the same business transaction disagreeing between the two systems\"} (merged into the existing glossary)."
+  k2: "The requirement statement — what must be true (\"the system shall …\")."
+  k3: "Must be true when recording it as an assumption, it means the **user authorizes** handling it as you propose (without authorization it will be rejected)"
+  k4: "Gate name (either the Chinese name or the internal code will do, e.g. \"Feasibility Gate (G1)\", \"Requirements Baseline Gate (G2)\", \"Architecture Gate (G3)\", \"Delivery Gate (G7)\";"
+  k5: "prototype/agile/spiral processes also have \"Prototype Acceptance Gate (GP)\", \"Iteration Completion Gate (GI)\" and \"Risk Quadrant Review (GR)\")."
+  k6: "When talking to the user, use the Chinese name rather than the code alone."
+  k7: "JSON array — [{\"dimension\":\"technical\",\"verdict\":\"feasible\",\"rationale\":\"…\"}, …]; dimensions are technical/economic/legal/operational/schedule."
+  k8: "JSON array of PoC / validation suggestions for the risky parts, e.g. [\"spend 1 day validating the throughput ceiling of X\"]."
+  k9: "Measurable response — metric + condition + threshold, e.g. \"P99 < 500 ms at 1 million records per day\"."
+
+uiRender:
+  k1: "(not initialized)"
+  k2: "passed {p1}"
+  k3: "waived {p1}"
+  k4: "failed {p1}"
+  k5: "last 5 {p1}"
+  k6: "Not initialized — there is no `{p1}/` in the current working directory."
+  k7: "Next step — call `sdo_init` (or use `/sdo-status` in an interactive session to see why)."
+  k8: "Project　{p1} {p2}"
+  k9: "Process　{p1} ｜ Scale　{p2}"
+  k10: " ｜ Stage　{p1}"
+  k11: " ｜ Requirements　{p1}"
+  k12: "Gate　{p1}"
+  k13: "Trial — question ledger {p1} (open {p2}) ｜ gate records {p3} ｜ evidence {p4}"
+  k14: "## Stages"
+  k15: "- Iteration {p1} ({p2}) — {p3}"
+  k16: "> ⚠️ journal tail is corrupt (line {p1}); the board reflects only the last consistent prefix."
+  k17: "## Tasks (who is doing what)"
+  k18: "(none yet; use `sdo_plan action=decompose` to break out task cards)"
+  k19: "{p1} total — {p2}"
+  k20: "    · Definition of done — {p1}　｜ Write scope — {p2}"
+  k21: "    · Evidence — {p1}"
+  k22: "    · Blocked — {p1}"
+  k23: "## Requirements{p1}"
+  k24: "　{p1}　ambiguity {p2}/16　open questions {p3}"
+  k25: "## Requirements"
+  k26: "(none yet; `sdo_requirement action=capture` starts collection)"
+  k27: "## Details"
+  k28: "- Red team — {p1} (default {p2}{p3})"
+  k29: "- Scope (in) — {p1}"
+  k30: "- Non-goals (out) — {p1}"
+  k31: "- Stakeholders — {p1}"
+  k32: "- Success metrics — {p1}"
+  k33: "- Data directory — `{p1}/` (source of truth is journal.jsonl; project.json is a derived view)"
+  k34: "(empty)"
+  k35: "(unset)"
+  k36: "(first {p1}/{p2}, use --all for everything)"
+  k37: "Disabled"
+  k38: "Disabled"
+  k39: "Pending verdict {p1}"
+  k40: "# SDO Board"
+  k41: "(none)"
+  k42: "(unclaimed)"
+  k43: "(all)"
+  k44: "Enabled"
+  k45: "Enabled"
+
+uiCommands:
+  k1: "(result of the SDO command `{p1}` · for display only, no reply needed)\n\n{p2}"
+  k2: "{p1}\n… (echo truncated; see the command surface / file artifacts for the full text)"
+  k3: "Requires `--choice=add-budget|waive|narrow-scope`."
+  k4: "(not specified)"
+
+planMode:
+  section: "You are in [plan mode] — do read-only exploration only (read files, search, static analysis, run checks) — do not edit or write files, do not change configuration, do not commit; the user's verbal agreement does not count as approval, you must submit the plan to the user for review with exit_plan_mode. This is the review precondition for the SDO architecture stage — no design work is written before the review passes. [Plan requirements] The plan must be **structured** and cover at least the following 8 items (each must be concrete with the names of this project, no empty generalities) — 1) Goals and non-goals — what this architecture stage will produce and what it explicitly will not do; 2) Key design decisions — for each decision give **at least 2 alternatives** + rationale for the trade-off + consequences (G3 requires every ADR to include alternatives and consequences); 3) View inventory — which views to draw (logical/data/interface/deployment/other) and what each view is meant to express; 4) Components and contracts — the component breakdown, cross-component interactions, which interactions must become contracts, and the write-scope boundary of each; 5) Traceability plan — which requirements (REQ-xxx) map to which design elements (DES-xxx) and how orphans are avoided; 6) Risks and mitigation — every high-risk item **must** carry a mitigation measure and an owner; 7) Task decomposition preview — card granularity, DoD, dependency order, and the write scope of each card (to avoid overlapping edits); 8) Test plan — how must-level requirements are covered by test cases; Before submitting, self-check item by item with sdo_gate action=check gate=G3; submit with exit_plan_mode, and at the end of the plan list **2–3 questions you most want the user to confirm**."
+
+uiClamp:
+  truncated: "… (truncated — original {p1} characters, showing only the first {p2}. The full content is in the `.sdo/` source of truth — or re-fetch it with more specific filter parameters)"
+
+uiGates:
+  k1: "Scope (in) — {p1} items"
+  k2: "Scope (in) is empty"
+  k3: "Use `sdo_project action=update scopeIn=…` to state what is in scope"
+  k4: "Non-goals (out) — {p1} items"
+  k5: "No non-goals (out) declared"
+  k6: "Use `sdo_project action=update scopeOut=…` to state what is out of scope"
+  k7: "Stakeholders — {p1}"
+  k8: "Stakeholders are empty"
+  k9: "Use `sdo_project action=update stakeholders=…` to list stakeholders"
+  k10: "Success metrics are empty"
+  k11: "Use `sdo_project action=update metricsSuccess=…` to give measurable metrics"
+  k12: "Success metrics — {p1} (with numeric values)"
+  k13: "Unmeasurable success metrics — {p1}"
+  k14: "Write each metric as \"metric + condition + threshold\" (with numeric values)"
+  k15: "Glossary terms — {p1}"
+  k16: "Glossary is empty"
+  k17: "Use `sdo_project action=update glossary={\"term\":\"definition\"}` to add terms"
+  k18: "No feasibility assessment yet"
+  k19: "Call `sdo_feasibility action=assess`"
+  k20: "TELOS verdict — Go"
+  k21: "TELOS verdict — {p1}"
+  k22: "Resolve the blocking items and re-assess as Go, or explicitly terminate the project"
+  k23: "Risk register is empty"
+  k24: "Use `sdo_risk action=log` to register risks"
+  k25: "High/blocking risks missing mitigation or owner — {p1}"
+  k26: "Add `mitigation` and `owner` to each high risk"
+  k27: "Risks — {p1} (high {p2} / blocking {p3})"
+  k28: "PoC/validation recommendations — {p1}"
+  k29: "No PoC or validation recommendation given"
+  k30: "Provide `poc` in `sdo_feasibility action=assess` (high-risk items must be validated)"
+  k31: "Size tier trivial — red team not required by default"
+  k32: "Red team challenge has been performed"
+  k33: "Explicitly disabled in this session (on record)"
+  k34: "Red team challenge has not been performed"
+  k35: "Call `sdo_redteam action=attack`, or explicitly opt out (record it in `redteam/mode`)"
+  k36: "No red team issues recorded"
+  k37: "Run `sdo_redteam action=attack` first (it opens an issue for every requirement)"
+  k38: "All {p1} red team issues are closed"
+  k39: "Open issues — {p1} (each must return to a requirement or become a risk)"
+  k40: "Answer the challenge questions under the issue (`sdo_requirement action=answer`), or log a risk pointing at it — `sdo_risk action=log origin=<issue id> …`"
+  k41: "Missing human sign-off"
+  k42: "Provide `approvedBy` at baseline time (human sign-off; hard requirement of design §15.3)"
+  k43: "Signer — {p1}"
+  k44: "Prototype directory `{p1}/` has no substantive content"
+  k45: "Put a runnable prototype in that directory (and keep it deletable as a whole directory)"
+  k46: "This process does not involve a prototype (criterion not applicable)"
+  k47: "Prototype produced and marked throwaway"
+  k48: "Prototype is not marked throwaway"
+  k49: "Set the `prototype` key to `{throwaway: true}` in `.sdo/config.yml`"
+  k50: "This process does not involve a prototype (criterion not applicable)"
+  k51: "{p1} requirements backfilled from the prototype"
+  k52: "Prototype exists but no requirements were backfilled"
+  k53: "No requirements backfilled from the prototype yet"
+  k54: "Use `sdo_requirement action=capture prototypeSource=true …` to backfill prototype findings as requirements"
+  k55: "No `{p1}/` directory"
+  k56: "`{p1}/` only contains a description file"
+  k57: "`{p1}/` still has content and must not enter the deliverable (Q-05 / REQ-034)"
+  k58: "Delete `{p1}/` (the prototype is throwaway), or backfill its findings as requirements first and then delete it"
+  k59: "Risks — {p1} (open {p2})"
+  k60: "No risks registered for this loop"
+  k61: "Use `sdo_risk action=log` to record this loop's risks"
+  k62: "All high/blocking risks have mitigation and an owner"
+  k63: "Risks missing mitigation or owner — {p1}"
+  k64: "Add `mitigation` and `owner`, or downgrade/close the risk (`sdo_risk action=update`)"
+  k65: "All five views present ({p1} diagrams, each with elements)"
+  k66: "Missing {p1}"
+  k67: "Empty views — {p1}"
+  k68: "Use `sdo_design action=create` to complete the five views one by one (context/component/runtime/data/deployment)"
+  k69: "ADRs — {p1}, each with alternatives and consequences"
+  k70: "No ADRs yet"
+  k71: "Use `sdo_adr action=record` to record key decisions (alternatives and consequences required)"
+  k72: "Missing alternatives or consequences — {p1}"
+  k73: "Add `alternatives` and `consequences` to these ADRs (design §6.3)"
+  k74: "No requirements to trace"
+  k75: "Complete the requirement baseline first (G2)"
+  k76: "No orphans; requirement coverage {p1}%"
+  k77: "Orphan elements — {p1}"
+  k78: "Use `sdo_trace action=link from=REQ-001 to=DES-001 kind=req-des` to link every design element to a requirement"
+  k79: "Contracts cover {p1}/{p2} cross-component interactions"
+  k80: "The component view has no cross-component dependency edges"
+  k81: "Missing contracts — {p1}"
+  k82: "Incomplete failure semantics — {p1}"
+  k83: "Use `sdo_design action=contract` to add a contract for each interaction (with timeout/retry/idempotency)"
+  k84: "No task cards yet"
+  k85: "Use `sdo_plan action=decompose` to split task cards along the traceability graph"
+  k86: "Task cards — {p1}; all six mechanical checks pass"
+  k87: "Decomposition checks failed — {p1}"
+  k88: "No test cases yet"
+  k89: "Use `sdo_test action=plan` to write cases (covering every must requirement)"
+  k90: "Test cases — {p1}, covering all must requirements ({p2})"
+  k91: "Must requirements missing test cases — {p1}"
+  k92: "Write at least one case for each of {p1} (`sdo_test action=plan requirement=…`)"
+  k93: "No task cards yet"
+  k94: "Run `sdo_plan action=decompose` first"
+  k95: "Still orphaned — {p1}"
+  k96: "Link the orphan elements back to requirements (`sdo_trace action=link`)"
+  k97: "Must requirements missing test cases — {p1}"
+  k98: "Add req-tc edges"
+  k99: "Coverage {p1}%, no orphans"
+  k100: "No test cases"
+  k101: "Use `sdo_test action=plan` to write cases"
+  k102: "No test case has an execution result"
+  k103: "Use `sdo_test action=record` to record results (with evidence)"
+  k104: "Failing test cases — {p1}"
+  k105: "Fix and re-run them; failing cases may not pass the gate"
+  k106: "Test cases not run — {p1}"
+  k107: "Run every test case"
+  k108: "Must requirements without test cases — {p1}"
+  k109: "Add a case for every must requirement and link the trace edge (`sdo_test action=plan` + `sdo_trace action=link`)"
+  k110: "All {p1} test cases have results ({p2} passing); must requirements fully covered"
+  k111: "Blocking defects not closed — {p1}"
+  k112: "Fix and close them (`sdo_test action=defect id=… status=closed`)"
+  k113: "No open blocking defects ({p1} open in total)"
+  k114: "Use a different reviewer (authors may not review their own output)"
+  k115: "Completed without a passing review — {p1}"
+  k116: "Use `sdo_review action=record` (reviewer ≠ author)"
+  k117: "Reviews — {p1}; no independence violations"
+  k118: "No iteration started yet"
+  k119: "Use `sdo_plan action=iteration goal=…` to start an iteration"
+  k120: "Iteration {p1} has no task cards"
+  k121: "Decompose task cards for this iteration"
+  k122: "Unfinished in the iteration — {p1}"
+  k123: "Complete or move these cards out"
+  k124: "Iteration {p1} delivers an increment (all {p2} cards complete)"
+  k125: "No iteration started yet"
+  k126: "Use `sdo_plan action=iteration`"
+  k127: "The iteration has no goal"
+  k128: "Write a goal for the iteration (otherwise \"done\" cannot be judged)"
+  k129: "Complete but without evidence — {p1}"
+  k130: "Add evidence"
+  k131: "No test results in the iteration"
+  k132: "Run the test cases and record the results"
+  k133: "Iteration {p1} meets its DoD (including {p2} test results)"
+  k134: "Delivery manifest {p1} — {p2} artifacts, {p3} acceptance rows"
+  k135: "Use `sdo_deliver action=package` to generate the full manifest (with sha256, acceptance matrix, rollback point)"
+  k136: "No risk conclusion for this loop yet"
+  k137: "Use `sdo_risk action=conclude conclusion=continue|adjust|stop rationale=…` to give a conclusion"
+  k138: "This loop's conclusion — {p1}"
+  k139: "Process {p1} does not define gate {p2}"
+  k140: "Available gates — {p1}"
+  k141: "Process {p1} has no gate {p2} defined"
+  k142: "Checker `{p1}` is not implemented yet (later milestone)"
+  k143: "This criterion is scheduled for a later milestone; until then the gate cannot pass (\"not found\" does not count as pass)"
+  kFixCards: "Fix these cards and try again"
+
+uiPlan:
+  k1: "The change has artifact evidence (path + hash)"
+  k2: "Caller implementation"
+  k3: "Tests for failure semantics (timeout/retry/idempotency)"
+  k4: "The contract's failure semantics are covered by tests"
+  k5: "The DoD is empty or contains empty entries"
+  k6: "Write a decidable definition of done for this card (at least 1 entry that can clearly pass or fail)"
+  k7: "The card is sized large (which means it was never really decomposed)"
+  k8: "Keep splitting into medium or smaller (one card = one independently verifiable increment)"
+  k9: "No evidence requirement"
+  k10: "Provide at least one ('artifact' is the most common; use 'workspace-changes' when multiple files are involved)"
+  k11: "Fix the dependencies, or create the depended-on cards first"
+  k12: "Break the cycle (usually this means the two cards should be merged into one)"
+  k13: "Narrow the write scopes, or chain them as a dependency (blockedBy) — mutually exclusive write scopes are the precondition for safe parallelism"
+  t1: "{p1} ({p2})"
+  t2: "Implement {p1} ({p2})"
+  t3: "Make {p1} meet the acceptance criteria of {p2}"
+  t4: "Responsibility of {p1} — {p2}"
+  t5: "Acceptance criteria of {p1}"
+  t6: "Implementation of {p1}"
+  t7: "Every Given/When/Then of {p1} passes"
+  t8: "Integrate with contract {p1}"
+  t9: "Implement the calls and failure semantics per the contract of {p1}"
+  t10: "Contract {p1}"
+  t11: "Role {p1} is not one of the 8 roles"
+  t12: "Change it to one of — {p1}"
+  t13: "Dependency {p1} does not exist"
+  t14: "Dependency cycle — {p1}"
+  t15: "{p1} and {p2} may run in parallel, but their write scopes overlap — {p3}"
+
+uiDescribe:
+  contractMissingExact: "Required: consumer={p1}; producer={p2}"
+  k6: "Enter"
+  k7: "Current phase: {p1} ({p2})"
+  k8: "Data directory: `{p1}/`"
+  k9: "Not initialized yet: there is no `{p1}/` in the current working directory."
+  k10: "Next: call `sdo_init` (project name/process/scale)."
+  k11: "(none)"
+  k12: "Project: {p1} {p2}"
+  k13: "Process: {p1} | Scale: {p2} | Phase: {p3}"
+  k14: "Gate gaps: pending {p1} | latest verdict: {p2}"
+  k15: "Requirements: {p1} | open questions: {p2} ({p3} in the ledger)"
+  k16: " | traceability coverage: — (available from M2)"
+  k17: "Feasibility: {p1} | risks: {p2} (open {p3}, high {p4}, blocking {p5})"
+  k18: "Red-team open issues: {p1} | change requests: {p2}"
+  k19: "Evidence: {p1}"
+  k20: "Projection: {p1} | source of truth: "
+  k21: "Note: `{p1}/config.yml` is missing or unreadable; using the default project configuration (process {p2} | scale {p3})."
+  k22: "Artifacts:"
+  k23: "  `{p1}/journal.jsonl` (source of truth, append-only)"
+  k24: "  `{p1}/project.json` (derived view, rebuildable)"
+  k25: "  `{p1}/requirements/*.yml` and `{p2}/questions/*.yml` (requirement and question ledgers)"
+  k26: "Usable fields: name / process / scale / scopeIn / scopeOut / stakeholders / metricsSuccess / glossary"
+  k27: "Fields written this time: {p1}"
+  k28: "Scope (in): {p1}"
+  k29: "Non-goals (out): {p1}"
+  k30: "Glossary: {p1} terms"
+  k31: "Success metrics: {p1}"
+  k32: "Not initialized yet (no `{p1}/`): call `sdo_init` first."
+  k33: "Process: {p1} | Scale: {p2} | Phase: {p3}"
+  k34: "Scope (in): {p1}"
+  k35: "Non-goals (out): {p1}"
+  k36: "Stakeholders: {p1}"
+  k37: "Glossary: {p1}"
+  k38: "Success metrics: {p1}"
+  k39: "Tailoring: {p1}"
+  k40: "Gate \"{p1}\" (current phase: {p2}): {p3}"
+  k41: "    Remedy: {p1}"
+  k42: "Unmet: {p1} (you may not enter the next phase until this passes)"
+  k43: "Verdict recorded in `.sdo/gates/{p1}.json` (the filename keeps the identifier for traceability and troubleshooting)."
+  k44: "Advanced from \"{p1}\" to \"{p2}\"{p3}."
+  k45: "\"{p1}\" is already the end of the process; there is nothing to advance to."
+  k46: "Remedy: {p1}"
+  k47: "First run `sdo_gate action=check gate={p1}` to see the criteria one by one; if there is a genuine justification, use `sdo_gate action=waive` (it leaves a trail)."
+  k48: "Rationale: {p1}"
+  k49: "PoC / validation suggestion: {p1}"
+  k50: "⚠️ No PoC / validation suggestion given: G1 will reject on this (high-risk items must be validated first)"
+  k51: "Next: log the risk with `sdo_risk action=log …`, then run `sdo_gate action=check gate=G1`."
+  k52: "The risk register is empty. Log one with `sdo_risk action=log title=… level=… mitigation=… owner=…`."
+  k53: "    ⚠️ Missing mitigation or owner: G1/GR will reject on this"
+  k54: "Rationale: {p1}"
+  k55: "Change: {p1}"
+  k56: "Impact analysis: design {p1} | tasks {p2} | tests {p3}"
+  k57: "Decision maker: {p1}"
+  k58: "⚠️ Not applied: {p1}"
+  k59: "No architecture views yet. Start with `sdo_design action=create kind=context name=…`."
+  k60: "{p1} ({p2}): {p3} elements{p4}"
+  k61: "Missing view: {p1} (G3 will reject)"
+  k62: "Contracts: {p1}"
+  k63: "Type: {p1}　Responsibilities: {p2}"
+  k64: "Dependencies: {p1} (every cross-component dependency needs a contract: G4 checks design.contracts)"
+  k65: "Next: link it to a requirement with `sdo_trace action=link from=REQ-001 to={p1} kind=req-des` (otherwise it is an orphan design)."
+  k66: "Failure semantics: timeout {p1} | retry {p2} | idempotency {p3}"
+  k67: "Contract coverage: {p1}/{p2} cross-component interactions"
+  k68: "Still missing contracts: {p1}"
+  k69: "Incomplete failure semantics: {p1} (G4 will reject)"
+  k70: "Superseded {p1} (the original record is marked superseded; its content is unchanged)"
+  k71: "Alternatives {p1} | consequences {p2}"
+  k72: "Decision: {p1}"
+  k73: "No ADRs yet. Record key decisions with `sdo_adr action=record` (alternatives and consequences are required)."
+  k74: "{p1}　[{p2}]　{p3}　alternatives {p4} | consequences {p5}"
+  k75: "Stimulus → response: {p1} → {p2}"
+  k76: "Measure: {p1}"
+  k77: "Related elements: {p1}"
+  k78: "No quality scenarios yet. Record one with `sdo_quality action=scenario` (the measure must be testable)."
+  k79: "Risk points {p1}{p2}"
+  k80: "Sensitivity points {p1}"
+  k81: "Trade-off points {p1}"
+  k82: "Assessor: {p1}"
+  k83: "Traceability edges {p1} | requirement coverage (with design elements) {p2}%"
+  k84: "Orphan design elements: {p1}"
+  k85: "Tasks with no originating requirement: {p1}"
+  k86: "Test cases with no originating requirement: {p1}"
+  k87: "must requirements missing test cases: {p1}"
+  k88: "{p1}: design {p2} | tasks {p3} | tests {p4}"
+  k89: "    · Write scope: {p1}{p2}"
+  k90: "    · Evidence required: {p1}　Traceability: {p2}"
+  k91: "Six mechanical checks: all passed (single role / DoD / acyclic / size / disjoint write scopes / evidence required)"
+  k92: "❌ {p1} of the six mechanical checks failed:"
+  k93: "Goal: {p1}"
+  k94: "Write scope: {p1}"
+  k95: "Evidence {p1}: {p2}"
+  k96: "Blocking reason: {p1}"
+  k97: "Current state: {p1}　r{p2}{p3}"
+  k98: "Re-read the card and retry with `expectedRevision={p1}`; if someone else holds it, do not grab it (use `sdo_task action=reassign` for an explicit reassignment)."
+  k99: "No task cards yet. Split work with `sdo_plan action=decompose`."
+  k100: "Iteration {p1} ({p2}): {p3}"
+  k101: "Dispatchable {p1}: {p2}"
+  k102: "⚠️ Possibly lost {p1}: {p2} (**not released automatically**; release/reassign explicitly)"
+  k103: "❌ {p1} decomposition checks failed (see `sdo_plan action=decompose`)"
+  k104: "⚠️ Host invocation (`SubagentRuntime.start`) is **not wired up yet**: this step would really start a model run and needs credentials and a usable assembly."
+  k105: "Until then, have the process officer hand the prompt below to the executor with `send_message`, or run it in place with the main model in inline mode."
+  k106: "Tool surface: {p1}　| Write scope: {p2}"
+  k107: "Claiming requires `expectedRevision={p1}`"
+  k108: "owner recorded as {p1}; when done you must report back with `sdo_task action=done id={p2} owner={p3} evidence=…`."
+  k109: "Artifacts {p1}:"
+  k110: "Acceptance matrix {p1} rows: {p2}"
+  k111: "Rollback point: {p1}"
+  k112: "Prototype content excluded: {p1}"
+  k113: "Type: {p1} | Priority: {p2}"
+  k114: " | Status: {p1} | Ambiguity score: {p2}/16"
+  k115: "Acceptance criteria: {p1}"
+  k116: "Type: {p1} | Priority: {p2} | Status: {p3}"
+  k117: "Ambiguity score: {p1}"
+  k118: "Hard signals: {p1} (of which `banned:*` generates mandatory quantified questions)"
+  k119: "Next: probe the weakest dimension with `sdo_requirement action=grill id={p1}` (≤4 questions per round)."
+  k120: "Skipped requirements (not found): {p1}"
+  k121: "If the requirement still does not meet DoR, use `sdo_requirement action=update` to fill in semantic score/acceptance criteria, or complete the statement directly."
+  k122: "   - Goal: {p1}"
+  k123: "   - Why ask: {p1}"
+  k124: "   - Cost of not asking: {p1}"
+  k125: "   - Option {p1}: {p2} (cost: {p3})"
+  k126: "   - Default suggestion (adopted and recorded as an assumption when the user answers \"I don't know\"): {p1}"
+  k127: "How to answer: `sdo_requirement action=answer id=<question ID> answer=\"…\" pickedOption=<index>`; if the user does not know, use `assume=true`."
+  k128: "Answer: {p1}"
+  k129: "Answered by: {p1}"
+  k130: "Score after updating goal {p1}: {p2}"
+  k131: "⚠️ Recorded as an **assumption** (the user answered \"I don't know\"): register this assumption as a risk and disclose it in the delivery documents."
+  k132: "No requirements yet. Start collecting with `sdo_requirement action=capture`."
+  k133: "　{p1}/16　open {p2}　{p3}"
+  k134: "Below threshold (<14): {p1}"
+  k135: "{p1}　v{p2}　signed by: {p3}"
+  k136: "Wrote `gates/G2.json` and entered the `architecture` phase based on the `phase/entered` event."
+  k137: "Next: start architecture design with `sdo_design action=create` (the M2 implementation)."
+  k138: "G2 failed (requirement baseline rejected):\n{p1}"
+  k139: "    Current state: {p1}"
+  k140: "    Remedy: {p1}"
+  k141: "Unmet: {p1} (you may not enter architecture design until this passes)"
+  k142: "Red-team challenge executed: generated {p1} P0 questions (see design §5.4 for the attack angles)."
+  k143: "Red team is {p1} in **this session** (a `redteam/mode` trail has been written{p2})."
+  k144: "This is a session-level switch: a different session must express it again (Q-15)."
+  k145: "Red-team status: this session {p1}; this process run {p2}."
+  k146: "Run a round with `sdo_redteam action=attack`; disable it for this session with `action=off` (writes a trail)."
+  k147: "The render header contains the source-of-truth location and journal seq {p1}; re-rendering the same state is byte-identical (idempotent)."
+  k148: "This file is a **generated artifact**: edit the source of truth under `.sdo/` and re-render; do not edit the artifact by hand."
+  k149: "Remedy: {p1}"
+  k150: "Current DoR verdict:"
+  k151: "The architecture design engine is implemented in M2 (`sdo_design` currently only keeps the G2 gate enforced)."
+  k152: "(not assessed)"
+  k153: "from project.json"
+  k154: "  `{p1}/config.yml` (project-level configuration, human-editable)"
+  k155: "none"
+  k156: "{p1} (waive {p2})"
+  k157: "❌ Failed"
+  k158: "(not written)"
+  k159: "(not written)"
+  k160: "(not written)"
+  k161: "(none)"
+  k162: "(none)"
+  k163: "(none)"
+  k164: "(unbounded)"
+  k165: "　Dependencies: {p1}"
+  k166: "(none)"
+  k167: "(unbounded)"
+  k168: "(none)"
+  k169: "(unbounded)"
+  k170: "No (G7 will reject)"
+  k171: "(undecided, DoR will block)"
+  k172: "(empty)"
+  k173: "Enabled"
+  k174: ", rationale: {p1}"
+  k175: "Enabled (default)"
+  k176: "No attack has been run yet"
+  k177: "SDO status"
+  k178: "Project ledger updated: {p1} {p2}"
+  k179: "Project ledger: {p1} {p2}"
+  k180: "Cannot advance: the exit gate \"{p2}\" of \"{p1}\" has not passed yet."
+  k181: "Feasibility assessment recorded ({p1}, verdict: {p2})"
+  k182: "{p1} risks in total (open {p2} | high {p3} | blocking {p4}):"
+  k183: "Change request {p1} (requirements {p2}, decisions {p3})"
+  k184: "Architecture views {p1}/5:"
+  k185: "Updated"
+  k186: "Design element {p2} {p1}: {p3} ({p4})"
+  k187: "Contract {p1} recorded　{p2} ({p3})"
+  k188: "Recorded {p1}: {p2} ({p3})"
+  k189: "ADRs {p1}:"
+  k190: "Quality scenarios {p1}:"
+  k191: "ATAM-lite assessment recorded:"
+  k192: "Traceability report:"
+  k193: "(empty)"
+  k194: "Task cards {p1}: {p2}"
+  k195: "Claim failed ({p1}): {p2}"
+  k196: "Task cards {p1} | done {p2} | in progress {p3} | blocked {p4}"
+  k197: "Dispatch request generated: {p1} → {p2} (backend {p3}, persona {p4})"
+  k198: "Running in place {p1} (backend inline{p2})"
+  k199: "Delivery package {p1} (by {p2}, {p3})"
+  k200: "Requirement {p1} updated: {p2}"
+  k201: "Requirement {p1} captured: {p2}"
+  k202: "No questions this round."
+  k203: "{p1} questions this round (batch limit 4; every question must carry options and their costs):"
+  k204: "Answer {p1} recorded (status: {p2})"
+  k205: "{p1} requirements in total:"
+  k206: "G2 passed: {p1} requirements are now frozen as the baseline."
+  k207: "(no record)"
+  k208: "rebuilt from journal"
+  k209: "(empty)"
+  k210: "(empty — G2 will block)"
+  k211: "(empty)"
+  k212: "(empty)"
+  k213: "(empty — gates G0/G2 will block)"
+  k214: "(empty)"
+  k215: "(empty — gate G2 will block)"
+  k216: "(empty)"
+  k217: "(not set)"
+  k218: "✅ Passed"
+  k219: "⚠️ Waived"
+  k220: "(end of process)"
+  k221: "✅ Change applied (requirement status changed, version +0.1)"
+  k222: "Created"
+  k223: "(not written)"
+  k224: "⚠️ No related design elements (`targets`): sensitivity points will be hard to locate during ATAM"
+  k225: "(empty — honestly call out the scenarios that may not meet the bar)"
+  k226: "none"
+  k227: "none"
+  k228: "none"
+  k229: "none"
+  k230: "Yes"
+  k231: "(rule/model disagree; the stricter one wins, needs review)"
+  k232: "Disable"
+  k233: "Disabled"
+  k234: "An attack has been run"
+  k235: "journal.jsonl tail is corrupt (line {p1}, truncated)"
+  k236: "journal.jsonl is intact"
+  k237: "{p1}"
+  k238: "　(source: {p1})"
+  k239: "{p1}　[{p2}/{p3}]　{p4}　{p5}{p6}"
+  k240: "　Dependencies: {p1}"
+  k241: "    · {p1} {p2}　[{p3}]{p4}"
+  k242: "　⚠️ measure is not testable"
+  k243: "{p1}　[{p2}/{p3}]　{p4}{p5}"
+  k244: "(empty)"
+  k245: "    · DoD: {p1}"
+  k246: "(empty)"
+  k247: "DoD: {p1}"
+  k248: "Undecided"
+  k249: "{p1}　[{p2}/{p3}]　{p4}"
+  k1: "No fields were written this time (this tool only writes fields given explicitly)."
+  k2: "Quality scenario {p1} recorded ({p2}/{p3})"
+  k3: "Rendered {p1} → `{p2}`"
+  k4: "{p1} design rejected: {p2}"
+  k5: "View"
+  m1: "No fields were written this time (this tool only writes fields given explicitly)."
+  m2: "Quality scenario {p1} recorded ({p2}/{p3})"
+  m3: "Rendered {p1} → `{p2}`"
+  m4: "{p1} design rejected: {p2}"
+  m5: "View"
+  m6: "Enter"
+  m7: "Gate passed ({p1})."
+
+uiIndex:
+  k2: "The host has no tokenMeter service"
+  k8: "\n- If the stakeholders do not match reality (for example, you are a solo developer but several stakeholders show up), correct it immediately: `sdo_project action=update stakeholders=...`."
+  k9: "Unknown action: {p1} (available: update | show)"
+  k10: "- Threshold tiers: {p1}% (each tier is asked only once; **going over budget never stops work automatically**)"
+  k11: "- Unit price table:"
+  k12: "Unknown choice: use `add-budget` / `waive` / `narrow-scope`."
+  k13: "Add budget"
+  k14: "Continue and record a waiver"
+  k15: "Narrow the scope"
+  k16: "Decision recorded: {p1} ({p2}) -> `budget/decision` trace; development **continues** (the budget only monitors and warns, it never hard-stops).\n- {p3} decisions so far"
+  k17: "Unknown action: {p1} (available: report)"
+  k18: "- WARNING: usage unavailable: {p1} --"
+  k19: "we will not pass off an estimate as if it were real data"
+  k20: "- Note: {p1}"
+  k21: "- By model: {p1}"
+  k22: "- Budget: not set (`/sdo-budget --set total=...`; without a total we only report consumption and never judge overspend)"
+  k23: "- Budget: {p1} | Tiers already asked: {p2}"
+  k24: "- Threshold tiers: {p1}% (each tier is asked only once)"
+  k25: "- WARNING {p1}: choose **add budget / continue and record a waiver / narrow the scope** (via `/sdo-budget --decide choice=...`). **This never stops automatically.**"
+  k26: "(unnamed card)"
+  k27: "Starting an iteration requires `goal` (an iteration without a goal cannot be judged \"done\")."
+  k28: "Iteration {p1} started: {p2} (status={p3})\n- Next: `sdo_plan action=decompose` to break out this iteration's cards, then `sdo_plan action=next` to dispatch."
+  k29: "Unknown action: {p1} (available: decompose | iteration | next)"
+  k30: "No task cards available to dispatch (all are claimed or done). Use `sdo_task action=list` for the full picture."
+  k31: "Capacity is full: {p1} cards are queued (`maxParallelDispatch` = {p2})."
+  k32: "\n- {p1} more cards are waiting in the capacity queue."
+  k33: "Claiming requires `id`, `owner` and `expectedRevision` (CAS: the revision number you read)."
+  k34: "Reporting back requires `id` and `owner`."
+  k35: "Report rejected ({p1}): {p2}"
+  k36: "`id` is required."
+  k37: "(unstated)"
+  k38: "Writing a case requires `title` and `expected`."
+  k39: "Recorded case {p1} [{p2}] {p3}{p4}"
+  k40: "Recording a result requires `caseId` and `status`."
+  k41: "A pass must also carry `evidence` (command + output summary, or an artifact path) -- otherwise this \"pass\" has no evidence."
+  k42: "Recorded result {p1}: {p2} -> {p3}\n- {p4} cases | {p5} passed | {p6} failed | {p7} open defects"
+  k43: "Updated defect {p1} -> {p2}"
+  k44: "Logging a defect requires `title` and `severity` (blocker/major/minor)."
+  k45: "Logged defect {p1} [{p2}/{p3}] {p4}"
+  k46: "No review records yet. Use `sdo_review action=record` (reviewer != author)."
+  k47: "- WARNING: independence violation: {p1}"
+  k48: "Recording a review requires `taskId`, `reviewer` and `verdict`."
+  k49: "Task card {p1} not found."
+  k50: "Review independence violation: the author of {p1} is also {p2}. Please use a different reviewer (design section 8.7)."
+  k51: "Recorded review {p1}: {p2} -> {p3} (reviewer {p4}{p5})"
+  k52: "Packaging requires `artifacts` (JSON array: relative path + type)."
+  k53: "Packaging requires `rollbackPoint` (which known state to roll back to if something goes wrong)."
+  k54: "- WARNING: these artifacts cannot be found on disk (their hashes cannot be computed): {p1}"
+  k55: "- Rendered: {p1}"
+  k56: "Waiving a gate requires `gate`."
+  k57: "A waiver must leave a trace: provide both `reason` and `approver` (design section 7.5 / AC-003)."
+  k58: "Waived gate \"{p1}\" (approver: {p2}, reason: {p3}).\n{p4}"
+  k59: "Unknown action: {p1} (available: check | advance | waive)"
+  k60: "Judging a gate requires `gate` (for example G0 / G1 / G2 / G7)."
+  k61: "Unknown action: {p1} (available: assess)"
+  k62: "A feasibility assessment requires `verdict` (go / no-go / conditional)."
+  k63: "Not assessed"
+  k64: "Logging a risk requires `title` and `level` (low / medium / high / blocker)."
+  k65: "- WARNING: `mitigation` or `owner` is missing: G1/GR will reject this (high/blocker risks must have a mitigation and an owner)"
+  k66: "- This risk points at red team issue {p1}, so the issue is treated as closed (design section 5.4)"
+  k67: "Updating a risk requires `id`."
+  k68: "Risk {p1} not found."
+  k69: "Updated risk {p1}: {p2} [{p3}] {p4}"
+  k70: "A risk conclusion requires `conclusion` (continue / adjust / stop)."
+  k71: "Recorded this round's risk conclusion: {p1} ({p2})"
+  k72: "Capturing a requirement requires `statement` (a decidable statement such as \"the system shall...\"). First ask the user what needs to be built."
+  k73: "No requirement to question yet: first capture one with `sdo_requirement action=capture`."
+  k74: "**You must not answer on your own behalf** (answering your own questions will be rejected). Only after the user explicitly authorizes it may you record it as an assumption with `authorizedByUser: true`."
+  k75: "Answering a question requires `id` (the Q-xxxx in the question ledger)."
+  k76: "Provide `answer`, or use `assume=true` to mean the user does not know, adopt the question's default suggestion, and record it as an assumption."
+  k77: "Question {p1} not found."
+  k78: "Updating a requirement requires `id`."
+  k79: "Requirement {p1} not found."
+  k80: "A baseline requires a human signature: pass `approvedBy` (design section 15.3, G2 requires a human signature)."
+  k81: "A change requires `id`."
+  k82: "A change must give `reason` (design section 5.5: change content + rationale + impact analysis + decision)."
+  k83: "A change must give `decision` (approved / rejected / deferred)."
+  k84: "Statement changed to: {p1}"
+  k85: "Priority changed to: {p1}"
+  k86: "Title changed to: {p1}"
+  k87: "(change request recorded only; no specific fields were given)"
+  k88: "Unknown action: {p1} (available: capture | grill | answer | update | change | list | baseline)"
+  k89: "No requirement to attack yet: run `sdo_requirement action=capture` first."
+  k90: "M1 implements only `srs`; `{p1}` comes in a later milestone."
+  k91: "Not initialized yet: call `sdo_init` first."
+  k92: "- The architecture phase requires **passing a plan review first** (design Q-17: SDO actively drives plan mode), but this environment has no interactive review channel."
+  k93: "- Wrote the `plan/review-blocked` trace; **we do not enter plan mode, do not reach G3, and offer no skip switch** (Q-20)."
+  k94: "- Single-session principle (C-09): **do not open another session**. Within the **current session**, either wire up an interactive review channel (the host assembling plan mode) or explain the plan to the user and confirm it in this session."
+  k95: "- When review is impossible: this phase stays blocked (no writing, no reaching the architecture gate); you may explicitly waive it with a trace, but switching sessions to bypass it is not allowed."
+  k96: "- Wrote the `plan/review-blocked` trace; we do not enter plan mode and do not reach G3 (Q-20)."
+  k97: "- remedy: continue in a Web/CLI session (the interactive review channel is available there)."
+  k98: "- Ask the user to review the architecture plan; once passed, `exit_plan_mode` ends plan mode (this is the first gate)."
+  k99: "- After the plan passes, call `sdo_design action=create` to write views and elements (the second gate is G3)."
+  k100: "Plan review is not finished yet: still in plan mode. Ask the user to review it and pass it with `exit_plan_mode` before writing the design."
+  k101: "Recording a contract requires `producer`, `consumer` and `schema` (the contract body)."
+  k102: "Unknown action: {p1} (available: create | contract | view)"
+  k103: "Creating an element requires `kind` (context | component | runtime | data | deployment)."
+  k104: "Creating an element requires `name`."
+  k105: "An ADR requires `title` and `decision`."
+  k106: "An ADR must give **alternatives** (`alternatives` JSON array, with pros/cons): G3 rejects decisions that only state a conclusion."
+  k107: "An ADR must give **consequences** (`consequences` JSON array, including the ones you dislike)."
+  k108: "A quality scenario requires `attribute` and a **measurable** `measure` (metric + condition + threshold)."
+  k109: "Measure is not measurable: {p1}. Write it as \"metric + condition + threshold\" (including a number or threshold symbol)."
+  k110: "Creating a traceability edge requires `from`/`to`/`kind`, or pass a JSON array via `links`."
+  k111: "- Requirement coverage: {p1}% | Orphans: design {p2} / tasks {p3} / tests {p4}"
+  k112: "- must requirements missing test cases: {p1}"
+  k113: "Rendered the traceability report -> `{p1}` (derived view, includes coverage and orphan list)."
+  k114: "(unstated)"
+  k115: "(none)"
+  k116: " (covers {p1})"
+  k117: ", author {p1}"
+  k118: "{p1} cases | {p2} results ({p3} passed / {p4} failed / {p5} skipped) | {p6} open defects ({p7} blocking)"
+  k119: "Logged risk {p1} [{p2}] {p3}"
+  k120: "Not filled in (shows tokens only, never guesses an amount)"
+  k121: "Consumption only (no total set)"
+  k122: "Defect {p1} not found."
+  k123: "No delivery package yet. Use `sdo_deliver action=package`."
+  k124: "{p1}\n- Source marked as **prototype backfill** (source=prototype)."
+  k125: "none"
+  k126: "Wrote {p1}."
+  k127: "{p1}\n{p2}"
+  k128: "(unit price not filled in)"
+  k129: "{p1} {p2} tokens{p3}"
+  k130: "Reassignment requires `owner`."
+  k131: "Task card {p1} not found."
+  k132: "{p1}"
+  k133: "released"
+  k134: "reassigned"
+  k135: "{p1}: {p2}"
+  k136: " (covers {p1})"
+  k137: "- {p1} [{p2}] {p3}{p4}"
+  k138: "Board file writing is disabled (board.text=false); docs/BOARD.md was not written."
+  k139: "{p1}\n{p2}"
+  planReviewed: "Recorded the plan review pass **within this session** (reviewed by {x}). You may continue with sdo_design create."
+  planWaived: "Recorded a **plan review waiver** (with a trace; the reason and approver were written to the source of truth). You may continue with sdo_design create."
+  planWaiveNoReason: "(no reason given)"
+  planBlockedHead: "Entering the design phase is blocked: this host has no interactive plan review channel (plan mode is unavailable)."
+  planExitReview: "Exit one: ask the user to review the plan in this session, then call `sdo_design action=review approvedBy=<reviewer>`."
+  planExitWaive: "Exit two: if review is truly impossible, waive it explicitly with a trace: `sdo_design action=waive-plan reason=<reason> by=<approver>` (SDO offers no \"skip\" switch, and a waiver must state its reason)."
+  acWritten: "- Wrote {n} acceptance criteria (source: the acceptance from this capture)."
+  note: "Review note (optional, written to the trace)."
+  by: "Approver (who approved the waiver), defaults to human."
+  planLoadDiag: "- (diagnostic) Self-loading plan-mode failed: {p1}"
+  planLoadDeferred: "Loading was attempted but the service was not registered (usually a missing dependency service: plan-mode needs tools / systemPrompt / sessionProjections)"
+  planLoadNone: "Loading not attempted"
+  planChecklist: "The plan must be **structured** and cover at least the following 8 items (each item must name something specific to this project; no empty talk):\n1) Goals and non-goals: what this architecture phase will produce, and what it explicitly will not do;\n2) Key design decisions: for each decision give **>=2 alternatives** + tradeoff rationale + consequences (G3 requires every ADR to include alternatives and consequences);\n3) View inventory: which views to draw (logical/data/interface/deployment/other) and what each view is meant to express;\n4) Components and contracts: component split, cross-component interactions, which interactions must become contracts, and the write-scope boundary of each;\n5) Traceability plan: which requirements (REQ-xxx) map to which design elements (DES-xxx), and how orphans are avoided;\n6) Risks and mitigations: high-risk items **must** carry a mitigation and an owner;\n7) Task breakdown preview: card granularity, DoD, dependency order, and each card's write scope (to avoid overwriting each other);\n8) Test plan: how must-level requirements are covered by test cases;\nBefore submitting, self-check item by item with sdo_gate action=check gate=G3; submit with exit_plan_mode, and list **2-3 questions you want the user to confirm** at the end of the plan."
+  dropNoReason: "(no reason given)"
+  scopeDerivedNote: "- Note: the write scopes below are derived automatically from each element. Pick one of two: (1) state the scope in the element's responsibility, e.g. \"write scope: <glob> exclusive\"; or (2) write `plan: { scopeTemplate: \"src/main/java/{{slug}}/,src/test/java/{{slug}}/\" }` in `.sdo/config.yml` so the derivation rule matches this project's real layout.: {p1}"
+  defaultRole: "developer"
+  dropContractDone: "Contract {p1} ({p2}) has been voided (trace kept: it no longer counts toward coverage, but the record stays in the source of truth)"
+  dropContractMissing: "Voiding a contract requires id (for example `sdo_design action=drop-contract id=CT-010 reason=...`)"
+  dropContractNotFound: "Contract {p1} was not found (use `sdo_design action=view` to see the list)"
+  k1: "Budget updated: {p1}"
+  k3: "Reviewed {p1}:"
+  k4: "WARNING: these questions are **for the user**: ask them one by one with the host's question tool (`ask_user_question`), at most 4 at a time;"
+  k5: "Entering the design phase is blocked: plan mode cannot be driven for this call (missing agent reference or service error)."
+  k6: "Entered plan mode ({p1}): explore and compare options first; do not start implementing."
+  k7: "Created {p1} traceability edges ({p2} requested)."
+  m1: "Budget updated: {p1}"
+  m2: "Consumption only (no total set)"
+  m3: "Reviewed {p1}:"
+  m4: "WARNING: these questions are **for the user**: ask them one by one with the host's question tool (`ask_user_question`), at most 4 at a time;"
+  m5: "Entering the design phase is blocked: plan mode cannot be driven for this call (missing agent reference or service error)."
+  m6: "Entered plan mode ({p1}): explore and compare options first; do not start implementing."
+  m7: "Created {p1} traceability edges ({p2} requested)."
+
+
+uiLang:
+  current: "- Current UI language: **{p1}** (base language {p2})"
+  available: "- Language packs shipped: {p1}"
+  switched: "- UI language switched to **{p1}** (**effective for this process** until restart). To make it permanent, set `lang` in the preset row's config, or the `SDO_LANG` environment variable."
+  unknown: "- No language pack for `{p1}`. Available: {p2}"
+  usage: "- Usage: `sdo_lang action=set lang=en` (model tool) | `/sdo-lang en` (slash command) | `lang` in the preset row config or the `SDO_LANG` environment variable (permanent)"
+  coverage: "- The active pack covers {p1} of {p2} base-language keys (the rest fall back to the base language)"
+  extraKeys: "- {p1} of its keys are pack-specific (under the base language those strings come from the process data)"

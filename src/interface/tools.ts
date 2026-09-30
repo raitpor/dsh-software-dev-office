@@ -10,13 +10,20 @@
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
+import { t } from '../domain/i18n.js'
 import type { OfficeCall } from '../office.js'
 import { PRIORITIES, REQUIREMENT_KINDS, SCALES } from '../types.js'
 import type { Priority, RequirementKind, Scale } from '../types.js'
 
 /** 工具行为依赖，由插件入口注入。 */
+export interface LangArgs {
+  action?: string | undefined
+  lang?: string | undefined
+}
+
 export interface OfficeToolDeps {
   init(call: OfficeCall, args: InitArgs): Promise<string>
+  lang(call: OfficeCall, args: LangArgs): Promise<string>
   status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string>
   project(call: OfficeCall, args: ProjectArgs): Promise<string>
   gate(call: OfficeCall, args: GateArgs): Promise<string>
@@ -120,6 +127,10 @@ export interface DesignArgs {
   timeout?: string | undefined
   retry?: string | undefined
   idempotency?: string | undefined
+  approvedBy?: string | undefined
+  note?: string | undefined
+  by?: string | undefined
+  reason?: string | undefined
 }
 
 export interface AdrArgs {
@@ -238,6 +249,8 @@ export interface RequirementArgs {
   answer?: string | undefined
   pickedOption?: number | undefined
   assume?: boolean | undefined
+  /** 记为\"假设\"时必须为 true（表示**用户授权**，否则拒绝） */
+  authorizedByUser?: boolean | undefined
   /** 回答者（默认 human） */
   by?: string | undefined
   /** 基线签字人（人类） */
@@ -258,12 +271,27 @@ export interface RedTeamArgs {
   ids?: string[] | undefined
   limit?: number | undefined
   reason?: string | undefined
+  requirementId?: string | undefined
+  questions?: string | undefined
 }
 
 /** 从一次工具执行里取出调用上下文（会话身份 + 不透明的 agent 引用，后者供 plan mode 适配器用）。 */
 export function callOf(exec: ToolRunContext): OfficeCall {
   const agent = exec.agent
-  return agent === undefined ? {} : { sessionId: String(agent.id), agent }
+  if (agent === undefined) return {}
+  // cwd 尽量从 agent 上现取（比"创建会话时记录"更新、更可靠），多处字段容错
+  // **实测结论（dsh-agent 0.2.0-rc.1）**：Agent 上**没有** `cwd`/`workspace.cwd`/`session.cwd`；
+  // 会话工作目录在 `agent.session.header.cwd`。此前读错字段 → 工作区恒为 undefined
+  // （症状：requireWorkspace 抛「无法确定本会话的工作区」）。旧字段作为兜底保留，代价为零。
+  const holder = agent as unknown as {
+    cwd?: unknown
+    workspace?: { cwd?: unknown }
+    session?: { cwd?: unknown; header?: { cwd?: unknown } }
+  }
+  const cwd = [holder.session?.header?.cwd, holder.cwd, holder.workspace?.cwd, holder.session?.cwd].find(
+    (value): value is string => typeof value === 'string' && value !== '',
+  )
+  return { sessionId: String(agent.id), agent, ...(cwd === undefined ? {} : { cwd }) }
 }
 
 /** 宽松解析枚举；非法值返回 undefined（由行为层决定是否报错）。 */
@@ -307,17 +335,14 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
   return [
     defineTool({
       name: 'sdo_init',
-      description:
-        'Create the software-dev-office project in the current working directory (creates `.sdo/` with an append-only '
-        + 'journal as the single source of truth). Create-only and idempotent: if the project exists it returns the '
-        + 'existing record and changes nothing. Use `sdo_project` afterwards to maintain the project ledger.',
+      description: t('tool.sdo_init'),
       parameters: {
-        name: { type: 'string', description: 'Project name; defaults to the working directory name.' },
+        name: { type: 'string', description: t('param.name') },
         process: { type: 'string', description: "Process: 'waterfall' (default), 'prototype', 'agile' or 'spiral'." },
         scale: { type: 'string', description: "Scale: 'trivial', 'normal' (default) or 'critical'. Drives tailoring and the red-team default." },
-        scopeIn: { type: 'string', description: 'Comma-separated in-scope items.' },
-        scopeOut: { type: 'string', description: 'Comma-separated explicit non-goals (at least one is required at G0/G2).' },
-        stakeholders: { type: 'string', description: 'Comma-separated stakeholder roles (become STK-01, STK-02, ...).' },
+        scopeIn: { type: 'string', description: t('param.scopeIn') },
+        scopeOut: { type: 'string', description: t('param.scopeOut') },
+        stakeholders: { type: 'string', description: t('param.stakeholders') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -333,12 +358,26 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
     }),
 
     defineTool({
-      name: 'sdo_status',
-      description:
-        'Read the state of the software-dev-office project: phase, pending gate, requirement/question counts, '
-        + 'the latest gate result and whether the derived projection had to be rebuilt from the journal. Read-only.',
+      name: 'sdo_lang',
+      description: t('tool.sdo_lang'),
       parameters: {
-        rebuild: { type: 'boolean', description: 'Force rebuilding the derived projection (`project.json`) from the journal.' },
+        action: { type: 'string', required: true, description: t('param.langAction') },
+        lang: { type: 'string', description: t('param.lang') },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        return deps.lang(callOf(exec), {
+          action: typeof args.action === 'string' ? args.action : 'show',
+          lang: typeof args.lang === 'string' ? args.lang : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      name: 'sdo_status',
+      description: t('tool.sdo_status'),
+      parameters: {
+        rebuild: { type: 'boolean', description: t('param.rebuild') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -348,21 +387,17 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_project',
-      description:
-        'Maintain the project ledger (the inputs every gate depends on): in-scope items and explicit non-goals, '
-        + 'stakeholders, the domain glossary, measurable success metrics, and the process/scale. Gate G2 refuses while '
-        + 'the non-goal list or the glossary is empty, so this is the tool that closes those gaps after `sdo_init`. '
-        + "Actions: 'update' (writes exactly the fields you pass; nothing is overwritten implicitly) | 'show'.",
+      description: t('tool.sdo_project'),
       parameters: {
         action: { type: 'string', required: true, description: "'update' | 'show'." },
-        name: { type: 'string', description: 'Project name (update).' },
+        name: { type: 'string', description: t('param.name') },
         process: { type: 'string', description: "Process: 'waterfall' | 'prototype' | 'agile' | 'spiral'." },
         scale: { type: 'string', description: "Scale: 'trivial' | 'normal' | 'critical' (drives tailoring and the red-team default)." },
-        scopeIn: { type: 'string', description: 'Comma-separated in-scope items (replaces the list).' },
-        scopeOut: { type: 'string', description: 'Comma-separated explicit non-goals (replaces the list; required by G0/G2).' },
-        stakeholders: { type: 'string', description: 'Comma-separated stakeholder roles (rewrites STK-01, STK-02, ...).' },
-        metricsSuccess: { type: 'string', description: 'Comma-separated measurable success metrics.' },
-        glossary: { type: 'string', description: 'JSON object of domain terms, e.g. {"差异":"同一笔业务在两侧系统的不一致记录"} (merged into the existing glossary).' },
+        scopeIn: { type: 'string', description: t('param.scopeIn') },
+        scopeOut: { type: 'string', description: t('param.scopeOut') },
+        stakeholders: { type: 'string', description: t('param.stakeholders') },
+        metricsSuccess: { type: 'string', description: t('param.metricsSuccess') },
+        glossary: { type: 'string', description: t('uiTools.k1') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -383,40 +418,31 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_requirement',
-      description:
-        'Requirement lifecycle and the interrogation engine (the core of "grill the user until the requirement is '
-        + 'unambiguous"). '
-        + "Actions: 'capture' (create a draft requirement), 'grill' (produce up to 4 ranked questions with options and "
-        + 'costs — never an open-ended dump; each question states why it is asked and the consequence of not asking), '
-        + "'answer' (record an answer, or `assume:true` to take the recommended default as an explicit assumption), "
-        + "'update' (patch fields, attach Given/When/Then acceptance criteria, or apply the semantic dimension scores), "
-        + "'change' (after baselining, every edit goes through a change request with a reason, an automatic impact "
-        + "analysis and a decision — 'approved' applies it, 'rejected'/'deferred' only files it), "
-        + "'list', 'baseline' (freeze the requirement set at gate G2 — refuses unless DoR passes: score >= 14/16, no zero "
-        + 'dimension, no open P0, must-requirements have Given/When/Then, non-goals declared, red team run, human sign-off).',
+      description: t('tool.sdo_requirement'),
       parameters: {
         action: { type: 'string', required: true, description: "'capture' | 'grill' | 'answer' | 'update' | 'list' | 'baseline'." },
-        id: { type: 'string', description: 'Requirement id (e.g. REQ-001); required for update/answer-to-requirement flows.' },
-        title: { type: 'string', description: 'Requirement title (capture/update).' },
-        statement: { type: 'string', description: 'The requirement statement — what must be true ("系统须…").' },
-        rationale: { type: 'string', description: 'Why this requirement exists (the value behind it).' },
+        id: { type: 'string', description: t('param.id') },
+        title: { type: 'string', description: t('param.title') },
+        statement: { type: 'string', description: t('uiTools.k2') },
+        rationale: { type: 'string', description: t('param.rationale') },
         kind: { type: 'string', description: "'functional' (default) | 'quality' | 'constraint'." },
         priority: { type: 'string', description: "MoSCoW: 'must' | 'should' | 'could' | 'wont'. Required for DoR." },
-        sourceStakeholder: { type: 'string', description: 'Stakeholder id such as STK-01 (traceability source).' },
-        sourceRaw: { type: 'string', description: 'The raw ask, in the requester\'s own words.' },
+        sourceStakeholder: { type: 'string', description: t('param.sourceStakeholder', 'Stakeholder id such as STK-01 (traceability source).') },
+        sourceRaw: { type: 'string', description: t('param.sourceRaw', 'The raw ask, in the requester\'s own words.') },
         dimensions: { type: 'string', description: 'JSON object of the eight semantic dimension scores, e.g. {"goal":2,"user":1,...}. The deterministic rule channel caps these; stricter wins.' },
         acceptance: { type: 'string', description: 'JSON array of acceptance criteria: [{"given":"…","when":"…","then":"…"}].' },
-        limit: { type: 'number', description: 'Max questions per grill batch (default 4, hard cap 4).' },
-        quick: { type: 'boolean', description: 'Quick mode: only P0 questions (used by the trivial tailoring path).' },
-        answer: { type: 'string', description: 'Answer text for the question being answered.' },
-        pickedOption: { type: 'number', description: 'Zero-based index of the chosen option; recorded together with the answer.' },
-        assume: { type: 'boolean', description: 'The user does not know: take the question\'s recommended default and record it as an explicit assumption.' },
+        limit: { type: 'number', description: t('param.limit') },
+        quick: { type: 'boolean', description: t('param.quick') },
+        answer: { type: 'string', description: t('param.answer') },
+        pickedOption: { type: 'number', description: t('param.pickedOption', 'Zero-based index of the chosen option; recorded together with the answer.') },
+        assume: { type: 'boolean', description: t('param.assume') },
+        authorizedByUser: { type: 'boolean', description: t('uiTools.k3') },
         by: { type: 'string', description: 'Who answered (default "human").' },
-        approvedBy: { type: 'string', description: 'Human sign-off name required by `baseline` (gate G2).' },
+        approvedBy: { type: 'string', description: t('param.approvedBy') },
         source: { type: 'string', description: "Provenance: 'prototype' marks the requirement as backfilled from a throwaway prototype (design §7.2); any other value is treated as a stakeholder id such as STK-01." },
-        reason: { type: 'string', description: 'Change reason (action=change).' },
+        reason: { type: 'string', description: t('param.reason') },
         decision: { type: 'string', description: "Change decision (action=change): 'approved' applies the change; 'rejected'/'deferred' only files the request." },
-        decidedBy: { type: 'string', description: 'Who decided the change (action=change).' },
+        decidedBy: { type: 'string', description: t('param.decidedBy') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -435,6 +461,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           answer: typeof args.answer === 'string' ? args.answer : undefined,
           pickedOption: typeof args.pickedOption === 'number' ? args.pickedOption : undefined,
           assume: args.assume === true,
+          authorizedByUser: args.authorizedByUser === true,
           by: typeof args.by === 'string' ? args.by : undefined,
           approvedBy: typeof args.approvedBy === 'string' ? args.approvedBy : undefined,
           source: typeof args.source === 'string' ? args.source : undefined,
@@ -449,17 +476,14 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_redteam',
-      description:
-        'Adversarial requirement review (design §5.4): attacks the requirement set from seven angles (missing '
-        + 'stakeholders, hidden assumptions, cost, testability, internal conflicts, harmful-but-correct behaviour, and '
-        + 'the missing non-goals/fallback/rollback check) and turns each attack into a P0 question in the ledger. '
-        + "Actions: 'attack' | 'off' | 'on' | 'status'. `off`/`on` switch the red team for THIS SESSION only (written to "
-        + 'the journal as `redteam/mode`); on `normal`/`critical` scale the red team runs by default, on `trivial` it does not.',
+      description: t('tool.sdo_redteam'),
       parameters: {
-        action: { type: 'string', required: true, description: "'attack' | 'off' | 'on' | 'status'." },
-        ids: { type: 'string', description: 'Comma-separated requirement ids to attack (default: all requirements).' },
-        limit: { type: 'number', description: 'Max attack questions per requirement (default 4).' },
-        reason: { type: 'string', description: 'Why the red team is being switched off/on (recorded in the journal).' },
+        action: { type: 'string', required: true, description: t('param.redteamAction') },
+        requirementId: { type: 'string', description: t('param.requirementId') },
+        questions: { type: 'string', description: t('param.questions') },
+        ids: { type: 'string', description: t('param.ids', 'Comma-separated requirement ids to attack (default: all requirements).') },
+        limit: { type: 'number', description: t('param.limit') },
+        reason: { type: 'string', description: t('param.reason') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -468,16 +492,15 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           ids: asArray(args.ids) ?? parseList(args.ids),
           limit: typeof args.limit === 'number' ? args.limit : undefined,
           reason: typeof args.reason === 'string' ? args.reason : undefined,
+          requirementId: typeof args.requirementId === 'string' ? args.requirementId : undefined,
+          questions: typeof args.questions === 'string' ? args.questions : undefined,
         })
       },
     }),
 
     defineTool({
       name: 'sdo_render',
-      description:
-        'Render human-readable documents from `.sdo/` sources (design §10.1). Every generated file starts with a '
-        + '"DO NOT EDIT" header naming the source and the journal seq, and re-rendering the same state is byte-identical. '
-        + "M1 renders `docs/SRS.md`.",
+      description: t('tool.sdo_render'),
       parameters: {
         target: { type: 'string', description: "What to render: 'srs' (default) — more targets land in later milestones." },
       },
@@ -489,21 +512,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_plan',
-      description:
-        "Task decomposition and dispatch planning. 'decompose' builds cards through two channels — the structural "
-        + 'channel (one card per design element reachable from a baselined requirement, plus one per contract edge) '
-        + "and the model channel (`suggestions`) — and then runs six mechanical checks: single role, non-empty DoD, "
-        + 'acyclic dependencies, size cap (a `large` card means it was not decomposed), write-scope disjointness '
-        + 'between cards that could run in parallel, and at least one evidence requirement. '
-        + "'iteration' opens a new iteration (agile/spiral) with a goal. 'next' picks the dispatchable cards within "
-        + 'the parallel capacity budget and returns the hand-off request (the backend is chosen per §8.3 and degrades '
-        + "to inline execution when no dispatch backend is available).",
+      description: t('tool.sdo_plan'),
       parameters: {
         action: { type: 'string', required: true, description: "'decompose' | 'iteration' | 'next'." },
-        requirements: { type: 'string', description: 'decompose: JSON array of requirement ids to decompose (default: all).' },
-        suggestions: { type: 'string', description: 'decompose: JSON array of extra cards from the model channel: [{title, dod:[…], role, writeScopes:[…], size}]' },
-        goal: { type: 'string', description: 'iteration: the goal of this iteration.' },
-        limit: { type: 'number', description: 'next: how many cards to hand off (default 1).' },
+        requirements: { type: 'string', description: t('param.requirements') },
+        suggestions: { type: 'string', description: t('param.suggestions') },
+        goal: { type: 'string', description: t('param.goal') },
+        limit: { type: 'number', description: t('param.limit') },
         backend: { type: 'string', description: "next: 'auto' | 'subagent' | 'native-team' | 'inline'." },
       },
       output: OUTPUT,
@@ -521,21 +536,16 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_task',
-      description:
-        'Task cards and the collaboration protocol. Claiming uses compare-and-set (`expectedRevision`) so two '
-        + 'workers never take the same card; only the owner may report; `done` REQUIRES evidence (command output, an '
-        + 'artifact path, or a workspace-changes reference) — a bare "finished" is not accepted; a stuck card is '
-        + 'reported as `block` with a reason. Stalled owners are never released automatically: use `release` or '
-        + '`reassign`, both of which leave a trace.',
+      description: t('tool.sdo_task'),
       parameters: {
-        action: { type: 'string', required: true, description: "'list' | 'claim' | 'done' | 'block' | 'release' | 'reassign'." },
-        id: { type: 'string', description: 'Task id (TASK-001).' },
-        owner: { type: 'string', description: 'Who claims / reports / takes over the card.' },
-        expectedRevision: { type: 'number', description: 'claim: the revision you read (CAS).' },
+        action: { type: 'string', required: true, description: "'list' | 'claim' | 'done' | 'block' | 'drop' | 'release' | 'reassign'." },
+        id: { type: 'string', description: t('param.id') },
+        owner: { type: 'string', description: t('param.owner') },
+        expectedRevision: { type: 'number', description: t('param.expectedRevision') },
         evidence: { type: 'string', description: 'done: JSON array [{"kind":"artifact|command|workspace-changes","detail":"…"}].' },
-        note: { type: 'string', description: 'block: why it is stuck.' },
-        reason: { type: 'string', description: 'release/reassign: the reason (recorded).' },
-        actor: { type: 'string', description: 'release/reassign: who performs the action.' },
+        note: { type: 'string', description: t('param.note') },
+        reason: { type: 'string', description: t('param.reason') },
+        actor: { type: 'string', description: t('param.actor') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -554,23 +564,19 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_test',
-      description:
-        "Test plan, results and defects. 'plan' writes a test case (unit/integration/e2e) and may bind it to a "
-        + "requirement id — gate G4 requires every must requirement to have at least one case. 'record' records a "
-        + "result with evidence; a failing result must be fixed, not waived. 'defect' records or updates a defect "
-        + "(severity blocker/major/minor, status open/fixed/closed/wontfix); an open blocker stops G6.",
+      description: t('tool.sdo_test'),
       parameters: {
         action: { type: 'string', required: true, description: "'plan' | 'record' | 'defect' | 'list'." },
-        title: { type: 'string', description: 'plan: case title. defect: defect title.' },
+        title: { type: 'string', description: t('param.title') },
         kind: { type: 'string', description: "plan: 'unit' | 'integration' | 'e2e'." },
-        requirement: { type: 'string', description: 'plan: the requirement this case covers (REQ-001).' },
-        steps: { type: 'string', description: 'plan: JSON array of steps.' },
-        expected: { type: 'string', description: 'plan: the expected outcome.' },
-        caseId: { type: 'string', description: 'record: which case ran (TC-001).' },
+        requirement: { type: 'string', description: t('param.requirement') },
+        steps: { type: 'string', description: t('param.steps') },
+        expected: { type: 'string', description: t('param.expected') },
+        caseId: { type: 'string', description: t('param.caseId') },
         status: { type: 'string', description: "record: 'pass' | 'fail' | 'skip'. defect: 'open' | 'fixed' | 'closed' | 'wontfix'." },
-        evidence: { type: 'string', description: 'record: the evidence (command + output digest, or artifact path).' },
+        evidence: { type: 'string', description: t('param.evidence') },
         severity: { type: 'string', description: "defect: 'blocker' | 'major' | 'minor'." },
-        defectId: { type: 'string', description: 'defect: existing defect id to update.' },
+        defectId: { type: 'string', description: t('param.defectId') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -592,16 +598,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_review',
-      description:
-        'Review records for finished task cards. The reviewer must differ from the card owner (independence is '
-        + "checked mechanically, not trusted). 'record' files a verdict (pass / changes-requested / reject) with "
-        + "findings; 'list' shows them. Gate G6 requires every finished card to carry a passing review.",
+      description: t('tool.sdo_review'),
       parameters: {
         action: { type: 'string', required: true, description: "'record' | 'list'." },
-        taskId: { type: 'string', description: 'The task card under review.' },
-        reviewer: { type: 'string', description: 'Who reviews (must differ from the card owner).' },
+        taskId: { type: 'string', description: t('param.taskId') },
+        reviewer: { type: 'string', description: t('param.reviewer') },
         verdict: { type: 'string', description: "'pass' | 'changes-requested' | 'reject'." },
-        findings: { type: 'string', description: 'JSON array of findings.' },
+        findings: { type: 'string', description: t('param.findings') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -617,18 +620,14 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_deliver',
-      description:
-        "Delivery package: a manifest with the sha256 of every artifact, the acceptance matrix (one row per must "
-        + 'requirement, with evidence and a verdict), an explicit rollback point, and a statement that no '
-        + '`prototype/` content is included (Q-05). `show` lists the current package. Gate G7 refuses an incomplete '
-        + 'manifest — publishing and operations are deliberately out of scope.',
+      description: t('tool.sdo_deliver'),
       parameters: {
         action: { type: 'string', required: true, description: "'package' | 'show'." },
         artifacts: { type: 'string', description: 'JSON array: [{"path":"src/x.ts","kind":"source|docs|config|schema|test"}].' },
         acceptance: { type: 'string', description: 'JSON array: [{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}].' },
-        rollbackPoint: { type: 'string', description: 'How to roll back (e.g. the git commit or the previous package id).' },
+        rollbackPoint: { type: 'string', description: t('param.rollbackPoint') },
         by: { type: 'string', description: 'Who packages it (default "human").' },
-        notes: { type: 'string', description: 'Anything the receiver must know.' },
+        notes: { type: 'string', description: t('param.notes') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -645,13 +644,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_cost',
-      description:
-        'Cost report for this project: tokens consumed, and — only when the user filled in a price table — an '
-        + 'estimated amount, always labelled as an estimate. dsh itself meters tokens only and has no currency '
-        + 'model, so a missing price means tokens are shown and money is not guessed. The budget is optional: '
-        + 'without a `total` the report shows consumption only (no remaining, no percentage, no threshold). '
-        + 'Exceeding a budget never stops work (C-08) — it only asks the human to choose: add budget, waive with a '
-        + 'record, or narrow scope. This tool is READ-ONLY for the model.',
+      description: t('tool.sdo_cost'),
       parameters: {
         action: { type: 'string', required: true, description: "'report'." },
       },
@@ -663,21 +656,21 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_gate',
-      description:
-        'Gate engine (process is data, gates are checked, never inferred). '
-        + "'check' evaluates one gate's criteria and records the verdict; 'advance' moves to the next phase only when "
-        + "every exit gate of the current phase passed (or was waived); 'waive' records an explicit, attributed waiver "
-        + "(`tailoring.waivedGates` + gate record) instead of silently skipping a gate. Criteria whose checker is not "
-        + 'implemented yet fail on purpose — a gate never passes because nothing could be checked. '
-        + "For the spiral risk quadrant gate (GR) pass `conclusion=continue|adjust|stop` with a `rationale`.",
+      description: t('tool.sdo_gate'),
       parameters: {
         action: { type: 'string', required: true, description: "'check' | 'advance' | 'waive'." },
-        gate: { type: 'string', description: "Gate id, e.g. 'G0', 'G1', 'G2', 'G3', 'G7', 'GP' (prototype), 'GI' (agile) or 'GR' (spiral)." },
-        approvedBy: { type: 'string', description: 'Human sign-off used by gates that require it (G2).' },
-        reason: { type: 'string', description: 'Why this gate is waived (required by `waive`).' },
-        approver: { type: 'string', description: 'Who approved the waiver (required by `waive`).' },
+        gate: {
+          type: 'string',
+          description:
+            t('uiTools.k4')
+            + t('uiTools.k5')
+            + t('uiTools.k6'),
+        },
+        approvedBy: { type: 'string', description: t('param.approvedBy') },
+        reason: { type: 'string', description: t('param.reason') },
+        approver: { type: 'string', description: t('param.approver') },
         conclusion: { type: 'string', description: "Spiral GR gate: this round's risk conclusion — 'continue' | 'adjust' | 'stop'." },
-        rationale: { type: 'string', description: 'Rationale for the round conclusion (spiral GR gate).' },
+        rationale: { type: 'string', description: t('param.rationale') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -698,16 +691,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_feasibility',
-      description:
-        "TELOS feasibility assessment (technical / economic / legal / operational / schedule) plus the Go/No-Go verdict, "
-        + 'its rationale and the PoC or validation suggestions for the risky parts. Recorded as the truth source for '
-        + 'gate G1, and the risks you log with `sdo_risk` become G1 evidence too.',
+      description: t('tool.sdo_feasibility'),
       parameters: {
         action: { type: 'string', required: true, description: "'assess'." },
-        telos: { type: 'string', description: 'JSON array: [{"dimension":"technical","verdict":"可行","rationale":"…"}, …]; dimensions are technical/economic/legal/operational/schedule.' },
+        telos: { type: 'string', description: t('uiTools.k7') },
         verdict: { type: 'string', description: "'go' | 'no-go' | 'conditional'." },
-        rationale: { type: 'string', description: 'Why this verdict (the honest summary, including what remains uncertain).' },
-        poc: { type: 'string', description: 'JSON array of PoC / validation suggestions for the risky parts, e.g. ["用 1 天验证 X 的吞吐上限"].' },
+        rationale: { type: 'string', description: t('param.rationale') },
+        poc: { type: 'string', description: t('uiTools.k8') },
         by: { type: 'string', description: 'Who assessed (default "human").' },
       },
       output: OUTPUT,
@@ -725,25 +715,20 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_risk',
-      description:
-        'Risk register (`.sdo/risks/`). `log` records a risk (level low/medium/high/blocker, probability, impact, '
-        + 'mitigation, owner, and an optional `origin` such as a red-team issue id — a risk whose origin points at an '
-        + 'issue closes that issue). `update` moves a risk to mitigated/closed or fixes its mitigation/owner. `list` '
-        + 'shows the register. Gate G1 requires the register to be non-empty and every high/blocker risk to have a '
-        + 'mitigation and an owner; the spiral gate GR also needs a per-round `conclusion`.',
+      description: t('tool.sdo_risk'),
       parameters: {
         action: { type: 'string', required: true, description: "'log' | 'update' | 'list' | 'conclude'." },
-        id: { type: 'string', description: 'Risk id (RISK-001) — required by update.' },
-        title: { type: 'string', description: 'Risk title (log).' },
+        id: { type: 'string', description: t('param.id') },
+        title: { type: 'string', description: t('param.title') },
         level: { type: 'string', description: "'low' | 'medium' | 'high' | 'blocker'." },
         probability: { type: 'string', description: "'low' | 'medium' | 'high'." },
-        impact: { type: 'string', description: 'What happens if it materialises.' },
-        mitigation: { type: 'string', description: 'Mitigation / response (required for high and blocker risks at G1).' },
-        owner: { type: 'string', description: 'Who owns the risk (required for high and blocker risks at G1).' },
-        origin: { type: 'string', description: 'Source of the risk, e.g. a red-team issue id (REQ-ISSUE-001) — this closes that issue.' },
+        impact: { type: 'string', description: t('param.impact') },
+        mitigation: { type: 'string', description: t('param.mitigation') },
+        owner: { type: 'string', description: t('param.owner') },
+        origin: { type: 'string', description: t('param.origin') },
         status: { type: 'string', description: "'open' | 'mitigated' | 'closed' (update)." },
         conclusion: { type: 'string', description: "Spiral per-round risk conclusion ('conclude'): 'continue' | 'adjust' | 'stop'." },
-        rationale: { type: 'string', description: 'Rationale for the round conclusion.' },
+        rationale: { type: 'string', description: t('param.rationale') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -766,30 +751,23 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_design',
-      description:
-        'Architecture work, gated twice: gate G2 must have passed AND the plan must have been reviewed by an '
-        + 'interactive reviewer (SDO drives plan mode itself; when no interactive reviewer exists the architecture '
-        + "phase is blocked on purpose and a `plan/review-blocked` event is recorded — design Q-20). "
-        + "Actions: 'create' (upsert a design element in one of the five views: context | component | runtime | data | "
-        + "deployment; elements get DES-* ids and their `dependsOn` edges drive contract completeness), "
-        + "'contract' (record a cross-component contract with its schema and failure semantics: timeout / retry / "
-        + "idempotency), 'view' (read the current views).",
+      description: t('tool.sdo_design'),
       parameters: {
-        action: { type: 'string', required: true, description: "'create' | 'contract' | 'view'." },
+        action: { type: 'string', required: true, description: "'create' | 'contract' |  | 'drop-contract''view'." },
         kind: { type: 'string', description: "View: 'context' | 'component' | 'runtime' | 'data' | 'deployment' (required by create)." },
-        id: { type: 'string', description: 'Existing element id (DES-001) to update; omit to create.' },
-        name: { type: 'string', description: 'Element name (create).' },
+        id: { type: 'string', description: t('param.id') },
+        name: { type: 'string', description: t('param.name') },
         elementKind: { type: 'string', description: "Free-form element kind: 'system' | 'service' | 'store' | 'queue' | 'external' …" },
-        responsibility: { type: 'string', description: 'What this element is responsible for.' },
-        dependsOn: { type: 'string', description: 'Comma-separated element NAMES this element depends on (each edge needs a contract).' },
-        summary: { type: 'string', description: 'View summary (create).' },
-        producer: { type: 'string', description: 'Contract producer element name (contract).' },
-        consumer: { type: 'string', description: 'Contract consumer element name (contract).' },
-        schema: { type: 'string', description: 'Contract body: structure, fields, example payload (contract).' },
+        responsibility: { type: 'string', description: t('param.responsibility') },
+        dependsOn: { type: 'string', description: t('param.dependsOn') },
+        summary: { type: 'string', description: t('param.summary') },
+        producer: { type: 'string', description: t('param.producer') },
+        consumer: { type: 'string', description: t('param.consumer') },
+        schema: { type: 'string', description: t('param.schema') },
         contractKind: { type: 'string', description: "'http' | 'event' | 'rpc' | 'schema' (contract)." },
-        timeout: { type: 'string', description: 'Failure semantics: timeout behaviour (contract).' },
-        retry: { type: 'string', description: 'Failure semantics: retry policy (contract).' },
-        idempotency: { type: 'string', description: 'Failure semantics: idempotency key / expectation (contract).' },
+        timeout: { type: 'string', description: t('param.timeout') },
+        retry: { type: 'string', description: t('param.retry') },
+        idempotency: { type: 'string', description: t('param.idempotency') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -815,19 +793,15 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_adr',
-      description:
-        'Architecture decision records. Every ADR must carry the alternatives you rejected (with pros/cons) and the '
-        + 'consequences you accept — gate G3 refuses ADRs that only state a conclusion. '
-        + "Actions: 'record' | 'list' | 'supersede' (records a new ADR and marks the old one superseded without "
-        + 'rewriting history).',
+      description: t('tool.sdo_adr'),
       parameters: {
         action: { type: 'string', required: true, description: "'record' | 'list' | 'supersede'." },
-        title: { type: 'string', description: 'Decision title (record).' },
-        context: { type: 'string', description: 'The forces at play: what makes this a decision at all.' },
-        decision: { type: 'string', description: 'What we decided.' },
+        title: { type: 'string', description: t('param.title') },
+        context: { type: 'string', description: t('param.context', 'The forces at play: what makes this a decision at all.') },
+        decision: { type: 'string', description: t('param.decision') },
         alternatives: { type: 'string', description: 'JSON array: [{"option":"…","pros":"…","cons":"…"}].' },
-        consequences: { type: 'string', description: 'JSON array of accepted consequences (including the bad ones).' },
-        supersedes: { type: 'string', description: 'ADR id this new record supersedes (supersede).' },
+        consequences: { type: 'string', description: t('param.consequences') },
+        supersedes: { type: 'string', description: t('param.supersedes') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -845,22 +819,18 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_quality',
-      description:
-        'Quality attribute scenarios and a lightweight ATAM. Each scenario states stimulus → response plus a '
-        + 'MEASURABLE measure (metric + condition + threshold); a scenario without numbers is not a scenario. '
-        + "'evaluate' records the ATAM output as three explicit lists — risks, sensitivities and tradeoffs — which "
-        + 'are what later gates and the risk register consume.',
+      description: t('tool.sdo_quality'),
       parameters: {
         action: { type: 'string', required: true, description: "'scenario' | 'evaluate' | 'list'." },
         attribute: { type: 'string', description: "Quality attribute: 'performance' | 'security' | 'reliability' | 'maintainability' | … (scenario)." },
-        stimulus: { type: 'string', description: 'What arrives (the stimulus).' },
-        response: { type: 'string', description: 'What the system does in response.' },
-        measure: { type: 'string', description: 'Measurable response: metric + condition + threshold, e.g. "单日 100 万条下 P99 < 500 毫秒".' },
+        stimulus: { type: 'string', description: t('param.stimulus') },
+        response: { type: 'string', description: t('param.response') },
+        measure: { type: 'string', description: t('uiTools.k9') },
         priority: { type: 'string', description: "'high' | 'medium' | 'low'." },
-        targets: { type: 'string', description: 'Comma-separated design element ids this scenario targets.' },
-        risks: { type: 'string', description: 'JSON array of risks found by the ATAM (evaluate).' },
-        sensitivities: { type: 'string', description: 'JSON array of sensitivities (evaluate).' },
-        tradeoffs: { type: 'string', description: 'JSON array of tradeoffs (evaluate).' },
+        targets: { type: 'string', description: t('param.targets') },
+        risks: { type: 'string', description: t('param.risks') },
+        sensitivities: { type: 'string', description: t('param.sensitivities') },
+        tradeoffs: { type: 'string', description: t('param.tradeoffs') },
         by: { type: 'string', description: 'Who evaluated (default "human").' },
       },
       output: OUTPUT,
@@ -883,15 +853,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
 
     defineTool({
       name: 'sdo_trace',
-      description:
-        'Traceability graph (`.sdo/trace/links.jsonl`) — the engine change-impact analysis and the G3/G5 orphan and '
-        + "coverage checks read from. Actions: 'link' (build edges: req-des | req-task | req-tc | des-task | des-ct; "
-        + "either one edge via from/to/kind or several via a JSON `links` array), 'query' (coverage, orphans, and the "
-        + "must-requirements still missing tests), 'report' (render `docs/TRACE.md`).",
+      description: t('tool.sdo_trace'),
       parameters: {
         action: { type: 'string', required: true, description: "'link' | 'query' | 'report'." },
-        from: { type: 'string', description: 'Edge source id, e.g. REQ-001 (link).' },
-        to: { type: 'string', description: 'Edge target id, e.g. DES-001 (link).' },
+        from: { type: 'string', description: t('param.from') },
+        to: { type: 'string', description: t('param.to') },
         kind: { type: 'string', description: "'req-des' | 'req-task' | 'req-tc' | 'des-task' | 'des-ct'." },
         links: { type: 'string', description: 'JSON array for batch linking: [{"from":"REQ-001","to":"DES-001","kind":"req-des"}].' },
       },
