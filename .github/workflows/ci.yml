@@ -44,6 +44,7 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
+          cache: npm
           # actions/setup-node 的 npm 缓存需要一个依赖锁文件
           # setup-node 会直接以 "Dependencies lock file is not found" 失败，
 
@@ -54,10 +55,10 @@ jobs:
       # 依赖来自两处：① `vendor/` 里的**运行时闭包**（随仓库提交，离线铺设，不碰 registry）
       #                 ② 公开 registry 上的 devDependencies（typescript / @types/node，按平台自动取二进制）
       # 也不假设 `@deepseek-ai/*` 一定在公开源上。
-      - name: 安装依赖（vendor 离线闭包 + 公开源 devDeps）
-        run: node scripts/ci-install.mjs
-        env:
-          npm_config_cache: ${{ github.workspace }}/.pack-cache
+      # 标准做法：`package-lock.json` 锁版本，`npm ci` 从 registry 装（含 devDependencies）。
+      # 之前那套 vendor 离线闭包已删除：实测官方包都在公开源上，锁文件才是可复现的正解。
+      - name: 安装依赖（npm ci）
+        run: npm ci --no-audit --no-fund
 
       - name: 类型检查
         run: npm run typecheck

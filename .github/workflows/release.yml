@@ -60,10 +60,13 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+          cache: npm
           # setup-node 直接报 "Dependencies lock file is not found" 而失败。
 
-      - name: 安装依赖（vendor 离线闭包 + 公开源 devDeps）
-        run: node scripts/ci-install.mjs
+      # 标准做法：`package-lock.json` 锁版本，`npm ci` 从 registry 装（含 devDependencies）。
+      # 之前那套 vendor 离线闭包已删除：实测官方包都在公开源上，锁文件才是可复现的正解。
+      - name: 安装依赖（npm ci）
+        run: npm ci --no-audit --no-fund
       - name: 构建并运行测试
         # npm test = `npm run build && node --test lib/test/`，跨平台无 shell 依赖
         run: npm test

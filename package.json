@@ -29,9 +29,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test lib/test/",
     "clean": "rm -rf lib",
-    "pack:offline": "node scripts/pack-offline.mjs",
-    "install:offline": "node scripts/install-offline.mjs",
-    "vendor:ci": "node scripts/vendor-ci.mjs"
+    "pack:offline": "node scripts/pack-offline.mjs"
   },
   "keywords": [
     "dsh",

@@ -256,27 +256,19 @@ git tag -a v0.1.1 -m "SDO v0.1.1" && git push origin v0.1.1
 2. **peer 用链接、绝不用拷贝** —— 安装器把宿主 store 里的实例软链进 profile（实测安装处与宿主处 realpath 完全相同）。
 3. **不在 profile 里直接 `npm install`** —— npm 会 reify 整棵树、连别人的 `file:` 依赖也想动 ✗。改为临时前缀装好再合并，卸载按安装记录**精确回收**。
 
-### CI 怎么装依赖（不需要锁文件、也不需要私有 registry）
+### CI 怎么装依赖
 
-CI **不跑 `npm ci`**，而是「两段式」（`node scripts/ci-install.mjs`）：
-
-1. **运行时闭包离线铺设**：`vendor/` 里随仓库带了一份 `dependencies + peerDependencies` 的传递闭包
-   （34 个包 / 约 2.2MB tgz），CI 直接把它解开铺成 `node_modules/` —— **不经过 npm、不碰 registry、
-   不需要 `package-lock.json`**，因此 `@deepseek-ai/*` 就算不在公开源上也能构建与测试。
-2. **devDependencies 从公开 registry 取**：`typescript` / `@types/node` 必然在公开源上，而且
-   `typescript@7` 需要**当前平台**的编译器二进制包（19 个平台不可能随仓库存），让 npm 按平台自己取最省事，
-   也顺带让 Windows runner 能正常编译。
-
-维护方式（换依赖后**必须**重生成并提交）：
+标准做法：仓库提交 `package-lock.json`，CI 用 **`npm ci`**（`setup-node` 开 `cache: npm`）。
 
 ```bash
-npm install            # 在能联网的开发机上
-npm run vendor:ci      # 重新生成 vendor/（含 manifest 与说明）
-git add vendor && git commit -m "refresh vendored CI deps"
+npm ci            # CI 与本地一致：按锁文件装，含 devDependencies
 ```
 
-> `vendor/` 只装 `@deepseek-ai/*` 闭包；peer 里第三方开发工具（eslint/js-yaml 之类）**故意不收**，
-> 以免与 npm 的实际安装结果不一致（这些差异都写在 `vendor/manifest.json` 里可复核）。
+> **历史（值得留档）**：这里一度用"`vendor/` 离线依赖闭包 + 自写安装器"绕过 `npm ci`，
+> 理由是"官方 `@deepseek-ai/*` 可能不在公开源上、且没有锁文件"。后来实测发现**两个前提都不成立**
+> （registry 探测：`@deepseek-ai/dsh-plan-mode`、`cordis`、`typescript@7.0.2` 等全部在公开源上；
+> 而"本机无网"更是误判 —— 真正的报错是 npm 写不了 `~/.npm` 的 `EROFS`）。
+> 因此那套机制已删除，改回标准做法；**离线包产线（`pack:offline`）不受影响**，它本来就是给装机器用的。
 
 ---
 
