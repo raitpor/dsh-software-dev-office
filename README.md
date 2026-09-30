@@ -32,7 +32,7 @@ SDO 的做法是把这件事变成**机械可判**的流程：
 
 #### A. 离线安装包（推荐，装机器**无需联网**）
 
-从 [Releases](https://github.com/raitpor/dsh-software-dev-office/releases) 下载对应产物：
+从 [Releases](https://github.com/raitpor/dsh-software-dev-office/releases) 下载对应产物（每个版本改了什么见 [CHANGELOG.md](CHANGELOG.md)）：
 
 ```text
 Linux / macOS ：dsh-software-dev-office-0.1.1-offline.tar.gz
@@ -275,3 +275,5 @@ npm ci            # CI 与本地一致：按锁文件装，含 devDependencies
 ## 协议与作者
 
 MIT License © 2026 [raitpor](https://github.com/raitpor) —— 见 [LICENSE](LICENSE)。
+
+变更历史：见 [CHANGELOG.md](CHANGELOG.md)（首个公开发布为 **0.1.1**）。

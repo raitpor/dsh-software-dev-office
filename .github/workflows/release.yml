@@ -145,6 +145,7 @@ jobs:
           NOTES_FILE="$(mktemp)"
           cat > "$NOTES_FILE" <<'EOF'
           离线安装包：解压后按 README-offline.md 安装。
+          完整变更记录见仓库根目录 CHANGELOG.md。
           EOF
 
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
