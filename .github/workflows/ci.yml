@@ -1,0 +1,69 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# CI：类型检查（typecheck）+ 构建与单元测试（npm test，Node 内置测试器）
+#
+# 触发条件：
+#   - push：所有分支（用 branches: ['**'] 显式覆盖全部分支；这样**标签推送不会**触发
+#     本工作流，标签构建与发布统一交给 release.yml，避免同一次打标签跑两遍测试）
+#   - pull_request：所有 PR
+#   - workflow_dispatch：支持在 Actions 页面手动触发
+#
+# 为什么只用官方 action（actions/checkout、actions/setup-node）：
+#   官方 action 由 GitHub 自己维护、版本可锁定，且不需要额外的 secret，
+#   相比第三方 action 供应链风险最小；本仓库的依赖全是官方 @deepseek-ai/* 包，
+#   没有必要为此引入外部工具链。
+# ─────────────────────────────────────────────────────────────────────────────
+name: ci
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+  workflow_dispatch:
+
+# 最小权限原则：CI 只读仓库内容，任何步骤都不需要写权限
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: verify (${{ matrix.os }} / node ${{ matrix.node }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 矩阵里任何一个组合失败都不要取消其它组合：
+      # 我们要一次看全「哪个 OS / 哪个 Node 版本」真的有问题，
+      # 否则 ubuntu 先挂会让 windows 的结果永远看不到。
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [20, 22]
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js ${{ matrix.node }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          # actions/setup-node 的 npm 缓存需要一个依赖锁文件
+          # setup-node 会直接以 "Dependencies lock file is not found" 失败，
+
+      # 没有就退回 npm install」需要条件判断，而 ubuntu 默认是 bash、
+      # windows 默认是 pwsh，两套语法不同。GitHub 的 windows-latest runner
+      # 自带 Git Bash，因此显式声明 bash 就能让**同一个脚本**在两个平台跑通，
+      # 其它步骤（typecheck / test）都是普通 npm 命令，沿用默认 shell（逐条 run:）即可。
+      # 依赖来自两处：① `vendor/` 里的**运行时闭包**（随仓库提交，离线铺设，不碰 registry）
+      #                 ② 公开 registry 上的 devDependencies（typescript / @types/node，按平台自动取二进制）
+      # 也不假设 `@deepseek-ai/*` 一定在公开源上。
+      - name: 安装依赖（vendor 离线闭包 + 公开源 devDeps）
+        run: node scripts/ci-install.mjs
+        env:
+          npm_config_cache: ${{ github.workspace }}/.pack-cache
+
+      - name: 类型检查
+        run: npm run typecheck
+
+      # npm test = `npm run build && node --test lib/test/`
+      # 全部是 npm / node 自身的命令，不包含 rm、cp 之类 shell 命令，
+      # 也没有 bash 专属语法，因此在 windows-latest 上同样可跑（无需 shell: bash）。
+      - name: 构建并运行测试
+        run: npm test

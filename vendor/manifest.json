@@ -1,0 +1,190 @@
+{
+  "generatedAt": "2026-09-30T08:59:57.121Z",
+  "from": "linux",
+  "node": "v26.10.0",
+  "root": {
+    "@deepseek-ai/dsh-plan-mode": "dep:0.2.0-rc.1",
+    "@deepseek-ai/dsh-session-projection": "dep:0.2.0-rc.1",
+    "@deepseek-ai/cordis": "peer:~4.0.4",
+    "@deepseek-ai/dsh-commands": "peer:0.2.0-rc.1",
+    "@deepseek-ai/dsh-llm": "peer:0.2.0-rc.1",
+    "@deepseek-ai/dsh-session": "peer:0.2.0-rc.1",
+    "@deepseek-ai/dsh-system-prompt": "peer:0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "peer:0.2.0-rc.1",
+    "@deepseek-ai/schemastery": "peer:~3.18.4"
+  },
+  "packages": {
+    "@deepseek-ai/dsh-plan-mode": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "zod": {
+      "version": "4.6.5",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-brand": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/cordis": {
+      "version": "4.0.4",
+      "via": "pnpm-store"
+    },
+    "@standard-schema/spec": {
+      "version": "1.1.0",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/cosmokit": {
+      "version": "1.8.5",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/cordis-plugin-include": {
+      "version": "1.0.9",
+      "via": "pnpm-store"
+    },
+    "js-yaml": {
+      "version": "4.3.2",
+      "via": "pnpm-store"
+    },
+    "argparse": {
+      "version": "2.0.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/cordis-plugin-loader": {
+      "version": "1.0.5",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/schemastery": {
+      "version": "3.18.4",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-agent": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-llm": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-util-crypto": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-timeout": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-util-values": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-typert-protocol": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-invariants": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-session": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-scope": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-session-projection": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-system-prompt": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-workspace": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-storage": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-storage-domain": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-session-persistence": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-commands": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-attachment": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-tools": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-ptc-runtime": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-sandbox": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-sandbox-policy": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-user-approval": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    },
+    "@deepseek-ai/dsh-user-questions": {
+      "version": "0.2.0-rc.1",
+      "via": "pnpm-store"
+    }
+  },
+  "tarballs": [
+    "argparse-2.0.1.tgz",
+    "deepseek-ai-cordis-4.0.4.tgz",
+    "deepseek-ai-cordis-plugin-include-1.0.9.tgz",
+    "deepseek-ai-cordis-plugin-loader-1.0.5.tgz",
+    "deepseek-ai-cosmokit-1.8.5.tgz",
+    "deepseek-ai-dsh-agent-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-attachment-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-brand-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-commands-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-invariants-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-llm-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-plan-mode-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-ptc-runtime-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-sandbox-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-sandbox-policy-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-scope-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-session-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-session-persistence-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-session-projection-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-storage-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-storage-domain-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-system-prompt-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-timeout-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-tools-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-typert-protocol-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-user-approval-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-user-questions-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-util-crypto-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-util-values-0.2.0-rc.1.tgz",
+    "deepseek-ai-dsh-workspace-0.2.0-rc.1.tgz",
+    "deepseek-ai-schemastery-3.18.4.tgz",
+    "js-yaml-4.3.2.tgz",
+    "standard-schema-spec-1.1.0.tgz",
+    "zod-4.6.5.tgz"
+  ]
+}

@@ -18,7 +18,8 @@
     "presets",
     "skills",
     "src/data",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "engines": {
     "node": ">=20"
@@ -27,7 +28,10 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test lib/test/",
-    "clean": "rm -rf lib"
+    "clean": "rm -rf lib",
+    "pack:offline": "node scripts/pack-offline.mjs",
+    "install:offline": "node scripts/install-offline.mjs",
+    "vendor:ci": "node scripts/vendor-ci.mjs"
   },
   "keywords": [
     "dsh",
@@ -59,5 +63,14 @@
   "dependencies": {
     "@deepseek-ai/dsh-plan-mode": "0.2.0-rc.1",
     "@deepseek-ai/dsh-session-projection": "0.2.0-rc.1"
+  },
+  "author": "raitpor",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/raitpor/dsh-software-dev-office.git"
+  },
+  "homepage": "https://github.com/raitpor/dsh-software-dev-office#readme",
+  "bugs": {
+    "url": "https://github.com/raitpor/dsh-software-dev-office/issues"
   }
 }

@@ -1,0 +1,159 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Release：在 ubuntu / windows 两个平台各跑一遍构建与离线打包，
+#          再把离线安装包发布到 GitHub Release。
+#
+# 触发条件：
+#   - push 标签 v*（例如 v0.1.2）：正式发布路径
+#   - workflow_dispatch：手动触发，必须填写一个**已存在**的标签名
+#     （release 步骤会用 gh release create --verify-tag 兜底，防止凭空造标签）
+#
+# 为什么只用官方 action：
+#   actions/checkout、actions/setup-node、actions/upload-artifact、
+#   actions/download-artifact 都是 GitHub 官方维护的，版本可锁定、无需额外 secret。
+#   创建 Release 用 runner 上**预装的 GitHub CLI（gh）**，而不是第三方 release action：
+#   少一个供应链依赖，也少一个要额外授权的 token（GITHUB_TOKEN 就够）。
+# ─────────────────────────────────────────────────────────────────────────────
+name: release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '要发布的已存在标签（例如 v0.1.2）'
+        required: true
+        type: string
+
+# 默认只读；只有真正需要写 Release 的 release job 才提升为 contents: write
+permissions:
+  contents: read
+
+env:
+  # 手动触发时用输入的标签，标签推送时用被推送的标签名。
+  # 用 github.event.inputs.tag（而不是 inputs.tag）是为了在非 workflow_dispatch
+  # 事件下也能安全求值（此时它为空字符串，于是回退到 github.ref_name）。
+  RELEASE_TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  # ── 打包：两个 OS 各出一份离线包，作为 artifact 传给 release job ──────────────
+  pack:
+    name: pack (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # 一个平台失败不影响另一个平台的结果，便于判断是平台问题还是脚本问题
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    env:
+      # 离线打包脚本内部会调用 npm（npm pack / npm cache add）。
+      # npm 默认缓存目录在 runner 的 HOME 下，某些环境下不可写、也不便于复用；
+      # 把 npm_config_cache 显式指到**工作区内**的 .pack-cache，
+      # 保证脚本在任何平台都拿到一个确定可写的缓存目录。
+      #（.pack-cache/ 已在 .gitignore 中，不会污染提交内容）
+      npm_config_cache: ${{ github.workspace }}/.pack-cache
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # setup-node 直接报 "Dependencies lock file is not found" 而失败。
+
+      - name: 安装依赖（vendor 离线闭包 + 公开源 devDeps）
+        run: node scripts/ci-install.mjs
+      - name: 构建并运行测试
+        # npm test = `npm run build && node --test lib/test/`，跨平台无 shell 依赖
+        run: npm test
+
+      - name: 生成离线安装包
+        # 产物固定为 dist/offline/ 下的：
+        #   dsh-software-dev-office-<version>-offline.tar.gz
+        #   dsh-software-dev-office-<version>-offline.zip
+        #   SHA256SUMS
+        # 该步骤使用 job 级 env 里的 npm_config_cache（工作区内可写缓存）
+        run: npm run pack:offline
+
+      - name: 上传离线包 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          # artifact 名带上矩阵 os，两个平台的产物互不覆盖
+          name: offline-${{ matrix.os }}
+          # 只上传 dist/offline/ 下的三件产物。
+          # 打包脚本会在同目录下建隐藏目录 .work/（内含整套 staging 与 npm 缓存，体积很大）；
+          # upload-artifact v4 默认不包含隐藏文件（include-hidden-files 默认 false），
+          # 所以 .work/ 不会被传上去，artifact 里只有三个文件。
+          path: dist/offline/*
+          if-no-files-found: error
+
+  # ── 发布：把 artifact 收回来，用预装的 gh 建/更新 Release ────────────────────
+  release:
+    name: publish release
+    needs: pack
+    runs-on: ubuntu-latest
+    # gh release create / upload 需要写仓库内容（Release 属于 contents）
+    permissions:
+      contents: write
+    steps:
+      - name: 下载离线包 artifact
+        uses: actions/download-artifact@v4
+        with:
+          # 两个矩阵作业产出的**文件名完全相同**（版本号里不含 OS），
+          # 若把两个 artifact 全部 merge-multiple 到同一目录，同名文件会互相覆盖，
+          # 可能得到「归档来自 Windows、SHA256SUMS 来自 Linux」这种不配套的组合，
+          # 让用户校验失败。离线包本身与平台无关，所以这里用 pattern 选定
+          # Linux 那一份作为**规范产物**，merge-multiple 仍按要求保留。
+          pattern: offline-ubuntu-latest
+          merge-multiple: true
+          path: dist/offline
+
+      - name: 校验产物存在并打印 SHA256SUMS
+        shell: bash
+        run: |
+          set -euo pipefail
+          ls -l dist/offline
+          # 三类产物都必须存在，缺任何一个就直接失败（不发布半成品）
+          for f in dist/offline/*-offline.tar.gz dist/offline/*-offline.zip dist/offline/SHA256SUMS; do
+            if [ ! -f "$f" ]; then
+              echo "::error::缺少预期的离线包产物：$f"
+              exit 1
+            fi
+            echo "OK: $f"
+          done
+          echo "──────── SHA256SUMS ────────"
+          cat dist/offline/SHA256SUMS
+
+      - name: 创建或更新 Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # gh 在 CI 里也能从 origin remote 推断仓库；显式给 GH_REPO 更稳，
+          # 避免 checkout 目录或 remote 异常时 gh 找不到目标仓库。
+          # 因此命令行里不再逐个写 --repo（等价写法，见末尾说明）。
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          # 发布说明：优先用 gh 自动生成的 release notes（--generate-notes），
+          # 另外用 --notes-file 前置一行离线包安装说明。
+          # gh 官方文档明确支持把 --notes / --notes-file 的内容前置到自动生成的 notes 之上。
+          NOTES_FILE="$(mktemp)"
+          cat > "$NOTES_FILE" <<'EOF'
+          离线安装包：解压后按 README-offline.md 安装。
+          EOF
+
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            # 同名 Release 已存在（例如重跑失败的工作流）：兜底改为覆盖上传资产
+            echo "Release $RELEASE_TAG 已存在 → 覆盖上传资产"
+            gh release upload "$RELEASE_TAG" dist/offline/* --clobber
+          else
+            echo "创建 Release $RELEASE_TAG"
+            gh release create "$RELEASE_TAG" \
+              --title "$RELEASE_TAG" \
+              --generate-notes \
+              --notes-file "$NOTES_FILE" \
+              --verify-tag \
+              dist/offline/*
+          fi
