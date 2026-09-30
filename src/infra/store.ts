@@ -58,7 +58,10 @@ export class SdoStore {
     if (rel !== '' && (rel.startsWith('..') || isAbsolute(rel))) {
       throw new SdoPathError(`路径逃出项目目录：${segments.join('/')} → ${target}`)
     }
-    return target
+    // 归一化成正斜杠：路径在账本里**当 key 用**（与 relativeTo 一致）。Windows 的 join 会给反斜杠，
+    // 不归一化的话同一逻辑路径会有两种写法（实测 Windows CI 上 `endsWith('a/b.yml')` 断言因此失败）；
+    // Node 的 fs 接受正斜杠，故对文件操作没有副作用。
+    return target.split(sep).join('/')
   }
 
   /** 确保 `.sdo/` 及其常用子目录存在（设计 §4.5 布局的 M0 子集）。 */

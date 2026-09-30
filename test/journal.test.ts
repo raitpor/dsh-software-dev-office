@@ -48,7 +48,8 @@ test('追加事件：seq 单调递增并落盘为 JSONL', () => {
 
   const text = store.readText(JOURNAL_FILE) ?? ''
   assert.equal(text.split('\n').filter((l) => l !== '').length, 2)
-  assert.equal(store.modeOf(JOURNAL_FILE), 0o600)
+  // Windows 无 POSIX 权限位（stat 合成 0o666）：仅在 POSIX 上断言 0600，见 store.test.ts 的同款说明
+  if (process.platform !== 'win32') assert.equal(store.modeOf(JOURNAL_FILE), 0o600)
 })
 
 test('投影折叠：创建 → 阶段进入/退出 → 红队开关（会话内）', () => {
@@ -73,7 +74,7 @@ test('AC-006 / E2E-06：删掉 project.json 后能从 journal 重建', () => {
   assert.equal(first.rebuilt, false, 'append 时已把投影物化（派生视图跟随真源）')
   assert.equal(first.project?.phase, 'feasibility')
   assert.ok(store.exists(PROJECT_FILE), '重建后应落盘')
-  assert.equal(store.modeOf(PROJECT_FILE), 0o600)
+  if (process.platform !== 'win32') assert.equal(store.modeOf(PROJECT_FILE), 0o600)
 
   const cached = journal.loadProject()
   assert.equal(cached.rebuilt, false, '已有投影时不应重复重建')
