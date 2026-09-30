@@ -68,7 +68,7 @@ jobs:
       - name: 安装依赖（npm ci）
         run: npm ci --no-audit --no-fund
       - name: 构建并运行测试
-        # npm test = `npm run build && node --test lib/test/`，跨平台无 shell 依赖
+        # npm test = `npm run build && node scripts/run-tests.mjs`（跨 Node 20/22，见脚本注释），跨平台无 shell 依赖
         run: npm test
 
       - name: 生成离线安装包

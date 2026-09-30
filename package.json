@@ -28,7 +28,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && node --test lib/test/",
+    "test": "npm run build && node scripts/run-tests.mjs",
     "clean": "rm -rf lib",
     "pack:offline": "node scripts/pack-offline.mjs"
   },

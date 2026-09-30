@@ -63,7 +63,7 @@ jobs:
       - name: 类型检查
         run: npm run typecheck
 
-      # npm test = `npm run build && node --test lib/test/`
+      # npm test = `npm run build && node scripts/run-tests.mjs`（跨 Node 20/22，见脚本注释）
       # 全部是 npm / node 自身的命令，不包含 rm、cp 之类 shell 命令，
       # 也没有 bash 专属语法，因此在 windows-latest 上同样可跑（无需 shell: bash）。
       - name: 构建并运行测试
