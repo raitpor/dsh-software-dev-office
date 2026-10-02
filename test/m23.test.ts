@@ -439,36 +439,48 @@ test('R-5：`method.ts` 不得再手抄"未决"判定（复用 dor.isEffectively
 })
 
 test('R-6：CHANGELOG 结构正确（升级须知在最后、每轮只出现一次、编号**单调**）', () => {
-  const text = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')
-  const lines = text.split('\n')
-  const count = (needle: string): number => lines.filter((line) => line.includes(needle)).length
-  const indexOf = (needle: string): number => lines.findIndex((line) => line.includes(needle))
-  assert.equal(count('## [0.1.2] - 2026-10-01'), 1, '不得有重复的 0.1.2 段')
-  assert.equal(count('## [0.1.1] - 2026-09-30'), 1, '不得有重复的 0.1.1 段')
-  assert.equal(count('### 升级须知'), 1, '升级须知只应有一节')
+  const raw = readFileSync(join(ROOT, 'CHANGELOG.md'), 'utf8')
+  /**
+   * **CRLF 归一（Windows CI 的必修）**：GitHub 的 Windows runner 默认 `core.autocrlf=true`，
+   * 检出的是 **CRLF** 文本；对文件内容做"整行相等/位置"判断时，行尾的 `\r` 会让 `=== '### 修复'`
+   * 这类断言全部落空 —— 实测 tag `v0.1.2` 上 windows × node20/22 的 CI 就是挂在这一点上
+   * （ubuntu 全绿、windows 都红在"构建并运行测试"）。
+   *
+   * 这里对 **LF 与 CRLF 两种形态各跑一遍**：既修掉 Windows 的假红，也让"必须归一"这件事
+   * 在 Linux 上就能被守住（否则回归只会再次以 Windows-only 的形式暴露）。
+   */
+  const variants: [string, string][] = [['LF', raw], ['CRLF（Windows 检出）', raw.replace(/\r?\n/gu, '\r\n')]]
+  for (const [label, rawText] of variants) {
+    const lines = rawText.replace(/\r\n?/gu, '\n').split('\n')
+    const count = (needle: string): number => lines.filter((line) => line.includes(needle)).length
+    const indexOf = (needle: string): number => lines.findIndex((line) => line.includes(needle))
+    assert.equal(count('## [0.1.2] - 2026-10-01'), 1, `[${label}] 不得有重复的 0.1.2 段`)
+    assert.equal(count('## [0.1.1] - 2026-09-30'), 1, `[${label}] 不得有重复的 0.1.1 段`)
+    assert.equal(count('### 升级须知'), 1, `[${label}] 升级须知只应有一节`)
 
-  // 两套编号必须用**明确前缀**分开（评审员曾被混用编号误导过一次）：
-  //   `缺陷复审报告 第 N 轮` = sdo-test 的缺陷复审报告轮次；`评审员核实 第 N 轮` = 评审员的独立核实轮次
-  const verified = [5, 4, 3, 2, 1].map((n) => `评审员核实 第 ${n} 轮`)
-  const reports = [4, 3, 2].map((n) => `缺陷复审报告 第 ${n} 轮`)
-  for (const label of [...verified, ...reports]) {
-    assert.equal(count(label), 1, `${label} 只应出现一次`)
+    // 两套编号必须用**明确前缀**分开（评审员曾被混用编号误导过一次）：
+    //   `缺陷复审报告 第 N 轮` = sdo-test 的缺陷复审报告轮次；`评审员核实 第 N 轮` = 评审员的独立核实轮次
+    const verified = [5, 4, 3, 2, 1].map((n) => `评审员核实 第 ${n} 轮`)
+    const reports = [4, 3, 2].map((n) => `缺陷复审报告 第 ${n} 轮`)
+    for (const roundLabel of [...verified, ...reports]) {
+      assert.equal(count(roundLabel), 1, `[${label}] ${roundLabel} 只应出现一次`)
+    }
+    // 单调性（此前只断言"出现一次"，排序是乱的：前段最新在前、后段最新在后）
+    const vIdx = verified.map(indexOf)
+    const rIdx = reports.map(indexOf)
+    assert.deepEqual([...vIdx].sort((a, b) => a - b), vIdx, `[${label}] 评审员核实轮次必须**最新在前**`)
+    assert.deepEqual([...rIdx].sort((a, b) => a - b), rIdx, `[${label}] 缺陷复审报告轮次必须**最新在前**`)
+    assert.ok(Math.max(...vIdx) < Math.min(...rIdx), `[${label}] 评审员核实轮次必须整体排在缺陷复审报告之前`)
+
+    const unrel = lines.indexOf('## [Unreleased]')
+    const upgrade = lines.findIndex((line) => line === '### 升级须知')
+    const v012 = lines.indexOf('## [0.1.2] - 2026-10-01')
+    assert.ok(unrel < upgrade && upgrade < v012, `[${label}] 顺序必须是：Unreleased → 升级须知 → 0.1.2`)
+    assert.ok(
+      lines.slice(unrel, upgrade).some((line) => line === '### 修复'),
+      `[${label}] 各轮条目都必须落在「### 修复」之下（旧版把第二轮挂在升级须知底下）`,
+    )
   }
-  // 单调性（此前只断言"出现一次"，排序是乱的：前段最新在前、后段最新在后）
-  const vIdx = verified.map(indexOf)
-  const rIdx = reports.map(indexOf)
-  assert.deepEqual([...vIdx].sort((a, b) => a - b), vIdx, '评审员核实轮次必须**最新在前**')
-  assert.deepEqual([...rIdx].sort((a, b) => a - b), rIdx, '缺陷复审报告轮次必须**最新在前**')
-  assert.ok(Math.max(...vIdx) < Math.min(...rIdx), '评审员核实轮次必须整体排在缺陷复审报告之前（时间上更晚）')
-
-  const unrel = lines.indexOf('## [Unreleased]')
-  const upgrade = lines.findIndex((line) => line === '### 升级须知')
-  const v012 = lines.indexOf('## [0.1.2] - 2026-10-01')
-  assert.ok(unrel < upgrade && upgrade < v012, '顺序必须是：Unreleased → 升级须知 → 0.1.2')
-  assert.ok(
-    lines.slice(unrel, upgrade).some((line) => line === '### 修复'),
-    '各轮条目都必须落在「### 修复」之下（旧版把第二轮挂在升级须知底下）',
-  )
 })
 
 

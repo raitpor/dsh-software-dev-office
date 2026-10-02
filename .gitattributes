@@ -1,0 +1,9 @@
+# 统一行尾：仓库内一律 LF（Windows 检出也如此）。
+# 动机：GitHub 的 Windows runner 默认 core.autocrlf=true，会把文本检出成 CRLF —— 
+# 这曾让 CI 在 windows × node20/22 上假红（对文件内容做整行判断的用例全部落空）。
+# 用例侧另有 CRLF 归一 + 双形态断言兜底（test/m23.test.ts 的 R-6），两层一起保证跨平台一致。
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.zip binary
+*.gz binary
