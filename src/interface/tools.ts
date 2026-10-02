@@ -12,7 +12,29 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 import { t } from '../domain/i18n.js'
 import type { OfficeCall } from '../office.js'
-import { PRIORITIES, REQUIREMENT_KINDS, SCALES } from '../types.js'
+import {
+  ADR_ACTIONS,
+  COST_ACTIONS,
+  DELIVER_ACTIONS,
+  DESIGN_ACTIONS,
+  FEASIBILITY_ACTIONS,
+  GATE_ACTIONS,
+  LANG_ACTIONS,
+  PLAN_ACTIONS,
+  PRIORITIES,
+  PROJECT_ACTIONS,
+  QUALITY_ACTIONS,
+  REDTEAM_ACTIONS,
+  REQUIREMENT_ACTIONS,
+  REQUIREMENT_KINDS,
+  REVIEW_ACTIONS,
+  RISK_ACTIONS,
+  SCALES,
+  TASK_ACTIONS,
+  TEST_ACTIONS,
+  TRACE_ACTIONS,
+  actionList,
+} from '../types.js'
 import type { Priority, RequirementKind, Scale } from '../types.js'
 
 /** 工具行为依赖，由插件入口注入。 */
@@ -21,12 +43,34 @@ export interface LangArgs {
   lang?: string | undefined
 }
 
+/**
+ * 门禁签字的**人机关口问答**通道（§7.2 来源②）。
+ *
+ * 工具自己把"是否签字"问给用户，并把**用户所选选项的原文**原样取回 ——
+ * 引用文本因此不经过模型之手，这是本方案里"防代签"最关键的一环。
+ * 宿主没装配该通道时返回 `undefined`（回执要求改用 `channel=statement` + 原话）。
+ */
+export interface GateSignAnswer {
+  /** 用户所选选项的**原文**（直接落 basis，模型无法编造） */
+  selectedLabel: string
+  /** 用户自填的自由文本（选择"其他"时） */
+  custom?: string | undefined
+}
+
 export interface OfficeToolDeps {
   init(call: OfficeCall, args: InitArgs): Promise<string>
   lang(call: OfficeCall, args: LangArgs): Promise<string>
   status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string>
   project(call: OfficeCall, args: ProjectArgs): Promise<string>
   gate(call: OfficeCall, args: GateArgs): Promise<string>
+  /**
+   * 门禁签字的**人机关口问答**通道（§7.2 来源②）。
+   *
+   * 工具自己把"是否签字"问给用户，并把**用户所选选项的原文**原样取回 ——
+   * 引用文本因此不经过模型之手，这是本方案里"防代签"最关键的一环。
+   * 宿主没装配该通道时返回 `undefined`（回执要求改用 `channel=statement` + 原话）。
+   */
+  gateSignQuestion?(call: OfficeCall, gate: string): Promise<GateSignAnswer | undefined>
   feasibility(call: OfficeCall, args: FeasibilityArgs): Promise<string>
   risk(call: OfficeCall, args: RiskArgs): Promise<string>
   requirement(call: OfficeCall, args: RequirementArgs): Promise<string>
@@ -51,6 +95,8 @@ export interface InitArgs {
   scopeIn?: string[] | undefined
   scopeOut?: string[] | undefined
   stakeholders?: string[] | undefined
+  /** 项目级界面面（§2.1）：comma-separated web/desktop/mobile */
+  surfaces?: string[] | undefined
 }
 
 export interface ProjectArgs {
@@ -64,11 +110,13 @@ export interface ProjectArgs {
   metricsSuccess?: string[] | undefined
   /** JSON：{"术语":"定义"} */
   glossary?: Record<string, string> | undefined
+  /** 项目级界面面（§2.1）：web / desktop / mobile */
+  surfaces?: string[] | undefined
 }
 
 export interface GateArgs {
   action: string
-  /** check / waive 时的门禁 id（advance 不用） */
+  /** check / waive / sign 时的门禁 id（advance / rollback 不用） */
   gate?: string | undefined
   /** 人类签字（G2 的签字准则；advance 时也用于临时判定） */
   approvedBy?: string | undefined
@@ -78,6 +126,24 @@ export interface GateArgs {
   conclusion?: 'continue' | 'adjust' | 'stop' | undefined
   /** 结论理由 */
   rationale?: string | undefined
+  /**
+   * **门禁签字来源通道**（§7.2）：
+   *   · `statement` = 用户在会话中**明确表述**过签字确认（模型须给出 `quote` 原话，
+   *     工具会拿去**会话记录**里核对，对不上即拒绝 —— 防模型凭空代签）；
+   *   · `question`  = 走**人机关口问答**让用户亲自选（工具自己发问，不接受模型自述的引用）。
+   */
+  channel?: 'statement' | 'question' | undefined
+  /** `channel=statement` 时的**用户原话引用**（必填） */
+  quote?: string | undefined
+  /** 会话轮次引用（可选，落 journal 便于审计） */
+  turn?: string | undefined
+  /** 阶段回退的目标阶段（action=rollback） */
+  to?: string | undefined
+  /**
+   * 调用方 agent（**只为签字通道传**：人机关口问答必须带上活的 agent 才能问出去）。
+   * 不解读它，原样交给 handler。
+   */
+  agent?: unknown
 }
 
 export interface FeasibilityArgs {
@@ -109,7 +175,7 @@ export interface RiskArgs {
 
 export interface DesignArgs {
   action: string
-  /** 视图：context | component | runtime | data | deployment */
+  /** 视图：context | component | runtime | data | deployment | ui */
   kind?: string | undefined
   /** 元素 id（更新既有元素时给） */
   id?: string | undefined
@@ -131,6 +197,37 @@ export interface DesignArgs {
   note?: string | undefined
   by?: string | undefined
   reason?: string | undefined
+  // —————————————— 增量 1：设计交互闭环 ——————————————
+  /** action=grill：模型基于需求给出的**设计方法推荐**（§1.3 要求必须带推荐与理由） */
+  method?: string | undefined
+  /** action=grill：推荐理由 */
+  rationale?: string | undefined
+  /** action=grill：本轮最多新增几个问题（不填 = 一次给全） */
+  round?: number | undefined
+  /** action=answer：问题 id */
+  questionId?: string | undefined
+  /** action=answer：选项下标（0 基）或选项原文，也可以是自定义答复 */
+  choice?: string | undefined
+  /** action=answer：用户明确授权"按你的建议办"（未授权不得自问自答） */
+  assume?: boolean | undefined
+  /** action=confirm：元素/契约/界面条目 id */
+  target?: string | undefined
+  /** action=issues：open | all */
+  state?: string | undefined
+  /** view=create 时：界面视图 JSON（风格/页面/断点/无障碍） */
+  ui?: string | undefined
+  // —————————————— 增量 2：设计方法论方法包 ——————————————
+  /** action=artifact：方法产物种类（dictionary|dfd|erd|classes|sequences|layers|debt|reversibility|increments） */
+  artifactKind?: string | undefined
+  /** action=artifact：产物正文 JSON */
+  artifactData?: string | undefined
+  // —————————————— 界面线框图 / PlantUML 骨架 ——————————————
+  /**
+   * `action=render`：**可选**。`true` 走默认落点 `.sdo/design/ui.puml`，也可以给相对路径。
+   *
+   * ⚠️ 只写 `.puml` **骨架源码**（本仓库没有 PlantUML 渲染器，不出图）；不能是绝对路径或 `..`。
+   */
+  puml?: string | undefined
 }
 
 export interface AdrArgs {
@@ -246,6 +343,8 @@ export interface RequirementArgs {
   dimensions?: string | undefined
   /** JSON：[{"given":"","when":"","then":""}] 追加的验收标准 */
   acceptance?: string | undefined
+  /** `append`（默认，追加）或 `replace`（整份替换，用于改号/删除存量验收标准 —— R-2） */
+  acceptanceMode?: string | undefined
   answer?: string | undefined
   pickedOption?: number | undefined
   assume?: boolean | undefined
@@ -264,6 +363,22 @@ export interface RequirementArgs {
   decidedBy?: string | undefined
   limit?: number | undefined
   quick?: boolean | undefined
+  // —————— §7.1 设计适用性声明（需求阶段产出） ——————
+  /** 声明：本项目性质与设计重点（自由文本，模型起草） */
+  focus?: string | undefined
+  /** 声明要做的视图（JSON 数组：["context","component",…]） */
+  viewsPresent?: string | undefined
+  /** 声明不做的视图 + 理由（JSON 数组：[{"kind":"data","why":"…"}]） */
+  viewsAbsent?: string | undefined
+  /** 声明必需的非视图工件（JSON 数组：["invariants","mapping","diffVerify"]） */
+  artifacts?: string | undefined
+  /**
+   * 声明**不做**的非视图工件 + 理由（D5；JSON 数组：[{"kind":"mapping","why":"…"}]）。
+   * 与 `viewsAbsent` 同口径：逐条 `why` 必填，缺理由 C-2C 判红。
+   */
+  artifactsAbsent?: string | undefined
+  /** 用户签字绑定声明的依据（用户原话／所选选项原文；action=applicability-confirm 必填） */
+  basis?: string | undefined
 }
 
 export interface RedTeamArgs {
@@ -343,6 +458,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         scopeIn: { type: 'string', description: t('param.scopeIn') },
         scopeOut: { type: 'string', description: t('param.scopeOut') },
         stakeholders: { type: 'string', description: t('param.stakeholders') },
+        surfaces: { type: 'string', description: t('param.surfaces') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -353,6 +469,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           scopeIn: parseList(args.scopeIn),
           scopeOut: parseList(args.scopeOut),
           stakeholders: parseList(args.stakeholders),
+          surfaces: parseList(args.surfaces),
         })
       },
     }),
@@ -361,7 +478,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_lang',
       description: t('tool.sdo_lang'),
       parameters: {
-        action: { type: 'string', required: true, description: t('param.langAction') },
+        action: { type: 'string', required: true, description: `${actionList(LANG_ACTIONS)} ${t('param.langAction')}` },
         lang: { type: 'string', description: t('param.lang') },
       },
       output: OUTPUT,
@@ -389,7 +506,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_project',
       description: t('tool.sdo_project'),
       parameters: {
-        action: { type: 'string', required: true, description: "'update' | 'show'." },
+        action: { type: 'string', required: true, description: actionList(PROJECT_ACTIONS) },
         name: { type: 'string', description: t('param.name') },
         process: { type: 'string', description: "Process: 'waterfall' | 'prototype' | 'agile' | 'spiral'." },
         scale: { type: 'string', description: "Scale: 'trivial' | 'normal' | 'critical' (drives tailoring and the red-team default)." },
@@ -398,6 +515,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         stakeholders: { type: 'string', description: t('param.stakeholders') },
         metricsSuccess: { type: 'string', description: t('param.metricsSuccess') },
         glossary: { type: 'string', description: t('uiTools.k1') },
+        surfaces: { type: 'string', description: t('param.surfaces') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -412,6 +530,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           stakeholders: parseList(args.stakeholders),
           metricsSuccess: parseList(args.metricsSuccess),
           glossary: parsed,
+          surfaces: parseList(args.surfaces),
         })
       },
     }),
@@ -420,17 +539,18 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_requirement',
       description: t('tool.sdo_requirement'),
       parameters: {
-        action: { type: 'string', required: true, description: "'capture' | 'grill' | 'answer' | 'update' | 'list' | 'baseline'." },
+        action: { type: 'string', required: true, description: actionList(REQUIREMENT_ACTIONS) },
         id: { type: 'string', description: t('param.id') },
         title: { type: 'string', description: t('param.title') },
         statement: { type: 'string', description: t('uiTools.k2') },
         rationale: { type: 'string', description: t('param.rationale') },
-        kind: { type: 'string', description: "'functional' (default) | 'quality' | 'constraint'." },
+        kind: { type: 'string', description: "'functional' (default) | 'quality' | 'constraint' | 'ui' (declares a UI/screen surface; drives the UI gate)." },
         priority: { type: 'string', description: "MoSCoW: 'must' | 'should' | 'could' | 'wont'. Required for DoR." },
         sourceStakeholder: { type: 'string', description: t('param.sourceStakeholder', 'Stakeholder id such as STK-01 (traceability source).') },
         sourceRaw: { type: 'string', description: t('param.sourceRaw', 'The raw ask, in the requester\'s own words.') },
         dimensions: { type: 'string', description: 'JSON object of the eight semantic dimension scores, e.g. {"goal":2,"user":1,...}. The deterministic rule channel caps these; stricter wins.' },
         acceptance: { type: 'string', description: 'JSON array of acceptance criteria: [{"given":"…","when":"…","then":"…"}].' },
+        acceptanceMode: { type: 'string', enum: ['append', 'replace'], description: 'How `acceptance` is applied: append (default) or replace (use replace to renumber/remove existing criteria, e.g. when C9 reports duplicate AC ids).' },
         limit: { type: 'number', description: t('param.limit') },
         quick: { type: 'boolean', description: t('param.quick') },
         answer: { type: 'string', description: t('param.answer') },
@@ -443,6 +563,12 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         reason: { type: 'string', description: t('param.reason') },
         decision: { type: 'string', description: "Change decision (action=change): 'approved' applies the change; 'rejected'/'deferred' only files the request." },
         decidedBy: { type: 'string', description: t('param.decidedBy') },
+        focus: { type: 'string', description: t('uiTools.kApplicabilityFocus') },
+        viewsPresent: { type: 'string', description: t('uiTools.kApplicabilityPresent') },
+        viewsAbsent: { type: 'string', description: t('uiTools.kApplicabilityAbsent') },
+        artifacts: { type: 'string', description: t('uiTools.kApplicabilityArtifacts') },
+        artifactsAbsent: { type: 'string', description: t('uiTools.kApplicabilityArtifactsAbsent') },
+        basis: { type: 'string', description: t('uiTools.kApplicabilityBasis') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -458,6 +584,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           sourceRaw: typeof args.sourceRaw === 'string' ? args.sourceRaw : undefined,
           dimensions: typeof args.dimensions === 'string' ? args.dimensions : undefined,
           acceptance: typeof args.acceptance === 'string' ? args.acceptance : undefined,
+          acceptanceMode: typeof args.acceptanceMode === 'string' ? args.acceptanceMode : undefined,
           answer: typeof args.answer === 'string' ? args.answer : undefined,
           pickedOption: typeof args.pickedOption === 'number' ? args.pickedOption : undefined,
           assume: args.assume === true,
@@ -470,6 +597,12 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           decidedBy: typeof args.decidedBy === 'string' ? args.decidedBy : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
           quick: args.quick === true,
+          focus: typeof args.focus === 'string' ? args.focus : undefined,
+          viewsPresent: typeof args.viewsPresent === 'string' ? args.viewsPresent : undefined,
+          viewsAbsent: typeof args.viewsAbsent === 'string' ? args.viewsAbsent : undefined,
+          artifacts: typeof args.artifacts === 'string' ? args.artifacts : undefined,
+          artifactsAbsent: typeof args.artifactsAbsent === 'string' ? args.artifactsAbsent : undefined,
+          basis: typeof args.basis === 'string' ? args.basis : undefined,
         })
       },
     }),
@@ -478,7 +611,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_redteam',
       description: t('tool.sdo_redteam'),
       parameters: {
-        action: { type: 'string', required: true, description: t('param.redteamAction') },
+        action: { type: 'string', required: true, description: `${actionList(REDTEAM_ACTIONS)} ${t('param.redteamAction')}` },
         requirementId: { type: 'string', description: t('param.requirementId') },
         questions: { type: 'string', description: t('param.questions') },
         ids: { type: 'string', description: t('param.ids', 'Comma-separated requirement ids to attack (default: all requirements).') },
@@ -514,7 +647,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_plan',
       description: t('tool.sdo_plan'),
       parameters: {
-        action: { type: 'string', required: true, description: "'decompose' | 'iteration' | 'next'." },
+        action: { type: 'string', required: true, description: actionList(PLAN_ACTIONS) },
         requirements: { type: 'string', description: t('param.requirements') },
         suggestions: { type: 'string', description: t('param.suggestions') },
         goal: { type: 'string', description: t('param.goal') },
@@ -538,7 +671,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_task',
       description: t('tool.sdo_task'),
       parameters: {
-        action: { type: 'string', required: true, description: "'list' | 'claim' | 'done' | 'block' | 'drop' | 'release' | 'reassign'." },
+        action: { type: 'string', required: true, description: actionList(TASK_ACTIONS) },
         id: { type: 'string', description: t('param.id') },
         owner: { type: 'string', description: t('param.owner') },
         expectedRevision: { type: 'number', description: t('param.expectedRevision') },
@@ -566,7 +699,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_test',
       description: t('tool.sdo_test'),
       parameters: {
-        action: { type: 'string', required: true, description: "'plan' | 'record' | 'defect' | 'list'." },
+        action: { type: 'string', required: true, description: actionList(TEST_ACTIONS) },
         title: { type: 'string', description: t('param.title') },
         kind: { type: 'string', description: "plan: 'unit' | 'integration' | 'e2e'." },
         requirement: { type: 'string', description: t('param.requirement') },
@@ -600,7 +733,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_review',
       description: t('tool.sdo_review'),
       parameters: {
-        action: { type: 'string', required: true, description: "'record' | 'list'." },
+        action: { type: 'string', required: true, description: actionList(REVIEW_ACTIONS) },
         taskId: { type: 'string', description: t('param.taskId') },
         reviewer: { type: 'string', description: t('param.reviewer') },
         verdict: { type: 'string', description: "'pass' | 'changes-requested' | 'reject'." },
@@ -622,7 +755,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_deliver',
       description: t('tool.sdo_deliver'),
       parameters: {
-        action: { type: 'string', required: true, description: "'package' | 'show'." },
+        action: { type: 'string', required: true, description: actionList(DELIVER_ACTIONS) },
         artifacts: { type: 'string', description: 'JSON array: [{"path":"src/x.ts","kind":"source|docs|config|schema|test"}].' },
         acceptance: { type: 'string', description: 'JSON array: [{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}].' },
         rollbackPoint: { type: 'string', description: t('param.rollbackPoint') },
@@ -646,7 +779,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_cost',
       description: t('tool.sdo_cost'),
       parameters: {
-        action: { type: 'string', required: true, description: "'report'." },
+        action: { type: 'string', required: true, description: actionList(COST_ACTIONS) },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -658,7 +791,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_gate',
       description: t('tool.sdo_gate'),
       parameters: {
-        action: { type: 'string', required: true, description: "'check' | 'advance' | 'waive'." },
+        action: { type: 'string', required: true, description: actionList(GATE_ACTIONS) },
         gate: {
           type: 'string',
           description:
@@ -671,6 +804,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         approver: { type: 'string', description: t('param.approver') },
         conclusion: { type: 'string', description: "Spiral GR gate: this round's risk conclusion — 'continue' | 'adjust' | 'stop'." },
         rationale: { type: 'string', description: t('param.rationale') },
+        channel: { type: 'string', description: t('uiTools.kGateChannel') },
+        quote: { type: 'string', description: t('uiTools.kGateQuote') },
+        turn: { type: 'string', description: t('uiTools.kGateTurn') },
+        to: { type: 'string', description: t('uiTools.kGateRollbackTo') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -685,6 +822,12 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
               ? args.conclusion
               : undefined,
           rationale: typeof args.rationale === 'string' ? args.rationale : undefined,
+          channel: args.channel === 'statement' || args.channel === 'question' ? args.channel : undefined,
+          quote: typeof args.quote === 'string' ? args.quote : undefined,
+          turn: typeof args.turn === 'string' ? args.turn : undefined,
+          to: typeof args.to === 'string' ? args.to : undefined,
+          // 人机关口问答通道需要活的 agent 与取消信号（由调用方注入的 answerer 处理）
+          agent: exec.agent,
         })
       },
     }),
@@ -693,7 +836,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_feasibility',
       description: t('tool.sdo_feasibility'),
       parameters: {
-        action: { type: 'string', required: true, description: "'assess'." },
+        action: { type: 'string', required: true, description: actionList(FEASIBILITY_ACTIONS) },
         telos: { type: 'string', description: t('uiTools.k7') },
         verdict: { type: 'string', description: "'go' | 'no-go' | 'conditional'." },
         rationale: { type: 'string', description: t('param.rationale') },
@@ -717,7 +860,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_risk',
       description: t('tool.sdo_risk'),
       parameters: {
-        action: { type: 'string', required: true, description: "'log' | 'update' | 'list' | 'conclude'." },
+        action: { type: 'string', required: true, description: actionList(RISK_ACTIONS) },
         id: { type: 'string', description: t('param.id') },
         title: { type: 'string', description: t('param.title') },
         level: { type: 'string', description: "'low' | 'medium' | 'high' | 'blocker'." },
@@ -753,11 +896,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_design',
       description: t('tool.sdo_design'),
       parameters: {
-        action: { type: 'string', required: true, description: "'create' | 'contract' |  | 'drop-contract''view'." },
-        kind: { type: 'string', description: "View: 'context' | 'component' | 'runtime' | 'data' | 'deployment' (required by create)." },
+        action: { type: 'string', required: true, description: actionList(DESIGN_ACTIONS) },
+        kind: { type: 'string', description: t('param.designKind') },
         id: { type: 'string', description: t('param.id') },
         name: { type: 'string', description: t('param.name') },
-        elementKind: { type: 'string', description: "Free-form element kind: 'system' | 'service' | 'store' | 'queue' | 'external' …" },
+        elementKind: { type: 'string', description: t('param.elementKind') },
         responsibility: { type: 'string', description: t('param.responsibility') },
         dependsOn: { type: 'string', description: t('param.dependsOn') },
         summary: { type: 'string', description: t('param.summary') },
@@ -768,6 +911,25 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         timeout: { type: 'string', description: t('param.timeout') },
         retry: { type: 'string', description: t('param.retry') },
         idempotency: { type: 'string', description: t('param.idempotency') },
+        method: { type: 'string', description: t('param.designMethod') },
+        rationale: { type: 'string', description: t('param.designRationale') },
+        round: { type: 'number', description: t('param.designRound') },
+        questionId: { type: 'string', description: t('param.designQuestionId') },
+        choice: { type: 'string', description: t('param.designChoice') },
+        assume: { type: 'boolean', description: t('param.designAssume') },
+        target: { type: 'string', description: t('param.designTarget') },
+        state: { type: 'string', description: t('param.designState') },
+        ui: { type: 'string', description: t('param.designUi') },
+        // F-7：这两个参数此前只在 TS 类型与 handler 里存在，schema 里漏了 → 宿主按 schema
+        // 过滤入参后 handler 收到空种类，`action=artifact` 在工具通道上根本不可用。
+        // 由 `test/m15.test.ts` 的「schema ↔ handler」机械守卫防回归。
+        artifactKind: { type: 'string', description: t('param.designArtifactKind') },
+        artifactData: { type: 'string', description: t('param.designArtifactData') },
+        puml: { type: 'string', description: t('param.designPuml') },
+        approvedBy: { type: 'string', description: t('param.approvedBy') },
+        note: { type: 'string', description: t('param.note') },
+        by: { type: 'string', description: t('param.by') },
+        reason: { type: 'string', description: t('param.reason') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -787,6 +949,22 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           timeout: typeof args.timeout === 'string' ? args.timeout : undefined,
           retry: typeof args.retry === 'string' ? args.retry : undefined,
           idempotency: typeof args.idempotency === 'string' ? args.idempotency : undefined,
+          method: typeof args.method === 'string' ? args.method : undefined,
+          rationale: typeof args.rationale === 'string' ? args.rationale : undefined,
+          round: typeof args.round === 'number' ? args.round : undefined,
+          questionId: typeof args.questionId === 'string' ? args.questionId : undefined,
+          choice: typeof args.choice === 'string' ? args.choice : undefined,
+          assume: args.assume === true,
+          target: typeof args.target === 'string' ? args.target : undefined,
+          state: typeof args.state === 'string' ? args.state : undefined,
+          ui: typeof args.ui === 'string' ? args.ui : undefined,
+          artifactKind: typeof args.artifactKind === 'string' ? args.artifactKind : undefined,
+          artifactData: typeof args.artifactData === 'string' ? args.artifactData : undefined,
+          puml: typeof args.puml === 'string' ? args.puml : undefined,
+          approvedBy: typeof args.approvedBy === 'string' ? args.approvedBy : undefined,
+          note: typeof args.note === 'string' ? args.note : undefined,
+          by: typeof args.by === 'string' ? args.by : undefined,
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
         })
       },
     }),
@@ -795,7 +973,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_adr',
       description: t('tool.sdo_adr'),
       parameters: {
-        action: { type: 'string', required: true, description: "'record' | 'list' | 'supersede'." },
+        action: { type: 'string', required: true, description: actionList(ADR_ACTIONS) },
         title: { type: 'string', description: t('param.title') },
         context: { type: 'string', description: t('param.context', 'The forces at play: what makes this a decision at all.') },
         decision: { type: 'string', description: t('param.decision') },
@@ -821,7 +999,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_quality',
       description: t('tool.sdo_quality'),
       parameters: {
-        action: { type: 'string', required: true, description: "'scenario' | 'evaluate' | 'list'." },
+        action: { type: 'string', required: true, description: actionList(QUALITY_ACTIONS) },
         attribute: { type: 'string', description: "Quality attribute: 'performance' | 'security' | 'reliability' | 'maintainability' | … (scenario)." },
         stimulus: { type: 'string', description: t('param.stimulus') },
         response: { type: 'string', description: t('param.response') },
@@ -855,7 +1033,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_trace',
       description: t('tool.sdo_trace'),
       parameters: {
-        action: { type: 'string', required: true, description: "'link' | 'query' | 'report'." },
+        action: { type: 'string', required: true, description: actionList(TRACE_ACTIONS) },
         from: { type: 'string', description: t('param.from') },
         to: { type: 'string', description: t('param.to') },
         kind: { type: 'string', description: "'req-des' | 'req-task' | 'req-tc' | 'des-task' | 'des-ct'." },

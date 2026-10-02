@@ -12,6 +12,8 @@ import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { nextId } from '../infra/ids.js'
+import { boolField, pushShapeNote, recordListOf, textOf } from '../infra/scalar.js'
+import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { Requirement } from '../types.js'
@@ -182,8 +184,108 @@ export interface DeliveryManifest {
   notes: string
 }
 
+/**
+ * 交付清单的**形状归一化**（F-21 ①）。
+ *
+ * `.sdo/delivery/manifest.yml` 与 `.sdo/delivery/DLV-*.yml` 都是手可编辑的真源，
+ * 两个列表位置：`artifacts`（记录列表）与 `acceptance`（记录列表）。
+ * 旧实现 `manifest.artifacts.filter` / `manifest.acceptance.some` 在手写成标量时抛
+ * `… is not a function`。口径：
+ *   · 记录列表写成标量 → **单元素列表**（标量放进最自然的字段：产物放进 `path`、
+ *     验收行放进 `requirement`），保住作者意图；哈希按"算不出来"处理 → 既有判据照常判红，
+ *     是可读的失败而不是崩溃；
+ *   · 写成映射（少写了 `-`）→ **不猜**，按空列表 + 提示；
+ *   · 数组里的非映射项 → 丢弃但报出（绝不静默）。
+ */
+function normalizeManifest(raw: unknown, id: string, notes: FieldShapeNote[]): DeliveryManifest | undefined {
+  if (raw === null || raw === undefined || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (raw !== undefined) {
+      pushShapeNote(notes, 'manifest', id, 'manifest', {
+        position: 'map',
+        actualType: raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw,
+        handling: 'empty',
+        text: textOf(raw),
+      })
+    }
+    return undefined
+  }
+  const record = raw as Record<string, unknown>
+  // 提示里点名的 id 要**先**确定（正文 id 优先、文件名兜底），否则形状提示会点不到实体
+  const declaredId = textOf(record.id)
+  const entityId = declaredId.trim() === '' ? id : declaredId
+  // 标量写成的产物行没有哈希可算：`sha256: 'missing'` 与 `hashArtifact()` 的"算不出来"同口径，
+  // 于是既有的"产物缺失"判据会**可读地**判红，而不是悄悄放行一条空哈希
+  const artifacts = recordListOf<DeliveryArtifact>(record.artifacts, (text) => ({ path: text, kind: 'source', sha256: 'missing' }))
+  pushShapeNote(notes, 'manifest', entityId, 'artifacts', artifacts.issue)
+  // 标量写成的验收行放进 `requirement`：既有的"验收未通过"判据会点名它（可读失败，不是静默通过）
+  const acceptance = recordListOf<AcceptanceRow>(record.acceptance, (text) => ({
+    requirement: text,
+    criterion: '',
+    evidence: '',
+    verdict: 'fail',
+  }))
+  pushShapeNote(notes, 'manifest', entityId, 'acceptance', acceptance.issue)
+  // `prototypeExcluded` 是布尔位置：旧实现用真值判断，手写 `yes` 会被当成"已排除"（静默放行 Q-05）；
+  // 现在只有 `true` 才算"已排除"，非布尔 → 按未声明处理 + 提示（门禁照旧判红，不静默放行）
+  const prototypeExcluded = boolField(record.prototypeExcluded)
+  pushShapeNote(notes, 'manifest', entityId, 'prototypeExcluded', prototypeExcluded.issue)
+  return {
+    ...(record as unknown as DeliveryManifest),
+    id: entityId,
+    at: textOf(record.at),
+    by: textOf(record.by),
+    artifacts: artifacts.value.map((artifact) => ({
+      path: textOf(artifact.path),
+      kind: textOf(artifact.kind) as DeliveryArtifact['kind'],
+      sha256: textOf(artifact.sha256),
+    })),
+    acceptance: acceptance.value.map((row) => ({
+      requirement: textOf(row.requirement),
+      criterion: textOf(row.criterion),
+      evidence: textOf(row.evidence),
+      verdict: textOf(row.verdict) as AcceptanceRow['verdict'],
+    })),
+    rollbackPoint: textOf(record.rollbackPoint),
+    prototypeExcluded: prototypeExcluded.value === true,
+    notes: textOf(record.notes),
+  }
+}
+
+/** 读一个交付清单文件（`id` 只在正文缺 id 时兜底；`manifest.yml` 传空串）。 */
+function readManifestFileChecked(
+  store: SdoStore,
+  file: string,
+  fallbackId: string,
+): { manifest: DeliveryManifest | undefined; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ manifest: unknown }>('delivery', file)?.manifest
+  return { manifest: normalizeManifest(raw, fallbackId, notes), notes }
+}
+
+export function readManifestChecked(
+  store: SdoStore,
+): { manifest: DeliveryManifest | undefined; notes: FieldShapeNote[] } {
+  return readManifestFileChecked(store, 'manifest.yml', '')
+}
+
 export function readManifest(store: SdoStore): DeliveryManifest | undefined {
-  return store.readYaml<{ manifest: DeliveryManifest }>('delivery', 'manifest.yml')?.manifest
+  return readManifestChecked(store).manifest
+}
+
+/**
+ * 全部交付清单上的形状提示（回执 / 门禁详情共用）。
+ *
+ * **只读带版本号的文件**（`DLV-*.yml`）：`manifest.yml` 只是"最新一版"的指针，
+ * 内容与对应版本文件相同 —— 两个都读会把同一条提示报两遍。
+ */
+export function manifestShapeNotes(store: SdoStore): FieldShapeNote[] {
+  const notes: FieldShapeNote[] = []
+  const names = store.listNames('delivery').filter((name) => /^DLV-\d+\.yml$/u.test(name))
+  if (names.length === 0) return readManifestChecked(store).notes
+  for (const name of names) {
+    notes.push(...readManifestFileChecked(store, name, name.replace(/\.yml$/u, '')).notes)
+  }
+  return notes
 }
 
 /** 全部历史交付版本（按编号升序）：**G-06** 的证据链 —— 每一版清单都能被取回。 */
@@ -191,7 +293,7 @@ export function listManifests(store: SdoStore): DeliveryManifest[] {
   return store
     .listNames('delivery')
     .filter((name) => /^DLV-\d+\.yml$/u.test(name))
-    .map((name) => store.readYaml<{ manifest: DeliveryManifest }>('delivery', name)?.manifest)
+    .map((name) => readManifestFileChecked(store, name, name.replace(/\.yml$/u, '')).manifest)
     .filter((manifest): manifest is DeliveryManifest => manifest !== undefined)
     .sort((a, b) => a.id.localeCompare(b.id))
 }
@@ -263,13 +365,28 @@ export function deliveryCompleteness(
   if (manifest.artifacts.length === 0) problems.push('交付清单为空')
   const missing = manifest.artifacts.filter((artifact) => artifact.sha256 === 'missing').map((artifact) => artifact.path)
   if (missing.length > 0) problems.push(`产物缺失（哈希算不出来）：${missing.join(' ')}`)
-  if (manifest.rollbackPoint.trim() === '') problems.push('没有回滚点')
+  if (textOf(manifest.rollbackPoint).trim() === '') problems.push('没有回滚点')
   if (!manifest.prototypeExcluded) problems.push(`交付清单里含 \`${prototypeDir}/\` 下的内容（Q-05）`)
   const musts = requirements.filter((requirement) => requirement.priority === 'must')
   const uncovered = musts.filter((requirement) => !manifest.acceptance.some((row) => row.requirement === requirement.id)).map((requirement) => requirement.id)
   if (uncovered.length > 0) problems.push(`must 需求没有验收行：${uncovered.join(' ')}`)
   const failed = manifest.acceptance.filter((row) => row.verdict === 'fail').map((row) => row.requirement)
   if (failed.length > 0) problems.push(`验收未通过：${failed.join(' ')}`)
+  // **P-3**：验收行引用的 **AC 编号必须真实存在、且属于它声明的那条需求**。
+  // 旧实现只查"每条 must 需求**有**验收行"，从不看 `row.criterion` —— 于是验收矩阵可以引用
+  // 一个不存在的 `AC-999` 或指错需求，交付门禁照样绿。而 N-2/P-5 的立论正是
+  // "AC 编号是交付验收矩阵的追溯键"，追溯键指空等于没追溯。
+  const acceptanceIdsByRequirement = new Map(
+    requirements.map((requirement) => [requirement.id, new Set(requirement.acceptance.map((ac) => ac.id))]),
+  )
+  const unknownCriteria = manifest.acceptance
+    .filter((row) => row.criterion.trim() !== '' && !acceptanceIdsByRequirement.get(row.requirement)?.has(row.criterion))
+    .map((row) => `${row.requirement}:${row.criterion}`)
+  if (unknownCriteria.length > 0) {
+    problems.push(`验收行引用了不存在的验收标准（或指错需求）：${unknownCriteria.join(' ')}`)
+  }
+  const emptyCriteria = manifest.acceptance.filter((row) => row.criterion.trim() === '').map((row) => row.requirement)
+  if (emptyCriteria.length > 0) problems.push(`验收行没有写验收标准编号：${emptyCriteria.join(' ')}`)
   return { ok: problems.length === 0, problems, manifest }
 }
 

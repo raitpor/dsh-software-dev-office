@@ -7,6 +7,12 @@
  *
  * 设计 §9.2 另有一条可达性约束：命令面只在交互式适配器（Web/CLI）可用，因此
  * **所有命令能力都必须有等价的模型工具入口**——这里每个命令都对应 `sdo_*` 工具。
+ *
+ * **参数解析**（2026-09-30 重写）：见 {@link ArgvReader} / `argv.ts` —— 一次扫描切成
+ * token，再统一解析出 `flags` / `options(k=v)` / `positionals`。旧的"主路径 + 裸 `k=v` 回退"
+ * 已删除：它在 `/sdo-budget --decide --note choice=waive` 一类输入上会把自由文本值里
+ * 恰好含同命令别的 `k=v` 的内容**错误认领**。每条命令用 `ArgvReader.of(raw, [...开关名])`
+ * 声明自己的开关，声明过的开关**不吞**下一个 token（这正是修复点）。
  */
 import type { CommandDefinition, CommandInvocation, CommandResult } from '@deepseek-ai/dsh-commands'
 import { createUserMessage } from '@deepseek-ai/dsh-llm'
@@ -14,7 +20,8 @@ import type { UserMessage } from '@deepseek-ai/dsh-session'
 
 import { fmt, t } from '../domain/i18n.js'
 import type { OfficeCall } from '../office.js'
-import type { GateArgs, InitArgs, RedTeamArgs, RequirementArgs } from './tools.js'
+import { ArgvReader } from './argv.js'
+import type { DesignArgs, GateArgs, InitArgs, RedTeamArgs, RequirementArgs } from './tools.js'
 
 /** 命令行为依赖，由插件入口注入。 */
 export interface OfficeCommandDeps {
@@ -29,6 +36,14 @@ export interface OfficeCommandDeps {
   setBudget(call: OfficeCall, input: { total?: number | undefined; currency?: string | undefined; tiers?: number[] | undefined }): string
   decideBudget(call: OfficeCall, choice: string, note: string): string
   render(call: OfficeCall, args: { target?: string | undefined }): Promise<string>
+  /**
+   * 设计阶段的交互动作（grill / answer / confirm / issues / render）。
+   *
+   * **与模型工具 `sdo_design` 是同一个依赖函数**（插件入口里就那一份实现）：
+   * 命令只负责解析参数，行为、门禁顺序（这五个动作在 designPrecondition **之前**处理）
+   * 与回执文案全部复用工具那条路径 —— 不许在这里复制一份逻辑。
+   */
+  design(call: OfficeCall, args: DesignArgs): Promise<string>
 }
 
 function callOf(invocation: CommandInvocation): OfficeCall {
@@ -48,24 +63,15 @@ function callOf(invocation: CommandInvocation): OfficeCall {
   return { sessionId: String(agent.id), agent, ...(cwd === undefined ? {} : { cwd }) }
 }
 
-/** 从 `rawInput` 里读一个布尔开关（`--flag` / `--flag=false`）。 */
-function flag(raw: string, name: string): boolean {
-  const matched = new RegExp(`(?:^|\\s)--${name}(?:=(true|false))?(?=\\s|$)`).exec(raw)
-  if (matched === null) return false
-  return matched[1] !== 'false'
-}
-
-/** 取 `--key=value` 的值。 */
-function option(raw: string, name: string): string | undefined {
-  const matched = new RegExp(`(?:^|\\s)--${name}=([^\\s]+)`).exec(raw)
-  return matched?.[1]
-}
-
-/** 取 `--key value` 或 `--key=value` 后的自由文本（用于 --answer）。 */
-function textOption(raw: string, name: string): string | undefined {
-  const matched = new RegExp(`(?:^|\\s)--${name}=(?:"([^"]*)"|'([^']*)'|(\\S+))`).exec(raw)
-  if (matched === null) return undefined
-  return matched[1] ?? matched[2] ?? matched[3]
+/**
+ * 取一个命令的参数读取器。
+ *
+ * `flagNames` 必须列全该命令的**开关**（`--flag` 型）——解析器据此决定 `--sw` 后面
+ * 的 token 是否被吞成值。漏列开关的后果是把它的值当字符串选项（`--decide choice=waive`
+ * 的 `choice=waive` 因此必须保持独立）。
+ */
+function reader(raw: string, flagNames: readonly string[] = []): ArgvReader {
+  return ArgvReader.of(raw, flagNames)
 }
 
 function ok(text: string): CommandResult {
@@ -176,14 +182,14 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-init'),
       handler: async (invocation) => {
         try {
-          const raw = invocation.rawInput
-          const scale = option(raw, 'scale')
+          const argv = reader(invocation.rawInput)
+          const scale = argv.option('scale')
           return ok(
             await deps.init(callOf(invocation), {
-              name: option(raw, 'name'),
-              process: option(raw, 'process'),
+              name: argv.option('name'),
+              process: argv.option('process'),
               scale: scale === 'trivial' || scale === 'normal' || scale === 'critical' ? scale : undefined,
-              stakeholders: option(raw, 'stakeholders')?.split(',').map((value) => value.trim()).filter((value) => value !== ''),
+              stakeholders: argv.option('stakeholders')?.split(',').map((value) => value.trim()).filter((value) => value !== ''),
             }),
           )
         } catch (error) {
@@ -196,7 +202,7 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-status'),
       handler: async (invocation) => {
         try {
-          return ok(await deps.status(callOf(invocation), { rebuild: flag(invocation.rawInput, 'rebuild') }))
+          return ok(await deps.status(callOf(invocation), { rebuild: reader(invocation.rawInput, ['--rebuild']).flag('rebuild') }))
         } catch (error) {
           return fail(error)
         }
@@ -207,11 +213,12 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-board'),
       handler: async (invocation) => {
         try {
+          const argv = reader(invocation.rawInput, ['--expand', '--all', '--write'])
           return ok(
             await deps.board(callOf(invocation), {
-              expand: flag(invocation.rawInput, 'expand'),
-              all: flag(invocation.rawInput, 'all'),
-              write: flag(invocation.rawInput, 'write'),
+              expand: argv.flag('expand'),
+              all: argv.flag('all'),
+              write: argv.flag('write'),
             }),
           )
         } catch (error) {
@@ -235,11 +242,12 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-grill'),
       handler: async (invocation) => {
         try {
+          const argv = reader(invocation.rawInput, ['--quick'])
           return ok(
             await deps.requirement(callOf(invocation), {
               action: 'grill',
-              id: option(invocation.rawInput, 'id'),
-              quick: flag(invocation.rawInput, 'quick'),
+              id: argv.option('id'),
+              quick: argv.flag('quick'),
             }),
           )
         } catch (error) {
@@ -252,14 +260,19 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-answer'),
       handler: async (invocation) => {
         try {
-          const index = option(invocation.rawInput, 'option')
+          const argv = reader(invocation.rawInput, ['--assume'])
+          const index = argv.option('option')
           return ok(
             await deps.requirement(callOf(invocation), {
               action: 'answer',
-              id: option(invocation.rawInput, 'id'),
-              answer: textOption(invocation.rawInput, 'answer') ?? '',
+              id: argv.option('id'),
+              answer: argv.textOption('answer') ?? '',
               pickedOption: index === undefined ? undefined : Number(index),
-              assume: flag(invocation.rawInput, 'assume'),
+              assume: argv.flag('assume'),
+              // **M1（本报告）**：命令面此前**根本没有** dimensions 参数 ——
+              // 模型通道的语义分只有工具面能给，命令行路径永远无法移动分数
+              // （"看起来努力了，判据没动"）。这里补上与工具面等价的 JSON 入参。
+              dimensions: argv.option('dimensions'),
             }),
           )
         } catch (error) {
@@ -272,12 +285,12 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-redteam'),
       handler: async (invocation) => {
         try {
-          const raw = invocation.rawInput
-          const action = flag(raw, 'attack') ? 'attack' : flag(raw, 'off') ? 'off' : flag(raw, 'on') ? 'on' : 'status'
+          const argv = reader(invocation.rawInput, ['--attack', '--off', '--on'])
+          const action = argv.flag('attack') ? 'attack' : argv.flag('off') ? 'off' : argv.flag('on') ? 'on' : 'status'
           return ok(
             await deps.redteam(callOf(invocation), {
               action,
-              reason: option(raw, 'reason'),
+              reason: argv.option('reason'),
             }),
           )
         } catch (error) {
@@ -290,13 +303,38 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-gate'),
       handler: async (invocation) => {
         try {
-          const raw = invocation.rawInput
+          // **N-4**：命令面此前只有 `--waive`，而 B2/D1 之后"需求基线签字只能走工具面"——
+          // 于是 `/sdo-gate` 这条入口根本完成不了流程（不是绕过，是死角）。现在补齐
+          // `--sign/--quote/--channel`，与工具面共用同一段 handler（`deps.gate`）。
+          const argv = reader(invocation.rawInput, ['--waive', '--sign', '--rollback'])
+          const action = argv.flag('sign')
+            ? 'sign'
+            : argv.flag('rollback')
+              ? 'rollback'
+              : argv.flag('waive')
+                ? 'waive'
+                : 'check'
           const args: GateArgs = {
-            action: flag(raw, 'waive') ? 'waive' : 'check',
-            gate: option(raw, 'gate'),
-            approvedBy: option(raw, 'approved-by') ?? option(raw, 'approvedBy'),
-            reason: textOption(raw, 'reason'),
-            approver: option(raw, 'approver'),
+            action,
+            gate: argv.option('gate'),
+            approvedBy: argv.option('approved-by') ?? argv.option('approvedBy'),
+            reason: argv.textOption('reason'),
+            approver: argv.option('approver'),
+            ...(argv.textOption('quote') === undefined ? {} : { quote: argv.textOption('quote') }),
+            ...(argv.option('channel') === undefined
+              ? // 签字面必须显式给出通道（缺省 = 会话明确表述），否则下游拿到 undefined 就"看情况"
+                action === 'sign'
+                ? { channel: 'statement' as const }
+                : {}
+              : // **P-7**：非法通道不得静默降级 —— `--channel=wechat` 曾被当成"会话明确表述"，
+                // 而那条通道的语义是"引用必须能在会话记录里找到"，等于悄悄换了一套更严的语义。
+                argv.option('channel') === 'question' || argv.option('channel') === 'statement'
+                ? { channel: argv.option('channel') as 'question' | 'statement' }
+                : (() => { throw new Error(fmt('uiIndex.kChannelInvalid', { p1: String(argv.option('channel')) })) })()),
+            ...(argv.option('to') === undefined ? {} : { to: argv.option('to') }),
+            // **R-4**：`--turn` 在工具面是消费的（写进 `gate/signed.data.turn`），命令面此前**静默丢弃** ——
+            // 而双语命令描述已经宣传了它（文档超出实现）。
+            ...(argv.option('turn') === undefined ? {} : { turn: argv.option('turn') }),
           }
           return ok(await deps.gate(callOf(invocation), args))
         } catch (error) {
@@ -320,7 +358,9 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-lang'),
       handler: async (invocation) => {
         try {
-          return ok(await deps.langSwitch(invocation.rawInput.trim() === '' ? undefined : invocation.rawInput.trim()))
+          // 位置参数（`/sdo-lang en`）。用分词结果而不是整段原文：`/sdo-lang "en"` 也拿到 `en`
+          const argv = reader(invocation.rawInput)
+          return ok(await deps.langSwitch(argv.first))
         } catch (error) {
           return ok(error instanceof Error ? error.message : String(error))
         }
@@ -331,22 +371,25 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-budget'),
       handler: async (invocation) => {
         try {
-          const raw = invocation.rawInput
-          if (flag(raw, 'set')) {
-            const total = option(raw, 'total')
-            const tiers = option(raw, 'tiers')
+          const argv = reader(invocation.rawInput, ['--set', '--decide'])
+          if (argv.flag('set')) {
+            const total = argv.option('total')
+            const tiers = argv.option('tiers')
             return ok(
               deps.setBudget(callOf(invocation), {
                 ...(total === undefined ? {} : { total: Number(total) }),
-                currency: option(raw, 'currency'),
+                currency: argv.option('currency'),
                 ...(tiers === undefined ? {} : { tiers: tiers.split(',').map((value) => Number(value.trim())).filter((value) => Number.isFinite(value)) }),
               }),
             )
           }
-          if (flag(raw, 'decide')) {
-            const choice = option(raw, 'choice')
+          if (argv.flag('decide')) {
+            // **关键修复**：`--decide --note choice=waive` 里的 `choice=waive` 是 `--note` 的**值**。
+            // 旧实现的主路径失败后回退扫裸 `k=v`，会把同一个 token 再认成 `choice` 选项 ✗。
+            // 这里 `decide` 是声明过的开关 → 解析阶段就不吞下一个 token，`--note` 才吞它。
+            const choice = argv.option('choice')
             if (choice === undefined) return ok(t('uiCommands.k3'))
-            return ok(deps.decideBudget(callOf(invocation), choice, textOption(raw, 'note') ?? t('uiCommands.k4')))
+            return ok(deps.decideBudget(callOf(invocation), choice, argv.textOption('note') ?? t('uiCommands.k4')))
           }
           return ok(await deps.cost(callOf(invocation), { action: 'report' }))
         } catch (error) {
@@ -359,7 +402,107 @@ export function createOfficeCommands(deps: OfficeCommandDeps, echo = false): Com
       description: t('command.sdo-render'),
       handler: async (invocation) => {
         try {
-          return ok(await deps.render(callOf(invocation), { target: option(invocation.rawInput, 'target') }))
+          return ok(await deps.render(callOf(invocation), { target: reader(invocation.rawInput).option('target') }))
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    // —————————————— 增量 1：设计阶段交互（与 `sdo_design` 的五个动作一一对应） ——————————————
+    // 命名沿用既有的 `/sdo-<…>` 连字符风格（D-01：宿主命令名不接受冒号，`/sdo:design` 非法）；
+    // 动作名进名称第二段（`sdo-design-<action>`），与工具 `sdo_design action=<action>` 对齐。
+    // 全部委托 `deps.design`（与工具同一个函数）：参数解析在此，行为不在此复制。
+    {
+      name: 'sdo-design-grill',
+      description: t('command.sdo-design-grill'),
+      handler: async (invocation) => {
+        try {
+          const argv = reader(invocation.rawInput)
+          return ok(
+            await deps.design(callOf(invocation), {
+              action: 'grill',
+              method: argv.option('method'),
+              rationale: argv.option('rationale'),
+              round: argv.numberOption('round'),
+              by: argv.option('by'),
+            }),
+          )
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-design-answer',
+      description: t('command.sdo-design-answer'),
+      handler: async (invocation) => {
+        try {
+          const argv = reader(invocation.rawInput, ['--assume'])
+          return ok(
+            await deps.design(callOf(invocation), {
+              action: 'answer',
+              questionId: argv.option('id') ?? argv.option('question-id') ?? argv.option('questionId'),
+              choice: argv.option('choice'),
+              note: argv.option('note'),
+              by: argv.option('by'),
+              assume: argv.flag('assume'),
+            }),
+          )
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-design-confirm',
+      description: t('command.sdo-design-confirm'),
+      handler: async (invocation) => {
+        try {
+          const argv = reader(invocation.rawInput)
+          return ok(
+            await deps.design(callOf(invocation), {
+              action: 'confirm',
+              target: argv.option('target') ?? argv.option('id'),
+              note: argv.option('note'),
+              by: argv.option('by'),
+            }),
+          )
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-design-issues',
+      description: t('command.sdo-design-issues'),
+      handler: async (invocation) => {
+        try {
+          return ok(
+            await deps.design(callOf(invocation), {
+              action: 'issues',
+              state: reader(invocation.rawInput).option('state'),
+            }),
+          )
+        } catch (error) {
+          return fail(error)
+        }
+      },
+    },
+    {
+      name: 'sdo-design-render',
+      description: t('command.sdo-design-render'),
+      handler: async (invocation) => {
+        try {
+          // 这里必须声明 `puml`：声明过的开关会进 `ArgvReader.flag(...)`，"出现"与
+          // "取值"才能分开（`--puml` = 默认落点；`--puml=路径` = 指定相对路径）。
+          const argv = reader(invocation.rawInput, ['puml'])
+          // 只写 `.puml` 骨架源码，**不渲染成图**（本仓库没有 PlantUML 渲染器）。
+          const wanted = argv.flag('puml')
+          const custom = argv.option('puml')
+          return ok(await deps.design(callOf(invocation), {
+            action: 'render',
+            ...(wanted || custom !== undefined ? { puml: custom ?? 'true' } : {}),
+          }))
         } catch (error) {
           return fail(error)
         }

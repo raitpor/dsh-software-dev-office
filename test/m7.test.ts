@@ -214,6 +214,12 @@ test('命令面覆盖设计 §9.2 的清单（这条会挡住"漏实现某个命
     'sdo-redteam',
     'sdo-render',
     'sdo-budget',
+    // 增量 1/2：设计阶段的交互闭环（与 `sdo_design` 的五个动作一一对应）
+    'sdo-design-grill',
+    'sdo-design-answer',
+    'sdo-design-confirm',
+    'sdo-design-issues',
+    'sdo-design-render',
   ]) {
     assert.ok(names.includes(required), `缺命令 ${required}（设计 §9.2 要求）`)
   }
@@ -325,6 +331,26 @@ test('棘轮守卫：面向用户模块的硬编码中文不得增加（应逐�
     'src/interface/tools.ts': 0,
     'src/domain/gates.ts': 0,
     'src/domain/plan.ts': 0,
+    // 增量 1 新模块：设计交互闭环 / 界面视图 / 设计文档，文案一律走语言包（基线 0）
+    'src/domain/design.ts': 0,
+    // 增量 2：设计交互回执抽成独立模块（工具与命令共用），同样不允许硬编码文案
+    'src/interface/designReceipt.ts': 0,
+    // 增量 2：设计方法论方法包（选择解析 / 产物检查器 / 一致性检查），文案一律走语言包
+    'src/domain/method.ts': 0,
+    // 预算回执抽成独立模块（命令面与装配层共用，非法选择的拒绝文案也在其中）
+    'src/interface/budgetReceipt.ts': 0,
+    // 界面线框图 / PlantUML 骨架：只排版，文案一律由调用方（语言包）传入
+    'src/domain/wireframe.ts': 0,
+    // 完整 argv 解析器：纯结构化解析，不含任何面向用户的文案
+    'src/interface/argv.ts': 0,
+    // 增量 3：设计适用性声明 / 门禁签字（文案一律走语言包，棘轮基线 0）
+    'src/domain/applicability.ts': 0,
+    'src/domain/signature.ts': 0,
+    // F-20：契约字段的 YAML 类型提示同样一律走语言包（新增模块也进棘轮，不留硬编码后门）
+    'src/domain/contracts.ts': 0,
+    'src/infra/scalar.ts': 0,
+    // F-21：手写 YAML 的形状提示（容器族 / `dropped` 非布尔）同样一律走语言包
+    'src/domain/shapeNotes.ts': 0,
   }
 
   const root = fileURLToPath(new URL('../../', import.meta.url))
@@ -440,7 +466,12 @@ test('i18n：显示层在非基准语言下优先语言包（阶段名/判据描
     // 非基准语言：语言包优先，否则英文界面会配中文的阶段名与判据描述
     i18n.setLocale('en')
     assert.equal(i18n.phaseText('architecture', '架构'), 'Architecture')
-    assert.equal(i18n.textOrProcess('criterion.C-20', '五视图齐备'), 'Five views complete')
+    // 断言"语言包优先"这件事本身，**不钉死措辞** —— C-20 的描述已随实现改口径
+    // （N-12：实现按"声明要做的视图"执法，不再只认五视图），钉死字符串会让文案改进变成假红。
+    const c20 = i18n.textOrProcess('criterion.C-20', '五视图齐备')
+    assert.equal(c20, i18n.t('criterion.C-20'), '非基准语言下必须优先语言包')
+    assert.notEqual(c20, '五视图齐备', '不得回落中文流程数据')
+    assert.match(c20, /five views/iu, `英文判据描述必须真的讲清口径：${c20}`)
     // 语言包里没有的键仍回落流程数据（不出现空白）
     assert.equal(i18n.textOrProcess('criterion.NOT-A-KEY', '数据里的兜底文案'), '数据里的兜底文案')
   } finally {

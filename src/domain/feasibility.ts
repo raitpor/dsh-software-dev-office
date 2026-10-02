@@ -5,6 +5,8 @@
  * 门禁 G1 直接读它：结论必须是 `go`，且必须登记风险并给出 PoC 建议。
  */
 import type { Journal } from '../infra/journal.js'
+import { pushShapeNote, recordOf, textListOf, textOf, typeNameOf } from '../infra/scalar.js'
+import type { FieldShapeNote } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
 import type { FeasibilityAssessment } from '../types.js'
 
@@ -23,8 +25,63 @@ export const TELOS_LABEL: Record<TelosDimension, string> = {
   schedule: '进度',
 }
 
+/**
+ * 读可行性评估并**做形状归一化**（F-21 ①）。
+ *
+ * `.sdo/feasibility.yml` 是手可编辑真源，两个容器位置：
+ * `telos`（五维映射，每个维度是 `{verdict, rationale}` 映射）与 `poc`（列表）。
+ * 旧实现 `assessment.telos[dimension].verdict` 在 `telos: 技术可行` 这类手写下抛
+ * `Cannot read properties of undefined`；`poc.join` 同理。口径：
+ *   · 标量写在列表位置 → 单元素 + 提示；映射写在列表位置 / 任何东西写在映射位置 → 空 + 提示；
+ *   · `telos` 缺失的维度补成空映射（**不猜**内容），判据与回执照旧能读。
+ */
+export function readFeasibilityChecked(
+  store: SdoStore,
+): { assessment: FeasibilityAssessment | undefined; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ feasibility: unknown }>(FEASIBILITY_FILE)?.feasibility
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (raw !== undefined) {
+      pushShapeNote(notes, 'feasibility', FEASIBILITY_FILE, 'feasibility', {
+        position: 'map',
+        actualType: typeNameOf(raw),
+        handling: 'empty',
+        text: textOf(raw),
+      })
+    }
+    return { assessment: undefined, notes }
+  }
+  const record = raw as Record<string, unknown>
+  const telosRaw = recordOf(record.telos)
+  pushShapeNote(notes, 'feasibility', FEASIBILITY_FILE, 'telos', telosRaw.issue)
+  const telos = {} as FeasibilityAssessment['telos']
+  for (const dimension of TELOS_DIMENSIONS) {
+    const entry = recordOf(telosRaw.value[dimension])
+    pushShapeNote(notes, 'feasibility', FEASIBILITY_FILE, `telos.${dimension}`, entry.issue)
+    telos[dimension] = { verdict: textOf(entry.value['verdict']), rationale: textOf(entry.value['rationale']) }
+  }
+  const poc = textListOf(record.poc)
+  pushShapeNote(notes, 'feasibility', FEASIBILITY_FILE, 'poc', poc.issue)
+  const assessment: FeasibilityAssessment = {
+    ...(record as unknown as FeasibilityAssessment),
+    id: textOf(record.id),
+    at: textOf(record.at),
+    by: textOf(record.by),
+    telos,
+    verdict: textOf(record.verdict) as FeasibilityAssessment['verdict'],
+    rationale: textOf(record.rationale),
+    poc: poc.value,
+  }
+  return { assessment, notes }
+}
+
 export function readFeasibility(store: SdoStore): FeasibilityAssessment | undefined {
-  return store.readYaml<{ feasibility: FeasibilityAssessment }>(FEASIBILITY_FILE)?.feasibility
+  return readFeasibilityChecked(store).assessment
+}
+
+/** 可行性评估上的形状提示（回执 / 只读视图 / 门禁详情共用）。 */
+export function feasibilityShapeNotes(store: SdoStore): FieldShapeNote[] {
+  return readFeasibilityChecked(store).notes
 }
 
 export function writeFeasibility(store: SdoStore, assessment: FeasibilityAssessment): void {

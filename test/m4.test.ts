@@ -300,6 +300,12 @@ test('交付包：sha256 清单 + 验收矩阵 + 回滚点 + 原型排除（G7 �
   const incomplete = office.evaluate(call(), 'G7').criteria.find((criterion) => criterion.id === 'C-60')
   assert.equal(incomplete?.ok, false)
 
+  // **P-3**：验收矩阵引用的 AC 编号必须真实存在且属于该需求 —— 先补一条真的验收标准。
+  office.update(call(), {
+    id: requirement.id,
+    addAcceptance: [{ id: 'AC-001', given: '已导入两日文件', when: '执行对账', then: '输出差异清单' }],
+  })
+
   const result = office.packageDelivery(call(), {
     by: '验收人',
     artifacts: [{ path: 'deliverable.txt', kind: 'docs' }],
@@ -313,6 +319,17 @@ test('交付包：sha256 清单 + 验收矩阵 + 回滚点 + 原型排除（G7 �
   const g7 = office.evaluate(call(), 'G7')
   assert.equal(g7.criteria.find((criterion) => criterion.id === 'C-60')?.ok, true, `C-60 应通过：${g7.criteria.find((c) => c.id === 'C-60')?.detail}`)
   assert.equal(g7.criteria.find((criterion) => criterion.id === 'C-61')?.ok, true)
+
+  // **P-3 反例**：引用一个**不存在**的 AC 编号（旧实现从不查它）→ C-60 必须判红并点名
+  office.packageDelivery(call(), {
+    by: '验收人',
+    artifacts: [{ path: 'deliverable.txt', kind: 'docs' }],
+    acceptance: [{ requirement: requirement.id, criterion: 'AC-999', evidence: '手工验证通过', verdict: 'pass' }],
+    rollbackPoint: 'git commit a4d97e8',
+  })
+  const fabricated = office.evaluate(call(), 'G7').criteria.find((criterion) => criterion.id === 'C-60')
+  assert.equal(fabricated?.ok, false, '验收行引用不存在的 AC 编号必须判红（追溯键指空 = 没追溯）')
+  assert.match(fabricated?.detail ?? '', /AC-999/u, `必须点名那个编号：${fabricated?.detail}`)
 
   // 渲染交付与测试计划文档
   const docs = office.renderVerificationDocs(call())
@@ -494,7 +511,15 @@ test('D1/D2/D3（依据 sdo-test 15:28 诊断修复）：门禁名归一 / 最�
   // 不在 GateCriterionResult 上 —— 我第一版断言用错字段，当场被测试拦下。
   const proto = g7.criteria.filter((c) => c.id === 'C-61' || c.id === 'C-62')
   assert.ok(proto.length > 0, 'G7 应含原型类判据')
-  assert.ok(proto.every((c) => c.ok), `不涉及原型时原型判据不得为红：${JSON.stringify(proto.map((c) => [c.id, c.ok, c.detail]))}`)
+  // **口径统一（§一.5）**：`prototype.backfilled` 由"判假返回 ok"改为 **N/A + 理由**
+  // （`ok: false` + `na: true`）；`prototype.excluded`（目录不存在 = 真的没有原型内容可排除）
+  // 仍是**通过**，N/A 只用于"这条判据对本项目没有意义"。
+  // 因此这里的断言从"每条都 ok"收紧为：每条要么通过、要么是**带理由的 N/A**。
+  const bad = proto.filter((c) => !(c.ok || (c.na === true && (c.naReason ?? '').trim() !== '')))
+  assert.deepEqual(bad, [], `不涉及原型时原型判据不得为红，且 N/A 必须带理由：${JSON.stringify(proto.map((c) => [c.id, c.ok, c.na, c.naReason]))}`)
+  const backfilled = proto.find((c) => c.id === 'C-62')
+  assert.equal(backfilled?.na, true, 'prototype.backfilled 在"不涉及原型"时必须是 N/A（不是 ok）')
+  assert.ok((backfilled?.naReason ?? '').trim() !== '', 'N/A 必须带理由')
 })
 
 test('G-01~G-05（依据 sdo-test 汇总报告修复）：落盘名/建议透传/不复活废卡/风险口径', async () => {

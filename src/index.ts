@@ -15,7 +15,7 @@ import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
-import { renderBoard } from './board/render.js'
+import { boardModelFor, renderBoard } from './board/render.js'
 import { Config, resolveSettings } from './config.js'
 import type { SdoConfig } from './config.js'
 import { contractCoverage } from './domain/contracts.js'
@@ -27,6 +27,7 @@ import {
   describeAdvance,
   describeAnswer,
   describeAssessment,
+  describeApplicability,
   describeBaseline,
   describeBoardNote,
   describeCapture,
@@ -36,6 +37,7 @@ import {
   describeDesign,
   describeDesignElement,
   describeDesignGate,
+  describeDesignQuestions,
   describeFeasibility,
   describeGate,
   describeInit,
@@ -46,8 +48,12 @@ import {
   describeRender,
   describeRequirementList,
   describeRisks,
+  describeRollback,
+  describeRollbackTargets,
   describeScenario,
   describeScenarioList,
+  describeSignature,
+  describeSignatureWaiting,
   describeStatus,
   describeDispatch,
   describeInlineHandoff,
@@ -59,9 +65,17 @@ import {
   describeTrace,
 } from './interface/describe.js'
 import { renderStatusBlock } from './interface/inject.js'
+import {
+  designInteraction,
+  joinReceiptParts,
+  renderContractDirectionAnomalies,
+  renderInvalidatedConfirmations,
+  writeUiViewReceipt,
+} from './interface/designReceipt.js'
+import { decideBudgetReceipt, setBudgetReceipt } from './interface/budgetReceipt.js'
 import { createOfficeCommands } from './interface/commands.js'
 import { createOfficeTools, parseList } from './interface/tools.js'
-import type { LangArgs } from './interface/tools.js'
+import type { GateSignAnswer, LangArgs } from './interface/tools.js'
 import { clampToolResult } from './interface/clamp.js'
 import { resolveScopeCall } from './interface/scope.js'
 import { disciplineOrAllow } from './domain/discipline.js'
@@ -91,7 +105,16 @@ import type {
 } from './interface/tools.js'
 import { SoftwareDevOffice } from './office.js'
 import type { OfficeCall } from './office.js'
-import { VIEW_KINDS } from './types.js'
+import {
+  COST_ACTIONS,
+  DESIGN_ACTIONS,
+  FEASIBILITY_ACTIONS,
+  GATE_ACTIONS,
+  PLAN_ACTIONS,
+  PROJECT_ACTIONS,
+  REQUIREMENT_ACTIONS,
+  VIEW_KINDS,
+} from './types.js'
 import type { AcceptanceCriterion, Dimension, EvidenceItem, ViewKind } from './types.js'
 
 export const name = 'dsh-software-dev-office'
@@ -138,7 +161,54 @@ function jsonOr<T>(value: string | undefined, label: string): { value?: T; error
   }
 }
 
+/**
+ * 给"schema 上有、但这个动作不消费"的入参点名（**Z-3**）。
+ *
+ * 纪律：**不得静默**。旧实现里 `sdo_design action=create/contract` 传 `by` / `note`
+ * 会被无声吞掉，调用方以为留了痕。返回空串表示没有这类入参（回执里整段不出现）。
+ */
+function unusedArgsNote(names: string[], values: (string | undefined)[]): string {
+  const unused = names.filter((_name, index) => (values[index] ?? '').trim() !== '')
+  return unused.length === 0 ? '' : fmt('uiIndex.unusedArgs', { p1: unused.join(' / ') })
+}
+
+/**
+ * `viewsAbsent` 的入参归一（**m4**）。
+ *
+ * 旧实现的形状容错过宽：写 `["context"]`（数组项是字符串）会读成 `{kind: undefined}` →
+ * 一个 `kind:''` 的幽灵条目（既不报"这是什么视图"，也不报"缺理由"）。
+ * 现在与**文件侧读取**同一口径（`readApplicabilityChecked`）：字符串项 = `{ kind: 该字符串, why: '' }`，
+ * 于是"没写理由"会被既有判据 `absentNoWhy` 明确判红；其它形状按原样报出（走 `viewIgnored`）。
+ */
+function normalizeAbsentView(item: unknown): { kind: string; why: string } {
+  if (typeof item === 'string') return { kind: item, why: '' }
+  if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+    const record = item as { kind?: unknown; why?: unknown }
+    return {
+      kind: typeof record.kind === 'string' ? record.kind : record.kind === undefined || record.kind === null ? '' : String(record.kind),
+      why: typeof record.why === 'string' ? record.why : '',
+    }
+  }
+  return { kind: item === undefined || item === null ? '' : String(item), why: '' }
+}
+
 /** 插件入口。 */
+/**
+ * **§4.2（评审员）**：只读入口的"读不动也要说得出话"包装。
+ *
+ * `status`/`evaluate`/`advance` 已在 office 层兜底，但 `office.requirements()` 这类**列表读取**
+ * （以及 `boardRequirements`）仍会裸抛 —— 于是 `sdo_requirement action=list`、`/sdo-board`
+ * 会以异常收场。这里统一转成**可读失败**（带相对路径，NFR-009）。
+ */
+function guardedRead<T>(label: string, read: () => T): { ok: true; value: T } | { ok: false; text: string } {
+  try {
+    return { ok: true, value: read() }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error)
+    return { ok: false, text: fmt('uiIndex.truthReadFailed', { p1: label, p2: message }) }
+  }
+}
+
 export function apply(ctx: Context, config: SdoConfig): void {
   // 显示语言由插件行配置驱动（`lang`，默认 `zh-CN`；另有随包的 `en`）。
   // 必须在**注册工具/命令与注入状态块之前**设定：工具描述、命令描述、状态块都取自语言包。
@@ -343,6 +413,42 @@ export function apply(ctx: Context, config: SdoConfig): void {
     })
   }
 
+  // —————————————— 增量 1：设计阶段的交互回执（全部文案走语言包） ——————————————
+  //
+  // 回执渲染与交互校验统一在 `interface/designReceipt.ts`：**模型工具与斜杠命令共用同一份
+  // 实现**，否则两条入口迟早说法不一致。这里只保留界面视图（`view kind=ui`）的渲染。
+
+  /** `sdo_design action=view kind=ui`：界面视图 + 含 UI 判定（三态）。 */
+  const renderUiView = (call: OfficeCall): string => {
+    const { view, check, decision } = office.uiView(call)
+    const lines: string[] = [t('uiDesign.uiViewHeader')]
+    lines.push(`- ${t('uiDesign.docUiNaBasis')}：${decision.reason}`)
+    if (!decision.hasUi) {
+      // 判定为假：显式 N/A + 理由（既不是失败，也不是通过）
+      lines.push(`- ${fmt('uiDesign.uiViewNa', { p1: decision.reason })}`)
+      return lines.join('\n')
+    }
+    if (view === undefined) {
+      lines.push(`- ${t('uiDesign.uiViewEmpty')}`)
+      return lines.join('\n')
+    }
+    lines.push(`- ${view.id}｜${t('uiDesign.uiViewStyle')}：${view.style.source}（${view.style.rationale}）`)
+    const tokens = Object.entries(view.style.tokens)
+    lines.push(`- ${t('uiDesign.docUiTokens')}：${tokens.length === 0 ? t('uiDesign.docEmpty') : tokens.map(([k, v]) => `${k}=${v}`).join('；')}`)
+    lines.push(`- ${t('uiDesign.uiViewScreens')}：${view.screens.length === 0 ? t('uiDesign.uiScreensNa') : ''}`)
+    for (const screen of view.screens) {
+      lines.push(`- ${screen.id}｜${screen.name}`)
+      lines.push(`  - ${t('uiDesign.docUiColumns')}：${screen.columns.map((column) => `${column.name}(${column.kind})`).join('、')}`)
+      lines.push(`  - ${t('uiDesign.docUiLayout')}：${screen.layout.grid}｜${screen.layout.regions.join(' / ')}`)
+      lines.push(`  - ${t('uiDesign.docRequires')}：${screen.requires.length === 0 ? t('uiDesign.uiDraftNoSource') : screen.requires.join(' ')}`)
+    }
+    lines.push(`- ${t('uiDesign.docUiBreakpoints')}：${view.breakpoints.length === 0 ? t('uiDesign.docEmpty') : view.breakpoints.map((item) => `${item.name}(${item.width})`).join('、')}`)
+    lines.push(`- ${t('uiDesign.docUiA11y')}：${t('uiDesign.docUiContrast')} ${view.accessibility.contrast === '' ? t('uiDesign.docEmpty') : view.accessibility.contrast}｜${t('uiDesign.docUiKeyboard')} ${view.accessibility.keyboard ? t('uiDesign.docYes') : t('uiDesign.docNo')}`)
+    lines.push(`- ${t('uiDesign.uiViewConfirm')}：${check.ok ? t('uiDesign.uiViewConfirmed') : `${t('uiDesign.uiViewUnconfirmed')}（${[...check.missing, ...check.unconfirmed].join(' ')}）`}`)
+    lines.push(t('uiDesign.uiViewAuthorHint'))
+    return lines.join('\n')
+  }
+
   const deps = {
     lang: async (_call: OfficeCall, args: LangArgs): Promise<string> => langAction(args),
     langSwitch: async (input?: string | undefined): Promise<string> => langAction(input ?? ''),
@@ -364,8 +470,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
     },
 
     async status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string> {
-      if (args.rebuild === true) office.rebuild(call)
-      return describeStatus(office.status(call), settings.projectDirName)
+      // **③b（本轮核实）**：旧实现把 `office.rebuild()` 的返回值**丢掉**了 —— 用户显式 `--rebuild` 之后，
+      // 回执既不说明"已强制重建"，也不说明"真源被截断、本次只折叠到最后一致前缀（可能回退阶段）"，
+      // 而 `status.rebuilt` 在这一次读取里必然是 false（投影刚被写过），于是回执看起来"什么都没发生"。
+      const forced = args.rebuild === true ? office.rebuild(call) : undefined
+      const text = describeStatus(office.status(call), settings.projectDirName, office.shapeNotes(call))
+      if (forced === undefined) return text
+      const note = forced.truncated
+        ? fmt('uiIndex.kRebuildTruncated', { p1: String(forced.badLine ?? '?') })
+        : t('uiIndex.kRebuildForced')
+      return `${note}\n${text}`
     },
 
     async board(
@@ -373,20 +487,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
       args: { expand?: boolean | undefined; all?: boolean | undefined; write?: boolean | undefined },
     ): Promise<string> {
       const status = office.status(call)
-      const model = {
-        project: status.project,
-        config: status.config,
-        counts: status.counts,
-        gates: office.gatesFor(call),
-        requirements: office.boardRequirements(call),
-        process: office.process(call),
-        pendingGate: status.pendingGate,
-        tasks: office.tasks(call),
-        iteration: office.iteration(call),
-        dataDirName: settings.projectDirName,
-        truncated: status.truncated,
-        ...(status.badLine === undefined ? {} : { badLine: status.badLine }),
-      }
+      // **§4.1/§4.2（评审员）**：看板装配抽到 `boardModelFor`（可测、读不动也能出图、truthError 进正文）
+      const { model } = boardModelFor(office, status, call, settings.projectDirName)
       const text = renderBoard(model, { expand: args.expand === true, all: args.all === true })
       if (args.write !== true) return text
       if (!settings.board.text) {
@@ -399,7 +501,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
 
     async project(call: OfficeCall, args: ProjectArgs): Promise<string> {
       if (args.action === 'show') return describeProject(office.status(call), settings.projectDirName)
-      if (args.action !== 'update') return fmt('uiIndex.k9', { p1: args.action })
+      if (args.action !== 'update') return fmt('uiIndex.k9', { p1: args.action, p2: PROJECT_ACTIONS.join(' | ') })
       const result = office.updateProject(call, {
         name: args.name,
         process: args.process,
@@ -409,30 +511,22 @@ export function apply(ctx: Context, config: SdoConfig): void {
         stakeholders: args.stakeholders,
         metricsSuccess: args.metricsSuccess,
         glossary: args.glossary,
+        surfaces: args.surfaces,
       })
       return describeProjectUpdate(result)
     },
 
     setBudget(call: OfficeCall, input: { total?: number | undefined; currency?: string | undefined; tiers?: number[] | undefined }): string {
-      const budget = office.setBudget(call, input)
-      return [
-        fmt('uiIndex.m1', { p1: budget.total === undefined ? t('uiIndex.m2') : `${budget.currency} ${budget.total}` }),
-        fmt('uiIndex.k10', { p1: budget.tiers.join(' / ') }),
-        t('uiIndex.k11') + (Object.keys(settings.cost.prices).length === 0 ? t('uiIndex.k120') : Object.entries(settings.cost.prices).map(([model, price]) => `${model}=${price}`).join(' ')),
-      ].join('\n')
+      // 与命令面同一份实现（`budgetReceipt.ts`）：回执与"非法选择被拒绝"都在那里，测试可直接复用
+      return setBudgetReceipt(office, call, input, settings.cost.prices)
     },
 
     decideBudget(call: OfficeCall, choice: string, note: string): string {
-      if (choice !== 'add-budget' && choice !== 'waive' && choice !== 'narrow-scope') {
-        return t('uiIndex.k12')
-      }
-      const budget = office.decideBudget(call, choice, note)
-      const labels: Record<string, string> = { 'add-budget': t('uiIndex.k13'), waive: t('uiIndex.k14'), 'narrow-scope': t('uiIndex.k15') }
-      return fmt('uiIndex.k16', { p1: labels[choice], p2: note, p3: budget.decisions.length })
+      return decideBudgetReceipt(office, call, choice, note)
     },
 
     async cost(call: OfficeCall, args: { action: string }): Promise<string> {
-      if (args.action !== 'report') return fmt('uiIndex.k17', { p1: args.action })
+      if (args.action !== 'report') return fmt('uiIndex.k17', { p1: args.action, p2: COST_ACTIONS.join(' | ') })
       const source = await collectUsage(call.agent)
       const report = office.costReport(call, source)
       const lines = [report.line]
@@ -492,7 +586,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               }),
           ...(office.iteration(call) === undefined ? {} : { iteration: office.iteration(call)?.number }),
         })
-        const planSummary = describePlan(result.tasks, result.issues)
+        const planSummary = describePlan(result.tasks, result.issues, office.shapeNotes(call))
         return (result.notes ?? []).length === 0
           ? planSummary
           : `${planSummary}\n${fmt('uiIndex.scopeDerivedNote', { p1: (result.notes ?? []).join('、') })}`
@@ -504,12 +598,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
         return fmt('uiIndex.k28', { p1: iteration.number, p2: iteration.goal, p3: iteration.status })
       }
 
-      if (args.action !== 'next') return fmt('uiIndex.k29', { p1: args.action })
+      if (args.action !== 'next') return fmt('uiIndex.k29', { p1: args.action, p2: PLAN_ACTIONS.join(' | ') })
 
       const plan = office.dispatchPlan(call)
       if (plan.dispatch.length === 0) {
         const issues = office.planIssues(call)
-        if (issues.length > 0) return describePlan(office.tasks(call), issues)
+        if (issues.length > 0) return describePlan(office.tasks(call), issues, office.shapeNotes(call))
         return plan.queued.length === 0
           ? t('uiIndex.k30')
           : fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
@@ -547,14 +641,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // D3-3 回收路径：建错的卡置为 dropped（留痕不删除），把「误拆不可逆」变成可回收
           if (args.id === undefined) return t('uiIndex.k33')
           const dropped = office.dropTask(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
-          return dropped === undefined ? fmt('uiIndex.k34', { p1: args.id }) : describeTask(dropped)
+          return dropped === undefined ? fmt('uiIndex.k34', { p1: args.id }) : describeTask(dropped, office.shapeNotes(call))
         }
         case 'claim': {
           if (args.id === undefined || args.owner === undefined || args.expectedRevision === undefined) {
             return t('uiIndex.k33')
           }
           const result = office.claimTask(call, { taskId: args.id, owner: args.owner, expectedRevision: args.expectedRevision })
-          return result.ok ? describeTask(result.task) : describeTaskConflict(result.detail, result.current, result.code)
+          return result.ok ? describeTask(result.task, office.shapeNotes(call)) : describeTaskConflict(result.detail, result.current, result.code)
         }
         case 'done':
         case 'block': {
@@ -573,7 +667,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(items.length === 0 ? {} : { evidence: items }),
             ...(args.note === undefined ? {} : { note: args.note }),
           })
-          return result.ok ? describeTask(result.task) : fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
+          return result.ok ? describeTask(result.task, office.shapeNotes(call)) : fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
         }
         case 'release':
         case 'reassign': {
@@ -587,7 +681,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 ? undefined
                 : office.reassignTask(call, { taskId: args.id, actor, owner: args.owner, reason })
           if (task === undefined) return fmt('uiIndex.k132', { p1: args.action === 'reassign' && args.owner === undefined ? t('uiIndex.k130') : fmt('uiIndex.k131', { p1: args.id }) })
-          return fmt('uiIndex.k135', { p1: args.action === 'release' ? t('uiIndex.k133') : t('uiIndex.k134'), p2: describeTask(task) })
+          return fmt('uiIndex.k135', { p1: args.action === 'release' ? t('uiIndex.k133') : t('uiIndex.k134'), p2: describeTask(task, office.shapeNotes(call)) })
         }
         case 'list':
         default:
@@ -597,6 +691,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             stale: office.staleTasks(call),
             issues: office.planIssues(call),
             iteration: office.iteration(call),
+            shapeNotes: office.shapeNotes(call),
           })
       }
     },
@@ -689,7 +784,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
     async deliver(call: OfficeCall, args: DeliverArgs): Promise<string> {
       if (args.action !== 'package') {
         const manifest = office.manifest(call)
-        return manifest === undefined ? t('uiIndex.k123') : describeManifest(manifest)
+        return manifest === undefined ? t('uiIndex.k123') : describeManifest(manifest, office.shapeNotes(call))
       }
       const artifacts = jsonOr<{ path: string; kind?: string }[]>(args.artifacts, 'artifacts')
       if (artifacts.error !== undefined) return artifacts.error
@@ -716,7 +811,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
         ...(args.notes === undefined ? {} : { notes: args.notes }),
       })
       const docs = office.renderVerificationDocs(call)
-      const lines = [describeManifest(result.manifest)]
+      const lines = [describeManifest(result.manifest, office.shapeNotes(call))]
       if (result.missingArtifacts.length > 0) lines.push(fmt('uiIndex.k54', { p1: result.missingArtifacts.join(' ') }))
       lines.push(fmt('uiIndex.k55', { p1: docs.join('、') }))
       return lines.join('\n')
@@ -726,6 +821,54 @@ export function apply(ctx: Context, config: SdoConfig): void {
       if (args.action === 'advance') {
         return describeAdvance(office.advance(call))
       }
+      if (args.action === 'rollback') {
+        // §6.1 阶段回退：设计阶段发现需求问题 → 回退需求阶段（须有 reason + 合法回退边）
+        if (args.to === undefined) return t('uiIndex.kRollbackNoTarget')
+        const result = office.rollbackPhase(call, {
+          to: args.to,
+          reason: args.reason ?? '',
+          ...(args.approvedBy === undefined ? {} : { by: args.approvedBy }),
+        })
+        return result.ok
+          ? describeRollback(result)
+          : `${result.error ?? ''}\n${describeRollbackTargets(office.rollbackTargets(call))}`
+      }
+      if (args.action === 'sign') {
+        // §7.2 门禁级签字：**只承认两种来源**，且必须带上用户原话／所选选项原文
+        if (args.gate === undefined) return t('uiIndex.k60')
+        if (args.channel === 'question') {
+          const answer = await deps.gateSignQuestion?.(call, args.gate)
+          if (answer === undefined) return t('uiIndex.kSignNoChannel')
+          if (answer.selectedLabel !== t('uiSign.signOption')) {
+            return fmt('uiIndex.kSignDeclined', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
+          }
+          const signature = office.signGate(call, {
+            gate: args.gate,
+            by: args.approvedBy ?? 'human',
+            // 引用 = **用户所选选项原文**（由本工具自己取回，不经过模型）
+            basis: answer.selectedLabel,
+            channel: 'question',
+            ...(args.turn === undefined ? {} : { turn: args.turn }),
+          })
+          return describeSignature(signature, office.signatureState(call, args.gate))
+        }
+        // `channel=statement`（默认）：用户在会话中明确表述过 → 必须给出用户原话
+        const quote = (args.quote ?? '').trim()
+        if (quote === '') return t('uiIndex.kSignNoQuote')
+        // 引用要能在**会话记录**里找到（拿不到会话历史时退回"引用非空"的规格最低要求）；
+        // **R-7**：核对口径随签字一起落台账，回执与门禁 detail 会如实标注"未核对"。
+        const quoteCheck = office.checkUserQuote(call, quote)
+        if (!quoteCheck.ok) return t('uiIndex.kSignQuoteMismatch')
+        const signature = office.signGate(call, {
+          gate: args.gate,
+          by: args.approvedBy ?? 'human',
+          basis: quote,
+          channel: 'command',
+          basisChecked: quoteCheck.basisChecked,
+          ...(args.turn === undefined ? {} : { turn: args.turn }),
+        })
+        return describeSignature(signature, office.signatureState(call, args.gate))
+      }
       if (args.action === 'waive') {
         if (args.gate === undefined) return t('uiIndex.k56')
         if ((args.reason ?? '').trim() === '' || (args.approver ?? '').trim() === '') {
@@ -734,17 +877,82 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const recorded = office.waiveGate(call, args.gate, args.reason ?? '', args.approver ?? '')
         return fmt('uiIndex.k58', { p1: gateLabel(recorded.gate), p2: args.approver, p3: args.reason, p4: describeGate(recorded) })
       }
-      if (args.action !== 'check') return fmt('uiIndex.k59', { p1: args.action })
+      if (args.action !== 'check') return fmt('uiIndex.k59', { p1: args.action, p2: GATE_ACTIONS.join(' | ') })
       if (args.gate === undefined) return t('uiIndex.k60')
       // 螺旋流程的风险象限门：先落本圈风险结论，再判定
       if (args.conclusion !== undefined) {
         office.concludeRisk(call, args.conclusion, args.rationale ?? args.reason ?? '', args.approvedBy ?? 'human')
       }
-      return describeGate(office.checkGate(call, args.gate, args.approvedBy))
+      const evaluation = office.checkGate(call, args.gate, args.approvedBy)
+      const blocks = [describeGate(evaluation)]
+      // §7.2：G3 未签字时，回执必须明确写「等待用户签字确认」——而不是让模型自己猜
+      if (evaluation.gate === 'G3') {
+        const signature = office.signatureState(call, 'G3')
+        if (signature.status !== 'valid') blocks.push(describeSignatureWaiting(signature))
+      }
+      return blocks.join('\n')
+    },
+
+    /**
+     * **门禁签字的人机关口问答通道**（§7.2 来源②）。
+     *
+     * 与 `@deepseek-ai/dsh-plan-mode` 的先例一致：`ctx.get('userQuestions')` 现取服务、
+     * 带上**活的 agent** 与取消信号发问，再把**用户所选选项的原文**原样返回。
+     * 关键：`basis` 由此**不经过模型** —— 模型无法凭空调出这句话。
+     *
+     * 宿主没装配该服务（headless / 精简装配）时返回 `undefined`：
+     * 回执会要求改用 `channel=statement` 并给出用户原话（规格承认的第二来源）。
+     */
+    async gateSignQuestion(call: OfficeCall, gate: string): Promise<GateSignAnswer | undefined> {
+      // 动态取服务：本包**不**把 dsh-user-questions 声明为依赖（只有 plan-mode 的依赖树里才有），
+      // 静态 import 会在未装配它的宿主上让整个插件模块加载失败。
+      const interaction = (ctx as unknown as {
+        get?: (name: string) => {
+          ask?: (request: {
+            questions: {
+              id: string
+              header?: string
+              question: string
+              detail?: string
+              options?: { label: string; description?: string }[]
+            }[]
+            agent?: unknown
+            signal?: AbortSignal
+          }) => Promise<{ answers?: { id?: string; selected?: string[]; custom?: string }[] }>
+        } | undefined
+      }).get?.('userQuestions')
+      const ask = interaction?.ask
+      if (ask === undefined) return undefined
+      const questionId = 'sdo-gate-sign'
+      const signLabel = t('uiSign.signOption')
+      const declineLabel = t('uiSign.declineOption')
+      const answer = await ask.call(interaction, {
+        questions: [
+          {
+            id: questionId,
+            header: t('uiSign.header'),
+            question: fmt('uiSign.question', { p1: gateLabel(gate) }),
+            detail: t('uiSign.detail'),
+            options: [
+              { label: signLabel, description: t('uiSign.signCost') },
+              { label: declineLabel, description: t('uiSign.declineCost') },
+            ],
+          },
+        ],
+        ...(call.agent === undefined ? {} : { agent: call.agent }),
+      })
+      const item = (answer.answers ?? []).find((entry) => entry.id === questionId)
+      if (item === undefined) return undefined
+      const selected = (item.selected ?? [])[0]
+      if (selected === undefined || selected === '') {
+        const custom = (item.custom ?? '').trim()
+        return custom === '' ? undefined : { selectedLabel: custom, custom }
+      }
+      return { selectedLabel: selected, ...(item.custom === undefined ? {} : { custom: item.custom }) }
     },
 
     async feasibility(call: OfficeCall, args: FeasibilityArgs): Promise<string> {
-      if (args.action !== 'assess') return fmt('uiIndex.k61', { p1: args.action })
+      if (args.action !== 'assess') return fmt('uiIndex.k61', { p1: args.action, p2: FEASIBILITY_ACTIONS.join(' | ') })
       if (args.verdict === undefined) return t('uiIndex.k62')
       const telosRows = jsonOr<{ dimension?: string; verdict?: string; rationale?: string }[]>(args.telos, 'telos')
       if (telosRows.error !== undefined) return telosRows.error
@@ -767,7 +975,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
         },
         args.by ?? 'human',
       )
-      return describeFeasibility(assessment)
+      return describeFeasibility(assessment, office.shapeNotes(call))
     },
 
     async risk(call: OfficeCall, args: RiskArgs): Promise<string> {
@@ -813,7 +1021,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
         }
         case 'list':
         default:
-          return describeRisks(office.risks(call))
+          const riskList = guardedRead('risks', () => office.risks(call))
+          if (!riskList.ok) return riskList.text
+          return describeRisks(riskList.value)
       }
     },
 
@@ -832,8 +1042,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
             'acceptance',
           )
           if (acceptance.error !== undefined) return acceptance.error
-          const criteria: AcceptanceCriterion[] = (acceptance.value ?? []).map((item, index) => ({
-            id: item.id ?? `AC-${String(index + 1).padStart(3, '0')}`,
+          // **M8（本报告）**：旧实现在 `item.id` 缺失时用 `AC-${index+1}` 补齐、**不查全局** ——
+          // 两条需求各自的第一条 AC 都会叫 `AC-001`（实测台账里 REQ-001 与 REQ-012 重号），
+          // 交付验收矩阵按 AC-id 追溯即错配，而 C3 不做唯一性检查所以不会红。
+          // 现在与 `update` 路径一样用 `makeAcceptanceIds` 统一发号（全局唯一）。
+          const captureRows = acceptance.value ?? []
+          const captureIds = makeAcceptanceIds(office.storeFor(office.requireWorkspace(call)), captureRows.length)
+          const criteria: AcceptanceCriterion[] = captureRows.map((item, index) => ({
+            id: item.id ?? captureIds[index] ?? `AC-${String(index + 1).padStart(3, '0')}`,
             given: item.given ?? '',
             when: item.when ?? '',
             then: item.then ?? '',
@@ -851,7 +1067,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             modelDimensions: dims.value,
             acceptance: criteria,
           })
-          const text = describeCapture(result)
+          const text = describeCapture(result, office.shapeNotes(call))
           const withAcceptance = criteria.length === 0
             ? text
             : `${text}\n${fmt('uiIndex.acWritten', { n: criteria.length })}`
@@ -859,7 +1075,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
         }
 
         case 'grill': {
-          const ids = args.id === undefined ? office.requirements(call).map((requirement) => requirement.id) : [args.id]
+          const grillIds = guardedRead('requirements', () => office.requirements(call))
+          if (!grillIds.ok) return grillIds.text
+          const ids = args.id === undefined ? grillIds.value.map((requirement) => requirement.id) : [args.id]
           if (ids.length === 0) return t('uiIndex.k73')
           const limit = Math.max(1, Math.min(4, args.limit ?? 4))
           const result = office.grill(call, {
@@ -872,7 +1090,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             t('uiIndex.m4'),
             t('uiIndex.k74'),
             '',
-            describeQuestions(result.questions, result.skipped),
+            describeQuestions(result.questions, result.skipped, office.shapeNotes(call)),
           ].join('\n')
         }
 
@@ -893,7 +1111,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             modelDimensions: dims.value,
           })
           if (result === undefined) return fmt('uiIndex.k77', { p1: args.id })
-          return describeAnswer(result)
+          return describeAnswer(result, office.shapeNotes(call), { dimensionsGiven: dims.value !== undefined })
         }
 
         case 'update': {
@@ -928,28 +1146,44 @@ export function apply(ctx: Context, config: SdoConfig): void {
                   },
                 }),
           }
+          // **R-2**：`acceptanceMode=replace` 走"整份替换"入口 —— 存量 AC 重号（C9 判红）
+          // 必须有可执行的改号/删除路径，否则判据给的补救按提示做不完。
+          const mode = args.acceptanceMode ?? 'append'
+          if (mode !== 'append' && mode !== 'replace') {
+            return fmt('uiIndex.kAcceptanceModeInvalid', { p1: mode })
+          }
+          const replace = mode === 'replace'
           const result = office.update(call, {
             id: args.id,
             ...(Object.keys(patch).length === 0 ? {} : { patch }),
-            ...(criteria.length === 0 ? {} : { addAcceptance: criteria }),
+            ...(criteria.length === 0
+              ? {}
+              : replace
+                ? { replaceAcceptance: criteria }
+                : { addAcceptance: criteria }),
             modelDimensions: dims.value,
           })
           if (result === undefined) return fmt('uiIndex.k79', { p1: args.id })
-          return describeRequirementUpdate(result)
+          return describeRequirementUpdate(result, office.shapeNotes(call))
         }
 
         case 'baseline': {
-          if ((args.approvedBy ?? '').trim() === '') {
-            return t('uiIndex.k80')
-          }
-          const outcome = office.baseline(call, { approvedBy: args.approvedBy })
-          return describeBaseline(outcome)
+          // D1：`approvedBy` **不再是必填、也不再放行** —— 放行依据是签字台账里的 G2 签字
+          // （`sdo_gate action=sign gate=G2 quote=…`）。传了就在 C7 的 detail 里作为
+          // 附加信息如实显示，不静默忽略；没传也不拦（真正的门槛在 C7）。
+          const outcome = office.baseline(call, {
+            ...(args.approvedBy === undefined ? {} : { approvedBy: args.approvedBy }),
+          })
+          return describeBaseline(outcome, { applicabilityDeclared: office.applicability(call) !== undefined })
         }
 
         case 'change': {
           if (args.id === undefined) return t('uiIndex.k81')
           if ((args.reason ?? '').trim() === '') return t('uiIndex.k82')
           if (args.decision === undefined) return t('uiIndex.k83')
+          // §6.7：变更路径可以**显式重给**语义分；不给则沿用需求上已落盘的模型维度。
+          const dims = jsonOr<Partial<Record<Dimension, number>>>(args.dimensions, 'dimensions')
+          if (dims.error !== undefined) return dims.error
           const patch = {
             ...(args.title === undefined ? {} : { title: args.title }),
             ...(args.statement === undefined ? {} : { statement: args.statement }),
@@ -970,22 +1204,74 @@ export function apply(ctx: Context, config: SdoConfig): void {
               decision: args.decision,
               decidedBy: args.decidedBy ?? args.by ?? 'human',
               ...(Object.keys(patch).length === 0 ? {} : { patch }),
+              ...(dims.value === undefined ? {} : { dimensions: dims.value }),
             }),
+            office.shapeNotes(call),
           )
         }
 
         case 'list':
-          return describeRequirementList(office.requirements(call))
+          const list = guardedRead('requirements', () => office.requirements(call))
+          if (!list.ok) return list.text
+          return describeRequirementList(list.value, office.shapeNotes(call))
+
+        // —————————————— §7.1 / §7.2：需求阶段的规划级设计问题 + 设计适用性声明 ——————————————
+
+        case 'design-questions': {
+          // 方法论选择题属于**需求/规划决策**，在这里（需求阶段）提出，复用同一个问题账本。
+          const asked = office.askDesignQuestions(call, {
+            ...(args.rationale === undefined
+              ? {}
+              : { recommendation: { method: args.answer ?? '', rationale: args.rationale } }),
+            ...(args.by === undefined ? {} : { by: args.by }),
+          })
+          if (asked === undefined) return t('uiIndex.kApplicabilityNoProject')
+          return describeDesignQuestions(asked.question, asked.created)
+        }
+
+        case 'applicability': {
+          if ((args.focus ?? '').trim() === '') return t('uiIndex.kApplicabilityNoFocus')
+          const present = jsonOr<string[]>(args.viewsPresent, 'viewsPresent')
+          if (present.error !== undefined) return present.error
+          const absent = jsonOr<unknown[]>(args.viewsAbsent, 'viewsAbsent')
+          if (absent.error !== undefined) return absent.error
+          const artifacts = jsonOr<string[]>(args.artifacts, 'artifacts')
+          if (artifacts.error !== undefined) return artifacts.error
+          // D5：`artifactsAbsent` 与 `viewsAbsent` 同一份入参归一（同一口径、同一报错方式）。
+          const artifactsAbsent = jsonOr<unknown[]>(args.artifactsAbsent, 'artifactsAbsent')
+          if (artifactsAbsent.error !== undefined) return artifactsAbsent.error
+          const declaration = office.draftApplicability(call, {
+            focus: args.focus ?? '',
+            ...(present.value === undefined ? {} : { viewsPresent: present.value }),
+            ...(absent.value === undefined ? {} : { viewsAbsent: absent.value.map((item) => normalizeAbsentView(item)) }),
+            ...(artifacts.value === undefined ? {} : { artifacts: artifacts.value }),
+            ...(artifactsAbsent.value === undefined
+              ? {}
+              : { artifactsAbsent: artifactsAbsent.value.map((item) => normalizeAbsentView(item)) }),
+            ...(args.by === undefined ? {} : { by: args.by }),
+          })
+          const check = office.applicabilityCheck(call)
+          return describeApplicability(declaration, check.problems, office.shapeNotes(call))
+        }
+
+        case 'applicability-confirm': {
+          if ((args.basis ?? '').trim() === '') return t('uiIndex.kApplicabilityNoBasis')
+          const confirmed = office.confirmApplicability(call, args.basis ?? '', args.by ?? 'human')
+          if (confirmed === undefined) return t('uiIndex.kApplicabilityMissingToConfirm')
+          return describeApplicability(confirmed, [], office.shapeNotes(call))
+        }
 
         default:
-          return fmt('uiIndex.k88', { p1: args.action })
+          return fmt('uiIndex.k88', { p1: args.action, p2: REQUIREMENT_ACTIONS.join(' | ') })
       }
     },
 
     async redteam(call: OfficeCall, args: RedTeamArgs): Promise<string> {
       switch (args.action) {
         case 'attack': {
-          const ids = args.ids ?? office.requirements(call).map((requirement) => requirement.id)
+          const reqIds = guardedRead('requirements', () => office.requirements(call))
+          if (!reqIds.ok) return reqIds.text
+          const ids = args.ids ?? reqIds.value.map((requirement) => requirement.id)
           if (ids.length === 0) return t('uiIndex.k89')
           const limit = Math.max(1, Math.min(7, args.limit ?? 4))
           const result = office.redTeamAttack(call, ids, limit)
@@ -993,7 +1279,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
           return describeRedTeam('attack', { questions: result.questions, skipped: result.skipped })
         }
         case 'propose': {
-          const ids = args.ids ?? office.requirements(call).map((requirement) => requirement.id)
+          const reqIds = guardedRead('requirements', () => office.requirements(call))
+          if (!reqIds.ok) return reqIds.text
+          const ids = args.ids ?? reqIds.value.map((requirement) => requirement.id)
           if (ids.length === 0) return t('redteam.proposeNone')
           return office.proposeRedTeam(call, ids, args.limit ?? 3)
         }
@@ -1037,7 +1325,31 @@ export function apply(ctx: Context, config: SdoConfig): void {
 
     async design(call: OfficeCall, args: DesignArgs): Promise<string> {
       const action = args.action === '' ? 'view' : args.action
-      if (action === 'view') return describeDesign(office.views(call), office.contracts(call))
+      // —————————————— 增量 1：设计交互闭环（A）+ 界面视图（C）+ 设计文档（D） ——————————————
+      // 这五个动作**必须在门禁之前**处理：它们正是用来把门禁缺的东西问出来、确认掉的。
+      // 若它们也被 G3 前置拦住，"未与我交流"就永远无解（§1.3）。
+      if (
+        action === 'grill'
+        || action === 'answer'
+        || action === 'issues'
+        || action === 'confirm'
+        || action === 'render'
+        // 增量 2：方法包的选择查看与产物写入同样必须在门禁之前（否则缺产物无法补齐）
+        || action === 'method'
+        || action === 'artifact'
+      ) {
+        return designInteraction(office, call, action, args)
+      }
+      if (action === 'view') {
+        if (args.kind === 'ui') return renderUiView(call)
+        // F-16：只读视图也要把"名字与字段矛盾"的存量契约摆出来 —— 否则读 producer/consumer
+        // 做影响分析的人（或模型）拿到的方向是反的却毫无提示。
+        return joinReceiptParts([
+          // F-20：只读视图也要摆出契约字段的 YAML 类型提示（手写 `retry: 2` 时不能静默）
+          describeDesign(office.views(call), office.contracts(call), office.contractFieldNotes(call), office.shapeNotes(call)),
+          renderContractDirectionAnomalies(office.contractDirectionAnomalies(call)),
+        ])
+      }
       if (action === 'review') {
         // 出口之一：用户在本会话内评审完计划（无 plan mode 的宿主用它）
         office.markPlanApproved(call, args.approvedBy ?? 'human', args.note)
@@ -1096,15 +1408,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
 
       if (action === 'drop-contract') {
         if ((args.id ?? '') === '') return t('uiIndex.dropContractMissing')
+        const staleBefore = office.staleConfirmations(call).map((item) => item.target)
         const dropped = office.dropContract(call, args.id as string, args.reason ?? t('uiIndex.dropNoReason'))
-        return dropped === undefined
-          ? fmt('uiIndex.dropContractNotFound', { p1: args.id as string })
-          : fmt('uiIndex.dropContractDone', { p1: dropped.id, p2: dropped.name })
+        if (dropped === undefined) return fmt('uiIndex.dropContractNotFound', { p1: args.id as string })
+        return joinReceiptParts([
+          fmt('uiIndex.dropContractDone', { p1: dropped.id, p2: dropped.name }),
+          renderInvalidatedConfirmations(office, call, staleBefore),
+        ])
       }
       if (action === 'contract') {
         if ((args.producer ?? '') === '' || (args.consumer ?? '') === '' || (args.schema ?? '') === '') {
           return t('uiIndex.k101')
         }
+        const staleBefore = office.staleConfirmations(call).map((item) => item.target)
         const contract = office.recordContract(call, {
           ...(args.id === undefined ? {} : { id: args.id }),
           // D4-2：方向按字段语义写（producer → consumer），避免被误读成「方向写反」
@@ -1120,13 +1436,35 @@ export function apply(ctx: Context, config: SdoConfig): void {
           },
         })
         const coverage = contractCoverage(office.storeFor(office.requireWorkspace(call)))
-        return describeContract(contract, coverage)
+        return joinReceiptParts([
+          // F-20：本次写入/更新后该契约的字段类型提示（手写 YAML 写坏了也能在回执里看到）
+          describeContract(contract, coverage, office.contractFieldNotes(call), office.shapeNotes(call)),
+          // **Z-3（本报告）**：`by` / `note` 这两个入参在 create/contract 上**不被消费**
+          // （契约台账没有"记录人/批注"字段）。旧实现静默吞掉，调用方以为写进去了。
+          // 依"不得静默"纪律：当场点名，别让人以为留了痕。
+          unusedArgsNote(['by', 'note'], [args.by, args.note]),
+          // F-16：D4-2 只修了写入路径 —— 存量里"名字与字段矛盾"的记录（早期构建残留）
+          // 必须在回执里显式报出（只检测、不自动对调：报告 §6.6.1 证明自动判定会改错一半）。
+          renderContractDirectionAnomalies(office.contractDirectionAnomalies(call)),
+          renderInvalidatedConfirmations(office, call, staleBefore),
+        ])
       }
 
-      if (action !== 'create') return fmt('uiIndex.k102', { p1: action })
+      if (action !== 'create') return fmt('uiIndex.k102', { p1: action, p2: DESIGN_ACTIONS.join(' | ') })
+      // —————————————— F-9：界面视图（第 6 个视图）的**写入入口** ——————————————
+      // 必须**先于** `kind` 校验分流：`ui` 不在五视图白名单里，走下面的 `parseViewKind`
+      // 只会得到"创建元素需要 kind"。`ui` 是死参数时，含界面的项目 C-27 永远红。
+      if (args.ui !== undefined) {
+        // 同时给了五视图 kind 与 ui：不许静默丢一个 —— 明确报冲突让调用方选。
+        if (parseViewKind(args.kind) !== undefined) return t('uiIndex.kUiConflict')
+        return writeUiViewReceipt(office, call, args.ui)
+      }
+      // `kind=ui` 但没给 `ui` 正文：同样不许静默当成"缺 kind"，要给可执行的下一步。
+      if (args.kind === 'ui') return t('uiIndex.kUiMissing')
       const kind = parseViewKind(args.kind)
       if (kind === undefined) return t('uiIndex.k103')
       if ((args.name ?? '') === '') return t('uiIndex.k104')
+      const staleBefore = office.staleConfirmations(call).map((item) => item.target)
       const result = office.upsertElement(call, {
         kind,
         ...(args.id === undefined ? {} : { id: args.id }),
@@ -1136,7 +1474,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
         dependsOn: parseList(args.dependsOn),
         summary: args.summary,
       })
-      return describeDesignElement(result)
+      // F-19：按 id 改写了已确认元素 → 旧确认戳当场失效并点名（改内容不会自动重新盖章）
+      return joinReceiptParts([
+        describeDesignElement(result),
+        renderInvalidatedConfirmations(office, call, staleBefore),
+        // Z-3：`by` / `note` 在 create 上不被消费（元素台账没有"记录人/批注"字段）→ 当场点名
+        unusedArgsNote(['by', 'note'], [args.by, args.note]),
+      ])
     },
 
     async adr(call: OfficeCall, args: AdrArgs): Promise<string> {
@@ -1162,11 +1506,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
             consequences: consequences.value ?? [],
             ...(args.action === 'supersede' && args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
           })
-          return describeAdr(adr, args.supersedes)
+          return describeAdr(adr, args.supersedes, office.shapeNotes(call))
         }
         case 'list':
         default:
-          return describeAdrList(office.adrs(call))
+          return describeAdrList(office.adrs(call), office.shapeNotes(call))
       }
     },
 
@@ -1187,7 +1531,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             priority: args.priority,
             targets: parseList(args.targets),
           })
-          return describeScenario(scenario)
+          return describeScenario(scenario, office.shapeNotes(call))
         }
         case 'evaluate': {
           const risks = jsonOr<string[]>(args.risks, 'risks')
@@ -1200,11 +1544,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
             tradeoffs: tradeoffs.value ?? [],
             by: args.by ?? 'human',
           })
-          return describeAssessment(assessment)
+          return describeAssessment(assessment, office.shapeNotes(call))
         }
         case 'list':
         default:
-          return describeScenarioList(office.scenarios(call))
+          return describeScenarioList(office.scenarios(call), office.shapeNotes(call))
       }
     },
 
@@ -1230,6 +1574,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
           } catch (error) {
             return error instanceof Error ? error.message : String(error)
           }
+        }
+        case 'unlink': {
+          if (args.from === undefined || args.to === undefined) return t('uiIndex.kUnlinkNeeds')
+          const removed = office.unlinkTrace(call, { from: args.from, to: args.to, ...(args.kind === undefined ? {} : { kind: args.kind }) })
+          if (removed.removed === 0) return fmt('uiIndex.kUnlinkNone', { p1: args.from, p2: args.to })
+          const after = office.traceReport(call)
+          return [
+            fmt('uiIndex.kUnlinkDone', { p1: removed.removed, p2: args.from, p3: args.to }),
+            fmt('uiIndex.k111', { p1: Math.round(after.coverage * 100), p2: after.orphans.design.length, p3: after.orphans.tasks.length, p4: after.orphans.tests.length }),
+          ].join('\n')
         }
         case 'report': {
           const path = office.renderTrace(call)

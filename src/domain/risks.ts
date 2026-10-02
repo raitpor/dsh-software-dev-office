@@ -7,6 +7,7 @@
  *   · 螺旋流程的每圈风险评审门（GR）读这里。
  */
 import { nextId } from '../infra/ids.js'
+import { textOf } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { RiskItem } from '../types.js'
@@ -111,7 +112,7 @@ export function riskStats(risks: RiskItem[]): {
     (risk) =>
       (risk.level === 'high' || risk.level === 'blocker') &&
       risk.status === 'open' &&
-      (risk.mitigation.trim() === '' || risk.owner.trim() === ''),
+      (textOf(risk.mitigation).trim() === '' || textOf(risk.owner).trim() === ''),
   )
   return {
     total: risks.length,

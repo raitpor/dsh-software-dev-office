@@ -6,10 +6,12 @@ import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
 import { CHECKERS, evaluateGate } from '../src/domain/gates.js'
+import { Journal } from '../src/infra/journal.js'
 import { listIssues } from '../src/domain/issues.js'
 import { isEffectivelyOpen } from '../src/domain/dor.js'
 import { exitGates, loadAllProcesses, loadProcess, nextPhase, phaseLabel } from '../src/domain/process.js'
 import { SoftwareDevOffice, processOfProject } from '../src/office.js'
+import { prepareG2 } from './support/g2-fixture.js'
 import type { SdoConfig } from '../src/config.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m3/', import.meta.url))
@@ -224,6 +226,8 @@ test('不变量：每个流程的每条门禁准则都有已实现的检查器�
       const evaluation = evaluateGate(process, gate.id, {
         workspace,
         store: office.storeFor(workspace),
+        journal: new Journal(office.storeFor(workspace)),
+        process,
         project: office.status(call()).project,
         requirements: [],
         questions: [],
@@ -416,6 +420,8 @@ test('变更控制：基线后的修改走 CR；rejected 不应用，approved �
       modelDimensions: { goal: 2, user: 2, scenario: 2, data: 2, interface: 2, constraint: 2, acceptance: 2, boundary: 2 },
     })
   }
+  // D1 + D4：未决 P1 补风险处置，再签 G2 字（放行依据是签字台账）
+  prepareG2(office, call())
   const baseline = office.baseline(call(), { approvedBy: '张三' })
   assert.equal(baseline.ok, true, `基线应通过：${baseline.dor.failed.join(',')}`)
 
@@ -499,6 +505,8 @@ test('evaluateGate 对未知门禁给出可用门禁清单（不静默通过）'
   const evaluation = evaluateGate(process, 'G99', {
     workspace,
     store: office.storeFor(workspace),
+    journal: new Journal(office.storeFor(workspace)),
+    process,
     project: office.status(call()).project,
     requirements: [],
     questions: [],

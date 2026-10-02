@@ -131,6 +131,23 @@ export function locale(): string {
   return load().locale
 }
 
+/**
+ * 在**指定语言**下执行一段渲染（N-11）。
+ *
+ * 用途：`docs/DESIGN.md` 的渲染头记录了渲染时的语言，判据要按**那个**语言重渲染才能逐字节比对
+ * 正文 —— 否则"中文渲染 → 切到 en → 章节标题找不到"会变成假红，照着 remedy 重渲染后又反向假红。
+ * 只影响这段同步执行的取文，结束后恢复原语言（渲染是纯函数，不落盘、不产生异步）。
+ */
+export function withLocale<T>(target: string, render: () => T): T {
+  const previous = activeLocale
+  setLocale(target)
+  try {
+    return render()
+  } finally {
+    setLocale(previous)
+  }
+}
+
 /** 反查：中文（或标识本身）→ 标识。命令参数用它，使用户可以写"立项门禁"。 */
 export function idOf(section: string, input: string): string | undefined {
   const table = load().tables[section]

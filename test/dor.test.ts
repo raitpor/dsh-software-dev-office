@@ -9,6 +9,7 @@ import { evaluateDor } from '../src/domain/dor.js'
 import { listRequirements, readRequirement } from '../src/domain/requirements.js'
 import { renderSrs } from '../src/infra/render.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { prepareG2 } from './support/g2-fixture.js'
 import type { SdoConfig } from '../src/config.js'
 import type { Requirement, SdoProject } from '../src/types.js'
 
@@ -41,6 +42,14 @@ function project(): SdoProject {
   const status = office.status(call())
   assert.ok(status.project !== undefined)
   return status.project
+}
+
+/**
+ * **D1 + D4**：G2 的放行依据是**签字台账**里那条带用户原话引用的签字，
+ * 且每条未决 P1 都要有风险处置。凡是要"基线真的通过"的夹具都先走这一步。
+ */
+function signG2(): void {
+  prepareG2(office, call())
 }
 
 /** 造一条完全就绪的需求（用于正例）。 */
@@ -169,7 +178,12 @@ test('基线：答完 P0 + 跑红队 + 签字 → G2 通过并推进到 architec
   }
 
   const beforeDor = office.dor(call(), '张三')
-  assert.equal(beforeDor.ok, true, `DoR 应通过，实际未过：${beforeDor.failed.join(',')}`)
+  assert.equal(beforeDor.ok, false, 'DoR 必须等签字台账里那条 G2 签字才算通过（D1）')
+  assert.ok(beforeDor.failed.includes('C7-signoff'), `未签字时必须挂 C7：${beforeDor.failed.join(',')}`)
+
+  signG2()
+  const signedDor = office.dor(call(), '张三')
+  assert.equal(signedDor.ok, true, `签字后 DoR 应通过，实际未过：${signedDor.failed.join(',')}`)
 
   const outcome = office.baseline(call(), { approvedBy: '张三' })
   assert.equal(outcome.ok, true)
@@ -212,6 +226,7 @@ test('设计门禁正例：基线通过后放行（M2 才实现真正的设计�
       modelDimensions: { goal: 2, user: 2, scenario: 2, data: 2, interface: 2, constraint: 2, acceptance: 2, boundary: 2 },
     })
   }
+  signG2()
   const outcome = office.baseline(call(), { approvedBy: '张三' })
   assert.equal(outcome.ok, true, `基线应通过，实际未过：${outcome.dor.failed.join(',')}`)
   const check = office.designCheck(call())

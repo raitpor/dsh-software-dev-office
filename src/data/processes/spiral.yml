@@ -1,6 +1,8 @@
 # 随包数据：螺旋（设计 §7.2）
 #
 # 关键纪律：四象限循环（目标 → 风险 → 工程 → 评审），**每圈必须有风险结论**。
+# 阶段产物分两种：`suggestedArtifacts` 只是**建议**（不入门禁、不校验存在性）；
+# 真正可强制的是项目自己的「设计适用性声明」（`applicability`），由 G3 的 C-2C 逐条校验。
 id: spiral
 name: 螺旋模型
 description: 四象限循环、风险驱动；适合高风险、大型、需求需逐圈细化的项目
@@ -10,39 +12,39 @@ phases:
     role: office
     entry: []
     exit: [G0]
-    artifacts: [VISION.md]
+    suggestedArtifacts: [VISION.md]
   - id: feasibility
     name: 可行性
     role: analyst
     entry: [G0]
     exit: [G1]
-    artifacts: [FEASIBILITY.md]
+    suggestedArtifacts: [FEASIBILITY.md]
   - id: risk-quadrant
     name: 风险象限
     role: architect
     entry: [G1]
     exit: [GR]
-    artifacts: [RISKS.md]
+    suggestedArtifacts: [RISKS.md]
     loop: { tool: sdo_risk, action: log, until: "risks.converged" }
   - id: requirements
     name: 需求
     role: analyst
     entry: [GR]
     exit: [G2]
-    artifacts: [SRS.md]
+    suggestedArtifacts: [SRS.md]
     loop: { tool: sdo_requirement, action: grill, until: "dor.project" }
   - id: architecture
     name: 架构
     role: architect
     entry: [G2]
     exit: [G3]
-    artifacts: [SDD.md, DECISIONS.md, QUALITY.md]
+    suggestedArtifacts: [SDD.md, DECISIONS.md, QUALITY.md]
   - id: design-plan
     name: 详细设计
     role: architect
     entry: [G3]
     exit: [G4]
-    artifacts: [PLAN.md, TESTPLAN.md]
+    suggestedArtifacts: [PLAN.md, TESTPLAN.md]
   - id: construction
     name: 开发
     role: developer
@@ -54,13 +56,21 @@ phases:
     role: tester
     entry: [G5]
     exit: [G6]
-    artifacts: [TESTREPORT.md]
+    suggestedArtifacts: [TESTREPORT.md]
   - id: delivery
     name: 交付
     role: delivery
     entry: [G6]
     exit: [G7]
-    artifacts: [DELIVERY.md]
+    suggestedArtifacts: [DELIVERY.md]
+rollback:
+  architecture: [requirements, feasibility]
+  design-plan: [architecture, requirements]
+  construction: [design-plan, architecture]
+  verification: [construction]
+  # 终止阶段（交付后重开）：可「重新验证」，也可一步「重新设计」。
+  # 未列出 requirements —— 改需求走 `sdo_requirement action=change` 的变更控制，不靠回退绕行。
+  delivery: [verification, architecture]
 gates:
   - id: G0
     name: 立项门禁
@@ -73,7 +83,7 @@ gates:
     name: 可行性门禁
     criteria:
       - { id: C-05, check: "feasibility.verdict", desc: "TELOS 结论为 Go" }
-      - { id: C-06, check: "feasibility.risks", desc: "风险已登记" }
+      - { id: C-06, check: "feasibility.risks", desc: "风险已登记，且 high / blocker 级未关闭风险必须有应对与责任人（mitigation 与 owner 非空）" }
       - { id: C-07, check: "feasibility.poc", desc: "给出 PoC 建议" }
   - id: GR
     name: 风险象限评审门
@@ -85,18 +95,31 @@ gates:
     name: 需求基线门禁（DoR）
     criteria:
       - { id: C1-dor-per-requirement, check: "dor.per_requirement", desc: "每条需求满足 §5.2.5" }
-      - { id: C2-open-questions, check: "questions.open_p0", desc: "无 P0 未决" }
+      - { id: C2-open-questions, check: "questions.open_p0", desc: "无 P0 未决问题；P1 未决不超过 2 条，且每条都已转风险（风险登记里存在 origin 指向该问题 id 的风险项）" }
       - { id: C3-must-has-ac, check: "dor.must_has_ac", desc: "must 需求有 Given/When/Then" }
       - { id: C4-glossary, check: "project.glossary", desc: "术语表非空" }
       - { id: C5-non-goals, check: "project.scope.out", desc: "非目标已声明" }
       - { id: C6-red-team, check: "redteam.executed", desc: "红队已执行或留痕停用" }
-      - { id: C7-signoff, check: "human.signoff", desc: "人类签字" }
+      - { id: C7-signoff, check: "human.signoff", desc: "人类基线签字：以签字台账（gates/signatures.yml）里的 G2 签字为准，`approvedBy` 字符串只是附加信息；必须带用户原话/所选选项原文，无引用视为无效；签字后需求/项目/裁剪/问题/风险/红队真源变更即失效" }
       - { id: C8-red-team-closed, check: "redteam.closed", desc: "红队议题已闭环" }
+      - { id: C9-ac-ids-unique, check: "dor.ac_ids_unique", desc: "验收标准编号全局唯一（AC 编号是交付验收矩阵的追溯键，重号即错配）" }
   - id: G3
     name: 架构门禁
     criteria:
-      - { id: C-20, check: "design.views", desc: "五视图齐备" }
-      - { id: C-21, check: "trace.orphans", desc: "无孤儿设计元素" }
+      - { id: C-20, check: "design.views", desc: "声明里要做的视图齐备（五视图非空；声明要做界面视图时须有界面证据）" }
+      - { id: C-21, check: "trace.orphans", desc: "设计元素 / 任务卡 / 测试用例都追溯到 ≥1 已基线 REQ（孤儿 = 0）" }
+      - { id: C-23, check: "design.no-open-questions", desc: "开放设计问题 = 0" }
+      - { id: C-24, check: "design.confirmed", desc: "关键条目（元素/契约/界面条目）均有用户确认戳" }
+      - { id: C-25, check: "design.doc", desc: "docs/DESIGN.md 存在、含 11 个固定章节，且由当前真源渲染（渲染序号不早于真源变更）" }
+      - { id: C-27, check: "ui.confirmed", desc: "含 UI 时：风格 + 每页栏目 + 每页布局均已确认（不含 UI 时 N/A）" }
+      - { id: C-28, check: "design.method-selected", desc: "设计方法已选择：未回答/空/答案非法即失败；显式 none 也通过（此时方法产物判据为 N/A）" }
+      - { id: C-29, check: "design.method-products", desc: "选中方法包的最小必产项齐备（缺任一即失败；未选中的包 N/A + 理由；显式 none 时本判据 N/A）" }
+      - { id: C-2F, check: "design.method-docs", desc: "选中方法包时：每包必须有一份人审文档 docs/METHOD-<包>.md，文档头绑定该包产物的内容指纹（台账变更后需重新生成），正文要覆盖该包每个条目 id" }
+      - { id: C-2A, check: "design.method-consistency", desc: "方法产物之间一致（数据字典覆盖 DFD 流名、无悬空引用、依赖方向合规）" }
+      - { id: C-2B, check: "design.applicability", desc: "设计适用性声明存在且结构完整（focus + 每个视图显式二选一 + absent 带理由）；存量项目缺声明即红" }
+      - { id: C-2C, check: "design.artifacts", desc: "声明里要做的非视图工件齐备（不变量每条带 verify / 映射两侧非空 / 差分策略有基线来源）；声明为不做的工件（artifactsAbsent）必须逐条写出理由，缺理由即失败（与 absent 视图同一口径）；两处都没列则 N/A" }
+      - { id: C-2D, check: "design.signed", desc: "G3 门禁级用户签字（必须带用户原话或所选选项原文；无引用视为无效；签字后声明 / 需求 / 契约变更即失效）" }
+      - { id: C-2E, check: "phase.rollback-recorded", desc: "阶段回退留痕合规（回退必须有 reason，且只能沿流程声明的合法回退边）" }
   - id: G4
     name: 详细设计门禁
     criteria:

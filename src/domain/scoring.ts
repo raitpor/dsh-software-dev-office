@@ -11,6 +11,7 @@
  * `src/data/scoring.yml`，项目改不动（Q-02）。
  */
 import { loadPackagedYaml } from '../infra/data.js'
+import { textOf } from '../infra/scalar.js'
 import { DIMENSIONS } from '../types.js'
 import type { AcceptanceCriterion, Ambiguity, Dimension, Requirement, Severity } from '../types.js'
 
@@ -141,7 +142,7 @@ export function ruleChannel(input: ScoreInput): { caps: Partial<Record<Dimension
   // —— 启发式基线 ——
   const measurable = KEYWORDS.measurable.test(text) || context.hasSuccessMetrics
   const base: Record<Dimension, number> = {
-    goal: measurable ? 2 : requirement.rationale.trim() !== '' || requirement.statement.length >= 12 ? 1 : 0,
+    goal: measurable ? 2 : textOf(requirement.rationale).trim() !== '' || requirement.statement.length >= 12 ? 1 : 0,
     user:
       requirement.source.stakeholder !== undefined && KEYWORDS.role.test(text)
         ? 2
@@ -184,7 +185,26 @@ export function scoreRequirement(input: ScoreInput): ScoreResult {
   const score = DIMENSIONS.reduce((sum, dimension) => sum + (dimensions[dimension] ?? 0), 0)
   const ambiguity: Ambiguity = { score, dimensions, open: [] }
   if (needsReview) ambiguity.needsReview = true
+  // **§6.7**：把模型通道的**原始输入**记下来（只记合法维度、只记 0..2 的整数）。
+  // 这不是审计冗余：变更控制重算评分时要"规则维度按新内容重算、模型维度沿用"，
+  // 而合成后的 `dimensions` 已经分不出哪个来自模型。
+  const modelDimensions = normalizeModelDimensions(input.modelDimensions)
+  if (modelDimensions !== undefined) ambiguity.modelDimensions = modelDimensions
   return { ambiguity, flags: [...new Set(flags)], caps, base }
+}
+
+/** 归一模型通道输入：只保留合法维度与 0..2 的整数；空对象返回 `undefined`（= 没给语义分）。 */
+export function normalizeModelDimensions(
+  input: Partial<Record<Dimension, number>> | undefined,
+): Partial<Record<Dimension, number>> | undefined {
+  if (input === undefined) return undefined
+  const out: Partial<Record<Dimension, number>> = {}
+  for (const dimension of DIMENSIONS) {
+    const value = input[dimension]
+    if (typeof value !== 'number' || !Number.isFinite(value)) continue
+    out[dimension] = Math.max(0, Math.min(2, Math.round(value)))
+  }
+  return Object.keys(out).length === 0 ? undefined : out
 }
 
 /** 该评分是否达到 DoR 阈值（并满足"无 0 分维度"）。 */

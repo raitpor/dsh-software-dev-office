@@ -10,6 +10,9 @@
  * 本模块是纯函数（无 IO、无宿主依赖），因此可以用夹具把预算语义钉死。
  */
 
+import { pushShapeNote, recordListOf, textListOf, textOf, typeNameOf } from '../infra/scalar.js'
+import type { FieldShapeNote } from '../infra/scalar.js'
+
 /** 用量的一行（来自 tokenMeter 的测量结果）。 */
 export interface UsageRow {
   sessionId: string
@@ -150,6 +153,57 @@ export interface CostSnapshot {
 /** 从 `.sdo/` 读成本快照（没有就是没测过）。 */
 export function readCostSnapshot(store: { readYaml<T>(...segments: string[]): T | undefined }): CostSnapshot | undefined {
   return store.readYaml<{ cost: CostSnapshot }>('cost.yml')?.cost
+}
+
+/**
+ * 读预算并**做形状归一化**（F-21 ①）。
+ *
+ * `.sdo/budget.yml` 是手可编辑真源，三个列表位置：`tiers`（数字列表）、`askedTiers`（字符串列表）、
+ * `decisions`（记录列表）。旧实现 `[...budget.tiers]` 在 `tiers: 50` 这类手写下会把字符串
+ * **展开成字符**（`['5','0']`），阈值提醒随之变成静默的胡说；`decisions` 被展开同理。
+ * 口径：标量 → 单元素 + 提示；映射写在列表位置 → 空 + 提示（**不猜**）。
+ */
+export function readBudgetChecked(store: { readYaml<T>(...segments: string[]): T | undefined }): {
+  budget: Budget | undefined
+  notes: FieldShapeNote[]
+} {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ budget: unknown }>('budget.yml')?.budget
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (raw !== undefined) {
+      pushShapeNote(notes, 'budget', 'budget.yml', 'budget', { position: 'map', actualType: typeNameOf(raw), handling: 'empty', text: textOf(raw) })
+    }
+    return { budget: undefined, notes }
+  }
+  const record = raw as Record<string, unknown>
+  // 数字列表：标量 → 单元素（解析不出数字的项丢掉，但形状问题已经报出）
+  const tiersRead = textListOf(record.tiers)
+  pushShapeNote(notes, 'budget', 'budget.yml', 'tiers', tiersRead.issue)
+  const askedRead = textListOf(record.askedTiers)
+  pushShapeNote(notes, 'budget', 'budget.yml', 'askedTiers', askedRead.issue)
+  const decisionsRead = recordListOf<Budget['decisions'][number]>(record.decisions, (text) => ({ at: '', tier: text, choice: 'waive', note: '' }))
+  pushShapeNote(notes, 'budget', 'budget.yml', 'decisions', decisionsRead.issue)
+  const budget: Budget = {
+    ...(record as unknown as Budget),
+    currency: textOf(record.currency),
+    tiers: tiersRead.value.map((item) => Number(item)).filter((tier) => Number.isFinite(tier)),
+    askedTiers: askedRead.value,
+    decisions: decisionsRead.value.map((decision) => ({
+      at: textOf(decision.at),
+      tier: textOf(decision.tier),
+      choice: textOf(decision.choice) as BudgetChoice,
+      note: textOf(decision.note),
+    })),
+  }
+  // 用 `delete` 而不是赋 undefined：YAML 写入器不支持值为 undefined 的键
+  if (typeof record.total === 'number' && Number.isFinite(record.total)) budget.total = record.total
+  else delete budget.total
+  return { budget, notes }
+}
+
+/** 预算上的形状提示（回执 / 只读视图 / 门禁详情共用）。 */
+export function budgetShapeNotes(store: { readYaml<T>(...segments: string[]): T | undefined }): FieldShapeNote[] {
+  return readBudgetChecked(store).notes
 }
 
 /** 预算面板行：**没有 total 时不给剩余/百分比**。 */

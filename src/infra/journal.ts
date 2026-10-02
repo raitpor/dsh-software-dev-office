@@ -62,11 +62,37 @@ export class Journal {
     return { events, truncated: false }
   }
 
+  /**
+   * 盘上**所有**可解析事件里最大的 `seq`（坏行跳过）。
+   *
+   * **§3.1 二阶（第四份评审员报告）**：`read()` 在坏行处截断，若用「截断前缀长度 + 1」分配新 `seq`，
+   * 截断期写入的事件会拿到一个**与既有事件重复（甚至更小）的 seq** —— 那不仅让"签字之后改过真源"
+   * 这类**基于 seq 比较**的判定继续瞎（实测：修好 journal 后失效事件仍被忽略、签字继续报 `valid`），
+   * 还破坏了本条真源"seq 单调"的硬不变量。所以分配 `seq` 必须看**盘上全文**，而不是截断后的视图。
+   */
+  private maxSeqOnDisk(): number {
+    const text = this.store.readText(JOURNAL_FILE)
+    if (text === undefined) return 0
+    let max = 0
+    for (const line of text.split('\n')) {
+      const trimmed = line.trim()
+      if (trimmed === '') continue
+      try {
+        const parsed = JSON.parse(trimmed) as { seq?: unknown }
+        if (typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) && parsed.seq > max) max = parsed.seq
+      } catch {
+        // 坏行没有可信的 seq，跳过（它本身读不出来）
+      }
+    }
+    return max
+  }
+
   /** 追加一条事件，返回落盘后的事件（含分配到的 seq）。 */
   append(type: SdoEventType, data: Record<string, unknown>, actor = 'sdo'): JournalEvent {
     const last = this.read()
+    // 截断期也不能分配重复 seq：取「截断前缀长度」与「盘上最大 seq」的较大者 + 1
     const event: JournalEvent = {
-      seq: last.events.length + 1,
+      seq: Math.max(last.events.length, this.maxSeqOnDisk()) + 1,
       at: new Date().toISOString(),
       actor,
       type,
@@ -115,6 +141,25 @@ export class Journal {
           project = { ...project, phaseHistory: history }
           break
         }
+        case 'phase/rolled-back': {
+          // **§6.1 阶段回退**：与 `phase/entered` 同口径地更新当前阶段，
+          // 并在阶段历史上保留**回退原因**（谁、何时、因何回退、从哪退到哪）。
+          if (project === undefined) break
+          const from = event.data['from'] as string | undefined
+          const to = event.data['to'] as SdoProject['phase'] | undefined
+          if (typeof to !== 'string') break
+          const reason = typeof event.data['reason'] === 'string' ? event.data['reason'] : ''
+          const history: PhaseRecord[] = project.phaseHistory.map((record) => {
+            if (record.phase !== from || record.exited !== undefined) return record
+            return { ...record, exited: event.at, rolledBackTo: to, rollbackReason: reason }
+          })
+          project = {
+            ...project,
+            phase: to,
+            phaseHistory: [...history, { phase: to, entered: event.at }],
+          }
+          break
+        }
         case 'redteam/mode': {
           if (project === undefined) break
           const enabled = event.data['enabled'] === true
@@ -147,15 +192,43 @@ export class Journal {
     }
     if (cached !== undefined) return result
     const project = Journal.fold(read.events)
-    if (project !== undefined) this.store.writeJson([PROJECT_FILE], project)
-    return { ...result, project, rebuilt: project !== undefined }
+    // **§4.4**：投影缺失 **且** journal 被截断时只给内存视图、不落盘 ——
+    // 否则"截断前缀"会被写成新事实，之后所有读路径都以它为准（静默回退的另一种入口）。
+    if (project !== undefined && !read.truncated) this.store.writeJson([PROJECT_FILE], project)
+    return { ...result, project, rebuilt: project !== undefined && !read.truncated }
   }
 
-  /** 显式重建投影并落盘；返回重建结果。 */
-  rebuild(): { project: SdoProject | undefined; truncated: boolean } {
+  /**
+   * 重建投影并落盘；返回重建结果。
+   *
+   * **§4.4（第三份评审员报告，2026-10-02）**：`journal` 里出现**坏行**时（`read()` 会截断到
+   * 最后一致前缀），**绝不能**用"截断前缀的折叠结果"覆盖已有投影 —— 实测后果是**静默回退**：
+   * 崩溃半写留下一行坏 JSON 之后，任何一次写操作（`append() → rebuild()`）都会把
+   * `project.json` 从 `architecture` 打回 `intake`，而 journal 里坏行之后的事件其实都还在。
+   * 现在：`truncated && !force` 时**保留最后一份良好投影**，并把 `skipped` 如实回报；
+   * 只有**显式入口**（`sdo_status --rebuild` → `office.rebuild` 传 `force`）才允许强制重建 ——
+   * 那时是用户明确要求在"真源不完整"的前提下重建。
+   */
+  rebuild(options: { force?: boolean } = {}): {
+    project: SdoProject | undefined
+    truncated: boolean
+    badLine?: number
+    /** 因 journal 被截断而**拒绝覆盖**已有投影（保留了最后一份良好投影）。 */
+    skipped?: boolean
+  } {
     const read = this.read()
+    const badLine = read.badLine === undefined ? {} : { badLine: read.badLine }
+    if (read.truncated && options.force !== true) {
+      // 已有投影 → 保留它（真源不可信时，派生投影不该被"部分真源"覆盖）
+      const cachedProject = this.store.readJson<SdoProject>(PROJECT_FILE)
+      if (cachedProject !== undefined) {
+        return { project: cachedProject, truncated: true, ...badLine, skipped: true }
+      }
+      // 没有投影可保留：折叠出一份**内存视图**，但**不落盘**（不把截断状态固化成事实）
+      return { project: Journal.fold(read.events), truncated: true, ...badLine, skipped: true }
+    }
     const project = Journal.fold(read.events)
     if (project !== undefined) this.store.writeJson([PROJECT_FILE], project)
-    return { project, truncated: read.truncated }
+    return { project, truncated: read.truncated, ...badLine }
   }
 }

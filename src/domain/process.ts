@@ -63,10 +63,40 @@ export function entryGates(process: ProcessDef, phase: string): string[] {
   return phaseDef(process, phase)?.entry ?? []
 }
 
+/**
+ * 从某阶段起（**含自身**）到流程末尾，所有阶段的出口门禁（按阶段顺序展开）。
+ *
+ * 用途：阶段回退时必须作废「**目标阶段及其之后**」的全部门禁记录 ——
+ * 只作废目标阶段会让更靠后的陈旧 `passed` 记录掩盖变化，重走时被直接放行（R-2）。
+ * 目标阶段不存在时返回空数组（宁可一条都不作废，也不误删别的阶段）。
+ */
+export function exitGatesFrom(process: ProcessDef, phase: string): string[] {
+  const index = phaseIndex(process, phase)
+  if (index < 0) return []
+  return process.phases.slice(index).flatMap((item) => item.exit)
+}
+
 /** 当前阶段**待判定**的门禁 = 出口门禁里第一个尚未通过的（由调用方给出已通过集合）。 */
 export function pendingGate(process: ProcessDef, phase: string, satisfied: Iterable<string>): string | undefined {
   const done = new Set(satisfied)
   return exitGates(process, phase).find((gate) => !done.has(gate))
+}
+
+/**
+ * 从某阶段**允许回退到**的阶段集合（§6.1：**按流程数据声明**，不硬编码）。
+ *
+ * 只认 `process.rollback[from]` 里写明的边，并过滤掉流程里不存在的阶段
+ * （数据写错时宁可"没有合法边"也不要放进一个不存在的目标）。
+ */
+export function legalRollbackTargets(process: ProcessDef, from: string): string[] {
+  const declared = process.rollback?.[from] ?? []
+  const known = new Set(process.phases.map((phase) => phase.id))
+  return declared.filter((target) => known.has(target))
+}
+
+/** 某阶段是否允许回退（至少一条合法边）。 */
+export function canRollback(process: ProcessDef, from: string): boolean {
+  return legalRollbackTargets(process, from).length > 0
 }
 
 /** 取门禁定义。 */

@@ -8,6 +8,7 @@
  *   ④ **失联不自动释放**：超时只报告"疑似失联"，释放必须显式 `release` / `reassign`（留痕）。
  */
 import type { Journal } from '../infra/journal.js'
+import { textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
 import type { EvidenceItem, TaskCard } from '../types.js'
 import { listTasks, writeTask } from './plan.js'
@@ -57,7 +58,7 @@ export function claim(store: SdoStore, journal: Journal, input: ClaimInput): Cla
     (other) =>
       other.id !== task.id &&
       other.status === 'in-progress' &&
-      other.writeScopes.some((scope) => task.writeScopes.some((mine) => mine.startsWith(scope) || scope.startsWith(mine))),
+      other.writeScopes.some((scope) => task.writeScopes.some((mine) => textOf(mine).startsWith(textOf(scope)) || textOf(scope).startsWith(textOf(mine)))),
   )
   if (clash !== undefined) {
     return {

@@ -5,7 +5,9 @@
  * 这样门禁既可单测，也可被工具层与（M3 的）流程状态机复用。
  */
 import { DIMENSIONS } from '../types.js'
-import type { GrillQuestion, Requirement, SdoProject } from '../types.js'
+import type { GrillQuestion, Requirement, RiskItem, SdoProject } from '../types.js'
+import { textOf } from '../infra/scalar.js'
+import { fmt, t } from './i18n.js'
 
 /**
  * 判定一个问题是否**实质上未决**：
@@ -44,10 +46,28 @@ export interface DorInput {
   redTeamExecuted: boolean
   /** 本会话红队是否被显式停用（`redteam/mode` 留痕） */
   redTeamDisabled: boolean
-  /** 人类签字（设计 §15.3 G2 末条） */
+  /**
+   * **G2 门禁级签字状态**（来自 `gates/signatures.yml` + journal，D1）。
+   *
+   * 这是 C7 **唯一**的放行依据：`approvedBy` 之类的入参字符串**不再**能让 C7 变绿。
+   * 传 `undefined` 等价于"台账里没有签字"（`missing`）——**fail-closed**，不是"跳过判定"。
+   */
+  signoff?: { status: 'missing' | 'unquoted' | 'stale' | 'valid' | 'unknown'; reason: string; signer?: string | undefined } | undefined
+  /**
+   * 人类签字（设计 §15.3 G2 末条）—— **D1 之后只是附加信息**：
+   * 它会被如实写进 C7 的 detail（不静默忽略），但**不参与**通过与失败的判定。
+   */
   approvedBy?: string | undefined
   /** P1 未决问题的上限（设计 §5.2.5） */
   maxOpenP1?: number | undefined
+  /**
+   * 风险登记（D4）：未决 P1 问题必须能在这里找到**对应的风险处置**。
+   *
+   * 关联口径（机械可判）：某条 P1 问题 `Q` 已转风险 ⟺ 存在风险项，其 `origin`
+   * **等于** `Q.id`，或**以 `Q.id` 为空白分隔的 token**（如 `origin: "Q-0035 redteam"`
+   * 或 `origin: "ISSUE-1 Q-0035"`）。用 token 而不是子串：`Q-003` 不得匹配 `Q-0035`。
+   */
+  risks?: RiskItem[] | undefined
 }
 
 /** 每条需求的门禁画像，便于给出精确 remedy。 */
@@ -55,6 +75,42 @@ interface PerRequirement {
   id: string
   ok: boolean
   problems: string[]
+}
+
+/**
+ * 一条问题**是否已转入风险登记**（D4 的机械关联口径）。
+ *
+ * `RiskItem.origin` 是自由文本，但流程写出来的形态是"问题 id / 议题 id"：
+ * 这里按**空白分隔的 token 全等**匹配（`origin: "Q-0035"`、`origin: "Q-0035 redteam"` 都算，
+ * `origin: "Q-003"` **不**匹配 `Q-0035`）—— 子串匹配会让 `Q-003` 假绿，全等又漏掉多来源写法。
+ */
+export function hasRiskDisposition(questionId: string, risks: RiskItem[]): boolean {
+  const wanted = questionId.trim()
+  if (wanted === '') return false
+  return risks.some((risk) =>
+    textOf(risk.origin)
+      .split(/\s+/u)
+      .map((token) => token.trim())
+      .filter((token) => token !== '')
+      .includes(wanted),
+  )
+}
+
+/** C2 的人可读 detail（逐条点名：P0 未决 / P1 未决 / **未转风险的 P1**）。 */
+function c2Detail(openP0: GrillQuestion[], openP1: GrillQuestion[], p1WithoutRisk: GrillQuestion[], maxOpenP1: number): string {
+  if (openP0.length === 0 && openP1.length === 0) return t('uiDor.c2NoOpen')
+  const parts: string[] = []
+  if (openP0.length > 0) {
+    parts.push(fmt('uiDor.c2P0', { p1: openP0.length, p2: openP0.map((question) => question.id).join(' ') }))
+  }
+  if (openP1.length > 0) {
+    parts.push(fmt('uiDor.c2P1', { p1: openP1.length, p2: openP1.map((question) => question.id).join(' ') }))
+  }
+  if (openP1.length > maxOpenP1) parts.push(fmt('uiDor.c2OverLimit', { p1: maxOpenP1 }))
+  if (p1WithoutRisk.length > 0) {
+    parts.push(fmt('uiDor.c2P1NoRisk', { p1: p1WithoutRisk.map((question) => question.id).join(' ') }))
+  }
+  return parts.join(t('uiDor.detailSep'))
 }
 
 function inspect(requirement: Requirement): PerRequirement {
@@ -98,25 +154,31 @@ export function evaluateDor(input: DorInput): DorResult {
     remedy:
       bad.length === 0
         ? undefined
-        : '用 `sdo_requirement action=grill` 就最弱维度提问、`action=answer` 回答并更新语义分，再补优先级/来源/验收标准',
+        : t('uiDor.c1Remedy'),
   })
 
-  // C2：无 P0 未决；P1 未决 ≤ 上限
-  const open = input.questions.filter((question) => question.status === 'open')
+  // C2：无 P0 未决；P1 未决 ≤ 上限；**且每条未决 P1 都有对应的风险处置**（D4）
+  //
+  // **M6**：口径必须用 `isEffectivelyOpen` —— 旧实现只认 `status === 'open'`，
+  // 于是**手改 YAML 把问题标成 `assumed`（不带 `authorizedByUser`）即可绕过 G2**：
+  // 需求侧"不许自问自答"的纪律存在一个手改逃生口，而设计侧早已用"未授权假设仍算未决"的口径，
+  // 两个门禁对同一份数据用两套口径。现在两侧共用同一份实现。
+  //
+  // **D4（本报告 M5）**：判据 desc 承诺的"且转风险"这一半此前**完全没实现** ——
+  // 回执可以显示"P1 未决 2 条"，而这两条一条都没进风险登记，G2 照样绿。
+  // 现在逐条机械判定，并把**具体缺哪条问题**点名出来（remidy 与文案同源）。
+  const open = input.questions.filter((question) => isEffectivelyOpen(question))
   const openP0 = open.filter((question) => question.severity === 'P0')
   const openP1 = open.filter((question) => question.severity === 'P1')
+  const risks = input.risks ?? []
+  const p1WithoutRisk = openP1.filter((question) => !hasRiskDisposition(question.id, risks))
+  const c2Ok = openP0.length === 0 && openP1.length <= maxOpenP1 && p1WithoutRisk.length === 0
   criteria.push({
     id: 'C2-open-questions',
-    label: `无 P0 未决问题；P1 未决不超过 ${maxOpenP1} 条`,
-    ok: openP0.length === 0 && openP1.length <= maxOpenP1,
-    detail:
-      openP0.length === 0 && openP1.length === 0
-        ? '无未决问题'
-        : `P0 未决 ${openP0.length} 条${openP0.length > 0 ? `（${openP0.map((q) => q.id).join(' ')}）` : ''}；P1 未决 ${openP1.length} 条${openP1.length > 0 ? `（${openP1.map((q) => q.id).join(' ')}）` : ''}`,
-    remedy:
-      openP0.length === 0 && openP1.length <= maxOpenP1
-        ? undefined
-        : '先把 P0 问题全部回答（`sdo_requirement action=answer`）；P1 超过 2 条时需转入风险登记或补答',
+    label: fmt('uiDor.c2Label', { p1: maxOpenP1 }),
+    ok: c2Ok,
+    detail: c2Detail(openP0, openP1, p1WithoutRisk, maxOpenP1),
+    remedy: c2Ok ? undefined : t('uiDor.c2Remedy'),
   })
 
   // C3：每条 must 需求至少一条 Given/When/Then 验收标准（§15.3 G2）
@@ -174,14 +236,27 @@ export function evaluateDor(input: DorInput): DorResult {
     remedy: redTeamOk ? undefined : '调用 `sdo_redteam action=attack` 跑一轮红队，或明确要求停用（会写 `redteam/mode` 留痕）',
   })
 
-  // C7：人类签字（§15.3 G2 末条）
-  const approved = (input.approvedBy ?? '').trim()
+  // C7：人类签字 —— **以签字台账为准**（D1）
+  //
+  // 旧实现只看 `approvedBy` 这个**入参字符串**：模型写一句 `approvedBy="human"` 就把
+  // 整个流程最关键的冻结点自授了，审计上无法区分真签与人造。现在放行依据**只有**
+  // `signatureState(store, journal, 'G2')`（签字必须带用户原话/所选选项原文，
+  // 且签字后需求/项目/问题/风险/红队真源再变即按 journal 序号失效）。
+  // `approvedBy` 不再参与判定，但**不静默丢弃** —— 它照旧写进 detail 与门禁记录。
+  const signoff = input.signoff
+  const signoffOk = signoff?.status === 'valid'
+  const signer = (input.approvedBy ?? '').trim()
+  const approvedNote = signer === '' ? t('uiDor.c7NoApprovedBy') : fmt('uiDor.c7ApprovedByExtra', { p1: signer })
+  // `signoff` 缺省等价于"台账里没有签字"（fail-closed）——**不是**跳过判定。
+  const signoffReason = signoff?.reason ?? fmt('uiSignature.missing', { p1: 'G2' })
   criteria.push({
     id: 'C7-signoff',
-    label: '人类签字',
-    ok: approved !== '',
-    detail: approved === '' ? '缺少签字人' : `签字人：${approved}`,
-    remedy: approved === '' ? '基线时提供 `approvedBy`（人类签字；设计 §15.3 G2 要求）' : undefined,
+    label: t('uiDor.c7Label'),
+    ok: signoffOk,
+    detail: signoffOk
+      ? fmt('uiDor.c7Ok', { p1: signoff?.signer ?? '', p2: signoffReason, p3: approvedNote })
+      : fmt('uiDor.c7Fail', { p1: signoffReason, p2: approvedNote }),
+    remedy: signoffOk ? undefined : t('uiDor.c7Remedy'),
   })
 
   const failed = criteria.filter((criterion) => !criterion.ok).map((criterion) => criterion.id)

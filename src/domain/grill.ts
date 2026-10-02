@@ -8,13 +8,16 @@
  *   uncertainty = 该维度当前得分越低越不确定（0→3、1→2、2→1）
  *   blocking    = severityWeight（P0=3 / P1=2 / P2=1）
  */
-import { t } from './i18n.js'
+import { fmt, t } from './i18n.js'
 import { loadPackagedYaml } from '../infra/data.js'
+import { pushShapeNote, recordListOf, textListOf, textOf } from '../infra/scalar.js'
+import type { FieldShapeNote } from '../infra/scalar.js'
 import { nextId } from '../infra/ids.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { Dimension, GrillOption, GrillQuestion, Requirement, SdoProject, Severity } from '../types.js'
 import { listRequirementIds, readRequirement, setOpenQuestions, updateRequirement } from './requirements.js'
+import { isEffectivelyOpen } from './dor.js'
 import { loadScoring, weakestDimensions } from './scoring.js'
 import type { ScoringModel } from './scoring.js'
 
@@ -48,8 +51,63 @@ export function listQuestionIds(store: SdoStore): string[] {
     .map((name) => name.replace(/\.yml$/u, ''))
 }
 
+/**
+ * 读一条问题并**做形状归一化**（F-21 ①）。
+ *
+ * `.sdo/questions/Q-*.yml` 是给人手改的真源：
+ *   · `targets: REQ-001`（漏了列表写法）→ 旧实现 `question.targets.includes` 抛
+ *     `includes is not a function`；现在按**单元素列表**读取（意图明确），并给出提示；
+ *   · `options: {...}`（列表位置写成映射）→ **不猜**，按空列表读取 + 提示；
+ *   · `targets` 写成映射同理。
+ * 归一化只在读取边界做一次，消费点（`openQuestionsFor` / `alreadyAsked` / 回执）不再打补丁。
+ */
+export function readQuestionChecked(
+  store: SdoStore,
+  id: string,
+): { question: GrillQuestion | undefined; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ question: unknown }>('questions', `${id}.yml`)?.question
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    // 文件在、主体不是映射：可读的失败（跳过它），但必须报出
+    if (raw !== undefined) {
+      pushShapeNote(notes, 'question', id, 'question', {
+        position: 'map',
+        actualType: raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw,
+        handling: 'empty',
+        text: textOf(raw),
+      })
+    }
+    return { question: undefined, notes }
+  }
+  const record = raw as Record<string, unknown>
+  const targets = textListOf(record.targets)
+  pushShapeNote(notes, 'question', id, 'targets', targets.issue)
+  const options = recordListOf<GrillOption>(record.options, (text) => ({ label: text, cost: '' }))
+  pushShapeNote(notes, 'question', id, 'options', options.issue)
+  const declaredId = textOf(record.id)
+  const question: GrillQuestion = {
+    ...(record as unknown as GrillQuestion),
+    // 文件名才是真源键：正文 id 缺失/写坏时按文件名落地
+    id: declaredId.trim() === '' ? id : declaredId,
+    text: textOf(record.text),
+    targets: targets.value,
+    why: textOf(record.why),
+    consequenceIfUnasked: textOf(record.consequenceIfUnasked),
+    options: options.value.map((option) => ({ label: textOf(option.label), cost: textOf(option.cost) })),
+    defaultRecommendation: textOf(record.defaultRecommendation),
+  }
+  return { question, notes }
+}
+
 export function readQuestion(store: SdoStore, id: string): GrillQuestion | undefined {
-  return store.readYaml<{ question: GrillQuestion }>('questions', `${id}.yml`)?.question
+  return readQuestionChecked(store, id).question
+}
+
+/** 全部问题上的形状提示（回执 / 只读视图 / 门禁详情共用）。 */
+export function questionShapeNotes(store: SdoStore): FieldShapeNote[] {
+  const notes: FieldShapeNote[] = []
+  for (const id of listQuestionIds(store)) notes.push(...readQuestionChecked(store, id).notes)
+  return notes
 }
 
 export function listQuestions(store: SdoStore): GrillQuestion[] {
@@ -67,8 +125,9 @@ export function writeQuestion(store: SdoStore, question: GrillQuestion): void {
 
 /** 某条需求上的未决问题。 */
 export function openQuestionsFor(store: SdoStore, requirementId: string): GrillQuestion[] {
+  // **P-6**：未决口径与门禁（G2 的 C2）同源 —— 未获用户授权的 `assumed` 仍算未决。
   return listQuestions(store).filter(
-    (question) => question.status === 'open' && question.targets.includes(requirementId),
+    (question) => isEffectivelyOpen(question) && question.targets.includes(requirementId),
   )
 }
 
@@ -84,9 +143,9 @@ function alreadyAsked(
     if (question.status === 'obsolete') return false
     if (!question.targets.includes(requirementId)) return false
     // ① 同一模板：按 why 里的 #templateId 判重
-    if (question.why.includes(`#${templateId}`)) return true
+    if (textOf(question.why).includes(`#${templateId}`)) return true
     // ② **同一段文字**（实测反馈：两个模板文字相同 / 换个写法又问一遍，用户看到的就是"反复问同一题"）
-    return templateText !== undefined && norm(question.text) === norm(templateText)
+    return templateText !== undefined && norm(textOf(question.text)) === norm(templateText)
   })
 }
 
@@ -394,7 +453,7 @@ export function askQuestions(
   // 把未决问题回写到需求的 ambiguity.open，并在状态块/看板上可见
   for (const requirement of requirements) {
     const open = listQuestions(store)
-      .filter((question) => question.status === 'open' && question.targets.includes(requirement.id))
+      .filter((question) => isEffectivelyOpen(question) && question.targets.includes(requirement.id))
       .map((question) => question.id)
     setOpenQuestions(store, requirement.id, open, undefined, project)
   }
@@ -435,6 +494,17 @@ export function answerQuestion(
   const question = readQuestion(store, input.id)
   if (question === undefined) return undefined
 
+  // **m3（本报告）**：`pickedOption` 越界此前**静默**退化为普通答案 ——
+  // 调用方以为记下了"用户选了第 N 项"，台账里却是一句自由文本。越界即报错（可读的失败）。
+  if (input.pickedOption !== undefined) {
+    if (!Number.isInteger(input.pickedOption) || input.pickedOption < 0 || input.pickedOption >= question.options.length) {
+      throw new Error(fmt('uiGrill.pickedOptionOutOfRange', {
+        p1: String(input.pickedOption),
+        p2: question.id,
+        p3: String(question.options.length),
+      }))
+    }
+  }
   const picked = input.pickedOption === undefined ? undefined : question.options[input.pickedOption]
   const text = input.assume === true ? question.defaultRecommendation : input.answer
   const answerText = picked === undefined ? text : `${text}（选择：${picked.label}）`
@@ -454,26 +524,20 @@ export function answerQuestion(
     targets: next.targets,
   })
 
+  // **m2（本报告）**：旧实现先 `updateRequirement`（一次评分）再 `setOpenQuestions`（又一次评分），
+  // 同一需求被派发两次评分 —— 当前是覆盖式赋值所以结果一致，一旦评分改成累加就会翻倍。
+  // 现在未决集合**先算好**，一次带进 `updateRequirement`，每条需求只算一次。
   const updated: Requirement[] = []
   for (const target of next.targets) {
+    const open = listQuestions(store)
+      .filter((item) => isEffectivelyOpen(item) && item.targets.includes(target))
+      .map((item) => item.id)
     const result = updateRequirement(store, journal, project, {
       id: target,
+      openQuestions: open,
       ...(input.modelDimensions === undefined ? {} : { modelDimensions: input.modelDimensions }),
     })
     if (result !== undefined) updated.push(result.requirement)
-  }
-
-  // 回答后重算未决集合
-  for (const target of next.targets) {
-    const open = listQuestions(store)
-      .filter((item) => item.status === 'open' && item.targets.includes(target))
-      .map((item) => item.id)
-    const refreshed = setOpenQuestions(store, target, open, input.modelDimensions, project)
-    if (refreshed !== undefined) {
-      const index = updated.findIndex((requirement) => requirement.id === target)
-      if (index >= 0) updated[index] = refreshed
-      else updated.push(refreshed)
-    }
   }
 
   return { question: next, updated }
@@ -494,8 +558,9 @@ export function allRequirementIds(store: SdoStore): string[] {
 /** 需求陈述里的"可用词"：中文取 2-gram，ASCII 取长度≥2 的 token（用于校验"引用原文"）。 */
 export function statementKeywords(statement: string): string[] {
   const out = new Set<string>()
-  for (const token of statement.match(/[A-Za-z0-9][A-Za-z0-9._-]+/gu) ?? []) out.add(token.toLowerCase())
-  const cjk = statement.replace(/[^\u4e00-\u9fff]/gu, ' ')
+  const text = textOf(statement)
+  for (const token of text.match(/[A-Za-z0-9][A-Za-z0-9._-]+/gu) ?? []) out.add(token.toLowerCase())
+  const cjk = text.replace(/[^\u4e00-\u9fff]/gu, ' ')
   for (const run of cjk.split(/\s+/u)) {
     for (let i = 0; i + 2 <= run.length; i += 1) out.add(run.slice(i, i + 2))
   }
@@ -514,11 +579,11 @@ export function validateProposed(
 ): { accepted: ProposedQuestion[]; rejected: { text: string; reason: RejectReason }[] } {
   const keywords = statementKeywords(statement)
   const norm = (text: string): string => text.replace(/\s+/gu, '').replace(/[？?！!。，,、；;：:]/gu, '')
-  const seen = new Set(existing.map((question) => norm(question.text)))
+  const seen = new Set(existing.map((question) => norm(textOf(question.text))))
   const accepted: ProposedQuestion[] = []
   const rejected: { text: string; reason: RejectReason }[] = []
   for (const question of questions) {
-    const text = (question.text ?? '').trim()
+    const text = textOf(question.text).trim()
     if (text === '') { rejected.push({ text, reason: 'empty' }); continue }
     if (text.length < 6) { rejected.push({ text, reason: 'tooShort' }); continue }
     if (text.length > 200) { rejected.push({ text, reason: 'tooLong' }); continue }

@@ -10,6 +10,8 @@
  *   ⑤ 可能并行的卡之间写范围互斥 ⑥ 每卡至少一项证据要求
  */
 import { nextId } from '../infra/ids.js'
+import { pushShapeNote, recordListOf, textListOf, textOf } from '../infra/scalar.js'
+import type { FieldShapeNote } from '../infra/scalar.js'
 import { fmt, t } from './i18n.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
@@ -32,8 +34,76 @@ export function listTaskIds(store: SdoStore): string[] {
     .map((name) => name.replace(/\.yml$/u, ''))
 }
 
+/**
+ * 读一张任务卡并**做形状归一化**（F-21 ①）。
+ *
+ * `.sdo/tasks/TASK-*.yml` 是给人手改的真源，卡上有**七个列表位置**：
+ * `inputs` / `outputs` / `dod` / `evidenceRequired` / `blockedBy` / `writeScopes` /
+ * `requirements`，加一个记录列表 `evidence`。旧实现直接把它们当数组用：
+ * `dod.some` / `blockedBy.includes` / `blockedBy.every` / `writeScopes.filter` 都会因
+ * `dod: 完成即可` 这类手写而抛 `… is not a function`。这里把形状收敛在读入处：
+ *   · 标量 → **单元素列表**（意图明确）+ 提示；
+ *   · 映射 / 对象 → 空列表 + 提示（**不猜**）；
+ *   · 记录列表里的标量项 → 放进最自然的字段（`detail`）保留，同样给提示。
+ */
+export function readTaskChecked(
+  store: SdoStore,
+  id: string,
+): { task: TaskCard | undefined; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ task: unknown }>('tasks', `${id}.yml`)?.task
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (raw !== undefined) {
+      pushShapeNote(notes, 'task', id, 'task', {
+        position: 'map',
+        actualType: raw === null ? 'null' : Array.isArray(raw) ? 'array' : typeof raw,
+        handling: 'empty',
+        text: textOf(raw),
+      })
+    }
+    return { task: undefined, notes }
+  }
+  const record = raw as Record<string, unknown>
+  const list = (field: string): string[] => {
+    const read = textListOf(record[field])
+    pushShapeNote(notes, 'task', id, field, read.issue)
+    return read.value
+  }
+  const evidence = recordListOf<EvidenceItem>(record.evidence, (text) => ({ kind: 'command', detail: text, at: '' }))
+  pushShapeNote(notes, 'task', id, 'evidence', evidence.issue)
+  const declaredId = textOf(record.id)
+  const task: TaskCard = {
+    ...(record as unknown as TaskCard),
+    id: declaredId.trim() === '' ? id : declaredId,
+    title: textOf(record.title),
+    goal: textOf(record.goal),
+    inputs: list('inputs'),
+    outputs: list('outputs'),
+    dod: list('dod'),
+    evidenceRequired: list('evidenceRequired') as EvidenceItem['kind'][],
+    blockedBy: list('blockedBy'),
+    writeScopes: list('writeScopes'),
+    role: textOf(record.role),
+    status: textOf(record.status) as TaskCard['status'],
+    requirements: list('requirements'),
+    evidence: evidence.value.map((item) => ({
+      kind: textOf(item.kind) as EvidenceItem['kind'],
+      detail: textOf(item.detail),
+      at: textOf(item.at),
+    })),
+  }
+  return { task, notes }
+}
+
 export function readTask(store: SdoStore, id: string): TaskCard | undefined {
-  return store.readYaml<{ task: TaskCard }>('tasks', `${id}.yml`)?.task
+  return readTaskChecked(store, id).task
+}
+
+/** 全部任务卡上的形状提示（回执 / 只读视图 / 门禁详情共用）。 */
+export function taskShapeNotes(store: SdoStore): FieldShapeNote[] {
+  const notes: FieldShapeNote[] = []
+  for (const id of listTaskIds(store)) notes.push(...readTaskChecked(store, id).notes)
+  return notes
 }
 
 export function listTasks(store: SdoStore): TaskCard[] {
@@ -216,7 +286,7 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
         remedy: fmt('uiPlan.t12', { p1: ROLES.join(' / ') }),
       })
     }
-    if (task.dod.length === 0 || task.dod.some((item) => item.trim() === '')) {
+    if (task.dod.length === 0 || task.dod.some((item) => textOf(item).trim() === '')) {
       issues.push({
         code: 'dod-nonempty',
         taskId: task.id,
@@ -284,7 +354,7 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
       if (related) continue
       if (a.iteration !== b.iteration && (a.iteration !== undefined || b.iteration !== undefined)) continue
       const overlap = a.writeScopes.filter((scope) =>
-        b.writeScopes.some((other) => scope.startsWith(other) || other.startsWith(scope)),
+        b.writeScopes.some((other) => textOf(scope).startsWith(textOf(other)) || textOf(other).startsWith(textOf(scope))),
       )
       if (overlap.length > 0) {
         issues.push({

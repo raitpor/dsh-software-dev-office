@@ -5,6 +5,8 @@
  * 一条 ADR 被取代时写 `supersededBy`，原记录不改（决策史不可篡改）。
  */
 import { nextId } from '../infra/ids.js'
+import { pushShapeNote, recordListOf, textListOf, textOf, typeNameOf } from '../infra/scalar.js'
+import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { Adr } from '../types.js'
@@ -16,8 +18,51 @@ export function listAdrIds(store: SdoStore): string[] {
     .map((name) => name.replace(/\.yml$/u, ''))
 }
 
+/**
+ * 读一条 ADR 并**做形状归一化**（F-21 ①）。
+ *
+ * `.sdo/decisions/ADR-*.yml` 是手可编辑真源，`alternatives`（记录列表）与 `consequences`
+ * （列表）是 G3 的 `design.adr` 判据直接读的字段。旧实现 `adr.alternatives.length` 在标量写法下
+ * 把字符串长度当条目数 —— **不崩但静默判错**；标量按单元素保留 + 提示，映射按空 + 提示。
+ */
+export function readAdrChecked(store: SdoStore, id: string): { adr: Adr | undefined; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ adr: unknown }>('decisions', `${id}.yml`)?.adr
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) {
+    if (raw !== undefined) {
+      pushShapeNote(notes, 'adr', id, 'adr', { position: 'map', actualType: typeNameOf(raw), handling: 'empty', text: textOf(raw) })
+    }
+    return { adr: undefined, notes }
+  }
+  const record = raw as Record<string, unknown>
+  const alternatives = recordListOf<Adr['alternatives'][number]>(record.alternatives, (text) => ({ option: text, pros: '', cons: '' }))
+  pushShapeNote(notes, 'adr', id, 'alternatives', alternatives.issue)
+  const consequences = textListOf(record.consequences)
+  pushShapeNote(notes, 'adr', id, 'consequences', consequences.issue)
+  const declaredId = textOf(record.id)
+  const adr: Adr = {
+    ...(record as unknown as Adr),
+    id: declaredId.trim() === '' ? id : declaredId,
+    title: textOf(record.title),
+    status: textOf(record.status) as Adr['status'],
+    context: textOf(record.context),
+    decision: textOf(record.decision),
+    alternatives: alternatives.value.map((item) => ({ option: textOf(item.option), pros: textOf(item.pros), cons: textOf(item.cons) })),
+    consequences: consequences.value,
+    at: textOf(record.at),
+  }
+  return { adr, notes }
+}
+
 export function readAdr(store: SdoStore, id: string): Adr | undefined {
-  return store.readYaml<{ adr: Adr }>('decisions', `${id}.yml`)?.adr
+  return readAdrChecked(store, id).adr
+}
+
+/** 全部 ADR 上的形状提示（回执 / 门禁详情共用）。 */
+export function adrShapeNotes(store: SdoStore): FieldShapeNote[] {
+  const notes: FieldShapeNote[] = []
+  for (const id of listAdrIds(store)) notes.push(...readAdrChecked(store, id).notes)
+  return notes
 }
 
 export function listAdrs(store: SdoStore): Adr[] {

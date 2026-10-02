@@ -5,12 +5,15 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
+import { SdoStore } from '../src/infra/store.js'
+import { writeMethodDoc } from './support/method-doc-fixture.js'
 import { adrCompleteness } from '../src/domain/adr.js'
 import { viewsCompleteness } from '../src/domain/architecture.js'
 import { contractCoverage } from '../src/domain/contracts.js'
 import { isMeasurable, unmeasurableScenarios } from '../src/domain/quality.js'
 import { link, report } from '../src/domain/trace.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { prepareG2 } from './support/g2-fixture.js'
 import type { SdoConfig } from '../src/config.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m2/', import.meta.url))
@@ -68,8 +71,105 @@ function baselineReadyRequirement(): void {
     if (open.length === 0) break
     office.answer(call(), { id: open[0]!.id, answer: '已确认', modelDimensions: ALL2 })
   }
+  // D1 + D4：未决 P1 补风险处置，再签 G2 字（放行依据是签字台账）
+  prepareG2(office, call())
   const outcome = office.baseline(call(), { approvedBy: '张三' })
   assert.equal(outcome.ok, true, `基线应通过：${outcome.dor.failed.join(',')}`)
+}
+
+/**
+ * 补齐**结构化方法包的最小必产项**（增量 2：选了 structured 就必须有数据字典 + 分层 DFD + ERD）。
+ *
+ * 顺带满足两条机械检查：
+ *   · 数据字典覆盖 DFD 上出现的每一个流名；
+ *   · 条目都带 `requires`（无来源条目会被既有 `trace.orphans` 抓成孤儿）。
+ */
+function structuredMethodProducts(requirementId: string): void {
+  office.writeMethodArtifact(call(), 'dictionary', {
+    summary: '对账差异数据字典',
+    dictionary: [
+      { name: '对账文件', type: 'file', source: '上游系统', sink: '对账系统', validation: '非空且格式合法', requires: [requirementId] },
+      { name: '差异清单', type: 'record[]', source: '对账系统', sink: '业务方', validation: '每条含差异 id', requires: [requirementId] },
+    ],
+  })
+  office.writeMethodArtifact(call(), 'dfd', {
+    summary: '对账分层数据流图',
+    levels: [
+      {
+        level: 0,
+        name: '上下文层',
+        flows: [
+          { name: '对账文件', from: '上游系统', to: '对账系统' },
+          { name: '差异清单', from: '对账系统', to: '业务方' },
+        ],
+        processes: [{ name: '对账系统', inputs: ['对账文件'], outputs: ['差异清单'], requires: [requirementId] }],
+      },
+      {
+        level: 1,
+        name: '分解层',
+        flows: [
+          { name: '对账文件', from: '上游系统', to: '差异检测服务' },
+          { name: '差异清单', from: '差异检测服务', to: '业务方' },
+        ],
+        processes: [{ name: '差异检测服务', inputs: ['对账文件'], outputs: ['差异清单'], requires: [requirementId] }],
+      },
+    ],
+  })
+  office.writeMethodArtifact(call(), 'erd', {
+    summary: '对账差异 ERD',
+    entities: [
+      { name: '对账批次', identifier: '批次ID', requires: [requirementId] },
+      { name: '对账差异', identifier: '差异ID', requires: [requirementId] },
+    ],
+    relations: [{ name: '批次含差异', from: '对账批次', to: '对账差异', cardinality: '1:N' }],
+  })
+  // 新口径：选中 structured 就必须有与人审文档（且指纹与台账一致）
+  writeMethodDoc(workspace, new SdoStore(join(workspace, '.sdo')), 'structured')
+
+}
+
+/**
+ * 走完**增量 1 的设计交互闭环**（增量 1 起 G3 会拦"没和用户交流过的设计"）：
+ * 提出问题 → 回答问题 → 生成设计文档 → 逐条确认关键条目。
+ * 因此"G3 全绿"的正例必须把这几步真的做掉，而不是只写五视图。
+ *
+ * **增量 2**：方法题答"结构化"后，还要补齐结构化包的最小必产项（否则 `design.method-products` 是红的）。
+ */
+function completeDesignInteraction(requirementId: string): void {
+  const grilled = office.grillDesign(call(), { recommendation: { method: '结构化', rationale: '需求明确' } })
+  // 每个缺口都给一个答复（选项下标 + 说明）
+  for (const id of grilled.stillOpen) office.answerDesign(call(), id, '0', '按推荐')
+  structuredMethodProducts(requirementId)
+  office.renderDesign(call())
+  for (const target of office.designConfirmGaps(call()).required) {
+    office.confirmDesign(call(), target, '用户在会话中确认', '张三')
+  }
+  // **§7.1 / §7.2**：声明适用性 + 用户签字绑定 + G3 门禁级签字（必须在所有真源写入**之后**签，
+  // 否则签字会被"签字后真源变更"规则判失效）
+  declareApplicability()
+}
+
+
+/**
+ * **§7.1 / §7.2 前置**：声明设计适用性 + 用户签字绑定 + G3 门禁级签字。
+ *
+ * 2026-09-30 起 G3 多两道硬门：① 必须有适用性声明（存量项目缺声明即红）；
+ * ② 必须有**带引用文本**的用户签字。因此"G3 全绿"的正例必须真的走完这两步。
+ *
+ * 固定声明"五视图全做、无额外工件"（本文件的正例都是五视图齐备的形态）。
+ */
+function declareApplicability(sign = true): void {
+  office.draftApplicability(call(), {
+    focus: '对账系统新建：五视图全做，无额外非视图工件',
+    viewsPresent: ['context', 'component', 'runtime', 'data', 'deployment'],
+    viewsAbsent: [],
+    artifacts: [],
+    by: '模型起草',
+  })
+  office.confirmApplicability(call(), '同意就按这份声明走', '张三')
+  if (sign) office.signGate(call(), { gate: 'G3', by: '张三', basis: '我签字确认这次设计可以放行', channel: 'command' })
+  // X-1：C-25 要求文档不早于最后一次真源变更；声明（含其确认）也是文档真源 → 重渲染。
+  office.renderDesign(call())
 }
 
 test('五视图：齐备性检查与 G3 的 design.views 准则', () => {
@@ -89,8 +189,11 @@ test('五视图：齐备性检查与 G3 的 design.views 准则', () => {
   assert.equal(completeness.ok, true, `五视图应齐备：${JSON.stringify(completeness)}`)
   assert.equal(office.views(call()).length, 5)
 
+  // **§7.1**：声明适用性（五视图全做）——`design.views` 现在按声明逐视图判真
+  declareApplicability()
   const g3 = office.evaluate(call(), 'G3')
   assert.equal(g3.criteria.find((criterion) => criterion.id === 'C-20')?.ok, true)
+  assert.equal(g3.criteria.find((criterion) => criterion.id === 'C-2D')?.ok, true, '签字后门禁级签字判据必须为绿')
 })
 
 test('设计元素：DependsOn 边驱动契约完整性（G4 的 design.contracts）', () => {
@@ -234,9 +337,12 @@ test('G3 全绿：五视图 + 无孤儿 + ADR 含备选与后果', () => {
   for (const element of ['DES-001', 'DES-002', 'DES-003', 'DES-004', 'DES-005']) {
     link(store, journal, { from: captured.requirement.id, to: element, kind: 'req-des' })
   }
+  // **增量 1**：G3 现在还要求"设计交互闭环"走完（问题清零 + 方法选定 + 文档 11 章 + 关键条目确认）
+  // **增量 2**：方法选定后还要按所选包补齐最小必产项（C-29 / C-2A）
+  completeDesignInteraction(captured.requirement.id)
 
   const g3 = office.evaluate(call(), 'G3')
-  assert.equal(g3.status, 'passed', `G3 应通过：${g3.criteria.filter((c) => !c.ok).map((c) => `${c.id}:${c.detail}`).join(' | ')}`)
+  assert.equal(g3.status, 'passed', `G3 应通过：${g3.criteria.filter((c) => !c.ok && c.na !== true).map((c) => `${c.id}:${c.detail}`).join(' | ')}`)
   assert.equal(office.checkGate(call(), 'G3').status, 'passed')
 })
 

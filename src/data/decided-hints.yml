@@ -1,0 +1,141 @@
+# 设计缺口 key → 「既有决策」（ADR）的识别关键词（F-5）。
+#
+# 为什么是数据文件而不是代码里的字面量：
+#   · 这些词是**匹配数据**，不是给用户看的文案 —— 放进语言包会被当文案翻译/校验；
+#   · 中英两种写法都要收（ADR 是用户写的，语言与插件语言包未必一致），
+#     放在这里就与语言包解耦：切到 en 也照样能认出中文 ADR。
+#
+# 命中范围：只扫 ADR 的 title / context / decision（**不扫** consequences 与 alternatives ——
+# "考虑过但否决了"的方案不算已定案）。只认仍然有效的 ADR（proposed / accepted）。
+hints:
+  form:
+    - 分层
+    - 单体
+    - 微服务
+    - 包结构
+    - layered
+    - monolith
+    - microservice
+    - modular
+  deployment:
+    - 部署
+    - 单机
+    - 容器
+    - docker
+    - kubernetes
+    - deploy
+    - on-premise
+  external:
+    - 外部系统
+    - 第三方
+    - 对接
+    - 集成
+    - external
+    - integration
+    - third-party
+  store:
+    - sqlite
+    - postgres
+    - mysql
+    - mariadb
+    - 数据库
+    - 存储
+    - database
+    - storage
+  consistency:
+    - 一致性
+    - 事务
+    - 强一致
+    - 最终一致
+    - consistency
+    - transaction
+    - acid
+  retention:
+    - 保留策略
+    - 保留期
+    - 归档
+    - 清理
+    - retention
+    - archive
+    - purge
+  concurrency:
+    - 并发
+    - 串行
+    - 加锁
+    - 锁
+    - concurren
+    - serial
+    - lock
+    - immediate
+  performance:
+    - 性能
+    - 延迟
+    - 吞吐
+    - p99
+    - performance
+    - latency
+    - throughput
+  failure:
+    - 失败处理
+    - 重试
+    - 幂等
+    - retry
+    - idempot
+    - failure
+  errors:
+    - 错误处理
+    - 异常处理
+    - 失败快速
+    - error handling
+    - exception
+    - fail-fast
+  observability:
+    - 可观测
+    - 日志
+    - 监控
+    - 指标
+    - observab
+    - logging
+    - metrics
+    - monitor
+  evolution:
+    - 演进
+    - 向后兼容
+    - 升级
+    - 灰度
+    - evolution
+    - backward compat
+    - migration
+  techdebt:
+    - 技术债
+    - 技术债务
+    - 债务
+    - tech debt
+    - technical debt
+  ui-style:
+    - 界面风格
+    - 视觉风格
+    - 设计规范
+    - ui style
+    - design system
+    - style guide
+  ui-columns:
+    - 栏目
+    - 列表列
+    - columns
+    - table columns
+  ui-layout:
+    - 页面布局
+    - 布局
+    - layout
+    - wireframe
+  ui-breakpoint:
+    - 断点
+    - 响应式
+    - breakpoint
+    - responsive
+  ui-a11y:
+    - 无障碍
+    - 可达性
+    - a11y
+    - accessibility

@@ -111,7 +111,15 @@ export class SdoStore {
   readYaml<T = unknown>(...segments: string[]): T | undefined {
     const text = this.readText(...segments)
     if (text === undefined) return undefined
-    return parseYaml(text) as T
+    try {
+      return parseYaml(text) as T
+    } catch (error) {
+      // **R-14**：YAML 子集的报错只说"YAML 第 N 行：…"，**不带文件名** —— 而 `.sdo/**/*.yml`
+      // 是给人手改的真源，用户根本不知道该去修哪个文件。这里补上**相对路径**（NFR-009：不泄漏绝对路径）。
+      const where = relative(this.root, this.path(...segments)).split(sep).join('/')
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`${message}（文件：${where}）`)
+    }
   }
 
   writeYaml(segments: string[], value: unknown, options: WriteOptions = {}): string {
@@ -121,7 +129,16 @@ export class SdoStore {
   readJson<T = unknown>(...segments: string[]): T | undefined {
     const text = this.readText(...segments)
     if (text === undefined) return undefined
-    return JSON.parse(text) as T
+    try {
+      return JSON.parse(text) as T
+    } catch (error) {
+      // **R-14 同口径**：JSON 的报错同样只有位置、没有文件名，而 `.sdo/**/*.json`
+      // （`project.json`、`gates/*.json`、成本快照…）也都是可手改的真源/派生投影。
+      // 补上**相对路径**（NFR-009：不泄漏绝对路径）——这条由"投影坏掉"的矩阵用例逼出来。
+      const where = relative(this.root, this.path(...segments)).split(sep).join('/')
+      const message = error instanceof Error ? error.message : String(error)
+      throw new Error(`${message}（文件：${where}）`)
+    }
   }
 
   writeJson(segments: string[], value: unknown, options: WriteOptions = {}): string {
