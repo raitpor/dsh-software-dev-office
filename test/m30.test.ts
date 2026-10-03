@@ -8,7 +8,7 @@
  */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -19,7 +19,7 @@ import { claim, report } from '../src/domain/collab.js'
 import { auditDoneEvidence, parseArtifactDetail } from '../src/domain/evidence.js'
 import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
-import { changedFilesSince, readWorkspaceChanges, recordWorkspaceChanges } from '../src/domain/workspaceChanges.js'
+import { changedFilesSince, readWorkspaceChanges, recordWorkspaceChanges, unresolvedSeqs } from '../src/domain/workspaceChanges.js'
 import { recordTestCase, recordTestResult } from '../src/domain/records.js'
 import { createOfficeTools } from '../src/interface/tools.js'
 import type { SdoConfig } from '../src/config.js'
@@ -419,4 +419,111 @@ test('M30-14 A1 的可发现性：证据形状（含 exitCode 是独立字段）
   assert.match(evidence.description, /exitCode/u, '要说清 exitCode 字段')
   assert.match(evidence.description, /独立字段/u, '要明说它必须是字段，写进 detail 文本不生效')
   assert.match(evidence.description, /sha256/u, 'artifact 的哈希写法也要给出来')
+})
+
+// —————————————————————— 评审 T-2 / T-3：回执文案必须能读懂 ——————————————————————
+
+test('M30-15 T-2 哈希不符要打印**能区分**的指纹（前 12 位相同、尾巴不同时不能看起来一样）', () => {
+  writeProject('normal')
+  writeCard({ requirements: [], evidenceRequired: ['artifact'] })
+  mkdirSync(join(workspace, 'src', 'det'), { recursive: true })
+  writeFileSync(join(workspace, 'src', 'det', 'm.ts'), 'export const m = 1\n', 'utf8')
+  const real = createHash('sha256').update('export const m = 1\n').digest('hex')
+  // 现场形态：模型编了个"前 12 位正确、尾巴是编的"哈希
+  const said = real.slice(0, 12) + 'a'.repeat(52)
+  assert.notEqual(said, real)
+  const bad = report(store, journal, {
+    taskId: 'TASK-001',
+    owner: 'cockpit',
+    status: 'done',
+    evidence: [{ kind: 'artifact', detail: `src/det/m.ts sha256=${said}`, at: 'x' }],
+  })
+  assert.equal(bad.ok, false)
+  assert.equal(bad.ok === false ? bad.code : '', 'evidence-artifact-hash')
+  const detail = bad.ok === false ? bad.detail : ''
+  // 两个指纹必须不同（评审前的实现只打印前 12 位 ⇒ 两句看起来一模一样）
+  const shown = [...detail.matchAll(/([0-9a-f]{8,}…[0-9a-f]{4})/gu)].map((match) => match[1] as string)
+  assert.equal(shown.length, 2, `要同时给出"现算"与"证据写的是"两个指纹：${detail}`)
+  assert.notEqual(shown[0], shown[1], '两个指纹必须能区分开')
+  assert.match(detail, /第 13 位起不同/u, '要指出首个不同位，便于一眼定位')
+})
+
+test('M30-16 T-3 detail 后面跟说明文字时，报错要**教怎么改**（而不是只说产物不存在）', () => {
+  writeProject('normal')
+  writeCard({ requirements: [], evidenceRequired: ['artifact'] })
+  mkdirSync(join(workspace, 'src', 'det'), { recursive: true })
+  writeFileSync(join(workspace, 'src', 'det', 'n.ts'), 'export const n = 1\n', 'utf8')
+  const real = createHash('sha256').update('export const n = 1\n').digest('hex')
+  const task = { id: 'TASK-001', evidenceRequired: ['artifact'] as EvidenceItem['kind'][], evidence: [] as EvidenceItem[] }
+  const clean = { path: 'src/det/n.ts', workspace, task }
+
+  // ① 路径后直接跟说明
+  const first = auditDoneEvidence(clean.task, [{ kind: 'artifact', detail: 'src/det/n.ts（已通过 mvn 编译）', at: 'x' }], clean.workspace)
+  assert.equal(first.ok, false)
+  assert.equal(first.ok === false ? first.code : '', 'evidence-artifact-detail', '是写法问题，不是"产物不存在"')
+  assert.match(first.ok === false ? first.detail : '', /之后还有「（已通过 mvn 编译）」/u, '要点出多余的那段文字')
+  assert.match(first.ok === false ? first.detail : '', /另一条 evidence/u, '要给出可执行的修法')
+
+  // ② **合法哈希之后**再跟说明：文案必须说「哈希没问题」，别误导用户删掉哈希
+  //    这里刻意覆盖**两种**变体：说明带内部空格、以及**不带空格**的短括号（评审 T-3 残留变体：
+  //    锚定正则下 `\S+` 会一路吃到结尾，把合法哈希误报成"不是 64 位十六进制"）。
+  for (const tail of ['（已通过 mvn 编译）', '（已通过）', ' 已通过']) {
+    const result = auditDoneEvidence(clean.task, [{ kind: 'artifact', detail: `src/det/n.ts sha256=${real}${tail}`, at: 'x' }], clean.workspace)
+    assert.equal(result.ok, false, `哈希后跟「${tail}」必须被拒（detail 写法不合法）`)
+    assert.equal(result.ok === false ? result.code : '', 'evidence-artifact-detail', `「${tail}」应报写法问题而不是哈希问题`)
+    assert.match(result.ok === false ? result.detail : '', /与哈希都合法/u, '要说明路径与哈希本身都合法')
+    assert.match(result.ok === false ? result.detail : '', /哈希之后还有/u, '要指出多出来的是哈希之后的说明')
+  }
+
+  // 反向：合法两种写法仍必须放行（收紧不能变成乱拦）
+  for (const detail of ['src/det/n.ts', `src/det/n.ts sha256=${real}`]) {
+    assert.equal(auditDoneEvidence(clean.task, [{ kind: 'artifact', detail, at: 'x' }], clean.workspace).ok, true, `${detail} 必须放行`)
+  }
+})
+
+test('M30-17 A2 竞态修复：采集时拿不到清单 → done 时补记，对账从此真的成立', () => {
+  // 复刻宿主行为：先 append `workspace/changes` 事件（监听器此刻触发、拿不到摘要），之后才写记录。
+  writeProject('normal')
+  writeCard({ writeScopes: ['src/det/'], evidenceRequired: ['artifact'] })
+  claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', sessionId: 's1', expectedRevision: 1 })
+  const seq = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, summary: undefined, enabled: true, hasProject: true })
+  assert.deepEqual(unresolvedSeqs(store, 's1', seq), [seq + 1], '没有摘要的 seq 要列出来供 done 补取')
+  assert.equal(changedFilesSince(store, 's1', seq).audited, false, '补取之前：未对账')
+
+  // done 时再取一次并补记（带越界文件）→ 对账成立并且**真的判红**
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, summary: { files: [{ path: 'src/other/escape.ts' }] }, enabled: true, hasProject: true })
+  assert.deepEqual(unresolvedSeqs(store, 's1', seq), [], '同一 seq 已有带摘要的记录 → 不再缺')
+  const after = changedFilesSince(store, 's1', seq)
+  assert.equal(after.audited, true, '同一 seq 只要有一条带摘要就算对过账')
+  assert.deepEqual(after.files, ['src/other/escape.ts'])
+  const violated = report(store, journal, {
+    taskId: 'TASK-001',
+    owner: 'cockpit',
+    status: 'done',
+    evidence: [artifact('src/det/z.ts', 'export const z = 26\n', false)],
+  })
+  assert.equal(violated.ok, false)
+  assert.equal(violated.ok === false ? violated.code : '', 'write-scope-violation', '补取到的越界文件必须判红')
+  assert.match(violated.ok === false ? violated.detail : '', /src\/other\/escape\.ts/u, '要点名越界文件')
+})
+
+test('M30-18 A2 补取的接线：done 之前先补，且补不到不拦', () => {
+  const index = readFileSync(new URL('../../src/index.ts', import.meta.url), 'utf8')
+  assert.match(index, /office\.pendingWorkspaceChanges\(call, args\.id\)/u, 'done 时必须查"还缺清单的 seq"')
+  assert.match(index, /service\?\.summary\?\.\(item\.sessionId, item\.seq\)/u, '要用宿主的 workspaceChanges.summary 再取一次')
+  assert.match(index, /office\.noteResolvedWorkspaceChanges\(call/u, '取到就补记（append-only）')
+  assert.match(index, /if \(files\.length > 0\)/u, '空清单不补记（避免制造"零改动"的假对账）')
+  const office = readFileSync(new URL('../../src/office.ts', import.meta.url), 'utf8')
+  assert.match(office, /pendingWorkspaceChanges\(call: OfficeCall, taskId: string\)/u)
+  assert.match(office, /noteResolvedWorkspaceChanges\(call: OfficeCall/u)
+})
+
+test('M30-19 文档守卫：CHANGELOG 不许写死"全量 N/N"（两次漂移后改为与测试输出同源）', () => {
+  // 事故史：写「全量 430/430」→ 加用例后变 433；改「438」→ 又变 441。写死的计数必然漂移，
+  // 所以改成"以 node scripts/run-tests.mjs 输出为准"，并在这里禁止它再出现。
+  const changelog = readFileSync(new URL('../../CHANGELOG.md', import.meta.url), 'utf8')
+  const hardcoded = [...changelog.matchAll(/全量 \*\*\d+\/\d+\*\*/gu)].map((match) => match[0])
+  assert.deepEqual(hardcoded, [], `CHANGELOG 里不要写死测试计数（会漂移）：${hardcoded.join('、')}`)
+  assert.match(changelog, /run-tests\.mjs/u, '要指向真正的计数来源')
 })

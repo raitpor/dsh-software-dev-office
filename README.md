@@ -241,6 +241,9 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 | `orchestrator` | `subagent` | 派发后端：`subagent` / `native-team`（实验）/ `inline` |
 | `maxParallelDispatch` | `4` | 并行派发上限（1–8） |
 | `captureWorkspaceChanges` | `true` | 采集 `workspace/changes` 证据 |
+| `enforceRoleMask` | `true` | 对**认得出的派发角色**硬拦掩码之外的调用（B6）；关掉只是不拦，掩码声明照旧 |
+| `dispatchProvider` | `spawn` | 真派发用的 provider 名（宿主 `subagents.list()` 里的名字；preset 默认装 `spawn`） |
+| `dispatchMaxDepth` | `1` | 派发深度上限（子代理不再开子代理） |
 | `registerTools` / `registerCommands` | `true` | 是否注册工具 / 斜杠命令（headless 可只留工具面） |
 | `board` | `{ text: true, panel: false }` | 看板后端：文本看板默认开；Web 面板未实现 |
 | `cost` | 见 §6 | 成本监视与预算 |
@@ -266,6 +269,7 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 | `claim` | CAS 版本、状态可认领、写范围不与在进行的卡冲突 | `revision-mismatch` / `not-claimable` / `write-scope-conflict`（既有） |
 | `done` | 证据种类 ⊇ 卡上 `evidenceRequired` | `evidence-kind-missing`（A1） |
 | `done` | `artifact` 证据的路径**必须真实存在**；给了 `sha256=` / `#<hex>` 就复算比对；越出工作区判红 | `evidence-artifact-missing` / `evidence-artifact-hash` / `evidence-artifact-outside`（A1） |
+| `done` | `artifact` 的 `detail` 只能是「路径」或「路径 sha256=<64hex>」——**路径/哈希后面跟说明文字**会被当成路径的一部分 | `evidence-artifact-detail`（A1；文案会指出多出来的那段，并把合法哈希区分开） |
 | `done` | `command` 证据带 `exitCode` 时必须为 0（不给则不拦） | `evidence-command-failed`（A1） |
 | `done` | **写范围对账**：认领之后本会话真实改动的文件必须落在 `writeScopes` 内 | `write-scope-violation`（A2） |
 | `done` | 卡上需求的用例**有结果**：`pass`，或 `skip` + 非空理由 | `test-result-missing`（没跑）/ `test-failing`（fail）/ `test-skip-unjustified`（skip 没写理由）（C7） |
@@ -276,10 +280,17 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 `(sessionId, seq)` 与文件清单记进 `.sdo/evidence/workspace-changes.jsonl`（`captureWorkspaceChanges` 控制开关）。
 `claim` 事件自身（带 `sessionId`）当基线，`done` 只比"基线之后"的改动。
 
+**采集与解析是分开的（竞态）**：宿主先 `session.append('workspace/changes', …)`、**之后**才把摘要写进记录，所以采集监听器那一刻拿不到文件清单。SDO 因此只记 `(sessionId, seq)`，并在 **`done` 时**（会话通常还活着）用 `workspaceChanges.summary(sessionId, seq)` 再取一次、**补记**一条带清单的记录；取不到就照旧如实报「未对账」。
+
 **"已对账"的判据是 `audited`，不是"有条目"**（评审 2026-10-03 抓到的 A2 缺陷）：每条命中条目都必须
 **带宿主给的摘要**（`summaryAvailable`）才算对过账 —— 宿主没有 `workspaceChanges` 服务、或 `summary()`
 返回 `undefined` 时，条目会"存在但没有文件信息"，那种情况**必须**回「写范围未对账」（`uiIndex.kWorkScopeNotAudited`），
 不得给出干净回执。旧条目没有该字段 ⇒ 保守当"未对账"。宿主**明确**回了"零改动"（`files: []`）则算已核对。
+
+**数据源的真实边界（实测 2026-10-03，sdo-test 67 个会话记录）**：宿主只为**顶层轮次**公告 `workspace/changes` ——
+9 个主会话共 38 个事件，而 **58 个子代理会话 0 个**。所以写范围对账只在「认领会话自己收到过公告」时成立；
+**被派发的执行者（子代理）完成的卡会走「写范围未对账」兜底**。要让 A2 覆盖派发卡需要换数据源
+（例如按卡的 `writeScopes` 在认领前后比对文件指纹），属设计取舍 —— 当前实现**不假装**覆盖，回执里如实说明。
 
 **证据 JSON 形状**（`sdo_task action=done` 的 `evidence` 参数，写在工具描述里）：
 
@@ -293,6 +304,60 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 
 **派发提示**（B4）：`buildDispatch` 的协议第 0 步就是"先加载角色卡技能 `sdo-role-cards`，再读本角色卡片"，
 免得执行者要自己从技能目录里发现它。
+
+### 派发：从「打印请求」到「真的起一次」（B4 / P-1）
+
+`buildDispatch` 组装的请求现在**真的交给宿主**：
+
+```
+sdo_plan action=next  →  pickBackend →  buildDispatch  →  subagents.start(settings.dispatchProvider, {
+    prompt:      [{ type:'text', text: request.prompt }]   // 协议第 0 步就让执行者先加载 sdo-role-cards
+    parent:      call.agent                                // 本次调用的发起 agent（宿主要求 live Agent）
+    persona:     request.persona
+    toolFilter:  { allow: request.toolFilter, deny: 角色 deny }   // ← 下发给宿主；**是否真隐藏取决于 provider 能力**（见下）
+    maxDepth:    settings.dispatchMaxDepth                 // 默认 1：子代理不再开子代理
+})
+```
+
+**"收窄到什么程度"是可观察的（评审 §4.2，第二轮加严）**：子代理每次开新请求都会公告 `request/header`，里面带**它实际拿到的工具清单**。
+SDO 只对自己派发出去的子会话（台账 `dispatch/started`）记账，写进 `.sdo/evidence/child-tools.jsonl`，
+并在下一次派发回执里如实展示：**「全部在掩码内」**（那就是宿主确实收窄了的证据）或
+**「掩码外工具仍可见：…」**（点名越界工具）。这样就不必靠谁的口头断言。
+
+**工具面隐藏没有关闭，而且原因在宿主侧**（真机实测 2026-10-03）：`toolFilter` 我们确实下发了，`spawn` provider 也**声明**
+`capabilities.toolFilter: true`（`dsh-subagent-spawn-in-process/lib/index.js:27`），宿主链路里也确实调了
+`applyChildComposition(..., {toolFilter})` → `childCtx.tools.restrict(...)` —— **但实测没生效**：sdo-test 派发出去的子代理
+**仍能调用**掩码外的 `sdo_plan`/`sdo_review`/`sdo_gate`（全部被**钩子的 B6 拦下**）—— 它的**公告面**其实被收窄了（`request/header` 里只有掩码内 9 个）。疑似「子代理自带 preset 之后注册进来的工具
+绕过 `restrict()`」，已另记 `docs/verification/2026-10-03-上游问题-子代理toolFilter未生效.md`。
+⇒ 派发回执**只陈述能证明的事**：已下发（附 provider 与它声明的能力值）+ **是否真的收窄，本插件无法自证** + 越界由钩子兜底。
+**P-3 仍未关闭**，而这不是接线问题。
+
+成功 → 记 `dispatch/started`（子会话 id）并回执「已真正派发」；失败 → 如实给出原因
+（`no-service` / `no-provider`（附可用 provider 列表）/ `no-parent` / `failed`），并退回
+「流程官用 `send_message` 转交」的老路径。**绝不假装派出去了**。
+
+### 角色掩码真的生效了吗（B5 / B6）
+
+**B5：先认出「这次工具调用是谁发的」**。宿主在 `ToolExecution.agent` 上给了发起者；据此四态判定：
+
+| 情形 | 角色 | 掩码 |
+|---|---|---|
+| 该会话**正做着**某张卡（卡 `in-progress` 且 owner 未变） | 卡上的 `role` | **硬拦**（B6） |
+| 子会话（`delegationDepth > 0`）但还没认领 | `dispatched`（非驾驶舱） | 不拦（角色未知），但**阶段纪律照走** |
+| 根会话（驾驶舱） | `cockpit` | 不拦 |
+| 拿不到会话信息 | `cockpit` | 不拦（**fail-open**：认不出人不能变成干不了活） |
+
+归属**只在这张卡正被做着时**成立：卡 `done`/`blocked`/`dropped`、被 `release` 回 ready、或被 `reassign` 换人，该会话立刻回到 `cockpit`（否则单会话模式下驾驶舱会被永久降级成那个角色的工具面，连 `sdo_gate` 都调不了 —— 评审 2026-10-03 F2）。
+
+`sdo_task` 是**协议通道**（claim/done/block 全在它上面），因此 **8 个角色的 `allow` 都必须包含它** —— 缺一个就会「认领即锁死」（评审 2026-10-03 F1）。`m31-04` 直接从派发提示里机械推导用到的工具并逐个核对掩码，以后提示里加了调用而掩码没跟上会立刻红。
+
+**B6：认得出的派发角色，掩码之外的调用当场拒绝**（白名单语义：`allow` 之外一律拒），
+开关 `enforceRoleMask`（默认开）。拒绝文案会点名角色、工具、该角色**可用**的工具面与角色卡路径。
+角色推导结果按 `roleCacheVersion` 缓存（本进程的认领/回报会失效）+ **5 秒 TTL** 兜底：钩子这个热路径不重读 journal，而台账若被**别的进程/实例**改写，最多陈旧 5 秒。
+
+诚实边界：**钩子拦的是调用**（第二层防线）。工具面**隐藏**由 P-1 接线后的 `toolFilter` 交给宿主施加
+（子代理看不到掩码外的工具）—— 该下发**已在真机上跑通派发**，但「子代理的工具面里确实没有掩码外工具」
+尚未在真机逐一核对（见 §11）。
 
 ## 10. 台账与产物
 
@@ -321,10 +386,12 @@ skills/ 8 张角色卡（analyst / architect / red-team / developer / tester / r
 
 | 边界 | 说明 |
 |---|---|
-| 派发宿主调用未接线 | `sdo_plan action=next` 会选后端、生成带 CAS 版本的派发请求并留痕；宿主 `SubagentRuntime.start` 的真实调用尚未接线。当前由流程官（**驾驶舱会话**）用 `send_message` 转交（该工具已由 preset 挂载；**被派发的角色没有它** —— 转交与观察子代理是驾驶舱的能力），或按 `inline` 就地执行。派发提示里已含「先加载角色卡技能」的第 0 步（B4）；**角色 `toolFilter` 仍只是算出来写进请求**，未真正施加 |
+| 派发已接线（P-1），真机未复测 | `sdo_plan action=next` 现在会真的调用宿主 `subagents.start(provider, {prompt, parent, persona, toolFilter: {allow, deny}, maxDepth})` 起子代理，并把子会话 id 记进 `dispatch/started`；宿主没有该服务 / 未注册 provider / 拿不到发起 agent 时**如实回执原因**，退回「流程官用 `send_message` 转交」。**工具面隐藏没有关闭（宿主侧）**：`toolFilter` 已下发、`spawn` 也声明支持，但实测子代理**仍能调用**掩码外工具（被钩子 B6 拒绝；公告面已被收窄）—— 疑似宿主 `restrict()` 收不住子代理自带 preset 注册的工具。**该现象现在可观察**：SDO 从子会话的 `request/header` 记下它真实的工具面（`.sdo/evidence/child-tools.jsonl`）并在派发回执里展示；上游问题见 `docs/verification/2026-10-03-上游问题-子代理toolFilter未生效.md`。本地单测覆盖参数与失败面；**本工作区未做真机成功派发复测**（sdo-test 已用它跑通开发阶段，见其测试报告） |
 | 子代理用量未归集 | `sdo_cost` 只统计驾驶舱会话；子代理会话对象未暴露给插件，回执里明确说明而不是编数 |
 | Web 面板未做 | 文本看板（`/sdo-board`）可用；Web 面板（client 插件）尚未实现 |
-| L3 纪律守卫未实测 | 策略与钩子已就位（fail-open，仅 `gateLevel: strict` 时拦）；deny 分支在本环境未做实测 |
+| 派发子代理的生命周期不可见 | P-1 用宿主 `subagents.start` 起的子会话**不在驾驶舱 `list_agents` 里**；卡停在 `in-progress` 时只能靠读会话文件判断它还活着，**没有超时/回收机制**（与「失联 owner 不自动释放」同类）。台账里有 `dispatch/started`（子会话 id）可作为线索 |
+| A2 的数据面很窄（已部分修） | 宿主只为**顶层轮次**公告 `workspace/changes`（实测：9 个主会话 39 事件 / **59 个子代理会话 0 事件**）⇒ 派发卡的写范围对账仍走「未对账」兜底。另有一个**竞态**曾让主会话也拿不到清单：宿主**先 `append` 事件、后写摘要记录**（`dsh-workspace-changes` 相邻两行），采集监听器在 append 那刻必然读到空 ⇒ 现改为「采集只记 `(sessionId, seq)`，`done` 时再取一次并补记」 |
+| 工具面隐藏的真机效果未逐一核对 | B5/B6 起：钩子用 `ToolExecution.agent` 推角色（认领过的卡 → 卡上的角色），并对**认得出的派发角色**硬拦掩码之外的调用（`enforceRoleMask`，默认开；fail-open）。**角色掩码的真机效果已由 sdo-test 验证**：真派发的子代理会话里出现 `tool/result` 级的拒绝回执（「越界：角色 developer 的工具面里没有 …」，本工作区按首行 `delegationDepth` 复算命中 8 个 depth≥1 会话）；本地单测另覆盖四态推导、掩码判定与真实钩子驱动。**仍待真机逐一核对**的是：P-1 真派发时子代理的**工具面**里确实没有掩码外工具（`toolFilter` 已交给宿主，属宿主行为）。另：角色归属的缓存是**进程内**的（版本号 + 5 秒 TTL），跨进程改台账最多陈旧 5 秒 |
 | 命令结果渲染 | Web 客户端不渲染"轮次之外"的命令节点（上游问题，见 `docs/verification/2026-09-29-上游问题-命令结果不渲染.md`）。SDO 用 `commandEcho: echo` 经 `agent.inbox.send(..., wakeup=false)` 投递成插件来源消息：界面可见、不唤醒轮次 |
 | 多词值必须加引号 | `--note 见 choice=waive`（未加引号）里 `choice=waive` 是独立 token；要一个多词值就写 `--note "…"`（见 §7） |
 | PlantUML 只出源码 | 本仓库不依赖 PlantUML，也没有渲染器：`--puml` 只写 `.puml` 骨架源码，出图请自行拿 PlantUML 处理 |

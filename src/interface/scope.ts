@@ -30,6 +30,19 @@ function cwdOfAgentLike(value: unknown): string | undefined {
   return typeof cwd === 'string' && cwd !== '' ? cwd : undefined
 }
 
+/**
+ * 从"会话/agent 风格"的对象里取**会话 id**（只认非空字符串；取不到就 `undefined`）。
+ *
+ * 为什么必须共享一处：`callOf`（工具层）写进台账的 `sessionId`、A2 的采集（`session.header.id`）
+ * 与角色归属（`claimsBySession`）**必须读同一个字段**，否则"认领会话"与"变更会话"对不上号。
+ * 老写法 `String(agent.id)` 在拿不到 id 时会**静默写入字面量 `"undefined"`**（评审 2026-10-03 新 minor），
+ * 污染归属与对账基线 —— 所以取不到就返回 `undefined`，由调用方**省略**该字段。
+ */
+export function sessionIdOf(scope: unknown): string | undefined {
+  const candidates = candidateIds(scope)
+  return candidates.find((id) => id.trim() !== '')
+}
+
 function candidateIds(scope: unknown): string[] {
   const ids: string[] = []
   const push = (value: unknown): void => {
@@ -37,10 +50,20 @@ function candidateIds(scope: unknown): string[] {
   }
   push(scope)
   if (typeof scope === 'object' && scope !== null) {
-    const holder = scope as { sessionId?: unknown; id?: unknown; session?: { id?: unknown } }
+    const holder = scope as {
+      sessionId?: unknown
+      id?: unknown
+      header?: { id?: unknown }
+      session?: { id?: unknown; header?: { id?: unknown } }
+    }
     push(holder.sessionId)
     push(holder.id)
     push(holder.session?.id)
+    // **真实 agent 形态**：会话 id 在 `agent.session.header.id`（`SessionHeader.id`，dsh-session 明写
+    // "mirrors the Session's id"）。少了这两个候选，钩子拿到的 sessionId 永远是 undefined ⇒
+    // 角色推导恒为 unknown ⇒ 掩码空转（2026-10-03 测试报告 T-4 的覆盖缺口就是这么暴露的）。
+    push(holder.session?.header?.id)
+    push(holder.header?.id)
   }
   return ids
 }

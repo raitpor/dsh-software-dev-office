@@ -136,7 +136,7 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       return { ok: false, code, detail: describeTestFirstGaps(task.id, 'done', doneGaps) }
     }
     // A2：写范围对账 —— 拿"认领基线"之后本会话真实改动的文件，与卡的 writeScopes 比。
-    const baseline = lastClaimBaseline(journal, task.id)
+    const baseline = claimBaseline(journal, task.id)
     const changed = changedFilesSince(store, baseline?.sessionId, baseline?.seq)
     const scopeAudit = auditWriteScopes(changed.files, task.writeScopes.map((scope) => textOf(scope)).filter((scope) => scope !== ''))
     if (changed.entries > 0 && !scopeAudit.ok) {
@@ -176,7 +176,7 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
  * 取某卡最近一次认领基线（A2）：直接用 `task/claimed` 事件自己的 `seq` 与它带的 `sessionId`。
  * 没有就返回 undefined —— 对账会如实报"未对账"，而不是猜一个基线。
  */
-function lastClaimBaseline(journal: Journal, taskId: string): { sessionId: string; seq: number } | undefined {
+export function claimBaseline(journal: Journal, taskId: string): { sessionId: string; seq: number } | undefined {
   const events = journal.read().events.filter((event) => event.type === 'task/claimed' && event.data.id === taskId)
   const last = events[events.length - 1]
   if (last === undefined) return undefined

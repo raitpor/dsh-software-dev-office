@@ -500,7 +500,10 @@ export function describeTaskBoard(input: {
   return lines.join('\n')
 }
 
-/** 派发请求（宿主后端）。 */
+/**
+ * 派发请求（宿主后端）——**这是"没派出去"时的回执**：提示词与掩码都在这儿，交给流程官自行转交。
+ * 真派发成功走 {@link describeDispatchStarted}（P-1）。
+ */
 export function describeDispatch(request: DispatchRequest, degradedReason?: string | undefined): string {
   const lines = [fmt('uiDescribe.k197', { p1: request.task.id, p2: request.owner, p3: request.backend, p4: request.persona })]
   lines.push(
@@ -513,6 +516,72 @@ export function describeDispatch(request: DispatchRequest, degradedReason?: stri
   lines.push('')
   lines.push(request.prompt)
   return lines.join('\n')
+}
+
+/**
+ * **已真正派发**（P-1）：宿主起了子代理运行 —— 回执给子会话 id、provider、下发的工具数与写范围，
+ * 提示词仍然附上（便于留档与人工核对），但**不再**让流程官自己转交。
+ *
+ * **口径（2026-10-03 评审纠正后）**：只陈述**能证明**的两件事 —— ① 我们把 `toolFilter` 下发了（附 provider
+ * 与它声明的能力值）；② **子代理的工具面是否真的收窄，本插件无法自证**。真机反例见
+ * sdo-test §8.4②（`spawn` 派发出去的子代理仍然调用了 `sdo_plan`/`sdo_review`/`sdo_gate`，被钩子拒绝）。
+ * 所以这里**不再**写"它看不到掩码外的工具" —— 那是替宿主打包票。
+ */
+export function describeDispatchStarted(
+  request: DispatchRequest,
+  provider: string,
+  childSessionId: string,
+  tools: number,
+  toolFilterDeclared = false,
+  faces: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }[] = [],
+): string {
+  const lines = [fmt('uiDescribe.k199DispatchStarted', { p1: request.task.id, p2: request.owner, p3: provider, p4: childSessionId })]
+  lines.push(fmt('uiDescribe.k200DispatchTools', { p1: String(tools), p2: request.persona }))
+  // 只报"我们做了什么"与"provider 声明了什么"，并**明说本插件不能自证生效**（越界由钩子兜底）
+  lines.push(fmt('uiDescribe.k201MaskHandedOver', { p1: provider, p2: toolFilterDeclared ? t('uiDescribe.k231Yes') : t('uiDescribe.k232No') }))
+  lines.push(t('uiDescribe.k202MaskNotSelfVerifiable'))
+  lines.push(fmt('uiDescribe.k106', { p1: request.toolFilter.join(' '), p2: request.writeScopes.join('、') || t('uiDescribe.k169') }))
+  lines.push(...childFaceLines(faces))
+  // 观测是**持续**写入的：派发这一刻子代理还没跑，所以这里必然可能"未观测到"——指路，别让它成为死数据
+  lines.push(t('uiDescribe.k207FaceLedgerPointer'))
+  lines.push(fmt('uiDescribe.k107', { p1: request.expectedRevision }))
+  lines.push('')
+  lines.push(request.prompt)
+  return lines.join('\n')
+}
+
+/**
+ * **公告面 + 执行面**的观测渲染（派发回执与 `sdo_status` 共用一处 —— 口径只能有一份）。
+ *
+ * - 公告面：`request/header` 里它被公告的工具与掩码外项（宿主收窄的是**公告清单**）；
+ * - 执行面：本会话里**实际发起**的掩码外调用次数与去重后的工具名（模型对**未公告**工具仍能调用，钩子兜底拒绝）。
+ */
+export function childFaceLines(faces: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }[]): string[] {
+  const lines: string[] = []
+  for (const face of faces) {
+    lines.push(
+      face.violations.length === 0
+        ? fmt('uiDescribe.k203FaceAnnouncedClean', { p1: face.childSessionId, p2: String(face.tools.length) })
+        : fmt('uiDescribe.k204FaceAnnouncedViolations', { p1: face.childSessionId, p2: face.violations.join(' ') }),
+    )
+    const called = face.calls ?? []
+    if (called.length === 0) {
+      lines.push(fmt('uiDescribe.k205FaceCalledClean', { p1: face.childSessionId }))
+      continue
+    }
+    // 文案里的"N 次"必须是**次数**（`calls` 是去重名 —— 两者口径不同，评审第三轮 B）
+    lines.push(
+      fmt('uiDescribe.k206FaceCalledViolations', {
+        p1: face.childSessionId,
+        // 旧条目（没有 callCount）用去重名字数兜底：方向**保守**（不夸大次数），
+        // 新条目都带 callCount ⇒ 正常路径不会走到兜底（评审第四轮 §3）。
+        p2: String(face.callCount ?? called.length),
+        p3: String(called.length),
+        p4: called.join(' '),
+      }),
+    )
+  }
+  return lines
 }
 
 /** 就地执行（inline 降级）：把任务卡交给主模型。 */

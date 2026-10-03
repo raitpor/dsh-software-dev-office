@@ -167,6 +167,10 @@ import type { ApplicabilityDraftInput, ApplicabilityState } from './domain/appli
 import type { SignatureState } from './domain/signature.js'
 import { methodDocStatus } from './domain/methodDocs.js'
 import type { MethodDocStatus } from './domain/methodDocs.js'
+import { recordWorkspaceChanges, unresolvedSeqs } from './domain/workspaceChanges.js'
+import { readChildFaces, recordChildFace } from './domain/dispatchFace.js'
+import type { ChildFaceEntry } from './domain/dispatchFace.js'
+import { claimBaseline } from './domain/collab.js'
 
 /**
  * 该阶段是否是"架构/设计"阶段（增量 1 / §1.3 第 2 条）。
@@ -2225,17 +2229,26 @@ export class SoftwareDevOffice {
     return dropContract(store, journal, contractId, reason)
   }
 
+  /**
+   * **B5 的角色缓存版本号**：只在"会话 ↔ 卡"关系会变的事件（认领/回报）后 +1。
+   * 工具钩子是热路径，不能每次都重读 journal 来推角色；版本号一变才重算。
+   */
+  roleCacheVersion = 0
+
   claimTask(call: OfficeCall, input: ClaimInput): ClaimResult {
     const { store, journal } = this.contextFor(call)
     // A2：认领时记下"发生在哪个会话"，`done` 据此取本会话的真实改动做写范围对账
     const sessionId = input.sessionId ?? call.sessionId
-    return claim(store, journal, sessionId === undefined ? input : { ...input, sessionId })
+    const outcome = claim(store, journal, sessionId === undefined ? input : { ...input, sessionId })
+    this.roleCacheVersion += 1
+    return outcome
   }
 
   /** 回报（done 必须带证据）。 */
   reportTask(call: OfficeCall, input: ReportInput): ReportResult {
     const { store, journal } = this.contextFor(call)
     const result = reportTask(store, journal, input)
+    if (result.ok) this.roleCacheVersion += 1
     if (result.ok && input.status === 'done') {
       // 完成的卡自动挂上"任务→需求"的追溯边（覆盖率与影响分析都靠它）
       const task = result.task
@@ -2281,6 +2294,72 @@ export class SoftwareDevOffice {
       owner: input.owner,
       degradedReason: input.degradedReason ?? '',
     })
+  }
+
+  /**
+   * **真派发留痕（P-1）**：宿主真的起了一次子代理运行 —— 记下 provider、子会话 id 与下发的工具数。
+   * （只在 `startDispatch` 返回 `started:true` 时调用；失败只写 `dispatch/decided`，不写这里。）
+   */
+  recordDispatchStarted(call: OfficeCall, input: { taskId: string; provider: string; childSessionId: string; tools: number; role?: string | undefined }): void {
+    const { journal } = this.contextFor(call)
+    journal.append('dispatch/started', {
+      task: input.taskId,
+      provider: input.provider,
+      childSessionId: input.childSessionId,
+      tools: input.tools,
+      ...(input.role === undefined ? {} : { role: input.role }),
+    })
+  }
+
+  /**
+   * **补记文件清单**（A2 的竞态修法）：宿主先 append `workspace/changes` 事件、之后才写摘要记录，
+   * 所以采集当时拿不到文件清单。`done` 时（会话仍活着）再取一次，取到就补一条带摘要的记录。
+   */
+  noteResolvedWorkspaceChanges(call: OfficeCall, input: { sessionId: string; seq: number; files: string[] }): void {
+    const { store } = this.contextFor(call)
+    recordWorkspaceChanges({
+      store,
+      sessionId: input.sessionId,
+      seq: input.seq,
+      summary: { files: input.files.map((path) => ({ path })) },
+      enabled: true,
+      hasProject: true,
+    })
+  }
+
+  /** 本会话派发出去的子会话（来自 `dispatch/started`；带卡上的角色，用于算"掩码外工具"）。 */
+  dispatchedChildren(call: OfficeCall): { childSessionId: string; taskId: string; role: string; provider: string }[] {
+    const { store, journal } = this.contextFor(call)
+    const roleOfCard = new Map(listTasks(store).map((task) => [task.id, task.role]))
+    return journal
+      .read()
+      .events.filter((event) => event.type === 'dispatch/started')
+      .map((event) => ({
+        childSessionId: String(event.data.childSessionId ?? ''),
+        taskId: String(event.data.task ?? ''),
+        provider: String(event.data.provider ?? ''),
+        role: String(event.data.role ?? roleOfCard.get(String(event.data.task ?? '')) ?? ''),
+      }))
+      .filter((item) => item.childSessionId !== '')
+  }
+
+  /** 记一条"子代理工具面观测"（评审 §4.2：把"是否收窄"变成可核对的事实）。 */
+  noteChildFace(call: OfficeCall, input: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }): void {
+    const { store } = this.contextFor(call)
+    recordChildFace(store, input)
+  }
+
+  /** 读回观测（供回执里如实展示）。 */
+  childFaces(call: OfficeCall): ChildFaceEntry[] {
+    return readChildFaces(this.storeFor(this.requireWorkspace(call))).faces
+  }
+
+  /** A2：列出该卡认领之后、**还缺文件清单**的 `(sessionId, seq)`（供 `done` 时补取）。 */
+  pendingWorkspaceChanges(call: OfficeCall, taskId: string): { sessionId: string; seq: number }[] {
+    const { store, journal } = this.contextFor(call)
+    const baseline = claimBaseline(journal, taskId)
+    if (baseline === undefined) return []
+    return unresolvedSeqs(store, baseline.sessionId, baseline.seq).map((seq) => ({ sessionId: baseline.sessionId, seq }))
   }
 
   /** 迭代。 */

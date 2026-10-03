@@ -65,6 +65,8 @@ import {
   describeTaskBoard,
   describeTaskConflict,
   describeTrace,
+  describeDispatchStarted,
+  childFaceLines,
 } from './interface/describe.js'
 import { renderStatusBlock } from './interface/inject.js'
 import {
@@ -119,6 +121,15 @@ import {
 } from './types.js'
 import type { AcceptanceCriterion, Dimension, EvidenceItem, ViewKind } from './types.js'
 import { recordWorkspaceChanges } from './domain/workspaceChanges.js'
+import { attributeRole, claimsBySession, roleCardPath, roleMaskDecision, toolAllowList } from './domain/roles.js'
+import type { RoleAttribution } from './domain/roles.js'
+import { startDispatch } from './integration/dispatch.js'
+import type { SubagentRuntimeLike } from './integration/dispatch.js'
+import { roleCard } from './domain/roles.js'
+import { isRole } from './domain/plan.js'
+import { sessionIdOf } from './interface/scope.js'
+import { toolCallNameOf, toolNamesOfHeader } from './domain/dispatchFace.js'
+import { maskAllows } from './domain/roles.js'
 
 export const name = 'dsh-software-dev-office'
 
@@ -298,11 +309,39 @@ export function apply(ctx: Context, config: SdoConfig): void {
    */
   ctx.on('session/event', (session, event) => {
     try {
-      if (!settings.captureWorkspaceChanges) return
-      if ((event as { type?: string }).type !== 'workspace/changes') return
+      const eventType: string = String((event as { type?: unknown }).type ?? '')
       const header = (session as { header?: { id?: unknown; cwd?: unknown } }).header
-      const sessionId = typeof header?.id === 'string' ? header.id : undefined
+      // 采集用的会话 id 与 `callOf`（claim 基线）读**同一个字段**，否则两边对不上号
+      const sessionId = sessionIdOf(session)
       const cwd = typeof header?.cwd === 'string' ? header.cwd : undefined
+      // **评审 §4.2：把「宿主有没有真的收窄工具面」从断言变成观察** —— 只认我们自己派发出去的子会话，
+      // 看它 `request/header` 里**实际拿到**的工具清单。这条不受 `captureWorkspaceChanges` 开关影响
+      // （它观测的是掩码是否生效，与写范围对账是两件事）。
+      if (eventType === 'request/header') {
+        if (sessionId === undefined || cwd === undefined) return
+        const dispatched = office.dispatchedChildren({ sessionId, cwd })
+        const mine = dispatched.find((item) => item.childSessionId === sessionId)
+        if (mine === undefined) return
+        const tools = toolNamesOfHeader((event as { data?: { header?: unknown } }).data?.header)
+        if (tools.length === 0) return
+        const role = mine.role
+        const violations = isRole(role) ? tools.filter((tool) => !maskAllows(role, tool)) : []
+        office.noteChildFace({ sessionId, cwd }, { childSessionId: sessionId, tools, violations })
+        return
+      }
+      // **执行面**：模型可能对**未被公告**的工具发起调用（宿主会把它路由到工具层，只有钩子拦得住）。
+      // 只统计我们自己派发出去的子会话里、落在掩码之外的调用。
+      if (eventType === 'tool/call') {
+        if (sessionId === undefined || cwd === undefined) return
+        const mine = office.dispatchedChildren({ sessionId, cwd }).find((item) => item.childSessionId === sessionId)
+        if (mine === undefined || !isRole(mine.role)) return
+        const called = toolCallNameOf(event)
+        if (called === undefined || maskAllows(mine.role, called)) return
+        office.noteChildFace({ sessionId, cwd }, { childSessionId: sessionId, tools: [], violations: [], calls: [called], callCount: 1 })
+        return
+      }
+      if (!settings.captureWorkspaceChanges) return
+      if (eventType !== 'workspace/changes') return
       if (sessionId === undefined || cwd === undefined) return
       office.noteSession(sessionId, cwd)
       const store = office.storeFor(cwd)
@@ -336,6 +375,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
   }
   interface SubagentsLike {
     listDescendants(rootSessionId: unknown, signal?: AbortSignal): Promise<{ sessionId?: unknown }[]>
+    /** P-1：真派发所需的最小面（缺失即降级为"让流程官自己转交"）。 */
+    list?: () => string[]
+    start?: SubagentRuntimeLike['start']
   }
   let tokenMeter: TokenMeterLike | undefined
   let subagentsApi: SubagentsLike | undefined
@@ -527,11 +569,17 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // 而 `status.rebuilt` 在这一次读取里必然是 false（投影刚被写过），于是回执看起来"什么都没发生"。
       const forced = args.rebuild === true ? office.rebuild(call) : undefined
       const text = describeStatus(office.status(call), settings.projectDirName, office.shapeNotes(call))
-      if (forced === undefined) return text
+      // **观测的事后出口（评审第三轮 C）**：派发回执那一刻子代理还没跑，观测数据只有到了这里（或看板）才看得到
+      const faces = office.childFaces(call)
+      const faceBlock =
+        faces.length === 0
+          ? ''
+          : '\n' + fmt('uiDescribe.k208FaceBlockHeader', { p1: String(faces.length) }) + '\n' + childFaceLines(faces).join('\n')
+      if (forced === undefined) return text + faceBlock
       const note = forced.truncated
         ? fmt('uiIndex.kRebuildTruncated', { p1: String(forced.badLine ?? '?') })
         : t('uiIndex.kRebuildForced')
-      return `${note}\n${text}`
+      return `${note}\n${text}` + faceBlock
     },
 
     async board(
@@ -677,10 +725,34 @@ export function apply(ctx: Context, config: SdoConfig): void {
           ...(decision.degradedReason === undefined ? {} : { degradedReason: decision.degradedReason }),
         })
         lastBackend = { backend: decision.backend, iteration: iteration?.number }
+        if (decision.backend === 'inline') {
+          out.push(describeInlineHandoff(request, decision.degradedReason))
+          continue
+        }
+        // P-1：真的把请求交给宿主的 subagents 服务起一次运行；失败如实说明原因（不假装派出去了）
+        const outcome = await startDispatch({
+          runtime: subagentsApi,
+          provider: settings.dispatchProvider,
+          agent: call.agent,
+          request,
+          deny: isRole(task.role) ? (roleCard(task.role)?.deny ?? []) : [],
+          maxDepth: settings.dispatchMaxDepth,
+        })
+        if (outcome.started) {
+          office.recordDispatchStarted(call, {
+            taskId: task.id,
+            provider: outcome.provider,
+            childSessionId: outcome.childSessionId,
+            tools: request.toolFilter.length,
+            ...(isRole(task.role) ? { role: task.role } : {}),
+          })
+          out.push(describeDispatchStarted(request, outcome.provider, outcome.childSessionId, request.toolFilter.length, outcome.toolFilterDeclared, office.childFaces(call)))
+          continue
+        }
         out.push(
-          decision.backend === 'inline'
-            ? describeInlineHandoff(request, decision.degradedReason)
-            : describeDispatch(request, decision.degradedReason),
+          describeDispatch(request, decision.degradedReason) +
+            '\n' +
+            fmt('uiIndex.kDispatchNotStarted', { p1: outcome.reason, p2: outcome.detail }),
         )
       }
       const tail = plan.queued.length === 0 ? '' : fmt('uiIndex.k32', { p1: plan.queued.length })
@@ -714,6 +786,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // A1：`command` 证据可带退出码（给了就必须为 0 才算完成）
             ...(row.exitCode === undefined ? {} : { exitCode: Number(row.exitCode) }),
           }))
+          // ——— A2 竞态修法：宿主"先 append 事件、后写摘要"，所以采集当时必然拿不到文件清单。
+          // `done` 这一刻会话通常还活着，再取一次并补记（取不到就照旧如实报"未对账"）。
+          if (args.action === 'done') {
+            try {
+              const resolution = office.pendingWorkspaceChanges(call, args.id)
+              const service = (ctx as unknown as { get?: (name: string) => unknown }).get?.('workspaceChanges') as
+                | { summary?: (id: string, seq: number) => { files?: { path?: string; display?: string }[] } | undefined }
+                | undefined
+              for (const item of resolution) {
+                const summary = service?.summary?.(item.sessionId, item.seq)
+                const files = (summary?.files ?? [])
+                  .map((file) => (typeof file.path === 'string' && file.path !== '' ? file.path : typeof file.display === 'string' ? file.display : ''))
+                  .filter((path) => path !== '')
+                if (files.length > 0) office.noteResolvedWorkspaceChanges(call, { sessionId: item.sessionId, seq: item.seq, files })
+              }
+            } catch {
+              /* fail-open：补不到就照旧"未对账"，绝不因此拦下 done */
+            }
+          }
           const result = office.reportTask(call, {
             taskId: args.id,
             owner: args.owner,
@@ -1687,6 +1778,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
        * 只在 `gateLevel: strict` 下拦；**fail-open**：钩子自身异常一律放行
        * （纪律守卫绝不能变成"插件坏了就干不了活"）。
        */
+      // B5 的角色缓存：`roleCacheVersion` 变化（认领/回报）或**超过 TTL** 才重算，避免每次工具调用都读 journal。
+      // TTL 是给"台账被别的进程/实例改写"留的兜底（本进程的版本号不会因外部写入而变）——最多陈旧 5 秒。
+      const ROLE_CACHE_TTL_MS = 5_000
+      let roleCacheKey = ''
+      let roleCacheAt = 0
+      let roleClaims: ReturnType<typeof claimsBySession> = []
+
       toolCtx.effect(() => {
         const off = (
           toolCtx as unknown as {
@@ -1694,7 +1792,46 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }
         ).on('tools/pre-execute', async (exec, next) => {
           try {
-            const status = office.status(office.callForScope(undefined))
+            // ——— B5：先认出"这次调用是谁发的" ———
+            // 宿主在 `ToolExecution.agent` 上给了发起者（"the agent on whose behalf the call runs"）。
+            // 老实现把 role 写死成 `cockpit`，而阶段纪律对 cockpit 首行放行 ⇒ 纪律与掩码都不生效。
+            const agent = (exec as { agent?: unknown }).agent
+            const call = injectionCall(agent)
+            const tool = String(exec.name ?? '')
+            const attributed = ((): RoleAttribution => {
+              if (call.cwd === undefined) return { kind: 'unknown', role: 'cockpit' }
+              const cacheKey = `${call.cwd}#${office.roleCacheVersion}`
+              if (roleCacheKey !== cacheKey || Date.now() - roleCacheAt > ROLE_CACHE_TTL_MS) {
+                roleCacheKey = cacheKey
+                roleCacheAt = Date.now()
+                roleClaims = claimsBySession(office.storeFor(call.cwd), office.journalFor(call.cwd))
+              }
+              const depth = (agent as { session?: { header?: { delegationDepth?: unknown } } } | undefined)?.session?.header?.delegationDepth
+              return attributeRole({
+                sessionId: call.sessionId,
+                delegationDepth: typeof depth === 'number' ? depth : undefined,
+                claims: roleClaims,
+              })
+            })()
+
+            // ——— B6：认得出的派发角色 ⇒ 掩码**硬拦**（白名单：allow 之外一律拒绝） ———
+            if (settings.enforceRoleMask && attributed.kind === 'dispatched') {
+              const mask = roleMaskDecision(attributed.role, tool)
+              if (mask.kind === 'deny') {
+                return {
+                  kind: 'deny',
+                  reason: fmt('uiIndex.kMaskDenied', {
+                    p1: attributed.role,
+                    p2: mask.tool,
+                    p3: toolAllowList(attributed.role).join(' / '),
+                    p4: roleCardPath(attributed.role),
+                  }),
+                }
+              }
+            }
+
+            // ——— L3 阶段纪律：用**真实角色**判（认不出时按驾驶舱 fail-open） ———
+            const status = office.status(call.cwd === undefined ? office.callForScope(undefined) : call)
             const args = (exec.arguments ?? {}) as { path?: unknown; file?: unknown; paths?: unknown }
             const paths = [
               ...(typeof args.path === 'string' ? [args.path] : []),
@@ -1704,14 +1841,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
             const decision = disciplineOrAllow({
               gateLevel: settings.gateLevel,
               phase: status.project?.phase ?? '',
-              role: 'cockpit',
-              tool: String(exec.name ?? ''),
+              role: attributed.role,
+              tool,
               paths,
               initialized: status.project !== undefined,
             })
             if (decision.kind === 'deny') return { kind: 'deny', reason: decision.reason }
           } catch {
-            /* fail-open：钩子异常一律放行 */
+            /* fail-open：钩子异常一律放行（认不出人不能变成干不了活） */
           }
           return next()
         })

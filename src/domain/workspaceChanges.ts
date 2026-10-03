@@ -26,6 +26,8 @@ export interface WorkspaceChangesEntry {
   at: string
   /** 该事件覆盖的变更文件（工作区相对路径）。 */
   files: string[]
+  /** 补记时间（`done` 时才取到清单的那种记录；`undefined` = 采集当时就拿到了）。 */
+  resolvedAt?: string | undefined
   /**
    * 宿主到底**给没给**这份摘要（`workspaceChanges.summary()` 是否可用）。
    *
@@ -110,8 +112,21 @@ export function changedFilesSince(
   const hit = entries.filter((entry) => entry.sessionId === sessionId && entry.seq > sinceSeq)
   const files: string[] = []
   for (const entry of hit) for (const file of entry.files) if (!files.includes(file)) files.push(file)
-  // `audited` 才是"能不能说已对账"：**每一条**命中条目都必须带宿主给的摘要。
-  // 只要求 entries>0 会把"有条目但没文件信息"误读成"零越界"（这正是评审抓到的缺陷）。
-  const audited = hit.length > 0 && hit.every((entry) => entry.summaryAvailable === true)
+  // `audited` = "窗口里**每个 seq** 都至少有一条带摘要的记录"。
+  // 按 seq 归并而不是"每条记录都要有摘要"：同一 seq 可以先是"采到但拿不到摘要"（宿主先 append 事件、
+  // 后写记录 —— 竞态），随后 `done` 时再取一次并**补记**一条带摘要的 ✓ 那样才算真对过账。
+  const seqs = [...new Set(hit.map((entry) => entry.seq))]
+  const audited = seqs.length > 0 && seqs.every((seq) => hit.some((entry) => entry.seq === seq && entry.summaryAvailable === true))
   return { files, entries: hit.length, audited }
+}
+
+/**
+ * **还缺文件清单的 seq**（采集时拿不到摘要的那些 —— 宿主是"先 append 事件、后写记录"，必然为空）。
+ * `done` 时拿它去宿主的 `workspaceChanges.summary(sessionId, seq)` 再取一次，取到就补记一条带摘要的。
+ */
+export function unresolvedSeqs(store: SdoStore, sessionId: string, sinceSeq: number): number[] {
+  const { entries } = readWorkspaceChanges(store)
+  const hit = entries.filter((entry) => entry.sessionId === sessionId && entry.seq > sinceSeq)
+  const seqs = [...new Set(hit.map((entry) => entry.seq))]
+  return seqs.filter((seq) => !hit.some((entry) => entry.seq === seq && entry.summaryAvailable === true))
 }

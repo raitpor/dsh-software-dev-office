@@ -22,6 +22,7 @@ import { fmt, t } from '../domain/i18n.js'
 import type { OfficeCall } from '../office.js'
 import { ArgvReader } from './argv.js'
 import type { DesignArgs, GateArgs, InitArgs, RedTeamArgs, RequirementArgs } from './tools.js'
+import { sessionIdOf } from './scope.js'
 
 /** 命令行为依赖，由插件入口注入。 */
 export interface OfficeCommandDeps {
@@ -60,7 +61,9 @@ function callOf(invocation: CommandInvocation): OfficeCall {
   const cwd = [holder.session?.header?.cwd, holder.cwd, holder.workspace?.cwd, holder.session?.cwd].find(
     (value): value is string => typeof value === 'string' && value !== '',
   )
-  return { sessionId: String(agent.id), agent, ...(cwd === undefined ? {} : { cwd }) }
+  // 会话 id 与采集/归属**读同一个字段**（见 sessionIdOf）；取不到就**省略**，绝不写 "undefined"
+  const sessionId = sessionIdOf(agent)
+  return { ...(sessionId === undefined ? {} : { sessionId }), agent, ...(cwd === undefined ? {} : { cwd }) }
 }
 
 /**

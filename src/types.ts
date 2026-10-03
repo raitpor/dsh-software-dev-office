@@ -1262,6 +1262,7 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'plan/review-approved',
   'plan/review-waived',
   'dispatch/decided',
+  'dispatch/started',
   'iteration/updated',
   'task/created',
   'task/updated',
@@ -1415,6 +1416,7 @@ export type SdoEventType =
   | 'task/done'
   | 'task/blocked'
   | 'dispatch/decided'
+  | 'dispatch/started'
   | 'iteration/updated'
   | 'review/recorded'
   | 'test/recorded'
@@ -1436,6 +1438,7 @@ export type SdoEventType =
   | 'task/done'
   | 'task/blocked'
   | 'dispatch/decided'
+  | 'dispatch/started'
   | 'iteration/updated'
   | 'review/recorded'
   | 'test/recorded'

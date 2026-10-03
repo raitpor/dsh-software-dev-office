@@ -314,3 +314,56 @@ test('M25 语言包不得出现重复键（YAML 后者会静默覆盖前者 —�
   }
   assert.deepEqual(duplicates, [], `语言包里有重复键，后者会静默覆盖前者：${duplicates.join('；')}`)
 })
+
+test('M25 语言包哨兵：不同段的同号键文案必须各就各位（我按行首匹配改语言包时顶掉过别段）', () => {
+  // 事故：修 P-1 派发文案时，我用"行首匹配 `  k104:`"批量替换，把 **uiIndex.k104**（创建元素需要 name）、
+  // **uiGates.k104**（失败用例）一起覆盖成了派发文案 —— 键没重复、守卫全绿，但三个功能同时说错话。
+  const packs = (locale: string): Record<string, Record<string, string>> =>
+    loadPackagedYaml<Record<string, Record<string, string>>>(`src/data/lang/${locale}.yml`)
+  const zh = packs('zh-CN')
+  const sentinels: [string, string, RegExp][] = [
+    ['uiIndex', 'k104', /name/u],
+    ['uiIndex', 'k105', /ADR|title|decision/u],
+    ['uiGates', 'k104', /用例/u],
+    ['uiDescribe', 'k104', /派发|子代理/u],
+  ]
+  for (const [section, key, pattern] of sentinels) {
+    assert.match(zh[section]?.[key] ?? '', pattern, `${section}.${key} 的文案被别的段的同号键顶掉了`)
+  }
+  // 反向：被点名这几段的同号键不得彼此雷同（否则说明有人又"整文件替换"了）
+  const k104s = ['uiIndex', 'uiGates', 'uiDescribe'].map((section) => zh[section]?.k104 ?? '')
+  assert.equal(new Set(k104s).size, k104s.length, `三段 k104 的文案不该雷同：${JSON.stringify(k104s)}`)
+})
+
+test('M25 语言包 markdown 守卫：`**` 要成对**且不能是空粗体**（第四轮复审：旧判据抓不住它记录的那次事故）', () => {
+  // 事故原文（我自己改文案时留下的）：`**仍然**可以调用****了掩码外的工具`
+  //   —— `**` 一共 4 个（**偶数**），旧的"个数为偶数"判据会**放行** ✗；真正的坏味道是 `****`（空粗体）。
+  // 判据：按顺序吃掉 `**…**`，要求**能配上**且**中间非空**；另外直接禁掉 `****`。
+  const markdownOk = (value: string): boolean => {
+    if (value.includes('****')) return false
+    let rest = value
+    for (;;) {
+      const open = rest.indexOf('**')
+      if (open === -1) return true
+      const close = rest.indexOf('**', open + 2)
+      if (close === -1) return false
+      if (rest.slice(open + 2, close).trim() === '') return false // 空内容或只有空白都算坏
+      rest = rest.slice(close + 2)
+    }
+  }
+  // **把事故原文当反例钉住**（变异自证该走的路：喂事故串，守卫必须红）
+  assert.equal(markdownOk('子代理**仍然**可以调用****了掩码外的工具'), false, '事故原文必须被判红（旧判据会放行）')
+  assert.equal(markdownOk('仍然**可以调用**掩码外的工具'), true, '成对且非空 → 放行')
+  assert.equal(markdownOk('**未闭合的粗体'), false)
+  assert.equal(markdownOk('空粗体 ** ** 也不行'), false, '中间只有空格也算空内容')
+
+  const problems: string[] = []
+  for (const locale of ['zh-CN', 'en']) {
+    const lines = readFileSync(new URL(`../../src/data/lang/${locale}.yml`, import.meta.url), 'utf8').split('\n')
+    for (const [index, line] of lines.entries()) {
+      const value = /^  [A-Za-z][\w]*: "(.*)"$/u.exec(line)?.[1]
+      if (value !== undefined && !markdownOk(value)) problems.push(`${locale}:${index + 1}`)
+    }
+  }
+  assert.deepEqual(problems, [], `这些语言包值的 ** 不成对或是空粗体：${problems.join('；')}`)
+})

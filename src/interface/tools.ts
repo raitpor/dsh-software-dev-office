@@ -36,6 +36,7 @@ import {
   actionList,
 } from '../types.js'
 import type { Priority, RequirementKind, Scale } from '../types.js'
+import { sessionIdOf } from '../interface/scope.js'
 
 /** 工具行为依赖，由插件入口注入。 */
 export interface LangArgs {
@@ -406,7 +407,9 @@ export function callOf(exec: ToolRunContext): OfficeCall {
   const cwd = [holder.session?.header?.cwd, holder.cwd, holder.workspace?.cwd, holder.session?.cwd].find(
     (value): value is string => typeof value === 'string' && value !== '',
   )
-  return { sessionId: String(agent.id), agent, ...(cwd === undefined ? {} : { cwd }) }
+  // 会话 id 与采集/归属**读同一个字段**（见 sessionIdOf）；取不到就**省略**，绝不写 "undefined"
+  const sessionId = sessionIdOf(agent)
+  return { ...(sessionId === undefined ? {} : { sessionId }), agent, ...(cwd === undefined ? {} : { cwd }) }
 }
 
 /** 宽松解析枚举；非法值返回 undefined（由行为层决定是否报错）。 */

@@ -47,6 +47,15 @@ export interface SdoConfig {
   /** 是否采集 `workspace/changes` 证据（M4 起生效） */
   captureWorkspaceChanges: boolean
   /**
+   * **B6：是否对"认得出的派发角色"硬拦掩码之外的调用**（默认开）。
+   * 关掉它只是不拦，回执与派发请求里的掩码**照旧声明**（声明与执行分开）。
+   */
+  enforceRoleMask: boolean
+  /** 真派发用的 provider 名（宿主 `subagents.list()` 里的名字；preset 默认装 `spawn`）。 */
+  dispatchProvider: string
+  /** 派发深度上限（子代理不应再开子代理 ⇒ 默认 1）。 */
+  dispatchMaxDepth: number
+  /**
    * 斜杠命令结果如何回显（设计 §9.2：命令 handler 针对 agent 运行、**不产生模型消息**，
    * 但结果**要让用户感知**——这个"感知"由命令结果本身承担，不该靠额外产生一轮模型消息来补）：
    *   · `echo`（**默认**）—— 把命令结果投递成一条用户可见消息：
@@ -90,6 +99,9 @@ export const Config: z<SdoConfig> = z.object({
   orchestrator: z.union([z.const('subagent'), z.const('native-team'), z.const('inline')]).default('subagent'),
   maxParallelDispatch: z.natural().min(1).max(8).default(4),
   captureWorkspaceChanges: z.boolean().default(true),
+  enforceRoleMask: z.boolean().default(true),
+  dispatchProvider: z.string().default('spawn'),
+  dispatchMaxDepth: z.number().min(0).max(4).default(1),
   commandEcho: z.union([z.const('none'), z.const('echo')]).default('echo'),
   board: z.object({
     text: z.boolean().default(true),

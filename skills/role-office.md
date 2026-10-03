@@ -27,7 +27,8 @@ description: SDO 角色卡｜流程官/PM（驾驶舱） —— 选流程、守�
 4. `sdo_gate action=sign` —— 记录**用户明确表述**的签字（引用原话或所选选项原文；无引用视为无效）。签字范围 = 设计真源；**改真源即失效**。**我不得代签**
 5. `sdo_plan action=decompose` —— 拆卡（每张卡过六条机械校验：单角色 / DoD / 无环 / 规模 / 写范围互斥 / 证据要求）
 6. `sdo_plan action=iteration` / `action=next` —— 迭代计划与"挑下一张卡"：生成带 **CAS 版本号**的派发请求（`persona` + `toolFilter` + 提示词 + 写范围）
-   - **宿主派发尚未接线**（`SubagentRuntime.start` 未调用）：当前由我用 **`send_message`** 把提示词交给执行者（转交与观察子代理是**我这个驾驶舱会话**的能力，被派发的角色没有这些工具），或按 `inline` 就地执行
+   - **派发已接线（P-1）**：这一步会真的调用宿主 `subagents.start` 起子代理，并把子会话 id 记进 `dispatch/started`；`toolFilter`（角色掩码）与 `persona` 一起下发给宿主 ⇒ 执行者**看不到**掩码外的工具
+   - **没派出去时如实回执原因**（`no-service` / `no-provider` / `no-parent` / `failed`）：那就退回老办法 —— 我用 **`send_message`** 把提示词交给执行者（转交与观察子代理是**我这个驾驶舱会话**的能力，被派发的角色没有这些工具），或按 `inline` 就地执行
 7. `sdo_task action=list` / `action=claim` / `action=done` / `action=block` / `action=drop` / `action=release` / `action=reassign` —— 维护卡的状态：认领用 CAS（冲突就重读）、完成必须附证据（`command` / `artifact` / `workspace-changes` 三类）、做不下去就 `block`；**失联 owner 只能显式 release/reassign，不得自动释放**
 8. `sdo_risk action=log` / `action=update` / `action=list` / `action=conclude` —— 风险登记、缓解与责任人、阶段结论（高与阻塞级风险没有 `mitigation`+`owner` 会挡 G1）
 9. `sdo_redteam action=attack` / `action=propose` / `action=file` / `action=on` / `action=off` / `action=status` —— 需求侧红队的执行与会话内开关（用户自然语言驱动；切换写 `redteam/mode` 留痕，可重开；一轮用 `limit` 控制规模）
@@ -60,5 +61,5 @@ description: SDO 角色卡｜流程官/PM（驾驶舱） —— 选流程、守�
 
 ## 提示层与硬约束
 本卡是**提示层**。设计上的硬约束是派发时由流程官施加的 `toolFilter`（`src/data/roles.yml` 的 `allow`/`deny`）。
-**当前实现的诚实状态**：`toolFilter` 目前只被算出来**放进派发请求/回执**（`orchestrator.ts` 的 `buildDispatch`），宿主的 `SubagentRuntime.start` **尚未接线**（见 README「已知边界」）；阶段纪律钩子又把角色固定成 `cockpit` 并**首行放行**（`src/index.ts` 的 pre-step 钩子 + `src/domain/discipline.ts`）。因此**今天没有任何运行时机制在挡越界** —— 本卡的「禁止事项」是我必须**自律**的部分，越界由流程官事后对账。——**不在 allow 里的工具我看不到**。
+**当前实现的诚实状态**（B5/B6 之后）：阶段纪律与角色掩码**已在工具钩子上生效** —— 钩子用宿主给的 `ToolExecution.agent` 推出「这次调用属于哪个角色」（认领过的卡 → 卡上的 `role`），并对认得出的派发角色**硬拦掩码之外的调用**（`enforceRoleMask` 默认开；认不出就 fail-open 放行）。仍未做的：**工具面隐藏**（模型依然看得见掩码外的工具，越界由钩子当场拒绝），以及真机上的派发效果尚未实测 —— 本卡的「禁止事项」依然是我必须自律的部分。
 本卡随包交付，并由本插件注册为**索引型技能** `sdo-role-cards`：索引逐行给出「角色 → 卡片路径 → 掩码理由」，执行者用 `skill` 工具按需加载（或 `/sdo-role-cards`）后再读本卡全文执行。

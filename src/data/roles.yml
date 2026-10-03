@@ -1,19 +1,21 @@
 # SDO 角色掩码表（设计 §8.1 / §9.1）：提示层用 skills/role-*.md，硬约束用这里的 allow/deny。
 # 派发时由流程官施加（toolFilter）；allow 之外一律不可见（白名单），deny 里是必须显式挡住的越界工具。
+# **`sdo_task` 是协议通道**：任何角色都要能 claim/done/block 自己那张卡，所以 8 个角色都必须在 allow 里
+# （缺口会导致「认领即锁死」：占住卡却无法完成或挂起 —— 评审 2026-10-03 F1）。
 roles:
   - code: analyst
     name: 产品/需求分析师
-    allow: [skill, read, grep, glob, write, sdo_requirement, sdo_project, sdo_trace, ask_user_question]
+    allow: [skill, read, grep, glob, write, sdo_requirement, sdo_project, sdo_trace, sdo_task, ask_user_question]
     deny: [sdo_redteam, edit, bash, sdo_review]
     rationale: 不得自跑红队（红队必须独立）；不改实现
   - code: red-team
     name: 需求红队
-    allow: [skill, read, grep, glob, sdo_requirement, sdo_redteam]
+    allow: [skill, read, grep, glob, sdo_requirement, sdo_redteam, sdo_task]
     deny: [write, edit, bash, sdo_design, sdo_review]
     rationale: 只质询不落笔（不得改需求：sdo_requirement 只许用 list 读，不许 capture/update/change/baseline）；不得无追溯地提建议
   - code: architect
     name: 架构师
-    allow: [skill, read, grep, glob, write, sdo_design, sdo_adr, sdo_quality, sdo_trace]
+    allow: [skill, read, grep, glob, write, sdo_design, sdo_adr, sdo_quality, sdo_trace, sdo_task]
     deny: [edit, bash, sdo_requirement, sdo_deliver]
     rationale: 设计写入受计划评审约束；不改需求、不打包
   - code: office
@@ -38,6 +40,6 @@ roles:
     rationale: 只读评审；不得评审自己的产物
   - code: delivery
     name: 交付官
-    allow: [skill, read, grep, glob, write, bash, sdo_deliver, sdo_trace, sdo_render]
+    allow: [skill, read, grep, glob, write, bash, sdo_deliver, sdo_trace, sdo_render, sdo_task]
     deny: [edit, sdo_review, sdo_requirement, sdo_design]
     rationale: 不得发布/上线（非目标）；不得改需求与设计
