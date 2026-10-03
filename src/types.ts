@@ -654,6 +654,11 @@ export interface EvidenceItem {
   kind: 'command' | 'artifact' | 'workspace-changes'
   detail: string
   at: string
+  /**
+   * `command` 证据的退出码（A1，可选）：给了就必须为 0，否则不作为完成证据。
+   * 不给也不判红 —— 没有可机械判定的输出格式约定，硬编只会逼人编造。
+   */
+  exitCode?: number | undefined
 }
 
 /** 任务卡（`.sdo/tasks/TASK-*.yml`，设计 §8.6）。 */

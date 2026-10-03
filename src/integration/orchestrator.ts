@@ -151,6 +151,10 @@ export function buildDispatch(input: {
     `写范围（只许改这些路径）：${task.writeScopes.join('、') || '（未限定，请先与流程官确认）'}`,
     '',
     '协议：',
+    // B4：先把角色卡技能加载进来（`sdo-role-cards` 是索引，正文在 `skills/role-<角色>.md`）。
+    // 不用假设执行者会自己从技能目录里发现它 —— 派发提示是它唯一必然读到的上下文。
+    `0) 先加载角色卡：用 \`skill\` 工具取 \`sdo-role-cards\`（索引里逐行给出「角色 → 卡片路径 → 掩码理由」），
+    再读你角色的卡片全文（\`skills/role-${task.role}.md\`）后按卡片执行；`,
     `1) 先用 \`sdo_task action=claim id=${task.id} expectedRevision=${task.revision}\` 认领（CAS，冲突就重新读卡）；`,
     '2) 只改写范围内的文件；',
     `3) 完成后 \`sdo_task action=done id=${task.id} owner=${input.owner}\` 并附证据；`,

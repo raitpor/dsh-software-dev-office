@@ -276,7 +276,10 @@ test('DEF 回归：callOf 必须从 agent.session.header.cwd 取工作目录', (
 
 test('守卫（DEF-03）：preset 新增插件行必须先登记（未登记的行会让整个 preset 注册失败）', () => {
   const preset = readFileSync(new URL('../../presets/sdo-office.patch.yml', import.meta.url), 'utf8')
-  const names = [...preset.matchAll(/name:\s*'?([^'\s]+)'?/gu)].map((m) => m[1] as string).filter((name) => /^[@a-z]/.test(name))  // 只看包/分组行（排除 preset 显示名这类中文行）
+  // **只扫真正的行，不扫注释**：注释里可以写到包名（例如"历史理由：不要引用 X"这类说明），
+  // 被注释掉的行不会挂载，把它当"未登记的行"是误报。
+  const rowLines = preset.split('\n').filter((line) => !line.trimStart().startsWith('#'))
+  const names = [...rowLines.join('\n').matchAll(/name:\s*'?([^'\s]+)'?/gu)].map((m) => m[1] as string).filter((name) => /^[@a-z]/.test(name))  // 只看包/分组行（排除 preset 显示名这类中文行）
   // 基线：这些行是 preset 从建立起就有、且真机会话里确实生效过的（fs/bash/ask/subagent/persona）。
   // 任何**新增**行都必须先在这里登记，并且先在真实 profile 里实测「能否选中该 preset」——
   // 解析失败的行会让整个 preset 注册失败（DEF-03：重启后选不到 sdo-office）。
@@ -288,6 +291,21 @@ test('守卫（DEF-03）：preset 新增插件行必须先登记（未登记的�
     '@deepseek-ai/dsh-tool-fs',
     '@deepseek-ai/dsh-tool-bash',
     '@deepseek-ai/dsh-tool-ask-user',
+    // 角色卡技能（B2）的加载器行。登记依据（三层，均可复跑）：
+    //   ① 官方 standard/ptc/cordis 三个 preset 都挂这一行（`dsh-web-app/presets/*.patch.yml`）；
+    //   ② 它在 harness 自己的"可安装插件包"清单里（`cordis-composition-reference/references/packages.md`
+    //      第 402 行：Model-facing skill loading tool），且是 dsh 应用的依赖（与 `dsh-tool-fs` 同类）；
+    //   ③ 从 cordis-plugin-loader 自身的解析基准 `createRequire(loader/lib/index.js)` 实测：
+    //      `@deepseek-ai/dsh-tool-skill` 可解析（对照 `dsh-tool-fs`/`dsh-tool-bash`/`dsh-persona` 同样可解析，
+    //      反证 `@deepseek-ai/dsh-tool-nonexistent` 解析失败）。
+    '@deepseek-ai/dsh-tool-skill',
+    // 搜索族与控制面（复审 22:48 审计出的同一根因：宿主 `disabled: true` 的行必须由 preset 补挂）。
+    // 登记依据同上一行：官方 standard/ptc preset 都挂；同在 harness 可安装包清单与 dsh 应用依赖里；
+    // 且以 cordis-plugin-loader 自身为基准 `createRequire(loader/lib/index.js)` 实测可解析
+    // （含子路径 `@deepseek-ai/dsh-tool-subagent-control/list-agents`）。
+    '@deepseek-ai/dsh-tool-fs-search',
+    '@deepseek-ai/dsh-tool-subagent-control',
+    '@deepseek-ai/dsh-tool-subagent-control/list-agents',
     '@deepseek-ai/dsh-tool-subagent',
     '@deepseek-ai/dsh-compaction-basic',
     '@deepseek-ai/dsh-command-compact',

@@ -90,6 +90,8 @@ export function readTaskChecked(
       kind: textOf(item.kind) as EvidenceItem['kind'],
       detail: textOf(item.detail),
       at: textOf(item.at),
+      // A1：退出码是 `command` 证据的一部分，读回时不能丢（丢了就等于没校验）
+      ...(typeof item.exitCode === 'number' ? { exitCode: item.exitCode } : {}),
     })),
   }
   return { task, notes }

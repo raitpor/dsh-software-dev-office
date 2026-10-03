@@ -44,6 +44,7 @@ criterion:
   C6-red-team: 红队已执行或留痕停用
   C7-signoff: 人类签字
   C8-red-team-closed: 红队议题已闭环
+  C-42: "中大卡（size ≥ medium）在完成前已通过评审"
 requirementKind:
   functional: 功能
   quality: 质量
@@ -174,7 +175,7 @@ param:
   gate: 门禁（可用中文名，如"立项门禁"，也可用标识 G0）
   approver: 批准人
   approvedBy: 人类签字人（基线门禁需要）
-  evidence: 证据：命令输出摘要 / 产物路径 / 改动引用（JSON 数组）
+  evidence: "done 的证据 JSON 数组。形状：[{\"kind\":\"command\",\"detail\":\"npm test（420 passed）\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"lib/x.js sha256=<64 位十六进制>\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-…@42\"}]。校验：种类要覆盖卡的 evidenceRequired；artifact 的路径必须真实存在（给了哈希就复算）；command 的 exitCode 是**独立字段** —— 写进 detail 文本不会被读到，要它生效就单独给字段。"
   status: 状态
   severity: 严重度
   kind: 类型
@@ -540,7 +541,7 @@ uiDescribe:
   k102: "- ⚠️ 疑似失联 {p1} 张：{p2}（**不会自动释放**，请显式 release/reassign）"
   k103: "- ❌ 拆分校验未通过 {p1} 项（详见 `sdo_plan action=decompose`）"
   k104: "- ⚠️ 宿主调用（`SubagentRuntime.start`）**尚未接线**：这一步会真正起一次模型运行，需要凭据与可用装配。"
-  k105: "在此之前请由流程官用 `send_message` 把下面的提示词交给执行者，或按 inline 方式由主模型就地执行。"
+  k105: "在此之前请由流程官（**驾驶舱会话**；被派发的角色没有 `send_message`）用 `send_message` 把下面的提示词交给执行者，或按 inline 方式由主模型就地执行。"
   k106: "- 工具面：{p1}　｜ 写范围：{p2}"
   k107: "- 认领需带 `expectedRevision={p1}`"
   k108: "- owner 记为 {p1}；完成后必须用 `sdo_task action=done id={p2} owner={p3} evidence=…` 回报。"
@@ -953,6 +954,7 @@ uiIndex:
   kUnlinkNeeds: "撤销追溯边需要 `from` 与 `to`（可选 `kind` 只删指定类型）"
   kUnlinkNone: "没有找到 {p1} → {p2} 的追溯边（未改动）"
   kUnlinkDone: "已撤销 {p1} 条追溯边（{p2} → {p3}）"
+  kWorkScopeNotAudited: "（注：本会话没有采集到 workspace/changes，卡上声明的**写范围未对账** —— 需要真核对就重跑一次带采集的会话。）"
 uiCommands:
   k1: "（SDO 命令 `{p1}` 的结果 · 仅供展示，无需回应）\n\n{p2}"
   k2: "{p1}\n…（回显已截断，完整体见命令面/文件产物）"
@@ -1199,6 +1201,10 @@ uiGates:
   kMethodDocNoHeader: "（缺文档头）"
   kMethodDocIncomplete: "`{p1}` 没覆盖这些条目 id：{p2} —— 文档要逐条写到产物（人审时看得到具体内容），不能只写一段感想。"
   kMethodDocRemedy: "为每个选中的方法包写一份 `docs/METHOD-<包>.md`（内容自己撰写：表格/图/说明都行，如 OO 出类图与时序图、结构化出 DFD 与 ERD、迁移出映射表），文档头必须是 `<!-- method-doc: package=<包>; basis=<指纹> -->`，指纹用 `sdo_design action=method` 回执里给出的当前值。"
+  kWorkReviewNone: "没有已完成的中大卡，本判据不拦"
+  kWorkReviewMissing: "这些中大卡（size ≥ medium）完成了但没有通过评审：{p1}（先 sdo_review action=record verdict=pass，评审人不得是卡 owner）"
+  kWorkReviewRemedy: "为每张中大卡记一条 verdict=pass 的评审（作者 ≠ 评审者）；确实不需要评审就把卡拆小（size 降到 small/trivial）"
+  kWorkReviewOk: "{p1} 张中大卡都已有通过评审"
 uiPlan:
   k1: "改动有产物证据（路径 + 哈希）"
   k2: "调用方实现"
@@ -1880,3 +1886,24 @@ uiDor:
   c7Remedy: '让用户在会话里明确表态，然后调用 `sdo_gate action=sign gate=G2 quote=「用户原话」`（或 `channel=question` 走人机关口问答）；只传 `approvedBy` 字符串**不放行**'
   c7NoApprovedBy: "；入参 approvedBy：**未提供**（该字符串已不再是放行依据）"
   c7ApprovedByExtra: "；入参 approvedBy：{p1}（**该字符串已不再是放行依据**，仅供追溯）"
+
+uiSkills:
+  roleCardsDescription: "SDO（dsh-software-dev-office）项目里执行或派发任务卡时用：按角色加载对应角色卡 —— 目标、输入/输出契约、完成定义（DoD）、禁止事项与提问模板。"
+  roleCardsWhenToUse: "在 SDO 项目里认领/执行任务卡、或把卡派发给某个角色时"
+  roleCardsRegistered: "角色卡索引技能已注册"
+  skillsMissing: "宿主没有装配 skills 服务：角色卡照常随包交付，但不能按需加载（不阻塞装配）"
+skillBody:
+  title: "SDO 角色卡（{p1} 张，按需加载）"
+  intro1: "你是 SDO（dsh-software-dev-office）项目里的**一次派发运行**：角色不是会话，工具面由流程官施加（见下表）。"
+  intro2: "先按你的角色读对应卡片**全文**，再按卡片执行 —— 卡片是纪律，不是可选建议。"
+  tableHead: "| 角色 | 名称 | 什么时候用（掩码理由） | 卡片 |"
+  tableRow: "| `{p1}` | {p2} | {p3} | `{p4}` |"
+  sectionsNote: "每张卡片都含：目标 / 输入契约 / 输出契约 / 完成定义（DoD）/ 禁止事项 / 提问与评审模板。"
+  maskHead: "硬约束（工具掩码，allow 之外的工具你看不到）："
+  maskLine: "- `{p1}`：allow = {p2}；deny = {p3}"
+  dirLine: "卡片目录：`{p1}`"
+  protocolHead: "执行协议（与派发提示同源，卡住时照此办理）："
+  protocol1: "1) `sdo_task action=claim`（带 `expectedRevision`，CAS 冲突就重新读卡）；"
+  protocol2: "2) 只改写范围内的文件；"
+  protocol3: "3) `sdo_task action=done` 时必须附证据条目（command / workspace-changes / artifact），空口完成不算完成；"
+  protocol4: "4) 做不下去就 `sdo_task action=block note=…` —— 不要硬撑，也不要静默改范围。"

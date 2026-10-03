@@ -32,11 +32,21 @@ function packageRoot(): string {
   throw new Error('sdo: 无法定位包根（未找到 package.json）')
 }
 
+/**
+ * 随包资源的**绝对路径**（相对包根）。
+ *
+ * 与 `loadPackagedYaml` 同一套包根定位：`src/` 与 `lib/` 两种布局都指向同一份随包文件。
+ * 供"随包但非 YAML"的资源使用（例如 `skills/` 下的角色卡）。
+ */
+export function packagedPath(relativePath: string): string {
+  return join(packageRoot(), relativePath)
+}
+
 /** 读取并解析一个随包 YAML 数据文件（相对包根；带缓存）。 */
 export function loadPackagedYaml<T>(relativePath: string): T {
   const cached = cache.get(relativePath)
   if (cached !== undefined) return cached as T
-  const target = join(packageRoot(), relativePath)
+  const target = packagedPath(relativePath)
   const text = readFileSync(target, 'utf8')
   const parsed = parseYaml(text) as T
   cache.set(relativePath, parsed)

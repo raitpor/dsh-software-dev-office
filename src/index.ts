@@ -10,6 +10,7 @@
  * 入口纪律（C-07）：本插件**不在 profile 层插入自己**，只出现在 `sdo-office` preset 的
  * `config.plugins` 里；未选择该 preset 的会话完全不加载本插件。
  */
+import { existsSync } from 'node:fs'
 import type { Context } from '@deepseek-ai/cordis'
 import type { CommandRuntime } from '@deepseek-ai/dsh-commands'
 import type { Session } from '@deepseek-ai/dsh-session'
@@ -17,6 +18,7 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
 import { boardModelFor, renderBoard } from './board/render.js'
 import { Config, resolveSettings } from './config.js'
+import { registerRoleCardsSkill } from './domain/skills.js'
 import type { SdoConfig } from './config.js'
 import { contractCoverage } from './domain/contracts.js'
 import { makeAcceptanceIds } from './domain/requirements.js'
@@ -116,6 +118,7 @@ import {
   VIEW_KINDS,
 } from './types.js'
 import type { AcceptanceCriterion, Dimension, EvidenceItem, ViewKind } from './types.js'
+import { recordWorkspaceChanges } from './domain/workspaceChanges.js'
 
 export const name = 'dsh-software-dev-office'
 
@@ -266,6 +269,55 @@ export function apply(ctx: Context, config: SdoConfig): void {
   ctx.inject(['planMode'], (planCtx) => {
     planMode = planCtx.get('planMode') as PlanModeLike
   })
+  /**
+   * **角色卡索引技能（B2）**：把随包的 8 张角色卡注册为**一个**索引型 skill，让执行者按需加载。
+   *
+   * 为什么是可选、且用 `inject`：`skills` 是宿主服务，不在本包依赖里（不引入
+   * `@deepseek-ai/dsh-skill`）；`inject` 在服务就绪时才跑回调 —— 服务不存在就静默不注册，
+   * **绝不让本插件装配失败**（与 `planMode` / `subagents` 同一先例）。
+   * 为什么只注册一个索引：技能目录（名字 + 描述）进每个会话的系统提示，8 条就是 8 行常驻 token。
+   */
+  ctx.inject(['skills'], (skillsCtx) => {
+    // **disposer 归属**：`skills.register()` 的 effect 挂在**技能服务自己的 ctx** 上，
+    // 所以返回值不会被本插件的 fiber 自动回收（插件热重载后目录里可能留旧正文，
+    // 同层同名又是"首个胜出 + 告警"）。这里用 `skillsCtx.effect(...)` 把它挂到本插件的
+    // fiber 上：卸载/重载时按逆序执行，注册随之撤销。
+    skillsCtx.effect(() => {
+      const outcome = registerRoleCardsSkill(skillsCtx.get('skills'))
+      logger.debug({ registered: outcome.registered, reason: outcome.reason }, 'sdo: role-cards skill')
+      return outcome.dispose ?? (() => {})
+    }, 'sdo:role-cards-skill')
+  })
+
+  /**
+   * **A2：采集 `workspace/changes`**（宿主 `session/event` 追加流的其中一个事件类型）。
+   *
+   * 只给**已经存在 `.sdo/`** 的工作区记账（不给无关会话造垃圾）；拿不到 `workspaceChanges` 服务
+   * 或拿不到会话 cwd 就静默跳过 —— 采集失败只会让 `done` 如实回一句「本会话的写范围未对账」，
+   * 绝不假装核对过。
+   */
+  ctx.on('session/event', (session, event) => {
+    try {
+      if (!settings.captureWorkspaceChanges) return
+      if ((event as { type?: string }).type !== 'workspace/changes') return
+      const header = (session as { header?: { id?: unknown; cwd?: unknown } }).header
+      const sessionId = typeof header?.id === 'string' ? header.id : undefined
+      const cwd = typeof header?.cwd === 'string' ? header.cwd : undefined
+      if (sessionId === undefined || cwd === undefined) return
+      office.noteSession(sessionId, cwd)
+      const store = office.storeFor(cwd)
+      if (!existsSync(store.path())) return
+      const changes = (ctx as unknown as { get?: (name: string) => unknown }).get?.('workspaceChanges') as
+        | { summary?: (id: string, seq: number) => { turn?: number; files?: { path?: string; display?: string }[] } | undefined }
+        | undefined
+      const seq = Number((event as { seq?: unknown }).seq)
+      if (!Number.isFinite(seq)) return
+      recordWorkspaceChanges({ store, sessionId, seq, summary: changes?.summary?.(sessionId, seq), enabled: true })
+    } catch {
+      /* fail-open：采集失败不影响任何写操作（只是 `done` 会如实报"未对账"） */
+    }
+  })
+
   /** 派发后端探测（软探测：宿主没有对应服务就降级为 inline）。 */
   let subagentsService: unknown
   ctx.inject(['subagents'], (subCtx) => {
@@ -653,12 +705,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
         case 'done':
         case 'block': {
           if (args.id === undefined || args.owner === undefined) return t('uiIndex.k34')
-          const evidence = jsonOr<{ kind: string; detail: string }[]>(args.evidence, 'evidence')
+          const evidence = jsonOr<{ kind: string; detail: string; exitCode?: unknown }[]>(args.evidence, 'evidence')
           if (evidence.error !== undefined) return evidence.error
           const items: EvidenceItem[] = (evidence.value ?? []).map((row) => ({
             kind: row.kind === 'command' || row.kind === 'workspace-changes' ? row.kind : 'artifact',
             detail: String(row.detail ?? ''),
             at: new Date().toISOString(),
+            // A1：`command` 证据可带退出码（给了就必须为 0 才算完成）
+            ...(row.exitCode === undefined ? {} : { exitCode: Number(row.exitCode) }),
           }))
           const result = office.reportTask(call, {
             taskId: args.id,
@@ -667,7 +721,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(items.length === 0 ? {} : { evidence: items }),
             ...(args.note === undefined ? {} : { note: args.note }),
           })
-          return result.ok ? describeTask(result.task, office.shapeNotes(call)) : fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
+          if (!result.ok) return fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
+          const taskText = describeTask(result.task, office.shapeNotes(call))
+          // A2：采集不到变更清单时**如实说**"写范围未对账"，不让"没数据"读成"已核对"
+          return result.workspaceAudit !== undefined && !result.workspaceAudit.checked
+            ? taskText + '\n' + t('uiIndex.kWorkScopeNotAudited')
+            : taskText
         }
         case 'release':
         case 'reassign': {

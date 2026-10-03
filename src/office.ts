@@ -2227,7 +2227,9 @@ export class SoftwareDevOffice {
 
   claimTask(call: OfficeCall, input: ClaimInput): ClaimResult {
     const { store, journal } = this.contextFor(call)
-    return claim(store, journal, input)
+    // A2：认领时记下"发生在哪个会话"，`done` 据此取本会话的真实改动做写范围对账
+    const sessionId = input.sessionId ?? call.sessionId
+    return claim(store, journal, sessionId === undefined ? input : { ...input, sessionId })
   }
 
   /** 回报（done 必须带证据）。 */

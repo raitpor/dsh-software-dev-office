@@ -132,6 +132,7 @@ gates:
     criteria:
       - { id: C-40, check: "tasks.all_done", desc: "全部任务卡完成" }
       - { id: C-41, check: "trace.coverage", desc: "追溯覆盖率达标" }
+      - { id: C-42, check: "review.required", desc: "中大卡（size ≥ medium）在完成前已通过评审" }
   - id: G6
     name: 验证门禁
     criteria:

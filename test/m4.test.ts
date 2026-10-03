@@ -6,8 +6,9 @@ import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
 import { claim, reassign, release, report, staleClaims } from '../src/domain/collab.js'
-import { planStats, readIteration, readyTasks, validatePlan } from '../src/domain/plan.js'
+import { ROLES, planStats, readIteration, readyTasks, validatePlan } from '../src/domain/plan.js'
 import { auditWriteScopes, buildDispatch, capacityPlan, independenceViolations, pickBackend } from '../src/integration/orchestrator.js'
+import { listTestCases } from '../src/domain/records.js'
 import { link } from '../src/domain/trace.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
@@ -15,7 +16,13 @@ import type { TaskCard } from '../src/types.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m4/', import.meta.url))
 const call = (): { sessionId: string } => ({ sessionId: 's1' })
-const EVIDENCE = [{ kind: 'artifact' as const, detail: 'src/x/index.ts sha256:abc', at: '2026-09-29T00:00:00Z' }]
+// A1 之后：artifact 证据必须指向**真实存在**的产物。夹具在 beforeEach 里造这个文件（见 createEvidenceArtifact）。
+const EVIDENCE = [{ kind: 'artifact' as const, detail: 'src/x/index.ts', at: '2026-09-29T00:00:00Z' }]
+/** 造出 EVIDENCE 指向的那个产物（新契约要求证据落地）。 */
+function createEvidenceArtifact(): void {
+  mkdirSync(join(workspace, 'src', 'x'), { recursive: true })
+  writeFileSync(join(workspace, 'src', 'x', 'index.ts'), 'export const x = 1\n', 'utf8')
+}
 
 let workspace: string
 let office: SoftwareDevOffice
@@ -28,6 +35,7 @@ beforeEach(() => {
   office.noteSession('s1', workspace)
   office.init(call(), { name: 'M4 测试', scale: 'normal', stakeholders: ['业务方'] })
   office.updateProject(call(), { scopeIn: ['对账'], scopeOut: ['自动调账'], metricsSuccess: ['识别率 ≥ 99%'], glossary: { 差异: '不一致记录' } })
+  createEvidenceArtifact()
 })
 
 afterEach(() => {
@@ -96,6 +104,7 @@ test('六条机械校验：单角色 / DoD / 无环 / 规模 / 写范围互斥 /
 test('协同协议：CAS 认领、只有 owner 能回报、done 必须带证据、失联不自动释放', () => {
   seedDesign()
   office.planDecompose(call())
+  planCasesForAllTasks()
   const store = office.storeFor(workspace)
   const journal = office.journalFor(workspace)
 
@@ -126,6 +135,7 @@ test('协同协议：CAS 认领、只有 owner 能回报、done 必须带证据�
   assert.equal(noEvidence.ok === false ? noEvidence.code : '', 'no-evidence')
 
   // ⑥ 带证据完成 → 自动挂上 req-task 追溯边
+  passAllCases()
   const done = office.reportTask(call(), { taskId: 'TASK-001', owner: 'dev-a', status: 'done', evidence: EVIDENCE })
   assert.equal(done.ok, true)
   const trace = office.traceReport(call())
@@ -192,6 +202,18 @@ test('派发请求与越界写复核', () => {
   assert.equal(request.persona, 'sdo-developer')
   assert.ok(request.toolFilter.includes('edit'))
 
+  // B4：派发提示的第 0 步必须让执行者**先加载角色卡**（提示是它唯一必然读到的上下文），
+  // 并且这个承诺必须可兑现 —— 角色工具面里真的要有 `skill`（两个方向都断言）。
+  assert.match(request.prompt, /sdo-role-cards/u, '提示要指名索引技能')
+  assert.match(request.prompt, /skills\/role-developer\.md/u, '提示要给出本角色的卡片路径')
+  assert.ok(request.toolFilter.includes('skill'), '承诺加载技能，工具面就必须含 skill')
+  for (const role of ROLES) {
+    const perRole = buildDispatch({ task: { ...task, role }, backend: 'inline', owner: 'cockpit', projectName: 'M4 测试' })
+    assert.ok(perRole.prompt.includes('sdo-role-cards'), `${role} 的提示也应含角色卡指引`)
+    assert.ok(perRole.prompt.includes(`skills/role-${role}.md`), `${role} 的提示应给出它自己的卡片路径`)
+    assert.ok(perRole.toolFilter.includes('skill'), `${role} 的工具面必须含 skill（否则提示在骗人）`)
+  }
+
   assert.deepEqual(auditWriteScopes(['src/des-001/index.ts'], ['src/des-001/']).violations, [])
   const violations = auditWriteScopes(['src/des-001/index.ts', 'src/other/x.ts'], ['src/des-001/'])
   assert.deepEqual(violations.violations, ['src/other/x.ts'])
@@ -201,6 +223,7 @@ test('派发请求与越界写复核', () => {
 test('容量与就绪：依赖未满足的卡不能派发', () => {
   seedDesign()
   office.planDecompose(call())
+  planCasesForAllTasks()
   const store = office.storeFor(workspace)
   const journal = office.journalFor(workspace)
   const [a, b] = office.tasks(call()) as [TaskCard, TaskCard]
@@ -212,9 +235,35 @@ test('容量与就绪：依赖未满足的卡不能派发', () => {
   journal.append('task/updated', { id: b.id, note: '依赖关系由模型补充' })
   // 完成后即可派发
   claim(store, journal, { taskId: a.id, owner: 'dev-a', expectedRevision: office.taskById(call(), a.id)?.revision ?? 1 })
+  passAllCases()
   report(store, journal, { taskId: a.id, owner: 'dev-a', status: 'done', evidence: EVIDENCE })
   assert.ok(readyTasks(office.tasks(call()), 10).some((task) => task.id === b.id))
 })
+
+
+/**
+ * C7（测试先行）之后，`normal`/`critical` 档的项目里**卡上的需求必须先有用例计划**才能认领、
+ * 完成前必须有结果。下面的用例关心的是别的机制，所以统一把这两件事补齐 ——
+ * 补的过程本身就是真实流程该有的顺序（先计划、再跑结果）。
+ */
+function planCasesForAllTasks(): void {
+  for (const task of office.tasks(call())) {
+    for (const requirement of task.requirements) {
+      office.addTestCase(call(), {
+        title: `${task.id} 覆盖 ${requirement}`,
+        kind: 'unit',
+        requirement,
+        steps: ['跑该用例'],
+        expected: '通过',
+      })
+    }
+  }
+}
+
+function passAllCases(): void {
+  const store = office.storeFor(workspace)
+  for (const testCase of listTestCases(store)) office.addTestResult(call(), { caseId: testCase.id, status: 'pass', evidence: 'exit=0' })
+}
 
 /** 直接改盘上的依赖（模拟"模型补充了依赖关系"）。 */
 function writeDependency(store: ReturnType<SoftwareDevOffice['storeFor']>, taskId: string, dependency: string): void {
@@ -247,8 +296,10 @@ test('验证与评审：用例覆盖 must、失败即拦、阻塞缺陷拦门禁
 
   // 评审独立性
   office.planDecompose(call())
+  planCasesForAllTasks()
   const task = office.tasks(call())[0] as TaskCard
   office.claimTask(call(), { taskId: task.id, owner: 'dev-a', expectedRevision: task.revision })
+  passAllCases()
   office.reportTask(call(), { taskId: task.id, owner: 'dev-a', status: 'done', evidence: EVIDENCE })
   office.addReview(call(), { taskId: task.id, reviewer: 'dev-a', verdict: 'pass', findings: [] })
   const violations = independenceViolations(office.reviews(call()), office.tasks(call()))
@@ -270,11 +321,13 @@ test('迭代：开/关迭代，增量与 DoD 由任务卡与证据决定（GI �
 
   seedDesign()
   office.planDecompose(call())
+  planCasesForAllTasks()
   const before = office.evaluate(call(), 'GI')
   assert.equal(before.criteria.find((criterion) => criterion.id === 'C-80')?.ok, false, '迭代内还有卡没完成 → 还不算产出增量')
   assert.equal(before.criteria.find((criterion) => criterion.id === 'C-81')?.ok, false, '卡没完成 → DoD 不过')
   assert.match(before.criteria.find((criterion) => criterion.id === 'C-80')?.detail ?? '', /未完成/u)
 
+  passAllCases()
   for (const task of office.tasks(call())) {
     office.claimTask(call(), { taskId: task.id, owner: `dev-${task.id}`, expectedRevision: task.revision })
     office.reportTask(call(), { taskId: task.id, owner: `dev-${task.id}`, status: 'done', evidence: EVIDENCE })
@@ -350,6 +403,7 @@ test('交付包：sha256 清单 + 验收矩阵 + 回滚点 + 原型排除（G7 �
 test('看板数据：任务统计、可派发与疑似失联', () => {
   seedDesign()
   office.planDecompose(call())
+  planCasesForAllTasks()
   const stats = planStats(office.tasks(call()))
   assert.equal(stats.total, 2)
   assert.equal(stats.allDone, false)

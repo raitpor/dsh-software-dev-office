@@ -7,6 +7,97 @@
 
 ## [Unreleased]
 
+### 修复
+
+- **评审 2026-10-03 报告的 A2 真缺陷（已自行复现后修）**：`done` 的写范围对账把"**采到条目但没有文件信息**"误当成"已对账、零越界"。可达路径是"宿主没有 `workspaceChanges` 服务 / `summary()` 返回 `undefined`"（本插件的可选依赖常态）。修法：采集条目新增 `summaryAvailable`（宿主到底给没给摘要），`changedFilesSince` 增加 `audited`（**每条**命中条目都必须带摘要；旧条目缺字段 ⇒ 保守当未对账），`done` 的 `checked` 改用 `audited`。**对照用例**：宿主明确回"零改动"（`files: []`）仍算已核对 —— 与"没有摘要"必须区分。用例 `M30-13`；变异 ㉟（把 `audited` 退回 `entries>0`）→ M30-13 红。
+- **minor 1：C7 失败文案把状态说错**。`skip` 但没写理由时会被归进 failing 桶，回执却说"用例结果是 **fail**"。新增缺口类型 `skip-unjustified` 与失败码 `test-skip-unjustified`，文案改为「用例是 skip 但**没写理由**」；`fail` 与"skip 无理由"同时存在时仍优先报 `test-failing`。用例 `M30-10`（断言失败码与文案，并断言**不得**出现"结果是 fail"）；变异 ㊱′ → M30-10 红。
+- **minor 2：`exitCode` 检查"存在但调用方够不着"**。`exitCode` 是**字段**，写进 `detail` 文本不会被读到 —— 而工具描述只说 `[{"kind","detail"}]`。现在把完整形状（含 `exitCode` 是独立字段、`sha256=<hex>` 写法）写进工具参数描述（语言包键 `param.evidence`，zh/en 各一份），并加守卫 `M30-14`（断言模型看得到的描述里含 `exitCode` / 独立字段 / `sha256`）；变异 ㊲′ → M30-14 红。
+- **修 minor 2 时我自己踩了一个坑（已修并加守卫）**：`param.evidence` **已存在**，我"新增"了一个同名键 ⇒ YAML 后者静默覆盖前者，新文案根本没到模型面前 —— 正是 `M30-14` 当场抓出来的。改为替换既有值，并新增语言包**重复键守卫**（`M25`，逐段扫描 zh/en）：变异 ㊳（塞入重复键）→ M25 红。
+
+
+### 新增
+
+- **开发阶段加固（五项，按确认的计划 A1 → B4 → A2 → C7 → D9 全部落地）**。核心思路：卡已经把纪律写清楚，但**执行者唯一必经的关口是 `claim` / `done`**，所以新机制全部贴着这两个关口做，能机械判定的才做，判不了的不硬编（避免逼人编造）。
+  - **A1 `done` 的证据与卡对齐**（`src/domain/evidence.ts` + `collab.report`）：① 证据种类必须覆盖卡上声明的 `evidenceRequired`；② `artifact` 证据的路径必须**真实存在**（支持 `path` / `path sha256=<hex>` / `path #<hex>`，给了哈希就复算比对；越出工作区的路径判红）；③ `command` 证据若带 `exitCode` 必须为 0。**反向也测**：不给哈希、不给退出码都不拦。
+  - **B4 派发提示先让执行者加载角色卡**：`buildDispatch` 的协议多了第 0 步（取 `sdo-role-cards` 索引 → 读本角色卡片），并断言"提示承诺的技能必须在工具面里"（8 个角色逐一核对）。
+  - **A2 接线 `workspace/changes` 采集 + 写范围对账**：`apply` 监听宿主的 `session/event` 追加流，对已存在 `.sdo/` 的工作区把 `(sessionId, seq)` 记进 `.sdo/evidence/workspace-changes.jsonl`（`captureWorkspaceChanges` 这个此前**没人读**的配置项现在真的生效）；`claim` 事件本身（带 `sessionId`）当基线，`done` 时用 `auditWriteScopes` 比对**认领之后本会话真实改动的文件**，越界即判红并点名文件。**采不到数据时不判红也不冒充已核对** —— 回执会明写「写范围未对账」（`uiIndex.kWorkScopeNotAudited`）。
+  - **C7 测试先行**（`src/domain/testFirst.ts`）：`normal`/`critical` 档的项目里，带需求的卡**认领前必须有用例计划**（`test-case-missing`），**完成前必须有结果** —— `pass`，或 `skip` + 非空理由（`test-result-missing` / `test-failing`）。`trivial` 档与无需求的卡豁免（有意的豁免，而不是悄悄跳过）。
+  - **D9 G5 新增判据 `C-42 review.required`**（waterfall/prototype/spiral 三个流程都加）：`size ≥ medium` 的完成卡在**开发完成门禁**就要有 `verdict=pass` 的评审，否则判红并点名。与 G6 的 `C-52 review.independent`（所有完成卡 + 作者≠评审者）分工：G5 更早更窄，G6 更晚更全。
+- **用例**：新增 `test/m30.test.ts`（12 条）覆盖 A1（5）/A2（3）/C7（3）/D9（1），B4 的断言进 `test/m4.test.ts`。**每一条都做双向**（该拦的拦、不该拦的不拦）。既有夹具按新契约更新（证据指向真实产物、先计划用例再认领/完成）。
+- **变异自证 7/7**：㉘ 去掉种类覆盖→M30-01 红 ㉙ 让产物存在性恒不触发→M30-02 红 ㉚ 让写范围对账看到零改动→M30-08 红 ㉛ 让采集忽略总开关→M30-06 红 ㉜ 让测试先行恒无缺口→M30-09/10 红 ㉝ 让 `C-42` 忽略卡规模→M30-12 红 ㉞ 改掉派发提示里的技能名→m4 派发用例红。（另有两条变异是我自己写错锚点/名字仍含子串，重做后才咬住 —— 已在过程中修正。）
+- **角色卡同步**：developer 卡去掉已经过时的「写范围对账尚未接线」并写清 `done` 的五条机器校验；tester 卡写明 C7 的两个硬关口；reviewer 卡写明 G5 的 `C-42`；office 卡在 DoD 里补上证据对账、写范围对账与 `C-42`。
+
+
+### 修复
+
+- **卡片 footer 去掉过度承诺（独立审计发现的同类问题，已逐条复核代码）**：八张卡原写「真正的硬约束是派发时由流程官施加的 `toolFilter`」——核实后**不成立**：`roleToolFilter` 只被 `buildDispatch` 用来**生成派发请求/回执**（`orchestrator.ts:15,142`），全仓**没有** `subagents.start` 调用；阶段纪律钩子又把 role **硬编码成 `cockpit`**（`src/index.ts` 的 pre-step 钩子），而 `evaluateDiscipline` 对 cockpit **首行放行**（`discipline.ts:39`）；`auditWriteScopes` 同样没有生产调用点。⇒ 今天**没有任何运行时机制在挡越界**。八张卡的 footer 改成如实描述（设计意图 + 当前实现状态 + "禁止事项靠自律、越界由流程官事后对账"）。
+- **按独立审计的代码事实补正的卡片细节（每条都在本仓复核过）**：analyst 不能自撰 `Q-*`（问题由 `grill`/红队产生，`REQUIREMENT_ACTIONS` 无 author 类动作）、未授权假设仍算未决；architect 的 `req-des` 边**必须显式建**（`sdo_design action=create` 没有 `requires` 参数，只有拆卡时会自动建 `req-task`）、`sdo_adr action=supersede` 不带被取代 id 会**静默退化成新增**、判据随流程裁剪（`C-22` 敏捷无、`C-30` 螺旋无）、`action=review` 记录的是**用户结论**而非自签；reviewer 的记录 id 形如 `REV-*` 且 **`taskId` 必填**、findings 是 JSON 字符串数组、只有 `pass` 算已评审、独立性只挡「评审人 ≠ 卡 owner」；tester 的 `write` **仍在**（无路径守卫，只挡了 `edit`）、用例计划属开发前的 G4（`C-32`）；delivery 的真源是 `.sdo/delivery/DLV-<n>.yml`（manifest 是指针）、验收矩阵三条机械要求、"不得发布"其实是**不存在**该动作、并有**两个静默陷阱**（`artifacts.kind` 非法归 `source`、`verdict` 非 `fail`/`waived` 当 `pass`）；office 的看板入口是命令面 `/sdo-board --write`。
+
+
+### 修复
+
+- **八张角色卡与 0.1.2 的能力对齐（用户诉求：卡片和需求/设计阶段有出入）**：审计发现卡片停在 0.1.2 之前 —— **几乎不提任何动作名**，模型拿到卡也不知道该调 `sdo_design action=confirm` 还是 `sdo_gate action=sign`、更不知道 0.1.2 新增的计划评审前置（`needs-plan-mode` → `action=review` / `waive-plan`）、**方法包产物与人审文档**（`action=method|artifact`，G3 `C-29`/`C-2F`）、**适用性声明**（`sdo_requirement action=applicability`/`applicability-confirm`，`C-2C`）、界面视图的区域声明、签字范围与失效语义（`C-2D`）。八张卡按实现重写，并新增一段 **`## 我实际要走的动作`**（逐条写清工具 + 动作 + 回执里要看什么），DoD 段改为引用**真实判据 id**（G2 的 `C1-dor-per-requirement`…`C9-ac-ids-unique`、G3 的 `C-20`…`C-2E`、G5/G6/G7 各条）。
+- **顺带修掉一个真缺陷：红队角色没有自己的工具**。设计初稿 §8.2 的掩码表写明「#5（`sdo_redteam`）归 red-team」，analyst 行也写着"不得自跑红队：#5 归 red-team"，但实现里 `red-team` 的 allow 漏了它 —— 被派发后**干不了自己的活**（而卡片输出契约写着产 `REQ-ISSUE-*`）。已在 `src/data/roles.yml` 补回，并把 rationale 写清"只许用 `sdo_requirement` 的 `list` 读，不许 capture/update/change/baseline"（工具级白名单表达不了动作级限制，因此写进卡与 rationale）。
+- **新增守卫 `test/m29.test.ts`（5 条，两个方向）**：① 八张卡必须具备七段结构（含新增的动作段）；② **声称要做的**：动作段里的 `sdo_*` 必须在**本角色掩码**内、`action=x` 必须是该工具真实存在的动作；③ **声称做不到的**：被写成"不在我的工具面里/不可见"的工具必须**真的**不在 allow 里；④ 卡片引用的**判据 id / 门禁 id / 产物名**必须真实存在（引用不存在的判据会误导执行者）；⑤ `skills/role-*.md` 与八个角色一一对应。变异自证 **6/6**：㉒ 动作段写掩码外工具→红 ㉓ 写不存在的动作→红 ㉔ 引用 `C-99`→红 ㉗ 引用 `C-2G`→红 ㉕ 把其实有的工具说成不可用→红 ㉖ 删掉动作段→红。
+- **卡片里的诚实说明**（避免卡片承诺机器其实没拦的东西）：developer 卡写明"写范围的自动对账尚未接线（`auditWriteScopes` 目前只有单测）"；reviewer 卡写明其评审记录是**按任务卡**的、且没有 `sdo_design`（设计确认与签字不由它落账）；tester 卡写明 `edit` 不可见（只许新建测试文件）。
+  - 观察（未改，待用户裁定）：设计初稿 §8.2 的掩码表已落后于实现（office 现在有 `sdo_redteam`/`sdo_task`/`sdo_render`/`sdo_deliver` 等，analyst 有 `sdo_project`，且表里没有 `sdo_lang` 等后加工具）——实现看起来是"单会话驾驶舱"口径的有意演化，但文档与代码不一致这件事本身需要决定往哪边收敛。
+
+
+### 修复
+
+- **语言包重载键串位（我在核实 `k105` 文案时踩到，已修；并顺带发现一条既有 en 缺陷）**：`k105` 这个键名在 `uiDescribe` / `uiIndex` / `uiGates` **三个段里复用**（与 F-3 同型的重载键）。我按"文件里第一条 `k105`"替换，在 en 包里改到的其实是 **`uiGates.k105`** —— 把英文的**门禁失败**文案覆盖成了派发文案，而真正要改的 `uiDescribe.k105` 没动。已恢复 `uiGates.k105`（门禁文案），并把 `uiDescribe.k105` 改为澄清版（点明是**驾驶舱会话**）。核实过程中另发现**既有缺陷**：en 的 `uiMethod.selectionMissing` 让英文用户去跑 `sdo_design action=grill`，而中文与代码实现都是需求阶段的 `sdo_requirement action=design-questions`（方法选择题确实在需求阶段提出）——已按实现纠正。
+- **新增守卫（抓这一类，不针对个案）**：`test/m25.test.ts` 断言**两包的 snake_case 标识符集合逐一对应**。依据：snake_case 跨语言**不翻译**（`send_message` / `sdo_requirement` / `journal.jsonl`），两包出现不同集合就是真写错；而散文、标点、尖括号占位符（`…` vs `...`、`<区域名>` vs `<region name>`）属于正常翻译差异，**不在**守卫范围。实测本仓 1482 个共有键里它只命中上面这 2 处、零误报。变异自证 2/2：⑳ 把派发文案塞回 `uiGates.k105` → 红；㉑ 把 `selectionMissing` 退回旧错 → 红。
+  - 我事后做了系统性扫描（逐键比对两包的 ASCII 标识符），确认除这两处外其余 28 条差异都是翻译风格差异，没有第三处串位。
+
+
+### 修复
+
+- **守卫表里的"惰性条目"（复审 2026-10-02 23:24 §3 的 minor）**：`test/m28.test.ts` 的 `TOOL_PROVIDER` 登记了 `send_message` / `list_agents`，但 `roles.yml` 里**没有任何角色** allow 它们 ⇒ M28-02 的循环永远碰不到这两条 —— "守卫表声称守住了、实际没守"。处置选**评审的选项②**（角色不该有这些工具）：卡片角色由设计元素类型映射（`plan.ts` 的 `VIEW_KIND_OF_ELEMENT`，兜底 `developer`），`office` 从不被派发；"派发 / 转交 / 观察子代理"是**驾驶舱会话**的能力（主会话工具面里确有它们，那几行被挂载由 M28-01 守住）。
+  - 新增 **M28-05（惰性条目杀手）**：`TOOL_PROVIDER` 的键集必须 ⊆ `roles.yml` 真正出现的工具名集合 —— 表里不许有"永远不会被断言用到"的条目。**这条守卫一上线就比评审多抓出两条**：`read_image` 与 `subagent`（同样不属于任何角色），一并清掉；表收敛为 roles.yml 真正用到的 8 个名字。
+  - 文案随之区分主体：`k105`（中英）与 README「已知边界」都点明是**驾驶舱会话**（被派发的角色没有 `send_message`），避免模型让子代理去用不存在的工具。
+  - 变异自证 2/2：⑱ 往表里塞一条角色用不到的条目 → `M28-05` 红（复现评审那条 minor）；⑲ 给角色加一个已挂载之外的工具名 → `M28-02` 红。
+
+
+### 修复
+
+- **preset 整个注册失败（会话里选不到 sdo-office）—— 我的错，已修**：上一轮照抄官方 preset 的 `tool-fs-search` 行时**只抄了 `id`/`name`，漏掉它下面的 `config` 块**。该包的 `sampleOverCapGlobResults` 是**必填、无默认值**，缺了它挂载期校验直接抛：
+  ```text
+  tool-fs-search (@deepseek-ai/dsh-tool-fs-search): invalid config:
+    - $sampleOverCapGlobResult missing required value (at sampleOverCapGlobResult)
+  ```
+  而 preset 里**任何一行挂不起来，整个 preset 就注册失败**（DEF-03 那类事故的通用形态）。修法：补上 `config: { sampleOverCapGlobResults: false }`（与官方 standard / ptc / cordis 三个 preset 逐字节一致；`false` = glob 超上限时保留前 N 条、不跨顶层采样）。
+  - **同路径本地验证**（不用重启）：拿该包自己的 schema 校验我写的值 —— `Config({sampleOverCapGlobResults:false})` 通过并展开出全部默认值（`globMaxResults:100` / `grepMaxMatches:250` / `timeoutMs:30000` …）；而 `Config({})` 复现出与线上**同一字段**的报错 `$.sampleOverCapGlobResults missing required value`。
+  - **对账**：把本 preset 的每一行与官方 `standard.patch.yml` 按 id 逐行比 config —— 触及的作业行全部一致；仅 3 处**有意**不同（SDO 自己的 persona 文案、delegation 只挂需要子集、不挂 model-selection-settings）。
+  - **守卫补强（这次不再用正则逐行匹配）**：`test/m28.test.ts` 新增 **M28-04**，按**行块**（`- id: X` 起、缩进更深的所有行）断言：① `tool-fs-search` 的块里必须有 `config:` 且 `sampleOverCapGlobResults: false`；② `tool-subagent` 必须有 `provider`（schema 里 `required()`）；③ 反向 —— `tool-skill` / `tool-subagent-control` / `list-agents` / `tool-fs` / `tool-bash` / `tool-ask-user` **不得**带 config（官方也裸挂，多给会掩盖 schema 变更）。成因就是"守卫只看行在不在、名字对不对，看不见 config 缺不缺"，所以断言必须落在整块上。变异自证 2/2：⑯ 删掉 config 块 → 红；⑰ 把 `false` 写成 `true` → 红。
+
+
+### 修复
+
+- **同一根因的两处未挂行（复审 2026-10-02 22:48 的 §2 同类审计）** —— 上轮只修了 `tool-skill`，复审把规则一般化（宿主 `dsh-web-app/cordis.patch.yml` 有意 `disabled: true` 的 24 行必须由 preset 补挂）后发现两处缺口：
+  - **`tool-fs-search` 未挂 ⇒ 会话里没有 `glob`/`grep`**：`tool-fs` 只注册 `read`/`write`/`edit`/`read_image`，搜索族在另一个包；而 `roles.yml` 八个角色的 allow 里都写着 `grep`/`glob`（**死允许项**）。已补挂。
+  - **`tool-subagent-control` 未挂 ⇒ 会话里没有 `send_message`/`interrupt_agent`**：SDO 自己的回执 `k105` 与 README「已知边界」都写着"当前由流程官用 `send_message` 把提示词交给执行者"，`tool-subagent` 的工具描述也提到它 —— 是**承诺落空**。已在 delegation 组内补挂（与 `tool-subagent` 同 isolate 域），并补挂配套的 `list-agents` 行（与 standard preset 同源）。
+  - **新增守卫 `test/m28.test.ts`（3 条，两个方向）**：① 集合方向 —— preset 挂载的行 ⊇ "宿主关闭且我们需要"的清单（每项写明为什么需要，含层位/包名/去重检查）；② 功能方向 —— `roles.yml` 里每个非本插件工具名都必须有**已挂载**的提供行（新增角色工具而忘了挂行会当场红）；③ 反向 —— 不得挂 `skill-filesystem`/`skill-badge`，且 preset 里不许出现"没写清用途"的行。三行新行同时登记进 `test/m7.ts` 的 DEF-03 解析清单（登记依据：官方 standard/ptc preset 同挂 + harness 可安装包清单 + 以 loader 自身为基准的 `createRequire` 实测，含子路径 `.../list-agents`）。
+  - 顺带更正 `presets/sdo-office.patch.yml` 里 `plan-mode` 的历史注释：原写"preset 引用它会解析失败"**未留存证据**，本轮机械实测显示该包与 `dsh-tool-skill` 同形、从 loader 基准可解析；是否改成一行声明需一次真机实测，**现在保持现状**（能用且已验证）。
+
+
+### 修复
+
+- **角色卡技能（B2）可达性 blocker（评审员 22:40 评审）**：上一轮把 8 张角色卡注册成索引技能 `sdo-role-cards`，但**在 sdo-office 会话里无人可见** —— 宿主层 `dsh-web-app/cordis.patch.yml` **有意**把 `tool-skill` 与 `skill-filesystem` 关掉（注释原文：`tool-skill` is what a preset mounts to give its agent the catalog and loader at all），而本插件的 preset 里**没有这一行** ⇒ 该会话既没有技能目录、也没有 `skill` 工具。修法：`presets/sdo-office.patch.yml` 的 presets 段加一行 `- id: tool-skill` / `name: '@deepseek-ai/dsh-tool-skill'`（落 preset 层；与官方 standard/ptc/cordis 三个 preset 同形；该包与已工作的 `dsh-tool-fs`/`dsh-tool-bash` 同在 dsh 应用依赖里，解析路径同源）；**不挂** `skill-filesystem`（SDO 是程序化注册，挂文件发现会让 8 张卡各占一个目录项）。
+  - 上一轮我把"可达性"定义为"掩码里有 `skill`"就收工，**并据此向你承诺"重启后目录里就会出现该技能"** —— 那是错的：掩码只是必要条件之一，preset 挂载才是让目录与加载器存在的那一步。本轮把断言补齐：新增 **M27-08** 直接读 preset 文件，断言 `tool-skill` 落在 `preset-sdo-office` 的 `config.plugins` 之内（缩进判层位，避免有人加到 profile 层造成全局泄漏）、包名正确、且**不得**挂 `skill-filesystem`。
+- **`register()` 未兜住宿主校验（评审 minor 2）**：`registerRoleCardsSkill` 现在把 `service.register(...)` 包进 try/catch，宿主校验规则收紧时降级为"不注册 + 带原因的日志"，不冒泡进插件装配（兑现"不阻塞装配"）。
+- **disposer 归属（评审 minor 1）**：`skills.register()` 的 effect 挂在**技能服务自己的 ctx** 上，返回值不会被本插件 fiber 回收（热重载后目录里可能留旧正文，同层同名又是"首个胜出"）。改为 `skillsCtx.effect(() => { …; return dispose }, 'sdo:role-cards-skill')`，让 disposer 随本插件 fiber 逆序执行。
+
+
+### 新增
+
+- **角色卡技能（B2，开发阶段接线）**：把随包的 8 张角色卡（`skills/role-*.md`）注册为宿主的**一个索引型技能** `sdo-role-cards`，让派发出去的执行者**按需加载**，而不是把八张卡正文塞进每次派发。
+  - **为什么是一条索引而不是 8 个技能**：技能目录（名字 + 描述）会进入该 profile **每个会话**的系统提示，注册 8 条就是 8 行常驻 token；索引只占 1 行，卡片正文仍按需加载。
+  - **索引正文现算**（`src/domain/skills.ts`）：角色名 / 掩码理由 / allow / deny 取自 `src/data/roles.yml`，卡片路径取自随包文件 —— 单真源、不手抄（改了角色表，索引与用例同步变）；正文中英各一份，走语言包 `skillBody.*`。
+  - **可达性是硬前提**：`src/data/roles.yml` 的 8 个角色白名单统一加 `skill`（只读工具）—— 否则"注册成功但执行者调不到"。`src/index.ts` 用 `ctx.inject(['skills'], …)`（与 `planMode` / `subagents` 同一先例）注册，并保留返回的 disposer。
+  - **可选依赖、不阻塞装配**：本包**不引入** `@deepseek-ai/dsh-skill`（本地声明可选服务类型 + 最小结构契约）；宿主没装配 skills 服务时静默降级为不注册，只记一条 debug 原因。
+  - 测试 `test/m27.test.ts`（7 条）：技能形状符合宿主契约（kebab 名 / 描述非空 / 目录资源 / 可调用）、索引覆盖 8 张卡且每条路径都读得到、注册成功路径与 disposer、**缺服务静默降级**、8 角色白名单含 `skill`、README 记载、描述取自语言包。变异自证 **5/5**：① 索引漏一张卡→红 ② 某角色去掉 `skill`→红 ③ 缺服务时抛错→红 ④ 注册 8 条而非 1 条→红 ⑤ 描述硬编码→红。
+
+
 ### 新增
 
 - **方法包人审文档**（用户要求：设计阶段各方法包的结果要成**文档**供人工审核，而不是只有 `.yml` 台账；文档内容**由模型撰写**）：

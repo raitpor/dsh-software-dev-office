@@ -205,6 +205,24 @@ docs/METHOD-structured.md · docs/METHOD-oo.md · docs/METHOD-evolutionary.md ·
 
 写法：`sdo_design action=artifact artifactKind=<dictionary|dfd|erd|classes|sequences|layers|debt|reversibility|increments|mapping|invariants|diffVerify> artifactData=<JSON>`（落 `.sdo/design/method-<kind>.yml`；`sdo_design action=method` 只读查看逐包状态）。`artifactData` 的公共字段只有 `summary` / `requires`，正文必须放在本 kind 的字段下：`dictionary→{dictionary:[…]}`、`dfd→{levels:[…]}`、`erd→{entities:[…],relations:[…]}`、`classes→{types:[…]}`、`sequences→{sequences:[…]}`、`layers→{rules:{layers,assignments,allowed}}`、`debt→{debts:[…]}`、`reversibility→{decisions:[…]}`、`increments→{increments:[…]}`、`mapping→{mappings:[…]}`、`invariants→{invariants:[…]}`、`diffVerify→{diffVerify:{…}}`。字段放错不会被静默忽略：回执点名被忽略的字段与本 kind 期望的字段；若一个期望字段都没给且盘上还没有该产物，写入被拒绝。
 
+## 8.1 角色与角色卡（按需加载）
+
+SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/role-<角色>.md`（8 张，SKILL.md 风格）；插件启动时把它们注册成**一条**技能目录项，执行者按需加载，而不是把八张卡的正文塞进每次派发：
+
+```text
+技能名：sdo-role-cards   （宿主 skills 服务；缺失该服务的组合里静默降级，不影响装配）
+内容：该读哪张卡（角色 → 卡片路径 → 掩码理由）+ 执行协议（claim → 写范围内 → 带证据 done → 卡住就 block）
+卡片：`skills/role-analyst.md` · `role-red-team` · `role-architect` · `role-office`
+      · `role-developer.md` · `role-tester.md` · `role-reviewer.md` · `role-delivery.md`
+```
+
+- 只注册**一条**目录项：技能目录（名字 + 描述）会进每个会话的系统提示，8 条就是 8 行常驻 token。
+- 索引正文**现算**自 `src/data/roles.yml` 与卡片文件（单真源，不手抄）；改了角色表，索引与用例同步变。
+- **两个前提缺一不可**：① 执行者的工具白名单里有 `skill`（8 个角色都加了）；② **preset 挂载了 `tool-skill`**（本 preset 已加）。只做①会出现"注册成功但无人可见"。
+- 这条规则是**通用的**：宿主层 `dsh-web-app` 有意 `disabled: true` 的行（共 24 条，含 `tool-fs-search`、`tool-subagent-control`、`tool-skill`）**必须由 preset 自己补挂**，否则该能力在 sdo-office 会话里根本不存在，而插件文案/角色 allow 却假定它有 —— 会变成"死允许项"。本 preset 需要的那批行有机械守卫（`test/m28.test.ts`：集合方向 + `roles.yml` 每个工具名都要有已挂载的提供行）。
+- 只挂 `tool-skill`、**不挂** `skill-filesystem`：SDO 走程序化注册（runtime 层），挂文件发现会把 `skills/` 下 8 张卡各变成一个目录项。
+- 卡片是纪律、掩码是硬约束：`allow` 之外的工具角色看不到（掩码表见 `src/data/roles.yml`）。
+
 ## 9. 配置
 
 全部配置写在 **preset 行的 `config`** 里（见 `presets/sdo-office.patch.yml`）：
@@ -237,6 +255,45 @@ docs/METHOD-structured.md · docs/METHOD-oo.md · docs/METHOD-evolutionary.md ·
 
 标识（`G0` / `REQ-001` / `in-progress`）**不翻译** —— 它们进出台账、命令参数与追溯图。
 
+## 9.1 开发阶段的机器校验（A1 / B4 / A2 / C7 / D9）
+
+开发阶段的一切都落在两个关口上：**`sdo_task action=claim`（开工）** 与 **`sdo_task action=done`（收工）**。
+凡是能机械判定的都在这两处拦，判不了的（比如"证据够不够好"）留给评审员 —— 不硬编，避免逼人编造。
+
+| 关口 | 校验 | 失败码 / 判据 |
+|---|---|---|
+| `claim` | 卡上有需求、且项目档位不是 `trivial` 时**必须先有用例计划** | `test-case-missing`（C7） |
+| `claim` | CAS 版本、状态可认领、写范围不与在进行的卡冲突 | `revision-mismatch` / `not-claimable` / `write-scope-conflict`（既有） |
+| `done` | 证据种类 ⊇ 卡上 `evidenceRequired` | `evidence-kind-missing`（A1） |
+| `done` | `artifact` 证据的路径**必须真实存在**；给了 `sha256=` / `#<hex>` 就复算比对；越出工作区判红 | `evidence-artifact-missing` / `evidence-artifact-hash` / `evidence-artifact-outside`（A1） |
+| `done` | `command` 证据带 `exitCode` 时必须为 0（不给则不拦） | `evidence-command-failed`（A1） |
+| `done` | **写范围对账**：认领之后本会话真实改动的文件必须落在 `writeScopes` 内 | `write-scope-violation`（A2） |
+| `done` | 卡上需求的用例**有结果**：`pass`，或 `skip` + 非空理由 | `test-result-missing`（没跑）/ `test-failing`（fail）/ `test-skip-unjustified`（skip 没写理由）（C7） |
+| G5 | `size ≥ medium` 的完成卡必须有 `verdict=pass` 的评审 | `C-42 review.required`（D9） |
+| G6 | 所有完成卡都有通过评审，且作者 ≠ 评审者 | `C-52 review.independent`（既有，比 C-42 更全更晚） |
+
+**写范围对账的数据从哪来**：SDO 监听宿主的 `session/event` 追加流，把 `workspace/changes` 事件的
+`(sessionId, seq)` 与文件清单记进 `.sdo/evidence/workspace-changes.jsonl`（`captureWorkspaceChanges` 控制开关）。
+`claim` 事件自身（带 `sessionId`）当基线，`done` 只比"基线之后"的改动。
+
+**"已对账"的判据是 `audited`，不是"有条目"**（评审 2026-10-03 抓到的 A2 缺陷）：每条命中条目都必须
+**带宿主给的摘要**（`summaryAvailable`）才算对过账 —— 宿主没有 `workspaceChanges` 服务、或 `summary()`
+返回 `undefined` 时，条目会"存在但没有文件信息"，那种情况**必须**回「写范围未对账」（`uiIndex.kWorkScopeNotAudited`），
+不得给出干净回执。旧条目没有该字段 ⇒ 保守当"未对账"。宿主**明确**回了"零改动"（`files: []`）则算已核对。
+
+**证据 JSON 形状**（`sdo_task action=done` 的 `evidence` 参数，写在工具描述里）：
+
+```json
+[{"kind":"command","detail":"npm test（423 passed）","exitCode":0},
+ {"kind":"artifact","detail":"lib/src/index.js sha256=<64 位十六进制>"},
+ {"kind":"workspace-changes","detail":"session-…@42"}]
+```
+
+`exitCode` 是**独立字段**：写进 `detail` 文本不会被读到（`detail` 只当人类摘要）。
+
+**派发提示**（B4）：`buildDispatch` 的协议第 0 步就是"先加载角色卡技能 `sdo-role-cards`，再读本角色卡片"，
+免得执行者要自己从技能目录里发现它。
+
 ## 10. 台账与产物
 
 ```text
@@ -264,7 +321,7 @@ skills/ 8 张角色卡（analyst / architect / red-team / developer / tester / r
 
 | 边界 | 说明 |
 |---|---|
-| 派发宿主调用未接线 | `sdo_plan action=next` 会选后端、生成带 CAS 版本的派发请求并留痕；宿主 `SubagentRuntime.start` 的真实调用尚未接线。当前由流程官用 `send_message` 转交，或按 `inline` 就地执行 |
+| 派发宿主调用未接线 | `sdo_plan action=next` 会选后端、生成带 CAS 版本的派发请求并留痕；宿主 `SubagentRuntime.start` 的真实调用尚未接线。当前由流程官（**驾驶舱会话**）用 `send_message` 转交（该工具已由 preset 挂载；**被派发的角色没有它** —— 转交与观察子代理是驾驶舱的能力），或按 `inline` 就地执行。派发提示里已含「先加载角色卡技能」的第 0 步（B4）；**角色 `toolFilter` 仍只是算出来写进请求**，未真正施加 |
 | 子代理用量未归集 | `sdo_cost` 只统计驾驶舱会话；子代理会话对象未暴露给插件，回执里明确说明而不是编数 |
 | Web 面板未做 | 文本看板（`/sdo-board`）可用；Web 面板（client 插件）尚未实现 |
 | L3 纪律守卫未实测 | 策略与钩子已就位（fail-open，仅 `gateLevel: strict` 时拦）；deny 分支在本环境未做实测 |

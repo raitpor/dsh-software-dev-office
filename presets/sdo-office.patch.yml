@@ -44,14 +44,45 @@
               suffix: 'Your working directory is {{cwd}}.'
           - id: tool-fs
             name: '@deepseek-ai/dsh-tool-fs'
+          # `glob` / `grep` 在**搜索族**里，不在 `tool-fs`（后者只给 read/write/edit/read_image）。
+          # 与 `tool-skill` 同理：宿主层有意 `disabled: true`（`dsh-web-app/cordis.patch.yml:472`），
+          # 必须由 preset 补挂 —— 否则八个角色的 allow 里的 `grep`/`glob` 全是**死允许项**，
+          # 而 README/提示词都假定能搜索。standard preset 同样挂着这一行。
+          - id: tool-fs-search
+            name: '@deepseek-ai/dsh-tool-fs-search'
+            # **必填 config**（没有默认值）：缺它挂载期校验就是
+            #   `tool-fs-search (@deepseek-ai/dsh-tool-fs-search): invalid config:
+            #    - $sampleOverCapGlobResult missing required value`
+            # 而这一行失败会让**整个 preset 注册失败**（症状：会话里选不到 sdo-office —— 实测过一次）。
+            # 官方 standard / ptc / cordis 三个 preset 同样给 false（glob 超上限时保留前 N 条、不跨顶层采样）。
+            config:
+              sampleOverCapGlobResults: false
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
           - id: tool-ask-user
             name: '@deepseek-ai/dsh-tool-ask-user'
-          # 注：计划评审**不使用** `@deepseek-ai/dsh-plan-mode`。
-          # 实测：该包只随 `dsh-web-app` bundle 解析，本插件的 preset 里引用它会**解析失败**，
-          # 进而导致整个 preset 注册失败（症状：会话里选不到 sdo-office）。Q-17 的"两道评审"
-          # 改由已装配的提问通道承担（见下方 tool-ask-user）：SDO 用提问工具请用户评审计划并留痕。
+          # 技能目录 + 加载器（`skill` 工具）。宿主层**有意关掉**这一行
+          # （`dsh-web-app/cordis.patch.yml`：`tool-skill: disabled: true`，注释写明
+          # "tool-skill is what a preset mounts to give its agent the catalog and loader at all"），
+          # 因此**必须由本 preset 挂载**：否则本插件注册的角色卡索引
+          # （`sdo-role-cards`）既没有目录项、也没有加载器 —— 注册成功但无人可见。
+          # 只挂 `tool-skill`、不挂 `skill-filesystem`：SDO 走**程序化注册**（runtime 层），
+          # 不需要文件发现；挂了会把 `skills/` 下 8 张卡各自变成一个目录项，违背"只占 1 行"的取舍。
+          # 该包与 dsh 发行的 `@deepseek-ai/dsh-tool-fs` / `dsh-tool-bash` 同类（同在 dsh 应用依赖里），
+          # 解析路径同源。
+          - id: tool-skill
+            name: '@deepseek-ai/dsh-tool-skill'
+          # 注：计划评审**不使用** `@deepseek-ai/dsh-plan-mode` 行，改用 `src/index.ts` 的动态
+          # import + try/catch 自行装载（方案 A，真机验证可用；装载失败只记原因，不影响其它功能）。
+          #
+          # 历史理由（"该包只在别处解析得到，preset 里引用会解析失败并拖垮整个 preset"）**没有留存证据**。
+          # 复审（2026-10-02 22:48 §3）与本轮的机械实测都指向相反：`@deepseek-ai/dsh-plan-mode` 就在同一个
+          # pnpm store 里、是 dsh 应用的依赖、且以 loader 自身为基准可解析 —— 与本轮修好的
+          # `@deepseek-ai/dsh-tool-skill` **完全同形**。因此这条结论**可能只是过期**（当时或另有原因）。
+          # 是否改成一行声明，需一次真机实测：加 `- id: plan-mode` / `name: '@deepseek-ai/dsh-plan-mode'`
+          # → 重启 → 确认 preset 仍可选中；成立再把动态 import 换成声明，并把实测证据补进本注释。
+          # 现在**保持现状**（能用且已验证），不拿"未实测的简化"去换"已知能用的路径"。
+          # Q-17 的"两道评审"由已装配的提问通道承担（见下方 tool-ask-user）。
           # 上下文压缩与工具结果剪枝（照抄官方 standard preset 的形状）。
           # 不装这三行 ⇒ SDO 会话上下文只增不减：实测 599 次工具调用后 messages 涨到 ~803k tokens，
           # 叠加 completion 预算 256k 直接撞上 1,048,576 上限（现象就是"上下文爆了"）。
@@ -80,3 +111,13 @@
               - id: tool-subagent
                 name: '@deepseek-ai/dsh-tool-subagent'
                 config: { provider: spawn, toolName: subagent, backgroundMode: continuable }
+              # 子代理控制面（`send_message` / `interrupt_agent`）：宿主层同样 `disabled: true`
+              # （`dsh-web-app/cordis.patch.yml:525`），必须由 preset 补挂。这一行是**承诺兑现**：
+              # SDO 自己的回执（`k105`）与 README「已知边界」都写着"当前由流程官用 `send_message`
+              # 把提示词交给执行者"，而 `tool-subagent` 的工具描述也提到 `send_message` ——
+              # 不挂它，该会话里根本没有这个工具。必须与 `tool-subagent` 同组（同一个 isolate 域）。
+              - id: tool-subagent-control
+                name: '@deepseek-ai/dsh-tool-subagent-control'
+              # 配套：流程官要看已派发的子代理（与 standard preset 同源）。
+              - id: tool-subagent-list-agents
+                name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'

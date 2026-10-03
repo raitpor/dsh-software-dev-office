@@ -675,7 +675,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         id: { type: 'string', description: t('param.id') },
         owner: { type: 'string', description: t('param.owner') },
         expectedRevision: { type: 'number', description: t('param.expectedRevision') },
-        evidence: { type: 'string', description: 'done: JSON array [{"kind":"artifact|command|workspace-changes","detail":"…"}].' },
+        evidence: { type: 'string', description: t('param.evidence') },
         note: { type: 'string', description: t('param.note') },
         reason: { type: 'string', description: t('param.reason') },
         actor: { type: 'string', description: t('param.actor') },

@@ -71,6 +71,7 @@ criterion:
   C-91: "Every high/blocker risk has a response and an owner"
   C-92: "This round's risk conclusion (continue / adjust / stop)"
 
+  C-42: "Medium/large cards (size >= medium) have a passing review before completion"
 requirementKind:
   functional: Functional
   quality: Quality
@@ -220,7 +221,7 @@ param:
   gate: "Gate (accepts a readable name such as \"Intake Gate\", or the id G0)"
   approver: Approver
   approvedBy: Human sign-off (required by the baseline gate)
-  evidence: "Evidence: command output summary / artifact path / change reference (JSON array)"
+  evidence: "Evidence JSON array for done. Shape: [{\"kind\":\"command\",\"detail\":\"npm test (420 passed)\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"lib/x.js sha256=<64-hex>\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-...@42\"}]. Checks: kinds must cover the card evidenceRequired; artifact paths must exist (a given hash is recomputed); command exitCode is a SEPARATE FIELD - writing it inside detail text is not read, so pass it as its own field."
   status: Status
   severity: Severity
   kind: Kind
@@ -720,6 +721,10 @@ uiGates:
   kMethodDocNoHeader: "(missing document header)"
   kMethodDocIncomplete: "`{p1}` does not cover these entry ids: {p2} — the document must walk through the artifacts so a human reviewer can see the actual content, not just a summary."
   kMethodDocRemedy: "Write one `docs/METHOD-<package>.md` per selected package (author the content yourself: tables, diagrams and prose are all fine — e.g. class and sequence diagrams for OO, DFD and ERD for structured, mapping tables for porting). The header must be `<!-- method-doc: package=<package>; basis=<basis> -->`, using the basis that `sdo_design action=method` reports."
+  kWorkReviewNone: "No completed medium/large card, so this criterion does not block"
+  kWorkReviewMissing: "These medium/large cards (size >= medium) are done without a passing review: {p1} (record one with sdo_review action=record verdict=pass; the reviewer must not be the card owner)"
+  kWorkReviewRemedy: "Record a pass review for every medium/large card (author != reviewer); if a card truly needs no review, split it down to small/trivial"
+  kWorkReviewOk: "All {p1} medium/large cards have a passing review"
 uiPlan:
   k1: "The change has artifact evidence (path + hash)"
   k2: "Caller implementation"
@@ -861,7 +866,7 @@ uiDescribe:
   k102: "⚠️ Possibly lost {p1}: {p2} (**not released automatically**; release/reassign explicitly)"
   k103: "❌ {p1} decomposition checks failed (see `sdo_plan action=decompose`)"
   k104: "⚠️ Host invocation (`SubagentRuntime.start`) is **not wired up yet**: this step would really start a model run and needs credentials and a usable assembly."
-  k105: "Until then, have the process officer hand the prompt below to the executor with `send_message`, or run it in place with the main model in inline mode."
+  k105: "Until then, have the flow officer (the **cockpit session**; a dispatched role has no `send_message`) hand the prompt below to the executor with `send_message`, or run it in place with the main model in inline mode."
   k106: "Tool surface: {p1}　| Write scope: {p2}"
   k107: "Claiming requires `expectedRevision={p1}`"
   k108: "owner recorded as {p1}; when done you must report back with `sdo_task action=done id={p2} owner={p3} evidence=…`."
@@ -1275,6 +1280,7 @@ uiIndex:
   kUnlinkNeeds: "Unlinking a trace edge needs `from` and `to` (optional `kind` removes only that type)"
   kUnlinkNone: "No trace edge {p1} → {p2} was found (nothing changed)"
   kUnlinkDone: "Removed {p1} trace edge(s) ({p2} → {p3})"
+  kWorkScopeNotAudited: "(note: no workspace/changes were captured for this session, so the card's **write scope was not audited** — re-run in a session with capture enabled to audit it.)"
 uiLang:
   current: "- Current UI language: **{p1}** (base language {p2})"
   available: "- Language packs shipped: {p1}"
@@ -1291,7 +1297,7 @@ uiMethod:
   aliasEvolutionary: "agile,evolutionary,evolution"
   aliasNone: "none,no method"
   # Selection
-  selectionMissing: "The «which design method does this project use» question has not been raised yet (run sdo_design action=grill first)"
+  selectionMissing: "The «which design method does this project use» question has not been raised yet (raise it in the requirements phase with `sdo_requirement action=design-questions`)"
   selectionUnanswered: "The method question {p1} has not been answered yet"
   selectionEmpty: "(empty answer)"
   selectionInvalid: "The method answer cannot be parsed as structured / oo / evolutionary / none: {p1}"
@@ -1926,3 +1932,24 @@ uiDor:
   c7Remedy: 'Have the user state their approval in the session, then call `sdo_gate action=sign gate=G2 quote=«the user own words»` (or `channel=question`); passing only `approvedBy` does NOT pass the gate'
   c7NoApprovedBy: "; approvedBy argument: NOT provided (that string is no longer the basis for passing)"
   c7ApprovedByExtra: "; approvedBy argument: {p1} (that string is NO LONGER the basis for passing; traceability only)"
+
+uiSkills:
+  roleCardsDescription: "Use when executing or dispatching a task card in an SDO (dsh-software-dev-office) project: load the role card for that role — goal, input/output contracts, definition of done, prohibitions and question templates."
+  roleCardsWhenToUse: "Claiming or dispatching a task card in an SDO project"
+  roleCardsRegistered: "Role-card index skill registered"
+  skillsMissing: "The host has no skills service mounted: role cards still ship with the package but cannot be loaded on demand (mounting is not blocked)"
+skillBody:
+  title: "SDO role cards ({p1}, loaded on demand)"
+  intro1: "You are a **single dispatch run** inside an SDO (dsh-software-dev-office) project: a role is not a session, and the flow officer imposes your tool surface (see the table)."
+  intro2: "Read the card for your role **in full** first, then follow it — a card is discipline, not optional advice."
+  tableHead: "| Role | Name | When to use (mask rationale) | Card |"
+  tableRow: "| `{p1}` | {p2} | {p3} | `{p4}` |"
+  sectionsNote: "Every card contains: goal / input contract / output contract / definition of done (DoD) / prohibitions / question and review templates."
+  maskHead: "Hard constraints (tool mask; tools outside allow are invisible to you):"
+  maskLine: "- `{p1}`: allow = {p2}; deny = {p3}"
+  dirLine: "Card directory: `{p1}`"
+  protocolHead: "Execution protocol (same source as the dispatch prompt; follow it when stuck):"
+  protocol1: "1) `sdo_task action=claim` (with `expectedRevision`; on a CAS conflict re-read the card);"
+  protocol2: "2) change only files inside your write scope;"
+  protocol3: "3) `sdo_task action=done` requires evidence items (command / workspace-changes / artifact) — claiming completion is not completion;"
+  protocol4: "4) when stuck use `sdo_task action=block note=…` — do not push through and do not silently change scope."

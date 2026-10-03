@@ -1078,6 +1078,25 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     return ok('review.independent', fmt('uiGates.k117', { p1: reviews.length }))
   },
 
+  /**
+   * **D9：中大卡在完成前就要有通过评审**（`size ≥ medium`）。
+   *
+   * 与 G6 的 `review.independent` 的分工：那条在**验证门禁**要求"所有完成卡都有 pass 评审 + 作者≠评审者"；
+   * 这条把**大卡**的评审要求**提前到开发完成门禁**，小卡（trivial/small）不在 G5 被拦。
+   * 两条的口径不冲突：G5 更早、更窄；G6 更晚、更全。
+   */
+  'review.required': (ctx) => {
+    const tasks = listTasks(ctx.store)
+    const big = tasks.filter((task) => task.status === 'done' && (task.size === 'medium' || task.size === 'large'))
+    if (big.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
+    const reviews = listReviews(ctx.store)
+    const missing = big.filter((task) => !reviews.some((review) => review.taskId === task.id && review.verdict === 'pass')).map((task) => task.id)
+    if (missing.length > 0) {
+      return fail('review.required', fmt('uiGates.kWorkReviewMissing', { p1: missing.join(' ') }), t('uiGates.kWorkReviewRemedy'))
+    }
+    return ok('review.required', fmt('uiGates.kWorkReviewOk', { p1: String(big.length) }))
+  },
+
   'iteration.increment': (ctx) => {
     const current = readIteration(ctx.store)
     if (current === undefined) return fail('iteration.increment', t('uiGates.k118'), t('uiGates.k119'))

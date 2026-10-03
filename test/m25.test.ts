@@ -16,8 +16,8 @@ import { SoftwareDevOffice } from '../src/office.js'
 import { describeInit, describeSignature, describeStatus } from '../src/interface/describe.js'
 import { link, readLinksChecked, report, unlink } from '../src/domain/trace.js'
 import { SdoStore } from '../src/infra/store.js'
-import { Journal } from '../src/infra/journal.js'
 import { loadPackagedYaml } from '../src/infra/data.js'
+import { Journal } from '../src/infra/journal.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m25/', import.meta.url))
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -224,6 +224,31 @@ test('观察 3（§3.5）：流程数据不得再把「建议产物」写成可�
   }
 })
 
+test('语言包守卫：两包的 snake_case 标识符必须一一对应（重载键串位 / 工具名写错）', () => {
+  // 为什么只查 snake_case：它跨语言**不翻译**（`send_message`、`sdo_requirement`、`journal.jsonl` 之类），
+  // 所以两包出现不同集合就是真的写错了。普通散文/标点/占位符（`…` vs `...`、`<区域名>` vs `<region name>`）
+  // 差异是正常翻译，不在此守卫范围。实测本仓 1482 个共有键里，只有 2 处命中，且都是真缺陷：
+  //   ① 我改语言包时用 `re.M` 匹配到**第一条** `k105`（该键名在 uiDescribe/uiIndex/uiGates 三个段复用）
+  //      → 把 en 的**门禁**文案覆盖成了派发文案；
+  //   ② 既有的 en `uiMethod.selectionMissing` 让英文用户去跑 `sdo_design action=grill`，
+  //      而中文与代码实现都是需求阶段的 `sdo_requirement action=design-questions`。
+  const packs = (locale: string): Record<string, Record<string, string>> =>
+    loadPackagedYaml<Record<string, Record<string, string>>>(`src/data/lang/${locale}.yml`)
+  const zh = packs('zh-CN')
+  const en = packs('en')
+  const idsOf = (text: string | undefined): string[] =>
+    [...new Set((text ?? '').match(/[a-z][a-z0-9]*(?:_[a-z0-9]+)+/gu) ?? [])].sort()
+  const problems: string[] = []
+  for (const [section, keys] of Object.entries(zh)) {
+    for (const key of Object.keys(keys)) {
+      const a = idsOf(zh[section]?.[key]).join(',')
+      const b = idsOf(en[section]?.[key]).join(',')
+      if (a !== b) problems.push(`${section}.${key}：zh=[${a}] en=[${b}]`)
+    }
+  }
+  assert.deepEqual(problems, [], `两包的 snake_case 标识符不一致（多半是段位串了或工具名写错）：\n${problems.join('\n')}`)
+})
+
 // —————————————————————— 类级守卫：语言包 ↔ 调用面 ——————————————————————
 
 test('语言包类级守卫：被引用的键都取得到（含 fmt()），且 t() 调用的文案不含占位符', () => {
@@ -263,4 +288,29 @@ test('语言包类级守卫：被引用的键都取得到（含 fmt()），且 t
   }
   assert.deepEqual(missing, [], `这些键在语言包里取不到（会漏出键名）：${missing.join(', ')}`)
   assert.deepEqual(leaking, [], `这些键用 t() 调用，但文案含占位符（必然漏出）：${leaking.join(', ')}`)
+})
+
+test('M25 语言包不得出现重复键（YAML 后者会静默覆盖前者 —— param.evidence 踩过一次）', () => {
+  // 事故背景：2026-10-03 修 A1 的可发现性时，我**新加**了一个已存在的 `param.evidence` 键，
+  // YAML 解析取后者 ⇒ 新文案根本没到模型面前，而一切"看起来都改了"。文本级扫描成本极低，直接钉住。
+  const duplicates: string[] = []
+  for (const locale of ['zh-CN', 'en']) {
+    const lines = readFileSync(new URL(`../../src/data/lang/${locale}.yml`, import.meta.url), 'utf8').split('\n')
+    let section = ''
+    const seen = new Map<string, number>()
+    for (const [index, line] of lines.entries()) {
+      if (/^[A-Za-z][\w]*:/u.test(line)) {
+        section = line.replace(/:.*$/u, '')
+        seen.clear()
+        continue
+      }
+      const key = /^  ([A-Za-z][\w]*):/u.exec(line)
+      if (key === null) continue
+      const name = `${locale}:${section}.${key[1]}`
+      const previous = seen.get(name)
+      if (previous !== undefined) duplicates.push(`${name}（行 ${previous + 1} 与 ${index + 1}）`)
+      else seen.set(name, index)
+    }
+  }
+  assert.deepEqual(duplicates, [], `语言包里有重复键，后者会静默覆盖前者：${duplicates.join('；')}`)
 })
