@@ -8,12 +8,13 @@
  */
 import { nextId } from '../infra/ids.js'
 import { fmt, t } from './i18n.js'
+import { designExitGates } from './process.js'
 import { readLinksChecked } from './trace.js'
 import { pushShapeNote, recordOf, textListOf, textOf, typeNameOf } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
-import type { ChangeRequest, Dimension, Requirement } from '../types.js'
+import type { ChangeRequest, Dimension, ProcessDef, Requirement } from '../types.js'
 
 export const TRACE_FILE = 'trace/links.jsonl'
 
@@ -187,4 +188,111 @@ export function createChange(store: SdoStore, journal: Journal, input: CreateCha
   })
   journal.append('change/decided', { id: change.id, decision: change.decision, by: change.decidedBy })
   return change
+}
+
+/**
+ * **未消化的需求变更**（语义 A，2026-10-04）。
+ *
+ * 动机（真机证据）：`CR-001` 批准后 23 秒，`TASK-041` 照常被认领并被派发 —— 变更控制只
+ * "登记 + 决策 + 算影响面"，**不改阶段、不碰基线**，于是"需求变了"对开发阶段没有任何约束，
+ * 受影响的那条需求就变成"让模型自由发挥"。本函数把"变了但还没重走一遍"变成**可机械判定**的事实。
+ *
+ * 判据（全部从 journal 现算，不新增真源；两侧都满足才算消化）：
+ *   ① **重新基线**：批准之后存在一条 `requirement/baselined`，且它覆盖该 CR 的受影响需求
+ *      （`ids` 含它）。注意 N-14：内容没变的需求重新基线**不写事件** —— 因此"没真改需求就重基线"
+ *      消化不掉，这正是我们要的；
+ *   ② **重过设计门**：那条重新基线**之后**还有一条设计门（需求阶段之后那个阶段的 exit，
+ *      四个随包流程都是 G3）的 `gate/result`，且结论是 `passed` / `waived`。
+ *      只看 ① 是不够的：G2 重签后阶段回到架构，但设计一行没动、G3 没重过，这时仍不许开工。
+ *
+ * 口径与失效机制**同源**：`requirement/updated` / `requirement/baselined` 本来就让旧 G3 签字失效，
+ * 所以"重签"不是本函数额外要求的仪式，而是既有签字机制的必然结果。
+ */
+export interface UndigestedChange {
+  id: string
+  /** 受影响需求（以变更单文件为准；读不到时退回 `change/requested` 事件里的那份） */
+  requirement: string
+  /** `change/decided(approved)` 的 journal 序号 */
+  approvedSeq: number
+  /** 批准之后覆盖该需求的重新基线序号；`undefined` = 还没重签 G2 */
+  rebaselinedSeq?: number | undefined
+}
+
+/** `requirement/baselined` 事件的 `ids` 归一（手写坏形状只当"没覆盖"）。 */
+function eventIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => textOf(item)).filter((item) => item !== '')
+}
+
+/**
+ * 列出**已批准但尚未消化**的需求变更（空数组 = 可以继续开发）。
+ *
+ * `process` 用于取"设计门"；`undefined` 或流程数据里找不到需求阶段时只按 ① 判定
+ * （拿不到设计门 ≠ 设计门不存在，此时不假装它过了 —— 见回执里的口径说明）。
+ */
+export function undigestedChanges(
+  store: SdoStore,
+  journal: Journal,
+  process: ProcessDef | undefined,
+): UndigestedChange[] {
+  const read = journal.read()
+  const requested = new Map<string, string>()
+  const approved: { id: string; seq: number }[] = []
+  for (const event of read.events) {
+    if (event.type === 'change/requested') {
+      const id = textOf(event.data['id'])
+      const requirement = textOf(event.data['requirement'])
+      if (id !== '' && requirement !== '') requested.set(id, requirement)
+      continue
+    }
+    if (event.type !== 'change/decided') continue
+    // 只有 `approved` 才逼着重走：「拒绝/延期」不动阶段，也不该拦住正在进行的开发
+    if (textOf(event.data['decision']) !== 'approved') continue
+    const id = textOf(event.data['id'])
+    if (id !== '') approved.push({ id, seq: event.seq })
+  }
+  if (approved.length === 0) return []
+  const designGates = new Set(process === undefined ? [] : designExitGates(process))
+  const baselines = read.events.filter((event) => event.type === 'requirement/baselined')
+  const designPassed = read.events.filter(
+    (event) =>
+      event.type === 'gate/result' &&
+      designGates.has(textOf(event.data['gate'])) &&
+      (event.data['status'] === 'passed' || event.data['status'] === 'waived'),
+  )
+  const out: UndigestedChange[] = []
+  for (const item of approved) {
+    const declared = textOf(readChange(store, item.id)?.requirement)
+    const requirement = declared.trim() !== '' ? declared : (requested.get(item.id) ?? '')
+    const baseline = baselines.find(
+      (event) => event.seq > item.seq && (requirement === '' || eventIds(event.data['ids']).includes(requirement)),
+    )
+    if (baseline === undefined) {
+      out.push({ id: item.id, requirement, approvedSeq: item.seq })
+      continue
+    }
+    // 设计门拿不到时（流程数据没有需求阶段）不假装它过了，也不假红：只按 ① 判定。
+    if (designGates.size > 0 && !designPassed.some((event) => event.seq > baseline.seq)) {
+      out.push({ id: item.id, requirement, approvedSeq: item.seq, rebaselinedSeq: baseline.seq })
+    }
+  }
+  return out
+}
+
+/** 未消化的变更 → 人读详情（`claim` 的拒绝理由；点名 CR 与下一步做什么，不含糊）。 */
+export function describeUndigestedChanges(changes: UndigestedChange[], process: ProcessDef | undefined): string {
+  const designGates = (process === undefined ? [] : designExitGates(process)).join(' / ') || 'G3'
+  const lines = [fmt('uiChange.notDigestedTitle', { p1: changes.map((item) => item.id).join('、') })]
+  for (const item of changes) {
+    lines.push(
+      item.rebaselinedSeq === undefined
+        ? fmt('uiChange.notDigestedNoBaseline', {
+            p1: item.id,
+            p2: item.requirement === '' ? t('uiChange.notDigestedNoRequirement') : item.requirement,
+          })
+        : fmt('uiChange.notDigestedNoRedesign', { p1: item.id, p2: item.requirement, p3: designGates }),
+    )
+  }
+  lines.push(t('uiChange.notDigestedSteps'))
+  return lines.join('\n')
 }

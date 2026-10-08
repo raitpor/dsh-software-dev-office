@@ -99,6 +99,19 @@ export function canRollback(process: ProcessDef, from: string): boolean {
   return legalRollbackTargets(process, from).length > 0
 }
 
+/**
+ * **设计阶段的出口门禁**（= 需求阶段之后那个阶段的 exit）——"需求变更后必须重过哪道门"。
+ *
+ * 为什么不写死 `G3`：门禁 id 是流程数据的一部分（四个随包流程当前都是 G3，数据里改名不该让代码判错）。
+ * 需求阶段的锚点是 `G2`（与 `office.baseline` 同源）；找不到时返回**空数组**——
+ * 调用方必须把空数组当"无法判定设计门"处理（本仓的口径：宁可拦住，不可假绿）。
+ */
+export function designExitGates(process: ProcessDef): string[] {
+  const requirements = process.phases.find((phase) => phase.exit.includes('G2'))
+  if (requirements === undefined) return []
+  return nextPhase(process, requirements.id)?.exit ?? []
+}
+
 /** 取门禁定义。 */
 export function gateDef(process: ProcessDef, gateId: string): GateDef | undefined {
   return process.gates.find((gate) => gate.id === gateId)
