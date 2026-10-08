@@ -48,7 +48,7 @@ test('faceDiff：声明面与实测面的差集（缺 = 能力静默缺失；多
   assert.deepEqual(faceDiff([], ['x']), { missing: [], extra: ['x'] })
 })
 
-test('SDO-53：声明的角色面 vs 子代理实测面 —— 无论哪一边多出来都要被说出来', () => {
+test('SDO-53 / R-10：声明的 `sdo_*` 面 vs 实测面 —— 两个方向都要报，但**通用面不算"多"**', () => {
   // 真机形状：developer 被派卡（`dispatch/started` 记了角色），子代理实测面缺 `read_image`、多 `sdo_gate`
   journal.append('dispatch/started', { task: 'TASK-001', childSessionId: 'c1111111', role: 'developer', tools: 9, mode: 'continuable' })
   const declared = toolAllowList('developer')
@@ -59,14 +59,29 @@ test('SDO-53：声明的角色面 vs 子代理实测面 —— 无论哪一边�
   })
   const rows = office.faceMismatches(call())
   assert.equal(rows.length, 1, `差集必须被报出来：${JSON.stringify(rows)}`)
-  assert.deepEqual(rows[0]?.missing, ['read_image'], '声明了却没拿到 ⇒ 缺（真机就是这样看不见图的）')
-  assert.deepEqual(rows[0]?.extra, ['sdo_gate'], '拿到了没声明的 ⇒ 多（收窄没生效，靠钩子兜底）')
+  assert.deepEqual(rows[0]?.missing, ['read_image'], '声明的**只读检视面**缺了 ⇒ 缺（真机就是这样看不见图的）')
+  assert.deepEqual(rows[0]?.extra, ['sdo_gate'], '`sdo_*` 里不在本角色 allow 的 ⇒ 多（收窄没生效，靠钩子兜底）')
   assert.equal(rows[0]?.task, 'TASK-001')
 
-  // 反向：实测面与声明面一致 ⇒ 不吵
+  // **R-10 的核心断言**：通用面（记忆/技巧/子代理控制…）是**有意继承**的，不许再被算成"多"
   rmSync(join(BASE, '.sdo', 'evidence'), { recursive: true, force: true })
-  recordChildFace(store, { childSessionId: 'c1111111', tools: [...declared], violations: [] })
-  assert.deepEqual(office.faceMismatches(call()), [], '一致时不得误报')
+  const general = ['memory_search', 'memory_save', 'technique_apply', 'technique_search', 'send_message', 'list_agents', 'interrupt_agent', 'failure_list', 'failure_resolve', 'read_image']
+  recordChildFace(store, { childSessionId: 'c1111111', tools: [...declared, ...general], violations: [] })
+  assert.deepEqual(office.faceMismatches(call()), [], '通用面继承宿主默认 ⇒ 一个字都不该报（旧口径在这里挂了一整条误导警告）')
+
+  // 反向：真的拿到**被禁止**的工具 ⇒ 照报
+  rmSync(join(BASE, '.sdo', 'evidence'), { recursive: true, force: true })
+  recordChildFace(store, {
+    childSessionId: 'c1111111',
+    tools: [...declared, 'sdo_gate', 'subagent', 'exit_plan_mode'],
+    violations: [],
+  })
+  const forbiddenRows = office.faceMismatches(call())
+  assert.deepEqual(
+    forbiddenRows[0]?.extra,
+    ['exit_plan_mode', 'sdo_gate', 'subagent'],
+    '被 deny / 执行者禁令挡住的工具出现了就要报（`write` 不在 developer 的 deny 里 ⇒ 不该报）',
+  )
 
   // 老事件没有角色 / 没有观测 ⇒ 不猜（如实返回空）
   journal.append('dispatch/started', { task: 'TASK-002', childSessionId: 'c2222222', tools: 9 })

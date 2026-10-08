@@ -254,7 +254,8 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       return { ok: false, code, detail: describeTestFirstGaps(task.id, 'done', doneGaps) }
     }
     // A2：写范围对账 —— 拿"认领基线"之后本会话真实改动的文件，与卡的 writeScopes 比。
-    const baseline = claimBaseline(journal, task.id)
+    // **R-4**：基线取"认领"与"派发"里更早的那个 —— 否则"先写后领"的写入不会被对账看见
+    const baseline = reconcileBaseline(journal, task.id)
     const changed = changedFilesSince(store, baseline?.sessionId, baseline?.seq)
     // **SDO-34（真机）**：`.sdo/` 下的**台账写入**（`sdo_test` / `sdo_gate` / `sdo_risk` 等工具自己落的）
     // **不占卡的写范围** —— 真机上「DoD 要求如实闭合缺陷」的卡因此与写范围打架，执行者只能二选一
@@ -318,6 +319,38 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
  * 取某卡最近一次认领基线（A2）：直接用 `task/claimed` 事件自己的 `seq` 与它带的 `sessionId`。
  * 没有就返回 undefined —— 对账会如实报"未对账"，而不是猜一个基线。
  */
+/**
+ * **本卡被派发给某个子会话**的时刻（`dispatch/started`）—— R-4（sdo-test-new 2026-10-08，major）。
+ *
+ * 真机：子代理先落盘产品文件（16:23:35）、77 秒后才认领成功（16:24:52，首次认领被 test-first 拦下，
+ * 它先补用例计划再回来领）⇒ 写范围对账的基线取"认领那一刻"，**认领前的写入整个在窗口之外**；
+ * 而子代理会话本来就不发 `workspace/changes`（既有已知限制），于是这段窗口没有任何机器约束。
+ */
+export function dispatchBaseline(journal: Journal, taskId: string): { sessionId: string; seq: number } | undefined {
+  const events = journal
+    .read()
+    .events.filter((event) => event.type === 'dispatch/started' && textOf(event.data.task) === taskId)
+  const first = events.find((event) => textOf(event.data.childSessionId) !== '')
+  if (first === undefined) return undefined
+  return { sessionId: textOf(first.data.childSessionId), seq: first.seq }
+}
+
+/**
+ * **收工对账用的基线**：认领时刻与派发时刻里**更早**的那个。
+ *
+ * 只有把窗口起点挪到"派发"（或认领，取更早者），"先写后领"才落进对账范围；
+ * 同一个子会话时直接取更早的那条；换人（不同会话）时仍以**认领会话**为准，但窗口也放宽到更早的 seq
+ * （那一段是同一个会话在认领前的写入）。
+ */
+export function reconcileBaseline(journal: Journal, taskId: string): { sessionId: string; seq: number } | undefined {
+  const claimed = claimBaseline(journal, taskId)
+  const dispatched = dispatchBaseline(journal, taskId)
+  if (claimed === undefined) return dispatched
+  if (dispatched === undefined) return claimed
+  if (dispatched.sessionId === claimed.sessionId) return dispatched.seq < claimed.seq ? dispatched : claimed
+  return { sessionId: claimed.sessionId, seq: Math.min(dispatched.seq, claimed.seq) }
+}
+
 export function claimBaseline(journal: Journal, taskId: string): { sessionId: string; seq: number } | undefined {
   const events = journal.read().events.filter((event) => event.type === 'task/claimed' && event.data.id === taskId)
   const last = events[events.length - 1]

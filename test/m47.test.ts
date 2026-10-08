@@ -84,25 +84,32 @@ test('SDO-52：掩码指纹 —— 空闲子代理的工具面指纹不符/未�
   const card = (id: string): never => ({ id, role: 'developer', size: 'small', status: 'ready', blockedBy: [], writeScopes: [`src/${id}/`], evidenceRequired: ['command'] } as never)
 
   // ① 指纹不符 ⇒ 拒绝复用 + 如实回报（真机：补了 read_image 却投进旧会话）
+  // **R-6**：池视图本身就判指纹（与准入同一判据）⇒ "跳过了谁、为什么"在 `unusable` 里如实露面，
+  // 不再靠准入端的 `reuseSkipped`（那会与池视图分叉：一边说空闲可复用、一边拒绝）
+  const stalePools = rolePools({ children: [chatty], roles: ['developer'], caps: { developer: 2 }, defaultCap: 4, maskHashOf: () => 'new-mask' })
+  assert.equal(stalePools[0]?.idle.length, 0, '指纹不符 ⇒ 不算空闲可复用')
+  assert.match(stalePools[0]?.unusable[0]?.reason ?? '', /掩码已变更/u, '要如实记账"跳过了谁、为什么"')
   const mismatch = admitDispatch({
-    ready: [card('TASK-001')], pools: rolePools({ children: [chatty], roles: ['developer'], caps: { developer: 2 }, defaultCap: 4 }),
+    ready: [card('TASK-001')], pools: stalePools,
     globalRoom: 4, reuseIdle: true, maskHashOf: () => 'new-mask',
   })
   assert.equal(mismatch.dispatch[0]?.reuseChildId, undefined, '指纹不符不得复用')
-  assert.equal(mismatch.reuseSkipped.length, 1, '要如实记账"跳过了谁、为什么"')
-  assert.match(mismatch.reuseSkipped[0]?.reason ?? '', /掩码已变更/u)
 
   // ② 老子代理没有指纹 ⇒ 同样不复用（无法确认其工具面）
+  const legacyPools = rolePools({ children: [legacy], roles: ['developer'], caps: { developer: 2 }, defaultCap: 4, maskHashOf: () => 'new-mask' })
+  assert.match(legacyPools[0]?.unusable[0]?.reason ?? '', /没有掩码指纹/u)
   const unknown = admitDispatch({
-    ready: [card('TASK-002')], pools: rolePools({ children: [legacy], roles: ['developer'], caps: { developer: 2 }, defaultCap: 4 }),
+    ready: [card('TASK-002')], pools: legacyPools,
     globalRoom: 4, reuseIdle: true, maskHashOf: () => 'new-mask',
   })
   assert.equal(unknown.dispatch[0]?.reuseChildId, undefined, '未知指纹不得复用')
-  assert.match(unknown.reuseSkipped[0]?.reason ?? '', /没有掩码指纹/u)
 
   // ③ 指纹一致 ⇒ 复用（且不报 skip）
+  const freshPools = rolePools({ children: [{ ...chatty, maskHash: 'new-mask' }], roles: ['developer'], caps: { developer: 2 }, defaultCap: 4, maskHashOf: () => 'new-mask' })
+  assert.equal(freshPools[0]?.idle.length, 1, '指纹一致 ⇒ 算空闲可复用')
+  assert.deepEqual(freshPools[0]?.unusable, [])
   const same = admitDispatch({
-    ready: [card('TASK-003')], pools: rolePools({ children: [{ ...chatty, maskHash: 'new-mask' }], roles: ['developer'], caps: { developer: 2 }, defaultCap: 4 }),
+    ready: [card('TASK-003')], pools: freshPools,
     globalRoom: 4, reuseIdle: true, maskHashOf: () => 'new-mask',
   })
   assert.equal(same.dispatch[0]?.reuseChildId, 'c-old', '指纹一致就该复用')

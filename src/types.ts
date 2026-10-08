@@ -337,6 +337,13 @@ export interface GateCriterionResult {
   na?: boolean | undefined
   /** N/A 的理由（`na: true` 时必填，回执要如实显示） */
   naReason?: string | undefined
+  /**
+   * **判据通过、但必须出声的告警**（R-22，sdo-test-new 2026-10-08）：
+   * 交付门禁现算出的 `deliveryCompleteness().warnings`（如「带已知偏差通过 3 条：…」）过去被**丢掉** ——
+   * 于是"带 3 条偏差通过"的门禁回执与"干净通过"长得**一模一样**，而 R-15 的原始动机正是"不许长得一样"。
+   * 判据口径不变（仍然通过），只是回执要把这些话印出来。
+   */
+  warnings?: string[] | undefined
 }
 
 /** 门禁判定结果（落 `.sdo/gates/<id>.json`）。 */

@@ -175,6 +175,22 @@ export function describeProject(status: StatusSnapshot, dataDirName: string): st
 }
 
 /** `sdo_gate action=check` 的回执。 */
+/**
+ * **交付回执里的"带已知偏差通过"那一行**（R-22，sdo-test-new 2026-10-08）。
+ *
+ * 抽成纯函数的原因有二：① 交付回执与门禁告警**同源**（同一批行、同一句话）；
+ * ② 它**可被行为断言**（真机教训：只断源码文本的守卫会被"条件改成恒假"这类变异绕过去 —— 变异 V3 就存活过）。
+ * 没有带偏差的行 ⇒ 返回 `undefined`（干净通过**不许**挂这条噪音）。
+ */
+export function deviationsNote(manifest: { acceptance: { requirement: string; criterion: string; verdict: string }[] }): string | undefined {
+  const deviations = manifest.acceptance.filter((row) => row.verdict === 'pass-with-deviation')
+  if (deviations.length === 0) return undefined
+  return fmt('uiIndex.kDeviationsAccepted', {
+    p1: String(deviations.length),
+    p2: deviations.map((row) => `${row.requirement}/${row.criterion}`).join(' '),
+  })
+}
+
 export function describeGate(evaluation: GateEvaluation): string {
   const head = fmt('uiDescribe.k40', { p1: gateWithId(evaluation.gate), p2: phaseText(evaluation.phase), p3: evaluation.status === 'passed' ? t('uiDescribe.k218') : evaluation.status === 'waived' ? t('uiDescribe.k219') : t('uiDescribe.k157') })
   const lines: string[] = [head]
@@ -189,6 +205,8 @@ export function describeGate(evaluation: GateEvaluation): string {
     )
     if (na) lines.push(fmt('uiDescribe.k41', { p1: t('uiDescribe.gateNaNote') }))
     else if (criterion.remedy !== undefined) lines.push(fmt('uiDescribe.k41', { p1: criterion.remedy }))
+    // **R-22**：通过但必须出声的告警（如"带已知偏差通过 3 条：…"）—— 不许被吞掉
+    for (const warning of criterion.warnings ?? []) lines.push(fmt('uiDescribe.kGateWarning', { p1: warning }))
   }
   if (evaluation.status === 'failed') {
     lines.push(fmt('uiDescribe.k42', { p1: evaluation.criteria.filter((criterion) => !criterion.ok && criterion.na !== true).map((criterion) => criterion.id).join(', ') }))
@@ -844,7 +862,9 @@ export function describeBaseline(outcome: BaselineOutcome, next?: { applicabilit
     for (const requirement of outcome.baselined) {
       lines.push(fmt('uiDescribe.k135', { p1: requirement.id, p2: requirement.version, p3: requirement.baseline?.by ?? 'human' }))
     }
-    lines.push(t('uiDescribe.k136'))
+    // **R-2**：只有**真的**写了 `phase/entered` 才能说"进入 architecture"；
+    // 内容未变、都已冻结时（D-6 起不再重放阶段转移）必须如实说"阶段未变 + 当前是哪个阶段"。
+    lines.push(outcome.phaseEntered === true ? t('uiDescribe.k136') : fmt('uiDescribe.k136b', { p1: outcome.phase ?? '' }))
     // **§7.1**：需求基线通过后，下一步是"在需求阶段定设计适用性"——
     // 这条提示必须出现在回执里，否则模型会径直推进到架构阶段、跳过声明（存量项目就在此列）。
     if (next?.applicabilityDeclared !== true) lines.push(t('uiDescribe.kApplicabilityNext'))

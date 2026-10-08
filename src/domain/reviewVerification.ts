@@ -64,7 +64,31 @@ export interface ReviewFindingDisposition {
    *   · `owner-settled`：认领会话被派发过且**已结算**（`dispatch/finished`）⇒ 看不到活的执行者；同上放行并标注。
    */
   ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled'
+  /**
+   * **R-16（sdo-test-new 2026-10-08）**：核实者的角色码 + 它与该卡角色的关系。
+   *
+   * 用户口径：核实评审**默认归实现者**（产品卡 = developer —— 他是按评审去修代码的人，
+   * 也最需要判断"这条是真的坏了"还是"这是有意的设计取舍"）；实现会话退役后可以**代核**，
+   * 但代核要"优先同角色"，且代核者**只负责复现/反证，不替作者做处置决定**。
+   * 记下这两个字段，事后才统计得出"谁核的、核到什么程度、是不是同角色代核"。
+   */
+  verifierRole?: string | undefined
+  roleMatch?: 'same-role' | 'cross-role' | 'unknown' | undefined
+  /** **被本次覆盖掉的那条核实**（R-19 A）：只记最关键的三个字段，台账里能看出"这里曾被改判"。 */
+  revisedFrom?: { outcome: ReviewFindingOutcome; by: string; at: string } | undefined
   at: string
+}
+
+/** 某个子会话被派发成什么角色（取最新一条 `dispatch/started`；拿不到 ⇒ 空串）。 */
+export function dispatchRoleOf(journal: Journal, sessionId: string): string {
+  let role = ''
+  for (const event of journal.read().events) {
+    if (event.type !== 'dispatch/started') continue
+    if (textOf(event.data['childSessionId']) !== sessionId) continue
+    const found = textOf(event.data['role'])
+    if (found !== '') role = found
+  }
+  return role
 }
 
 /** 一条评审的采纳状态。 */
@@ -128,6 +152,10 @@ export type VerifyFailure =
   | 'bad-outcome'
   | 'self-verify'
   | 'not-implementer'
+  /** **代核必须同角色**（2026-10-08 用户口径）：实现会话退役时，跨角色代核被拒。 */
+  | 'cross-role-verifier'
+  /** **同一 (评审, 发现) 已有核实**（R-19 A）：默认拒绝，要覆盖得显式传 `revise: true`。 */
+  | 'already-verified'
 
 export type VerifyResult =
   | { ok: true; disposition: ReviewFindingDisposition; coverage: { verified: number; total: number }; adopted: boolean }
@@ -141,6 +169,15 @@ export interface VerifyInput {
   /** 核实者（缺省 human）。 */
   by?: string | undefined
   sessionId?: string | undefined
+  /**
+   * **允许覆盖同一 `(评审, 发现)` 上已有的核实记录**（R-19 A，sdo-test-new 2026-10-08）。
+   *
+   * 缺省**拒绝再次核实**：真机发生过同一 `(REV-018, index 1)` 先落"同角色代核"、后落"实现者本人核"
+   * （两条依据不同：`owner-tenure-over` vs `session`），派生视图按写入顺序**静默留后写的那条**，
+   * 先落的那条在视图里没有任何痕迹；若两位核实者给出**相反判定**，采纳结论就由写入顺序决定。
+   * 要复核就显式传 `revise: true`。
+   */
+  revise?: boolean | undefined
 }
 
 /** 读核实台账（手可编辑 ⇒ 形状归一化，绝不因为手写成标量就抛）。 */
@@ -169,6 +206,19 @@ export function readDispositionsChecked(store: SdoStore): { dispositions: Review
       by: textOf(item.by),
       ...(item.sessionId === undefined ? {} : { sessionId: textOf(item.sessionId) }),
       ownerChecked: normalizeOwnerChecked(textOf(item.ownerChecked)),
+      ...(textOf(item.verifierRole) === '' ? {} : { verifierRole: textOf(item.verifierRole) }),
+      ...(typeof item.revisedFrom === 'object' && item.revisedFrom !== null
+        ? {
+            revisedFrom: {
+              outcome: textOf((item.revisedFrom as Record<string, unknown>)['outcome']) as ReviewFindingOutcome,
+              by: textOf((item.revisedFrom as Record<string, unknown>)['by']),
+              at: textOf((item.revisedFrom as Record<string, unknown>)['at']),
+            },
+          }
+        : {}),
+      ...(['same-role', 'cross-role', 'unknown'].includes(textOf(item.roleMatch))
+        ? { roleMatch: textOf(item.roleMatch) as 'same-role' | 'cross-role' | 'unknown' }
+        : {}),
       at: textOf(item.at),
     }))
     .filter((item) => item.reviewId !== '' && Number.isFinite(item.index) && item.index >= 0)
@@ -395,6 +445,8 @@ export function verifyReviewFinding(
   // ⇒ 放行并**如实标注**（G-1：否则一次性子代理退役后，它留下的评审**永久**不可采纳）。
   const claimSession = latestClaimSession(journal, review.taskId)
   const card = listTasks(store).find((item) => item.id === review.taskId)
+  // 核实者的角色：从"这个会话被派发成什么角色"现算（拿不到就是 unknown，编不出来）
+  const verifierRole = input.sessionId === undefined ? '' : dispatchRoleOf(journal, input.sessionId)
   const ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' = (() => {
     if (claimSession === undefined) return 'no-claim'
     if (input.sessionId !== undefined && claimSession === input.sessionId) return 'session'
@@ -411,16 +463,56 @@ export function verifyReviewFinding(
       detail: fmt('uiReview.notImplementer', { p1: review.id, p2: review.taskId, p3: claimSession }),
     }
   }
+  // **代核必须同角色**（2026-10-08 用户口径）：实现会话退役 ⇒ 首选**同角色**的会话代核，
+  // 而不是"谁有 bash 谁上"（真机就是这么把 developer 卡的 29 条发现交给 tester 代核的）。
+  // 判据用**评审自己记下的 `taskRole`**（记录时从卡上抄的）—— 卡 drop/重建/改角色都不会让它漂。
+  // 拿不到角色关系（老评审没记 `taskRole`、或核实者不是子会话/是人工）⇒ 不判，如实标 `unknown`。
+  const cardRole = textOf(review.taskRole).trim() !== '' ? textOf(review.taskRole).trim() : (card?.role ?? '')
+  if (ownerChecked !== 'session' && verifierRole !== '' && cardRole !== '' && verifierRole !== cardRole) {
+    return {
+      ok: false,
+      code: 'cross-role-verifier',
+      detail: fmt('uiReview.crossRoleVerifier', { p1: review.id, p2: review.taskId, p3: cardRole, p4: verifierRole }),
+    }
+  }
 
+  const roleMatch: 'same-role' | 'cross-role' | 'unknown' =
+    verifierRole === '' || card === undefined ? 'unknown' : verifierRole === card.role ? 'same-role' : 'cross-role'
+  // **R-19 A**：同一 `(评审, 发现)` 已有核实 ⇒ 默认拒绝（回执说清"已由谁、什么时候、判成什么"）
+  const previous = listDispositions(store).find((item) => item.reviewId === review.id && item.index === input.index)
+  if (previous !== undefined && input.revise !== true) {
+    return {
+      ok: false,
+      code: 'already-verified',
+      detail: fmt('uiReview.alreadyVerified', {
+        p1: review.id,
+        p2: String(input.index + 1),
+        p3: previous.by,
+        p4: previous.outcome,
+        p5: previous.at,
+      }),
+    }
+  }
+  // **R-19 A**：覆盖时要留痕（台账里看得出"这里曾被改判"）
+  const revised = previous === undefined ? undefined : { outcome: previous.outcome, by: previous.by, at: previous.at }
   const disposition: ReviewFindingDisposition = {
     reviewId: review.id,
     index: input.index,
     findingHash: findingHashOf(findings[input.index] ?? ''),
     outcome: input.outcome,
     evidence,
-    by: textOf(input.by).trim() === '' ? 'human' : textOf(input.by).trim(),
+    // **R-19 B**：有 `sessionId` 时缺省 `by` 不许落成 `human`（真机：子会话按实现者身份核实，却被标成 human，
+    // 与同一行的 `sessionId` + `ownerChecked: session` 自相矛盾；去重后存活的恰好是这条被标错的）
+    by: textOf(input.by).trim() !== ''
+      ? textOf(input.by).trim()
+      : input.sessionId === undefined
+        ? 'human'
+        : `${verifierRole === '' ? 'session' : `subagent:${verifierRole}`}:${input.sessionId.slice(0, 8)}`,
     ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
     ownerChecked,
+    ...(verifierRole === '' ? {} : { verifierRole }),
+    roleMatch,
+    ...(revised === undefined ? {} : { revisedFrom: revised }),
     at: new Date().toISOString(),
   }
   const existing = listDispositions(store).filter(

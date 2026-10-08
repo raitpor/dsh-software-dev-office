@@ -284,6 +284,8 @@ export interface PlanArgs {
   goal?: string | undefined
   /** next：派发几条 */
   limit?: number | undefined
+  /** next：**孤儿 TTL 覆盖（分钟）** —— 卡被未结算派发冻住时不必改 preset 重启（R-9） */
+  orphanTtlMinutes?: number | undefined
   /** next：后端偏好 auto | subagent | native-team | inline */
   backend?: string | undefined
   /** action=next：**强制新起**子代理（不复用空闲者；真机上单一子代理被复用 19 轮至上下文耗尽） */
@@ -328,6 +330,8 @@ export interface TaskArgs {
   outcome?: 'reproduced' | 'refuted' | undefined
   /** verify-review：复现命令与结果 / 反驳的反证（必填，空口核实不算） */
   proof?: string | undefined
+  /** verify-review：允许覆盖同一 `(评审, 发现)` 上已有的核实（缺省拒绝再次核实，R-19 A） */
+  revise?: boolean | undefined
 }
 
 export interface TestArgs {
@@ -349,6 +353,8 @@ export interface TestArgs {
   env?: string | undefined
   /** record：**被检产物**（相对路径）——记录时绑定 sha256，交付时重算比对 */
   artifact?: string | undefined
+  /** record：**断言面指纹**（R-3）—— 红与绿必须同指纹，否则"改断言转绿"与"改实现转绿"无法区分 */
+  harness?: string | undefined
   /** record：进度 3 的**变异自证**交付物（JSON 对象：{task, tool, target?, killed, survived?}） */
   mutation?: string | undefined
   /** record：增量 3 的**契约测试**交付物（JSON 对象：{task, contract, tool, cmd}） */
@@ -491,6 +497,18 @@ export function parseScale(value: unknown): Scale | undefined {
 
 /** 把逗号/分号分隔的文本解析为列表（中文标点也接受）。 */
 export function parseList(value: unknown): string[] | undefined {
+  // **R-18**：`["a","b"]` 这种 JSON 文本不许被逗号切碎（真机：`dod` 用数组传被拒、用 JSON 文本传才对，
+  // 而 JSON 文本到了这里又会被逗号切开 ⇒ 两头都不对）
+  if (typeof value === 'string') {
+    const text = value.trim()
+    if (text.startsWith('[') && text.endsWith(']')) {
+      const parsed = parseJson<unknown>(text)
+      if (Array.isArray(parsed)) {
+        const items = parsed.map((item) => String(item).trim()).filter((item) => item !== '')
+        return items.length > 0 ? items : undefined
+      }
+    }
+  }
   if (typeof value !== 'string' || value.trim() === '') return undefined
   return value
     .split(/[,，;；]/)
@@ -498,8 +516,21 @@ export function parseList(value: unknown): string[] | undefined {
     .filter((item) => item !== '')
 }
 
-/** 解析 JSON 字符串参数；失败返回 undefined（调用方负责给可读错误）。 */
+/**
+ * **复合参数归一**（R-18，sdo-test-new 2026-10-08）：schema 声明的是 **JSON 文本**（`type: 'string'`），
+ * 但宿主在某些路径上会把**数组原样透传**（真机：同一调用时好时坏 —— 按 schema 校验时返回
+ * `invalid arguments: "x" must be a string`，宽松时数组到达插件又被 `typeof === 'string'` 静默丢弃）。
+ * 两种形态都收：字符串原样、数组转成 JSON 文本交下游解析。
+ */
+export function compositeArg(value: unknown): string | undefined {
+  if (typeof value === 'string') return value
+  if (Array.isArray(value)) return JSON.stringify(value)
+  return undefined
+}
+
+/** 解析 JSON 字符串参数；**也接受已经解好的对象/数组**（宿主宽松路径）；失败返回 undefined。 */
 export function parseJson<T>(value: unknown): T | undefined {
+  if (typeof value === 'object' && value !== null) return value as T
   if (typeof value !== 'string' || value.trim() === '') return undefined
   try {
     return JSON.parse(value) as T
@@ -620,7 +651,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         sourceStakeholder: { type: 'string', description: t('param.sourceStakeholder', 'Stakeholder id such as STK-01 (traceability source).') },
         sourceRaw: { type: 'string', description: t('param.sourceRaw', 'The raw ask, in the requester\'s own words.') },
         dimensions: { type: 'string', description: 'JSON object of the eight semantic dimension scores, e.g. {"goal":2,"user":1,...}. The deterministic rule channel caps these; stricter wins.' },
-        acceptance: { type: 'string', description: 'JSON array of acceptance criteria: [{"given":"…","when":"…","then":"…"}].' },
+        acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"given":"…","when":"…","then":"…"}]\' — not an array.' },
         acceptanceMode: { type: 'string', enum: ['append', 'replace'], description: 'How `acceptance` is applied: append (default) or replace (use replace to renumber/remove existing criteria, e.g. when C9 reports duplicate AC ids).' },
         limit: { type: 'number', description: t('param.limit') },
         quick: { type: 'boolean', description: t('param.quick') },
@@ -729,15 +760,16 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         suggestions: { type: 'string', description: t('param.suggestions') },
         goal: { type: 'string', description: t('param.goal') },
         limit: { type: 'number', description: t('param.limit') },
+        orphanTtlMinutes: { type: 'number', description: 'next: override the orphan dispatch TTL (minutes) for this call — a card held by an unsettled dispatch becomes dispatchable without editing the preset (R-9).' },
         backend: { type: 'string', description: "next: 'auto' | 'subagent' | 'native-team' | 'inline'." },
         freshChild: { type: 'boolean', description: t('param.planFreshChild') },
         why: { type: 'boolean', description: 'next: print ONLY the diagnostics (no board) — use it when nothing was dispatched and you need the reason.' },
         // `profile` 动作的入参（增量 3 的**决策入口**）：与 `TestArgs` 同理 —— 工具边界上没有的字段会被静默丢掉。
-        packages: { type: 'string', description: "profile: JSON array of method packages to enable, e.g. '[\"tdd\",\"contract-first\"]'. Empty array = explicit opt-out (then `reason` is required)." },
-        scope: { type: 'string', description: "profile: 'all' (default) or a JSON array of task ids." },
-        derivedFrom: { type: 'string', description: "profile: JSON array of the basis for the choice; at least one must be machine-checkable, e.g. '[\"scale=normal\",\"contractCount=12\"]'." },
+        packages: { type: 'string', description: "profile: JSON **text** (a string) of method packages to enable, e.g. '[\"tdd\",\"contract-first\"]'. Empty array = explicit opt-out (then `reason` is required). Not an array." },
+        scope: { type: 'string', description: "profile: 'all' (default) or JSON **text** (a string) of task ids, e.g. '[\"TASK-001\"]' — not an array." },
+        derivedFrom: { type: 'string', description: "profile: JSON **text** (a string) of the basis for the choice, e.g. '[\"scale=normal\",\"contractCount=12\"]'; at least one must be machine-checkable. Not an array." },
         reason: { type: 'string', description: 'profile: human-readable reason for the choice (required when `packages` is empty).' },
-        exempt: { type: 'string', description: "profile: JSON array of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\"}]'." },
+        exempt: { type: 'string', description: "profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\"}]'. Not an array." },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -749,6 +781,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           suggestions: typeof args.suggestions === 'string' ? args.suggestions : undefined,
           goal: typeof args.goal === 'string' ? args.goal : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
+          orphanTtlMinutes: typeof args.orphanTtlMinutes === 'number' ? args.orphanTtlMinutes : undefined,
           backend: typeof args.backend === 'string' ? args.backend : undefined,
           // profile 动作的入参：**必须逐字段搬进来**（漏一行 = 工具层静默丢弃；B1 与 PLAN-1 都是这么死的）
           packages: typeof args.packages === 'string' ? args.packages : undefined,
@@ -766,11 +799,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       parameters: {
         action: { type: 'string', required: true, description: actionList(TASK_ACTIONS) },
         title: { type: 'string', description: 'update: new title.' },
-        dod: { type: 'string', description: 'update: JSON array of DoD items.' },
-        writeScopes: { type: 'string', description: 'update: JSON array of write scopes (refused while another owner is working the card).' },
-        blockedBy: { type: 'string', description: 'update: JSON array of blocking task ids (supports [\"*\"] = after every other card).' },
-        evidenceRequired: { type: 'string', description: 'update: JSON array of required evidence kinds.' },
-        requirements: { type: 'string', description: 'update: JSON array of requirement ids.' },
+        dod: { type: 'string', description: 'update: JSON **text** of DoD items — a string, e.g. \'["a","b"]\'. Do NOT pass an array (the schema is string).' },
+        writeScopes: { type: 'string', description: 'update: JSON **text** of write scopes, e.g. \'["lib/"]\' (refused while another owner is working the card). Do NOT pass an array.' },
+        blockedBy: { type: 'string', description: 'update: JSON **text** of blocking task ids, e.g. \'["TASK-001"]\' (supports ["*"] = after every other card). Do NOT pass an array.' },
+        evidenceRequired: { type: 'string', description: 'update: JSON **text** of required evidence kinds, e.g. \'["command"]\'. Do NOT pass an array.' },
+        requirements: { type: 'string', description: 'update: JSON **text** (a string) of requirement ids, e.g. \'["REQ-001"]\' — not an array.' },
         size: { type: 'string', description: 'update: small | medium | large.' },
         id: { type: 'string', description: t('param.id') },
         owner: { type: 'string', description: t('param.owner') },
@@ -783,16 +816,17 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         index: { type: 'number', description: t('param.reviewIndex') },
         outcome: { type: 'string', description: t('param.reviewOutcome') },
         proof: { type: 'string', description: t('param.reviewProof') },
+        revise: { type: 'boolean', description: 'verify-review: allow overwriting an existing verification of the same (review, finding). By default a second verification is refused (it would silently replace the first one).' },
       },
       output: OUTPUT,
       async execute(args, exec) {
         return deps.task(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'list',
           title: typeof args.title === 'string' ? args.title : undefined,
-          dod: typeof args.dod === 'string' ? args.dod : undefined,
-          writeScopes: typeof args.writeScopes === 'string' ? args.writeScopes : undefined,
-          blockedBy: typeof args.blockedBy === 'string' ? args.blockedBy : undefined,
-          evidenceRequired: typeof args.evidenceRequired === 'string' ? args.evidenceRequired : undefined,
+          dod: compositeArg(args.dod),
+          writeScopes: compositeArg(args.writeScopes),
+          blockedBy: compositeArg(args.blockedBy),
+          evidenceRequired: compositeArg(args.evidenceRequired),
           requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
           size: typeof args.size === 'string' ? args.size : undefined,
           id: typeof args.id === 'string' ? args.id : undefined,
@@ -806,6 +840,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           index: typeof args.index === 'number' ? args.index : undefined,
           outcome: parseEnum(args.outcome, ['reproduced', 'refuted'] as const),
           proof: typeof args.proof === 'string' ? args.proof : undefined,
+          revise: typeof args.revise === 'boolean' ? args.revise : undefined,
         })
       },
     }),
@@ -828,6 +863,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         reason: { type: 'string', description: 'defect: correction reason — recorded verbatim in the defect/updated event (evidence is recorded the same way).' },
         env: { type: 'string', description: 'env/record: environment fingerprint, e.g. "jdk=21.0.2; probe=run_checks.py@v3". Recorded with the result so staleness is machine-checkable (SDO-57).' },
         artifact: { type: 'string', description: 'record: the artifact this result was produced against (relative path) — its sha256 is bound now and re-checked at delivery.' },
+        // **R-3**：断言面指纹 —— 红与绿必须同指纹，否则"改断言转绿"与"改实现转绿"在台账上等价
+        harness: { type: 'string', description: 'record: assertion-surface fingerprint (e.g. sha256 of the test harness, or a stable id like "node --test test/x.test.js"). The tdd red->green check requires the failing and the passing run of a case to carry the SAME fingerprint.' },
         // 增量 3 的**交付物通道**：与"用例结果"在同一动作里分流（caseId/status 对它们非必填）。
         // 参数名与形状必须写在这里 —— 工具边界上没有的字段会被**静默丢掉**（模型照 README 写也写不进去）。
         mutation: {
@@ -862,6 +899,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           defectId: typeof args.defectId === 'string' ? args.defectId : undefined,
           env: typeof args.env === 'string' ? args.env : undefined,
           artifact: typeof args.artifact === 'string' ? args.artifact : undefined,
+          // **R-3**：断言面指纹（红绿必须同指纹）—— 必须进映射，否则工具边界上被静默丢掉
+          harness: typeof args.harness === 'string' ? args.harness : undefined,
           // 交付物通道：**必须逐字段搬进来**（漏一行 = 工具层静默丢弃，B1 那次就是这么死的）
           mutation: typeof args.mutation === 'string' ? args.mutation : undefined,
           contractTest: typeof args.contractTest === 'string' ? args.contractTest : undefined,
@@ -888,7 +927,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           taskId: typeof args.taskId === 'string' ? args.taskId : undefined,
           reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
           verdict: parseEnum(args.verdict, ['pass', 'changes-requested', 'reject'] as const),
-          findings: typeof args.findings === 'string' ? args.findings : undefined,
+          findings: compositeArg(args.findings),
           id: typeof args.id === 'string' ? args.id : undefined,
           actor: typeof args.actor === 'string' ? args.actor : undefined,
         })
@@ -907,8 +946,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         artifact: { type: 'string', description: 'run: the artifact you actually ran (relative path); its sha256 is bound at record time.' },
         exitCode: { type: 'string', description: 'run: exit code, if any.' },
         runsRequired: { type: 'string', description: t('param.runsRequired') },
-        artifacts: { type: 'string', description: 'JSON array: [{"path":"src/x.ts","kind":"source|docs|config|schema|test"}].' },
-        acceptance: { type: 'string', description: 'JSON array: [{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}].' },
+        artifacts: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"path":"src/x.ts","kind":"source|docs|config|schema|test"}]\' — not an array.' },
+        acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}]\' — not an array. Verdicts: pass | pass-with-deviation | fail | unverified | blocked | waived. **pass-with-deviation** (accept with a known deviation) REQUIRES a non-empty `deviation` field (what the deviation is, why it is accepted, who approved it) — it is rendered into DELIVERY.md and reported as a warning by the delivery gate.' },
         rollbackPoint: { type: 'string', description: t('param.rollbackPoint') },
         by: { type: 'string', description: 'Who packages it (default "human").' },
         notes: { type: 'string', description: t('param.notes') },
@@ -1141,7 +1180,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         title: { type: 'string', description: t('param.title') },
         context: { type: 'string', description: t('param.context', 'The forces at play: what makes this a decision at all.') },
         decision: { type: 'string', description: t('param.decision') },
-        alternatives: { type: 'string', description: 'JSON array: [{"option":"…","pros":"…","cons":"…"}].' },
+        alternatives: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"option":"…","pros":"…","cons":"…"}]\' — not an array.' },
         consequences: { type: 'string', description: t('param.consequences') },
         supersedes: { type: 'string', description: t('param.supersedes') },
       },
@@ -1202,7 +1241,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         from: { type: 'string', description: t('param.from') },
         to: { type: 'string', description: t('param.to') },
         kind: { type: 'string', description: "'req-des' | 'req-task' | 'req-tc' | 'des-task' | 'des-ct'." },
-        links: { type: 'string', description: 'JSON array for batch linking: [{"from":"REQ-001","to":"DES-001","kind":"req-des"}].' },
+        links: { type: 'string', description: 'JSON **text** (a string) for batch linking, e.g. \'[{"from":"REQ-001","to":"DES-001","kind":"req-des"}]\' — not an array.' },
       },
       output: OUTPUT,
       async execute(args, exec) {

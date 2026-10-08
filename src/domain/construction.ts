@@ -20,6 +20,7 @@ import { CONSTRUCTION_PACKAGES, SCALES } from '../types.js'
 import type { ConstructionPackage, TaskCard } from '../types.js'
 import { listContracts } from './contracts.js'
 import { listTestCases, listTestResults } from './records.js'
+import { listTasks } from './plan.js'
 import { listRequirements } from './requirements.js'
 
 /** `.sdo/construction/`：本机制的全部交付物。 */
@@ -207,6 +208,26 @@ export function findExemption(profile: ConstructionProfile, taskId: string, chec
   return profile.exempt.find((item) => item.task === taskId && item.check === check)
 }
 
+/**
+ * **死豁免诊断**（R-8 附录，sdo-test-new 2026-10-08）：`exempt` 按 `{task, check}` 绑卡 id，
+ * 卡被 `drop` 之后用同内容**重建**（新 id）时豁免**不跟随、也不提示** —— 只有人肉比对
+ * "卡状态 vs 豁免列表"才看得出来。本项目实证：TASK-030 因 R-9 被 drop 并重建为 TASK-043
+ * ⇒ 旧豁免成死条目，新卡又撞同一堵墙，白花一轮（多花：block → 裁决 → release → 补豁免）。
+ */
+export function deadExemptions(store: SdoStore): { task: string; check: string; why: string; reason: 'missing' | 'dropped' }[] {
+  const read = readConstructionProfile(store)
+  const profile = read.profile
+  if (read.status !== 'ok' || profile === undefined) return []
+  const byId = new Map(listTasks(store).map((task) => [task.id, task]))
+  const dead: { task: string; check: string; why: string; reason: 'missing' | 'dropped' }[] = []
+  for (const item of profile.exempt) {
+    const found = byId.get(item.task)
+    if (found === undefined) dead.push({ ...item, reason: 'missing' })
+    else if (found.status === 'dropped') dead.push({ ...item, reason: 'dropped' })
+  }
+  return dead
+}
+
 /** 卡涉及哪些契约：契约声明了 `requires`，与卡覆盖的需求有交集即算涉及（不新增真源）。 */
 export function contractsOfCard(store: SdoStore, card: TaskCard): string[] {
   const requirements = new Set(card.requirements)
@@ -267,10 +288,43 @@ export function claimGaps(
 }
 
 /**
+ * **这个 env 是不是"机器指纹"**（R-17 补充，sdo-test-new 2026-10-08）。
+ *
+ * 真机数据：`env` 是**自由文本** —— 同一张卡的红灯写「断言面=/tmp/tc003-harness.mjs（先于实现写好，…）」、
+ * 绿灯写「断言面=TC-003（31 条，本次以临时目录内脚本重放…）」⇒ 文字不同但其实是**同一次实验**。
+ * 把"env 必须逐字相等"当硬判据 ⇒ 本项目 46 张卡全红（越往后越红），而它**不是执行者的问题**。
+ * 结论：只有长得像指纹的 env（`k=v; k=v`、无中文、不过长）才参与"同一次实验"的判定；
+ * 散文 env 一律**不判**（判据不许对着它判死）。`harness` 是专门为此加的机器指纹字段，不受此限。
+ */
+function fingerprintLikeEnv(env: string): boolean {
+  const text = env.trim()
+  if (text === '') return false
+  if (text.length > 300) return false
+  if (/[\u4e00-\u9fff]/u.test(text)) return false
+  if (!text.includes('=')) return false
+  return text.split(';').every((part) => {
+    const item = part.trim()
+    return item === '' || /^[A-Za-z0-9_.-]+\s*=/u.test(item)
+  })
+}
+
+/**
  * 红→绿时序：卡覆盖的**每条需求**，其用例必须**先记 `fail`、后有 `pass`**（从 journal 现算）。
  * 只记 pass 的用例说明"测试没红过"，按 TDD 口径不算数。
  */
-export function redGreenGaps(store: SdoStore, journal: Journal, card: TaskCard): CardCheck[] {
+export function redGreenGaps(
+  store: SdoStore,
+  journal: Journal,
+  card: TaskCard,
+  /**
+   * **逐条判据的豁免**（R-8 ②）：`exempt(check) === true` 就跳过该条。
+   *
+   * 为什么必须给：规则③（红绿之间产物必须变化）对"验证/复算类卡片"是**结构性不可满足**的 ——
+   * 它们的 DoD 恰恰要求产物**不变**（冻结基线；本项目 INV-005）。缺这个口子，执行者只能去改台账或放弃。
+   */
+  options: { exempt?: ((check: string) => boolean) | undefined } = {},
+): CardCheck[] {
+  const skip = (check: string): boolean => options.exempt?.(check) === true
   const cases = listTestCases(store)
   // 结果真源与 C7（`testFirstGaps`）**同一个**：append-only 的 `.sdo/tests/results/TR-*.yml`。
   // 顺序用 id 的数字序（`idOf` 递增分配）——比时间戳稳，也不会因为"有人手写了结果文件"而漏看。
@@ -283,15 +337,57 @@ export function redGreenGaps(store: SdoStore, journal: Journal, card: TaskCard):
       .events.filter((event) => event.type === 'test/recorded' && String(event.data.caseId ?? '') !== '')
       .map((event) => String(event.data.id ?? '')),
   )
-  const firstFail = new Map<string, number>()
-  const firstPass = new Map<string, number>()
-  for (const [index, result] of results.entries()) {
-    if (result.status === 'fail' && !firstFail.has(result.caseId)) firstFail.set(result.caseId, index)
-    if (result.status === 'pass' && !firstPass.has(result.caseId)) firstPass.set(result.caseId, index)
+  // **R-8 + R-17（sdo-test-new 2026-10-08）**：「最新」与「同一次实验」是**两个维度**，必须分开。
+  //
+  // R-8 修的是"按 id 取历史第一条"（历史结果不可变 ⇒ 后续卡继承别人当年的不一致）；
+  // 但"`fail` 与 `pass` 各自独立取最新"又引入 R-17：红灯取本卡的 TR-053，绿灯却取**别人 4 小时后**的
+  // TR-070（env 口径不同，因为 env 里带着会话/角色标记）⇒ 判据必然红，**而且越往后越红**（每轮验证都会
+  // 产生"更晚的、env 不同的通过记录"）。
+  //
+  // 正确语义（R-17 建议 1+2 的合并）：
+  //   ① 先筛「同一次实验」：`env` 与 `harness` 任一侧缺失 ⇒ 视为兼容（不判，老台账不受影响）；
+  //      两侧都有且不等 ⇒ **不是同一次实验**；
+  //   ② 在同实验的候选对（i<j：fail 在前、pass 在后）里取**最新**的一对；
+  //   ③ 一组同实验对都没有 ⇒ 退回"最新的一对"（任何），让三条判据把**最接近的那对**的差异原因报出来。
+  const envComparable = (red: (typeof results)[number], green: (typeof results)[number]): boolean =>
+    fingerprintLikeEnv(red.env ?? '') && fingerprintLikeEnv(green.env ?? '')
+  const harnessComparable = (red: (typeof results)[number], green: (typeof results)[number]): boolean =>
+    (red.harness ?? '') !== '' && (green.harness ?? '') !== ''
+  const sameExperiment = (red: (typeof results)[number], green: (typeof results)[number]): boolean => {
+    if (envComparable(red, green) && red.env !== green.env) return false
+    if (harnessComparable(red, green) && red.harness !== green.harness) return false
+    return true
+  }
+  const pairOf = (caseId: string): { red: number; green: number } | undefined => {
+    const indexes = (status: 'fail' | 'pass'): number[] =>
+      results.map((item, index) => (item.caseId === caseId && item.status === status ? index : -1)).filter((index) => index >= 0)
+    const fails = indexes('fail')
+    const passes = indexes('pass')
+    const latestFail = fails[fails.length - 1]
+    if (latestFail !== undefined) {
+      const after = passes.filter((index) => index > latestFail)
+      // **本卡这次实验的绿灯**：之后第一条与之同实验的 pass（TR-053 → TR-054）
+      const same = after.find((index) => {
+        const green = results[index]
+        const red = results[latestFail]
+        return green !== undefined && red !== undefined && sameExperiment(red, green)
+      })
+      if (same !== undefined) return { red: latestFail, green: same }
+      // 之后有 pass 但都不是同一次实验（别人更晚的运行）⇒ 用它作**诊断对**，把差异原因报出来
+      const first = after[0]
+      if (first !== undefined) return { red: latestFail, green: first }
+    }
+    // 最近一次红灯之后没有绿灯（还在红）：退回"最新的一对"，保住"曾经红→绿"这个语义
+    for (let j = passes.length - 1; j >= 0; j -= 1) {
+      const green = passes[j] as number
+      const red = [...fails].reverse().find((index) => index < green)
+      if (red !== undefined) return { red, green }
+    }
+    return undefined
   }
   const gaps: CardCheck[] = []
   const untraceable = results.filter((item) => !traceable.has(item.id))
-  if (untraceable.length > 0) {
+  if (untraceable.length > 0 && !skip('tdd-result-untraceable')) {
     gaps.push({
       check: 'tdd-result-untraceable',
       ok: false,
@@ -300,12 +396,45 @@ export function redGreenGaps(store: SdoStore, journal: Journal, card: TaskCard):
   }
   for (const requirement of card.requirements) {
     const owned = cases.filter((item) => item.requirement === requirement)
-    const verified = owned.find((item) => {
-      const red = firstFail.get(item.id)
-      const green = firstPass.get(item.id)
-      return red !== undefined && green !== undefined && red < green
-    })
-    if (verified !== undefined) continue
+    const verified = owned.find((item) => pairOf(item.id) !== undefined)
+    if (verified !== undefined) {
+      // **R-3（sdo-test-new 2026-10-08，major）**：只看"先 fail 后 pass"分不清
+      // 「实现由红转绿」与「**断言被改到能过**」—— 真机上五个实例都属于后者（执行者都主动披露了，
+      // 缺的不是诚实而是判据）。三条机械判据把"同一次实验"钉住：
+      //   ① 环境指纹一致（`env` 已有值，等于白送）；② 断言面指纹一致（`harness`，R-3 新增字段）；
+      //   ③ **产物必须变化**（代码没变却转绿 ⇒ 直接判可疑）。
+      // 任一侧缺字段就不判（不许凭空判红：老台账没有这些字段，`tdd-red-green-missing` 仍然照旧生效）。
+      const pair = pairOf(verified.id) ?? { red: 0, green: 0 }
+      const red = results[pair.red]
+      const green = results[pair.green]
+      if (red !== undefined && green !== undefined) {
+        if (envComparable(red, green) && red.env !== green.env) {
+          if (!skip('tdd-env-changed')) gaps.push({
+            check: 'tdd-env-changed',
+            ok: false,
+            detail: fmt('uiConstruction.c33', { p1: verified.id, p2: red.env, p3: green.env }),
+          })
+        }
+        if (harnessComparable(red, green) && red.harness !== green.harness) {
+          if (!skip('tdd-harness-changed')) gaps.push({
+            check: 'tdd-harness-changed',
+            ok: false,
+            detail: fmt('uiConstruction.c34', { p1: verified.id, p2: red.harness, p3: green.harness }),
+          })
+        }
+        // **只有先确立了"同一次实验"（有可比指纹）**，才谈得上"产物没变却转绿" ——
+        // 否则红的可能是另一次实验，判"产物没变"就是误判（真机 46 张卡的红里有一半是这么来的）。
+        if ((envComparable(red, green) || harnessComparable(red, green))
+          && (red.artifactSha256 ?? '') !== '' && red.artifactSha256 === green.artifactSha256) {
+          if (!skip('tdd-artifact-unchanged')) gaps.push({
+            check: 'tdd-artifact-unchanged',
+            ok: false,
+            detail: fmt('uiConstruction.c35', { p1: verified.id, p2: red.artifact ?? '' }),
+          })
+        }
+      }
+      continue
+    }
     gaps.push({
       check: 'tdd-red-green-missing',
       ok: false,
@@ -402,7 +531,9 @@ export function doneGaps(
   const exempt = (check: string): boolean => findExemption(profile, card.id, check) !== undefined
 
   if (wants('tdd')) {
-    if (!exempt('tdd-red-green-missing')) gaps.push(...redGreenGaps(store, journal, card))
+    // **R-8 ②**：红绿的三条"同实验"判据各自可豁免（`tdd-env-changed` / `tdd-harness-changed` /
+    // `tdd-artifact-unchanged`）—— 验证类卡片的产物必须不变，是结构性豁免而不是放水
+    if (!exempt('tdd-red-green-missing')) gaps.push(...redGreenGaps(store, journal, card, { exempt }))
     if (!exempt('tdd-mutation-missing') && options.scale === 'critical') {
       // N3（评审）：规格要求 `killed ≥ 1` **且 `tool` 非空** —— 空 tool 的记录证不了"用什么杀的"
       const killed = readMutations(store)

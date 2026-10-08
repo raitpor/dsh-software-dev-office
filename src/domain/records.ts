@@ -46,6 +46,14 @@ export interface TestResult {
   /** 被检产物（相对路径）——记录时绑定 sha256，交付时**重算比对** ⇒ 产物一变，"过期"立刻可判 */
   artifact?: string | undefined
   artifactSha256?: string | undefined
+  /**
+   * **断言面指纹**（R-3，sdo-test-new 2026-10-08）：这一轮跑的**那套断言**（命令/harness 的 sha256 或稳定标识）。
+   *
+   * 病根：`redGreenGaps` 只看"同一 case 先有 fail、后有 pass"，而真机上"红灯之后**改断言**"与
+   * "改实现"在台账上**完全等价**（5 个实例：TASK-023 改了一句断言公式、TASK-025 修了断言面自身的管道 bug…）。
+   * 记下指纹后，红与绿**必须同指纹**才算是同一次实验。
+   */
+  harness?: string | undefined
 }
 
 export interface Defect {
@@ -119,6 +127,8 @@ export function recordTestResult(store: SdoStore, journal: Journal, input: Omit<
     // **SDO-57**：时点归 `at`，前置归 `env`/`artifact` —— 审计要能看到"这条结论是在什么环境下得出的"
     ...(result.env === undefined ? {} : { env: result.env, envSource: result.envSource ?? 'declared' }),
     ...(result.artifact === undefined ? {} : { artifact: result.artifact, artifactSha256: result.artifactSha256 ?? '' }),
+    // **R-3**：断言面指纹也进真源事件（红绿必须同指纹，判据从事件/记录都能复算）
+    ...(result.harness === undefined ? {} : { harness: result.harness }),
   })
   return result
 }
@@ -381,6 +391,14 @@ export interface Review {
   taskId: string
   reviewer: string
   verdict: 'pass' | 'changes-requested' | 'reject'
+  /**
+   * **原卡所属角色**（2026-10-08 用户口径）：记录评审时从卡上抄下来。
+   *
+   * 用途：核实（`verify-review`）的首选是**该卡的认领会话**；它退役之后，**代核必须是同角色** ——
+   * 而卡会被 drop/重建/改角色，所以"该由哪个角色来核"必须在**评审自己**身上留一份，
+   * 不能每次现算（现算在卡已不存在时会退化成"谁都能核"，正是 R-16 说的那个滑动）。
+   */
+  taskRole?: string | undefined
   findings: string[]
   at: string
   /**
@@ -426,12 +444,32 @@ export interface DeliveryArtifact {
   sha256: string
 }
 
+/**
+ * **验收结论的合法取值**（R-21，sdo-test-new 2026-10-08）：**只有这一份**。
+ *
+ * 病因（真机）：工具层的 `verdictOf` 自己抄了一份枚举（`pass`/`fail`/`unverified`/`blocked`/`waived`），
+ * R-15 新加的 `pass-with-deviation` 没跟上 ⇒ 行**在到达 `packageDelivery` 之前**就被改写成 `unverified`
+ * ⇒ 新档位端到端不可用（"如实声明偏差"反而把交付判死），而 `deviationGaps` 那条守卫**永远不可达**。
+ * 与 R-20（描述 vs schema）同一类病：**两处各写一份枚举**。现在两处都从这里派生。
+ */
+export const ACCEPTANCE_VERDICTS = ['pass', 'pass-with-deviation', 'fail', 'unverified', 'blocked', 'waived'] as const
+export type AcceptanceVerdict = (typeof ACCEPTANCE_VERDICTS)[number]
+
 export interface AcceptanceRow {
   requirement: string
   criterion: string
   evidence: string
-  /** **SDO-41**：`unverified` / `blocked` 是一等公民 —— 交付门禁按「未通过」处理，不许被改写成 `pass` */
-  verdict: 'pass' | 'fail' | 'unverified' | 'blocked' | 'waived'
+  /**
+   * **SDO-41**：`unverified` / `blocked` 是一等公民 —— 交付门禁按「未通过」处理，不许被改写成 `pass`。
+   *
+   * **R-15（sdo-test-new 2026-10-08）**：新增 **`pass-with-deviation`（带已知偏差通过）** ——
+   * 真机上"验收通过、但与契约/ADR 有一处已知冲突"（举例 URL 与 ADR-008 冲突）只能填 `pass`、
+   * 把偏差塞进 `evidence` 文本 ⇒ 渲染出来的 `DELIVERY.md` 读起来是**无偏差通过**，偏差在交付物里消失。
+   * 该档位**必须**带 `deviation`（偏差说明），否则拒收 —— 不许用一个新档位再制造一次静默。
+   */
+  verdict: AcceptanceVerdict
+  /** `pass-with-deviation` 必填：偏差是什么、为什么接受它、谁批的 */
+  deviation?: string | undefined
 }
 
 /**
@@ -537,6 +575,7 @@ function normalizeManifest(raw: unknown, id: string, notes: FieldShapeNote[]): D
       criterion: textOf(row.criterion),
       evidence: textOf(row.evidence),
       verdict: textOf(row.verdict) as AcceptanceRow['verdict'],
+      ...(textOf(row.deviation) === '' ? {} : { deviation: textOf(row.deviation) }),
     })),
     rollbackPoint: textOf(record.rollbackPoint),
     prototypeExcluded: prototypeExcluded.value === true,
@@ -722,6 +761,11 @@ export function packageDelivery(
   journal: Journal,
   input: PackageInput,
 ): { manifest: DeliveryManifest; missingArtifacts: string[] } {
+  // **R-15**：`pass-with-deviation` 必须带 `deviation` —— 档位存在的意义就是"偏差不许消失"，
+  // 允许空偏差等于给它一个更体面的 `pass`。
+  const deviationGaps = input.acceptance
+    .filter((row) => row.verdict === 'pass-with-deviation' && (row.deviation ?? '').trim() === '')
+    .map((row) => `${row.requirement}/${row.criterion}：\`pass-with-deviation\` 必须给 \`deviation\`（偏差是什么、为何接受、谁批的）`)
   const artifacts: DeliveryArtifact[] = input.artifacts.map((artifact) => ({
     path: artifact.path,
     kind: artifact.kind,
@@ -787,19 +831,20 @@ export function packageDelivery(
   )
   const caseGaps: string[] = []
   const acceptance = input.acceptance.map((row) => {
-    if (row.verdict !== 'pass') return row
+    if (row.verdict !== 'pass' && row.verdict !== 'pass-with-deviation') return row
     if (passingRequirements.has(row.requirement)) return row
     if (!caseGaps.includes(row.requirement)) {
       caseGaps.push(`${row.requirement}：没有任何已执行并通过的用例结果（\`sdo_test action=record\`）`)
     }
     return { ...row, verdict: 'unverified' as const }
   })
-  const gaps = [...runGaps, ...phaseGaps, ...caseGaps]
+  const gaps = [...deviationGaps, ...runGaps, ...phaseGaps, ...caseGaps]
   // **任何一类证据缺口都要降级**（运行证据 / 阶段 / 用例链）—— 初版写成"只在相位或用例有缺口时降级"，
   // 于是"产物变了、旧运行记录不再绑定"这条路径照样放行 pass（被 M44 的用例当场咬住）。
   const finalAcceptance = gaps.length === 0
     ? acceptance
-    : acceptance.map((row) => (row.verdict === 'pass' ? { ...row, verdict: 'unverified' as const } : row))
+    : acceptance.map((row) =>
+        row.verdict === 'pass' || row.verdict === 'pass-with-deviation' ? { ...row, verdict: 'unverified' as const } : row)
   // 目录条目不是「缺失」：单独列出来，回执与门禁都不许混为一谈（SDO-37）
   const dirs = artifacts.filter((artifact) => artifact.sha256.startsWith('dir:')).map((artifact) => artifact.path)
   const manifest: DeliveryManifest = {
@@ -876,6 +921,9 @@ export function deliveryCompleteness(
     .filter((row) => row.verdict === 'fail' || row.verdict === 'unverified' || row.verdict === 'blocked')
     .map((row) => `${row.requirement}:${row.verdict}`)
   if (failed.length > 0) problems.push(`验收未通过或未验证：${failed.join(' ')}`)
+  // **R-15**：`pass-with-deviation` 放行（它是"通过"），但**必须出声** —— 否则"带偏差通过"在交付门禁上
+  // 与"干净通过"长得一模一样，偏差就只活在矩阵里（人读渲染产物时才可能发现）。
+  const deviations = manifest.acceptance.filter((row) => row.verdict === 'pass-with-deviation')
   // **P-3**：验收行引用的 **AC 编号必须真实存在、且属于它声明的那条需求**。
   // 旧实现只查"每条 must 需求**有**验收行"，从不看 `row.criterion` —— 于是验收矩阵可以引用
   // 一个不存在的 `AC-999` 或指错需求，交付门禁照样绿。而 N-2/P-5 的立论正是
@@ -896,6 +944,13 @@ export function deliveryCompleteness(
   for (const item of freshness.stale) warnings.push(`证据 ${item.resultId}（用例 ${item.caseId}）已过期：${item.reason}`)
   if (freshness.unrecorded.length > 0) {
     warnings.push(`有 ${freshness.unrecorded.length} 条通过结果没有环境指纹（${freshness.unrecorded.join(' ')}）—— 无法机械核验时效（见 \`sdo_test action=env\`）`)
+  }
+  // **R-15**：`pass-with-deviation` 放行（它是"通过"），但**必须出声** —— 否则"带偏差通过"在交付门禁上
+  // 与"干净通过"长得一模一样，偏差只活在矩阵里（人读渲染产物时才可能发现）。
+  if (deviations.length > 0) {
+    warnings.push(
+      `带已知偏差通过 ${deviations.length} 条：${deviations.map((row) => `${row.requirement}/${row.criterion}`).join(' ')}`,
+    )
   }
   return { ok: problems.length === 0, problems, warnings, manifest }
 }
@@ -934,8 +989,12 @@ export function renderDelivery(manifest: DeliveryManifest, header: string): stri
   for (const row of manifest.acceptance) {
     // **SDO-41 ③**：非 `pass` 的结论必须**显著标注**（真机症状：13 行 `unverified` 被写成 pass，
     // 人读产物时看到"一片绿"）。标记放在结论列，读者扫一眼就能看出哪些没验证过。
-    const mark = row.verdict === 'pass' ? '' : ' ⚠️'
-    lines.push(`| ${row.requirement} | ${row.criterion} | ${row.evidence} | ${row.verdict}${mark} |`)
+    // **R-15**：`pass-with-deviation` 不是干净通过 —— 矩阵里必须同时看到档位与**偏差正文**
+    const mark = row.verdict === 'pass' ? '' : row.verdict === 'pass-with-deviation' ? ' ⚠️（带已知偏差）' : ' ⚠️'
+    const deviation = row.verdict === 'pass-with-deviation' && (row.deviation ?? '') !== ''
+      ? `<br>偏差：${row.deviation}`
+      : ''
+    lines.push(`| ${row.requirement} | ${row.criterion} | ${row.evidence}${deviation} | ${row.verdict}${mark} |`)
   }
   if (manifest.notes !== '') {
     lines.push('')

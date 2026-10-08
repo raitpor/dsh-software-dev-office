@@ -23,6 +23,23 @@ import { linkMany, readLinks } from './trace.js'
 export const ROLES = ['analyst', 'red-team', 'architect', 'office', 'developer', 'tester', 'reviewer', 'delivery'] as const
 export type Role = (typeof ROLES)[number]
 
+/**
+ * **这张卡是否产出产品工件**（R-12，sdo-test-new 2026-10-08）。
+ *
+ * 起因：C-42/C-45 的覆盖集只排 `role === 'reviewer'`，排不掉**实质在做复核的卡** ——
+ * 本项目里「代核别人的评审」那张卡（TASK-045）因为 R-11（reviewer 掩码没有 `bash`，跑不了复现命令）
+ * 只能挂在 `tester` 下，于是一 `done` 就落进覆盖集，判据立刻要求**它自己也要有一条被采纳的评审** ⇒ 自我递归。
+ *
+ * 机械判据（不靠 role）：看 `writeScopes` —— 全部落在 `.sdo/` 与 `docs/` 之下 ⇒ **不产出产品工件**
+ * （复核 / 代核 / 文书 / 收尾卡天然如此），不该进"必须被评审核实"的集合。
+ * 产品路径由卡自己声明（`bin/ lib/ src/ test/ tools/ fixtures/ public/ …`），因此不需要新增字段。
+ */
+export function producesProductArtifacts(card: { writeScopes?: readonly unknown[] | undefined }): boolean {
+  const scopes = (card.writeScopes ?? []).map((item) => String(item).replace(/^\.\//u, '').trim()).filter((item) => item !== '')
+  if (scopes.length === 0) return false
+  return scopes.some((scope) => !scope.startsWith('.sdo/') && !scope.startsWith('docs/'))
+}
+
 export function isRole(value: string): value is Role {
   return (ROLES as readonly string[]).includes(value)
 }
@@ -400,13 +417,20 @@ export function decompose(
   journal: Journal,
   requirements: Requirement[],
   input: DecomposeInput = {},
-): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined } {
+): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined; structuralCount?: number | undefined } {
   const selected = input.requirements === undefined
     ? requirements
     : requirements.filter((requirement) => input.requirements?.includes(requirement.id))
   const derived: string[] = []
+  const structural = structuralDrafts(store, selected, derived)
+  // **D-12（设计取舍，不改粒度）**：结构通道按「每设计元素一张」产出，写范围由模板推导 ——
+  // 粒度与范围**可能与项目布局不符**（真机：7/21 张对应 actor/实体/外部系统，不可独立实现）。
+  // 插件不替人判断"哪些元素可独立实现"，但**必须把这件事说出来**，否则那批卡只能靠人肉发现。
+  // **D-12**：把"这批卡从结构通道来、粒度与模板范围可能不符"如实交回回执（文案在界面层，
+  // 域层不塞用户可见中文）—— 插件不替人判断哪些元素可独立实现，但必须把这件事说出来。
+  const structuralCount = structural.length
   const drafts = [
-    ...structuralDrafts(store, selected, derived),
+    ...structural,
     ...(input.suggestions ?? []),
   ]
   const existing = listTasks(store)
@@ -433,7 +457,7 @@ export function decompose(
     }
   }
   const tasks = listTasks(store)
-  return { tasks, issues: validatePlan(tasks), notes: derived }
+  return { tasks, issues: validatePlan(tasks), notes: derived, structuralCount }
 }
 
 /** **D3-3 回收路径**：把建错/作废的卡置为 dropped 并留痕（真源仍是追加式，不删除记录）。 */

@@ -96,6 +96,7 @@ import type {
 } from './domain/records.js'
 import { createChange, listChanges, undigestedChanges as listUndigestedChanges } from './domain/change.js'
 import { isDesignDocTruthPath } from './types.js'
+import { textOf } from './infra/scalar.js'
 import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
 import type { PoolAdmission, PoolChild, RolePool } from './domain/pool.js'
 import type { UndigestedChange } from './domain/change.js'
@@ -174,14 +175,16 @@ import type { SignatureState } from './domain/signature.js'
 import { methodDocStatus } from './domain/methodDocs.js'
 import type { MethodDocStatus } from './domain/methodDocs.js'
 import { recordWorkspaceChanges, unresolvedSeqs, readWorkspaceChanges} from './domain/workspaceChanges.js'
-import { faceDiff, readChildFaces, recordChildFace } from './domain/dispatchFace.js'
-import { attributeRole, claimsBySession, listRoleCards, toolAllowList } from './domain/roles.js'
+import { readChildFaces, recordChildFace } from './domain/dispatchFace.js'
+import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
+import { isRole } from './domain/plan.js'
 import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
 import { rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
 import type { RehashResult, ReviewAdoption, VerifyResult } from './domain/reviewVerification.js'
 import type { DispatchFinished } from './domain/dispatchReports.js'
 import {
   SCOPE_ALL,
+  deadExemptions,
   readConstructionProfile,
   recordContractTest,
   recordMutation,
@@ -436,6 +439,15 @@ export interface BaselineOutcome {
    * C8（红队议题未闭环）判红时，回执显示"❌ 基线未通过 + 7 条全 ✅"，**没有任何原因和 remedy**。
    */
   evaluation?: GateEvaluation | undefined
+  /**
+   * **R-2（sdo-test-new 2026-10-08，minor）**：本次是否**真的**写了 `phase/entered`。
+   *
+   * D-6 修好"不重放阶段转移"之后，回执尾行还是**无条件**印「据 `phase/entered` 事件进入 architecture」
+   * ⇒ 刚修好的结论被同一份回执讲反。渲染必须按这个字段说实话。
+   */
+  phaseEntered?: boolean | undefined
+  /** 本次调用之后项目所处的阶段（`phaseEntered=false` 时回执要如实说"当前阶段仍是它"） */
+  phase?: string | undefined
 }
 
 const REJECT_KEY: Record<string, string> = {
@@ -1382,11 +1394,19 @@ export class SoftwareDevOffice {
     const currentPhase = project?.phase ?? ''
     const currentIndex = phaseOrder.indexOf(currentPhase)
     const architectureIndex = phaseOrder.indexOf('architecture')
-    if (architectureIndex >= 0 && (currentIndex === -1 ? true : currentIndex < architectureIndex)) {
+    const phaseEntered = architectureIndex >= 0 && (currentIndex === -1 ? true : currentIndex < architectureIndex)
+    if (phaseEntered) {
       journal.append('phase/exited', { phase: currentPhase === '' ? 'requirements' : currentPhase })
       journal.append('phase/entered', { phase: 'architecture' })
     }
-    return { ok: true, dor, baselined, gate }
+    // **R-2**：把"这次到底转没转阶段"交给渲染层 —— 回执不许讲与台账相反的话
+    return { ok: true, dor, baselined, gate, phaseEntered, phase: phaseEntered ? 'architecture' : currentPhase }
+  }
+
+  /** **死豁免诊断**（R-8 附录）：`exempt` 里的卡不存在或已 dropped ⇒ 回执要主动说。 */
+  deadExemptions(call: OfficeCall): { task: string; check: string; why: string; reason: 'missing' | 'dropped' }[] {
+    const { store } = this.contextFor(call)
+    return deadExemptions(store)
   }
 
   /** 设计阶段前置检查（G2 已过的硬前置；M2 才实现真正的设计工具）。 */
@@ -2528,7 +2548,7 @@ export class SoftwareDevOffice {
   // —————————————————————— M4：拆分、协同与验证 ——————————————————————
 
   /** 拆分任务（结构通道 + 模型建议）。 */
-  planDecompose(call: OfficeCall, input: DecomposeInput = {}): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined } {
+  planDecompose(call: OfficeCall, input: DecomposeInput = {}): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined; structuralCount?: number | undefined } {
     const { store, journal } = this.contextFor(call)
     const current = readIteration(store)
     // 已经有进行中的迭代时，拆出来的卡自动归入该迭代（否则迭代门禁无从判定）
@@ -2688,7 +2708,7 @@ export class SoftwareDevOffice {
   }
 
   /** 池快照（**只读一次 journal**）：孩子状态 + 每个角色的池 + 待派卡。 */
-  private poolSnapshot(call: OfficeCall): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[] } {
+  private poolSnapshot(call: OfficeCall, orphanTtlMinutes?: number): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[] } {
     const { journal } = this.contextFor(call)
     const children = [
       ...foldPoolChildren(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values(),
@@ -2703,9 +2723,14 @@ export class SoftwareDevOffice {
         caps: this.settings.poolCaps,
         defaultCap: this.settings.maxParallelDispatch,
         // 真机缺陷修复：未结算的僵尸派发不再永久占位（超时即孤儿），TTL 可配
-        orphanTtlMs: this.settings.dispatchOrphanTtlMinutes * 60_000,
+        // **R-9**：TTL 覆盖也要进池快照（否则状态行说"在飞"、派发路径却按覆盖后的 TTL 放行 —— 又是两套口径）
+        orphanTtlMs: (orphanTtlMinutes ?? this.settings.dispatchOrphanTtlMinutes) * 60_000,
         nowMs: Date.now(),
         reuseBlockedOf: this.reuseBlockedOf(call),
+        // **R-6**：掩码指纹判据**就在这里**（纯函数，从 `roles.yml` 现算）—— 以前只有
+        // `admitDispatch` 内部判，于是池视图把"掩码过期的空闲会话"算成可复用、`freeSlots` 被占掉，
+        // 真机上 developer 的有效并发从 4 掉到 2 且回执自相矛盾（池满 + 空闲可复用 N）。
+        maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
       }),
     }
   }
@@ -2755,20 +2780,55 @@ export class SoftwareDevOffice {
    * @param options.reuseIdle 宿主有没有可续聊入口 —— 没有时"空闲子代理"不可投递（one-shot 结算即消失），
    *   此时池退化为**并发上限**（这一点必须在回执里说清，不能假装在复用）。
    */
-  poolPlan(call: OfficeCall, options: { reuseIdle?: boolean | undefined; maskHashOf?: ((role: string) => string) | undefined } = {}): PoolAdmission {
-    const snapshot = this.poolSnapshot(call)
+  poolPlan(call: OfficeCall, options: {
+    reuseIdle?: boolean | undefined
+    freshChild?: boolean | undefined
+    /** **孤儿 TTL 覆盖**（R-9 的逃生口）：`sdo_plan action=next orphanTtlMinutes=N` —— 卡被未结算派发冻住时不必改 preset 重启 */
+    orphanTtlMinutes?: number | undefined
+  } = {}): PoolAdmission {
+    const snapshot = this.poolSnapshot(call, options.orphanTtlMinutes)
+    const { journal } = this.contextFor(call)
     const tasks = this.tasks(call)
     const inProgress = tasks.filter((task) => task.status === 'in-progress').length
     // **一张卡不许同时在两个子代理里**：已有"在飞"派发（started 未 finished）的卡不重复派 ——
     // 队列语义是"每张卡只入队一次"。代价要如实说：派发丢了的卡会一直算在飞，直到结算或人工处置。
-    const orphanTtlMs = this.settings.dispatchOrphanTtlMinutes * 60_000
+    const ttlMinutes = options.orphanTtlMinutes ?? this.settings.dispatchOrphanTtlMinutes
+    const orphanTtlMs = ttlMinutes * 60_000
     const nowMs = Date.now()
     // 只有**活着的**在飞才挡住同一张卡的重复派发；超时未结算（孤儿）不挡（否则那张卡永远派不出去）
+    //
+    // **R-9（sdo-test-new 2026-10-08，major）**：判据还要看"卡是不是**被显式放回来**过" ——
+    // 真机：4 张卡的子会话被停（`dispatch/started` 有、`finished` 无 ⇒ 孤儿），操作者把卡 `release`
+    // 回 `ready` 之后再派，回执却是"没有可派发的任务卡"：因为这里只看**派发记录**、不看卡状态，
+    // 卡被冻结到孤儿 TTL（默认 60 分钟），而 TTL 只能从 preset 改。
+    // 现在：该卡的 `task/released` 事件若**晚于**它的 `dispatch/started`，就说明操作者已判定那个子会话没了
+    // ⇒ **不再冻结**（"一张卡不许同时在两个子代理里"防的是并行，而 release 就是操作者的显式判定）。
+    const releasedAfterDispatch = new Set<string>()
+    {
+      const lastDispatch = new Map<string, number>()
+      const lastRelease = new Map<string, number>()
+      for (const event of journal.read().events) {
+        const id = String(event.data['id'] ?? event.data['task'] ?? '')
+        if (id === '') continue
+        if (event.type === 'dispatch/started') lastDispatch.set(id, event.seq)
+        if (event.type === 'task/released') lastRelease.set(id, event.seq)
+      }
+      for (const [id, seq] of lastRelease) {
+        if ((lastDispatch.get(id) ?? -1) < seq) releasedAfterDispatch.add(id)
+      }
+    }
+    const liveChildren = snapshot.children.filter((child) => child.state === 'busy' && !isStaleDispatch(child, nowMs, orphanTtlMs))
     const inFlight = new Set(
-      snapshot.children
-        .filter((child) => child.state === 'busy' && !isStaleDispatch(child, nowMs, orphanTtlMs))
-        .map((child) => child.task),
+      liveChildren.map((child) => child.task).filter((taskId) => !releasedAfterDispatch.has(taskId)),
     )
+    // **R-9**：把"被谁冻着、冻了多久"交回给回执（否则 `k30` 那句"都已认领/完成"是假话）
+    const heldByDispatch = liveChildren
+      .filter((child) => inFlight.has(child.task))
+      .map((child) => ({
+        taskId: child.task,
+        childSessionId: child.childSessionId,
+        minutes: Math.max(0, Math.round((nowMs - (Date.parse(child.startedAt) || nowMs)) / 60_000)),
+      }))
     // **SDO-30（2026-10-05 真机）**：把「最近派发过」的卡排到后面 —— 旧实现固定按 `size → id` 排序，
     // 关键的小卡（如解冻卡）排在 8 张同类卡之后被反复跳过（真机只能靠人肉 `send_message` 直指卡号）。
     // 「最近派发时间」从 `dispatch/started` 的 `startedAt` 现算：**没派过的排最前**。
@@ -2780,15 +2840,28 @@ export class SoftwareDevOffice {
     const fairReady = [...snapshot.ready].sort((a, b) =>
       (lastDispatched.get(a.id) ?? '').localeCompare(lastDispatched.get(b.id) ?? '') || a.id.localeCompare(b.id),
     )
-    return admitDispatch({
+    const admission = admitDispatch({
       ready: fairReady.filter((task) => !inFlight.has(task.id)),
       pools: snapshot.pools,
       globalRoom: Math.max(0, this.settings.maxParallelDispatch - inProgress),
+      // **R-5 症状 D**：全局预算拒收回执要报**真实**的"进行中"张数（旧实现硬编码 0）
+      inProgress,
       reuseIdle: options.reuseIdle === true,
-      ...(options.maskHashOf === undefined ? {} : { maskHashOf: options.maskHashOf }),
+      // **R-13**：强制新起时，"可复用空闲"不参与容量计算（否则 freshChild 在池满时等于自锁）
+      ...(options.freshChild === true ? { forceNew: true } : {}),
+      // 与 `poolSnapshot` **同一个**纯函数（`rolePools` 的 `unusable` 也用它）⇒ 池视图与准入永不分叉
+      maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
       // **R-1**：复用还要**证据**（该子会话被观测到手里有工具），不只是掩码指纹一致
       reuseBlockedOf: this.reuseBlockedOf(call),
     })
+    // **R-14**：派发前的静态可行性（只看机械可判的两条；文案在界面层）
+    const infeasible = [...fairReady, ...snapshot.ready]
+      .map((task) => ({ task, gaps: capabilityGaps(task, task.role) }))
+      .filter((row) => row.gaps.length > 0)
+      .map((row) => ({ taskId: row.task.id, role: row.task.role, gaps: [...row.gaps] }))
+      // 同一张卡可能出现两次（fairReady 是 snapshot.ready 的重排）⇒ 去重
+      .filter((row, index, all) => all.findIndex((item) => item.taskId === row.taskId) === index)
+    return { ...admission, heldByDispatch, infeasible }
   }
 
   /**
@@ -3264,9 +3337,27 @@ export class SoftwareDevOffice {
       if (face.tools.length === 0) continue
       const declared = declaredByChild.get(face.childSessionId)
       if (declared === undefined || !knownRoles.has(declared.role)) continue
-      const diff = faceDiff(toolAllowList(declared.role as never), face.tools)
-      if (diff.missing.length === 0 && diff.extra.length === 0) continue
-      rows.push({ childSessionId: face.childSessionId, role: declared.role, task: declared.task, ...diff })
+      // **R-10（sdo-test-new 2026-10-08，minor）**：旧实现拿 `toolAllowList(role)` 当"声明面" —— 那是
+      // **白名单时代**的口径。新口径是两层（`sdo_*` 白名单 + 通用面黑名单继承宿主默认），
+      // 于是"通用面"必然全被算成"多出来的"，**每个子会话都挂一条误导警告**（真机列了 14 项，
+      // 全是有意继承的记忆/技巧/`send_message`…）。
+      // 现在的差集只在**真的不一致**时才报：
+      //   · 「缺」= 本角色**声明的 `sdo_*`** 里、公告面没有的（流程面是真的白名单）；
+      //   · 「多」= 公告面里**被离场规则禁止**的：`roles.yml` 的 `deny` ∪ 执行者禁用面
+      //     ∪（`sdo_*` 里不在本角色 allow 的补集）。
+      // 通用面里那些"没在 allow 里"的名字**不再算多**（黑名单语义下它们本来就该在）。
+      const allow = toolAllowList(declared.role as never)
+      const card = listRoleCards().find((item) => String(item.code) === declared.role)
+      const forbidden = new Set<string>([...(card?.deny ?? []), ...EXECUTOR_DENIED_TOOLS])
+      // "声明面"= **真正的白名单那两层**：`sdo_*` 流程面 + 只读检视面（`read`/`grep`/`glob`/`read_image`，
+      // 设计上人人可用）。其余通用面继承宿主默认，**不在声明面里**（正是 R-10 的误报来源）。
+      const declaredSdo = allow.filter((name) => name.startsWith('sdo_') || (READ_ONLY_INSPECTION_TOOLS as readonly string[]).includes(name))
+      const missing = declaredSdo.filter((name) => !face.tools.includes(name)).sort()
+      const extra = face.tools
+        .filter((name) => forbidden.has(name) || (name.startsWith('sdo_') && !allow.includes(name)))
+        .sort()
+      if (missing.length === 0 && extra.length === 0) continue
+      rows.push({ childSessionId: face.childSessionId, role: declared.role, task: declared.task, missing, extra })
     }
     return rows
   }
@@ -3319,7 +3410,11 @@ export class SoftwareDevOffice {
 
   addReview(call: OfficeCall, input: Omit<Review, 'id' | 'at'>): Review {
     const { store, journal } = this.contextFor(call)
-    return recordReview(store, journal, input)
+    // **用户口径（2026-10-08）**：把**原卡所属角色**标在评审上 —— 这样"该由哪个角色来核实"这件事
+    // 不依赖卡还在不在（卡会被 drop/重建/改角色），代核才判得出"同角色"。
+    const card = this.tasks(call).find((task) => task.id === input.taskId)
+    const taskRole = textOf(input.taskRole).trim() !== '' ? textOf(input.taskRole).trim() : (card?.role ?? '')
+    return recordReview(store, journal, { ...input, ...(taskRole === '' ? {} : { taskRole }) })
   }
 
   /**

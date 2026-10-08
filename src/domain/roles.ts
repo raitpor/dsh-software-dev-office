@@ -191,6 +191,32 @@ export function toolDenyList(code: Role, sdoNames: readonly string[]): string[] 
   return [...new Set<string>([...card.deny, ...deniedSdo, ...forbidden])]
 }
 
+/**
+ * **派发前的静态可行性**（R-14，sdo-test-new 2026-10-08）：这张卡要求的**动作**，这个角色的掩码允许吗？
+ *
+ * 真机两次都栽在这：`reviewer` 被要求"复现"（跑命令）⇒ 它的 deny 面里有 `bash`；又被要求"产出文档"
+ * ⇒ deny 面里有 `write`。而矛盾**只在子会话动手失败之后**才浮出来（代价一整轮）。
+ * 这里只做**机械可判**的两条（文本里的 DoD 自由表述不猜）：
+ *   · `evidenceRequired` 含 `command` ⇒ 需要 `bash`（要交命令证据就得能跑命令）；
+ *   · `writeScopes` 非空 ⇒ 需要 `write` 或 `edit`（有写范围就得能落盘）。
+ * 返回**码**（`needs-bash` / `needs-write`），文案由界面层出 —— 域层不塞用户可见中文。
+ */
+export type CapabilityGapCode = 'needs-bash' | 'needs-write'
+
+export function capabilityGaps(
+  card: { evidenceRequired?: readonly unknown[] | undefined; writeScopes?: readonly unknown[] | undefined },
+  role: string,
+): CapabilityGapCode[] {
+  if (!isRole(role)) return []
+  const allow = toolAllowList(role)
+  const gaps: CapabilityGapCode[] = []
+  const evidence = (card.evidenceRequired ?? []).map((item) => String(item).trim())
+  if (evidence.includes('command') && !allow.includes('bash')) gaps.push('needs-bash')
+  const scopes = (card.writeScopes ?? []).map((item) => String(item).trim()).filter((item) => item !== '')
+  if (scopes.length > 0 && !allow.includes('write') && !allow.includes('edit')) gaps.push('needs-write')
+  return gaps
+}
+
 /** 该角色是否可见某工具（白名单语义：不在 allow 里就不可见；只读检视工具人人可见）。 */
 /**
  * 按**宿主已知工具**过滤工具面（送进 `tools.restrict()` 之前必须过这一道）。
@@ -208,7 +234,13 @@ export function toolDenyList(code: Role, sdoNames: readonly string[]): string[] 
 export function maskFingerprint(code: Role): string {
   const card = roleCard(code)
   if (card === undefined) return ''
-  const names = [...new Set<string>([...toolAllowList(code), ...card.deny])].sort()
+  // **R-7（sdo-test-new 2026-10-08，major）**：指纹必须覆盖**有效的 deny 面** —— 执行者禁用面
+  // （`EXECUTOR_DENIED_TOOLS`）是**代码层**的常量，`roles.yml` 里没有这些名字，所以旧实现算出的指纹
+  // 在"禁令上线"前后**完全一样** ⇒ 上线前创建的旧会话被判"指纹一致 ⇒ 可复用"，而它公告面里
+  // 仍握着 `exit_plan_mode`/`memory_forget`/`technique_forget`/`failure_forgive`（真机 `4e7ea6d8`）
+  // —— 复用判据把禁令绕过去了。
+  // 连同"白名单补集"一起算进指纹（`sdo_*` 的收窄历史也是复用必须失效的理由）。
+  const names = [...new Set<string>([...toolAllowList(code), ...card.deny, ...EXECUTOR_DENIED_TOOLS])].sort()
   return createHash('sha1').update(names.join('|')).digest('hex').slice(0, 12)
 }
 

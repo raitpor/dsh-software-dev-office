@@ -78,6 +78,7 @@ import {
 } from './records.js'
 import type { Review } from './records.js'
 import { reviewAdoptionLabel, reviewAdoptions } from './reviewVerification.js'
+import { producesProductArtifacts } from './plan.js'
 
 /** 判定所需的全部输入（由 office 组装）。 */
 export interface GateContext {
@@ -106,8 +107,8 @@ export interface GateContext {
   riskConclusion: string | undefined
 }
 
-function ok(id: string, detail: string): GateCriterionResult {
-  return { id, ok: true, detail }
+function ok(id: string, detail: string, warnings?: string[] | undefined): GateCriterionResult {
+  return { id, ok: true, detail, ...(warnings === undefined || warnings.length === 0 ? {} : { warnings }) }
 }
 
 function fail(id: string, detail: string, remedy: string): GateCriterionResult {
@@ -1194,7 +1195,13 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // **2026-10-08 口径**：评审「任务」完成不需要被评审，但**评审结果要被核实才能采纳** ——
     //   · `role === 'reviewer'` 的卡不在此列（与 SDO-35 / C-42 同一理由：评审卡自我递归没有意义）；
     //   · 其余完成卡的 `pass` 评审必须是**已采纳**的（每条发现都由实现会话核实过，评审与核实都能被真源佐证）。
-    const doneTasks = tasks.filter((task) => (task.status === 'done' || task.status === 'verified') && task.role !== 'reviewer')
+    // **R-12**：不只排 `role === 'reviewer'`，还排掉**不产出产品工件**的卡（复核/代核/文书）。
+    // 只排 role 的旧口径漏掉了"实质在做复核、却因 R-11 挂在 tester 下"的卡 ⇒ 它一 done 就要求自己被评审（自我递归）。
+    const doneTasks = tasks.filter(
+      (task) => (task.status === 'done' || task.status === 'verified')
+        && task.role !== 'reviewer'
+        && producesProductArtifacts(task),
+    )
     const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal).map((item) => [item.review.id, item]))
     const unreviewed: string[] = []
     const unadopted: string[] = []
@@ -1247,8 +1254,11 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     const tasks = listTasks(ctx.store)
     // **SDO-35（真机）**：**评审卡不参与这条判据**，否则每批评审卡又要被评审（自我递归：TASK-142/147 先后被点名）；
     // 而"再评一次"在池子里不成立（可复用的 reviewer 只有一个，派发器无法保证评审者 ≠ 卡 owner）。
+    // **R-12**：同一条机械判据（不产出产品工件的卡不进这个集合）
     const big = tasks.filter(
-      (task) => task.status === 'done' && (task.size === 'medium' || task.size === 'large') && task.role !== 'reviewer',
+      (task) => task.status === 'done' && (task.size === 'medium' || task.size === 'large')
+        && task.role !== 'reviewer'
+        && producesProductArtifacts(task),
     )
     if (big.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
     // 与 G6/C-52 **同一份采纳口径**（2026-10-08）：`pass` 评审必须**已核实采纳**才算数 ——
@@ -1316,7 +1326,12 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   'delivery.manifest': (ctx) => {
     const result = deliveryCompleteness(ctx.store, ctx.requirements, ctx.prototypeDir)
     if (result.ok) {
-      return ok('delivery.manifest', fmt('uiGates.k134', { p1: result.manifest?.id ?? '', p2: result.manifest?.artifacts.length ?? 0, p3: result.manifest?.acceptance.length ?? 0 }))
+      // **R-22**：通过也要把 warnings 交出去（"带已知偏差通过"必须与"干净通过"在回执上区分开）
+      return ok(
+        'delivery.manifest',
+        fmt('uiGates.k134', { p1: result.manifest?.id ?? '', p2: result.manifest?.artifacts.length ?? 0, p3: result.manifest?.acceptance.length ?? 0 }),
+        result.warnings,
+      )
     }
     return fail('delivery.manifest', result.problems.join('；'), t('uiGates.k135'))
   },

@@ -105,16 +105,18 @@ test('M36-01 折叠池状态：started=在飞、finished=空闲、复用则轮�
 })
 
 test('M36-02 池视图：上限取配置（没配的角色用全局上限）、one-shot 结算进 retired 而不是"空闲可复用"、空池也要列出来', () => {
+  // **R-6**：`rolePools` 也判掩码指纹（与准入同一判据）⇒ 夹具必须给指纹，否则一律算"不可复用"
   const pools = rolePools({
     children: [
-      { childSessionId: 'c1', role: 'developer', task: 'T1', mode: 'continuable', state: 'busy', rounds: 1, startedAt: '', finishedAt: '' },
-      { childSessionId: 'c2', role: 'developer', task: 'T2', mode: 'continuable', state: 'idle', rounds: 1, startedAt: '', finishedAt: '' },
-      { childSessionId: 'c3', role: 'developer', task: 'T3', mode: 'one-shot', state: 'idle', rounds: 1, startedAt: '', finishedAt: '' },
-      { childSessionId: 'c4', role: 'tester', task: 'T4', mode: 'one-shot', state: 'busy', rounds: 1, startedAt: '', finishedAt: '' },
+      { childSessionId: 'c1', role: 'developer', task: 'T1', mode: 'continuable', state: 'busy', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c2', role: 'developer', task: 'T2', mode: 'continuable', state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c3', role: 'developer', task: 'T3', mode: 'one-shot', state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c4', role: 'tester', task: 'T4', mode: 'one-shot', state: 'busy', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
     ],
     roles: ['developer', 'tester', 'architect'],
     caps: { developer: 3 },
     defaultCap: 4,
+    maskHashOf: () => 'H',
   })
   const roles = pools.map((pool) => pool.role)
   assert.deepEqual(roles, ['architect', 'developer', 'tester'], '待派角色即使没有孩子也要列出（"没池"与"池空"必须能分辨）')
@@ -137,7 +139,7 @@ test('M36-03 准入：池满只排队、不丢卡；空闲可复用就用它（�
     { childSessionId: 'c1', role: 'developer', task: 'T0', mode: 'continuable' as const, maskHash: MASK, state: 'busy' as const, rounds: 1, startedAt: '', finishedAt: '' },
     { childSessionId: 'c2', role: 'developer', task: 'T0b', mode: 'continuable' as const, maskHash: MASK, state: 'idle' as const, rounds: 1, startedAt: '', finishedAt: '' },
   ]
-  const pools = rolePools({ children, roles: ['developer'], caps: { developer: 2 }, defaultCap: 4 })
+  const pools = rolePools({ children, roles: ['developer'], caps: { developer: 2 }, defaultCap: 4, maskHashOf: () => MASK })
   assert.equal(pools[0]?.freeSlots, 0, '上限 2 = 1 在飞 + 1 空闲 ⇒ 没有新建位子（但空闲那个能接卡）')
 
   // ① 池上限 2 = 1 在飞 + 1 空闲 ⇒ 这一轮只能再派 **1** 张（投给空闲的 c2），其余排队
@@ -329,7 +331,10 @@ test('M36-07 工具层：池上限生效（只派 1 张、另一张排队并说�
   assert.match(first, /TASK-001/u, `要派出第一张：${first.slice(0, 400)}`)
   assert.doesNotMatch(first, /TASK-002.*已派发|TASK-002.*started/u)
   assert.match(first, /角色池（子代理复用/u, '回执要有池视图')
-  assert.match(first, /developer：在飞 1\/1/u, `池行要如实：${first.slice(-500)}`)
+  // **R-5A**：`在飞` 只报**折叠事实**（回执渲染在真正 start 之前 ⇒ 此刻确实 0 个在飞）；
+  // 旧实现往池里塞占位孩子，于是"本次准入 4 张"被印成"在飞 4/4"（真机 0 真在飞 + 4 准入 = 4/4）。
+  // 这一轮派了谁，由上面的"已派发 TASK-001"那行负责说清。
+  assert.match(first, /developer：在飞 0\/1/u, `池行要如实（在飞=折叠事实）：${first.slice(-500)}`)
   assert.match(first, /排队 1 张：TASK-002/u, '被上限挡住的卡要明说排队（否则用户以为流程卡死）')
   assert.equal(h.calls.filter((call) => call.kind === 'startContinuable').length, 1, '第一个窗口新起一个可续聊子代理')
 
@@ -461,4 +466,19 @@ test('M36-09 挂起后原样重派的提醒：`task/blocked` 之后卡内容没�
   const index = readFileSync(new URL('../../src/index.ts', import.meta.url), 'utf8')
   assert.match(index, /office\.unresolvedBlock\(call, task\.id\)/u, '派发分支要查"挂起后原样重派"')
   assert.match(index, /kDispatchRepeatBlocked/u, '查到就在回执里提醒')
+})
+
+test('M36-08 R-5C：被 `limit` 截掉的卡**必须露面**（既没派发、也没排队 —— 旧回执让它们凭空消失）', async () => {
+  const h = harness()
+  await h.callTool('sdo_init', { name: '截断演练', process: 'waterfall', scale: 'normal', stakeholders: '运维' })
+  journal.append('phase/entered', { phase: 'construction' })
+  // 用 `tester`（harness 只把 developer 的池上限压到 1）⇒ 两张卡都能**通过容量准入**
+  for (const id of ['TASK-101', 'TASK-102']) store.writeYaml(['tasks', `${id}.yml`], { task: card(id, 'tester') })
+
+  // 两张卡都通过容量准入，但 `limit=1` 只派 1 张
+  const receipt = await h.callTool('sdo_plan', { action: 'next', backend: 'subagent', limit: 1 })
+  assert.match(receipt, /TASK-101/u, `第一张要派出去：${receipt.slice(0, 300)}`)
+  assert.match(receipt, /另有 1 张已通过容量准入、但被本次 `limit=1` 挡下/u, `被 limit 挡下的卡要点名：${receipt.slice(-600)}`)
+  assert.match(receipt, /TASK-102/u, '要说出是哪张卡（旧实现里它既不"已派发"也不"排队"，凭空消失）')
+  assert.equal(journal.read().events.filter((event) => event.type === 'dispatch/started').length, 1, '只派 1 张')
 })

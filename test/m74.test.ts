@@ -22,6 +22,7 @@ import { Config, resolveSettings } from '../src/config.js'
 import type { SdoConfig } from '../src/config.js'
 import { focusHead, nonGoalConflictOf, nonGoalTerms } from '../src/domain/grill.js'
 import { admitDispatch, rolePools } from '../src/domain/pool.js'
+import { maskFingerprint } from '../src/domain/roles.js'
 import { describePoolBlock } from '../src/interface/describe.js'
 import type { PoolChild } from '../src/domain/pool.js'
 import { Journal } from '../src/infra/journal.js'
@@ -98,25 +99,32 @@ test('M74-01 R-1：不能复用的空闲子代理进 `unusable` 且**不占池�
   })
   assert.equal(admission.dispatch.length, 1, '卡必须派得出去（旧实现会在这里永久排队）')
   assert.equal(admission.dispatch[0]?.reuseChildId, undefined, '零工具会话不许被复用 ⇒ 新起一个')
-  // 这一层（工具面证据）由 `rolePools` 的 `unusable` 记账（回执里的池视图），不重复算进 `reuseSkipped`；
-  // 掩码指纹那一层仍走 `reuseSkipped` —— 两条通道都在回执里露面。
+  // 这一层（工具面证据）由 `rolePools` 的 `unusable` 记账（回执里的池视图），不重复算进 `reuseSkipped`
   assert.equal(admission.reuseSkipped.filter((item) => item.childSessionId === 'child-zero').length, 0)
+  // **R-6**：掩码指纹那一层也收敛进 `unusable`（`rolePools` 与准入共用 `reuseBlockedReason`）——
+  // 旧实现只在准入里判，于是池视图把它算成"空闲可复用"、`freeSlots` 被占掉，真机并发 4→2。
+  const stalePools = rolePools({ children: [idleChild('child-stale', 'OLD')], roles: ['developer'], caps: { developer: 2 }, defaultCap: 2, maskHashOf: () => 'NEW' })
+  assert.equal(stalePools[0]?.idle.length, 0, '掩码过期的空闲会话不得算"空闲可复用"')
+  assert.match(stalePools[0]?.unusable[0]?.reason ?? '', /掩码已变更/u, '原因要能读出来')
   const maskMismatch = admitDispatch({
     ready: [readyCard('TASK-004')],
-    pools: rolePools({ children: [idleChild('child-stale', 'OLD')], roles: ['developer'], caps: { developer: 2 }, defaultCap: 2 }),
+    pools: stalePools,
     globalRoom: 4,
     reuseIdle: true,
     maskHashOf: () => 'NEW',
   })
   assert.equal(maskMismatch.dispatch[0]?.reuseChildId, undefined, '掩码指纹不一致同样不许复用')
-  assert.equal(maskMismatch.reuseSkipped.length, 1, '掩码那一层的放弃复用要如实记账')
-  assert.match(maskMismatch.reuseSkipped[0]?.reason ?? '', /掩码已变更/u)
+  assert.equal(maskMismatch.dispatch[0]?.reuseChildId, undefined, '掩码过期不得复用')
+  // 不再走 `reuseSkipped`：它已经在池视图的 `unusable` 里如实露面（判据只有一处，回执不会自相矛盾）
+  assert.equal(maskMismatch.reuseSkipped.length, 0)
 
   // ② 有"证据可用"的空闲会话时：cap=1 的位子归它（复用它，不再新建）
   const withUsable = rolePools({
     children: [idleChild('child-zero'), idleChild('child-ok')],
     roles: ['developer'],
     caps: { developer: 1 },
+    // **R-6**：池视图也判掩码指纹 ⇒ 夹具要给出与当前一致的指纹（`idleChild` 默认 `'same'`）
+    maskHashOf: () => 'same',
     defaultCap: 1,
     reuseBlockedOf: blocked,
   })
@@ -135,9 +143,16 @@ test('M74-01 R-1：不能复用的空闲子代理进 `unusable` 且**不占池�
   assert.equal(reuse.dispatch[0]?.reuseChildId, 'child-ok', '有证据的空闲会话要真的被复用')
   assert.equal(reuse.reuseSkipped.filter((item) => item.childSessionId === 'child-ok').length, 0)
 
-  // ③ 防御面：池子**没**过 `rolePools` 那一道（例如调用方自己拼的池）时，准入这一层也必须守同一判据
-  const rawPools = rolePools({ children: [idleChild('child-zero')], roles: ['developer'], caps: { developer: 2 }, defaultCap: 2 })
-  assert.equal(rawPools[0]?.idle.length, 1, '前置：不传判定函数时它仍在 idle 里')
+  // ③ 防御面：池子只过了**掩码那一层**（没有工具面观测判据，例如调用方自己拼的池）时，
+  // 准入这一层也必须守同一判据（`reuseSkipped` 是这条防御线的出口）
+  const rawPools = rolePools({
+    children: [idleChild('child-zero', 'H')],
+    roles: ['developer'],
+    caps: { developer: 2 },
+    defaultCap: 2,
+    maskHashOf: () => 'H',
+  })
+  assert.equal(rawPools[0]?.idle.length, 1, '前置：掩码一致、没喂观测判据 ⇒ 它此刻仍在 idle 里')
   const guarded = admitDispatch({
     ready: [readyCard('TASK-005')],
     pools: rawPools,
@@ -155,14 +170,15 @@ test('M74-02 R-1：office 层把"工具面观测"接进复用判定（没观测�
   const store = office.storeFor(workspace) as unknown as SdoStore
   office.init(call(), { name: 'M74', scale: 'normal', stakeholders: ['业务方'] })
   const journal: Journal = office.journalFor(workspace)
-  // 一条"已结算的可续聊子代理"（掩码指纹与当前角色一致）
-  journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-old', tools: 11, role: 'developer', mode: 'continuable', maskHash: 'FIXED' })
+  // 一条"已结算的可续聊子代理"（掩码指纹取**真值**——R-6 之后指纹判据在 office 内部现算，
+  // 写死 'FIXED' 的夹具会变成"掩码已变更"而误判成不可复用）
+  journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-old', tools: 11, role: 'developer', mode: 'continuable', maskHash: maskFingerprint('developer') })
   journal.append('dispatch/finished', { childSessionId: 'child-old', task: 'TASK-001', role: 'developer', turn: 1, reason: 'completed' })
   void store
 
   const poolCall = { sessionId: 's1', cwd: workspace }
   // ① 没有任何工具面观测 ⇒ 不许复用，而且不占池位
-  const cold = office.poolPlan(poolCall, { reuseIdle: true, maskHashOf: () => 'FIXED' })
+  const cold = office.poolPlan(poolCall, { reuseIdle: true })
   const coldPool = cold.pools.find((pool) => pool.role === 'developer')
   if (coldPool !== undefined) {
     assert.equal(coldPool.idle.length, 0, '没观测到工具面 ⇒ 不算可复用')
@@ -170,7 +186,7 @@ test('M74-02 R-1：office 层把"工具面观测"接进复用判定（没观测�
   }
   // ② 观测到"它手里确实有工具" ⇒ 才允许复用
   office.noteChildFace(poolCall, { childSessionId: 'child-old', tools: ['read', 'bash', 'sdo_task'], violations: [] })
-  const warm = office.poolPlan(poolCall, { reuseIdle: true, maskHashOf: () => 'FIXED' })
+  const warm = office.poolPlan(poolCall, { reuseIdle: true })
   const warmPool = warm.pools.find((pool) => pool.role === 'developer')
   assert.equal(warmPool?.idle.length, 1, '有观测 + 掩码指纹一致 ⇒ 可复用')
   assert.equal(warmPool?.unusable.length, 0)
@@ -264,6 +280,38 @@ test('M74-06 R-1：池视图必须把"不可复用"那批印出来（否则"池�
   assert.match(rendered, /child-ze/u, '要点名是哪个子会话（前 8 位）')
   assert.match(rendered, /0 个工具/u, '要给出原因')
   // 反向：没有不可复用的会话时不得出现这行噪声
-  const clean = describePoolBlock(rolePools({ children: [idleChild('child-ok')], roles: ['developer'], caps: { developer: 1 }, defaultCap: 1 }), [], true, 30)
+  const clean = describePoolBlock(rolePools({ children: [idleChild('child-ok', 'H')], roles: ['developer'], caps: { developer: 1 }, defaultCap: 1, maskHashOf: () => 'H' }), [], true, 30)
   assert.doesNotMatch(clean, /不占池位/u)
+})
+
+test('M74-07 R-6：**office 层**自己把掩码指纹喂给池视图 —— 掩码过期的空闲会话不占池位（两套口径的收敛点）', () => {
+  office.init(call(), { name: 'M74', scale: 'normal', stakeholders: ['业务方'] })
+  const journal: Journal = office.journalFor(workspace)
+  const NOW = maskFingerprint('developer')
+  // ① 一个"掩码过期"的空闲会话（`roles.yml` 改过之后创建的）+ 一个"当前掩码"的在飞会话
+  journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-stale', tools: 11, role: 'developer', mode: 'continuable', maskHash: 'deadbeefdead' })
+  journal.append('dispatch/finished', { childSessionId: 'child-stale', task: 'TASK-001', role: 'developer', turn: 1, reason: 'completed' })
+  journal.append('dispatch/started', { task: 'TASK-002', provider: 'spawn', childSessionId: 'child-flying', tools: 11, role: 'developer', mode: 'continuable', maskHash: NOW })
+  const poolCall = { sessionId: 's1', cwd: workspace }
+  const view = office.poolView(poolCall).find((pool) => pool.role === 'developer')
+  assert.equal(view?.busy.length, 1, '在飞 1')
+  assert.equal(view?.idle.length, 0, '**掩码过期的空闲会话不算可复用**（判据在 office 内部现算，不靠调用方传）')
+  assert.equal(view?.unusable.length, 1, '要单独列出来（不静默）')
+  assert.match(view?.unusable[0]?.reason ?? '', /掩码已变更|观测/u, '原因要能读出来（两条判据都成立时，观测那条更可执行）')
+  // 把"工具面观测"这一层补上（它排在前）⇒ 理由必须变成**掩码**那条 —— 这一步证明 office 真的在判掩码指纹
+  office.noteChildFace(poolCall, { childSessionId: 'child-stale', tools: ['read', 'write', 'sdo_task'], violations: [] })
+  const afterObserve = office.poolView(poolCall).find((pool) => pool.role === 'developer')
+  assert.equal(afterObserve?.idle.length, 0, '观测过它也不给复用（指纹不符）')
+  assert.match(afterObserve?.unusable[0]?.reason ?? '', /掩码已变更/u, '两条判据都满足时理由要指向掩码')
+  assert.ok((view?.freeSlots ?? 0) > 0, `不占池位：freeSlots = cap − 在飞 − 可复用空闲（实际 ${view?.freeSlots}）`)
+  // ② 同一个图形经**派发路径**（poolPlan）也必须是同一结论（旧实现这里拒绝复用、池视图却说空闲可复用）
+  const plan = office.poolPlan(poolCall, { reuseIdle: true })
+  const planPool = plan.pools.find((pool) => pool.role === 'developer')
+  assert.deepEqual(
+    planPool?.unusable.map((item) => item.childSessionId),
+    afterObserve?.unusable.map((item) => item.childSessionId),
+    '状态路径与派发路径的"不可复用"清单必须一致（同一个人、同一个理由口径）',
+  )
+  assert.match(planPool?.unusable[0]?.reason ?? '', /掩码已变更/u, '派发路径同样指向掩码')
+  assert.equal(planPool?.idle.length, 0)
 })

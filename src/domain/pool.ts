@@ -134,6 +134,36 @@ export function capOf(caps: Record<string, number>, role: string, defaultCap: nu
 }
 
 /**
+ * **该空闲子代理为什么不能复用** —— 判据**只有这一处**（R-6，sdo-test-new 2026-10-08 复测）。
+ *
+ * 真机缺陷：`rolePools`（池视图，状态行/排队行都渲染它）只吃"工具面观测"这一层判据，
+ * 而掩码指纹比对写在 `admitDispatch` 内部 ⇒ **同一个空闲会话**在池视图里是"空闲可复用"、
+ * 在准入里却被拒 ⇒ 回执印出「池满（在飞 2/4，空闲可复用 3）」这种自相矛盾的话，
+ * 而 `freeSlots = cap − 在飞 − 可复用空闲` 被"不能用的人"占掉 ⇒ developer 的有效并发从 4 掉到 2，
+ * 两张卡被无谓排队（实测：seq≤583 时 busy=2 / idle=3 / freeSlots=0，两张卡全 `pool-full`）。
+ *
+ * **最坏情况**（同机制外推）：4 个槽全是"掩码过期但被观测过"的空闲会话 ⇒ 该角色永久无法派发。
+ *
+ * @param wantedMaskHash 该角色**当前**的掩码指纹；空串 = 取不到指纹 ⇒ 保守视为不可复用（与旧口径一致）
+ * @param extra 额外判据（office 层接的是工具面观测：零工具 / 没观测到都不给复用）
+ */
+export function reuseBlockedReason(
+  child: PoolChild,
+  wantedMaskHash: string,
+  extra?: ((child: PoolChild) => string | undefined) | undefined,
+): string | undefined {
+  const observed = extra?.(child)
+  if (observed !== undefined) return observed
+  const actual = child.maskHash ?? ''
+  if (wantedMaskHash === '' || actual !== wantedMaskHash) {
+    return actual === ''
+      ? '旧子代理没有掩码指纹（无法确认其工具面）'
+      : '掩码已变更（该会话的工具面是创建时的旧面）'
+  }
+  return undefined
+}
+
+/**
  * 折叠出每个角色池的现状（**含没有孩子的角色**：只列 `roles` 里出现的角色，
  * 目的是让"这个角色今天没有池"和"池空了"在回执里长得不一样）。
  */
@@ -154,6 +184,11 @@ export function rolePools(input: {
    * 不传 = 不做这一层判定（既有行为，掩码指纹那层仍在 `admitDispatch` 里）。
    */
   reuseBlockedOf?: ((child: PoolChild) => string | undefined) | undefined
+  /**
+   * **取该角色当前的掩码指纹**（R-6）：与 `admitDispatch` 用**同一个** `reuseBlockedReason` 判。
+   * 缺省/返回空串 ⇒ 保守视为"指纹取不到" ⇒ 不可复用（方向与准入路径一致）。
+   */
+  maskHashOf?: ((role: string) => string) | undefined
 }): RolePool[] {
   const ttl = input.orphanTtlMs ?? 0
   const now = input.nowMs ?? Date.now()
@@ -173,8 +208,11 @@ export function rolePools(input: {
     const busy = inFlight.filter((child) => !stale.includes(child))
     const continuable = children.filter((child) => child.state === 'idle' && child.mode === 'continuable')
     // **R-1**：不可复用的空闲子代理**不占池位**（否则 cap=1 的角色会永久排队），单独列出来如实报
+    // **R-6**：判据与 `admitDispatch` 共用 `reuseBlockedReason` —— 掩码指纹也在这里判，
+    // 否则"池视图说空闲可复用、准入却拒绝"会让 `freeSlots` 被不能用的人占掉（真机并发 4→2）。
+    const wanted = input.maskHashOf?.(role) ?? ''
     const unusable = continuable
-      .map((child) => ({ childSessionId: child.childSessionId, reason: input.reuseBlockedOf?.(child) ?? '' }))
+      .map((child) => ({ childSessionId: child.childSessionId, reason: reuseBlockedReason(child, wanted, input.reuseBlockedOf) ?? '' }))
       .filter((item) => item.reason !== '')
     const unusableIds = new Set(unusable.map((item) => item.childSessionId))
     const idle = continuable.filter((child) => !unusableIds.has(child.childSessionId))
@@ -225,6 +263,17 @@ export interface PoolAdmission {
   /** 被挡下的卡及原因（池满 / 全局预算满） */
   blocked: { task: TaskCard; reason: 'pool-full' | 'global-budget'; detail: string }[]
   pools: RolePool[]
+  /**
+   * **R-9**：这些 ready 卡被**未结算的派发**冻着（子会话还活着或未超时）—— 回执里"没有可派发的卡"
+   * 必须说清是它们（真机：卡已 `release` 回 ready，回执却说"都已认领/完成"）。
+   * `minutes` = 那笔派发已经过去多久（操作者据此判断该等结算还是该覆盖 TTL）。
+   */
+  heldByDispatch?: { taskId: string; childSessionId: string; minutes: number }[] | undefined
+  /**
+   * **R-14**：这些卡的**要求**与该角色的**掩码能力**矛盾（`evidenceRequired` 要命令却没有 `bash`、
+   * 有写范围却没有 `write/edit`）—— 派发前就要说出来，别等子会话动手失败（真机赔了一整轮）。
+   */
+  infeasible?: { taskId: string; role: string; gaps: string[] }[] | undefined
 }
 
 /**
@@ -243,6 +292,20 @@ export function admitDispatch(input: {
   /** 取某角色掩码指纹（SDO-52）：只有指纹**一致**的空闲子代理才允许复用 */
   maskHashOf?: ((role: string) => string) | undefined
   /**
+   * **当前"进行中"（in-progress）的卡数**（R-5 症状 D）：只用于把全局预算的拒收回执说真话。
+   * 旧实现把文案里的数字**硬编码成 0**（`进行中 ${0} 张`），真机 4 张在飞时也印 0。
+   */
+  inProgress?: number | undefined
+  /**
+   * **本轮强制新起**（`sdo_plan freshChild=true`，R-13，sdo-test-new 2026-10-08）。
+   *
+   * 语义冲突：池容量口径是 `freeSlots = cap − busy − idle(可复用)`，而 `freshChild` 又禁止复用它们
+   * ⇒ 池里躺满 `cap` 个可复用空闲时，「想新建会超 cap、想复用被自己禁止」⇒ **自锁**（真机
+   * `在飞 0/4` 却 `池满`，TASK-041 从 22:00 起派不出去）。
+   * 修法：本轮既然**不许用**它们，它们就不该占容量 ⇒ 容量按 `cap − busy` 算（只对新建计数）。
+   */
+  forceNew?: boolean | undefined
+  /**
    * **该空闲子代理为什么不能复用**（R-1，与 `rolePools` 同一函数）：返回原因即拒绝复用。
    * office 层接的是"工具面观测"——**观测到零工具 / 没观测到**都不给复用（新起一个永远是对的）。
    */
@@ -252,13 +315,19 @@ export function admitDispatch(input: {
   const byRole = new Map(pools.map((pool) => [pool.role, pool]))
   const dispatch: PoolAdmission['dispatch'] = []
   const reuseSkipped: PoolAdmission['reuseSkipped'] = []
+  /** 每个角色**本次准入新建**了几张（R-5A：`在飞` 只报真实在飞，新建数另说，不再塞占位孩子） */
+  const admittedByRole = new Map<string, number>()
   const queued: TaskCard[] = []
   const blocked: PoolAdmission['blocked'] = []
   let room = Math.max(0, Math.floor(input.globalRoom))
   for (const task of input.ready) {
     if (room <= 0) {
       queued.push(task)
-      blocked.push({ task, reason: 'global-budget', detail: `全局并行预算已满（进行中 ${0} 张之外无空位）` })
+      blocked.push({
+        task,
+        reason: 'global-budget',
+        detail: `全局并行预算已满（进行中 ${input.inProgress ?? 0} 张之外无空位）`,
+      })
       continue
     }
     const pool = byRole.get(task.role)
@@ -278,15 +347,9 @@ export function admitDispatch(input: {
     // 写成正文 → 1 轮结束"（`dispatch/started.tools: 11` 但紧接着 `dispatch/observe-failed`）。
     // 所以再加一条**证据型**判据：该子会话被**观测到**手里有工具才允许复用（观测不到 ⇒ 也不复用）。
     const wanted = input.maskHashOf?.(task.role) ?? ''
-    const blockedReasonOf = (child: PoolChild): string | undefined => {
-      const observed = input.reuseBlockedOf?.(child)
-      if (observed !== undefined) return observed
-      if (wanted === '' || (child.maskHash ?? '') !== wanted) {
-        return (child.maskHash ?? '') === '' ? '旧子代理没有掩码指纹（无法确认其工具面）' : '掩码已变更（该会话的工具面是创建时的旧面）'
-      }
-      return undefined
-    }
-    if (input.reuseIdle && pool.idle.length > 0) {
+    // **R-6**：与 `rolePools` 共用同一个判据函数（口径只有一处，回执不可能自相矛盾）
+    const blockedReasonOf = (child: PoolChild): string | undefined => reuseBlockedReason(child, wanted, input.reuseBlockedOf)
+    if (input.reuseIdle && input.forceNew !== true && pool.idle.length > 0) {
       const index = pool.idle.findIndex((child) => blockedReasonOf(child) === undefined)
       if (index >= 0) {
         const taken = pool.idle.splice(index, 1)[0] as PoolChild
@@ -304,30 +367,40 @@ export function admitDispatch(input: {
         })
       }
     }
-    if (pool.freeSlots > 0) {
-      pool.freeSlots -= 1
-      pool.busy.push({
-        childSessionId: '',
-        role: pool.role,
-        task: task.id,
-        mode: 'one-shot',
-        state: 'busy',
-        rounds: 1,
-        startedAt: '',
-        finishedAt: '',
-      })
+    // **R-13**：`forceNew` 时容量不含"可复用空闲"（本轮不许用它们，它们也就不该挡新起）
+    const admitted = admittedByRole.get(pool.role) ?? 0
+    const freshRoom = input.forceNew === true ? Math.max(0, pool.cap - pool.busy.length - admitted) : pool.freeSlots
+    if (freshRoom > 0) {
+      pool.freeSlots = Math.max(0, pool.freeSlots - 1)
+      // **R-5A**：这里**不再**往 `pool.busy` 里塞占位孩子（`childSessionId: ''`）。
+      // 占位会让回执印出「在飞 4/4」而实际只派了 1 张（真机：0 真在飞 + 4 准入 = 4/4）——
+      // 「在飞」是**事实**，「本次准入 N 张」是**计划**，两者必须分开讲。
+      admittedByRole.set(pool.role, (admittedByRole.get(pool.role) ?? 0) + 1)
       dispatch.push({ task })
       room -= 1
       continue
     }
     queued.push(task)
+    const admittedNow = admittedByRole.get(pool.role) ?? 0
+    const forced = input.forceNew === true && pool.idle.length > 0
+      ? `，本轮 freshChild=true（强制新起）⇒ 池内 ${pool.idle.length} 个空闲可复用会话**不参与容量计算**`
+      : ''
     blocked.push({
       task,
       reason: 'pool-full',
-      detail: `${pool.role} 池满（在飞 ${pool.busy.length}/${pool.cap}${pool.idle.length > 0 ? `，空闲可复用 ${pool.idle.length}` : ''}）`,
+      detail: `${pool.role} 池满（在飞 ${pool.busy.length}/${pool.cap}${pool.idle.length > 0 ? `，空闲可复用 ${pool.idle.length}` : ''}${admittedNow > 0 ? `，本次已先准入 ${admittedNow} 张新建` : ''}${forced}）`,
     })
   }
-  return { dispatch, reuseSkipped, queued, blocked, pools }
+  // **R-5B**：`reuseSkipped` 以前在"逐候选卡"的循环里 push ⇒ **候选卡 × 不可复用会话**的笛卡尔积
+  // （真机把同一个 sessionId 重复列了 6 次/5 次，回执写「有 12 个空闲子代理没有被复用」而实际只有 2 个）。
+  // 按 `childSessionId` 去重，保首条理由（顺序即首次出现的顺序）。
+  const seenSkipped = new Set<string>()
+  const dedupedSkipped = reuseSkipped.filter((item) => {
+    if (seenSkipped.has(item.childSessionId)) return false
+    seenSkipped.add(item.childSessionId)
+    return true
+  })
+  return { dispatch, reuseSkipped: dedupedSkipped, queued, blocked, pools }
 }
 
 /** 满池排队的人读说明（回执用；点名角色与上限，并指向"等谁结算"）。 */

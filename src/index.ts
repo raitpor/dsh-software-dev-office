@@ -17,6 +17,8 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
 import { boardModelFor, renderBoard } from './board/render.js'
+import { ACCEPTANCE_VERDICTS } from './domain/records.js'
+import type { AcceptanceVerdict } from './domain/records.js'
 import { Config, resolveSettings } from './config.js'
 import { registerRoleCardsSkill } from './domain/skills.js'
 import type { SdoConfig } from './config.js'
@@ -25,6 +27,7 @@ import { describeUndigestedChanges } from './domain/change.js'
 import { makeAcceptanceIds } from './domain/requirements.js'
 import { SdoStore } from './infra/store.js'
 import {
+  deviationsNote,
   describeAdr,
   describeAdrList,
   describeAdvance,
@@ -693,10 +696,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const poolReuse = reuseCapability((subagentsApi ?? {}) as unknown as SubagentRuntimeLike).supported
       // **§2.2（第二轮评审 HIGH）**：状态路径不传 `maskHashOf` ⇒ 与派发路径**两套口径**
       // （真机：同一状态下 `queued/blocked=pool-full` 而派发路径 `dispatch=[TASK-9/复用]`）。
-      const poolPlan = office.poolPlan(call, {
-        reuseIdle: poolReuse,
-        maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
-      })
+      // **R-6**：掩码指纹判据收敛到 office 内部（`maskFingerprint` 是纯函数，池视图与准入共用一处）
+      const poolPlan = office.poolPlan(call, { reuseIdle: poolReuse })
       const poolText = describePoolBlock(poolPlan.pools, poolPlan.queued.map((task) => task.id), poolReuse, settings.dispatchOrphanTtlMinutes)
       const poolBlock = poolText === '' ? '' : '\n' + poolText + '\n'
       // **SDO-53**：公告清单 ≠ 实际可调 —— 把「我们声明的面」与「子代理实测拿到的面」的差集摆出来
@@ -714,11 +715,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
         faces.length === 0
           ? ''
           : '\n' + fmt('uiDescribe.k208FaceBlockHeader', { p1: String(faces.length) }) + '\n' + childFaceLines(faces).join('\n')
-      if (forced === undefined) return text + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock
+      // **R-8 附录**：死豁免（卡不存在 / 已 dropped）主动说 —— 否则"用 drop+重建绕限制"会白花一轮
+      const deadExempt = office.deadExemptions(call)
+      const deadBlock = deadExempt.length === 0
+        ? ''
+        : '\n' + fmt('uiIndex.kDeadExemption', {
+            p1: String(deadExempt.length),
+            p2: deadExempt.map((item) => `${item.task}(${item.check})`).join(' '),
+          }) + '\n'
+      if (forced === undefined) return text + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
       const note = forced.truncated
         ? fmt('uiIndex.kRebuildTruncated', { p1: String(forced.badLine ?? '?') })
         : t('uiIndex.kRebuildForced')
-      return `${note}\n${text}` + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock
+      return `${note}\n${text}` + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
     },
 
     async board(
@@ -863,9 +872,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
           ...(office.iteration(call) === undefined ? {} : { iteration: office.iteration(call)?.number }),
         })
         const planSummary = describePlan(result.tasks, result.issues, office.shapeNotes(call))
-        return (result.notes ?? []).length === 0
-          ? planSummary
-          : `${planSummary}\n${fmt('uiIndex.scopeDerivedNote', { p1: (result.notes ?? []).join('、') })}`
+        // **D-12**：结构通道的粒度/范围提示（不改粒度 —— 那是方法学选择，但必须说出来）
+        const structuralNote = (result.structuralCount ?? 0) === 0
+          ? ''
+          : `\n${fmt('uiIndex.kStructuralGranularity', { p1: String(result.structuralCount ?? 0) })}`
+        const scopeNote = (result.notes ?? []).length === 0
+          ? ''
+          : `\n${fmt('uiIndex.scopeDerivedNote', { p1: (result.notes ?? []).join('、') })}`
+        return planSummary + scopeNote + structuralNote
       }
 
       if (args.action === 'iteration') {
@@ -886,8 +900,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // 一次 plan 可能横跨多个角色 ⇒ 传**取指纹的函数**，由池在逐卡判定时就地取。
       const plan = office.poolPlan(call, {
         reuseIdle: reuse.supported && !freshChild,
-        maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
+        freshChild,
+        // **R-9 逃生口**：卡被未结算派发冻住时，这一轮就能覆盖孤儿 TTL，不必改 preset 重启
+        ...(args.orphanTtlMinutes === undefined ? {} : { orphanTtlMinutes: args.orphanTtlMinutes }),
       })
+      // **R-14**：派发前把「卡的要求 ∩ 该角色的能力」矛盾摆出来（不阻断派发，但绝不允许它静默）
+      const infeasibleBlock = (plan.infeasible ?? []).length === 0
+        ? ''
+        : '\n' + (plan.infeasible ?? []).map((row) => fmt('uiIndex.kCapabilityGap', {
+            p1: row.taskId,
+            p2: row.role,
+            p3: row.gaps.map((gap) => t(`uiIndex.kGap_${gap}`)).join(' / '),
+          })).join('\n') + '\n'
       if (plan.dispatch.length === 0) {
         const issues = office.planIssues(call)
         if (issues.length > 0) {
@@ -915,7 +939,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
           if (args.why === true) return verdict + '\n' + diagnostics
           return verdict + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call))
         }
-        if (plan.queued.length === 0) return t('uiIndex.k30')
+        if (plan.queued.length === 0) {
+          // **R-9**：真机在这里印「没有可派发的任务卡（都已认领/完成）」，而实际上是 4 张 ready 卡
+          // 被**停止的子会话**留下的未结算派发冻着 ⇒ 回执必须点名「被谁冻着、冻了多久、怎么解」。
+          const frozen = plan.heldByDispatch ?? []
+          if (frozen.length > 0) {
+            return fmt('uiIndex.kDispatchFrozen', {
+              p1: String(frozen.length),
+              p2: frozen
+                .map((item) => fmt('uiIndex.kDispatchFrozenItem', {
+                  p1: item.taskId,
+                  p2: item.childSessionId.slice(0, 8),
+                  p3: String(item.minutes),
+                }))
+                .join(' '),
+              p3: String(settings.dispatchOrphanTtlMinutes),
+            })
+          }
+          return infeasibleBlock + t('uiIndex.k30')
+        }
         // 排队不是"没卡"，而是**被上限挡住**：必须说清是哪个池满，否则用户会以为流程卡住了
         const blocked = plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })).join('\n')
         return fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
@@ -928,6 +970,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const decision = pickBackend(preference, backendProbe(), lastBackend, iteration?.number)
       const take = Math.max(1, Math.min(args.limit ?? 1, plan.dispatch.length))
       const picked = plan.dispatch.slice(0, take)
+      // **R-5C（sdo-test-new 2026-10-08）**：被 `limit` 截掉的卡**既不在"已派发"也不在"排队"**里
+      // （它们已通过容量准入，只是这一轮没派）⇒ 回执里凭空消失。如实点名，并说明下次还会再挑。
+      const held = plan.dispatch.slice(take)
       const out: string[] = []
       for (const [index, entry] of picked.entries()) {
         const task = entry.task
@@ -1000,6 +1045,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
           maxDepth: settings.dispatchMaxDepth,
           ...(entry.reuseChildId === undefined ? {} : { reuseChildId: entry.reuseChildId }),
         })
+        if (held.length > 0) {
+          out.push(fmt('uiDescribe.kDispatchLimitHeld', {
+            p1: String(held.length),
+            p2: String(take),
+            p3: held.map((item) => item.task.id).join(' '),
+          }))
+        }
         if (plan.reuseSkipped.length > 0) {
           out.push(fmt('uiIndex.kReuseSkipped', {
             p1: String(plan.reuseSkipped.length),
@@ -1135,16 +1187,33 @@ export function apply(ctx: Context, config: SdoConfig): void {
             index: args.index - 1,
             outcome: args.outcome,
             evidence: args.proof ?? '',
-            by: args.actor ?? 'human',
+            by: args.actor ?? '',
+            // **R-19 A**：默认拒绝"再次核实"（真机：同一条发现先代核、后实现者核，视图静默留后写的那条）
+            ...(args.revise === true ? { revise: true } : {}),
           })
           if (!result.ok) return `${result.code}：${result.detail}`
-          return fmt('uiIndex.kReviewVerified', {
+          // **R-16**：不是实现者本人核的 ⇒ 如实标注"代核"+ 代核者的角色与局限（只复现/反证，不替作者处置）
+          const proxyNote = result.disposition.ownerChecked === 'session'
+            ? ''
+            : '\n' + fmt('uiIndex.kReviewProxyVerified', {
+                p1: result.disposition.ownerChecked,
+                p2: result.disposition.verifierRole ?? '?',
+                p3: result.disposition.roleMatch ?? 'unknown',
+                p4: args.id,
+              })
+          return proxyNote + fmt('uiIndex.kReviewVerified', {
             p1: args.review,
             p2: String(args.index),
             p3: result.disposition.outcome,
             p4: String(result.coverage.verified),
             p5: String(result.coverage.total),
             p6: result.adopted ? t('uiIndex.kReviewAdopted') : t('uiIndex.kReviewNotAdoptedYet'),
+          // **R-19 B**：回执直接印"核实者是谁 + 凭什么身份"，不必回读台账（真机 `by: human` 与
+          // `sessionId`/`ownerChecked: session` 自相矛盾，审计按 `by` 读会得出错误结论）
+          }) + '\n' + fmt('uiIndex.kReviewVerifierLine', {
+            p1: result.disposition.by,
+            p2: result.disposition.ownerChecked,
+            p3: result.disposition.roleMatch ?? 'unknown',
           })
         }
         case 'claim': {
@@ -1322,6 +1391,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // **SDO-57（C）**：证据自带**时点（at）+ 前置（env/被检产物）** ⇒ 限定语不再静默过期
             ...(args.env === undefined ? {} : { env: args.env }),
             ...(args.artifact === undefined ? {} : { artifact: args.artifact }),
+            // **R-3**：断言面指纹（红绿必须一致；不给就只按"出现过 fail、后有 pass"判，与旧行为一致）
+            ...(args.harness === undefined ? {} : { harness: args.harness }),
           })
           const stats = office.verification(call)
           // 记完这一条就把"时效"摆出来（只告警、不拦）：过期的证据与没记环境的结果都要被看见
@@ -1520,7 +1591,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const artifacts = jsonOr<{ path: string; kind?: string }[]>(args.artifacts, 'artifacts')
       if (artifacts.error !== undefined) return artifacts.error
       if ((artifacts.value ?? []).length === 0) return t('uiIndex.k52')
-      const acceptance = jsonOr<{ requirement: string; criterion: string; evidence: string; verdict?: string }[]>(args.acceptance, 'acceptance')
+      const acceptance = jsonOr<{ requirement: string; criterion: string; evidence: string; verdict?: string; deviation?: string }[]>(args.acceptance, 'acceptance')
       if (acceptance.error !== undefined) return acceptance.error
       if ((args.rollbackPoint ?? '').trim() === '') return t('uiIndex.k53')
       const result = office.packageDelivery(call, {
@@ -1540,6 +1611,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
           criterion: row.criterion,
           evidence: row.evidence,
           verdict: verdictOf(row.verdict),
+          // **R-21（连带）**：逐字段重建行时**必须带上 `deviation`** —— 否则 `pass-with-deviation`
+          // 到了域层就变成"缺偏差说明"，守卫会把如实声明偏差的行判红（真机就是这个形状）。
+          ...(typeof row.deviation === 'string' && row.deviation.trim() !== '' ? { deviation: row.deviation } : {}),
         })),
         rollbackPoint: args.rollbackPoint ?? '',
         runsRequired: (args.runsRequired ?? '').split(',').map((item) => item.trim()).filter((item) => item !== ''),
@@ -1553,9 +1627,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
       if (rewritten.length > 0) {
         lines.push(fmt('uiIndex.kAcceptanceVerdictRewritten', {
           p1: String(rewritten.length),
+          // **R-21**：合法取值从常量生成（手抄一份就是下一次漂移的来源）
           p2: rewritten.map((row) => `${row.requirement}:${row.verdict}→${verdictOf(row.verdict)}`).join(' '),
+          p3: ACCEPTANCE_VERDICTS.join('/'),
         }))
       }
+      // **R-22**：交付回执也必须把"带已知偏差通过"说出来（报告把这条标为未核实 —— 核实后：那边确实没有；
+      // 于是"交付文档里看得见、回执里看不见"，人最常看的那处仍然与干净通过长得一样）
+      const deviationNote = deviationsNote(result.manifest)
+      if (deviationNote !== undefined) lines.push(deviationNote)
       // **真机运行证据**：缺证据时交付回执必须**先**说这件事（它解释了下游为什么一片 unverified）
       for (const gap of result.manifest.runGaps) lines.push(fmt('uiIndex.kRunGap', { p1: gap }))
       // **SDO-57（C）**：交付回执必须摆出**证据时效**（过期 / 没记环境）—— 限定语过期的代价，
@@ -2695,13 +2775,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
 /**
  * 验收行的 `verdict` 取值（**SDO-41**）。
  *
- * 允许：`pass` / `fail` / `unverified` / `blocked` / `waived`。**其它一律归 `unverified`** ——
- * 真机上提交 `unverified` 被旧实现静默改写成 `pass`（框架主动生产假绿记录），
- * 所以原则是：**宁可说「未验证」，绝不默认「通过」**；被改写哪些行由回执逐行点名。
+ * 合法取值**只有一份**：`ACCEPTANCE_VERDICTS`（域层）—— **R-21（sdo-test-new 2026-10-08，major）**：
+ * 这里曾自己抄了一份枚举，R-15 新加的 `pass-with-deviation` 没跟上 ⇒ 行**在到达 `packageDelivery` 之前**
+ * 就被改写成 `unverified` ⇒ 新档位端到端不可用，而"缺 `deviation` 判红"那条守卫**永远不可达**。
+ * 现在从常量派生（与 R-20「描述 vs schema」同一类病的同一个治法）。
+ * 原则不变：**其它一律归 `unverified`**（宁可说「未验证」，绝不默认「通过」）；被改写哪些行由回执逐行点名。
  */
-function verdictOf(value: unknown): 'pass' | 'fail' | 'unverified' | 'blocked' | 'waived' {
+function verdictOf(value: unknown): AcceptanceVerdict {
   const text = String(value ?? '').trim()
-  return text === 'pass' || text === 'fail' || text === 'unverified' || text === 'blocked' || text === 'waived'
-    ? text
-    : 'unverified'
+  return (ACCEPTANCE_VERDICTS as readonly string[]).includes(text) ? (text as AcceptanceVerdict) : 'unverified'
 }
