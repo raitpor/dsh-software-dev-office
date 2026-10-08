@@ -17,6 +17,7 @@ import {
   artifactKindLabel,
   isMethodArtifactKind,
   methodArtifactFieldReport,
+  methodArtifactShapeProblems,
   methodLabel,
 } from '../domain/method.js'
 import type { MethodArtifactInput } from '../domain/method.js'
@@ -221,6 +222,27 @@ export function renderMethodStatus(office: SoftwareDevOffice, call: OfficeCall):
  *   ② 未知/被忽略字段**一律显式报出**；若这次提交**一个期望字段都没有**且盘上还没有该产物，
  *      直接**拒绝写入**（不落半成品）。
  */
+/**
+ * 统计这次提交里**没有稳定键（`name`）**的条目数。
+ *
+ * **SDO-11（2026-10-05 真机，高）**：`writeMethodArtifact` 是**合并**语义，条目 id 由
+ * `assignIds(...)` 分配 —— 只有带 `name` 的条目才能复用原 id；没有 name 的条目**每次重写都拿新号**、
+ * 旧条目也不会被删。真机实测：同一 kind 连写三次（前两次 schema 写错）⇒ 留下 MAP-015…MAP-042 共 28 条
+ * 垃圾，成为孤儿并直接卡住 G3（C-21 / C-2F），而且没有直观回退手段。所以写入时就地提示。
+ */
+function namelessEntryCount(body: unknown): number {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return 0
+  let count = 0
+  for (const value of Object.values(body as Record<string, unknown>)) {
+    if (!Array.isArray(value)) continue
+    for (const item of value) {
+      if (item === null || typeof item !== 'object' || Array.isArray(item)) continue
+      if (typeof (item as { name?: unknown }).name !== 'string') count += 1
+    }
+  }
+  return count
+}
+
 export function writeMethodArtifactReceipt(office: SoftwareDevOffice, call: OfficeCall, args: DesignArgs): string {
   const kind = (args.artifactKind ?? '').trim()
   if (!isMethodArtifactKind(kind)) {
@@ -257,16 +279,59 @@ export function writeMethodArtifactReceipt(office: SoftwareDevOffice, call: Offi
         })}`
     return `${fmt('uiMethod.artifactNoPayload', { p1: label, p2: fields.expected.join(' ') })}${suffix}`
   }
+  // **D-11（sdo-test-new 2026-10-08，minor）**：形状会让**内容丢失**时**拒写**（不写盘）。
+  // 旧实现照写 + 只在回执里告警，而 C-29（`rules.allowed` 为空即失败）读的正是这份形状 ⇒
+  // 调用方以为写成功了，直到判据变红才发现，期间还作废了 G3 签字。口径与 `sdo_plan action=profile`
+  // 统一：**校验不过 = 整次拒绝、不写盘**（只拦 `handling === 'empty'`，可无损收回的形状照旧放行）。
+  const lostShape = methodArtifactShapeProblems(kind as MethodArtifactKind, body as Record<string, unknown>)
+  if (lostShape.length > 0) {
+    return fmt('uiIndex.kMethodShapeRejected', {
+      p1: label,
+      p2: lostShape.map((note) => `${note.field}（${note.actualType}）`).join('、'),
+    })
+  }
+  // **F-5（sdo-test 报告，minor）**：方法产物的**列表字段是整列覆盖**（提交 `dictionary` 就替换整列），
+  // 此前描述与回执都不说，真机上「只想补 2 条」把既有 7 条覆盖掉了（原文只能在渲染出的文档里找回）。
+  // 现在：① 覆盖前**先留一份快照**（`evidence/file-history/`，与直接写 `.sdo/` 真源同一套口径）；
+  //       ② 回执写明"整列覆盖 N → M"与副本落点。行为不变，但不再静默。
+  const listFields = ['dictionary', 'levels', 'entities', 'relations', 'types', 'sequences', 'debts', 'decisions', 'increments', 'mappings', 'invariants'] as const
+  const before = office.methodArtifacts(call).find((item) => item.kind === kind)
+  const submitted = body as Record<string, unknown>
+  const beforeLists = (before ?? {}) as unknown as Record<string, unknown[] | undefined>
+  // **只在"这次提交会让某个列表变短"时才留副本**（只改 summary 不该留下无意义的快照）
+  const shrinking = listFields.filter((field) => {
+    const sent = submitted[field]
+    return Array.isArray(sent) && sent.length < (beforeLists[field]?.length ?? 0)
+  })
+  const snapshot = before === undefined || shrinking.length === 0
+    ? undefined
+    : office.snapshotTruthFile(call, `.sdo/design/method-${kind}.yml`)
   const staleBefore = office.staleConfirmations(call).map((item) => item.target)
   const artifact = office.writeMethodArtifact(call, kind as MethodArtifactKind, body)
-  const base = fmt('uiMethod.artifactOk', { p1: artifactKindLabel(kind), p2: String(artifactEntryCount(artifact)) })
+  const shrunk = shrinking
+    .map((field) => ({
+      field,
+      from: beforeLists[field]?.length ?? 0,
+      to: (artifact as unknown as Record<string, unknown[]>)[field]?.length ?? 0,
+    }))
+    .filter((item) => item.to < item.from)
+  const overwriteNote = shrunk.length === 0
+    ? ''
+    : '\n' + fmt('uiMethod.artifactWholeListOverwrite', {
+        p1: shrunk.map((item) => `${item.field} ${item.from} → ${item.to}`).join('、'),
+        p2: snapshot ?? t('uiMethod.artifactSnapshotUnavailable'),
+      })
+  const base = fmt('uiMethod.artifactOk', { p1: artifactKindLabel(kind), p2: String(artifactEntryCount(artifact)) }) + overwriteNote
+  // SDO-11：没有稳定 key 的条目**每次重写都会分配新 id 且旧条目不删** —— 当场说清后果与处置
+  const nameless = namelessEntryCount(body)
+  const namelessNote = nameless === 0 ? '' : `\n${fmt('uiMethod.artifactNoStableKey', { p1: String(nameless) })}`
   // F-19：写入动作不该默默略过失效状态 —— 这次提交前后新失效的确认戳一并点名
   //（方法产物本身不在关键条目清单里，所以这里通常是空段；空段不产生多余空行）
   const invalidated = renderInvalidatedConfirmations(office, call, staleBefore)
   const withInvalidated = invalidated === '' ? base : `${base}\n\n${invalidated}`
   // F-21：方法产物的形状提示（`collaborators: repo` 这类手写）必须在写入回执里点名
   const shape = shapeNoteBlock(office.shapeNotes(call))
-  const withShape = shape.length === 0 ? withInvalidated : `${withInvalidated}\n${shape.join('\n')}`
+  const withShape = (shape.length === 0 ? withInvalidated : `${withInvalidated}\n${shape.join('\n')}`) + namelessNote
   if (ignored.length === 0) return withShape
   return `${withShape} ${fmt('uiMethod.artifactIgnoredSuffix', {
     p1: ignored.join(' '),
@@ -381,11 +446,16 @@ export function designInteraction(office: SoftwareDevOffice, call: OfficeCall, a
     if (!gaps.required.includes(target)) {
       return fmt('uiDesign.uiConfirmUnknown', { p1: target })
     }
-    const basis = args.note ?? args.reason ?? t('uiDesign.uiConfirmDefaultBasis')
-    const confirmed = office.confirmDesign(call, target, basis, args.by ?? 'human')
+    // **SDO-25（2026-10-05 真机）**：调用方写 `basis=` 时旧实现**只读 `note`/`reason`** ⇒ 用户授权的
+    // 原话被丢弃、事件里留下工具自己的「用户在会话中确认」（历史不可改写，回执与真源不符）。
+    // 现在三者的优先级：`basis`（显式授权原话）> `note` > `reason` > 默认文案。
+    const basis = args.basis ?? args.note ?? args.reason ?? t('uiDesign.uiConfirmDefaultBasis')
+    // **SDO-48**：代盖必须自报（`basisSource=proxy`）；否则真源里会留下「用户在会话中确认」这种与事实相反的措辞
+    const basisSource = args.basisSource === 'proxy' ? ('proxy' as const) : ('user' as const)
+    const confirmed = office.confirmDesign(call, target, basis, args.by ?? 'human', basisSource)
     // Y-1：目标在当前真源里解析不出内容 → **拒绝写入**，如实报告（不再谎报"已确认"）
     if (confirmed === undefined) return fmt('uiDesign.uiConfirmUnresolvable', { p1: target })
-    const ok = fmt('uiDesign.uiConfirmOk', { p1: target, p2: basis })
+    const ok = fmt('uiDesign.uiConfirmOk', { p1: target, p2: basis }) + (basisSource === 'proxy' ? '\n' + t('uiDesign.uiConfirmProxy') : '')
     // F-19：确认一条之后，仍**因内容变更**而失效的条目要接着列出来 ——
     // 只报"这条确认好了"会让用户以为整批都干净了。
     const remaining = renderInvalidatedConfirmations(office, call)

@@ -41,6 +41,23 @@ export interface ChildFaceEntry {
 }
 
 /** 记一条观测（append-only）。 */
+/**
+ * **声明的工具面 vs 宿主实际给的面**（SDO-53：公告清单 ≠ 实际可调）。
+ *
+ * 真机上两个方向都出现过：**公告多于实际**（子代理自报 10 个，同一派发公告 12 个）与
+ * **掩码外仍可调**（靠 B6 钩子兜底拦下）。这里不做猜测，只把差集摆出来：
+ * `missing` = 我们声明了、子代理却没拿到（能力静默缺失，`read_image` 那次就是）；`extra` = 子代理拿到了
+ * 我们没声明的（收窄没生效，安全面）。
+ */
+export function faceDiff(declared: readonly string[], observed: readonly string[]): { missing: string[]; extra: string[] } {
+  const want = new Set(declared)
+  const have = new Set(observed)
+  return {
+    missing: [...want].filter((name) => !have.has(name)).sort(),
+    extra: [...have].filter((name) => !want.has(name)).sort(),
+  }
+}
+
 export function recordChildFace(store: SdoStore, entry: Omit<ChildFaceEntry, 'at'> & { at?: string | undefined }): ChildFaceEntry {
   const full: ChildFaceEntry = { ...entry, at: entry.at ?? new Date().toISOString() }
   store.appendLine([...CHILD_FACE_SEGMENTS], JSON.stringify(full) + '\n')
