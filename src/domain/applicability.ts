@@ -30,7 +30,7 @@ import type {
   ViewKind,
 } from '../types.js'
 import { fmt, t } from './i18n.js'
-import { listMethodArtifacts } from './method.js'
+import { diffVerifyGaps, listMethodArtifacts } from './method.js'
 
 /** 声明文件（`.sdo/design/applicability.yml`）。 */
 export const APPLICABILITY_FILE = 'applicability.yml'
@@ -328,7 +328,8 @@ export function applicabilityState(store: SdoStore, app: DesignApplicability | u
   )
   for (const kind of both) problems.push(fmt('uiApplicability.viewBoth', { p1: viewLabel(kind) }))
   // "显式二选一"的硬要求只覆盖**五视图**：`ui` 是否适用由 `uiDecision`（需求真源）与 C-27 现算，
-  // 声明里写或不写都不改变那条判据（与 `viewRules` 同一口径）。
+  // 但声明里一旦写了 `ui` 就必须与真源**方向一致**（§3.2：`design.views` 两个方向都判 ——
+  // "说不做界面"遇上 `surfaces:[web]` 一样判红，不能再靠 N/A 绕过）。
   const undeclared = VIEW_KINDS.filter(
     (kind) => !app.viewsPresent.includes(kind) && !app.viewsAbsent.some((item) => item.kind === kind),
   )
@@ -370,7 +371,7 @@ export interface ViewRule {
  * **只展开五视图**：`ui` 在声明里是「界面视图适用」的陈述，它是否齐备由 C-27 现算
  * （`uiDecision` + `uiConfirmation`），不在这里重复判一次（否则 C-20 会去五视图仓库里找 ui）。
  * 但"声明了却无人检查"是另一个洞 —— `design.views` 会另外比对声明里的 `ui` 与
- * `uiDecision`（Y-4），两侧口径因此不再分叉。
+ * `uiDecision`（Y-4 + §3.2：**两个方向**都比，`present ⟺ hasUi`），两侧口径因此不再分叉。
  *
  * M7：自相矛盾（既 present 又 absent）的视图**不再静默取 present** ——
  * 返回 `conflict: true`，`design.views` 据此判红（`applicabilityState` 也会报结构问题）。
@@ -449,8 +450,11 @@ export function confirmationComplete(confirmed: ApplicabilityConfirmation | unde
  *   · `mapping`    → 映射非空，且每条 `from` / `to` / `rewrite` 非空；
  *   · `diffVerify` → 策略存在，且 `sameInputSameOutput` 与 `baselineSource` 非空。
  *
- * 返回未齐备的工件种类（空数组 = 齐备）。`porting` 包的**同类**检查更严（还查替代方案、
- * 模块引用真实性、基线来源取值），两条判据各自独立成立、互不放松。
+ * 返回未齐备的工件种类（空数组 = 齐备）。
+ *
+ * **§3.3（第二轮评审）**：`diffVerify` 的判据以前与 `porting` 包**两套实现**（这里只查两个字段非空，
+ * 那边还查枚举取值 / `baselineRef` / `controlRepo`），而注释却自称"互不放松" —— 事实上是这里更松。
+ * 现在两边**共用** `diffVerifyGaps`（`method.ts`）。`porting` 包另有替代方案与模块引用的检查，那些仍是它独有的。
  */
 export function missingArtifacts(app: DesignApplicability, store: SdoStore): string[] {
   const missing: string[] = []
@@ -473,10 +477,9 @@ export function missingArtifacts(app: DesignApplicability, store: SdoStore): str
       continue
     }
     if (kind === 'diffVerify') {
-      const strategy = artifact?.diffVerify
-      if (strategy === undefined || textOf(strategy.sameInputSameOutput).trim() === '' || textOf(strategy.baselineSource).trim() === '') {
-        missing.push(kind)
-      }
+      // **§3.3**：与 porting 包**共用同一份判据**（枚举取值、`baselineRef`、`controlRepo` 一并查）——
+      // 旧实现只查两个字段非空，`baselineSource: '我的直觉'` + `baselineRef: ''` 会被放过。
+      if (diffVerifyGaps(artifact?.diffVerify).length > 0) missing.push(kind)
     }
   }
   return missing

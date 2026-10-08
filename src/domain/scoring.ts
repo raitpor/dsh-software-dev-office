@@ -221,3 +221,21 @@ export function weakestDimensions(ambiguity: Ambiguity, limit = 3): Dimension[] 
     .sort((a, b) => (ambiguity.dimensions[a] ?? 0) - (ambiguity.dimensions[b] ?? 0) || a.localeCompare(b))
     .slice(0, limit)
 }
+
+/**
+ * **D-2（sdo-test-new 2026-10-08，major）**：这条需求里**是否真的存在**该维度的关注点。
+ *
+ * 真机症状：`REQ-001`（「CLI 侧产出逐字节一致的报告输出」）既无时延也无上游，却被问
+ * 「多少毫秒 / P99」与「上游超时或返回脏数据怎么办」——答复还被记在 `REQ-001` 名下。
+ * 根因：`selectQuestions` 只按"这条需求在这个维度上分最低"选题，**从不看需求正文**；
+ * 而"分低"恰恰等于"没有该关注点"——于是最缺什么就问什么，包括**根本不存在**的关注点。
+ *
+ * 口径：只对**关注点必须来自需求自身内容**的两个维度设闸（`interface`/`constraint`）。
+ * 其余维度（`user`/`scenario`/`data`/`boundary`/`acceptance`…）问"谁关心/怎么兜底"永远是合理的，
+ * 即使正文没写 —— 所以**不设闸**（不把闸门泛化成"正文没写就不许问"）。
+ */
+export function concernApplies(dimension: Dimension, text: string): boolean {
+  if (dimension === 'constraint') return KEYWORDS.constraint.test(text)
+  if (dimension === 'interface') return KEYWORDS.iface.test(text)
+  return true
+}

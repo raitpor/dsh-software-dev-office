@@ -67,11 +67,11 @@ phases:
 rollback:
   architecture: [requirements]
   design-plan: [architecture, requirements]
-  construction: [design-plan, architecture]
-  verification: [construction]
-  # 终止阶段（交付后重开）：可「重新验证」，也可一步「重新设计」。
-  # 未列入 requirements —— 改需求走 `sdo_requirement action=change` 的变更控制，不靠回退绕行。
-  delivery: [verification, architecture]
+  construction: [design-plan, architecture, requirements]
+  verification: [construction, requirements]
+  # 终止阶段（交付后重开）：可「重新验证」、可一步「重新设计」，也可按需求变更回到需求阶段（语义 A 的自动回退目标）。
+  # 需求变更（`sdo_requirement action=change` 批准）会**强制回退到 requirements**：更新需求 → 重签 G2 → 重走设计过 G3 才能继续开发。
+  delivery: [verification, architecture, requirements]
 gates:
   - id: G0
     name: 立项门禁
@@ -127,12 +127,14 @@ gates:
       - { id: C-30, check: "design.contracts", desc: "契约齐备" }
       - { id: C-31, check: "plan.tasks", desc: "任务卡齐备" }
       - { id: C-32, check: "plan.testplan", desc: "测试计划覆盖 must REQ" }
+      - { id: C-33, check: "construction.profile-decided", desc: "实现阶段方法包已决定（模型自选、依据可核对；显式不选包时 N/A + 理由）" }
   - id: G5
     name: 开发完成门禁
     criteria:
       - { id: C-40, check: "tasks.all_done", desc: "全部任务卡完成" }
       - { id: C-41, check: "trace.coverage", desc: "追溯覆盖率达标" }
       - { id: C-42, check: "review.required", desc: "中大卡（size ≥ medium）在完成前已通过评审" }
+      - { id: C-43, check: "construction.packages-satisfied", desc: "范围内已完成卡满足所选方法包（红→绿 / 变异 / 契约测试 / 契约先冻结）" }
   - id: G6
     name: 验证门禁
     criteria:

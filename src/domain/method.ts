@@ -17,11 +17,11 @@ import { readdirSync } from 'node:fs'
 import { join } from 'node:path'
 
 import { nextId } from '../infra/ids.js'
-import { boolField, pushShapeNote, recordListOf, recordOf, textListOf, textMapOf, textOf, typeNameOf } from '../infra/scalar.js'
+import { boolField, looseRecordListOf, pushShapeNote, recordListOf, recordOf, textListOf, textMapOf, textOf, typeNameOf } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
-import { DIFF_BASELINE_SOURCES, METHOD_ARTIFACT_KINDS, METHOD_CHOICES, METHOD_IDS } from '../types.js'
+import { DIFF_BASELINE_SOURCES, METHOD_ARTIFACT_KINDS, METHOD_CHOICES, METHOD_IDS, DiffVerifyStrategy} from '../types.js'
 import type {
   DataDictionaryItem,
   DebtItem,
@@ -93,16 +93,54 @@ function methodAliases(): { id: MethodChoice; words: string[] }[] {
 export function parseMethodChoice(raw: string | null | undefined): MethodChoice[] | undefined {
   const text = (raw ?? '').trim().toLowerCase()
   if (text === '') return undefined
-  const tokens = text.split(/[^a-z0-9]+/u)
+  // **SDO-10（真机）**：旧实现是「整段答案里**出现**别名即选中」—— 备注里写「否决了 X 与 Y」会把 X、Y 也选上。
+  // 现在只认两种**显式**写法：① 整段就是一个/多个选项标记（ASCII 词全部可识别，或很短的中文别名）；
+  // ② 有明确的选择引导词（选择/选定/选中/采用/option/selected）。散文里提到别名 ⇒ **不算选中**（返回 undefined，
+  // 让调用方必须显式答复），这样"写备注顺手提及被否方案"不会再被读成选择。
+  const exact = matchChoiceTokens(text)
+  if (exact !== undefined) return exact
+  // 选项原文形态：`结构化 structured（数据字典…）（代价：…）｜备注：…` —— 取**开头那一段**（到括号/竖线前），
+  // 但开头若出现否定词（否决/不要/排除…）则不算选中（真机缺陷正是"备注里提了被否方案"被读成选择）。
+  const head = text.split(/[｜|（(。;；]/u)[0] ?? ''
+  if (head.length <= 40 && !/(否决|不要|不选|排除|不考虑|not|reject|without)/u.test(head)) {
+    const leading = matchChoiceTokens(head)
+    if (leading !== undefined) return leading
+  }
+  const marked = /(?:选择|选定|选中|采用|option|selected?)\s*[:：]?\s*([^\n。;；]+)/u.exec(text)
+  if (marked?.[1] !== undefined) return matchChoiceTokens(marked[1])
+  return undefined
+}
+
+/** 整段文本是否"就是一个/多个选项标记"（有任何无法识别的词 ⇒ 不是）。 */
+function matchChoiceTokens(text: string): MethodChoice[] | undefined {
+  const tokens = text.split(/[^a-z0-9]+/u).filter((token) => token !== '')
   const found = new Set<MethodChoice>()
-  for (const alias of methodAliases()) {
-    for (const word of alias.words) {
-      if (word === '') continue
-      const wholeWord = /^[a-z0-9]+$/u.test(word) && word.length <= 4
-      if (wholeWord ? tokens.includes(word) : text.includes(word)) found.add(alias.id)
+  let unknown = 0
+  for (const token of tokens) {
+    let hit = false
+    for (const alias of methodAliases()) {
+      if (alias.words.some((word) => word !== '' && word === token)) {
+        found.add(alias.id)
+        hit = true
+      }
+    }
+    if (!hit) unknown += 1
+  }
+  // 中文别名不走 token（会被分词丢）：整段很短且含中文别名时才算"就是它"
+  if (found.size === 0 && text.length <= 12) {
+    for (const alias of methodAliases()) {
+      if (alias.words.some((word) => word !== '' && !/^[a-z0-9]+$/u.test(word) && text.includes(word))) found.add(alias.id)
     }
   }
-  if (found.size === 0) return undefined
+  // **散文必须被识别为"散文"**：ASCII 之外的残留（中文备注等）在分词时会被丢掉，于是
+  // 「备注：我们否决了 structured 与 oo」曾照样被读成选中。这里把**已识别的别名**全部抹掉，
+  // 剩下的若还有任何字符（不含标点/空白/数字）⇒ 说明这段文本不只是"选项标记"，判 undefined。
+  let residue = text
+  for (const alias of methodAliases()) {
+    for (const word of alias.words) if (word !== '') residue = residue.split(word).join('')
+  }
+  residue = residue.replace(/[^0-9a-z\u4e00-\u9fff]+/gu, '').replace(/[0-9]+/gu, '')
+  if (found.size === 0 || unknown > 0 || residue !== '') return undefined
   if (found.has('none') && found.size > 1) return undefined
   return METHOD_CHOICES.filter((choice) => found.has(choice))
 }
@@ -363,12 +401,13 @@ function normalizeMethodArtifact(
     artifact.levels = levels.map((level, index) => {
       const normalized = normalizeRow({ ...level, name: textOf(level.name) }, 'levels', index, [], notes, id)
       const flows = level.flows === undefined ? undefined : (() => {
-        const read = recordListOf<DfdFlow>(level.flows, (text) => ({ name: text, from: '', to: '' }))
+        // **D-9**：流名列表（一串字符串）是合法写法，用宽容读法收回（旧写法把它读成空列表 + 误报形状问题）
+        const read = looseRecordListOf<DfdFlow>(level.flows, (text) => ({ name: text, from: '', to: '' }))
         pushShapeNote(notes, 'methodArtifact', id, `levels[${index}].flows`, read.issue)
         return read.value.map((flow) => ({ name: textOf(flow.name), from: textOf(flow.from), to: textOf(flow.to) }))
       })()
       const internalFlows = level.internalFlows === undefined ? undefined : (() => {
-        const read = recordListOf<DfdFlow>(level.internalFlows, (text) => ({ name: text, from: '', to: '' }))
+        const read = looseRecordListOf<DfdFlow>(level.internalFlows, (text) => ({ name: text, from: '', to: '' }))
         pushShapeNote(notes, 'methodArtifact', id, `levels[${index}].internalFlows`, read.issue)
         return read.value.map((flow) => ({ name: textOf(flow.name), from: textOf(flow.from), to: textOf(flow.to) }))
       })()
@@ -614,6 +653,21 @@ export function readMethodArtifact(store: SdoStore, kind: MethodArtifactKind): M
 }
 
 /**
+ * **D-11（sdo-test-new 2026-10-08，minor）**：把"这次提交的正文"按**同一条读路径**跑一遍，
+ * 只收集**会把内容读成空**的形状问题（不写盘、不猜语义）。
+ *
+ * 用途：写入边界的前置校验 —— 与 `sdo_plan action=profile` 同一口径（校验不过就整次拒绝、不写盘）。
+ * 真机症状：`rules.allowed` 写成映射时插件**照写**（只在回执里告警），而 C-29 读同一份形状判红
+ * ⇒ 调用方带着一份"能过语法、过不了判据"的产物继续往下走，还平白作废了 G3 签字。
+ * 只拦 `handling === 'empty'`：**内容会丢**才拒写；"标量当成单元素"这类可无损收回的形状照旧放行。
+ */
+export function methodArtifactShapeProblems(kind: MethodArtifactKind, body: Record<string, unknown>): FieldShapeNote[] {
+  const notes: FieldShapeNote[] = []
+  normalizeMethodArtifact({ ...body, kind }, kind, `method-${kind}`, notes)
+  return notes.filter((note) => note.handling === 'empty')
+}
+
+/**
  * 读方法快照并**做形状归一化**：`methods` 是列表位置（`selection.methods.includes` 会用到）。
  */
 export function readMethodSnapshotChecked(
@@ -673,12 +727,14 @@ export function listMethodArtifacts(store: SdoStore): MethodArtifact[] {
 export function artifactEntryCount(artifact: MethodArtifact): number {
   return (
     (artifact.dictionary?.length ?? 0)
-    + (artifact.levels?.reduce((sum, level) => sum + level.processes.length, 0) ?? 0)
+    + (artifact.levels?.reduce((sum, level) => sum + (Array.isArray(level.processes) ? level.processes.length : 0), 0) ?? 0)
     + (artifact.entities?.length ?? 0)
     + (artifact.relations?.length ?? 0)
     + (artifact.types?.length ?? 0)
     + (artifact.sequences?.length ?? 0)
-    + (artifact.rules === undefined ? 0 : artifact.rules.allowed.length)
+    // **D-10**：这是全函数里唯一没有 `Array.isArray`/`?? 0` 保护的计数 —— 映射形状下取 `.length`
+    // 得到 `undefined`，加起来是 **NaN**（真机回执「（NaN 条）」、journal 里 `entries: null`）。
+    + (Array.isArray(artifact.rules?.allowed) ? artifact.rules.allowed.length : 0)
     + (artifact.debts?.length ?? 0)
     + (artifact.decisions?.length ?? 0)
     + (artifact.increments?.length ?? 0)
@@ -1321,22 +1377,9 @@ function checkPorting(artifacts: Map<MethodArtifactKind, MethodArtifact>, module
     }
   }
 
-  // ③ 差分验证策略（必须给出可比对的基线来源）
-  const diffArtifact = artifacts.get('diffVerify')
-  const strategy = diffArtifact?.diffVerify
-  if (diffArtifact === undefined || strategy === undefined) {
-    missing.push(productLabel('diffVerify'))
-  } else {
-    if (!nonEmpty(strategy.sameInputSameOutput)) missing.push(t('uiMethod.diffNoSameInput'))
-    const source = textOf(strategy.baselineSource).trim()
-    if (!(DIFF_BASELINE_SOURCES as readonly string[]).includes(source)) {
-      missing.push(fmt('uiMethod.diffBadBaselineSource', { p1: source }))
-    }
-    if (!nonEmpty(strategy.baselineRef)) missing.push(t('uiMethod.diffNoBaselineRef'))
-    if (source === 'upstream-branch' && !nonEmpty(strategy.controlRepo)) {
-      missing.push(t('uiMethod.diffUpstreamNoRepo'))
-    }
-  }
+  // ③ 差分验证策略（判据见 `diffVerifyGaps` —— **与设计适用性侧共用同一份**，两侧不许松紧不一）
+  const diffGaps = diffVerifyGaps(artifacts.get('diffVerify')?.diffVerify)
+  for (const gap of diffGaps) missing.push(gap)
   return { missing, exemptions: [] }
 }
 
@@ -1728,4 +1771,25 @@ export function methodLabel(id: MethodId): string {
 /** 一个产物的可读种类名（收据/文档用）。 */
 export function artifactKindLabel(kind: MethodArtifactKind): string {
   return productLabel(kind)
+}
+
+/**
+ * **差分验证策略的判据**（§3.3，第二轮评审 HIGH）。
+ *
+ * 病根：同一条判据有**两套实现** —— 这里（porting 包）查 `baselineSource` 的**枚举取值**、`baselineRef`、
+ * `controlRepo`；而设计适用性侧（`missingArtifacts`）只查两个字段**非空**，文件头却自称"两条判据…互不放松"。
+ * 真机复现：`baselineSource: '我的直觉'` + `baselineRef: ''` ⇒ 适用性侧 `missingArtifacts = []`（放过）。
+ * 现在只有**这一份**判据，两侧都调它。
+ */
+export function diffVerifyGaps(strategy: DiffVerifyStrategy | undefined): string[] {
+  if (strategy === undefined) return [productLabel('diffVerify')]
+  const gaps: string[] = []
+  if (!nonEmpty(strategy.sameInputSameOutput)) gaps.push(t('uiMethod.diffNoSameInput'))
+  const source = textOf(strategy.baselineSource).trim()
+  if (!(DIFF_BASELINE_SOURCES as readonly string[]).includes(source)) {
+    gaps.push(fmt('uiMethod.diffBadBaselineSource', { p1: source }))
+  }
+  if (!nonEmpty(strategy.baselineRef)) gaps.push(t('uiMethod.diffNoBaselineRef'))
+  if (source === 'upstream-branch' && !nonEmpty(strategy.controlRepo)) gaps.push(t('uiMethod.diffUpstreamNoRepo'))
+  return gaps
 }

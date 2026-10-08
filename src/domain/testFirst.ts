@@ -10,7 +10,9 @@
  *   · 卡上没有需求（`requirements` 为空，例如纯工程整治卡）：没有可对应的验收标准；
  *   · 用例的 `requirement` 字段留空：本判据只看"有没有对应该需求的用例"，不猜。
  */
+import { fmt } from './i18n.js'
 import { listTestCases, listTestResults } from './records.js'
+import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { SdoProject, TaskCard } from '../types.js'
 
@@ -20,6 +22,8 @@ export type TestFirstGap =
   | { kind: 'failing'; requirement: string }
   /** 有用例、也有结果，但结果是 `skip` 而**没写理由** —— 这不是"没跑"，是"没说明"，文案必须分开。 */
   | { kind: 'skip-unjustified'; requirement: string }
+  /** 结果文件在 journal 里**没有对应事件**（手写/伪造）：`.sdo/tests/results/*.yml` 可手改，这是唯一的来源凭据。 */
+  | { kind: 'untraceable'; ids: string[] }
 
 /** 项目规模（`trivial` 档豁免本判据）。读不到就按 `normal` 处理（更严，不放过）。 */
 export function projectScale(store: SdoStore): string {
@@ -33,13 +37,26 @@ export function projectScale(store: SdoStore): string {
  *
  * @param phase `claim`：只要求"有用例计划"；`done`：还要求"有结果"（pass，或 skip + 非空理由）
  */
-export function testFirstGaps(store: SdoStore, task: TaskCard, phase: 'claim' | 'done'): TestFirstGap[] {
+export function testFirstGaps(store: SdoStore, task: TaskCard, phase: 'claim' | 'done', journal: Journal): TestFirstGap[] {
   if (projectScale(store) === 'trivial') return []
   const requirements = task.requirements.map((item) => String(item)).filter((item) => item !== '')
   if (requirements.length === 0) return []
   const cases = listTestCases(store)
   const results = listTestResults(store)
   const gaps: TestFirstGap[] = []
+  // **来源核对**（与 `redGreenGaps` 同一道，评审建议 1）：`recordTestResult` 文件与 journal 两处都写；
+  // 只有文件、没有事件的结果**不算数**。只核对**本卡用例**的结果，不牵连无关卡。
+  if (phase === 'done') {
+    const caseIds = new Set(cases.filter((item) => requirements.includes(String(item.requirement))).map((item) => item.id))
+    const traceable = new Set(
+      journal
+        .read()
+        .events.filter((event) => event.type === 'test/recorded' && String(event.data.caseId ?? '') !== '')
+        .map((event) => String(event.data.id ?? '')),
+    )
+    const untraceable = results.filter((item) => caseIds.has(item.caseId) && !traceable.has(item.id)).map((item) => item.id)
+    if (untraceable.length > 0) gaps.push({ kind: 'untraceable', ids: untraceable })
+  }
   for (const requirement of requirements) {
     const mine = cases.filter((item) => item.requirement === requirement)
     if (mine.length === 0) {
@@ -68,7 +85,9 @@ export function describeTestFirstGaps(taskId: string, phase: 'claim' | 'done', g
   const noResult = gaps.filter((gap) => gap.kind === 'no-result').map((gap) => gap.requirement)
   const failing = gaps.filter((gap) => gap.kind === 'failing').map((gap) => gap.requirement)
   const unjustifiedSkip = gaps.filter((gap) => gap.kind === 'skip-unjustified').map((gap) => gap.requirement)
+  const untraceable = gaps.flatMap((gap) => (gap.kind === 'untraceable' ? gap.ids : []))
   const parts: string[] = []
+  if (untraceable.length > 0) parts.push(fmt('uiTestFirst.kUntraceable', { p1: untraceable.join(' ') }))
   if (noCase.length > 0) parts.push('这些需求还没有用例计划：' + noCase.join('、') + '（先 sdo_test action=plan）')
   if (noResult.length > 0) parts.push('这些需求的用例还没跑出结果：' + noResult.join('、') + '（跑 sdo_test action=record）')
   if (failing.length > 0) parts.push('这些需求的用例结果是 fail：' + failing.join('、') + '（修好重跑）')

@@ -56,9 +56,9 @@ rollback:
   iteration: [architecture, requirements]
   release: [iteration]
   # 终止阶段（交付后重开）：agile 无 verification/design-plan 阶段名，
-  # 等价语义 = 「重新验证」→ release（其出口门禁是发布前门 G6）、「重新设计」→ architecture。
-  # 未列入 requirements —— 改需求走 `sdo_requirement action=change` 的变更控制，不靠回退绕行。
-  delivery: [release, architecture]
+  # 等价语义 = 「重新验证」→ release（其出口门禁是发布前门 G6）、「重新设计」→ architecture、需求变更 → requirements。
+  # 需求变更（`sdo_requirement action=change` 批准）会**强制回退到 requirements**：更新需求 → 重签 G2 → 重走设计过 G3 才能继续开发。
+  delivery: [release, architecture, requirements]
 gates:
   - id: G0
     name: 立项门禁
@@ -108,6 +108,8 @@ gates:
       - { id: C-80, check: "iteration.increment", desc: "本迭代产出可运行增量" }
       - { id: C-81, check: "iteration.dod", desc: "本迭代任务卡全部完成且带证据" }
       - { id: C-82, check: "review.independent", desc: "评审独立性" }
+      - { id: C-83, check: "construction.profile-decided", desc: "实现阶段方法包已决定（无 construction 阶段 ⇒ 在迭代门上要求）" }
+      - { id: C-84, check: "construction.packages-satisfied", desc: "范围内已完成卡满足所选方法包（同 C-43 口径）" }
   - id: G6
     name: 发布前门
     criteria:
