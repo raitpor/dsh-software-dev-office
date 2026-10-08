@@ -1,6 +1,39 @@
 # dsh-software-dev-office（SDO）
 
-> **一个 agent software dev office**：在同一个会话里，把「可行性 → 需求 → 架构 → 拆分 → 实现 → 测试 → 交付」按**门禁**推进；每一步的判据结论、证据、签字都落在可复算的台账里。
+> **一个 agent software dev office**：在同一个会话里，把「可行性 → 需求 → 架构 → 拆分 → 实现 → 测试 → 交付」
+### 9.1b 实现阶段方法包（增量 3）
+
+进**构造阶段**（`construction`；敏捷/螺旋在 `iteration` 里构造）后，**先让流程官决定方法包**，否则**不给认领**：
+
+```text
+sdo_plan action=profile packages='["tdd","contract-first"]' derivedFrom='["reqKind=functional(REQ-001)","contractCount=12"]' \
+                          reason="12 个契约已冻结，普通规模"        # scope 省略 = all；exempt='[{...}]' 逐项豁免
+```
+
+- **模型自选，不问用户**；但 `derivedFrom` **至少一条要能被机械核对**（`reqKind=<kind>(<REQ-id>)` 比对需求台账、
+  `contractCount=<n>` 比对契约数、`scale=<档位>` 比对 `.sdo/config.yml`），校验不过**整次拒绝、不写盘**。
+- **显式不选任何包**（`packages='[]'` + `reason`）是合法的 N/A：判据 N/A，但理由要留下。
+- **哪些会被拦**（开工关 = `claim`）：构造阶段没有 profile → `construction-profile-missing`；
+  选了 `contract-first` 而卡所涉契约**没先冻结** → `contract-not-frozen`。
+- **收工关 = `done`**：`tdd` 要求该卡覆盖的每条需求**先 fail 后 pass**（读 `.sdo/tests/results/TR-*.yml`，与 C7 同源）；
+  `critical` 档位还要**变异自证**（`.sdo/construction/tdd.yml` 里 `killed ≥ 1`）；`contract-first` 要有**契约测试记录**（`.sdo/construction/contract-first.yml`）。
+- **变异记录的 `target` 建议写清**（可空、**不判红**）：只写「用某工具杀了 ≥1 个变异」而没说**改了什么**，复核者没法跟着复跑；回执会在 `target` 为空时提示一句。另需知道：`killed`/`survived` 是**自报数**（插件无法独立验证），证据强度取决于谁在做、以及 `target` 是否写得可复跑。
+- **怎么记交付物**（可选，也可直接手写这两份 yml）：
+  ```text
+  sdo_test action=record mutation='{"task":"TASK-004","tool":"node --test","target":"lib/x.js","killed":3,"survived":0}'
+  sdo_test action=record contractTest='{"task":"TASK-005","contract":"CT-003","tool":"node --test","cmd":"node --test test/ct003.test.js"}'
+  ```
+  契约 id 必须在台账里存在（否则**整次拒收、不写盘**）；`killed = 0` 也允许落盘（"变异没杀掉"是有价值的事实，判据自己会判）。
+- **结果文件的来源会被核对**：C7 与红→绿时序都读 `.sdo/tests/results/TR-*.yml`，但**文件必须在 journal 里有对应 `test/recorded` 事件** —— 只有文件、没有事件的记录判 `tdd-result-untraceable`（堵住「手写结果文件」这条伪造路）。两条路径用的是同一道核对。
+- **交付物只落"无法现算"的事实**：红→绿时序、契约冻结序号都从既有真源现算，不另存一份；
+  `.sdo/construction/*.yml` 可手写，也可由既有工具写入（`sdo_test` 的扩展见增量 3 设计文档第 6 步）。
+- **复议**：随时可再调 `action=profile`（覆盖选择，把**被覆盖的那次**记进 `history`）；**已完成的卡不追溯判红**。
+- **升级影响**：正在构造阶段的项目需要先跑一次 `action=profile`（或显式 `packages='[]'` 表明不启用）；已过 G4/G5 的不追溯。
+- **门禁判据**：顺序流程（waterfall/prototype/spiral）在 **G4** 加 `C-33`（方法包已决定）、**G5** 加 `C-43`（范围内已完成卡满足所选包）；
+  **agile 没有 construction 阶段**（构造发生在迭代里）⇒ 两条挂在迭代门 **GI**（`C-83`/`C-84`）。显式不选包时两条都是 **N/A**（不计入全绿分子）。
+  复议本身不追溯，但要放过历史卡请写**豁免**（`exempt: [{task, check, why}]`，理由必填、且会被判据点名）。
+
+按**门禁**推进；每一步的判据结论、证据、签字都落在可复算的台账里。
 > 基于 **dsh `0.2.0`**（deepseek-harness 原生 Cordis 插件）。覆盖到「可部署产物 + 验收矩阵 + 回滚点」为止，**发布与运维不是它的范围**。
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
@@ -106,8 +139,9 @@ SDO：G2 需求基线门禁 ✅（需求冻结为 v0.2）
 | **架构** | "开始架构设计" | 先**计划评审**（通过后由 `exit_plan_mode` 结束）→ `sdo_design action=create`（五视图 / 界面视图）→ `action=contract` → `sdo_adr action=record` → `sdo_quality action=scenario` → `action=artifact`（按所选方法包补齐最小必产项）→ `sdo_trace action=link` → `G3` |
 | **详细设计与计划** | "拆任务" | `sdo_plan action=decompose`（结构通道按追溯图 + 模型通道吃建议；每元素一张卡；六条机械校验：单角色 / DoD / 无环 / 规模 / 写范围互斥 / 证据要求）→ `G4` |
 | **开发** | "下一步做什么" | `sdo_plan action=next`（按容量预算挑卡 + 派发请求）→ `sdo_task action=claim`（CAS，版本对不上即冲突）→ 一次派发运行 = 一个角色 → `sdo_task action=done`（**必须带证据**）→ `G5` |
-| **验证** | "记录测试与缺陷" | `sdo_test action=plan`（用例绑定需求）→ `action=record`（通过也要证据）→ `action=defect`（阻塞级缺陷会拦住门禁）→ `sdo_review action=record`（作者 ≠ 评审者）→ `G6` |
-| **交付** | "打交付包" | `sdo_deliver action=package`（产物 sha256 清单 + 验收矩阵 + 回滚点 + 声明不含原型内容）→ `G7` |
+| **验证** | "记录测试与缺陷" | `sdo_test action=plan`（用例绑定需求）→ `action=record`（通过也要证据）→ `action=defect`（阻塞级缺陷会拦住门禁）→ `sdo_review action=record`（作者 ≠ 评审者）→ `sdo_task action=verify-review`（实现方逐条核实发现）→ `G6` |
+| **交付** | "真机跑过再打交付包" | `sdo_deliver action=run`（记一条真机运行：目标/命令/结论/证据/**绑定被运行产物的 sha256**）→ 再 `action=package`（产物 sha256 清单 + **真机运行记录** + 验收矩阵 + 回滚点 + 声明不含原型内容；**缺真机证据则所有 `pass` 降级为 `unverified`**）→ `G7` |
+| | | **MC 模组要 `runServer` 与 `runClient` 各一条**；其他系统对应各自的真机启动 |
 
 ## 6. 常用操作
 
@@ -122,6 +156,7 @@ SDO：G2 需求基线门禁 ✅（需求冻结为 v0.2）
 | 需求变了 | `sdo_requirement action=change id=REQ-002 …`（影响分析 + 决策），或 `action=update`（改内容会退回 `changed` 并涨版本号） |
 | 改验收标准编号 / 删除 | `sdo_requirement action=update … acceptance=[…] acceptanceMode=replace`（整份替换；不传则只追加） |
 | 卡建错了 | `sdo_task action=drop id=…`（留痕，不再计入完成率） |
+| 卡写错了 | `sdo_task action=update id=… writeScopes='["src/x/"]'`（CAS 可选；写完要重新认领） |
 | 契约写错了 | `sdo_design action=contract id=CT-00x …`（原地更新）或 `action=drop-contract`（作废留痕） |
 | 写人读文档 | `sdo_design action=render` → `docs/DESIGN.md`；`sdo_render` → `docs/SRS.md`；`/sdo-board --write` → `docs/BOARD.md` |
 | 切界面语言 | 聊天里说"切换成英文"（`sdo_lang`）或 `/sdo-lang en`；持久化用 config 的 `lang` 或环境变量 `SDO_LANG` |
@@ -167,19 +202,41 @@ project.json（派生投影）坏掉 → 三处显示都会说「项目投影读
 - 显式 `--k=` 优先于裸 `k=v`，且与出现顺序无关。
 - `--` 之后全部作为位置参数；`"…"` / `'…'` 内的空白不切分，引号会被剥掉。
 
+### `.sdo/` 谁写谁读（口径）
+
+`.sdo/` 是**插件真源**：由工具写入，人工**只读**。唯一例外是**明确要求用户决策**的文件（例如待你签字的门禁结论、
+需要你回答的问题）。因此：证据、测试结果、签字、运行记录都必须由工具记账（journal 里留事件佐证）——
+手写或事后改文件会在回执里被点名（D4/D8 的交叉核对就是这么判的）。
+
+**写前快照**（`.sdo/evidence/file-history/`）：直接 `write`/`edit` 覆盖 `.sdo/` 下**手可编辑真源**之前，
+插件先把旧内容存一份 `<相对路径>.bak`（名字带毫秒时间戳 + 同毫秒序号，**不会互相覆盖**）；
+每个真源只保留**最近 20 份**（`FILE_HISTORY_KEEP`），更早的按时间从最旧删起。它是**观测产物、不是真源**：
+既不参与任何判据，也不写 journal 事件（新事件类型会流进"签字失效 / 中性表"，把例行清理变成门禁事件）。
+
+`disciplineTools` / `disciplineAllowPaths`（配置项）目前是**保留未启用**：`strict` 档暂时不据此收窄工具面或写入路径，
+README 以前写成"已受约束"是**不准确**的（D12）。要用它们做硬闸门请先明确口径（会在运行中的项目上突然收窄能力）。
+
+### 复合参数的写法（SDO-12）
+
+`steps` / `evidence` / `acceptance` / `alternatives` / `consequences` / `links` / `telos` / `poc` / `mutation` /
+`contractTest` / `suggestions` / `deps` 等**复合参数在 schema 里是字符串**：必须传**字符串化的 JSON**
+（元素用双引号，例如 `suggestions='[{"title":"…","dod":["…"]}]'`）。直接传数组/对象会被宿主参数校验挡下
+（报 `"<参数名>" must be a string`），**不是**插件在拒绝 —— 真机上为此浪费过 6 次调用。
+字符串内部要引号时用「」或反引号，别用 ASCII 单引号当 JSON 引号。
+
 ## 8. 模型工具速查（20 个）
 
 | 分组 | 工具（动作） |
 |---|---|
 | 项目与状态 | `sdo_init`、`sdo_status`（含 `rebuild`）、`sdo_project`（update / show）、`sdo_lang`（show / set） |
-| 需求 | `sdo_requirement`（capture / grill / answer / update / change / list / baseline / design-questions / applicability / applicability-confirm）、`sdo_redteam`（attack / propose / file / on / off / status） |
+| 需求 | `sdo_requirement`（capture / grill / answer / update / change / list / baseline / design-questions / applicability / applicability-confirm）、`sdo_redteam`（attack / propose / file / dispose / on / off / status） |
 | 可行性 / 风险 | `sdo_feasibility`（assess）、`sdo_risk`（log / update / list / conclude） |
 | 架构与设计 | `sdo_design`（view / create / contract / drop-contract / grill / answer / confirm / issues / render / method / artifact / review / waive-plan）、`sdo_adr`（record / list / supersede）、`sdo_quality`（scenario / evaluate / list） |
-| 计划与协同 | `sdo_plan`（decompose / iteration / next）、`sdo_task`（list / claim / done / block / drop / release / reassign） |
-| 验证与评审 | `sdo_test`（plan / record / defect / list）、`sdo_review`（record / list） |
+| 计划与协同 | `sdo_plan`（decompose / iteration / next / profile）、`sdo_task`（list / claim / done / block / drop / release / reassign / update / verify-review）（`update` 改卡字段含写范围；已完成卡不改、有人在做时不得改写范围） |
+| 验证与评审 | `sdo_test`（plan / record / defect / list / env）、`sdo_review`（record / rehash / list）—— `rehash` = 给**老格式评审**补记内容指纹（补记之后改 verdict/正文可检出）—— 评审核实在 `sdo_task`（list / … / **verify-review**）：实现方逐条核实评审发现（复现 / 反证），核实过的评审才会被门禁采纳 |
 | 追溯与文档 | `sdo_trace`（link / unlink / query / report）、`sdo_render` |
 | 门禁与成本 | `sdo_gate`（check / advance / sign / waive / rollback）、`sdo_cost`（report） |
-| 交付 | `sdo_deliver`（package / show） |
+| 交付 | `sdo_deliver`（run / package / show） |
 
 ### 设计方法包（`sdo_design action=grill` 的 `design:method` 题）
 
@@ -221,7 +278,35 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 - **两个前提缺一不可**：① 执行者的工具白名单里有 `skill`（8 个角色都加了）；② **preset 挂载了 `tool-skill`**（本 preset 已加）。只做①会出现"注册成功但无人可见"。
 - 这条规则是**通用的**：宿主层 `dsh-web-app` 有意 `disabled: true` 的行（共 24 条，含 `tool-fs-search`、`tool-subagent-control`、`tool-skill`）**必须由 preset 自己补挂**，否则该能力在 sdo-office 会话里根本不存在，而插件文案/角色 allow 却假定它有 —— 会变成"死允许项"。本 preset 需要的那批行有机械守卫（`test/m28.test.ts`：集合方向 + `roles.yml` 每个工具名都要有已挂载的提供行）。
 - 只挂 `tool-skill`、**不挂** `skill-filesystem`：SDO 走程序化注册（runtime 层），挂文件发现会把 `skills/` 下 8 张卡各变成一个目录项。
-- 卡片是纪律、掩码是硬约束：`allow` 之外的工具角色看不到（掩码表见 `src/data/roles.yml`）。
+- 卡片是纪律、掩码是硬约束。**掩码分两层（2026-10-08 口径纠正）**：
+  · **SDO 流程面**（`sdo_*`，本插件自己注册的封闭集合）—— **白名单**：`allow` 里没列的 `sdo_*` 一律下发 deny
+    （developer 拿不到 `sdo_gate`、reviewer 拿不到 `sdo_test`…这一层是**职责分离**）；
+  · **通用面**（宿主/harness 的 `read`/`write`/`bash`/`skill`/记忆/技能/联网…）—— **黑名单**：
+    只有 `roles.yml` 的 `deny` 明写挡住的才挡（谁能写、谁能跑 bash 逐角色写清），其余**继承宿主默认**。
+  旧口径把 `allow` 当**整体**白名单下发，等于连通用面一起清空 —— 真机事故：子代理原话
+  「**无法使用 `technique_apply`**」（它手里只有角色声明的十几个名字）。掩码表见 `src/data/roles.yml`。
+- **执行者禁令（2026-10-08 用户裁定）**：被派发的执行者**不得再起一个 agent 运行** ——
+  `subagent` / `subagent_fork` / `workflow` / `sdo_plan` 四件套对子会话一律拒绝。它们起的子代理
+  **不带角色掩码**（不经过 `toolFilter`），拿到任何一个就等于**绕开整张掩码表**。
+  三层施加：下发 deny 面**无条件**含它（`EXECUTOR_FORBIDDEN_TOOLS`）、钩子按 `MaskContext.executor` 拒绝、
+  派发提示与 8 张角色卡都写明。**只对子会话生效**：驾驶舱即使认领了卡也仍能派发（它的本职）。
+- **写入控制分两层（2026-10-08 用户裁定）**：① **工具级**——谁能写（`write`/`edit`/`bash`，只读角色一条都没有）；
+  ② **路径级**——写得下去写不下去由**路径**决定：必须落在本次**活卡的 `writeScopes`** 内，
+  公共面（`disciplineAllowPaths`：`.sdo/` 台账、`docs/` 派生文档、`test/` 用例）不受卡范围约束；
+  没认领就只能写公共面。**`write` 与 `edit` 必须同权**：只给 `write` 不给 `edit` 不代表更安全
+  （`write` 一样能整篇覆盖、`bash` 更能），只会把「改一处」逼成「读全文 → 整篇写回」——
+  真机 architect 正是这么把登记簿覆盖掉、23 条 DEV 正文永久丢失的（SDO-23）。
+- **诚实边界**：宿主 `sandbox` 只有**模式级**策略，没有路径白名单 ⇒ **`bash` 的越界写没有机械前置拦得住**，
+  只能靠 `done` 时的 A2 写范围对账兜底；要硬拦只有一条路——**角色不给 `bash`**。
+- **通用工具也可能被"限定给某角色"**（例：`ask_user_question` **仅 analyst**，2026-10-08 用户裁定）：
+  做法是在**其他角色的 `deny`** 里写它 —— 那才是真源（改提示词不算数）。
+- **执行者禁用面（2026-10-08 全面审计）**：除了那四件套，执行者还一律拿不到 **平台 / 用户 / 会话 / 共享库**
+  层面的能力 —— `plugin_manager`（装卸插件）、`exit_plan_mode`（要用户批准计划）、
+  `memory_forget` / `technique_forget`（共享知识库的**不可逆删除**，`"*"` 会全清）、`failure_forgive`
+  （给自己豁免纪律）、`create_goal` / `update_goal`（会**自动续轮** ⇒ 自我续命）。见
+  `domain/roles.ts` 的 `EXECUTOR_DENIED_TOOLS`（每条都有分类理由），以及
+  `test/m75` 的**审计守卫**：宿主工具面逐个归类，新工具出现必须有人做决定；按角色分权的工具
+  必须"声明集与 deny 集互补"，否则用例红（"再一个 `ask_user_question`" 会被机械抓住）。
 
 ## 9. 配置
 
@@ -235,11 +320,13 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 | `promptOrder` | `240` | 状态块的注入顺序（越小越靠前） |
 | `statusChars` | `1500` | 状态块字符上限（200–4000）；超出截断并提示用 `sdo_status` 看全量 |
 | `gateLevel` | `enforce` | `suggest` 只提示 / `enforce` 门禁前置 / `strict` 追加拦截写类工具 |
-| `disciplineTools` | `["write","edit","bash"]` | `strict` 下受纪律守卫约束的工具 |
-| `disciplineAllowPaths` | `[".sdo/","docs/","test/"]` | `strict` 下允许写入的路径前缀 |
+| `disciplineTools` | `["write","edit","bash"]` | **保留未启用**：`strict` 档目前**不**据此收窄工具面（口径见 §8 前的说明，D12） |
+| `disciplineAllowPaths` | `[".sdo/","docs/","test/"]` | **保留未启用**：`strict` 档目前**不**据此限制写入路径（D12） |
 | `commandEcho` | `echo` | 命令结果如何让你看见：`echo` 经 inbox 投递（不唤醒轮次）/ `none` 只回命令面 |
 | `orchestrator` | `subagent` | 派发后端：`subagent` / `native-team`（实验）/ `inline` |
 | `maxParallelDispatch` | `4` | 并行派发上限（1–8） |
+| `dispatchOrphanTtlMinutes` | `60` | 未结算派发的**孤儿 TTL**：`dispatch/started` 之后超过这么久仍无 `dispatch/finished`（子会话被强杀 / 派发丢了）就不再占池位；TTL 内的未结算派发照旧占位（不误伤长任务） |
+| `poolCaps` | `{}` | **按角色的子代理池上限**，如 `{ developer: 2, tester: 1 }`；没写的角色用 `maxParallelDispatch`。池满的卡**排队**（不丢卡），等池里有子代理结算后由下一次 `sdo_plan action=next` 放行 |
 | `captureWorkspaceChanges` | `true` | 采集 `workspace/changes` 证据 |
 | `enforceRoleMask` | `true` | 对**认得出的派发角色**硬拦掩码之外的调用（B6）；关掉只是不拦，掩码声明照旧 |
 | `dispatchProvider` | `spawn` | 真派发用的 provider 名（宿主 `subagents.list()` 里的名字；preset 默认装 `spawn`） |
@@ -267,6 +354,7 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 |---|---|---|
 | `claim` | 卡上有需求、且项目档位不是 `trivial` 时**必须先有用例计划** | `test-case-missing`（C7） |
 | `claim` | CAS 版本、状态可认领、写范围不与在进行的卡冲突 | `revision-mismatch` / `not-claimable` / `write-scope-conflict`（既有） |
+| `claim` | **存在已批准但未消化的需求变更**（未重新基线，或未重过设计门） | `change-not-digested`（语义 A，见下） |
 | `done` | 证据种类 ⊇ 卡上 `evidenceRequired` | `evidence-kind-missing`（A1） |
 | `done` | `artifact` 证据的路径**必须真实存在**；给了 `sha256=` / `#<hex>` 就复算比对；越出工作区判红 | `evidence-artifact-missing` / `evidence-artifact-hash` / `evidence-artifact-outside`（A1） |
 | `done` | `artifact` 的 `detail` 只能是「路径」或「路径 sha256=<64hex>」——**路径/哈希后面跟说明文字**会被当成路径的一部分 | `evidence-artifact-detail`（A1；文案会指出多出来的那段，并把合法哈希区分开） |
@@ -304,6 +392,24 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 
 **派发提示**（B4）：`buildDispatch` 的协议第 0 步就是"先加载角色卡技能 `sdo-role-cards`，再读本角色卡片"，
 免得执行者要自己从技能目录里发现它。
+
+### 变更控制：批准的需求变更强制回退（语义 A）
+
+需求基线之后改需求必须走 `sdo_requirement action=change`（变更请求 + 影响分析 + 决策）。
+**批准**的变更会立刻把项目**拉回需求阶段**，并要求按顺序做完这三步才能继续开发：
+
+```text
+① 更新受影响需求      sdo_requirement action=update id=REQ-…
+② 重新冻结 G2（重签）  sdo_requirement action=baseline
+③ 重走设计并重过 G3    sdo_gate action=check gate=G3（或 advance）
+```
+
+在 ②③ 都完成之前，构造阶段的 `claim` 一律拒绝，错误码 **`change-not-digested`**（回执点名是哪条 CR、哪条需求）。
+判定完全从台账现算、不新增真源：**批准之后有覆盖该需求的重新基线**，**且此后设计门有 `passed` / `waived` 的判定** ——
+两步缺一不可（只重签 G2 不够：需求变了却不重新设计，那条需求就变成"让模型自由发挥"）。
+`rejected` / `deferred` 的变更**不动阶段**；低影响变更也走同一条路（**有意不按影响面分级** —— 分级会引入
+"什么算低影响"的判断口子，正是这条纪律要堵的）。
+设计依据：[`docs/plan/2026-10-04-需求变更强制回退-设计.md`](docs/plan/2026-10-04-需求变更强制回退-设计.md)。
 
 ### 派发：从「打印请求」到「真的起一次」（B4 / P-1）
 
@@ -351,13 +457,13 @@ SDO 只对自己派发出去的子会话（台账 `dispatch/started`）记账，
 
 `sdo_task` 是**协议通道**（claim/done/block 全在它上面），因此 **8 个角色的 `allow` 都必须包含它** —— 缺一个就会「认领即锁死」（评审 2026-10-03 F1）。`m31-04` 直接从派发提示里机械推导用到的工具并逐个核对掩码，以后提示里加了调用而掩码没跟上会立刻红。
 
-**B6：认得出的派发角色，掩码之外的调用当场拒绝**（白名单语义：`allow` 之外一律拒），
-开关 `enforceRoleMask`（默认开）。拒绝文案会点名角色、工具、该角色**可用**的工具面与角色卡路径。
+**B6：认得出的派发角色，掩码之外的调用当场拒绝**（**同一套两层语义**：`sdo_*` 走 `allow` 白名单，
+通用面只有 `deny` 里明写的才拒），开关 `enforceRoleMask`（默认开）。拒绝文案会点名角色、工具、该角色**可用**的工具面与角色卡路径。
 角色推导结果按 `roleCacheVersion` 缓存（本进程的认领/回报会失效）+ **5 秒 TTL** 兜底：钩子这个热路径不重读 journal，而台账若被**别的进程/实例**改写，最多陈旧 5 秒。
 
-诚实边界：**钩子拦的是调用**（第二层防线）。工具面**隐藏**由 P-1 接线后的 `toolFilter` 交给宿主施加
-（子代理看不到掩码外的工具）—— 该下发**已在真机上跑通派发**，但「子代理的工具面里确实没有掩码外工具」
-尚未在真机逐一核对（见 §11）。
+诚实边界：**钩子拦的是调用**（第二层防线）。工具面**隐藏**由 P-1 接线后的 `toolFilter` 交给宿主施加 ——
+现在**只下发 `deny`**（不发 `allow`）：`allow` 一填就把整个通用面挡掉了（见上）。
+该下发已在真机上跑通并观测到子会话的公告面（`evidence/child-tools.jsonl`，`violations: []`）。
 
 ## 10. 台账与产物
 
@@ -379,23 +485,47 @@ skills/ 8 张角色卡（analyst / architect / red-team / developer / tester / r
 三条操作规则：
 
 1. **手写真源**（`<projectDir>/` 下的 `*.yml`）可以手改，但必须是合法 YAML 子集（用空格缩进）；写坏会判红并点名相对路径。
-2. **不要手改派生视图**：`project.json`、`docs/*.md`、看板都从真源现算。`docs/DESIGN.md` 的内容判据要求它与「按渲染头序号从当前真源重渲染」的结果一致 —— 改设计后请重新 `sdo_design action=render`，手改正文会被判红。
-3. **签字绑定真源**：签字之后真源再变（改需求 / 设计 / 契约、重建基线等）会让签字失效，需要重新签字；注入块与看板里的「最近判定留痕」只是历史记录，**当前是否通过是现算的**。
+2. **不要手改派生视图**：`project.json`、`docs/*.md`、看板都从真源现算。`docs/DESIGN.md` 的内容判据要求它与「按渲染头序号从当前真源重渲染」的结果一致 —— 改设计后请重新 `sdo_design action=render`，手改正文会被判红（逐字节比对，`docs/DESIGN.md` 顶部的注释区也算在内）。
+   如果你在 `docs/DESIGN.md` 里手写了内容，**下一次渲染覆盖它之前会先留副本**（`.sdo/evidence/file-history/`，同一套上限），并把副本落点记进 `design/rendered` 事件的 `snapshot` 字段 —— 手改不会被"静默销毁"。
+3. **评审结果要核实才能采纳**：评审（`sdo_review action=record`）记下的发现是**主张**，不是结论。
+   要它被门禁采纳（G5 的 C-42 / G6 的 C-52）或被用来闭合改动，必须由**该卡的实现会话**逐条核实：
+   `sdo_task action=verify-review id=<卡> review=REV-… index=<第几条，从 1 起> outcome=reproduced|refuted proof="…"`
+   —— 照发现能复现就 `reproduced`、复现不了就 `refuted` 并给反证（**空口核实不算**，`evidence` 必填）。
+   没核实完的评审在状态块、`action=list`、门禁文案里都会点名（与"没有评审"分开说）；
+   卡上最新一条评审还在 `changes-requested` / `reject` 且发现没核实完时，`sdo_task action=done` 会被拒。
+   评审**任务卡**的完成不再要求"再被评审"（自我递归没有意义），但它的评审产出同样要按上面这条核实。
+4. **签字绑定真源**：签字之后真源再变（改需求 / 设计 / 契约、重建基线等）会让签字失效，需要重新签字；注入块与看板里的「最近判定留痕」只是历史记录，**当前是否通过是现算的**。
 
 ## 11. 已知边界
 
 | 边界 | 说明 |
+| 工作区不是 git 仓库 | 宿主采不到 `workspace/changes` ⇒ `done` 会**显式**报「写范围未对账」（不等于没有越界，也不据此判越界）。退路：在能采到的会话里重跑，或用 `evidence` 的 `artifact` 逐条列出本轮实际写入的文件再人工比对。**不自动退回 mtime 扫描**（会把上一次中断会话留下的旧文件误判成本轮改动，F-7 事故）。 |
 |---|---|
-| 派发已接线（P-1），真机未复测 | `sdo_plan action=next` 现在会真的调用宿主 `subagents.start(provider, {prompt, parent, persona, toolFilter: {allow, deny}, maxDepth})` 起子代理，并把子会话 id 记进 `dispatch/started`；宿主没有该服务 / 未注册 provider / 拿不到发起 agent 时**如实回执原因**，退回「流程官用 `send_message` 转交」。**工具面隐藏没有关闭（宿主侧）**：`toolFilter` 已下发、`spawn` 也声明支持，但实测子代理**仍能调用**掩码外工具（被钩子 B6 拒绝；公告面已被收窄）—— 疑似宿主 `restrict()` 收不住子代理自带 preset 注册的工具。**该现象现在可观察**：SDO 从子会话的 `request/header` 记下它真实的工具面（`.sdo/evidence/child-tools.jsonl`）并在派发回执里展示；上游问题见 `docs/verification/2026-10-03-上游问题-子代理toolFilter未生效.md`。本地单测覆盖参数与失败面；**本工作区未做真机成功派发复测**（sdo-test 已用它跑通开发阶段，见其测试报告） |
+| 派发已接线（P-1），**工具面探针必须带 agent 作用域** | `sdo_plan action=next` 会真的调用宿主 `subagents.start(provider, {prompt, parent, persona, toolFilter: {allow, deny}, maxDepth})` 起子代理，并把子会话 id 记进 `dispatch/started`；宿主没有该服务 / 未注册 provider / 拿不到发起 agent 时**如实回执原因**，退回「流程官用 `send_message` 转交」。**⚠️ 宿主 API 陷阱（D-14 blocker，sdo-test-new 2026-10-08 真机复现）**：`tools.get(name)` **省略 scope 时只查全局层**，而 `sdo-office` preset 的工具注册在 **agent 平面** ⇒ 探针对 15 个名字**全部**返回 undefined，白名单被清成 `[]` 原样下发，子代理**一个工具都没有**（子会话描述符 `toolFilter.allow: []`，整轮只能把工具调用写成正文，卡零变化，而回执仍写"已真正派发"）。现在：探针按 `call.agent` 作用域查（查不到再退回全局视图）；`filterKnownTools` 把"名单非空却全未知"当**探针不可用**（原名单 fail-open，真有未注册名时宿主 `restrict()` 会**当场抛错**），并区分 `applied`（实际下发）与 `kept/dropped`（探针的说法）；回执分开报 **SDO 流程面白名单**与**实际下发的 deny 面**，deny 面为空时**显式告警**；`request/header` 里工具面为空会记 `dispatch/observe-failed`（不再静默）。**并且下发内容已从 `allow` 白名单改成只发 `deny`**（见上面的两层口径）。**工具面隐藏本身仍是宿主行为**：`toolFilter` 已下发、`spawn` 也声明支持，但实测子代理**仍能调用**掩码外工具（被钩子 B6 拒绝）；观测见 `.sdo/evidence/child-tools.jsonl`，上游问题见 `docs/verification/2026-10-03-上游问题-子代理toolFilter未生效.md` |
+| **子代理复用的判据：要"有工具"的正面证据** | 复用一个空闲的 continuable 子会话需要**两**条同时成立：① 掩码指纹一致（SDO-52：工具面是**创建会话时**定下的）；② `evidence/child-tools.jsonl` 里**观测到该子会话公告面非空**（R-1：修复前构建创建的零工具子会话 `f4ae86fa` 被复用两次，两次都是"无工具 → 把工具调用写成正文 → 1 轮结束"）。**观测到零工具、或根本没有观测记录 ⇒ 强制新起**（新起永远是对的，复用只是省一次会话创建），原因写进回执（`kReuseSkipped` / `kPoolUnusable`）。这类"永远不会被复用"的空闲会话**不占池位**，否则 `poolCaps` 很窄的角色会永久排队（既不复用它、也没位子新建） |
+| 议题"闭环"是**现算**的，文件里的 `status` 是显式处置记录 | C8 用 `issueClosure()` 从「相关质询是否已回答 / 是否已转为风险」**现算**闭环，从不读 `issues/*.yml` 的 `status`；因此"质询都答完了"与"文件还写着 `status: open`"可以同时成立（sdo-test-new 真机就是 6 个议题这个状态）。插件**不自动改写**手可编辑真源（那会把派生结论冒充人工处置），而是给入口 + 说清口径：`sdo_redteam action=dispose id=REQ-ISSUE-00x disposition=risk\|requirement note=…` 把文件追平并留 `issue/closed`，回执区分"这次真的闭环了"与"门禁此前已现算判闭环、本次只是把文件追平" |
 | 子代理用量未归集 | `sdo_cost` 只统计驾驶舱会话；子代理会话对象未暴露给插件，回执里明确说明而不是编数 |
 | Web 面板未做 | 文本看板（`/sdo-board`）可用；Web 面板（client 插件）尚未实现 |
 | 派发子代理的生命周期不可见 | P-1 用宿主 `subagents.start` 起的子会话**不在驾驶舱 `list_agents` 里**；卡停在 `in-progress` 时只能靠读会话文件判断它还活着，**没有超时/回收机制**（与「失联 owner 不自动释放」同类）。台账里有 `dispatch/started`（子会话 id）可作为线索 |
 | A2 的数据面很窄（已部分修） | 宿主只为**顶层轮次**公告 `workspace/changes`（实测：9 个主会话 39 事件 / **59 个子代理会话 0 事件**）⇒ 派发卡的写范围对账仍走「未对账」兜底。另有一个**竞态**曾让主会话也拿不到清单：宿主**先 `append` 事件、后写摘要记录**（`dsh-workspace-changes` 相邻两行），采集监听器在 append 那刻必然读到空 ⇒ 现改为「采集只记 `(sessionId, seq)`，`done` 时再取一次并补记」 |
-| 工具面隐藏的真机效果未逐一核对 | B5/B6 起：钩子用 `ToolExecution.agent` 推角色（认领过的卡 → 卡上的角色），并对**认得出的派发角色**硬拦掩码之外的调用（`enforceRoleMask`，默认开；fail-open）。**角色掩码的真机效果已由 sdo-test 验证**：真派发的子代理会话里出现 `tool/result` 级的拒绝回执（「越界：角色 developer 的工具面里没有 …」，本工作区按首行 `delegationDepth` 复算命中 8 个 depth≥1 会话）；本地单测另覆盖四态推导、掩码判定与真实钩子驱动。**仍待真机逐一核对**的是：P-1 真派发时子代理的**工具面**里确实没有掩码外工具（`toolFilter` 已交给宿主，属宿主行为）。另：角色归属的缓存是**进程内**的（版本号 + 5 秒 TTL），跨进程改台账最多陈旧 5 秒 |
+| 工具面隐藏的真机效果（**已部分自证**） | B5/B6 起：钩子用 `ToolExecution.agent` 推角色（认领过的卡 → 卡上的角色），并对**认得出的派发角色**硬拦掩码之外的调用（`enforceRoleMask`，默认开；fail-open；**两层语义同上**）。**角色掩码的真机效果已由 sdo-test 验证**：真派发的子代理会话里出现 `tool/result` 级的拒绝回执（「越界：角色 developer 的工具面里没有 …」，本工作区按首行 `delegationDepth` 复算命中 8 个 depth≥1 会话）；本地单测另覆盖四态推导、掩码判定与真实钩子驱动。**仍待真机逐一核对**的是：P-1 真派发时子代理的**工具面**里确实没有掩码外工具（`toolFilter` 已交给宿主，属宿主行为）。另：角色归属的缓存是**进程内**的（版本号 + 5 秒 TTL），跨进程改台账最多陈旧 5 秒 |
 | 命令结果渲染 | Web 客户端不渲染"轮次之外"的命令节点（上游问题，见 `docs/verification/2026-09-29-上游问题-命令结果不渲染.md`）。SDO 用 `commandEcho: echo` 经 `agent.inbox.send(..., wakeup=false)` 投递成插件来源消息：界面可见、不唤醒轮次 |
 | 多词值必须加引号 | `--note 见 choice=waive`（未加引号）里 `choice=waive` 是独立 token；要一个多词值就写 `--note "…"`（见 §7） |
 | PlantUML 只出源码 | 本仓库不依赖 PlantUML，也没有渲染器：`--puml` 只写 `.puml` 骨架源码，出图请自行拿 PlantUML 处理 |
 | 发布 / 运维 | 明确非目标：到「交付包 + 验收矩阵 + 回滚点」为止 |
+
+> 文档索引与权威性（哪些文档是现行、哪些是历史）：见 [`docs/README.md`](docs/README.md)。设计与实现的偏移核实见 [`docs/verification/2026-10-03-设计与实现偏移核实.md`](docs/verification/2026-10-03-设计与实现偏移核实.md)。
+
+### 9.1c 派发汇报（子 agent 取汇报）与子代理复用
+
+- **取汇报（推 + 拉）**：子代理结算后的报告会**自动贴在你下一次调用任何 SDO 工具的回执**上（最多 3 份，送达一次后不再重复；载体是工具回执 —— 宿主没有子会话→父会话的投递通道）；`sdo_status` 同时保留「**最近完成的派发**」块供随时拉取（卡 / 子会话 / 结论 / 耗时 / 报告落点 + 摘要）。子代理结算时（`turn/end`）会写
+  `dispatch/finished` 并把它的**最后一条助手消息**落到 `.sdo/evidence/child-reports/<卡>-<子会话前8位>.md`（按卡切，复用时不覆盖；读者按 `dispatch/finished.report` 读回）；派发回执也会给出复用/观测口径。
+- **观测失败不再静默**：采集类失败仍 fail-open，但会记一条 `dispatch/observe-failed`（真机上曾丢过三次派发的观测）。
+- **复用**：宿主 `subagents.start` 目前**只发 one-shot**（宿主 `Service.start()` 里把描述符写死 `mode: one-shot`），所以每次派发都是新会话、无法复用；
+  宿主**已经**提供可续聊入口（`subagents.startContinuable` / `sendMessage`，后者按宿主注释「空闲的目标会起一轮」），
+  插件侧已实现**角色池 + 卡队列**：逐角色并行上限（`poolCaps`）、池满排队不丢卡、结算后把下一张卡**投给空闲的同一个子代理**（真复用）。
+  投递由驾驶舱触发（`sdo_plan action=next`），插件不自主起代理；宿主不可续聊时如实降级为 one-shot + 并发上限。
+- 设计与探测证据见 [`docs/plan/2026-10-04-派发汇报与子代理复用-设计.md`](docs/plan/2026-10-04-派发汇报与子代理复用-设计.md)。
 
 ## 12. 开发与发布
 

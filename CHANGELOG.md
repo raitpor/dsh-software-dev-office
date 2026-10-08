@@ -7,6 +7,1089 @@
 
 ## [Unreleased]
 
+### 修复（**用户裁定**：放开 `edit`，但把写范围管起来；顺带查出**两个死配置 + 一处路径判据空转**）
+
+**起因**（用户提问）：*tester 没有 `edit`，它把自己的测试脚本写错了怎么改？*
+核实结论（读码 + 真机子会话实录）：tester **有 `write` 也有 `bash`** ⇒「没有 edit」**既不是能力边界也不是路径边界**，
+只是把"改一处"逼成"读全文 → 整篇写回"（真机 architect 正是这么把登记簿覆盖掉、23 条 DEV 正文永久丢失 —— SDO-23）。
+⇒ 新口径：**`write` 与 `edit` 同权**（谁能写谁就能改），**独立性改由"写在哪里"机械控制**。
+
+- **写入范围纪律（新模块 `src/domain/writeScope.ts`，纯函数）—— 两重限制**：
+  · **3b 卡级**：调用方有**活着的认领卡** ⇒ 目标路径必须落在该卡的 `writeScopes` 内（越界**当场拒**，
+    而不是等到 `done` 才在对账里点名）；**没认领**（或已收工）⇒ 只能写公共面，回执里给出"先 `sdo_task action=claim`"的出路；
+    卡上 `writeScopes` 为空（计划缺陷，C-31 会判红）⇒ 拒并让流程官补卡。
+  · **3a 公共放行面**：`disciplineAllowPaths`（默认 `.sdo/` 台账、`docs/` 派生文档、`test/` 用例）**不受卡范围约束**。
+  · 顺序：**先掩码（谁能写）→ 再写范围（能写哪儿）→ 再 L3 阶段纪律（什么时候能写）**；三者失效方向不同，分开判。
+- **`write`/`edit` 同权**：`analyst`、`office`、`tester`、`delivery` 补上 `edit`（architect/developer 本来就有）；
+  `red-team` / `reviewer` 仍是**只读**（`write`/`edit`/`bash` 一条都没有）。流程官尤其需要 `edit`：
+  它手维 `.sdo/` 下的**手可编辑真源**，整篇 `write` 会丢内容。
+- **审计（用户要求"看看其他角色和工具是否有类似问题"）—— 查出三处，全修**：
+
+  | 问题 | 证据 | 处置 |
+  |---|---|---|
+  | `disciplineAllowPaths` **声明了但全仓无人读** | 机械扫描 `SdoConfig` 21 个字段：只有它、`disciplineTools` 无人引用 | 变成写范围纪律的**公共放行面**（真源在 `config.ts` + preset 注释） |
+  | `disciplineTools` **同样是死配置** | 同上；且 preset 里写了 `[write, edit, bash]`，让人以为 bash 也在纪律内 | 变成"受写范围管辖的工具集"；**bash 没有路径参数** ⇒ 如实标 `checked: false`（不许假装拦住了），越界写仍由 `done` 的 A2 对账兜底 |
+  | L3 的路径判据**在真机上恒不命中** | `path.startsWith('src/')` vs 真机实录 `{"file_path":"/home/raiptor/gitrepo/…/sdo-test-new/lib/parse.js"}`（**绝对路径**） | 钩子里统一 `normalizeWorkspacePath(path, call.cwd)` 归一，三处共用（快照 / 写范围 / L3）；归一**保留目录尾斜杠**，否则 `lib/` 会退化成 `lib` ⇒ `libx/a.js` 被**假放行** |
+
+- **诚实边界（写进 README 与配置文档）**：宿主 `sandbox` 服务只有**模式级**策略（`read-only`/`workspace-write`），
+  **没有路径白名单** ⇒ `bash` 的越界写**没有任何机械前置拦得住**，只能靠 `done` 时的 A2 写范围对账兜底
+  （而子代理会话采不到 `workspace/changes` 时那条对账会退化成"未对账"）。想要硬拦只有一条路：**角色不给 bash**。
+- **测试**：新增 `test/m76.test.ts`（7 条）——路径归一（含绝对路径/`..`/反斜杠/工作区外）、3b 卡级双向、
+  3a 公共面、没活卡/空写范围/bash 无路径三种边界、fail-open 三个方向、真钩子（tester 能 `edit` 自己的用例、
+  写 `src/` 当场拒、没认领只能写公共面、驾驶舱不受管辖）、**接线守卫 + 死配置守卫**
+  （机械扫 `SdoConfig` 每个字段：声明了却没人读 ⇒ 红）。
+  连带更新：`m7-02`（同权口径 + 只读角色）、`m31-04`（`edit` 从"禁用清单"移出，改为**deny 面对称**守卫 ——
+  通用面是黑名单语义后，只在 `allow` 里删 `edit` 是**没有效果**的）、`m29-03`（我新写的一句把 `sdo_review`
+  与"不在我的工具面里"放同一行，被守卫抓到 —— 拆行）、`m65-02`（掩码用例改用公共面路径，与写范围用例分开考）。
+- **变异自证（9/9 全杀）**：卡级检查失效 / 公共放行面消失 / 没活卡也放行 / 路径不归一 / 尾斜杠被吃掉 /
+  忽略 `disciplineTools` / 驾驶舱纳入管辖 / `disciplineAllowPaths` 不再被读 / `deny` 面只禁 `write` 不禁 `edit`
+  —— 每条都有用例变红。**两个等价变异如实记下**（不假装杀掉）：
+  ① 把"没活卡"分支的条件改成恒假的复合式（不改行为）；② 只在 `allow` 里删 `tester` 的 `edit`
+  （黑名单语义下 `allow` 对通用工具**已不决定可见性**，只有 `deny` 才决定 —— 它仍会改掩码指纹，但当前无用例覆盖指纹）。
+
+### 修复（**全面审计**：还有没有像 `ask_user_question` 那样"白名单时代被挡住、改黑名单后静默放开"的工具）
+
+**做法**（机械，不靠眼看）：把宿主**真实**工具面（`cordis_inspect_query(host, Tool, listTools)` 的实测结果
+＋ `presets/sdo-office.patch.yml` 的挂载行 ＋ `roles.yml` 引用的名字，三者取并集，共 40 个）逐个归类，
+并对每个"按角色分权"的工具核对**分权是否完整**：
+`声明的角色 allow` 与 `其余角色的 deny` **必须互补** —— 只要有一个角色既没 allow 也没 deny，就是泄露
+（`ask_user_question` 正是这个形状）。
+
+**审计结果**：
+
+| 分类 | 工具 | 处置 |
+|---|---|---|
+| **新发现·平台管理** | `plugin_manager`（装卸插件 —— 能被用来把 SDO 自己关掉） | ⛔ 执行者禁用 |
+| **新发现·用户交互/会话模式** | `exit_plan_mode`（把计划推给**用户**批准） | ⛔ 执行者禁用 |
+| **新发现·共享库不可逆删除** | `memory_forget` / `technique_forget`（都支持 `"*"` 全清、**跨项目共享**） | ⛔ 执行者禁用（`*_save` / `technique_apply` **保留**） |
+| **新发现·纪律豁免** | `failure_forgive`（"这次算了"） | ⛔ 执行者禁用（豁免只能由**用户**批准） |
+| **新发现·会话生命周期** | `create_goal` / `update_goal`（会触发**自动续轮** ⇒ 执行者能自我续命、脱离驾驶舱） | ⛔ 执行者禁用 |
+| 已挡（上一轮） | `subagent` / `subagent_fork` / `workflow` / `sdo_plan` | ⛔ 执行者禁用 |
+| 按角色分权·**核对通过** | `write` / `edit` / `bash` / `ask_user_question` | 声明集与 deny 集互补（无泄露） |
+| 有意全开（逐条写理由） | 只读族（`read`/`grep`/`glob`/`read_image`/`memory_search`/`technique_search`/`technique_get`/`failure_list`/`get_goal`/`cordis_inspect_*`）、沉淀族（`memory_save`/`technique_save`/`technique_apply`/`technique_export`/`technique_learn`/`failure_resolve`）、`web_*`/`todo_write`/`present`/`skill`、`send_message`/`list_agents`/`interrupt_agent`（起不了新运行） | 保持继承 |
+
+- **执行者禁用面扩成 `EXECUTOR_DENIED_TOOLS`**（= 上表 ⛔ 的 11 个；`EXECUTOR_FORBIDDEN_TOOLS` 仍是其中
+  "能起新 agent 运行"的 4 个，回执文案分两类）。三种施加方式与上一轮相同（下发 deny 面 / 钩子
+  `MaskContext.executor` / 提示面与 8 张角色卡），新增回执键 `kMaskExecutorDenied` 说清"平台、用户、会话、
+  共享库这些层面归驾驶舱"。
+- **防复发（本轮真正的交付物）**：`test/m75.test.ts` 新增 **M75-09 审计守卫** ——
+  ① 宿主工具面清单 `HOST_TOOL_FACE`（40 个）**逐个归类**，任何一个**没归类**就直接红
+  （宿主升级加了新工具 ⇒ 必须有人做决定）；② 逐个核"按角色分权"的工具**分权是否互补**，
+  不互补（= 有人会静默拿到）就红并点名是哪些角色。**这条守卫能机械地抓住"再一个 `ask_user_question`"**。
+- **变异自证（7/7 全杀）**：`plugin_manager` / `memory_forget`+`technique_forget` / `create_goal`+`update_goal` /
+  `failure_forgive` / `exit_plan_mode` 各自从禁用面拿掉、`ask_user_question` 只挡 3 个角色（**人为造一个泄露**）、
+  以及"宿主新增一个没人归类的工具" —— 每一条都有用例变红（最后两条正好证明审计守卫在管用）。
+- 提示面同步：派发提示新增第 7 条（平台/用户/会话层面的动作不在执行者手里），8 张角色卡各加一条同义说明。
+
+### 修复（**用户裁定**：执行者不得再派发子代理；`ask_user_question` 仅 analyst）
+
+上一节把通用面改成"继承宿主默认"之后，**通用面里能起 agent 运行的那几个**就成了新的绕过口子：
+`subagent` / `subagent_fork` / `workflow` 起出来的子代理**不带角色掩码**（它们不经过 `toolFilter`），
+于是任何角色子代理只要拿到它们，就能派出一个"什么都能调"的子代理 —— **等于绕开整张掩码表**。
+`ask_user_question` 同理属于"上一轮改成继承之后**多给了**的能力"：旧白名单语义下只有 analyst 有它。
+
+- **执行者禁令（`EXECUTOR_FORBIDDEN_TOOLS`）**：`subagent` / `subagent_fork` / `workflow` / `sdo_plan`
+  四件套。施加方式**三层**（少一层都能绕）：
+  · **下发的 deny 面无条件含它**（`toolDenyList`）—— 那份面只会发给被派发的子会话；
+  · **钩子（B6）按上下文判**（`maskAllows` / `roleMaskDecision` 新增 `MaskContext.executor`），拒绝原因单列
+    `kMaskExecutorForbidden`，说清"它起的子代理不带掩码"；
+  · **派发提示第 6 条**与**8 张角色卡的「禁止事项」**都写明 —— 别让模型"试了才知道"（浪费一轮）。
+  **只对子会话生效**：驾驶舱（`delegationDepth` 0 / 无 `parentSession`）即使认领了卡仍是流程官，
+  派发是它的本职（真机 F2：单会话模式下驾驶舱被自己的角色归属锁死，连 `sdo_gate` 都调不了）。
+  `send_message` / `list_agents` / `interrupt_agent` **不在此列**：它们起不了新的运行，目标也被宿主限死在
+  "自己的直接子代理/父会话"，不构成"换个不带掩码的 agent 干活"的机械绕过（若也要挡，加一行进常量即可）。
+- **`ask_user_question` 仅 analyst**（用户裁定，回到旧白名单语义）：`roles.yml` 里**另外 7 个角色的 `deny`**
+  显式写上它（analyst 的 `allow` 保留、`deny` 不含 —— 改真源才算改口径，改提示词不算数）。
+  驾驶舱（root）仍可问用户（它不走角色掩码）。
+- **文档同步**：`roles.yml` 头部注释写清两层语义 + 执行者禁令"为什么不写进本表"（它是上下文相关、
+  8 个角色一视同仁）；8 张角色卡的「禁止事项」新增一条、并修掉「提示层与硬约束」段里那句**已过期**的
+  「仍未做的：工具面隐藏」（现在工具面隐藏已生效、真机公告面已核对）；README 的掩码段同步。
+- **测试**：`test/m75.test.ts` 增至 8 条（新增执行者禁令的三层断言 + `ask_user_question` 仅 analyst
+  含真源侧 `allow`/`deny` 与 `maskConflicts` 检查）；`test/m31`、`test/m32`、`test/m38` 的接线断言随新签名更新。
+- **变异自证（6/6 可杀 + 1 个等价变异）**：执行者禁令被拿掉 / 不进 deny 面 / 钩子不带 executor 上下文 /
+  `ask_user_question` 只加 analyst 自己 / 观测面不按执行者算越界 —— 每条都有用例变红。
+  **一个等价变异**：把"是不是子会话"改成**恒真**观察不到差别 —— 因为 `roleMaskDecision` 对 `cockpit`
+  本来就 fail-open，而 `attributeRole` 只有**子会话**才可能被归属成具体角色（根会话一律 `cockpit`，
+  m38 已钉）。记在这里，不假装它是"被杀死"的。
+- 顺带：`test/m29` 的"卡片声称做不到的工具必须真不在掩码里"守卫**抓到我自己**写错的一句 ——
+  role-office 卡里我把 `sdo_plan` 写成"不在我的工具面里"，而它在 office 的 `allow` 里（只是**执行者**禁用）。
+  已改成统一措辞（"对被派发的执行者一律拒绝"），这正说明该守卫在管用。
+
+### 修复（**用户发现：角色掩码把宿主通用面一起挡掉了** —— 子代理「无法使用 `technique_apply`」）
+
+**症状（用户转述子代理原话）**：派发出去的子代理报**无法使用 `technique_apply`**。
+**机械核对**（该子会话 `request/header` 的公告面，`.sdo/evidence/child-tools.jsonl`）：
+`bash edit glob grep read read_image sdo_task sdo_test sdo_trace skill write` —— **只有角色声明的十几个名字**，
+宿主/harness 的整个通用面（`technique_apply` / `memory_*` / `web_search` / `todo_write` / `subagent` /
+`todo_write` / `present` …）**一个都没有**。
+
+**根因**：`toolFilter` 一直按 **allow 白名单**下发（`{allow: 角色的十几个名字, deny}`），
+而宿主 `tools.restrict({allow})` 的语义是"**只保留**这些" ⇒ 通用面被一起清空。
+（这与上一轮 D-14 同源：修好探针之后，白名单**第一次真的生效**，于是这个一直存在的口径问题才显形 ——
+子代理此前是"零工具"，现在是"只有角色面"。）
+
+**修（口径：SDO 流程面白名单 + 通用面黑名单）**：
+- **SDO 流程面**（`sdo_*`，本插件注册的**封闭集合**）—— 仍是**白名单**：`roles.yml` 的 `allow` 里没列的
+  `sdo_*` 一律进 deny 面（developer 拿不到 `sdo_gate`、reviewer 拿不到 `sdo_test`…这是**职责分离**）。
+  补集由**真实注册名**现算（`officeToolNames`，从注册循环里收集），绝不硬编码第二份名单。
+- **通用面**（`read`/`write`/`bash`/`skill`/记忆/技能/联网…）—— 改成**黑名单**：只有 `roles.yml` 的 `deny`
+  明写挡住的才挡（谁能写、谁能跑 bash 早已逐角色写清），其余**继承宿主默认**。
+- **下发内容**：`startDispatch` 现在**只发 `deny`、不发 `allow`**（两个分支都改了）。发 `allow` 就等于
+  把通用面隐藏掉 —— 这正是本缺陷本身，`test/m75` 把两个分支都钉住。
+- **钩子（B6）同口径**：`maskAllows` 也改成两层（`sdo_*` 走 allow 白名单；通用面只有 `deny` 才拒），
+  否则会出现"工具可见但一调就被钩子拒"的**更糟**状态。
+- **认不出角色 ⇒ 整个 SDO 流程面进 deny**（`toolDenyList` 对未知角色返回全部 `sdo_*`）：
+  这一层是职责分离，方向必须 fail-closed（旧实现读不到掩码表就退回"内置兜底名单"）。
+- **回执与台账说清两层**：成功回执分开报「**SDO 流程面白名单 N 个**」与「**通用面继承宿主默认，
+  只挡 deny 面 M 个**」并列出 deny 名单；`dispatch/started` 新增 `denyTools`/`deny`/`sdoAllow`
+  三个字段（审计"掩码到底下到哪一层"）；deny 面为**空**时新增显式告警（= 掩码没生效）。
+- **文档**：README 的掩码段与"B6"段改写成两层口径；已知边界那两行同步（`toolFilter` 那段不再说"白名单"）。
+
+- **测试**：新增 `test/m75.test.ts`（7 条，两层语义 + 补集不变量 + 未知角色 fail-closed +
+  `buildDispatch` 的 deny 面 + **两条下发分支都只发 deny** + 真实钩子对 `technique_apply` 放行/
+  `sdo_gate` 照旧拒绝 + SDO 工具清单与真实注册表不漂移）；`test/m7`、`test/m31`、`test/m32`、
+  `test/m36`、`test/m37`、`test/m46`、`test/m73` 的夹具与断言随口径更新
+  （`m7`/`m31` 的"白名单语义"改成两层语义，这是**有意的口径变更**，不是迁就实现）。
+- **变异自证（7/7 全杀）**：通用面回退成白名单 / deny 面丢掉 SDO 补集 / 认不出角色时全放行 /
+  两条下发分支任一条又发 `allow` / `buildDispatch` 不接真实注册名 / 工具面那行不再交代两层 ——
+  每条都有用例变红（其中"下发分支"第一轮只钉了 one-shot 那条，`startContinuable` 的变异**存活**，
+  补上第二条分支后被杀）。
+
+### 修复（sdo-test-new 2026-10-08 **修复复测报告**：R-1 新发现 major / D-4 minor / D-2 残留）
+
+**报告**：`plugins-test/sdo-test-new/docs/2026-10-08-修复复测报告.md`（上一轮 15 条的复测 + 新发现）。
+**复测结论我逐条核对**：11 条 ✅ / 2 条 🟡 / 1 条 ⚪ / 1 条 ❌ 与我修的东西一致，**其中 D-14 拿到了我上轮
+点名缺的那一步真机自证** —— 新子会话 `66cc01cf` 的 descriptor `allow=[read grep glob read_image skill write
+edit bash sdo_task sdo_trace sdo_test]`、`request/header` **有** tools、单轮 10 次 `tool/call`、卡被真的认领、
+`lib/parse.js` 落盘、`child-tools.jsonl` 记录 `violations: []`（**"工具面是否真收窄"首次得到自证**）。
+另：他们把结案清单里 journal 行数的勘误（407 → 402）也改了。
+
+- **R-1（major，复测新发现）复用路径会把卡投给"零工具的旧子会话"**。真机事实：修复前构建创建的
+  `f4ae86fa`（descriptor `toolFilter.allow: []`）在修复后**又被复用了两次**，两次都是"无工具 → 把工具调用
+  写成正文 → 1 轮结束"（`seq 406 dispatch/started tools:11 reused:true` 紧接 `seq 407 dispatch/observe-failed`，
+  `seq 408` 1279ms `completed`）。**根因**：复用判定只比 `maskHash`（角色 allow∪deny 的指纹），而"这个会话
+  **创建时**实际拿到几个工具"是**创建期**的事实 —— 掩码指纹覆盖不到。**修**：
+  · 复用改为要**正面证据**：`child-tools.jsonl` 里**观测到该子会话公告面非空**才允许复用；观测到零工具、
+    或**根本没有观测记录**，一律**强制新起**（新起永远是对的，复用只是省一次会话创建），原因进
+    `reuseSkipped` / `kPoolUnusable` 由回执点名；
+  · **不可复用的空闲会话不再占池位**（新增 `RolePool.unusable` + `freeSlots` 只减**可复用**的空闲）——
+    否则 `poolCaps: {developer: 1}` 的角色会**永久排队**：既不复用它、也没位子新建（比"少复用"严重得多）；
+  · 池视图新增一行如实印出这批会话与原因（"池里明明有人却新起了一个"必须解释得清）。
+- **D-4（minor，两轮报告都点名）同一维度的题库问题逐字相同**（Q-0014…Q-0017 是同一句
+  「谁不能看到这些数据？」，只有 `targets` 不同）⇒ 用户被问 4 遍同一件事。**修**：把红队通道早就有的
+  "**由需求自身派生**"抬头抽成一处口径（`focusHead`），题库与禁词通道一并使用 ——
+  `针对「<需求标题>」（该需求在「…」上尚未澄清）【本问聚焦：…】：<模板原文>`。抬头不破坏去重：
+  `alreadyAsked` 的归一化本来就会剥掉 `针对…：`，同一 (模板, 需求) 仍然只问一次。
+- **D-2 残留**：`scope.out` 明写「鉴权与多用户」，`grill` 却仍就它发问。**修**（口径：**不静默跳过** ——
+  "问的是非目标"不等于"这条问题没有价值"，非目标也可能需要确认）：新增 `nonGoalTerms` /
+  `nonGoalConflictOf`（只取**纯中文、≥2 字**的子词；`CSV`/`Web`/`SDO` 这类 ASCII 词满篇都是，不做匹配），
+  命中时把冲突词**记进问题真源**（`GrillQuestion.nonGoalConflict`）并在 grill 回执里**逐条点名**，
+  由人决定照答 / `assume` 记假设 / 标 `obsolete`。
+
+**复测报告里我**无法**复现的一条（给出反证，不当作已修）**："回执自报数与实算数差 1"（报告 §4 记
+D-12 的 24 项 vs 我上轮复算的 23 项）。我核到的是：回执那一行就是 `validatePlan(...).issues.length`
+（`describePlan` 的 `k92`，一个 (卡, 检查) 一条，`status: dropped` 的卡在 `validatePlan` 里**直接跳过**，
+全路径没有二次计数），**但**当时那批卡现在已被 drop/改写（现台账 37 张里 13 张非 dropped ⇒ 违规 **0**），
+`task/created` 事件只记 `id/role/size/requirements`（**没有 writeScopes**）⇒ 历史那一刻的卡集**已不可复原**。
+可复算口径已给出：`validatePlan(listTasks(store))`（见 `test/m74` 同款读法），报告若还留着快照可据此对齐。
+
+- **测试**：新增 `test/m74.test.ts`（6 条：R-1 三层 —— `rolePools` 记账 / `freeSlots` 不占位 / 准入层防御面、
+  office 把观测接进判定、池视图渲染；D-4 题面两两不同 + 抬头语义 + 幂等；非目标词与冲突判定）；
+  `test/m36.test.ts` 的复用用例按新口径改写（**结算 ≠ 可复用**：先断言"没观测到就不许复用、且不占池位"，
+  再 `noteChildFace` 观测到工具后才断言可复用）。
+- **变异自证（7/7 全杀）**：`rolePools` 忽略证据判定 / 不可复用的仍占池位 / 准入层忽略证据判定 /
+  office 不接观测 / 题库通道不加抬头 / 不记非目标冲突 / 非目标词不过滤 ASCII —— 每一条都有用例变红。
+
+### 修复（sdo-test-new 2026-10-08 全量测试结案清单：D-14 blocker / D-1·D-2·D-3·D-5·D-7·D-8·D-12 major / D-6·D-9·D-10·D-11 minor）
+
+**报告**：`plugins-test/sdo-test-new/docs/2026-10-08-SDO插件测试结案清单.md`（证据在 `docs/evidence/R2…R5/`）。
+**核实纪律**：15 条我先独立复核（读码定位到行 + 复跑报告自己的证据链；真机子会话记录、台账、journal 都读了），
+**全部复现** —— 其中两条我拿到的是**更准的数**（D-12 的机械校验违规实为 **23** 项而非 24；
+D-6 的 `phaseHistory` 在当前投影里两条 architecture 都已被后来的 exited 收口，但**重放本身**无条件成立），
+并按这两条口径写断言。另有一条**报告自身的数字错**：结案清单两处写「journal 407 行」，而该工作区自己的
+快照探针（`docs/evidence/R5/台账快照.txt`）写的是「402 行｜末事件 seq=402」，与我复算一致（seq 1..402 连续
+无缺口、无重复）—— **真源没有被截断**，是清单里的数字不对。报告自己的复现探针我一条都没改（本仓库工作区
+零改动，只在只读副本/临时目录里跑）。
+
+- **D-14（blocker）真派发下发的子代理拿到 0 个工具**（子会话描述符实测 `toolFilter.allow: []`；该子会话
+  `request/header` 里一个工具都没有，模型只能把工具调用写成正文然后结束；卡与工作区零变化）。
+  **根因**：宿主 `tools.get(name)` **省略 scope 时只查全局层**（dsh-tools 的契约原文：*omitted = the global view*），
+  而 `sdo-office` preset 的工具是 **agent 平面**注册（宿主源码注释：preset 工具是 *ANCESTOR contribution*）
+  ⇒ 15 个名字**全**判"宿主未知" ⇒ 白名单被清成空集原样下发。**修**（三处一起）：
+  · 探针**带上调用方 agent 的作用域**（`tools.get(name, call.agent)`，查不到再退回全局视图取并集）；
+  · `filterKnownTools` 新增**盲态**判定：名单非空却"全未知"= **探针不可用**（不是"宿主不认识这些名字"），
+    此时按原名单 fail-open 下发（若真有未注册名，宿主 `restrict()` 会**当场抛错** = 响的失败），
+    并新增 `applied`（**实际下发**的名单）与 `kept`/`dropped`（探针的说法）分开；
+  · 派发回执只报**实际下发**的名单与条数，空集时新增 `kDispatchEmptyFace` **显式告警**（旧实现把
+    "角色意图"当"已下发"写，与 `dispatch/started.tools: 0` 在同一份回执里并列）。
+- **D-14 连带**：① `request/header` 里工具面为空以前**直接 return** ⇒ 观测彻底静默（README 明写"观测失败
+  不再静默"）；现在记 `dispatch/observe-failed` 并写明这是"零工具派发"的直接症状；
+  ② `uiDispatch.kReportedLine` / `kFinishedLine` 点明那是**子运行结束**（≠ 这张卡完成），不再只印一个
+  `completed`。
+- **D-15（major）显式 `backend=…` 被"同迭代二选一锁"静默覆盖**（真机：显式要 `inline` 被换回 `subagent`；
+  降级原因只进 `dispatch/decided`，**成功回执里没有**；而文案却承诺"如需切换请显式说明并留痕"——入口不存在）。
+  **修**：`pickBackend` 新增 `explicit`（默认 = 调用方点名了后端）：**显式点名时锁让路**并留 `overrideNote`
+  （与 `degradedReason` 语义分开：降级 = 结果≠请求；覆盖 = 结果=请求、锁让路），两者都进
+  `dispatch/decided`（新增 `overrideNote` 字段）与**成功路径**回执（`describeDispatchStarted` /
+  `describeInlineHandoff` 新增参数）；`auto`（没点名）照旧守锁。
+- **D-7（major）复合 JSON 参数写坏 ⇒ 回执是一条不相干的预算回执**。`jsonOr` 的失败分支用的键是
+  `uiIndex.k1`，而那个键的文案是**「预算已更新：{p1}」**且模板里没有 `{p2}` ⇒ 34 个调用点（
+  `alternatives`/`consequences`/`dimensions`/`steps`/`findings`…）里任何一处写坏，用户看到的都是
+  "预算已更新"，真正的解析错误被丢掉、操作静默未执行（真机上据此误判成"并行写台账踩踏"）。
+  **修**：新增 `uiIndex.kJsonParseFailed`（参数名 + 宿主给的错误正文 + **明说本次没有写入任何东西**）。
+- **D-8（major）`sdo_adr action=record` 静默忽略传入的 `id`**（传 `ADR-999` 落 `ADR-006`，而同一 schema 的
+  `param.id` 明写"标识（如 REQ-001 / TASK-001 / Q-0001）"）。**修**：显式 `id` 被**尊重**（`RecordAdrInput.id`），
+  但先把两件事挡在前面：形状（`isAdrId`：`ADR-` + ≥3 位；它直接变成文件名）与**冲突**（重号会覆盖别人的
+  决策史）⇒ 分别报 `kAdrIdBad` / `kAdrIdTaken`，两者都**不写盘**。`supersede` 时 `id === supersedes` 也拒。
+- **D-1（major）`pickedOption` 的下标绑插件自己的选项表，而台账只留一句拼好的正文**：模型把题转述给用户时
+  会重排/改写选项 ⇒ 真机上 `answer` 正文与「（选择：…）」**互相矛盾**，事后无法复原"用户到底选了什么"。
+  **修**：`GrillQuestion` 新增 `pickedOption` / `pickedLabel`（标签按插件选项表解析 = 可复算的那一份），
+  文件与 `question/answered` 事件**各记一份**；`param.pickedOption` 的描述写明"下标绑的是插件存的选项表，
+  转述重排时仍按下标表给，并保留用户原话"。
+- **D-2（major）提问目标与需求内容无关**（真机：`REQ-001` 既无时延也无上游，却被问"多少毫秒 / P99"与
+  "上游超时怎么办"，答复还被记在它名下）。根因：`selectQuestions` 只按"这条需求在该维度分最低"选题，
+  **从不看正文**——而"分低"恰恰等于"没有该关注点"。**修**：新增 `scoring.concernApplies` 关注点闸门，
+  只对**必须来自需求自身内容**的两个维度（`interface` / `constraint`）设闸；`user`/`scenario`/`data`/
+  `boundary` 等"问谁关心、怎么兜底永远合理"的维度**不设闸**（不把闸门泛化成"正文没写就不许问"）。
+- **D-3（major）模型通道的质询结构上没有选项**（`writeProposedQuestions` 硬编码 `options: []`，
+  `answer` 又拒绝对它用 `pickedOption` ⇒ 一句"该题只有 0 个选项"的死胡同）。**修**：`file` 通道接受
+  `options[{label,cost}]` 与 `recommendation`（`sanitizeOptions` 净化：非数组/无 label 一律当没有选项，
+  最多 6 项），落进题目文件；0 选项的题再用 `pickedOption` 时给出**可执行的出路**（`uiGrill.noOptionsFreeText`：
+  改用自由文本 `answer`，并说明怎么让这类题带上选项）；`param.questions` 描述同步。
+- **D-5（major）议题文件与门禁判定脱钩，且处置路径不可达**（6 个 `issues/*.yml` 在 G2 通过后仍
+  `status: open`，journal `issue/closed × 0`，而 C8 从问题/风险**现算**判"已全部闭环"；`disposeIssue()`
+  被 `office.ts` 包了一层却**没有任何 action 接到它**，`issue/closed` 还是个挂在 G2 签字失效集合里的
+  **不可达事件**）。**修**：接通这条路径 —— `REDTEAM_ACTIONS` 新增 `dispose`（工具面加 `id` /
+  `disposition=risk|requirement` / `note`），处置后文件 `status/disposition` 追平并留 `issue/closed`；
+  回执**分开说**两种情况（"这次真的闭环了" vs "门禁此前已现算判闭环、本次只是把文件追平"）。
+  不自动改写手可编辑真源（那会把派生结论冒充人工处置），所以另给入口 + 回执点明口径。
+- **D-6（minor）`baseline` 重放阶段转移**（真机 journal 出现两对 `exited requirements` + `entered architecture`，
+  `phaseHistory` 里两个 architecture 条目 ⇒ 阶段时长统计与审计失效）。**修**：按流程定义的阶段顺序判
+  "当前阶段是否已到 `architecture`"，到过就不再写；并且**如实写真实退出的阶段**（旧实现硬编码
+  `exited requirements`——在 requirements **之前**的阶段调 baseline 时那是一条**假事件**，真机夹具里就是
+  `intake`）；`advance()` 对称地不再做"自转移"。冻结需求本身照做（那是 baseline 的本职）。
+- **D-9（minor）对象数组里的字符串列表被读成空 + 误报"是 string 类型"**（真机 `design/method-dfd.yml` 的
+  `levels[].flows` 在盘上是**合法的字符串列表**，被读成空列表并提示"请写成 `- 值` 列表"——正是作者已经
+  写的形状；后果比报告说的更重：**父/子层流量平衡校验因此空洞通过**）。**修**：新增
+  `scalar.looseRecordListOf`（标量项按 `fromScalar` 收回、只对"既不是标量也不是映射"的项报形状问题），
+  `levels[].flows` / `internalFlows` 改用它（那里的 `fromScalar` 早就写好了，只是旧读法让它成为死代码）。
+- **D-10（minor）条数会算出 NaN**（真机回执「（NaN 条）」、journal `entries: null`；根因是
+  `artifact.rules.allowed.length` 是**全函数唯一**没有 `Array.isArray`/`?? 0` 保护的计数）。**修**：
+  `allowed` 与 `levels[].processes` 两处都加保护（后者只能被直接调用者触发，但同样会得 NaN）。
+- **D-11（minor）形状会让内容丢失时**照样写盘**（而 C-29 会读那份形状判红 ⇒ 调用方带着"过不了判据"的
+  产物继续走，还平白作废了一次签字）。**修**：写入边界新增 `methodArtifactShapeProblems`（把**这次提交的
+  正文**按同一条读路径跑一遍），只拦 `handling === 'empty'`（**内容会丢**才拒写，"标量当单元素"这类可无损
+  收回的形状照旧放行），口径与 `sdo_plan action=profile` 统一：**校验不过 = 整次拒绝、不写盘**。
+- **D-12（major，设计取舍）结构通道"每设计元素一张"在本项目产出大量不可用卡**（21 张里 17 张对应 actor/
+  实体/外部系统等**非可独立实现**的单元，写范围还是默认模板 `src/des-XXX/`）。本轮修**可确证的那一半**：
+  · `decompose` 建卡时**顺手建立 `req-task` 追溯边**（旧实现只 `createTask`，边要等卡**完成**才补 ⇒
+    G5 的 C-41 在开发期永远是 0，真机上只能人工补 22 条；`linkMany` 自带去重，与完成时的补边不重复）；
+  · 粒度可配（跳过非可实现种类）**未做**：那要改拆卡策略与判据口径，属**待裁决的设计取舍**，已在
+    报告复核结论里显式记为"未修 + 理由"，不假装已解决。
+- **测试**：新增 `test/m73.test.ts`（13 条，每条对着上面一条缺陷，且都**双向**：该堵的必须红、正常路径
+  必须绿）；`test/m4.test.ts` 的后端锁用例按新口径改写（锁只管 `auto`，显式点名必须生效）；
+  `test/m46.test.ts` / `test/m32.test.ts` / `test/m37.test.ts` 的接线断言随签名更新。
+- **变异自证（15/15 全杀）**：逐条把修复改回旧行为并重建 —— 盲态不再 fail-open、探针丢掉 agent 作用域、
+  回执报角色意图、显式点名被锁吞掉、`jsonOr` 用回预算键、忽略显式 `id`、不记结构化选择、关注点闸门失效、
+  `file` 通道不接受选项、`dispose` 不可达、阶段转移重放、flows 用回严格读法、计数回退 NaN、形状坏也照写、
+  拆卡不建追溯边 —— **每一条都有用例变红**（其中"回执报角色意图"这条第一轮**存活**，暴露出我原来的断言
+  只测了 `describeDispatchStarted` 本身、没测**调用点**，补上调用点守卫后被杀）。
+
+### 修复（sdo-test 2026-10-08 测试报告：G-1 blocker / G-2 major / F-5 / F-6）
+
+**报告**：`plugins-test/sdo-test/docs/testdoc/2026-10-08-插件测试报告-评审发现核实机制.md`
+（被测对象就是上一轮新加的「评审结果要核实才能采纳」机制；报告 §2 的五路实测我逐条复核一致）。
+
+- **G-1（blocker）实现会话退役 ⇒ 评审永久不可采纳、且两个桶互相遮挡**（我自建探针复现：一次性子会话
+  认领 → 卡 done → 子会话结算退役 ⇒ 驾驶舱核实被 `not-implementer` 拒、done 卡又认领不回来
+  ⇒ 采纳状态永远 `unverified`；而门禁在 `unreviewed` 上**提前 return**，把"有 pass 评审但采纳不了"
+  的卡藏在身后）。**修**：
+  · `verifyReviewFinding` 的"实现方"判定加入**不可达退化**（与既有 `no-claim` 同性质，宁可少一层身份校验，
+    也不把老数据变成没法干活），但**每种原因都如实记**进台账与 journal：`owner-tenure-over`（卡已离开
+    `in-progress` ⇒ 实现方任期结束）／`owner-settled`（派发已结算 ⇒ 看不到活的执行者）；
+    **卡仍在进行中 + 子会话在飞**时照旧只认实现方（`not-implementer` 不放宽）。
+  · C-42 / C-52 **两个桶一起报**（各自的消息与补救话术并列），死结不再隐形。
+- **G-2（major）老格式评审的防篡改判据整体失效且静默**（报告实测本项目 20/20 无指纹；我在只读副本上
+  机械复算：`review/recorded` 20 条、带 `contentHash` **0** 条，评审文件同样 0；自建探针：把
+  `changes-requested` 手改成 `pass` **查不出来**）。**修**：
+  · 采纳状态新增 `tamperGuard: 'content-hash' | 'none-legacy'`；门禁**成功文案**与 `sdo_review action=list`
+    都显式标注"该条不具备防篡改保护"（不静默、也不把老台账判死）；
+  · 新增**补记通道** `sdo_review action=rehash id=REV-…`（落 `review/hashed` 真源事件）：补记之后改
+    verdict / 改发现正文即判 `tampered`；补记**之前**的改动仍不可校验（回执与文案如实写明）；
+  · **不许洗白**：已记录指纹与当前内容不一致 ⇒ 补记被拒并保持 `tampered`（那正是"改过"的证据）。
+- **F-5（minor，承接 10-05 报告）`sdo_design action=artifact` 的列表字段是整列覆盖，描述与回执都不说**
+  （真机：只想补 2 条时序把既有 7 条覆盖掉，正文只能在渲染出的文档里找回）。**修**（不改行为，改"不静默"）：
+  描述写明"列表字段是整列覆盖"；**本次提交会让某个列表变短时才**在覆盖前先留一份
+  `evidence/file-history/` 快照（复用同一套命名与上限）；回执点名「整列覆盖：dictionary 7 → 2」与副本落点。
+  只改 `summary` / 不动列表时不产生多余快照。
+- **F-6（minor，承接 10-05 报告）非 git 工作区的 `workspace-changes` 结构性采不到**：现状已经**不是静默留空**
+  （`kWorkScopeNotAudited` 是显式告警，并说明"未对账 ≠ 没有越界 ≠ 判越界"）。本轮按报告把话说完：
+  点名两种已知原因（宿主只对顶层轮次公告 / 工作区不是 git 仓库），并给出两条可执行退路（换能采到的会话；
+  用 `evidence.artifact` 逐条列本轮实际写入的文件再人工比对）。**明确不自动退回 mtime 扫描** ——
+  真机上正是 mtime 把上一次中断会话留下的旧文件当成本轮改动（F-7 事故），比"未对账"更危险。
+- 用例：`test/m70.test.ts`（G-1，3 条）、`test/m71.test.ts`（G-2，3 条）、`test/m72.test.ts`（F-5，3 条）。
+  另补 `test/m68.test.ts` 第 4 条：**工具层 `done` 关闭环**（报告 §6 自陈未实测的那条 —— 未核实完时
+  `sdo_task action=done` 回执带 `review-open-findings`、逐条核实后放行且真的落 `task/done`）。
+  变异自证 10 条：去掉不可达退化 / 退化过度（任何人随时可核）/ 两个桶回到提前 return / 补记允许洗白 /
+  补记不生效 / 门禁不打"老格式"标注 / 回执不报整列覆盖 / 覆盖前不留副本 / 描述不写整列覆盖 / `done` 关不再拦 ⇒ 各自被对应用例杀掉。
+
+### 修复 + 新守卫：提示面里的命令必须真实可用（可达性那一类缺陷的机械化）
+
+- **修复（minor，真实误导）**：`kGateUnknownRemedy`（两包）教模型敲 **`sdo_gate action=list`** ——
+  而 `sdo_gate` 根本没有 `list` 动作（真实动作：check / advance / sign / waive / rollback）⇒ 模型照抄必然
+  被 `k59`（动作不认识）拒。改成真实面：`sdo_status` / `/sdo-board` 列当前流程声明的门禁与待判定项，
+  要看某道门的逐条判据用 `sdo_gate action=check gate=<门禁 id>`。
+- **新守卫 `test/m69.test.ts`**：把**语言包（zh / en）、README、全部角色卡、流程数据**里出现的每一条
+  `sdo_X action=Y` 抽出来，与**真实注册**的工具表对照 —— ① 工具必须存在；② `action` 必须是该工具
+  真实存在的动作（占位符 `<…>` / `…` 跳过）；③ 抽不到 ≥20 条命令时守卫**自己判红**（防正则空转）。
+  为什么需要它：`m24` 只守"动作清单有没有写进 README"、`m29` 只守**角色卡**，而**语言包/README 里的
+  命令行**此前无人守 —— 上一轮"核实动作挂在 `sdo_review` 上、实现角色掩码里没有它"这类事故
+  （提示面在教模型做一件它做不到的事）正好落在盲区里。
+- 变异自证：语言包里塞一条不存在的动作（`sdo_gate action=list`）/ 一个不存在的工具（`sdo_gatex action=check`）
+  ⇒ M69-01 各自红。
+
+### 新机制：**评审结果要被核实才能采纳**（用户 2026-10-08 口径）
+
+口径原话：「评审的（任务）完成不需要被评审，但**评审结果需要被核实才能采纳**；评审结果发给开发者角色
+改动时，**开发者应自行核实**（就像本插件自己的开发会话：评审员报的每条发现，实现者要先自己复现，
+复现不了要给出反证）」。落成四条机械后果：
+
+- **采纳**：`pass` 评审要满足 C-42（`review.required`）与 C-52（`review.independent`）的覆盖要求，
+  必须是**已采纳**状态 —— 即它的**每条发现**都由**该卡的实现会话**核实过（`reproduced` 照发现能复现 /
+  `refuted` 复现不了并给反证）。没核实的 `pass` 评审不再算数，且判据文案**区分**「没有通过评审」与
+  「有通过评审但未核实 / 被发现改过 / 核实无真源佐证」（四条消息各不相同，不许混成一句）。
+- **评审卡不再被要求"再被评审"**：C-52 的覆盖子句与 C-42 一样排除 `role === 'reviewer'`（SDO-35 的
+  实测理由：自我递归在池子里不成立，且只会诱导编排者盖橡皮图章）。**但评审的产出（findings）要核实** ——
+  这正是本条新机制补上的那一半。
+- **闭合**：卡上**最新一条**评审是 `changes-requested` / `reject` 且还有未核实的发现时，`sdo_task action=done`
+  **被拒**（新 code `review-open-findings`，点名评审 id 与还差第几条）—— "没核实就改、改完就说完成"这条路封死。
+- **新动作** `sdo_task action=verify-review`（`review` + `index` 从 1 起 + `outcome` + **必填 `proof`**）；
+  **为什么挂在 `sdo_task` 而不是 `sdo_review`**：核实必须由**实现会话**做，而 `sdo_review` 在
+  developer / tester / delivery 的掩码里是**显式 deny**（职责分离，"不可见评审"）—— 挂在 `sdo_review` 上
+  机制在真机上**根本够不着**（域层规则再对也没用，正是本项目反复出现的"检查存在但够不着"）。
+  `sdo_task` 是协议通道（8 个角色都在掩码里，`m31-04` 有机械守卫），所以**不放宽任何一条职责分离**就可达；
+  `sdo_review` 保持只给评审员（`record` / `list`），`m68-03` 专门钉住这条可达性与职责分离。
+  规则本身：
+  · 只能由**该卡最新认领会话**核实（否则拒 `not-implementer`，并点名真正的实现会话）；
+  · **不能自己核实自己**（记录该评审的会话不许给自己发"已核实"，拒 `self-verify`）；
+  · 老台账拿不到认领时放行但如实标注 `ownerChecked: 'no-claim'`（不把老数据变成没法干活）。
+- **三条防腐**（评审与核实台账都是手可编辑文件，纪律与 D4/R1 的"文件 vs journal"一致）：
+  ① 核实绑**发现正文指纹** ⇒ 发现被改，旧核实失效（`stale`）；
+  ② 核实必须有 `review/verified` **真源事件**佐证 ⇒ 只有台账里的记录 = 伪造（`forged`）；
+  ③ `review/recorded` 现在记**评审内容指纹**（`contentHash`）⇒ 把 `changes-requested` 手改成 `pass`
+  并补一套核实 = `tampered`，永远不采纳；连 `review/recorded` 事件都没有的手写评审 = `unrecorded`。
+- **可见性（不得静默）**：`action=record` 的回执明说"评审结果不会自动被采纳，要由实现会话逐条核实"；
+  `action=list` 逐条印「核实 i/n + 采纳状态」；**状态块**每轮列出待核实的评审 id。
+- **口径变化会影响既有夹具（有意为之，方向是收紧）**：`M30-12`（G5-C-42）与 `m4` 的 GI 夹具原先"记一条
+  `pass` 评审即放行"，现在必须补一步由实现会话核实 —— 夹具已按新口径更新，**没有放松任何判据**。
+- 用例：`test/m67.test.ts`（域层 4 条：采纳状态机 / 谁能核实 / 两条门禁 / `done` 关）、
+  `test/m68.test.ts`（工具层 3 条：真实工具接线 / 状态块不得静默 / **可达性**：实现角色够得着 `sdo_task` 而仍看不见 `sdo_review`）。
+  变异自证 9 条：门禁不看采纳状态、采纳判定不看 journal 佐证、不比对评审内容指纹、去掉"不能自己核实自己"、
+  去掉"只能由实现会话核实"、`done` 关不再拦未核实的改动要求、删掉 `case 'verify-review'` 分支 ⇒ 各自被对应用例杀掉。
+
+### 修复（第一轮整仓评审 §2 第 1 / 3 条：掩码逃逸 + 契约"签后重签"）
+
+- **§2 第 1 条（评审员"读码成立、两次探针没定住"，我定住了）掩码随卡状态消失**：掩码归属
+  （`claimsBySession`）要求认领事件的卡**仍然 `in-progress`**；卡一旦 done / dropped / blocked / ready，
+  归属失效 ⇒ `attributeRole` 退回 `unclaimed-child` ⇒ **整段跳过掩码**。我的探针第一次也没定住，
+  原因记下来了：**角色缓存**（`roleCacheVersion` + 5 秒 TTL）只在认领/回报时失效，`drop` 不碰它 ——
+  等过 TTL 才现原形：`reviewer` 子会话在卡 in-progress 时调 `write` = DENY，驾驶舱 `drop` 掉卡、
+  等过 5 秒后同一个调用 = **ALLOW**（而 `dispatch/started` 血缘仍在）。**修**：`attributeRole` 新增
+  **血缘角色兜底** `dispatchedRole`（取自 `dispatch/started`，同一会话复用多次取**最新一条**；
+  派发时 `roleCacheVersion` 立即 +1，不再滞后一个 TTL）。方向 fail-closed：认不出的角色名或不是我们
+  派发的子会话保持原口径放行。用例 `test/m65.test.ts`（4 条，含 **done / blocked 两条真实完成路径** —— `done` 会自动 +1 角色缓存版本，
+  所以掩码仍在不能用"缓存还没过期"解释）。变异自证：去掉血缘兜底 / 取第一条派发 /
+  把不认识的孩子当成 developer ⇒ 各自红。
+- **§2 第 3 条（"未构造签后重签场景"，我构造了）`frozenSeq` 取第一条 `design/confirmed`**：同一份契约
+  可以**重复确认**（改契约再签一次），而门禁 `construction.packages-satisfied`（C-43/C-84）是**事后**
+  拿那次认领的序号复核已完成卡的 ⇒ `签(50) → 认领(60) → 重签(120)` 在旧实现下 `50 < 60` 判**无 gap**，
+  "卡在契约变更前动的工"查不出来。**修**：取**最新**一条确认（本意是"卡开工时生效的那版契约已冻结"）；
+  这是**收紧**，历史卡走门禁注释里写明的**豁免**（用例里钉住豁免仍然有效）。用例 `test/m66.test.ts`（3 条）。
+  变异自证：退回 `.find` ⇒ M66-01 红。
+- **已核实但不改（口径差异，请用户定）**：C-52 `review.independent`（G6）的"每张完成卡都要有 pass 评审"
+  不排除 **reviewer 卡**，而 C-42 `review.required`（G5）按 SDO-35 的实测理由**排除**了它们（"再评一次
+  在池子里不成立"）。机制我读码确认；后果是**多一步成本**（换一个会话，或驾驶舱自己记一条 pass 评审），
+  **不是假绿**，评审员也判定"是成本、不是死锁" ⇒ 本轮不动门禁口径，如实列出待你决定：对齐（G6 也排除
+  reviewer 卡）还是保留（在 README 里写明这条成本）。
+- 第一轮 §2 第 4 条（`sdo_test` 同时给 `mutation` + `contractTest` 时后者静默丢弃）已在
+  §2.5c 修复（见下）；第 2 条（C-52）见上。
+
+### 修复（第二轮评审 §3.1 / §3.3）
+
+- **§3.1（HIGH）C-25 缓存键的"真源版本"用 `count:size:maxMtime` ⇒ 假绿**：**同字节数**的原地改写，
+  只要 mtime 不越过当时的最大值（git checkout / rsync / 备份还原 / 同毫秒两次写都会这样），键就完全不变
+  ⇒ **命中旧渲染**（真机复现：281B 原地改写 + mtime 调回 ⇒ 真门禁 G3 仍 ok）。现在 `truthRevision` 取
+  **内容哈希**（路径排序后逐个喂 sha256，输出 `count:size:sha16`）：内容变则键必变；**只动 mtime 不再产生假失配**。
+  用例 `test/m59.test.ts`（3 条）。变异自证：指纹不含内容 ⇒ 红。
+- **§3.3（HIGH）`diffVerify` 判据两套实现、头注释却说"互不放松"**：porting 包查枚举取值 / `baselineRef` /
+  `controlRepo`，而设计适用性侧只查两个字段非空（真机复现：`baselineSource: '我的直觉'` + `baselineRef: ''`
+  ⇒ `missingArtifacts = []` 放过）。现在抽出**唯一一份** `diffVerifyGaps`（`method.ts`），两侧共用；
+  适用性侧的注释改成如实描述。用例 `test/m60.test.ts`。变异自证：适用性侧退回"只查非空" ⇒ 红。
+  **后一半（"方法选择 `invalid` 时 `missing` 聚合成 `[]` ⇒ 失败说明为空"）未复现**：`methodProducts` 对非
+  `chosen` 状态返回 `missing: [selection.reason]`、`detail: selection.reason`，失败说明非空 —— 已按反证记录。
+
+
+### 修复（第二轮评审 §4.1 / §4.2：真源被写成永久不可读 + 空行静默丢失）
+
+- **§4.1（HIGH）含换行的**列表元素**写出去自己读不回来**：写出侧把多行串写成块标量，而**列表项**那种形状
+  （`- |-` + 缩进正文）解析侧（`parseList`）根本不认 ⇒ `sdo_quality action=evaluate` 的 risks/sensitivities
+  任一元素含换行时，`.sdo/quality/atam.yml` 会**永久不可读**，而 journal 已经记了"已记录"。
+  **修**：写出侧收口 —— 多行串（以及含 tab / 双引号 / 反斜杠 / 控制字符的串）一律写成**转义双引号**
+  （解析侧本来就支持 `\n` 等转义，且用 `JSON.parse` 解码），写读往返天然成立；顺带删掉不再使用的
+  `emitBlockScalar`（映射值的多行分支两处一并收口）。
+- **§4.2（HIGH）块标量里的空行被读取时静默丢弃**（多段正文往返掉空行）：同一处修法即解 ——
+  多段正文现在也是转义双引号，`para1\n\npara2` 原样往返。**兼容**：解析侧另补**列表块标量**
+  （`- |-` / `- |` / `- >`）的读取，存量与手写真源照样能读。
+- 用例 `test/m58.test.ts`（3 条：列表多行往返 / 多段正文与特殊字符往返 / 存量列表块标量兼容）。
+  变异自证：① 多行串又走块标量 ⇒ 红；② 解析侧不认列表块标量 ⇒ 红。
+
+
+### 修复（第二轮整仓评审：§4.3 / §4.4 / §2.1 / §2.2 / §2.4 / §2.5c）
+
+- **§4.3（HIGH）三张角色卡教角色用 `pdf`**：`role-developer` / `role-reviewer` / `role-tester` 都写"工具面里有
+  `read_image` / **`pdf`**"，而掩码表 `READ_ONLY_INSPECTION_TOOLS` 里**没有** `pdf`、宿主也没注册它
+  （`roles.ts` 自己还记着"加进去会让真机报 names unknown global tool pdf、整个工具面坏掉"）⇒ 已从三张卡删掉。
+- **§4.4（HIGH）取代一个不存在的 ADR：静默不生效、回执却说"已取代"**：旧实现无论目标存不存在都先记新 ADR，
+  只有找到旧记录才标记它，而文案是「已取代 {p1}」。现在**先做存在性校验**，目标不存在 ⇒ 可读拒绝
+  （`kAdrSupersedeMissing`），既不取代也不新记。
+- **§2.1（HIGH）A2 补记不带 `journalSeq` ⇒ 对账永远不命中**（读者要求 `journalSeq !== undefined && > sinceSeq`）
+  ⇒ `unresolvedSeqs` 反复列同一批、**越界写永不告警**（真机 seq 42）。现在补记与原记录**同量纲**：复用同一
+  `(sessionId, hostSeq)` 条目的 `journalSeq`，抓不到就退回"补记这一刻的 journal 序号"；**连序号都拿不到（真源为空）
+  就不写** —— 宁可回执如实说"未对账"，也不写一条没有量纲键、永远不命中的条目。
+- **§2.2（HIGH）状态路径与派发路径两套池口径**：状态路径 `poolPlan` 不传 `maskHashOf` ⇒ 同一状态下
+  `queued/blocked=pool-full` 而派发路径 `dispatch=[TASK-9/复用]`。现在两条路径传**同一个**指纹函数。
+- **§2.4（HIGH）`maskHead` 文案与真机观测矛盾**（说"allow 之外的工具你看不到"，而真机上宿主并不隐藏）⇒
+  改成"**声明**之外不得调用；宿主未必替你隐藏，越界调用由 `tools/pre-execute` 钩子拒绝"（两包同步）。
+- **§2.5c（minor）`sdo_test` 同时给 `mutation` + `contractTest` 时后者被静默丢弃**（工具面声明了两个参数）⇒
+  两条各自落账、回执按顺序拼接。
+- 用例 `test/m57.test.ts`（§2.1 两条）。变异自证：§2.1 补记不带量纲键 ⇒ 红。
+
+### 修复（第二轮评审 §2.3 / §2.5a / §2.5b / §3.2 / §3.4）
+
+- **§2.3（HIGH）派发汇报键塌陷**：`dispatch/reported` 用 `${childSessionId}|${report}` 当"已读"键，而同一子会话为
+  **同一张卡**可以结算多次（多轮子代理 / 复用同一会话再跑一轮）—— 那时的 `task` 与报告落点**逐字相同**
+  ⇒ 第一笔送达后，后面每一笔结算都被当成"重复"而**永不推送**（探针复现：第二笔 `pending` 由应有的 1 变 0）。
+  现在已读登记改用**结算事件自身的 journal `seq`**（`DispatchFinished.seq` / `dispatch/reported.finishedSeq`）；
+  旧台账里没有 `finishedSeq` 的登记退化成**一条键额度**（一笔旧登记只顶一笔结算，按时间顺序消耗）——
+  升级既不重推历史，也不会再顺手吞掉同键的新结算。
+- **§2.5a（minor）`file-history/` 无界**，且我的探针查出同一处的第二个缺陷：快照名只到**毫秒**，
+  同一毫秒的连写**互相覆盖**（探针：`25 次写入 ⇒ 盘上只剩 5 份`）—— 防丢正文的机制自己在丢正文。
+  现在名字追加**同毫秒单调的 4 位序号**（名字序 == 时间序），并按真源各自**只保留最近 `FILE_HISTORY_KEEP`（20）份**。
+  这是观测产物（`evidence/`）故不写 journal 事件：新事件类型会流进"签字失效 / 中性表"两张表，
+  把例行清理变成门禁事件（见 `types.ts` 的 `isNeutralEvent`）。
+- **§2.5b（minor）`docs/DESIGN.md` 手改**：**"不一致无人察觉"是反证** —— C-25 把整份文件与"当前真源重渲染结果"
+  逐字节比对，手改正文必判红（`test/m19.test.ts` 的 `N-8 反例③` 早为此设了回归，`m63` 再钉一次）。
+  但"手改内容被下一次渲染**静默销毁**（无副本、无痕迹）"是真的 ⇒ 现在渲染覆盖前先判断盘上那份是不是
+  **我们上次渲染写下的**（比 `design/rendered` 新记的 `sha256`，旧事件退回字节数比较），不是就先按同一套
+  `file-history` 口径留副本，并把落点记进渲染事件（`design/rendered.snapshot`）。
+- **§3.2（HIGH）`viewsAbsent:[{kind:ui}]` + `surfaces:[web]` 绕过 C-20**：Y-4 只堵了"声明要做 ui 却没有界面真源"，
+  反方向"声明**不做** ui 而项目确有界面"照样 N/A/绿（同一份声明换个方向结论相反）。现在口径一句话：
+  **声明里的 `ui` 必须与 `uiDecision` 方向一致（`present ⟺ hasUi`）**，两个方向矛盾都判红并给出可执行补救；
+  方向一致时不重复判"界面是否确认"（那是 C-27 的职责）。
+- **§3.4（minor）红队"引用原文"形同虚设**：旧判据是"问题里出现需求陈述的**任意一个 2-gram**"，而中文里
+  「系统 / 功能 / 增加 / 支持」这类两字通用词几乎每句需求都有 ⇒ 与需求无关的问题也能过闸（评审探针原样复跑：
+  3 条里 2 条无关问题被放行）。现在要求**真的引用一段原文**：中文**连续 4 字以上**，或 ASCII **≥3 字符**的
+  token（数字/英文词）。门槛定在 4 而不是 3 有实测理由：那条无关问题与"系统须支持**增加导**出功能"恰好共有
+  `增加导`，3 字门槛仍会放行。提示词与拒绝理由（两包）同步改成写清缺什么。
+  **原探针复跑结果**：`accepted = ["导出时内存真的不超过 512 兆吗？"]`，
+  两条无关问题 `reason = noKeyword`。
+- 用例 `test/m61.test.ts`（§2.3，3 条）、`test/m62.test.ts`（§3.2，4 条）、`test/m63.test.ts`（§2.5a/b，4 条）、
+  `test/m64.test.ts`（§3.4，3 条）。变异自证：① 已读键回到 `(child, report)` ⇒ §2.3 红；② 旧登记额度不消耗 ⇒ 红；
+  ③ `ui` 缺席检查不比对真源（过度收紧）⇒ M62-02 红；④ 快照名回到时间戳直拼 / 取消份数上限 / 手改不留副本 /
+  只比字节数（等长手改漏判）/ 红队退回 2-gram 命中 / 中文门槛降回 3 字 ⇒ 各自红。
+- **未复现 / 反证（§5 各项，如实列出）**：**空 `report`**：确实写出 1 字节文件，但**不是静默**
+  （`childReportHealth` 返回 `short` + 字节数 1，`done` 回执会告警）；**子会话 id 截 8 位撞名**：宿主 `dsh-subagent`
+  的 childId 是 `randomUUID()`（v4，前 8 位随机，非时间前缀），8 位前缀撞名概率按生日界 ~1e-4/1000 个子会话，
+  且还要落在**同一张卡**上，未按缺陷处理（要消除只需把位数放宽，读者始终按 `dispatch/finished.report` 读回）；
+  **`reuseCapability` 声称 `activate`/`resume`**：它是**软探测**（`typeof === 'function'` 才认），
+  实测宿主 0.2.0-rc.1 的 `subagents` 服务**确实暴露 `startContinuable`**（`m32-08` 已钉），
+  两个别名只是兜底探测、不会宣称能力；**C-27 / 整门 G3 端到端**：`m15`（工具通道写到 C-27 转绿）、
+  `m17`、`m8`、`m13`（整门 G3 `status==='passed'`）已覆盖，非只有 C-20。
+
+
+### 修复（复审 R1–R4）
+
+- **R1（major）D4 只修了"有没有事件"，没修"事件说的什么"**：`recordTestResult(fail)` 之后把结果文件改成 `pass`
+  ⇒ 旧实现（连 D4 硬化后的 `unjournaled` 都算上）看不出问题：`passed=1`、`unjournaled=[]` ⇒ 纯 waterfall（无 tdd 包）
+  项目里"把红改成绿"这条捷径仍在。现在 `verificationStats` 新增 **`tampered`**（文件状态 ≠
+  `test/recorded` 事件状态），`tests.passed` 判据**判红并点名**（`kTestsTampered`：「TR-001（事件记 fail，文件写 pass）」），
+  补救话术要求用 `action=record` **新增**一条改判结果（历史与改判都留在真源里，不得覆盖旧结论）。
+- **R2（major）写失败仍会记 `truth/file-written`**：宿主明确「tool failures still receive post-execute」，
+  于是**失败**的 `.sdo` 真源写入照样作废 G3 签字。现在 post 钩子：① `result.isError === true` ⇒ **不记账**；
+  ② **内容没变**的重写也不记账（pre 阶段存哈希，post 比对；新增 `office.truthFileHash`，与
+  `noteTruthFileWrites` 同一套归一化与哈希口径）。
+- **R3（minor）`inconsistent` 没有任何判据消费**：手写的签字照样 `valid`（只多一句 ⚠️）。现在 G2 `human.signoff`、
+  G3 `design.signed` 与状态块的 `gateSigned` **都消费它** —— 台账与真源事件对不上 ⇒ **不算有效签字**（理由已写清是哪一种）。
+- **R4（minor）**：README 配置表两行改成**保留未启用**（与 §8 前说明一致）；`sdo_deliver` 的 `outcome`
+  在 schema 描述里写明 **run 必填**，并说明**为何不做 schema `required`**（`package`/`show` 不用它，
+  宿主是按**工具**而非按动作校验 —— 这条建议若照做会把 `package`/`show` 一起卡死）。
+- 用例 `test/m56.test.ts`（R1）；`test/m51.test.ts` 补 R2 两条（写失败不记 / 内容没变不记）。
+  变异自证：① 不核对事件状态 ⇒ 红；② G3 不消费 `inconsistent` ⇒ 红；③ 写失败也记账 ⇒ 红。
+
+
+### 修复（D4 硬化：从"告警"升级为"判红"）
+
+- **`tests.passed` 判据现在要求结果有真源事件佐证**（整仓评审 D4 的硬化）：旧实现只读
+  `tests/results/*.yml` ⇒ 手写一条 `status=pass`（journal 零事件）就能把这条判据判绿，
+  `recordTestResult(fail)` 之后把文件改成 `pass` 也查不出来。现在：
+  - 结果文件存在、journal 里查不到 `test/recorded` ⇒ **判红并点名**（`uiGates.kTestsUnjournaled`），
+    补救话术给出可执行动作（`sdo_test action=record` 重记 / 重跑）；
+  - journal 被坏行**截断**时，同样**判红**但话术不同（`kTestsUnknown`：「无法核验」——截断 ≠ 通过，
+    并指向坏行本身）。这与 `signatureState` 的 `unknown` 口径一致。
+- 用例 `test/m55.test.ts`（工具记账 ⇒ 不因无佐证判红；手写 ⇒ 判红点名；截断 ⇒ 另一种红）。
+  变异自证：不再核验事件 ⇒ 红。
+
+
+### 修复（整仓评审第三批：D3、D7、D12 + 口径）
+
+- **D3（blocker）id 从"可手改的文件列表"分配 ⇒ 删掉文件后号会回落**：实测 TR 记两条 → 删 `TR-002.yml` → 再记
+  **又是 TR-002**（journal 里同 id 两条事实），`RUN-` 更是按 `existing.length + 1` **数条数**。
+  现在 id 分配取「**文件 ∪ 真源事件**」的并集（`journalIds(journal, prefix)` 扫事件里的 `id` 字段）：
+  `TC/TR/DEF/REV/DLV/RUN` 六个前缀一致；追加式真源才是"这个号用过没有"的权威。
+- **D7（major）空 `writeScopes` = 不占写范围 + 免越界审计**（实测 `auditWriteScopes(['outside/x.ts'], [])` = ok），
+  而 `waterfall.yml` 的 C-31 声称"任务卡齐备（含写范围）"。现在 `validatePlan` 把**空/纯空白**写范围判成
+  `write-scope-empty` 计划问题（含 remedy 文案）⇒ C-31 名副其实。
+- **D12（minor）+ 口径**：README 新增「`.sdo/` 谁写谁读」一节 —— 真源由**工具**写、人工**只读**（唯一例外是
+  明确要求用户决策的文件）；并**如实标注** `disciplineTools`/`disciplineAllowPaths` 目前**保留未启用**
+  （以前 README 写成"已受约束"不准确；做成硬闸门会在运行中的项目上突然收窄能力，需先定口径）。
+- 用例 `test/m53.test.ts`（D3）、`test/m54.test.ts`（D7）。变异自证：① id 只从文件列表分配 ⇒ 红；② 不校验写范围非空 ⇒ 红。
+
+
+### 修复（整仓评审第二批：D8、D4）
+
+- **前提澄清后重新分档**：用户明确「除要用户决策的文件外，用户**不会**主动修改 `.sdo/` 内文件」
+  ⇒ 原先以"手写真源/存量迁移"为由缓修的 D4/D7 风险大幅下降（可以收紧），而 D3/D8 不受影响、仍是真洞。
+- **D8（major）`gate/signed` 与 `delivery/run-recorded` 零读者 ⇒ 签字寿命全落在可手改 YAML 上**：
+  `signatureState` 现在**追加一层与真源事件的交叉核对**（**不改任何既有判据**，`missing/unquoted/stale/valid/unknown`
+  语义一字不动）：台账**没有**该签字但 journal 有该门禁的 `gate/signed` 事件 ⇒ 置 `inconsistent` 并说明
+  「文件被删或被改写（这不是『从来没签过』）」；台账**有**签字但真源找不到对应事件（按 `at` 比对）⇒ 置
+  `inconsistent` 并说明「手写/绕过工具写入」。两者都接在人读理由后面 ⇒ 任何打印该理由的回执都看得见。
+- **D4（major）测试证据可以来自手写文件**：`verificationStats(store, journal?)` 新增 **`unjournaled`**
+  （`tests/results/*.yml` 里有、journal 里没有 `test/recorded` 的结果 id）；`office.verification` 带上 journal；
+  `sdo_test action=record` 的回执在"连刚记的这条都没有事件佐证"时显式告警（`kTestUnjournaled`）。
+  **统计口径不变**（`passed` 仍照旧算），变的是"证据是跑出来的还是写出来的"**能看出来**了；
+  没传 journal 时返回空数组（不假装核过）。
+- 用例 `test/m52.test.ts`（2 条）。变异自证：① 不再交叉核对 ⇒ 红；② 不再核对事件 ⇒ 红。
+- **仍未修（下一批）**：**D3（blocker）id 从可手改文件列表分配**（要改 `nextId`/`idOf` 全部调用点，真值取自 journal）；
+  **D7（major）空 `writeScopes` 免审计**（前提澄清后**可以**收紧：`validatePlan` 判空 ⇒ C-31 名副其实，需同步改测试夹具）；
+  **D12（minor）死配置**（倾向 README/配置标注"保留未启用"）。
+
+
+### 修复
+
+- **D1（blocker）钩子读错了宿主写工具的入参名 ⇒ 快照与真源事件在真机从未发生**：宿主 `@deepseek-ai/dsh-tool-fs`
+  的 `write`/`edit` **只声明 `file_path`**（全包 41 处，没有 `path`/`file`/`paths`），而插件两处钩子读的是
+  插件「期望」的键 ⇒ `paths` 恒空：**SDO-19/26 承诺的"改 `.sdo/` 真源前先快照"与 `truth/file-written` 记账
+  一次都没跑过**（真机台账 0 事件/0 快照，而同台账写设计/需求真源的事件有 47 条），L3 路径纪律也恒空放行。
+  现在宿主真实键**放首位**（旧键保留兼容），pre 快照与 post 记账两条路径都修。
+- **D2（blocker）撕尾后 `append` 复用坏行的 seq 并把新事件粘在坏行后**：`maxSeqOnDisk` 整行 JSON.parse 失败就跳过
+  ⇒ 半写行里完整的 `"seq":4` 看不见，「截断前缀长度 + 1」正好撞号；且直接 append 会把新事件粘到没有换行的坏行尾部
+  （一行里两个 `seq`，之后再也读不到）。现在：① 坏行也**正则扫一遍 `"seq":N`**；② 追加前**修复行边界**（补换行），
+  再按修复后的盘面重算 seq。
+- **D5 / D11 静默默认**：`sdo_test action=record` 的非法/缺失 `status` 旧实现一律落成 `pass`（真机 `status="passed"`
+  ⇒ 回执与落盘都是 pass）；`sdo_deliver action=run` 的 `outcome` 旧实现「不是 fail 就是 pass」⇒ **省略即通过**，
+  而交付只认 `outcome==='pass'` 的运行（"忘记声明结论"就抹掉真机证据缺口）。现在两者**显式必填、取值集合外可读拒绝**
+  （`kRecordBadStatus` / `kRunBadOutcome`）；schema 侧 `outcome` 带 enum（宿主先挡一道）。
+- **D6 任意角色都能 `drop` 未完成的卡 ⇒ C-40 变绿**：`sdo_task` 对 8 个角色可见，而 `drop`/`reassign`/`update`
+  旧实现**没有任何角色/owner 校验**（真机：developer 子代理 drop 后 C-40 由 fail 变 ok）。现在判据是
+  **`dispatch/started.childSessionId`**（插件自己记的权威事实，不依赖工具层拿不到的血缘字段）：
+  被派发出去的子代理不得 `drop`/`reassign`；`release`/`update` 允许**认领会话本人**。
+- **D9 空 findings 的 `pass` 评审翻绿 C-42**：真机复现「空评审前 G5/C-42 fail → 一条 `findings=[]` 的 pass 之后 ok」。
+  现在 `verdict=pass` 必须给出**非空 findings**（"无发现"要显式写出来），否则可读拒绝（`kReviewEmptyPass`）。
+- **D10 `plan-reviewed` 回执漏占位符**：该分支拿到 `approvedBy` 却用 `t()` 打印 ⇒ 回执里直接出现 `{x}`；改用 `fmt`。
+
+### 未修（本轮如实，下批）
+
+- **D3（blocker）id 从"可手改的文件列表"分配 ⇒ 删文件后复用 id**（`TR/TC/DEF/REV/DLV/RUN`）：真值应来自 journal，
+  要改 `nextId`/`idOf` 全部调用点 + 迁移口径，属结构性改动。
+- **D4（major）测试证据可以来自手写文件**（journal 无 `test/recorded` 也计入 C-50；fail→pass 改文件不可见）：
+  要改门禁口径（"结果必须有事件佐证"），会波及历史项目，需先定迁移策略。
+- **D7（major）空 `writeScopes` = 不占范围也免审计**：`validatePlan` 加"写范围非空"会在存量卡上大面积判红，需与 C-31 口径一并定。
+- **D8（major）`gate/signed` 与 `delivery/run-recorded` 零读者**：要给签字/运行记录加"YAML ↔ journal"交叉核对（删文件/手写都要被看见），属新判据。
+- **D12（minor）`disciplineTools`/`disciplineAllowPaths` 是死配置**而 README 说它们受约束：本批未动（要么实现为 strict 下的硬闸门，
+  要么在 README/配置里标注"保留未启用"）——**倾向后者**（实现会在运行中的项目上突然收窄工具面）。
+
+
+### 修复
+
+- **SDO-59 省略 `status` 的缺陷更正会把已关闭缺陷静默重开**（真机 2026-10-07 亲自踩中：为清理
+  `DEF-022/023/024` 标题里写死的 `[open]` 前缀，发起**只带 `evidence`** 的更正 ⇒ 回执显示
+  `status: closed -> open`，三条已关闭缺陷被一并重开，seq 2139-2141 留痕，随后 seq 2142-2144 才修回）。
+  这是**默认值语义危险**（与 SDO-55 的"回执不透明"不同：那次回执是诚实的）。
+  现在：① **省略 `status` = 保持不变**（更正只能改你显式给出的字段）；② 给了但**取值非法** ⇒
+  **可读拒绝**（`kDefectBadStatus`，不再悄悄当成 `open`）；③ 新建缺陷时省略 `status` 仍默认 `open`
+  （新缺陷本来就是 open），但非法取值同样拒绝。用例 `M48`（工具层）；变异自证：① 省略重新默认成 `open` ⇒ 红；
+  ② 非法状态不再拒绝 ⇒ 红。
+
+
+### 修复
+
+- **SDO-53（插件侧那一半）公告清单 ≠ 实际可调**：观测本来就有（`evidence/child-tools.jsonl` 记子代理实测面），
+  缺的是**与「我们声明的面」对账**。新增 `faceDiff(declared, observed)` → `{missing, extra}` 与
+  `office.faceMismatches(call)`：逐个子会话把「角色掩码声明的面」与「子代理实测拿到的面」比出**差集**，
+  `status` 回执里显式列出（`kFaceMismatch`）——`missing` = 声明了却没拿到（真机 `read_image` 就是这样消失的），
+  `extra` = 拿到了没声明的（收窄没生效，仍靠 B6 钩子兜底拦）。老事件没有角色 / 没有观测 ⇒ **不猜**（返回空）。
+- **SDO-12 复合参数的写法写进 README**：`steps`/`evidence`/`acceptance`/`alternatives`/`telos`/`suggestions`/
+  `mutation` 等在 schema 里是**字符串**，必须传**字符串化 JSON**；直接传数组/对象会被**宿主**参数校验挡下
+  （`"<参数名>" must be a string`，真机为此浪费过 6 次调用）——不是插件在拒绝。附"内部引号用「」/反引号"的注意。
+- 用例 `test/m50.test.ts`（3 条）。变异自证：① 差集比对恒空 ⇒ 红；② `status` 不再带差集 ⇒ 红。
+
+
+### 新增
+
+- **SDO-57（先做 C：把「时点 + 前置」钉在证据上；B 的断言实体待评估）**。真机病根：13 张卡普遍引用一句
+  「`run_checks.py --all` exit 1 的唯一来源是 `spell_pieces`…」，而环境/探针一变它就**静默过期**
+  （复跑后失败项变成 `real-registry`），代价是一整轮复评。C 把"过期"变成**可机械判定**：
+  - **`sdo_test action=env env="jdk=…; probe=…@版本"`**：环境指纹成**时序账本**（`project/environment` 从
+    "立项记一次"改为"变了就再登记一条，最近一条生效"）；空指纹拒绝（"没登记"与"登记了个空"必须分开）。
+  - **`sdo_test action=record … [env=…] [artifact=<被检产物>]`**：结果自带环境指纹（未声明则**按最近登记的环境
+    归属**并如实标 `envSource=inherited`，不假装是声明的），`artifact` 当场**绑定 sha256**。
+  - **机械判定**（`evidenceFreshness`，域函数，门禁与回执共用一个口径）：`artifact` **重算哈希比对**
+    （产物变了 ⇒ 过期，最强的一种）；`env` 与当前登记不符 ⇒ 过期；没记 `env` ⇒ 归 `unrecorded`
+    （**如实说"无法机械核验"，不判红** —— 历史证据不能被追溯判死）。
+  - **回执**：`record` 与 `deliver` 都摆出时效告警（`kEvidenceStale` / `kEvidenceUnrecorded` / `kEvidenceNoEnv`）；
+    `deliveryCompleteness` 新增 **`warnings`**（附加字段，**不改 `problems`** ⇒ 门禁判据不变，先观察一轮噪音）。
+  - 角色卡纪律：tester「换环境先登记再跑，记录带 `env`/`artifact`」；developer「引用结论要带出处与时间、
+    环境变了要重跑而不是沿用」；office「交付前处理时效告警」。
+  - 用例 `test/m49.test.ts`（3 条）；变异自证：① 产物哈希比对失效 ⇒ 红；② 环境指纹比对失效 ⇒ 红；③ 记录不再继承环境 ⇒ 红。
+  - **明确未做（B）**：`CLM-*` 断言实体（卡/交付按 id 引用、`supersedes` 与 env 双向失效、拦掉引用失效断言的
+    `pass` 行）——按你的指示先跑 C 观察噪音，再评估是否升级。
+
+### 测试基建
+
+- 语言包/README 守卫随 `TEST_ACTIONS += env` 同步（README 工具动作清单、参数 schema/接口/映射三处同源）。
+
+
+### 修复
+
+- **SDO-58 子代理报告残片化（真机 TASK-187 只有 235 字节，事后才被复评员发现）**：新增 `office.childReportHealth`
+  ——结算之后按 `dispatch/finished.report`（权威落点，不自己拼文件名）**量一下**：`< 400` 字节 ⇒ `short`、
+  文件读不到 ⇒ `missing`、没有派发记录 ⇒ `none`（内联做的卡不告警）。`sdo_task action=done` 的回执现在把
+  「报告只有 N 字节，疑似残片」或「找不到子代理报告」**显式说出来**（`kChildReportShort` / `kChildReportMissing`），
+  不必等人去翻文件大小。
+- **SDO-36 的回归从"源码级"升级为"工具层双会话探针"**（补掉我上一轮自陈的弱点）：用**真实注册的工具定义**、
+  从**两个不同会话**各调一次 `sdo_review action=record` —— 认领会话自评（只换 `reviewer` 名字）必须被拒、
+  另一会话必须放行并真的落一条 `REV-*`。**语义变异**（把护栏条件置假）现在**能杀掉这条用例**（此前杀不掉）。
+- 用例 `test/m48.test.ts`（3 条：工具层双会话 / 结算期报告体检 / `done` 回执接线）。
+  变异自证：① 自评护栏恒假 ⇒ 红（**这条正是此前杀不掉的语义变异**）；② 报告下限设 0 ⇒ 红；③ `done` 不再带体检告警 ⇒ 红。
+
+
+### 修复
+
+- **SDO-55 追加实测：`defect` 更新的 `evidence`/`reason` 载荷被静默丢弃**（真机 2026-10-07：流程官用
+  `sdo_test action=defect defectId=DEF-024 status=closed evidence="〔更正事件…〕"` 想把更正补进**事件日志**，
+  回执说「已更新缺陷 DEF-024 → closed」，而 `grep` journal **零命中** ⇒ 更正内容只能活在 `defects/*.yml`，审计链看不到）。
+  现在：`evidence` / `reason` **原样写进 `defect/updated` 事件**（缺省不写键），且它们**本身算一次有内容的更正**
+  ——只有字段与载荷都为空才报 `no-op-update`；回执追加一行说明「载荷已记入事件」。
+  用例 `M47`；变异自证：把载荷从"更正内容"里去掉 ⇒ 红。
+
+
+### 修复
+
+- **SDO-55 缺陷更正不回显有效差异（再次触发「登记≠写入」）**：真机上 `sdo_test action=defect defectId=DEF-024 title=… status=closed`
+  回执说「已更新缺陷 DEF-024 → closed」，而 `.sdo/defects/DEF-024.yml` 的 **title 一字未改**、journal 里也只有 `{id,status}`
+  （流程官据此对外误称「已更正」）。现在按补丁规格实现：① 更正落 **append-only 差异事件**
+  `defect/updated { id, changes:[{field,from,to}], by }`；② 回执**回显 from→to**；③ **no-op 更新报 `no-op-update`**（不得说「已更新」）；
+  ④ `title`/`severity`/`caseId` 与 `status` 一起接受（此前只取 `status`，其余字段被静默丢弃）。
+- **SDO-56 缺陷标题里写死的状态前缀**（`DEF-022/023/024` 的 title 以 `[open]` 开头而 status=closed）：状态标记**由 status 派生** ——
+  写入时剥掉 `[open]`/`[fixed]`/`[closed]`/`[wontfix]` 前缀并作为一次真实更正入账；`defect list` 回执对**存量**过时前缀
+  逐条告警（不改写历史，只把矛盾摆出来）。
+- **SDO-52 工具面变更对「复用会话」不生效**：真机上同一子会话自 10-05 起被复用约 **137 张卡**，中途给角色补的 `read_image`
+  **始终拿不到**（工具面是**创建会话时**定下的）。现在派发时把该角色的**掩码指纹**（`maskFingerprint`）记进 `dispatch/started`，
+  复用一个空闲子代理之前**必须比对**：指纹**不一致**（掩码改过）或**缺失**（老事件）⇒ **强制新起**，并在回执里如实列出
+  「跳过了谁、为什么」（`kReuseSkipped`）——绝不再把卡投进一个工具面过期的会话。
+- **SDO-54 派发器「静默不派发」**：真机回执是「⛔ 本次没有派发：计划有 10 处问题（见下）」，而「见下」的 10 条诊断被随后的
+  看板长文淹没/截断 ⇒ 流程官分不清是「计划有问题」还是「派发通道坏了」（最终绕开插件直接 spawn）。现在诊断**紧跟裁决**
+  （看板排在其后），并新增 `sdo_plan action=next why=true`：**只输出裁决 + 诊断**。
+- 用例 `test/m47.test.ts`（3 条）；既有夹具按**有意收紧的口径**更新：`m36` 的池夹具补掩码指纹（无指纹＝不允许复用）。
+  变异自证：① 去掉 no-op 报错 ⇒ 红；② 不剥标题前缀 ⇒ 红；③ 复用不比对指纹 ⇒ 红。
+
+
+### 修复
+
+- **回归修复（我上一轮引入）：工具面里出现宿主未注册的名字 ⇒ 子代理连 `read_image` 都拿不到。**
+  真机症状：子会话报「**没有 pdf 工具，导致无法获取 `read_image`**」。根因在**宿主源码**：
+  `tools.restrict(filter)` 会拿 `restrictableNames` 硬校验 `allow`/`deny` 里的每个名字，
+  **只要有一个未注册就抛错**（`names unknown global tool "pdf"`；`dsh-tools:2908`）——
+  而子代理组合时 `childCtx.tools.restrict(composition.toolFilter)` 正是这一步 ⇒ 整份工具面失效，
+  基础能力（读图）一并丢失。我上一轮把 `pdf` 当成"只读检视工具"加进基础面，正好踩中这条。
+  处置：① 基础面回到**宿主确实注册**的四个名字（`read`/`grep`/`glob`/`read_image`），并在注释里写明
+  「**不许凭想象加名字**」；② 派发前用 **`filterKnownTools`** 按宿主注册表（`tools.get(name)` 探针）
+  过滤 `allow` **与** `deny`（`restrict` 对两份名单都硬校验），被剔掉的名字**如实回报**
+  （`kToolFilterDropped`）——探针不可用时保持原样（fail-open：宁可少拦，也不能让整份工具面炸掉）。
+  用例 `test/m46.test.ts`：① 八角色的面都含只读检视工具；② **工具名必须都在宿主已注册清单里**
+  （这条守卫正是 `pdf` 会撞上的那条）；③ 真实 `tools/pre-execute` 钩子放行 `read_image`；
+  ④ 接线断言（`filterKnownTools` 覆盖 allow 与 deny）。变异自证：把 `pdf` 塞回基础面 ⇒ 红；
+  `filterKnownTools` 不再剔除 ⇒ 红；去掉派发前过滤 ⇒ 红。
+
+
+### 修复
+
+- **子代理看不了图片（真机 TASK-183：`developer` 角色掩码里没有 `read_image`）**：宿主提供 `read_image` 与 `pdf`
+  两个**只读检视**工具，而 `roles.yml` 的 8 个角色白名单里**一个都没有** —— 掩码是白名单语义
+  （`roleMaskDecision`：不在 `allow` 里即拒），于是所有子代理都"看不见图"，只能把外观类证据推给流程官/用户，
+  真机上多张渲染截图因此没人真正看过。
+  **机制化修法**（不逐条补数据，避免同类缺陷再犯）：把只读检视工具定为**所有角色的基础工具面**
+  （`READ_ONLY_INSPECTION_TOOLS = ['read','grep','glob','read_image','pdf']`，并入 `toolAllowList` 与 `maskAllows`），
+  **`deny` 仍然优先**、写类与流程类工具照旧逐条列举。角色卡（developer / tester / reviewer）同步写明
+  「截图与 PDF 你可以直接看，不要再用『我看不了图』当结论」。
+  用例 `test/m46.test.ts`（2 条）：① 八个角色的面都含这 5 个工具且 `maskAllows` 为真，反向钉住
+  `architect/bash`、`delivery/sdo_design`、`reviewer/write`、`developer/sdo_gate` 仍被拒；
+  ② **真实 `tools/pre-execute` 钩子**：已认领 `developer` 会话调 `read_image` / `pdf` 放行、`sdo_gate` 仍被拒
+  （证明修的是"基础面缺失"，不是把闸门整体放开）。
+
+
+### 修复
+
+- **SDO-36 评审独立性按"会话身份"判，不再只比自报名字**：`sdo_review action=record` 的 `reviewer` 是调用方
+  自己填的字符串，护栏只把它与卡的 owner 比 —— 同一个人把 `reviewer:1` 改成 `reviewer:2` 就过了（真机 REV-031
+  实测如此）。现在额外用**认领会话 id** 判：调用方会话与卡的认领会话相同 ⇒ 直接拒（`kSelfReviewSameSession`），
+  并提示"换一次派发/另一个子会话"，而不是"换个名字"。
+- **SDO-34 `.sdo/` 台账写入不再占卡的写范围**：真机上 DoD 要求"如实闭合缺陷"的卡，写范围却不含 `.sdo/defects/`
+  ⇒ 执行者只能违 DoD 或违写范围（`sdo_test` 工具写入不受约束才绕开）。现在写范围对账**排除 `.sdo/`**（台账由
+  工具负责，卡只对产品文件负责）；**反向不变**：产品文件越界照样判红并点名。
+- **SDO-46 blocked 卡"占范围"的口径写进实现并说清解除动作**：`blocked` **仍排他**（它随时可能继续写同一范围，
+  静默让给别的卡会造出两个写者 —— 保留 D6-1 的有意口径），但冲突 issue 现在点明"该卡处于 blocked"并给出
+  `sdo_task action=release|drop` 的解除动作；`sdo_plan action=next` **无法派发时不再回落到打印看板**，
+  而是先给明确裁决（`kDispatchHeldByScope` / `kDispatchBlockedByPlan`）—— 真机上"没派发"被误判成"卡没建成"，
+  在流水线上就是静默停摆。
+- **SDO-35 C-42 不再对"评审卡"自我递归**：`review.required` 排除了 `role=reviewer` 的卡 —— 否则每批评审卡
+  又要被评审（真机 TASK-142/147 先后被点名），而池子里可复用的 reviewer 只有一个，"再评一次"结构上不成立。
+- **SDO-40 交付必须"在验证之后"，且验收行要有「用例 → 通过结果」链**：`packageDelivery` 现在按**流程真源**算
+  交付门禁所在阶段的前一阶段（验证阶段），项目没走到那一步、或验证门禁从未有 `passed/waived` 留痕 ⇒ 记缺口；
+  每条 `pass` 行的需求还必须有**已执行并通过**的用例结果，否则**该行降级为 `unverified`**（真机上 15 行 pass 里
+  多条 AC 的 Given/When/Then 从未执行过）。任何一类证据缺口都会降级（修掉了初版"只在相位/用例有缺口时才降级"的
+  逻辑漏洞 —— 由 `M44` 当场咬住）。
+- **SDO-48② 确认戳区分"用户本人"与"代盖"**：`sdo_design action=confirm basisSource=user|proxy`（默认 `user`），
+  确认记录与 `design/confirmed` 事件都带 `basisSource` —— 真机上代盖被工具写成"用户在会话中确认"，
+  而 journal 追加式**不可改写**，真源里永久留下与事实相反的措辞。代盖时回执追加显式告警。
+- **SDO-08 台账记录运行环境**：立项时落一条 `project/environment`（插件 id/版本、宿主版本、node 版本），
+  跨版本复现不再只能靠外部线索；该事件在签字中性表里（元数据不作废签字）。
+- **SDO-10 方法选择只认显式写法**：`parseMethodChoice` 从"整段答案里**出现**别名即选中"改为
+  ① 整段就是一个/多个选项标记；② 选项原文形态（取开头段，含否定词即拒）；③ 显式引导词（选择/选定/选中/采用/option）。
+  核心是新增**散文残留判据**：把已识别别名抹掉后若还有字符（中文备注等）⇒ 判 `undefined`（真机缺陷：
+  「否决了 structured 与 oo」把两者都选上）。
+- **SDO-14(3) / SDO-15(3) 新增 `sdo_task action=update`**：卡是流程真源却没有受约束的修改入口（真机只能人肉改 YAML
+  或重新立卡）。三条约束：已完成/已核销/已作废的卡**不改**；卡**有人在做**时不得改 `writeScopes`（除非就是 owner）；
+  给了 `expectedRevision` 按 CAS 判。字段：`title`/`dod`/`writeScopes`/`blockedBy`/`evidenceRequired`/`requirements`/`size`。
+- 用例 `test/m45.test.ts`（5 条）；既有夹具按**有意收紧的口径**更新（in 不放宽校验）：`office.test` 的坏行行号改为
+  随合法事件数走并新增环境事件断言、`m4`/`m43`/`m44` 补"用例 → 通过结果"链。
+
+
+### 新增
+
+- **真机测试才能交付（用户要求 2026-10-06）**：移植的 MC 模组离线判据**全绿**、`gradle build verify` 退出码 0，
+  但交付 jar 装进游戏**启动即崩**（`RPSBlocks` 在模组构造期 `new Block`，而注册表已冻结）。⇒ 判据集合缺了最基础的一环：
+  **产物有没有在真实环境里跑过**。现在把它做成机械机制（其他系统同理，不限于 MC）：
+  - `sdo_deliver action=run target=<server|client|desktop|device…> command=<真实命令> outcome=pass|fail evidence=<日志/截图/人工确认> [artifact=<被运行的产物>] [exitCode=…]`
+    —— 记一条真机运行记录（`.sdo/delivery/runs.yml` + journal `delivery/run-recorded`）。**目标/命令/证据缺一即拒**；
+    给了 `artifact` 就**当场绑定它的 sha256**（没绑定的记录**交付时不算数** —— 否则拿旧包跑一遍就能洗白）。
+  - `sdo_deliver action=package runsRequired="server,client"`：**每个声明的运行目标都要有通过记录**，
+    且记录必须**绑定到本次交付清单里的某个产物**（哈希相等）；否则**所有 `pass` 行降级为 `unverified`**，
+    回执逐条列出缺口，交付门禁（G7 的 `delivery.manifest`）判红。渲染产物新增「真机运行记录」一节（含命令、结论、产物 sha256 前 12 位、证据）。
+  - 角色卡同步纪律：`role-delivery` / `role-tester` / `role-office` 写明「**离线判据全绿 ≠ 产物能跑**」、
+    MC 模组要 `runServer` + `runClient` 各一条、**记录必须带 `artifact=`**、失败要如实记 `outcome=fail` 并附原始日志。
+  - 用例 `test/m44.test.ts`（4 条：记录校验与哈希绑定、缺证据降级 + 门禁判红 + 渲染告警、绑定产物变化后旧记录失效、`runsRequired` 覆盖检查）。
+  - 既有夹具按**有意收紧的口径**更新（不放宽校验）：`test/m4` 的交付用例先记一条绑定产物的通过运行；`test/m43` 同理。
+
+
+### 修复
+
+- **SDO-41【报告评为「最严重」】交付包把「未验证」静默改写成「通过」**：`sdo_deliver action=package` 的
+  `verdict` 解析是 `row.verdict === 'fail' || row.verdict === 'waived' ? row.verdict : 'pass'` ——
+  **非法/缺失一律落成 `pass`**；真机上流程官提交 15 行（其中 13 行显式 `unverified`），
+  得到回执「15 行：…pass」与 `DELIVERY.md` 里**一片 pass**，且**零提示**。对一个以「不许伪造台账」为立身之本的
+  框架，这不是放行错误，而是**主动生产假绿记录**。现在：① `verdict` 取值集合
+  `pass|fail|unverified|blocked|waived`，**集合外一律落 `unverified`（绝不默认 pass）**，
+  回执**逐行点名**被改写的行；② 交付门禁把 `fail|unverified|blocked` 都算「未通过或未验证」（只有显式 `waived` 放过）；
+  ③ **验收行内容整体入账**（`delivery/packaged` 事件新增 `acceptanceRows`：requirement/criterion/evidence/verdict）
+  —— 旧事件只存 `acceptance: 15` 计数，矩阵**无法由真源重建**（正文只存在于自述"派生视图、请勿手改"的渲染产物里）；
+  ④ 渲染时非 `pass` 行加 **⚠️** 显著标注（避免人读时被"一片绿"误导）。
+- **SDO-50【判据层自锁】C-50 取历史 fail 结果的并集 ⇒ 官方补救「修好并重跑」在机制上不可能奏效**：
+  `verificationStats` 把所有历史结果**平铺**统计，一条用例出现过一次 fail 就永远红（真机 TC-053：`TR-061` fail 01:04、
+  `TR-066` pass 08:01，G6 判定 08:12 仍红），而门禁给的补救话术恰是「修好并重跑」——重跑只能**新增**一条 pass，
+  旧 fail 不会被替代。现在按 `caseId` 分组取 `at` **最新一条**（latest-wins），完整历史仍留在 `tests/results/` 与
+  journal 里（「失败→修复→改判」的证据链不丢）；也**没有**放宽成"有任一 pass 即通过"（最新是 fail 仍红）。
+- **SDO-37 交付包把目录当成"盘上找不到"**：`hashArtifact` 对目录抛异常 ⇒ 一律 `missing`，回执于是说
+  「这些产物在盘上找不到（哈希算不出来）」—— 把「目录不参与文件哈希」误读成「产物缺失」，而交付场景
+  「缺一个就是事故」。现在目录回 **`dir:<文件数>:<递归摘要前 12 位>`**（递归汇总相对路径 + 内容 sha256），
+  真不存在才回 `missing`；事件里单独列出 `directoryArtifacts`，交付门禁也**不**把目录算作缺失。
+
+
+### 修复
+
+- **SDO-30b 派发排序读不出「必须最后跑」的语义**（真机：最终全量构建卡 TASK-132 与写卡同时就绪时被**并发**派出，跑出的 jar 必然过期 —— 少了同批写卡的改动）：`blockedBy` 只能表达"排在某几张卡之后"，表达不了"排在**所有**卡之后 / 我需要独占写窗口"。现在支持 **`blockedBy: ['*']`**（通配依赖）：除自己以外的**所有非作废卡**都 done/verified 之前它不 ready；依赖存在性校验不把 `*` 当"不存在的卡"、依赖环遍历跳过它、「为什么还不能派」如实显示它在等"所有其它卡"。工具面文档（`param.suggestions`）同步写明这个写法。
+- **SDO-32 / SDO-31 的纪律落到角色卡上**（这类发现是执行纪律，不是判据）：`role-tester.md` 新增「断言纪律」——① 恒真断言必须变异自证；② **空集合断言**（`all([]) == True`）是最隐蔽的假绿，任何「全部满足」型断言**先断言集合非空**；③ 负向对照**先证它在修复前确实触发过**；④ 被 SKIP 拖红的退出码不得当绿。`role-reviewer.md` 新增「发现项的交付口径」——每条 finding 自标 **已核实 / 待核实**，**待核实项不是动作项**，评审记录不得当成 DoD 的动作清单（真机反例：一条 finding 列的 8 个「无主贴图」里有 1 个正被已注册物品使用，照单删除即回归）。`role-developer.md` 新增「承接清单先复核」——卡上写「按评审 F-xx 处理」时先逐条机械复核，核不出依据就顶回去（真机上有人用 `javap` 证伪了上一棒的调用点结论）。
+
+### 测试基建
+
+- **语言包守卫补强（本轮自曝）**：往双引号 YAML 值里写 ASCII 双引号会把整包**打坏**，而 `t()` 会**静默回退成键名**（回执里出现 `pkgMissing；pkgNotSelected；…`）—— 语言包守卫本身**没红**，是 M11/DoR 那批"正文对不上"的用例替它报的警。现在 `M42` 直球守卫：两个包必须**解析成功**，且四个区段抽查键的值不得回退成键名。
+
+
+### 修复
+
+- **评审员复审发现：`truth/file-written` 让"任何 `.sdo/` 真源写入"都判 `DESIGN.md` 陈旧（报警疲劳）**：手改一个**构造期**文件（`.sdo/construction/tdd.yml`、`.sdo/tests/*`、`.sdo/costs/*`…）会让 C-25 判文档陈旧 —— 正是 `DESIGN_DOC_SOURCE_EVENTS` 注释里自己警告过的「报警疲劳」（那里特意不列 `phase/*` 就是这个理由）。按评审员的建议①**在 C-25 侧按路径前缀收敛**：只有设计文档真正渲染的真源算文档来源（`.sdo/{design,contracts,decisions,quality,requirements,questions,risks}/**` 与 `.sdo/project.json`），构造/测试/成本/任务/门禁类不算；口径单一来源（`isDesignDocTruthPath`），写入侧把结果记进事件（`docSource`），C-25 只读它、旧事件回退到路径判定、路径也读不出则**保守算作会改文档**。
+  **G3 签字那一面有意不变**：任何真源直写照样作废签字（评审员的取向也是"宁可重签"）—— 两件事分开：文档新鲜度按路径收敛，真源被直写这件事一律留痕 + 作废签字。
+  - 用例 `test/m41.test.ts`（3 条：路径口径 8 真 + 7 假、谓词分流与两条反向回退、写入侧 `docSource` false/true 且签字口径不变）。变异自证：C-25 不按路径分流 ⇒ 红；路径口径放宽成「所有 `.sdo/`」⇒ 三条全红。
+- **顺手**：`listTaskIds` 读取侧补一条注释 —— 卡文件名只认 `TASK-…` 形态（评审员在合成夹具里用 `T-A`/`T-DEV` 导致 `listTasks()` 全空、排查耗时）。
+
+
+### 修复
+
+- **SDO-19（过松那一面）直接 `write`/`edit` 改真源现在会被当作真源变更**：此前直接写文件**不产生任何事件** ⇒ 既不掀 G3 签字、也不让 `DESIGN.md` 判陈旧（真机实测 A）；同一机制还被用来在不触发任何门禁反应的情况下整篇覆盖真源（事故 SDO-26）。现在在 **`tools/post-execute`**（写**成功之后**，避免把被拒的写记成"真源变了"）落一条 `truth/file-written`（含 `path` / `bytes` / `sha256`）：它不在中性表里 ⇒ G3 签字自然失效；同时列进 `DESIGN_DOC_SOURCE_EVENTS` ⇒ C-25 判文档陈旧。只认 `.sdo/` 下真源（`journal.jsonl` 与 `evidence/` 不算），fail-open。
+- **SDO-24 `DESIGN.md` 渲染出元素职责与契约 `schema` 正文**：人审文档此前只有「ID｜名称（类型）｜来源需求｜置信度」，**证明不了「真源变更在文档里可见」**（真机上架构师改的 6 处职责正文在文档里零命中，评审只能去读 `.sdo/design/*.yml`）。现在元素条目追加职责正文、契约条目追加 `schema` 正文（空值不占位）。
+- **SDO-30 派发排序导致新卡饿死**：旧实现固定按 `size → id` 排序，关键小卡（如解冻卡）排在 8 张同类卡之后被反复跳过（真机只能人肉 `send_message` 直指卡号）。现在按「最近派发时间」升序 —— **没派过的卡排最前**，同时间再按 id；无派发历史时保持原顺序（不许把既有排序打乱）。
+- **SDO-28 核实为已实现（反证，不改代码）**：报告称 `sdo_adr action=supersede`「不在旧记录留指针、不发 journal 事件」，但 `src/domain/adr.ts` 一直写 `status: 'superseded'` + `supersededBy` 到旧记录，并发 `adr/recorded { id: 旧 id, supersededBy: 新 id }`。真机上看到的是**手改真源**（架构师没有走 `action=supersede`）。已把这两条事实钉成回归 `M40`，防止将来被改回去。
+- **SDO-29（`action=render` 字节数 40279 → 39739）仍列为未解释**：本轮未复现该差值（它需要真机那次的两份渲染产物做逐行比对），不做无根据的解释。
+
+
+### 修复
+
+- **SDO-16 / SDO-17 自锁：解冻路径被自己要解的冻锁住（blocker）**：批准变更后 `claim` 被**全局**封锁，而消化变更这条路（更新需求 → 重签 G2 → 重走设计过 G3）本身要靠卡来做 —— 真机上「重新冻结需求基线」的卡被同一检查连拒 4 轮，6 张卡零开工，只能靠"无卡直接执行 + 流程官显式授权"绕行。现在 `change-not-digested` **只锁施工/验证/交付角色**，需求/架构角色（`analyst`/`architect`/`office`）的卡可以认领去消化它；拒绝回执新增一行「**解冻路径**」点名哪些角色能开工（SDO-17 的诉求：给可执行的最小解除序列）。
+- **SDO-18 C-25 与 C-2D 口径不一致**：`trace/linked` 里的**施工期覆盖边**（`req-task`/`req-tc`）不进 `DESIGN.md` 的追溯矩阵（§8 只有设计侧四列），但 C-25（文档新鲜度）此前一刀切 ⇒ 真机上子代理补两条覆盖边就把刚渲染好的文档判陈旧（`#1279 trace/linked`），流程官自己也踩过一次。现在 C-25 与 C-2D（`isSignatureInvalidatingEvent`）**同一口径**按 `kind` 分流；拿不到 `kind` 时保守视为"会改文档"。
+- **SDO-19 / SDO-26 直接写 `.sdo/` 真源既不产生事件、又能毁正文（真机事故：23 条 DEV 永久丢失）**：新增**写前快照** —— `write`/`edit` 覆盖 `.sdo/` 下手可编辑真源之前，先把旧内容存到 `.sdo/evidence/file-history/<路径>.<时间戳>.bak`。**不改任何行为**（不拦、不判红），调用方 fail-open；给出的是"可恢复"，不是"能检测"（内容指纹式监控见"未修"）。
+- **SDO-20 `contract-test-missing` 只能逐卡豁免（复发 7 次）**：改按**类别**判 —— 该卡角色的工具面里没有 `sdo_test`（评审 / 架构裁决 / 需求侧修正，零产品文件改动）时直接 N/A；`developer` 等有 `sdo_test` 的角色照旧检查（不许放宽）。
+- **SDO-21 认领被拒后卡没有 owner ⇒ `block` 也被拒**：现在允许**无主卡**上报阻塞并记一条 `task/claim-blocked`（与真正的 `task/blocked` 分开，便于审计）—— 台账上终于看得出"这张卡被机制卡住了"，同角色池也不会再反复派它。反向仍保证：有主卡只认 owner。
+- **SDO-22「写范围未对账」从脚注升级为显式告警**：`kWorkScopeNotAudited` 现在以 ⚠️ 开头，写明"宿只为**顶层轮次**公告 `workspace/changes`（子代理会话 0 条）⇒ 卡上写范围**没有被核对过**，既不是"没有越界"、也不能据此判越界"。
+- **SDO-23 architect 没有 `edit`（只能整篇 `write`，事故根因之一）**：architect 的掩码开放 `edit`（同时从 `deny` 移除），不再逼出「read 全文 → 整篇 write」这种破坏性写法。
+- **SDO-25 `sdo_design action=confirm` 忽略 `basis`**：工具面补 `basis`（接口/schema/映射三处）并让确认优先采纳它（`basis` > `note` > `reason` > 默认文案），用户授权的原话不再被丢掉。
+- **SDO-27 没有"换个子代理"的入口（单一子代理被复用 19 轮至上下文耗尽）**：`sdo_plan action=next` 新增 `freshChild=true` —— 这一轮**强制新起**子代理、不复用空闲者；回执注明本轮用了它。
+
+### 未修（如实，附理由）
+
+- **SDO-24 渲染器不输出元素职责 / 契约 schema 正文**（人审文档无法自证内容）：改渲染器会影响一批文档结构断言，本轮未动。
+- **SDO-28 `sdo_adr action=supersede` 不在旧记录留指针、不发事件**；**SDO-29 `action=render` 字节数不相称（未解释）**；**SDO-30 派发排序导致新卡饿死**（`limit` + id 序）——三条都留待下一批。
+- **SDO-19 的另一半（检测而非恢复）**：本轮只做"写前快照"；「直接写文件也让签字失效 / 让 C-25 判陈旧」需要内容指纹或把文件写入纳入事件流，属机制设计，未做。
+
+
+### 修复
+
+- **R-1 父会话被误判成 developer（用户直接点出；影响面比看起来大）**：`attributeRole` 先看 `claims`，于是**根会话**（驾驶舱 / office 流程官）只要认领过一张 developer 卡（真机 `owner=cockpit` 很常见），就被判成 `dispatched / developer` ⇒ **掩码开始拦它自己的工具调用**，回执写着"以 developer 身份"。现在**身份由血缘决定**：没有父会话且 `delegationDepth` 为 0（缺省按 0）⇒ 永远是驾驶舱；子会话（有 `parentSession` 或 depth ≥ 1）才按认领卡的角色走掩码。**认领事实只决定"这张卡归谁"，不决定"我是谁"**。用例 `M38`（六态 + 接线），`M31-01/07/08/09` 的夹具随之改成"以角色工作的是**子会话**"（旧夹具用 depth 0 表示子会话，正是这条缺陷的温床）。
+- **SDO-15 写范围对账两个计数器混用 ⇒ 任何卡都无法收工（真机阻塞级）**：`evidence/workspace-changes.jsonl` 里记的是**宿主会话**的 `seq`（真机 883/994/1488/1838），而认领基线 `claimBaseline` 是 **journal** 序号（真机 444）⇒ `entry.seq > claimSeq` 恒真 ⇒ 对账退化成"整会话改动都算本卡越界"，4 张卡全部无法 `done`。现在采集时**同时记下 journal 序号**（`journalSeq`），对账与"补摘要窗口"都改在**同一量纲**里比较；**旧记录没有 `journalSeq` 就不参与比较**，并如实退回「写范围未对账」（不再拿两个计数器硬拼出一个假的越界结论）。用例 `M38`（含真机形状：宿主 seq 883 起、认领在 journal 较后位置 ⇒ 窗口为空、可收工）；`M30` 的 A2 夹具同步带上 `journalSeq`。
+- **SDO-01 `assume` 与 `answer` 同传时静默吞掉正文**：`assume=true`（采用**题库建议**）的语义与自带正文矛盾，旧实现直接丢掉 `input.answer`（真机 8 条问题的台账一度被写成与领域无关的模板句）。现在**矛盾入参即报错**（与 `pickedOption` 越界同一口径），错误文案给出两种合法写法；被拒时不写盘、不落 journal。用例 `M38`。
+- **SDO-05 / SDO-13 签字回执只说失效集合、不说顺序**：真机上「签 G2 后再登记一条风险」「签 G3 后再补 20 条契约（G4 的 C-30 强制）」都各自当场作废签字，而回执当时并未提示顺序。现在按门禁在签字回执里写清：G2 ⇒「签字前先把 需求/问题/风险/红队 登记完（`risk/logged` 也会作废它）」；G3 ⇒「契约与其它设计真源请在**签字前**补完，否则必然重签 + 逐条重确认」。用例 `M38`。
+- **SDO-06 分数不一致的提示与门禁结论不对应**：`needsReview` 文案从「需复核」改为写清口径 ——「门禁按**更严者**判定；不一致本身**不阻塞**，只提示人工关注」。
+- **SDO-09 架构落笔的隐藏前置（要先「冻基线」）**：状态块的设计阶段提示补上顺序 ——「落笔设计前还要先 `sdo_requirement action=baseline` 冻结需求基线（G2 通过 ≠ 已冻结基线）」。
+- **SDO-11 方法产物缺稳定键会堆孤儿**：写入回执新增警示 —— 条目没有 `name`（稳定键）时明确说「每次重写都会分配新 id、旧条目不会删除」，并给出真机验证过的处置（先用空数组清空该 kind，再带 `name` 重写以复用原 id）。
+- **SDO-14(1) `suggestions` 字段无文档、写错键名静默退化**：`param.suggestions` 描述补成字段表（`title` / `dod` / `writeScopes`（**不是** `scope`）/ `evidenceRequired` / `blockedBy` / `role` / `size` / `requirements`），并写明写错键名会静默落空、以及未给 `writeScopes` 时的三条推导顺序。
+
+### 未修（如实，附理由）
+
+- **SDO-02 / SDO-03 / SDO-04（审讯与红队题库不识别领域、按条重复）**：属**产品设计**（题库分领域 / 项目级政策开关 / 去重策略），不是"修一个错"，本轮不动；报告已给缓解路径（`grill limit=1`、项目级一次性裁决）。
+- **SDO-08（台账不记插件/宿主版本）**：需要先定"宿主版本从哪读"（没有现成运行时可读的版本源），本轮不动。
+- **SDO-10（设计方法答案"出现即选中"）**：`parseMethodChoice` 对**整段答案文本**做别名匹配 —— 真机把备注里"否决了 X/Y"也选上了。改法（只接受选项下标/选项原文）会改变多选语义，需产品决定，本轮不动；报告给的回显建议也留待一并做。
+- **SDO-12（长/含空格 JSON 传参失败）**：报告自身未定位机制（且已降级为观察记录），本轮不动。
+- **SDO-14(2)(3) / SDO-15(2)(3)**：回执顶部单列"写范围来自模板"的卡、`suggestions[].scope` 覆盖、`sdo_task action=update` —— 都要动工具面/回执结构，留待下一批。
+- **SDO-07（架构阶段阻塞未复现）** 与 **SDO-14（写范围退化为占位属使用方误用）**：报告自身已判定为"已修复/已更正"，本轮无动作。
+
+
+### 修复
+
+- **签字失效口径与签字名归一**（真机报告 `2026-10-05-插件测试报告-签字失效口径与记账事件.md` 的 F-1 / F-2 / F-3，三条都是 major）：
+  - **F-1 签字名不归一 ⇒ 签字永远不被看见**：`sdo_gate action=sign` 把调用方传入的字符串**原样落盘**（真机留下 `gate: 架构门禁（G3）`），而判定侧按内部编号 `G3` **精确过滤** ⇒ 那条签字**永远不被采纳**；同一次调用的回执还用**入参**自证「✅ 当前有效」—— 于是"回执说有效、门禁说失效"在同一秒并存。现在三层一起补：① 落盘前归一（复用 `check` 侧同一个 `normalizeGateId`）；② 读取侧 `gateKeyOf` **兼容盘上已有的脏记录**（不必手改台账）；③ 回执状态一律基于**落盘后重新读出的那条记录**（不再用 `args.gate`）。
+  - **F-2 中性表漏了记账类事件** ⇒ 签完 G3 只要继续正常干活（挂追溯边、派发子代理、记变异证据）C-2D 就翻红。补：`dispatch/finished`、`dispatch/reported`、`dispatch/observe-failed`、`plan/profile-decided`、`test/mutation-recorded`、`test/contract-test-recorded`。判据沿用插件自己的 P-16 口径（跑一轮是否改变 `DESIGN.md` 正文）：真机在渲染出的 `DESIGN.md`（54,889 字节）上 grep，这些词命中 0。**`risk/logged` / `risk/updated` 有意不加** —— §11 会把风险渲染进文档（实测列有 RISK-006），登记风险确实改文档。
+  - **F-3 追溯边一刀切 ⇒ 一开工就作废自己的签字**：`trace/linked` / `trace/unlinked` 现在按**作用域**区分 —— 设计侧边（`kind: req-des`）进 `DESIGN.md` 的追溯矩阵 §8 ⇒ 失效；施工期覆盖边（`req-task` / `req-tc`）不进设计文档 ⇒ 记账。**不传 payload 时保守失效**（黑名单默认方向不变，`m20` 既有断言无需改）。`kSignScope` 文案同步收紧（写明"仅设计侧 `req-des`"）。
+  - 用例 `test/m37.test.ts`（11 条；四类反向：该失效的仍失效、未知 `kind` 保守失效、G2 白名单不受影响、脏门禁名必须被**真正采用**）。变异自证：追溯边回到一刀切 ⇒ F-3/端到端红；中性表漏回 `dispatch/finished` ⇒ F-2/端到端红；签字落盘不归一 ⇒ F-1 写入侧红；读取侧不认脏名 ⇒ F-1 两条红。
+- **F-4 复用回执假阳性**（真机 10 次派发、0 次真复用）：回执原先把「宿主**有**可续聊入口」写成一句，读起来像"这次复用了"。现在拆成两句：**能力**（宿主有没有入口）+ **本次派发**（`reused` 与 `mode` 的实测值）；并修掉旧文案里"已向宿主提 continuable 入口需求"这个**已知不成立**的说法（宿主一直有 `startContinuable` / `sendMessage`）。
+- **F-7 子代理把上一轮的残留算成本轮产出**（真机：报告列 5 个文件，mtime 全是前一天）：派发协议新增第 5 步 —— 报告/证据必须列出**本轮实际写入**的文件（路径 + mtime），没有改动就明说「本轮零产品改动」。
+- **F-5 / F-6 本轮未修（如实）**：F-5（`sdo_design action=artifact` 是**整类覆盖写**，工具描述却写"新增/更新"）与 F-6 的"无 VCS 时退回 mtime/清单式证据"都还没动。F-6 另需更正一处：**写范围对账本来不是"静默留空"** —— `reportTask` 一定回 `workspaceAudit:{checked:false}`，回执会附「写范围未对账」（`uiIndex.kWorkScopeNotAudited`）。
+
+
+### 修复
+
+- **池被"僵尸在飞"占满（真机缺陷，sdo-test 会话 10-05 09:23 实测）**：`sdo_status` 的池块显示
+  `developer：在飞 5/4｜空闲可复用 0` —— 该台账 8 笔派发里 **6 笔没有 `dispatch/finished`**（最早的 10-03，跨了两次重启）。
+  池状态是从台账现算的、**没有孤儿回收** ⇒ 池被永久占满 ⇒ 空闲可复用恒为 0、**真复用永不发生**、池满的卡只排队不放行。
+  - **修法**：新增配置 `dispatchOrphanTtlMinutes`（默认 **60** 分钟）。`dispatch/started` 之后超过 TTL 仍无 `dispatch/finished`
+    ⇒ 记为 `stale`：**不占池位**、**绝不进"空闲可复用"**（不能确定它还在不在，投进去等于把卡交给一个不存在的子代理），
+    并且**不再挡住同一张卡的重新派发**。TTL **之内**照旧占位（不误伤长任务）；`startedAt` 读不出时间的手写事件按保守口径仍占位。
+    池块如实标注「未结算超时 N」并点名 TTL 与调法（"若它们其实还在跑，调大 `dispatchOrphanTtlMinutes`"）。
+  - **真机复核**（同一份 sdo-test 台账副本，用构建产物跑）：修复前 `在飞 5/4｜空闲可复用 0` ⇒ 修复后
+    `在飞 0/4｜未结算超时 5`，**TASK-043 重新变为可派**（修复前它会永远排队）。
+  - 用例 `M36-08`（纯判定 + 容量）与 `M36-08b`（工具层：**超时僵尸之后池仍能放行**，正是真机那个场景）。
+  - 变异自证：不做孤儿判定 ⇒ `M36-08/08b` 红；判定过激（TTL 内的在飞也算孤儿）⇒ `M36-07/08` 红。
+- **挂起后原样重派**（真机教训，子代理指出、流程官自认）：同一张卡、同一理由挂起 → release → **卡内容一个字没改**又派出去，
+  等于让它再撞一次同一堵墙。现在派发回执会提醒并**原样引用挂起理由**：
+  「这张卡被挂起过且内容未改就又派了出去，挂起理由：…——先确认那个缺口已被消除」；
+  `task/updated`（卡改过）或 `task/done` 之后自动不再提醒（只认能被机械核对的事实）。用例 `M36-09`；变异：提醒不清账 ⇒ 红。
+
+
+### 新增
+
+- **子代理复用：角色池 + 卡片队列**（投递由驾驶舱触发，2026-10-04）：
+  - **先纠正我上一轮写错的宿主前提**：我此前写「宿主 `subagents.start` 只发 one-shot ⇒ 插件拿不到可续聊子代理 ⇒ 已向宿主提入口需求」——**不准确**。写死 `mode:"one-shot"` 的只是便捷方法 `start(name, request)`；**同一个服务**还暴露 `startContinuable(spec)`（返回 `{childId, messageId}`）与 `sendMessage(sender, targetId, content, {signal})`（宿主注释原文：「运行中的目标在最近步骤边界收下；**空闲的目标会起一轮**；不存在则从持久化冷恢复」），二者由 `requireContinuations()` 提供，并在 `ctx.inject(['agents'], …)` 时装载。**缺的只是插件侧实现**（本轮补上），不是宿主能力。
+  - **池与队列**（新 `src/domain/pool.ts`）：状态全部从 `dispatch/started` / `dispatch/finished` 现算（不新增真源，插件重启不丢）。池上限管的是**子代理个数**（不是"并发卡数"）：`poolCaps`（如 `{ developer: 2, tester: 1 }`），没写的角色用 `maxParallelDispatch`（⇒ 默认行为不变）。池满的卡**排队不丢**，等池里有子代理结算后由下一次 `sdo_plan action=next` 放行；插件**不自主起代理**。
+  - **真复用**：该角色有空闲的可续聊子代理时，下一张卡用 `sendMessage` **投给那个已有子代理**（`dispatch/started` 记 `reused:true` + `mode:"continuable"`，回执写「♻️ 复用 … 第 N 轮」）；没有空闲者且池未满 ⇒ 起 `startContinuable`；宿主不可续聊 ⇒ 如实退化成 one-shot 并在回执里写「池退化为并发上限」。
+  - **一张卡只许在一个子代理里**：已有在飞派发（started 未 finished）的卡不重复派；`busy` 的子代理绝不出现在可复用清单里；one-shot 结算后记 `retired`（不算「空闲可复用」）。
+  - 用例 `test/m36.test.ts`（7 条，含三类反向）＋变异自证：池上限失效 ⇒ `M36-02/03/07` 红；复用忙的子代理 ⇒ `M36-03/07` 红；复用失败仍宣称成功 ⇒ `M36-06` 红。
+  - 回执与 `sdo_status` 共用同一份池块（在飞/上限｜空闲可复用｜已退役＋排队清单）。
+
+### 变更（升级须知）
+
+- **批准的需求变更 ⇒ 强制回退到需求阶段（语义 A，2026-10-04）** —— **升级后第一次批准变更就会改变阶段**，先读完这段：
+  - **真机缺陷**（sdo-test 台账）：`CR-001` 12:36:24Z 批准 → 12:36:47Z `task/claimed`（**23 秒后开发照常继续**）。根因：`src/domain/change.ts` 里 `phase` 出现 **0 次** —— 变更只做"登记 + 决策 + 算影响面"，**不改阶段、不碰基线**；流程数据里的旧注释还写着"未列入 requirements —— 改需求走变更控制，不靠回退绕行"，而那条"变更控制"实际只让 G3 签字失效，**没有任何判据**说"变更没消化完不许开工"。
+  - **新语义（两半一起上）**：① 批准 ⇒ 阶段被拉回需求阶段（`change/rollback` + `phase/rolled-back` 留痕，走既有 `rollbackPhase`，R-3 / C-2E 口径不变）；② 未消化期间构造阶段的 `claim` 直接拒绝，错误码 **`change-not-digested`**。
+  - **"未消化"的机械定义**（从 journal 现算，不新增真源）：批准之后存在**覆盖该受影响需求**的 `requirement/baselined`，**且**此后设计门（需求阶段之后那个阶段的出口，随包流程是 G3）有 `passed` / `waived` 的 `gate/result`。两步缺一不可 —— 只重签 G2 不算消化（否则"需求变了却不重新设计"）。
+  - **不误伤的那一侧**：`rejected` / `deferred` 的变更**不动阶段、不拦认领**；低影响变更也走同一条路（**有意不按影响面分级**）。
+  - **流程数据**：`construction` / `verification` / `delivery` 的 `rollback` 补 `requirements`（四个流程一致，agile 的交付阶段用自身阶段名 + `requirements`）；旧注释改成新口径。
+  - **事后出口**：`sdo_status` 增「已批准但尚未消化的需求变更」块（与拒认领**同一份文案**，`describeUndigestedChanges` 一处定义两处用）——
+    重启 / 上下文压缩之后那条拒绝回执已经不在上下文里，模型仍能从状态块看到卡在哪、下一步做什么。
+  - 用例 `test/m35.test.ts`（`M35-01..05`：回退留痕 / 拒认领 / **只冻结 G2 仍拒** / 五种不误伤 / 工具层接线与回执 + 状态块）。变异自证：去掉自动回退 ⇒ `M35-01` 红；去掉拦截 ⇒ `M35-02` 红；把"待重过设计门"降级成"待重签 G2" ⇒ `M35-03` 红。
+  - 设计依据：[`docs/plan/2026-10-04-需求变更强制回退-设计.md`](docs/plan/2026-10-04-需求变更强制回退-设计.md)。
+
+### 修复
+
+- **子代理报告只"拉"不"推"（真机反馈：子 agent 结束仍未收到消息）—— 已补「推」半**：
+  - **真机复算**（我核过，不是猜测）：`TASK-042` 的子会话 `turn/end` 与台账 `dispatch/finished` **同一秒**（14:02:44Z）且报告文件已写 ⇒ ② 在真机上是好的；而 `TASK-043` 的子会话 `turn/end ×0`、最后事件距当时仅 1 秒 ⇒ **它还在跑**，本来就没有报告。所以问题不在落账，而在**送达方式**：上轮只做了拉取（要驾驶舱自己去 `sdo_status`），没有 `send_message` 那种主动送达。
+  - **修法（不需要宿主新 API）**：新增「未读报告」队列 —— 驾驶舱**下一次调用任何 SDO 工具**时，把未读报告（最多 3 份，含卡/结论/落点/摘要）**贴在该次工具回执**上；送达一次即记 `dispatch/reported`（append-only ⇒「未读」= finished − reported，**插件重启也不重推/不漏推**）。载体选择理由：工具回执是插件唯一能稳定写进模型上下文的地方（`agent/inbox/splice` 是宿主侧事件，插件调不到）。
+  - 用例 `M34-06`：结算后**下一次任意 SDO 工具回执**必须带「子代理报告（已自动送达）」+ 落点 + 摘要，且 `dispatch/reported` 留痕；**反向**：第二次调用不再重复送（否则每次刷屏）。变异 114（不推）→ 红；115（推送后不标记）→ 红。
+  - 诚实边界：投递发生在**下一次工具调用**，不是"秒级推送"（宿主没有事件驱动的注入入口）；若驾驶舱长时间不再调用任何 SDO 工具，报告会一直躺在队列里（可在 `sdo_status` 拉取）。
+
+
+### 修复
+
+- **评审三条建议（派发汇报/复用，逐条先复现后处置）**：
+  - **N1（文档）**：我引用的宿主行号偏差（写 `:3124`，实际 `Service.start()` 里那处在 `:3121`、descriptor 构造另一处在 `:2444`）⇒ 三处引用**不再用裸行号**，改成引用**符号/代码片段**（行号随宿主升级必漂，符号不漂）。
+  - **N2（前瞻，已按更稳做法修）**：报告落点原按 `childSessionId` 命名 —— one-shot 下没问题，但方案 3（同角色常驻、一个子代理服务多张卡）会让同一子会话多次结算、报告**逐卡覆盖**。现在按 **`<task>-<子会话前 8 位>.md`** 切，并规定读者一律按 `dispatch/finished.report` **记录读回**（不自己拼名）。**实现这条时又发现一个真问题**：结算用 `find` 取的是**第一条**派发记录 ⇒ 复用时会一直认第一张卡；已改为取**最新一条**（`filter(...).at(-1)`）。用例 `M34-05`（同一子会话为两张卡结算 ⇒ 两份报告、互不覆盖）钉住；变异 111（报告名退回只按子会话）/112（取第一条派发）→ 红。
+  - **N3（覆盖率）**：原 `M34-03` 只做「机制 + 接线」断言，边界写着「没复现真实异常」。按评审给的**确定性构造**收成用例 `M34-04`：把 `.sdo/evidence/child-reports` 预占成普通文件 ⇒ 写报告 `EEXIST` ⇒ 记 `dispatch/observe-failed`，且**不**误记 `dispatch/finished`（失败不被伪装成完成）；变异 113′（失败不留痕）→ 红。设计 §4 的对应边界已改为「已用确定性构造复现」。
+  - 用例 `m34` 5 条；全量测试全绿（计数以 `node scripts/run-tests.mjs` 输出为准）。
+
+
+### 新增
+
+- **子 agent 取汇报（三个方案）**：真机反馈"子代理已做完，但报告没回来"。探测确认：插件**能**收到子会话事件，`turn/end` 是结算信号（子会话没有 `session/end`），`assistant/message` 带全文。
+  - **②（中成本）**：监听子会话 `turn/end` ⇒ 写 `dispatch/finished`（卡/角色/turn/原因/耗时）+ 把它**最后一条助手消息**落到 `.sdo/evidence/child-reports/<childSessionId>.md`。
+  - **①（低成本）**：`sdo_status` 增「最近完成的派发」块（卡 / 子会话 / 结论 / 耗时 / 报告落点）。
+  - **③（完整）**：插件侧可行的那半已做 —— 报告落盘 + **状态块给摘要**（模型不必自己翻文件）；**自动回注父会话**需要宿主开入口（`agent/inbox/spliced` 是宿主侧事件），已记录待提。
+  - **附带修复（真机线索）**：`session/event` 监听器原本整段 `catch {}` **静默吞异常**（真机上恰好丢过三次派发的观测，导致"没数据"与"没问题"分不出来）⇒ 现在记 `dispatch/observe-failed`，仍 fail-open 但不再无声。
+  - 用例 `test/m34.test.ts`（3 条，走**真实监听器**与**真实注册的 `sdo_status`**）：结算落账 + 报告内容=最后一条消息 + 状态块含落点与摘要；**反向**：无关会话的 `turn/end` 不落账不写报告；失败留痕。变异 108′（不落 `dispatch/finished`）→ M34-01 红；109（报告取第一条而非最后一条）→ M34-01 红。
+- **子代理复用（决定 1+3，不做 2）**：
+  - 宿主事实（读码）：`dsh-subagent` 内部有 `one-shot`/`continuable` 两种模式（`lib/index.js:1370`），但 Service `start()` 把描述符**写死 `mode:"one-shot"`**（同文件 :3124）⇒ 插件今天拿不到可续聊子代理，"外派很多"的成本由此而来。
+  - **方案 1 的插件侧半个已就绪**：新增 `reuseCapability()`（只认**显式存在**的 `startContinuable`/`activate`/`resume`，与 `toolFilter` 探测同一口径：绝不替宿主打包票），回执按探测结果如实说"暂不可用，每次都是新会话"；宿主一旦开放，口径自动改变。
+  - **方案 3（同角色常驻 + developer 多实例并行、上限用 `maxParallelDispatch`）**：设计与边界已写进 [`docs/plan/2026-10-04-派发汇报与子代理复用-设计.md`](docs/plan/2026-10-04-派发汇报与子代理复用-设计.md)，待宿主 continuable 入口落地后实施。
+  - **不做方案 2（多卡合并派发）**：会丢信息 / 上下文过长导致漏关键信息 / 单次时长过长。
+  - 用例 `M32-08`（探测三入口 + 回执两个方向 + `startDispatch` 透传）；变异 110（探测恒 true）→ M32-01/M32-08 红。
+
+
+### 修复
+
+- **PLAN-1（blocker，sdo-test 真机会话发现）：`sdo_plan action=profile` 在工具层同样不可达** —— 与我上一轮刚修的 B1 **同一缺陷类**，但只修了 `sdo_test` 没扫同类。
+  - **现象**：`sdo_plan` 的 `parameters` 里没有 `packages`/`scope`/`derivedFrom`/`reason`/`exempt`，`execute` 映射里也没有 ⇒ 模型传的参数在工具边界被静默丢掉 ⇒ `action=profile` 永远回"packages 不能为空；derivedFrom 不能为空" ⇒ **`.sdo/construction/profile.yml` 永远不存在 ⇒ 整个实现阶段方法包功能在实际项目里是休眠的**（交付物通道能用，但没有任何东西会要求它们）。
+  - **修法**：补 schema（5 个参数，带 JSON 形状说明）+ 补 `execute` 透传。
+  - **回归**：新增 **`M33-15`：经 `apply()` 注册表里真实注册的 `sdo_plan`** 决定方法包（不是 `office.*`），断言回执、`profile.yml`、journal，以及"非法输入被拒且不写盘"。变异 **106**（删 `packages` 映射）→ M33-15 红；**107**（删 `derivedFrom` schema）→ **类型系统直接拒绝编译**（`args` 由 schema 推导）。
+- **AD-1（我的新守卫第一跑就抓到的同类缺陷）：`sdo_adr` 的 `id` 没进工具声明** —— `AdrArgs.id` 存在、schema/映射里都没有 ⇒ `action=supersede` 这类要靠 `id` 的动作在工具面不可达。已补 schema + 映射。
+- **新增机械守卫（`M25`）：`*Args` 里有的字段，工具 schema 与 execute 映射里都要有** —— 覆盖 17 个工具；反例自证"接口有、schema 没有"与"**只有别的工具有** `args.X`（分块检查）"都必须被抓到。变异 **105**（误删 `sdo_requirement` 的 `id` 映射）→ M25 **与** R-2 同时红。
+  - 与之互补的既有守卫 `F-7`（编译产物里 handler 读的每个 `args.X` 必须在 schema 里）方向相反；两条合起来才覆盖"接口 ↔ schema ↔ 映射"三处的一致性。
+- **我在本轮自己造成并修掉的一个回归（诚实记录）**：为清理误插进 `sdo_test` 的一行 `id`，我用"三行同形"的文本替换，结果**匹配到了 `sdo_requirement` 的真实代码**、把它的 `id` 映射删了（`R-2` 因此变红：`acceptanceMode=replace` 改号改不动）。已按**工具块内定位**补回；并把 `M25` 的映射检查从"全文件搜 `args.X`"改成**只看该工具自己那块** —— 否则这类误删永远抓不住（我正是被它放过的）。
+
+
+### 修复
+
+- **B1（blocker，复审发现）：交付物通道在工具层是死的 —— 已修，并补上工具层回归**。
+  - **现象**：`sdo_test` 的 `parameters` 里没有 `mutation`/`contractTest`，`execute` 的逐字段映射里也没有 ⇒ 模型给的这两个参数在**工具边界被静默丢掉**，`index.ts` 的分流分支永远进不去，落到"用例结果"分支报 `k40`；`.sdo/construction/*.yml` 一个字节都没写。选了 `tdd`（critical 档）或 `contract-first` 的卡会因此**永远无法 `done`**。
+  - **根因**：我给 `TestArgs` 加了字段，却**没有同步工具声明** —— 而 `TestArgs` 只是内部类型，工具边界上不存在的参数不会报错，只会消失。
+  - **修法**：`sdo_test` 的 `parameters` 补 `mutation`/`contractTest`（带说明：JSON 字符串、与"用例结果"分流、`caseId`/`status` 对它们非必填），`execute` 补两行透传。
+  - **为什么 462 条没照出来（诚实记录）**：`M33-11`/`M33-13` 直接调 `office.recordMutation`/`recordContractTest`，**绕过了工具边界** —— 这正是复审的切入点。新增 **`M33-14`：经 `apply()` 注册表里**真实注册的 `sdo_test`** 调用（不是 `office.*`）：断言 schema 有这两个参数、回执是"已记…"、`tdd.yml`/`contract-first.yml` 与 journal 都真的写了、`target` 为空带提示、未知契约拒收不写盘、以及"没有交付物参数时仍走用例结果分支"。
+  - 变异自证：**102** 删掉 `execute` 里 `mutation` 的映射 → M33-14 红（B1 的直接复现）；**103** 删掉 `contractTest` 映射 → 红。（试过"从 schema 删掉 `mutation`"，结果是**编译失败** —— `args` 由 schema 推导，schema 与映射的一致性由类型系统保证，这比用例更早一步。）
+  - 残留缺口如实说明：给 `TestArgs` 新增字段时**仍需手工同步工具声明**（类型系统不会替你想起这件事）；`M33-14` 这种"经真实工具"的用例是目前的防线。
+
+
+### 修复
+
+- **复审的两条后续建议（都先独立核实，再落地）**：
+  - **建议 1 —— 来源核对铺到 C7**：核实成立（`testFirstGaps` 只读 `.sdo/tests/results/TR-*.yml`，且只有 `collab.ts` 两个调用点）。现在 C7 与 `redGreenGaps` 用**同一道**核对：本卡用例的结果文件必须在 journal 里有 `test/recorded` 事件，否则判 **`tdd-result-untraceable`**（只核对本卡用例，不牵连无关卡）。README 里"C7 仍只读文件、属既有暴露面"的说明已随之改为事实。用例 `M30-20`（伪造文件 ⇒ `done` 判红并点名；删掉伪造文件后走真实路径 ⇒ 放行）；变异 99 → M30-20 红。
+  - **建议 2 —— `target` 的证据强度**：核实成立（交付物通道允许 `target` 为空，回执也不提）。`target` 仍**允许为空、不判红**，但回执会在缺失时给一句提示（"建议写清改了什么，否则复核者无法复跑"）；并在 README/规格里如实写明 `killed`/`survived` 是**自报数**、插件无法独立验证。用例 `M33-13`；变异 100 → M33-13 红。
+  - **顺带修掉一个我自己刚犯的错，并加了守卫**：为了让提示文案进语言包，我的插入脚本把段存在性判断写成了 `if section in lines`（漏冒号）⇒ 文件里出现**第二个 `uiIndex:`**；YAML 取后者 ⇒ **第一段整段静默消失**，一批用例的文案退化成键名（`truthReadFailed`）。已合并重复段；并把 `M25` 的重复键守卫扩成**同时查重复段**（旧守卫每遇段头就 `clear()`，正好漏掉这一类），且**带反例自证**（喂一段假的重复段文本，扫描必须报出来）。变异 101 → M25 红。
+
+
+### 修复
+
+- **评审 N1–N5（实现阶段方法包增量 3）——五条我都先独立复现，再分"改实现 / 改规格"处置**：
+  - **N2（伪造口，已改实现）**：红→绿时序读结果文件，而文件可手改 ⇒ 我加了一道便宜的反向核对：**结果文件必须在 journal 里有对应 `test/recorded` 事件**（`recordTestResult` 两处都写），否则判新检查码 **`tdd-result-untraceable`**（点名是哪些文件）。这样既不引入第二份真相，又堵住了派发路径下唯一好用的伪造口。**边界如实说明**：C7（`testFirstGaps`）本身仍只读文件、未做同样核对，属既有暴露面，未在本增量内改动。
+  - **N3（已改实现）**：变异自证除 `killed ≥ 1` 外，还要求**该记录的 `tool` 非空**（空 tool 证不了"用什么杀的"）；`target` 允许为空。
+  - **N1（已改文字 + 补判别性用例）**：设计文档 §1.1 与 `M33-05` 的用例名仍写"从 journal 现算"，与实现（读结果文件、按 id 数字序、与 C7 同源）不符 —— 两处已改；并新增 **`M33-12`**：① 只写文件不写事件 ⇒ `tdd-result-untraceable`；② 补上事件 ⇒ 通过；③ **文件序与 journal 序相反时以文件为准**（改回读 journal 这条用例就会红）。
+  - **N4/N5（按规格对齐，未改实现）**：变异自证实际是**按卡**（不是"每条覆盖需求各一条"）、触发条件只有**项目档位** `scale=critical`（没有"卡标注 critical"这回事，`TaskCard` 无该字段）。规格 §1.1 已改成与实现一致，并写明"逐需求粒度需给记录加 `requirement`、卡级档位需给卡加字段，属后续增量"。
+  - 变异自证：96（去掉来源核对）→M33-12 红；97（时序改回看 journal）→M33-05/09/10/12 红；98（不校验 tool 非空）→M33-06 红。`tsc` 0；**459/459**（+1 = M33-12）。
+
+
+### 新增
+
+- **实现阶段方法包（增量 3）· 步骤 6：交付物通道与角色卡收尾**：
+  - `sdo_test action=record` 新增两个**交付物**参数（与"用例结果"在同一动作里分流，`caseId`/`status` 对它们不是必填）：
+    `mutation='{"task":"TASK-004","tool":"node --test","target":"lib/x.js","killed":3,"survived":0}'` → 写 `.sdo/construction/tdd.yml`；
+    `contractTest='{"task":"TASK-005","contract":"CT-003","tool":"node --test","cmd":"…"}'` → 写 `.sdo/construction/contract-first.yml`。
+    两者都落 journal（`test/mutation-recorded` / `test/contract-test-recorded`）；**契约 id 必须在台账里存在**，否则整次拒收、不写盘；`killed = 0` 允许落盘（"变异没杀掉"是事实，判据自己判）。
+  - **developer 的 allow 补回 `sdo_test`**（设计初稿本就如此，实现里此前漏了）：TDD 的变异自证要由实现者记录；`sdo_gate`/`sdo_plan` 仍不给（职责分离不变）。
+  - 角色卡：office（决定方法包）、developer（记录变异自证）、tester（记录契约测试）各加一步；全部只引用该角色掩码内的工具（`M29` 判据，含"卡里写的判据 id 必须真实存在"）。
+  - 用例 `M33-11`（两个通道的正反例：非法输入**不得写盘**、契约不存在拒收、合法则 yml+journal 都有、收工关据此放行、处理器分流与 developer 掩码同源核对）；变异 93′（不落盘）、94（不落 journal）、95（不校验契约存在）→ 全红。
+  - **增量 3 的步骤 1–6 至此全部完成**；设计文档的实施进度表已同步。
+
+
+### 新增
+
+- **实现阶段方法包（增量 3）· 步骤 5：门禁判据 `C-33`/`C-43`（顺序流程）与 `C-83`/`C-84`（agile）**：
+  - 新增两个检查器：`construction.profile-decided`（**三态**：坏结构判红、没决定判红、**显式不选包判 N/A**）与 `construction.packages-satisfied`（按**当前** profile 复核**范围内已完成**的卡，用的是与 `claim`/`done` **同一套**检查器：契约先冻结、红→绿、critical 变异、契约测试）。
+  - 挂载：waterfall/prototype/spiral 的 **G4** += `C-33`、**G5** += `C-43`；**agile 没有 construction 阶段**（构造在迭代里）⇒ 两个判据挂 **GI**（`C-83`/`C-84`）。`N/A` 的表示沿用本仓库口径（`ok:false` + `na:true`，不计入全绿分子）。
+  - 用例 `M33-10`（三态、点名未知包、点名不合规的卡、补齐后放行、范围外不检查、四个流程的判据挂载机械核对）；变异 90′（缺 profile 判成 N/A）、91（忽略缺口）、92（waterfall 丢掉 C-33）→ 全红。
+  - **C-43 的追溯口径**（本轮澄清）：判据按**当前** profile 复核范围内**已完成**的卡；"复议不追溯"指**不会因为改了 profile 就自动翻旧账**，但仍在范围内的卡要合规 —— 要放过历史卡请写**豁免**（`exempt: [{task, check, why}]`，理由必填且判据会点名）。
+  - 升级影响：这一轮把门禁也接上了 —— **构造阶段/迭代门**都会要求 `profile`。既有项目（如 sdo-test，已在交付阶段）不追溯；正在构造阶段的项目需先跑一次 `sdo_plan action=profile`（或显式 `packages=[]` + 理由）。本轮据此给 4 个既有用例夹具（m4 迭代、m14 回退重判、m30 的 C7/A1/A2）补了**显式不选包**的中立 profile。
+  - **待做**：步骤 6（`sdo_test` 记录交付物的字段、developer/tester 角色卡收尾）。
+
+
+### 新增
+
+- **实现阶段方法包（增量 3）· 步骤 3–4：接进 `claim`（开工关）与 `done`（收工关）** —— 从此**真的会拦人**（此前只有领域检查器，不接线）：
+  - `claim`：构造阶段（`construction` / 敏捷的 `iteration`）没有 profile ⇒ `construction-profile-missing`；选了 `contract-first` 而卡所涉契约**没有先冻结**（冻结 `design/confirmed` 序号 ≥ 本次认领序号）⇒ `contract-not-frozen`。
+  - `done`：`tdd` 要求卡覆盖的每条需求**先 fail 后 pass** ⇒ `tdd-red-green-missing`；`critical` 档位还要**变异自证**（`killed ≥ 1`）⇒ `tdd-mutation-missing`；`contract-first` 要有契约测试记录 ⇒ `contract-test-missing`；profile **坏结构**在收工也拒（不静默）。
+  - 阶段从 `office.status(call).project?.phase` 现读传入（不做"测试专用参数"）；`trivial`/未到构造阶段的项目行为不变。
+  - **结果源统一（本轮自查发现的真问题）**：红→绿时序最初从 journal 现算，而 C7（`testFirstGaps`）读的是 `.sdo/tests/results/TR-*.yml` —— 两处真源不一致会**漏看手写的结果文件**（假红）。现在统一读结果文件，顺序用 **id 数字序**（`idOf` 递增分配，比时间戳稳），与 C7 同源。
+  - **显式不选包 = 合法 N/A**：`readConstructionProfile` 只要求"选了包才必须给 `derivedFrom`"；`packages: []` 时必须写 `reason`（判据 N/A，理由留档）。
+  - 用例 `M33-08`（缺 profile 拒 / 显式不选包放行 / 契约未冻结拒 / 冻结后放行 / 非构造阶段不查）与 `M33-09`（红→绿、critical 变异、契约测试三条都在 `done` 上真的拦，补齐后放行，坏结构也拒）；变异 87（开工关不查 profile）、88′（收工关不查方法包）、89″（永远按 normal 档）→ 全红。
+  - **升级影响（如实）**：正在构造阶段的项目升级后需要先跑一次 `sdo_plan action=profile`（或显式 `packages='[]'` 表明不启用）；已过 G4/G5 的项目不追溯。设计文档 [`docs/plan/2026-10-03-实现阶段方法包-增量3.md`](docs/plan/2026-10-03-实现阶段方法包-增量3.md) 的实施进度表已同步。
+  - **待做**：步骤 5（门禁判据 `C-33`/`C-43`、agile 的 `C-83`/`C-84`）与步骤 6（`sdo_test` 记录交付物的字段、README/角色卡收尾）。
+
+
+### 新增
+
+- **实现阶段方法包（增量 3）· 步骤 1–2：词表、落盘与"模型自选"的选择动作**（设计见 [`docs/plan/2026-10-03-实现阶段方法包-增量3.md`](docs/plan/2026-10-03-实现阶段方法包-增量3.md)）：
+  - 新模块 `src/domain/construction.ts`：`.sdo/construction/**` 的读写与校验（`profile.yml` + 每包交付物），以及**可机械判定的检查器** —— `claimGaps`（契约必须先冻结）、`redGreenGaps`（用例先 fail 后 pass，从 journal 现算）、`doneGaps`（critical 档位的变异自证、contract-first 的契约测试）。
+  - **`sdo_plan action=profile`**（新动作）：由**模型自选**方法包（**不问用户**），但强制 `derivedFrom[]` **至少一条能被机械核对**（`reqKind=<kind>(<REQ-id>)` 比对需求台账、`contractCount=<n>` 比对契约数、`scale=<档位>` 比对 `.sdo/config.yml`）；校验不过**整次拒绝、不写盘**；成功则写 `profile.yml` + journal `plan/profile-decided`，复议覆盖选择并把**被覆盖的那次**记进 `history`。
+  - 口径：**能从既有真源现算的一律不落盘**（红→绿时序、契约冻结序号都从 journal 现算）；`.sdo/construction/*.yml` 只落"无法现算"的事实（变异记录、契约测试记录、豁免）。
+  - 用例 `test/m33.test.ts`（7 条，覆盖落盘/坏结构判红/依据可核对/office 校验与历史/契约冻结边界（**序号相等也拒**）/红→绿时序/豁免与范围）；变异 82（去掉"至少一条可核对"）、83′（丢掉时序）、84（冻结允许同一条）、85（坏结构静默当 missing）、86（校验失败也写盘）→ 全红。
+  - **诚实进度**：步骤 1–2 完成；**检查器尚未接进 `claim`/`done`**（第 3–4 步），因此**当前不会拦任何调用**；门禁判据 `C-33`/`C-43`/`C-83`/`C-84`（第 5 步）与文档/角色卡（第 6 步）待做。
+
+
+### 文档
+
+- **新增设计：[`docs/plan/2026-10-03-实现阶段方法包-增量3.md`](docs/plan/2026-10-03-实现阶段方法包-增量3.md)**（只落设计，实现另起一轮）。要点：
+  - **形状**：实现阶段方法包**不是**设计阶段那套的克隆 —— 实现阶段的产物（用例/评审/证据/追溯/缺陷/卡）已是一等公民，所以包被定义为**"对既有产物的纪律（必给/禁用/时序）"**，卡点放在每个执行者都绕不过的 `claim`（开工关）与 `done`（收工关），G4/GI 只管"是否已选"、G5/GI 只做聚合。
+  - **选择（用户决定 1）**：由**模型自选，不问用户** —— 新增 `sdo_plan action=profile`（office 调用，不新增工具），强制 `derivedFrom[]`（至少一条可机械核对）+ `reason` + 复议历史，把"模型自选"变成**可审计**而不是暗箱；复议**不追溯**已完成卡。
+  - **交付物（用户决定 2）**：**不交人审文档**，只落 `.sdo/construction/**`（`profile.yml` + 每包一份 yml）；并明确**能从 journal 现算的一律不落盘**（红→绿时序、契约冻结 seq、卡变更规模），避免第二份真相。
+  - **判据**：顺序流程（waterfall/prototype/spiral）加 **`C-33`**（G4：profile 已定 + 依据可核对）与 **`C-43`**（G5：范围内每卡满足所选包）；**agile 无 construction 阶段**（构造发生在迭代内）⇒ 加 **`C-83`/`C-84`** 于 **GI**。未选包 ⇒ 判据 N/A + 理由（不惩罚不用该机制的流程）。
+  - **MVP 边界**：先上 `tdd` + `contract-first`（两者都有可现算的硬检查），`small-batch`/`hardened-critical` 放阶段 2；**度量类（规模/WIP）只告警不拦**，硬拦只给"证据存在性 + 时序一致性"。
+  - 诚实边界：升级只影响**升级后新进入/新退出构造阶段**的项目（已过 G4/G5 的不追溯，sdo-test 已在交付阶段不受影响）；包的自动推断**不做**（归属由模型声明 + 依据可核对）。
+
+
+### 修复
+
+- **G1 的工具此前无人能用（偏移核实发现的实现缺口，按方案 B 处置）**：`sdo_feasibility`（`action=assess`，可行性门禁 G1 的工具）在 `roles.yml` 里**零命中** —— 按掩码的白名单语义，只有驾驶舱能跑 G1，任何被派发的角色都调不到它（设计初稿原意是给 analyst）。
+  - 决策：**给 `office`（流程官）** —— G1 属立项阶段的流程门禁，由流程官在驾驶舱管线里跑；`analyst` 不持它。
+  - 落地：`src/data/roles.yml` 的 office allow 增 `sdo_feasibility`；`skills/role-office.md` 的动作段补第 2 条（G1：TELOS 维度 + 风险登记 + Go/No-Go + PoC 建议；门禁要求结论 `go`、高/阻塞级风险必须有 `mitigation` + `owner`，否则 G1 直接拒绝），后续步骤号顺延；用例 `M31-04` 把 `sdo_feasibility` 列入 office 的「必须能用」清单（变异 81：从 office 拿掉 → 红）。
+  - 偏移报告 [`docs/verification/2026-10-03-设计与实现偏移核实.md`](docs/verification/2026-10-03-设计与实现偏移核实.md) 的第 2 条已同步记为「已按 B 处置」。
+
+
+### 文档
+
+- **文档整理 + 设计与实现的偏移核实（2026-10-03）**：新增 [`docs/README.md`](docs/README.md)（文档索引与**权威顺序**：代码/`src/data/**` → README → CHANGELOG → `docs/plan/**` → `docs/design/**` → `docs/verification/**`），并给历史设计初稿加了抬头注记（它自称「待评审」后即停更）。
+- **偏移核实**：[`docs/verification/2026-10-03-设计与实现偏移核实.md`](docs/verification/2026-10-03-设计与实现偏移核实.md) —— 机械比对设计稿的表格与代码真源，逐项给证据：
+  - **§9.1 工具表**：19 只工具里 **11 处动作差异**、`sdo_lang` 整只缺表；两处「设计有而代码没有」是接口改名/换形（`sdo_task start`→`claim`、`sdo_render docs/all`→参数选目标）⇒ 文档过期。
+  - **§8.2 掩码表**：8 个角色全部与 `roles.yml` 不一致（多为一轮轮修复后的有意口径，如 8 角色都必须有 `sdo_task`）；**但发现一处实现缺口**：`sdo_feasibility`（G1 的工具）在 `roles.yml` 里零命中 ⇒ 按白名单语义**只有驾驶舱能跑 G1**（设计原本给了 analyst）——待决定归属。
+  - **§15.3 判据表**：设计用的是 `C-01…C-13` 上一代编号，**没有** `C-20/C-2A/C-30/…` 风格；实现真源 `src/data/processes/*.yml` 有 **51 条判据**（含 0.1.2 的设计阶段增量与 `C-42`）⇒ 判据真源只能是流程数据。
+  - **派发**：设计写 `SubagentRuntime.start` + 宿主隐藏工具面；实现用 `subagents.start`（已接线、真机通过）且宿主**没隐藏**（只收窄公告面，调用面靠钩子）⇒ 上游问题已留档。
+  - **无偏移的两处（正向）**：README §8 写「20 个工具」与实际注册数 **都是 20**；阶段模型与 `waterfall.yml` 一致。
+  - 诚实边界：设计稿的叙述性章节未逐段核对；判据只比到 id 体系；宿主「为何把未公告工具的调用路由进工具层」仍未最小复现。
+
+
 ### 修复
 
 - **markdown 守卫是"虚假保证"（第四轮复审发现，已修）**：上一轮新增的守卫判据是「每个语言包值里 `**` 的**个数为偶数**」，而它记录的那次事故原文 `子代理**仍然**可以调用****了掩码外的工具` 里 `**` 恰好是 **4** 个（偶数）⇒ **守卫放行** ✗。真正的坏味道是 **空粗体 `****`**（开合之间没有内容），不是"不成对"。
