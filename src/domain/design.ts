@@ -12,7 +12,7 @@
  *   · **确认戳绑定内容指纹**（F-19，见 `contentHash`）：内容改了旧确认即失效（`C-24`/`C-27` 判红
  *     并要求重新确认），与门禁签字按 journal 序号失效同源 —— 背书必须绑定它背书的那个版本。
  */
-import { existsSync, readdirSync, statSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import type { Dirent } from 'node:fs'
 import { createHash } from 'node:crypto'
 import { join } from 'node:path'
@@ -1131,6 +1131,7 @@ export function confirmDesign(
   target: string,
   basis: string,
   by: string,
+  basisSource: 'user' | 'proxy' = 'user',
 ): DesignConfirmation | undefined {
   const existing = listConfirmations(store)
   // F-19：确认戳**绑定被确认内容的指纹**。目标不可解析 → **拒绝**（绝不凭空背书）。
@@ -1140,6 +1141,7 @@ export function confirmDesign(
     target,
     basis,
     by,
+    basisSource,
     at: new Date().toISOString(),
     contentHash,
   }
@@ -1147,7 +1149,14 @@ export function confirmDesign(
     ? existing.map((item) => (item.target === target ? record : item))
     : [...existing, record]
   store.writeYaml(['design', 'confirmed.yml'], { confirmations: next })
-  journal.append('design/confirmed', { target, basis, by, contentHash: record.contentHash ?? '' })
+  journal.append('design/confirmed', {
+    target,
+    basis,
+    by,
+    // **SDO-48**：`basisSource=proxy` 时这一戳是**代盖**，审计读 journal 也能分辨（此前只写死了用户口径）
+    basisSource,
+    contentHash: record.contentHash ?? '',
+  })
   return record
 }
 
@@ -1719,6 +1728,11 @@ export interface DraftElement {
   confidence: 'high' | 'medium' | 'low'
   /** 来源需求（追溯矩阵与"标注来源"用） */
   requires: string[]
+  /**
+   * 职责正文（**SDO-24**）：`DESIGN.md` 是人审交付物，只写「ID｜名称（类型）｜来源｜置信度」
+   * 等于**证明不了「真源变更在文档里可见」** —— 现在随文档一起渲染（空则不占位）。
+   */
+  responsibility?: string | undefined
 }
 
 export interface DraftView {
@@ -1766,6 +1780,7 @@ export function designDraft(
           // `requires` 推导的，直接沿用会把"有追溯来源"的元素继续写成 low（与 C-21 自相矛盾）。
           confidence: requires.length > 0 ? derivedConfidence({ requires }) : (element.confidence ?? 'low'),
           requires,
+          responsibility: typeof element.responsibility === 'string' ? element.responsibility : '',
         }
       }),
     })
@@ -2051,7 +2066,12 @@ export function renderDesignDoc(input: {
     }
     for (const element of view.elements) {
       const requires = element.requires.length === 0 ? t('uiDesign.docNoSource') : element.requires.join(' ')
-      lines.push(`- ${element.id}｜${element.name}（${element.kind}）｜${t('uiDesign.docRequires')}：${requires}｜${t('uiDesign.docConfidence')}：${element.confidence}`)
+      // **SDO-24（2026-10-05 真机）**：只输出「ID｜名称（类型）｜来源需求｜置信度」时，人审文档
+      // **证明不了「真源变更在文档里可见」**（C-25 只能证明渲染序号不早于真源变更）——真机上架构师
+      // 改的 6 处职责正文在 DESIGN.md 里零命中，评审只能去读 `.sdo/design/*.yml`。现在一并渲染职责正文。
+      const responsibility = String(element.responsibility ?? '').trim()
+      lines.push(`- ${element.id}｜${element.name}（${element.kind}）｜${t('uiDesign.docRequires')}：${requires}｜${t('uiDesign.docConfidence')}：${element.confidence}`
+        + (responsibility === '' ? '' : `｜${t('uiDesign.docElementResp')}：${responsibility}`))
     }
   }
   if (draft.views.length === 0) lines.push(`- ${t('uiDesign.docEmptyView')}`)
@@ -2081,6 +2101,8 @@ export function renderDesignDoc(input: {
   for (const contract of draft.contracts) {
     lines.push(
       `- ${contract.id}｜${contract.name}（${contract.kind}）｜${contract.producer} → ${contract.consumer}`
+        // **SDO-24**：契约此前只输出失败语义、不输出 `schema` 正文 —— 人审文档同样无法自证内容。
+        + (String(contract.schema ?? '').trim() === '' ? '' : `\n    - ${t('uiDesign.docContractSchema')}：${String(contract.schema).trim()}`)
       + `｜${t('uiDesign.docTimeout')}：${contract.failureSemantics.timeout === '' ? t('uiDesign.docEmpty') : contract.failureSemantics.timeout}`
       + `｜${t('uiDesign.docRetry')}：${contract.failureSemantics.retry === '' ? t('uiDesign.docEmpty') : contract.failureSemantics.retry}`
       + `｜${t('uiDesign.docIdempotency')}：${contract.failureSemantics.idempotency === '' ? t('uiDesign.docEmpty') : contract.failureSemantics.idempotency}`,
@@ -2266,20 +2288,22 @@ const designDocCache = new Map<string, string>()
 const DESIGN_DOC_CACHE_LIMIT = 16
 
 /**
- * 缓存键里的"真源版本"：`journal` 文件 + **`.sdo/` 下全部手写真源**的 `count:size:maxMtime`。
+ * 缓存键里的"真源版本"：`journal` 文件 + **`.sdo/` 下全部手写真源**的**内容哈希**（`count:size:sha16`）。
  *
  * 为什么要遍历真源：`renderDesignDoc` 读的不只是 journal —— 它还读 `design/`、`contracts/`、
  * `decisions/`、`requirements/`、`questions/`、`trace/links.jsonl`、`risk`、`applicability`、
- * `confirmed`、`project.json` 等（清单见 `designDraft`/`confirmGaps`）。手改其中任何一个
- * **不会**产生 journal 事件，只按 journal 建键就会命中旧渲染（R-1 的假绿）。
+ * `confirmed`、`project.json` 等。手改其中任何一个**不会**产生 journal 事件，只按 journal 建键就会命中旧渲染。
  *
- * 代价：一次递归 `readdir` + `stat`（约百来个文件、约 1ms），相比一次 52ms 的重渲染依然划算。
+ * **§3.1（第二轮评审 HIGH）**：旧实现用 `count:size:maxMtime` 做指纹 ⇒ **同字节数**的原地改写，
+ * 只要 mtime 不越过当时的最大值（git checkout / rsync / 备份还原 / 同毫秒两次写都会这样），
+ * 键就完全不变 ⇒ **命中旧渲染**（真机复现：281B 原地改写 + mtime 调回 ⇒ 真门禁 G3 仍 ok 的假绿）。
+ * 现在指纹取**内容哈希**（路径排序后逐个喂 sha256）：内容变则键必变；只动 mtime 不再产生假失配。
+ *
+ * 代价：一次递归 `readdir` + 逐个读文件（真源都很小，约百来个文件）。相比一次几十毫秒的重渲染依然划算。
  * 注意**排除 journal 本身**（它另有更细的指纹，且它每次都变，重复无益）。
  */
-function truthRevision(root: string): string {
-  let count = 0
-  let size = 0
-  let maxMtime = 0
+export function truthRevision(root: string): string {
+  const files: string[] = []
   const walk = (dir: string): void => {
     let entries: Dirent[]
     try {
@@ -2294,18 +2318,24 @@ function truthRevision(root: string): string {
         continue
       }
       if (entry.name === 'journal.jsonl' || entry.name.startsWith('.tmp-')) continue
-      try {
-        const info = statSync(full)
-        count += 1
-        size += info.size
-        if (info.mtimeMs > maxMtime) maxMtime = info.mtimeMs
-      } catch {
-        /* 并发删除/无权限：忽略这一个文件 */
-      }
+      files.push(full)
     }
   }
   walk(root)
-  return `${count}:${size}:${Math.round(maxMtime)}`
+  // 排序保证同一集合得到同一个键（目录遍历顺序依赖文件系统，不能当指纹的一部分）
+  files.sort()
+  const hash = createHash('sha256')
+  let size = 0
+  for (const full of files) {
+    try {
+      const bytes = readFileSync(full)
+      size += bytes.length
+      hash.update(full.slice(root.length)).update('\u0000').update(bytes).update('\u0000')
+    } catch {
+      /* 并发删除/无权限：忽略这一个文件（与旧实现同口径） */
+    }
+  }
+  return `${files.length}:${size}:${hash.digest('hex').slice(0, 16)}`
 }
 
 function journalRevision(store: SdoStore): string {

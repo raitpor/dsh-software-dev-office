@@ -62,10 +62,26 @@ export function signatureShapeNotes(store: SdoStore): FieldShapeNote[] {
   return readSignaturesChecked(store).notes
 }
 
+/**
+ * 签字台账里的门禁名 → **比对键**。
+ *
+ * **F-1（2026-10-05 真机，major）**：`sdo_gate action=sign` 曾把调用方传入的字符串**原样落盘**
+ * （真机留下 `gate: 架构门禁（G3）`），而判定侧按内部编号 `'G3'` **精确过滤** ⇒ 那条签字
+ * **永远不被看见**（同一次调用的回执却自证"当前有效"）。现在两层一起补：
+ *   · 写入侧：`office.signGate` 落盘前归一成内部编号（复用 `normalizeGateId`）；
+ *   · 读取侧：这里把"带括号编号的中文全名"也认成同一个门禁（**兼容盘上已有的脏记录**，不必手改台账）。
+ */
+export function gateKeyOf(value: string): string {
+  const bracketed = /[（(]\s*(G\d+|GP|GI|GR)\s*[）)]/iu.exec(value)
+  if (bracketed !== null) return (bracketed[1] ?? '').toUpperCase()
+  return value.trim().toUpperCase()
+}
+
 /** 某个门禁**最新**一条签字（历史保留；判定只看最新一条 → 重新签字即可覆盖旧失效签字）。 */
 export function latestSignature(store: SdoStore, gate: string): GateSignature | undefined {
+  const wanted = gateKeyOf(gate)
   return listSignatures(store)
-    .filter((signature) => signature.gate === gate)
+    .filter((signature) => gateKeyOf(signature.gate) === wanted)
     .sort((a, b) => a.atSeq - b.atSeq)
     .at(-1)
 }
@@ -148,11 +164,46 @@ export function signoffInput(store: SdoStore, journal: Journal, gate: string): S
   }
 }
 
+/**
+ * **D8（整仓评审 major）**：签字状态判定 + **与真源事件的交叉核对**。
+ *
+ * 只**追加标记**，不改任何既有判据（`missing`/`unquoted`/`stale`/`valid`/`unknown` 的语义一字不动）：
+ *   · 台账里**没有**这条签字，但 journal 有该门禁的 `gate/signed` 事件 ⇒ 文件被删/被改写（不是"没签过"）；
+ *   · 台账里**有**这条签字，但 journal 里找不到对应事件 ⇒ 手写/绕过工具写入。
+ * 两种情况都置 `inconsistent`，并在理由后面接一句人读告警 —— "删文件就变成没签"与"手写一条没人知道"到此可见。
+ */
+export function signatureState(store: SdoStore, journal: Journal, gate: string): SignatureState {
+  const state = signatureStateCore(store, journal, gate)
+  const signedEvents = journal.read().events.filter(
+    (event) => event.type === 'gate/signed' && String(event.data.gate ?? '') === gate,
+  )
+  if (state.signature === undefined) {
+    if (signedEvents.length === 0) return state
+    return {
+      ...state,
+      inconsistent: true,
+      reason: `${state.reason} ${fmt('uiSignature.journalOnly', { p1: String(signedEvents.length) })}`,
+    }
+  }
+  if (signedEvents.some((event) => String(event.at) === String(state.signature?.at))) return state
+  return {
+    ...state,
+    inconsistent: true,
+    reason: `${state.reason} ${fmt('uiSignature.noEvent', { p1: state.signature.by, p2: state.signature.at })}`,
+  }
+}
+
 export interface SignatureState {
   status: SignatureStatus
   signature?: GateSignature | undefined
   /** 人读理由（回执与门禁 detail 都用它） */
   reason: string
+  /**
+   * **D8（整仓评审 major）**：签字台账（`gates/signatures.yml`）与真源事件（journal 的 `gate/signed`）
+   * **不一致** —— 要么文件被删/被改写（事件还在），要么文件里有签字而**没有任何事件佐证**（手写/绕过工具）。
+   * 实测过：删掉 YAML 就报 `missing`，与"从来没签过"**长得一模一样**；手写一条则无人知晓。
+   */
+  inconsistent?: boolean | undefined
 }
 
 /**
@@ -165,7 +216,7 @@ export interface SignatureState {
  * **每个门禁用自己的一份集合**（D1）：G2（需求基线）背书的是需求/项目/问题/风险/红队真源，
  * G3（架构）背书的是设计/契约/需求真源 —— 用一份集合必然漏掉一半（见 `types.ts` 的两份常量）。
  */
-export function signatureState(store: SdoStore, journal: Journal, gate: string): SignatureState {
+function signatureStateCore(store: SdoStore, journal: Journal, gate: string): SignatureState {
   const signature = latestSignature(store, gate)
   if (signature === undefined) {
     return { status: 'missing', reason: fmt('uiSignature.missing', { p1: gate }) }
@@ -189,8 +240,11 @@ export function signatureState(store: SdoStore, journal: Journal, gate: string):
       reason: fmt('uiSignature.truncated', { p1: gate, p2: String(read.badLine ?? '?') }),
     }
   }
-  const invalidating = (type: string): boolean => isSignatureInvalidatingEvent(gate, type)
-  const changed = read.events.filter((event) => event.seq > signature.atSeq).filter((event) => invalidating(event.type))
+  // 事件**连 payload 一起**交给判定（2026-10-05）：`trace/linked` / `trace/unlinked` 要看 `kind`
+  // 才能区分「设计侧边（改 DESIGN.md 的追溯矩阵）」与「施工期覆盖边（`req-task`/`req-tc`，属记账）」。
+  // 只传 type 会让所有追溯边一律失效 —— 那样签完 G3 一开工就会被自己的覆盖边作废。
+  const invalidating = (type: string, data?: unknown): boolean => isSignatureInvalidatingEvent(gate, type, data)
+  const changed = read.events.filter((event) => event.seq > signature.atSeq).filter((event) => invalidating(event.type, event.data))
   if (changed.length > 0) {
     // **P-13**：只报第一条会把读者指向"早已无关的旧事件"（真因可能是一条**尚未被分类**的新事件）。
     // 现在：列前 3 条（共 N 条），并对中性表里没有的事件类型**明确标注"按保守口径视为真源变更"**。

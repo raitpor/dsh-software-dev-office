@@ -85,12 +85,26 @@ export interface RecordAdrInput {
   alternatives: { option: string; pros: string; cons: string }[]
   consequences: string[]
   status?: Adr['status'] | undefined
+  /**
+   * **调用方指定的编号**（可选）。
+   *
+   * **D-8（sdo-test-new 2026-10-08，major）**：`sdo_adr` 的 schema 一直声明着 `id`（`param.id`：
+   * 「标识（如 REQ-001 / TASK-001 / Q-0001）」），但 `record` 分支**从不读它** ⇒ 传 `ADR-999`
+   * 落库变成 `ADR-006`，调用方无法钉住编号，文档里按自己编号写的引用与台账**静默漂移**。
+   * 现在：给了就用（存在性/格式/冲突由调用方先校验），没给才自动编号。
+   */
+  id?: string | undefined
+}
+
+/** 显式编号的合法形状（与自动编号同形；真源文件名直接用它，所以必须白名单化）。 */
+export function isAdrId(value: string): boolean {
+  return /^ADR-\d{3,}$/u.test(value)
 }
 
 /** 记录一条 ADR（`adr/recorded` 留痕）。 */
 export function recordAdr(store: SdoStore, journal: Journal, input: RecordAdrInput): Adr {
   const adr: Adr = {
-    id: nextId('ADR', listAdrIds(store)),
+    id: input.id ?? nextId('ADR', listAdrIds(store)),
     title: input.title,
     status: input.status ?? 'accepted',
     context: input.context,

@@ -18,8 +18,17 @@ export const WORKSPACE_CHANGES_SEGMENTS = ['evidence', 'workspace-changes.jsonl'
 
 export interface WorkspaceChangesEntry {
   sessionId: string
-  /** 该 `workspace/changes` 事件的 seq（回溯清单的键）。 */
+  /** 该 `workspace/changes` 事件的 seq（**宿主会话的**计数器；回调 `summary(sessionId, seq)` 要用它）。 */
   seq: number
+  /**
+   * 采集这一刻的 **SDO journal 序号**（同量纲于 `task/claimed` 的 seq）。
+   *
+   * **SDO-15（2026-10-05 真机，阻塞）**：宿主事件 seq 与 journal seq 是**两个不同计数器**
+   * （真机实测：记录里 seq 是 883/994/1488/1838，而 journal 只有 444 条），拿 journal 的认领序号
+   * 去比宿主 seq 恒为"更新" ⇒ 写范围对账退化成"整会话的改动都算本卡越界" ⇒ **任何卡都无法收工**。
+   * 旧记录没有这个字段 ⇒ 对账时**不参与比较**，并如实退回「未对账」（不再拿它判越界）。
+   */
+  journalSeq?: number | undefined
   /** 宿主给的轮次（可缺失）。 */
   turn?: number | undefined
   /** 采集时间。 */
@@ -53,6 +62,8 @@ export function recordWorkspaceChanges(input: {
   store: SdoStore
   sessionId: string
   seq: number
+  /** 采集这一刻的 journal 序号（对账同量纲的键；拿不到就不写，退回"未对账"） */
+  journalSeq?: number | undefined
   summary: WorkspaceChangesSummaryLike | undefined
   enabled: boolean
   now?: string | undefined
@@ -68,6 +79,7 @@ export function recordWorkspaceChanges(input: {
   const entry: WorkspaceChangesEntry = {
     sessionId: input.sessionId,
     seq: input.seq,
+    ...(input.journalSeq === undefined ? {} : { journalSeq: input.journalSeq }),
     ...(typeof input.summary?.turn === 'number' ? { turn: input.summary.turn } : {}),
     at: input.now ?? new Date().toISOString(),
     files,
@@ -109,7 +121,10 @@ export function changedFilesSince(
 ): { files: string[]; entries: number; audited: boolean } {
   if (sessionId === undefined || sinceSeq === undefined) return { files: [], entries: 0, audited: false }
   const { entries } = readWorkspaceChanges(store)
-  const hit = entries.filter((entry) => entry.sessionId === sessionId && entry.seq > sinceSeq)
+  // **只在 journal 量纲里比较**（SDO-15）：`sinceSeq` 是 `task/claimed` 的 journal 序号，
+  // 而 `entry.seq` 是宿主会话的计数器 —— 直接比会"全部命中"。旧记录（没有 `journalSeq`）
+  // **不参与比较**：宁可如实报「未对账」，也不拿两个计数器硬拼出一个假的越界结论。
+  const hit = entries.filter((entry) => entry.sessionId === sessionId && entry.journalSeq !== undefined && entry.journalSeq > sinceSeq)
   const files: string[] = []
   for (const entry of hit) for (const file of entry.files) if (!files.includes(file)) files.push(file)
   // `audited` = "窗口里**每个 seq** 都至少有一条带摘要的记录"。
@@ -126,7 +141,8 @@ export function changedFilesSince(
  */
 export function unresolvedSeqs(store: SdoStore, sessionId: string, sinceSeq: number): number[] {
   const { entries } = readWorkspaceChanges(store)
-  const hit = entries.filter((entry) => entry.sessionId === sessionId && entry.seq > sinceSeq)
+  // 同 SDO-15：窗口按 **journal 量纲** 划（`sinceSeq` 来自 `task/claimed`）；旧记录不参与
+  const hit = entries.filter((entry) => entry.sessionId === sessionId && entry.journalSeq !== undefined && entry.journalSeq > sinceSeq)
   const seqs = [...new Set(hit.map((entry) => entry.seq))]
   return seqs.filter((seq) => !hit.some((entry) => entry.seq === seq && entry.summaryAvailable === true))
 }

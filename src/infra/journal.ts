@@ -81,7 +81,13 @@ export class Journal {
         const parsed = JSON.parse(trimmed) as { seq?: unknown }
         if (typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) && parsed.seq > max) max = parsed.seq
       } catch {
-        // 坏行没有可信的 seq，跳过（它本身读不出来）
+        // **D2（整仓评审 blocker）**：坏行**也可能声明了 seq**（半写行里 `"seq":4` 是完整的）——
+        // 旧实现整行跳过 ⇒ 「截断前缀长度 + 1」正好撞上它的号。退一步扫原始文本，扫不到才真的跳过。
+        const claimed = /"seq"\s*:\s*(\d+)/u.exec(trimmed)
+        if (claimed !== null) {
+          const value = Number(claimed[1])
+          if (Number.isFinite(value) && value > max) max = value
+        }
       }
     }
     return max
@@ -98,6 +104,13 @@ export class Journal {
       type,
       data,
     }
+    // **D2**：坏行是**半写行**（文件末尾无换行）时直接 append 会把新事件**粘在坏行后面** ⇒ 一行里两个 seq。
+    // 先把行边界补齐（坏行留成独立的一行），再**重新**按补边界后的盘面算 seq。
+    const existing = this.store.readText(JOURNAL_FILE)
+    if (existing !== undefined && existing !== '' && !existing.endsWith('\n')) {
+      this.store.appendLine([JOURNAL_FILE], '\n')
+    }
+    event.seq = Math.max(this.read().events.length, this.maxSeqOnDisk()) + 1
     this.store.appendLine([JOURNAL_FILE], JSON.stringify(event))
     // 派生视图跟随真源：唯一写者在这里收口，避免"追加了事件但 project.json 还是旧的"。
     this.rebuild()

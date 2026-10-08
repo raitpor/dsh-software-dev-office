@@ -17,7 +17,7 @@ import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { DesignElement, EvidenceItem, Iteration, TaskCard, TaskSize, Requirement } from '../types.js'
 import { listElements, VIEW_KIND_OF_ELEMENT } from './architecture.js'
-import { readLinks } from './trace.js'
+import { linkMany, readLinks } from './trace.js'
 
 /** 设计 §8.1 的八个角色（拆分器只允许这些值）。 */
 export const ROLES = ['analyst', 'red-team', 'architect', 'office', 'developer', 'tester', 'reviewer', 'delivery'] as const
@@ -28,6 +28,8 @@ export function isRole(value: string): value is Role {
 }
 
 export function listTaskIds(store: SdoStore): string[] {
+// **卡 id 规范（评审员 2026-10-05）**：只认 `TASK-…` 形态的**文件名** —— 合成夹具里把卡命名成
+// `T-A` / `T-DEV` 会让 `listTasks()` 全空、`claim` 报 `not-found`（排查很费时间）。
   return store
     .listNames('tasks')
     .filter((name) => /^TASK-\d+\.yml$/u.test(name))
@@ -174,7 +176,7 @@ export interface DecomposeInput {
 }
 
 export interface PlanIssue {
-  code: 'single-role' | 'dod-nonempty' | 'acyclic' | 'size-cap' | 'write-scope-disjoint' | 'evidence-required'
+  code: 'single-role' | 'dod-nonempty' | 'acyclic' | 'size-cap' | 'write-scope-disjoint' | 'write-scope-empty' | 'evidence-required'
   taskId: string
   detail: string
   remedy: string
@@ -288,6 +290,17 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
         remedy: fmt('uiPlan.t12', { p1: ROLES.join(' / ') }),
       })
     }
+    // **D7（整仓评审 major）**：`waterfall.yml` 的 C-31 写「任务卡齐备（DoD/依赖/**写范围**）」，但旧实现**不校验
+    // 写范围非空** —— 而空写范围在下面的互斥判断里不冲突、在 `auditWriteScopes` 里"写哪儿都不算越界"
+    // （实测：`auditWriteScopes(['outside/x.ts'], [])` = ok）。卡可以既不占位也不受审计 ⇒ 这里判成计划问题。
+    if (task.writeScopes.filter((scope) => textOf(scope).trim() !== '').length === 0) {
+      issues.push({
+        code: 'write-scope-empty',
+        taskId: task.id,
+        detail: t('uiPlan.kWriteScopeEmpty'),
+        remedy: t('uiPlan.kWriteScopeEmptyRemedy'),
+      })
+    }
     if (task.dod.length === 0 || task.dod.some((item) => textOf(item).trim() === '')) {
       issues.push({
         code: 'dod-nonempty',
@@ -313,6 +326,8 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
       })
     }
     for (const dependency of task.blockedBy) {
+      // **SDO-30b（2026-10-05 真机）**：`'*'` 是**通配依赖**（"排在所有其它卡之后"），不是"不存在的卡"。
+      if (dependency === '*') continue
       if (!byId.has(dependency)) {
         issues.push({
           code: 'acyclic',
@@ -338,13 +353,17 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
       return
     }
     state.set(id, 'visiting')
-    for (const dependency of byId.get(id)?.blockedBy ?? []) visit(dependency, [...path, id])
+    for (const dependency of (byId.get(id)?.blockedBy ?? []).filter((item) => item !== '*')) visit(dependency, [...path, id])
     state.set(id, 'done')
   }
   for (const task of tasks) visit(task.id, [])
 
   // 可能并行的卡之间写范围互斥（同迭代、无依赖关系视为可能并行）
   // **D5-1**：成对循环只看**未作废**的卡；**D6-1（写范围租约）**：done/verified 也必须释放范围
+  // **SDO-46（真机）的口径（显式写在这里）**：`blocked` 的卡**继续持有写范围** —— 它只是等外部条件，
+  // 随时可能继续写同一范围，静默把范围让给别人会造出两个写者。真机上这条口径挡掉过一次派发
+  // （TASK-165 因容量停手却占着 `tools/checks/`，新卡 TASK-167 同范围派不出去）；
+  // 该修的不是"静默放行"，而是**把原因与解除动作说出来**（见冲突 issue 的 detail/remedy 与 `next` 的回执）。
   const active = tasks.filter(
     (task) => task.status !== 'dropped' && task.status !== 'done' && task.status !== 'verified',
   )
@@ -359,11 +378,14 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
         b.writeScopes.some((other) => textOf(scope).startsWith(textOf(other)) || textOf(other).startsWith(textOf(scope))),
       )
       if (overlap.length > 0) {
+        // **SDO-46**：把"挡住你的那张卡是什么状态"和"怎么腾范围"直接写给读者 —— 真机上被挡住的新卡
+        // 只看到一张看板，误判成"卡没建成"；确认后显式 `drop` 阻塞卡即立刻可派。
+        const holderNote = a.status === 'blocked' || b.status === 'blocked' ? t('uiPlan.kBlockedHolderNote') : ''
         issues.push({
           code: 'write-scope-disjoint',
           taskId: a.id,
-          detail: fmt('uiPlan.t15', { p1: a.id, p2: b.id, p3: overlap.join('、') }),
-          remedy: t('uiPlan.k13'),
+          detail: fmt('uiPlan.t15', { p1: a.id, p2: b.id, p3: overlap.join('、') }) + holderNote,
+          remedy: t('uiPlan.k13') + t('uiPlan.kScopeReleaseHint'),
         })
       }
     }
@@ -397,12 +419,18 @@ export function decompose(
     const key = `${draft.title}|${draft.role}`
     if (seen.has(key)) continue
     seen.add(key)
-    created.push(
-      createTask(store, journal, {
-        ...draft,
-        ...(input.iteration === undefined ? {} : { iteration: input.iteration }),
-      }),
-    )
+    const task = createTask(store, journal, {
+      ...draft,
+      ...(input.iteration === undefined ? {} : { iteration: input.iteration }),
+    })
+    created.push(task)
+    // **D-12（sdo-test-new 2026-10-08，major）**：拆卡时就把 `req-task` 边建起来。
+    // 旧实现只 `createTask`，追溯边要等卡**完成**才由 `office.ts` 补 —— 于是 G5 的 C-41（需求→任务覆盖）
+    // 在开发期永远是 0，真机上只能人工补 22 条边。`linkMany` 自带去重，与完成时的补边不会重复。
+    const reqIds = draft.requirements ?? []
+    if (reqIds.length > 0) {
+      linkMany(store, journal, reqIds.map((requirement) => ({ from: requirement, to: task.id, kind: 'req-task' })))
+    }
   }
   const tasks = listTasks(store)
   return { tasks, issues: validatePlan(tasks), notes: derived }
@@ -456,8 +484,16 @@ export function iterationTasks(store: SdoStore, number?: number | undefined): Ta
 /** 依赖已满足、可以派发的卡（按规模小→大、id 升序）。 */
 export function readyTasks(tasks: TaskCard[], limit = 4): TaskCard[] {
   const done = new Set(tasks.filter((task) => task.status === 'done' || task.status === 'verified').map((task) => task.id))
+  // **SDO-30b（2026-10-05 真机）**：`blockedBy: ['*']` = **排在所有其它卡之后**（"我需要独占写窗口"的
+  // 表达方式）。真机场景：最终全量构建卡（TASK-132）与写卡同时就绪时被并发派出，跑出的 jar 必然过期
+  // （少了同批写卡的改动）；`blockedBy` 只能表达"排在某几张卡之后"，表达不了"排在**所有**卡之后"。
+  const pending = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified' && task.status !== 'dropped')
+  const satisfied = (task: TaskCard, id: string): boolean => {
+    if (id !== '*') return done.has(id)
+    return pending.every((other) => other.id === task.id || done.has(other.id))
+  }
   return tasks
-    .filter((task) => (task.status === 'planned' || task.status === 'ready') && task.blockedBy.every((id) => done.has(id)))
+    .filter((task) => (task.status === 'planned' || task.status === 'ready') && task.blockedBy.every((id) => satisfied(task, id)))
     .sort((a, b) => a.size.localeCompare(b.size) || a.id.localeCompare(b.id))
     .slice(0, limit)
 }
@@ -465,9 +501,14 @@ export function readyTasks(tasks: TaskCard[], limit = 4): TaskCard[] {
 /** 依赖未满足的卡（给人看"为什么还不能派"）。 */
 export function blockedTasks(tasks: TaskCard[]): { task: TaskCard; waitingOn: string[] }[] {
   const done = new Set(tasks.filter((task) => task.status === 'done' || task.status === 'verified').map((task) => task.id))
+  const pending = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified' && task.status !== 'dropped')
   return tasks
     .filter((task) => task.status === 'planned' || task.status === 'ready')
-    .map((task) => ({ task, waitingOn: task.blockedBy.filter((id) => !done.has(id)) }))
+    .map((task) => ({
+      task,
+      // `'*'` 如实显示（UI 文案会说明它是"等所有其它卡"）
+      waitingOn: task.blockedBy.filter((id) => (id === '*' ? pending.some((other) => other.id !== task.id && !done.has(other.id)) : !done.has(id))),
+    }))
     .filter((item) => item.waitingOn.length > 0)
 }
 

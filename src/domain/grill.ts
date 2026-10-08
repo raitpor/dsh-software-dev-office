@@ -18,7 +18,7 @@ import type { SdoStore } from '../infra/store.js'
 import type { Dimension, GrillOption, GrillQuestion, Requirement, SdoProject, Severity } from '../types.js'
 import { listRequirementIds, readRequirement, setOpenQuestions, updateRequirement } from './requirements.js'
 import { isEffectivelyOpen } from './dor.js'
-import { loadScoring, weakestDimensions } from './scoring.js'
+import { concernApplies, loadScoring, weakestDimensions } from './scoring.js'
 import type { ScoringModel } from './scoring.js'
 
 /** 问题库里的一条模板。 */
@@ -172,8 +172,11 @@ export function selectQuestions(input: SelectInput): SelectedQuestion[] {
 
   for (const requirement of input.requirements) {
     const weak = new Set(weakestDimensions(requirement.ambiguity, 4))
+    // **D-2**：关注点必须来自需求自身（闸门只对 interface/constraint 生效，理由见 `concernApplies`）
+    const concernText = `${requirement.statement}\n${requirement.rationale}`
     for (const template of bank) {
       if (!weak.has(template.dimension)) continue
+      if (!concernApplies(template.dimension, concernText)) continue
       if (input.quick === true && template.severity !== 'P0') continue
       if (alreadyAsked(input.existing, template.id, requirement.id)) continue
       const dimensionScore = requirement.ambiguity.dimensions[template.dimension] ?? 0
@@ -320,6 +323,52 @@ export function weakDimensions(requirement: Requirement | undefined): Dimension[
     .map(([dimension]) => dimension as Dimension)
 }
 
+/**
+ * **D-4（sdo-test-new 2026-10-08 复测，minor）**：把问题**由需求自身派生** —— 加一个"针对谁"的抬头。
+ *
+ * 真机症状（两轮报告都点到）：同一维度的模板会被复制到 N 条需求上，**题面逐字相同**（Q-0014…Q-0017
+ * 是同一句「谁不能看到这些数据？」，只有 `targets` 不同）⇒ 用户被问 4 遍同一件事，信息增量极低。
+ * 红队通道早就这么做了（`针对「<标题>」（该需求在「…」上尚未澄清）【本问聚焦：…】：`），
+ * 这里把它抽成**一处口径**给题库/禁词通道复用；`alreadyAsked` 的归一化本来就会剥掉 `针对…：` 抬头，
+ * 因此去重语义不变（同一模板 + 同一需求仍然只问一次）。
+ */
+export function focusHead(requirement: Requirement | undefined, dimension: Dimension, target: string): string {
+  const weak = weakDimensions(requirement)
+  const weakLabel = weak.map((item) => t(`dimension.${item}`, item)).join('、')
+  const focused = weak.includes(dimension)
+  return `针对「${requirement?.title ?? target}」`
+    + (weakLabel === '' ? '' : `（该需求在「${weakLabel}」上尚未澄清）`)
+    + (focused ? `【本问聚焦：${t(`dimension.${dimension}`, dimension)}】` : '')
+}
+
+/**
+ * **D-2 残留（sdo-test-new 2026-10-08 复测）**：从项目声明的非目标里取**可机械匹配的中文词**。
+ *
+ * 真机形态：`scope.out` 写着「鉴权与多用户」，而 `grill` 生成的问题 `why` 里写着「…接口鉴权」
+ * ⇒ 用户被问一件**项目已明确不做**的事。整串匹配不上（`鉴权与多用户` ≠ 任意题干），所以要按
+ * 连接词/标点**切出子词**（`鉴权`、`多用户`）。只收**纯中文、≥2 字**的词：ASCII 词（`CSV`/`Web`/`SDO`）
+ * 满篇都是，拿它们匹配等于每次都撞。
+ */
+export function nonGoalTerms(nonGoals: readonly string[]): { term: string; nonGoal: string }[] {
+  const GENERIC = new Set(['不做', '非目标', '本次', '不涉及', '暂不', '支持', '功能', '系统'])
+  const out: { term: string; nonGoal: string }[] = []
+  for (const nonGoal of nonGoals) {
+    for (const raw of textOf(nonGoal).split(/[与和及、,，;；/／|（）()【】[\]\s]+/u)) {
+      const term = raw.trim()
+      if (term.length < 2 || GENERIC.has(term)) continue
+      if (!/^[\u4e00-\u9fff]+$/u.test(term)) continue
+      if (!out.some((item) => item.term === term && item.nonGoal === nonGoal)) out.push({ term, nonGoal })
+    }
+  }
+  return out
+}
+
+/** 这条问题是否撞上了声明的非目标（撞上就返回那个词；不撞返回 undefined）。 */
+export function nonGoalConflictOf(text: string, why: string, nonGoals: readonly string[]): string | undefined {
+  const haystack = `${textOf(text)}\n${textOf(why)}`
+  return nonGoalTerms(nonGoals).find((item) => haystack.includes(item.term))?.term
+}
+
 export function askQuestions(
   store: SdoStore,
   journal: Journal,
@@ -347,8 +396,13 @@ export function askQuestions(
           ...(input.limit === undefined ? {} : { limit: input.limit }),
         })
 
+  // **D-4**：题库通道的问题也要**由需求自身派生**（否则同一维度的 4 问逐字相同，见 `focusHead`）
+  const focusedTemplate = (template: BankQuestion, target: string): BankQuestion => ({
+    ...template,
+    text: `${focusHead(requirements.find((requirement) => requirement.id === target), template.dimension, target)}：${template.text}`,
+  })
   const templates: { template: BankQuestion; target: string }[] = selected.map((item) => ({
-    template: item.template,
+    template: focusedTemplate(item.template, item.target),
     target: item.target,
   }))
 
@@ -359,7 +413,8 @@ export function askQuestions(
       for (const requirement of requirements) {
         for (const template of bannedWordQuestions(requirement, model)) {
           if (alreadyAsked(existing, template.id, requirement.id)) continue
-          bannedTemplates.push({ template, target: requirement.id })
+          // **D-4**：同一禁词命中多条需求时，题面也必须各自指向自己的需求
+          bannedTemplates.push({ template: focusedTemplate(template, requirement.id), target: requirement.id })
         }
       }
     }
@@ -398,12 +453,7 @@ export function askQuestions(
         // 若该角度正对薄弱维度，措辞会进一步指向它。这样 6 条需求得到的是 6 个**不同**的问题，
         // 而不是同一句模板话复制 6 份（实测反馈的原话：看起来是同一个模板逐条复制）。
         const owner = requirements.find((requirement) => requirement.id === item.target)
-        const weak = weakDimensions(owner)
-        const weakLabel = weak.map((dimension) => t(`dimension.${dimension}`, dimension)).join('、')
-        const focused = weak.includes(item.template.dimension)
-        const head = `针对「${owner?.title ?? item.target}」`
-          + (weakLabel === '' ? '' : `（该需求在「${weakLabel}」上尚未澄清）`)
-          + (focused ? `【本问聚焦：${t(`dimension.${item.template.dimension}`, item.template.dimension)}】` : '')
+        const head = focusHead(owner, item.template.dimension, item.target)
         templates.push({ template: { ...item.template, text: `${head}：${item.template.text}` }, target: item.target })
         added += 1
         progressed = true
@@ -416,19 +466,24 @@ export function askQuestions(
   const askedAt = new Date().toISOString()
   const usedIds = existing.map((question) => question.id)
   const created: GrillQuestion[] = []
+  // **D-2 残留**：项目声明的非目标（`scope.out`）——问了非目标不静默跳过，而是**记进真源 + 回执点名**
+  const nonGoals = project?.scope?.out ?? []
   for (const { template, target } of templates) {
     const id = nextId('Q', usedIds, 4)
     usedIds.push(id)
+    const why = template.why.includes(`#${template.id}`) ? template.why : `#${template.id} ${template.why}`
+    const conflict = nonGoalConflictOf(template.text, why, nonGoals)
     const question: GrillQuestion = {
       id,
       text: template.text,
       targets: [target],
       dimension: template.dimension,
       severity: template.severity,
-      why: template.why.includes(`#${template.id}`) ? template.why : `#${template.id} ${template.why}`,
+      why,
       consequenceIfUnasked: template.consequenceIfUnasked,
       options: template.options,
       defaultRecommendation: template.defaultRecommendation,
+      ...(conflict === undefined ? {} : { nonGoalConflict: conflict }),
       answer: null,
       status: 'open',
       askedAt,
@@ -497,6 +552,11 @@ export function answerQuestion(
   // **m3（本报告）**：`pickedOption` 越界此前**静默**退化为普通答案 ——
   // 调用方以为记下了"用户选了第 N 项"，台账里却是一句自由文本。越界即报错（可读的失败）。
   if (input.pickedOption !== undefined) {
+    // **D-3**：0 选项的题（模型通道没给选项）以前只会得到一句"该题只有 0 个选项"的死胡同。
+    // 现在直接给**可用的出路**：用纯自由文本 `answer` 答复（并说清怎么让这类题带上选项）。
+    if (question.options.length === 0) {
+      throw new Error(fmt('uiGrill.noOptionsFreeText', { p1: question.id }))
+    }
     if (!Number.isInteger(input.pickedOption) || input.pickedOption < 0 || input.pickedOption >= question.options.length) {
       throw new Error(fmt('uiGrill.pickedOptionOutOfRange', {
         p1: String(input.pickedOption),
@@ -505,6 +565,13 @@ export function answerQuestion(
       }))
     }
   }
+  // **SDO-01（2026-10-05 真机）**：`assume=true` 的语义是"采用**题库建议**"，所以旧实现在这一支里
+  // **完全不看 `input.answer`** —— 调用方同时传两样时，自己写的那段正文被**静默丢掉**（真机 8 条问题
+  // 的台账一度被写成与领域无关的模板句）。同类问题（`pickedOption` 越界）已经从"静默退化"改成
+  // "越界即报错"，这里同一口径：**语义矛盾的入参组合直接报错**，并给出两种合法写法。
+  if (input.assume === true && (input.answer ?? '').trim() !== '') {
+    throw new Error(fmt('uiGrill.assumeOverridesAnswer', { p1: question.id }))
+  }
   const picked = input.pickedOption === undefined ? undefined : question.options[input.pickedOption]
   const text = input.assume === true ? question.defaultRecommendation : input.answer
   const answerText = picked === undefined ? text : `${text}（选择：${picked.label}）`
@@ -512,6 +579,11 @@ export function answerQuestion(
   const next: GrillQuestion = {
     ...question,
     answer: answerText,
+    // **D-1（sdo-test-new 2026-10-08，major）**：下标与标签**各记一份**（结构化留痕）。
+    // 以前只有拼进 `answer` 的那句自由文本 ⇒ 事后无法复原"用户到底选了哪一项"，
+    // 而真机上 `answer` 正文与「（选择：…）」恰恰**互相矛盾**（模型转述时重排了选项）。
+    ...(input.pickedOption === undefined ? {} : { pickedOption: input.pickedOption }),
+    ...(picked === undefined ? {} : { pickedLabel: picked.label }),
     status: input.assume === true ? 'assumed' : 'answered',
     ...(input.assume === true ? { authorizedByUser: true } : {}),
     answeredBy: input.by ?? 'human',
@@ -522,6 +594,9 @@ export function answerQuestion(
     status: next.status,
     by: next.answeredBy,
     targets: next.targets,
+    // 留痕同样带上结构化选择（journal 是唯一不可篡改的真源；文件是手可编辑的）
+    ...(next.pickedOption === undefined ? {} : { pickedOption: next.pickedOption }),
+    ...(next.pickedLabel === undefined ? {} : { pickedLabel: next.pickedLabel }),
   })
 
   // **m2（本报告）**：旧实现先 `updateRequirement`（一次评分）再 `setOpenQuestions`（又一次评分），
@@ -567,7 +642,54 @@ export function statementKeywords(statement: string): string[] {
   return [...out]
 }
 
-export interface ProposedQuestion { text: string; dimension?: string | undefined }
+/**
+ * 问题里**真正引用到原文**的片段：中文 **≥4 字**的连续片段，或 ASCII **≥3 字符**的 token。
+ *
+ * **§3.4（第二轮整体评审）**：旧实现用 {@link statementKeywords} 的 2-gram 做"任意一个命中即放行"，
+ * 而中文里「系统 / 功能 / 增加 / 支持」这类两字通用词几乎每句需求都有 ⇒ 与需求毫不相干的问题
+ * （实测："增加导入功能会不会让运维更复杂？"）也能过闸，"必须引用原文用词"这条规则形同虚设。
+ *
+ * 为什么门槛定在 **4 个连续汉字**（而不是 3）：中文里 3 字巧合依然常见 —— 上面那条无关问题与
+ * "系统须支持**增加导**出功能"共有 `增加导`（"增加" + 下一个字），3 字门槛会把它当成"引用了原文"。
+ * 4 字连续 ≈ 一个真正的词组（`内存占用` / `对账差异` / `增量同步`）。ASCII 侧同理：
+ * `MB` 这类两字符缩写不算，`512` / `Export` 这类 ≥3 字符才算。
+ *
+ * 注意这是**收紧**：真切题但只共用两字词的问题现在会被拒（理由是 `noKeyword`），
+ * 模型按提示补足原文片段（例如把「差异」写成「对账差异」）即可 —— 拒绝理由里写明了这一点。
+ */
+export function quotedFragments(question: string, statement: string): string[] {
+  const text = textOf(statement)
+  const asked = textOf(question).toLowerCase()
+  const hits: string[] = []
+  for (const token of text.match(/[A-Za-z0-9][A-Za-z0-9._-]{2,}/gu) ?? []) {
+    if (asked.includes(token.toLowerCase())) hits.push(token)
+  }
+  const cjk = text.replace(/[^\u4e00-\u9fff]/gu, ' ')
+  for (const run of cjk.split(/\s+/u)) {
+    for (let i = 0; i + 4 <= run.length; i += 1) {
+      const gram = run.slice(i, i + 4)
+      if (asked.includes(gram)) hits.push(gram)
+    }
+  }
+  return [...new Set(hits)]
+}
+
+export interface ProposedQuestionOption { label: string; cost: string }
+/**
+ * **D-3（sdo-test-new 2026-10-08，major）**：模型通道的问题以前**结构上不可能**带选项。
+ *
+ * 题库通道强制「每题必带选项与代价」，模型通道却硬编码 `options: []` ⇒ 用户面对这些题时
+ * 没有任何选项与代价提示，答复也不带选项语义，事后无法从台账复原"当时有哪些选择"。
+ * 现在 `file` 可以（并建议）连 `options` 一起交上来；确实没有选项时，`answer` 只能用自由文本，
+ * 而这条口径会**在回执里明说**（不再是一句"该题只有 0 个选项"的死胡同）。
+ */
+export interface ProposedQuestion {
+  text: string
+  dimension?: string | undefined
+  options?: ProposedQuestionOption[] | undefined
+  /** 模型给出的推荐项（必须与某个 option 的 label 一致；否则忽略） */
+  recommendation?: string | undefined
+}
 export type RejectReason = 'empty' | 'tooShort' | 'tooLong' | 'notQuestion' | 'noKeyword' | 'duplicate'
 
 /** **方案 B 的校验闸门**：模型生成的红队问题必须引用需求原文用词，且不得重复。 */
@@ -577,7 +699,6 @@ export function validateProposed(
   existing: GrillQuestion[],
   count: number,
 ): { accepted: ProposedQuestion[]; rejected: { text: string; reason: RejectReason }[] } {
-  const keywords = statementKeywords(statement)
   const norm = (text: string): string => text.replace(/\s+/gu, '').replace(/[？?！!。，,、；;：:]/gu, '')
   const seen = new Set(existing.map((question) => norm(textOf(question.text))))
   const accepted: ProposedQuestion[] = []
@@ -588,14 +709,40 @@ export function validateProposed(
     if (text.length < 6) { rejected.push({ text, reason: 'tooShort' }); continue }
     if (text.length > 200) { rejected.push({ text, reason: 'tooLong' }); continue }
     if (!/[？?]$/u.test(text)) { rejected.push({ text, reason: 'notQuestion' }); continue }
-    const lower = text.toLowerCase()
-    if (!keywords.some((keyword) => lower.includes(keyword))) { rejected.push({ text, reason: 'noKeyword' }); continue }
+    // §3.4：要**真的引用到一段原文**（中文 ≥3 字 / ASCII ≥3 字符），不是碰上某个两字通用词就放行
+    if (quotedFragments(text, statement).length === 0) { rejected.push({ text, reason: 'noKeyword' }); continue }
     if (seen.has(norm(text))) { rejected.push({ text, reason: 'duplicate' }); continue }
     seen.add(norm(text))
-    accepted.push({ text, ...(question.dimension === undefined ? {} : { dimension: question.dimension }) })
+    // **D-3**：选项与推荐项**原样带过去**（形状在写盘前统一净化，见 `sanitizeOptions`）
+    const options = sanitizeOptions(question.options)
+    const recommendation = textOf(question.recommendation).trim()
+    accepted.push({
+      text,
+      ...(question.dimension === undefined ? {} : { dimension: question.dimension }),
+      ...(options.length === 0 ? {} : { options }),
+      ...(options.some((option) => option.label === recommendation) ? { recommendation } : {}),
+    })
     if (accepted.length >= count) break
   }
   return { accepted, rejected }
+}
+
+/**
+ * 净化模型给的选项：只留 `label` 非空的项，`cost` 缺省为空串，最多 6 项（与题库同一量级）。
+ * 形状不合法（不是数组 / 元素不是映射）一律当作**没有选项**（不是"猜一个"）。
+ */
+export function sanitizeOptions(raw: unknown): ProposedQuestionOption[] {
+  if (!Array.isArray(raw)) return []
+  const out: ProposedQuestionOption[] = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object' || Array.isArray(item)) continue
+    const record = item as { label?: unknown; cost?: unknown }
+    const label = textOf(record.label).trim()
+    if (label === '') continue
+    out.push({ label, cost: textOf(record.cost).trim() })
+    if (out.length >= 6) break
+  }
+  return out
 }
 
 /** 把通过校验的模型提案写成红队问题（origin=red-team，留痕 model-proposed）。 */
@@ -620,8 +767,9 @@ export function writeProposedQuestions(
       severity: 'P0',
       why: `#model-proposed ${item.text}`,
       consequenceIfUnasked: t('redteam.fileConsequence'),
-      options: [],
-      defaultRecommendation: '',
+      // **D-3**：不再硬编码空选项 —— 模型给了就落（净化过），没给才为空（并且回执会说明只能用自由文本答复）
+      options: item.options ?? [],
+      defaultRecommendation: item.recommendation ?? '',
       answer: null,
       status: 'open',
       askedAt,

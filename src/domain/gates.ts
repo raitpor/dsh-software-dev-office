@@ -17,7 +17,7 @@ import { stripTrailingNewlines } from '../infra/render.js'
 import { textOf } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
-import { DESIGN_DOC_SOURCE_EVENTS } from '../types.js'
+import { DESIGN_DOC_SOURCE_EVENTS, isDesignDocTruthPath } from '../types.js'
 import type {
   FeasibilityAssessment,
   GateCriterionResult,
@@ -58,6 +58,8 @@ import {
 import { evaluateDor } from './dor.js'
 import { issueClosure } from './issues.js'
 import { methodConsistency, methodLabel, methodProducts, methodSelection } from './method.js'
+import { claimGaps, doneGaps, readConstructionProfile, scopeCovers } from './construction.js'
+import { readProjectConfig } from '../config.js'
 import { methodDocHeader, methodDocStatus } from './methodDocs.js'
 import { gateDef, gatePhase, legalRollbackTargets } from './process.js'
 import { riskStats } from './risks.js'
@@ -74,6 +76,8 @@ import {
   listTestResults,
   verificationStats,
 } from './records.js'
+import type { Review } from './records.js'
+import { reviewAdoptionLabel, reviewAdoptions } from './reviewVerification.js'
 
 /** 判定所需的全部输入（由 office 组装）。 */
 export interface GateContext {
@@ -119,6 +123,19 @@ function fail(id: string, detail: string, remedy: string): GateCriterionResult {
  */
 function na(id: string, reason: string): GateCriterionResult {
   return { id, ok: false, na: true, naReason: reason, detail: reason }
+}
+
+/** 被采纳、但**没有内容指纹**（老格式）的 `pass` 评审 id（G-2 的可见性标注）。 */
+function adoptedPassIds(
+  taskIds: string[],
+  reviews: Review[],
+  adoptions: Map<string, { state: string; tamperGuard?: string }>,
+): string[] {
+  const wanted = new Set(taskIds)
+  return reviews
+    .filter((review) => wanted.has(review.taskId) && review.verdict === 'pass')
+    .filter((review) => adoptions.get(review.id)?.state === 'adopted' && adoptions.get(review.id)?.tamperGuard === 'none-legacy')
+    .map((review) => review.id)
 }
 
 /** 该目录下是否有"实质内容"（忽略 README.md 与隐藏文件）。 */
@@ -343,7 +360,8 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     const signer = (ctx.approvedBy ?? '').trim()
     const extra = signer === '' ? t('uiGates.kSignoffApprovedByAbsent') : fmt('uiGates.kSignoffApprovedByExtra', { p1: signer })
     const events = signatureInvalidatingEventLine('G2')
-    if (ledger.status === 'valid') {
+    // **R3**：同上 —— 与真源事件对不上的签字不得算有效
+    if (ledger.status === 'valid' && ledger.inconsistent !== true) {
       return ok('human.signoff', `${ledger.reason}${extra}${events}`)
     }
     return fail('human.signoff', `${ledger.reason}${extra}${events}`, t('uiGates.kSignoffRemedy'))
@@ -449,6 +467,12 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
    * 声明说"界面视图：做"，门禁却一个字都不查（只靠 C-27 兜底；而 C-27 在
    * `surfaces` 未声明时直接 N/A），于是"声明了但无人检查"。现在：声明 `ui` 为 present
    * 就必须真有界面证据（`uiDecision`），否则判红。
+   *
+   * **§3.2（第二轮整体评审）**：方向 ① 只堵了一半 —— 声明 `viewsAbsent:[{kind:ui}]`（"不做界面视图"）
+   * 时 `ui` 照样**不产生规则**，于是"项目 `surfaces:[web]` + 声明说不做界面"能一路 N/A/绿，
+   * 而把同一件事写成 `viewsPresent:[ui]` 却判红（同一份声明换个方向结论相反）。修后口径只有一句：
+   * **声明里的 `ui` 必须与 `uiDecision` 方向一致（`present ⟺ hasUi`）**；两个方向矛盾都判红。
+   * `ui` 方向一致时本条不重复判"界面是否确认"——那是 C-27（`ui.confirmed`）的职责。
    */
   'design.views': (ctx) => {
     const app = applicabilityState(ctx.store).declaration
@@ -460,9 +484,20 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     if (conflicted.length > 0) {
       return fail('design.views', fmt('uiGates.kViewConflict', { p1: conflicted.join(' ') }), t('uiGates.kViewConflictRemedy'))
     }
-    // Y-4：声明要做的界面视图必须有界面证据
-    if (app.viewsPresent.includes('ui') && !uiDecision(ctx.project, ctx.requirements).hasUi) {
+    // 声明里的 `ui` 与界面真源必须**方向一致**：present ⟺ hasUi
+    const ui = uiDecision(ctx.project, ctx.requirements)
+    const uiAbsent = app.viewsAbsent.some((item) => item.kind === 'ui')
+    if (app.viewsPresent.includes('ui') && !ui.hasUi) {
       return fail('design.views', t('uiGates.kViewsUiDeclaredButAbsent'), t('uiGates.kViewsUiRemedy'))
+    }
+    // §3.2：说要"不做"、真源里却有界面（surfaces / 界面类需求）⇒ 同样判红。N/A 会让人以为门禁默认同意，
+    // 而这里的真相是"你签字绑定的声明与项目自己的声明打架"。
+    if (uiAbsent && ui.hasUi) {
+      return fail(
+        'design.views',
+        fmt('uiGates.kViewsUiAbsentButReal', { p1: ui.reason }),
+        t('uiGates.kViewsUiAbsentButRealRemedy'),
+      )
     }
     const views = viewsCompleteness(ctx.store)
     const presentRules = rules.filter((rule) => rule.state === 'present')
@@ -553,7 +588,9 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
    */
   'design.signed': (ctx) => {
     const state = signatureState(ctx.store, ctx.journal, 'G3')
-    if (state.status === 'valid') {
+    // **R3（复审 minor）**：`inconsistent` 以前没有任何判据消费 ⇒ 手写的签字照样 `valid`（只是理由多一句 ⚠️）。
+    // 现在：台账与真源事件对不上 ⇒ 不算有效签字（理由里已经写清是哪一种不一致）。
+    if (state.status === 'valid' && state.inconsistent !== true) {
       const signature = state.signature
       return ok(
         'design.signed',
@@ -815,7 +852,12 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // 注意事件**自身**的 seq 是下一条，这里比的是事件载荷里的 `seq`（= 渲染前的序号）。
     const changed = events
       .filter((event) => event.seq > seq)
-      .filter((event) => (DESIGN_DOC_SOURCE_EVENTS as readonly string[]).includes(event.type))
+      // **SDO-18（2026-10-05 真机）**：`trace/linked` 也在这张"会改文档"的表里，但**施工期覆盖边**
+      // （`req-task` / `req-tc`）不进 `DESIGN.md` 的追溯矩阵（§8 只有设计侧四列）。真机上子代理
+      // 补两条覆盖边就把刚渲染好的文档判陈旧（`#1279 trace/linked` 让 C-25 翻红），流程官自己也踩过。
+      // 这里与 C-2D（`isSignatureInvalidatingEvent`）**同一口径**：按 `kind` 分流；拿不到 `kind` 时保守
+      // 视为"会改文档"（黑名单方向不变）。
+      .filter((event) => isDesignDocSourceEvent(event))
     if (changed.length > 0) {
       const first = changed[0]
       return fail(
@@ -986,6 +1028,64 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     return fail('plan.testplan', fmt('uiGates.k91', { p1: uncovered.join(' ') }), fmt('uiGates.k92', { p1: uncovered.join(' ') }))
   },
 
+  /**
+   * **实现阶段方法包已决定**（C-33 / C-83）：进构造阶段前必须跑过 `sdo_plan action=profile`。
+   *
+   * 三态口径与 `design.method-selected` 一致：**显式不选任何包**是合法 N/A（但必须写理由）；
+   * profile **坏结构一律判红**（查不到就当过是禁止的）。
+   */
+  'construction.profile-decided': (ctx) => {
+    const read = readConstructionProfile(ctx.store)
+    if (read.status === 'invalid') {
+      return fail('construction.profile-decided', read.problems.join('；'), t('uiGates.kConstructionProfileRemedy'))
+    }
+    if (read.status === 'missing' || read.profile === undefined) {
+      return fail('construction.profile-decided', t('uiGates.kConstructionProfileMissing'), t('uiGates.kConstructionProfileRemedy'))
+    }
+    const profile = read.profile
+    if (profile.packages.length === 0) {
+      return na('construction.profile-decided', fmt('uiGates.kConstructionProfileOptOut', { p1: profile.reason }))
+    }
+    return ok(
+      'construction.profile-decided',
+      fmt('uiGates.kConstructionProfileOk', {
+        p1: profile.packages.join(' + '),
+        p2: profile.scope === 'all' ? 'all' : fmt('uiGates.kConstructionScopeTasks', { p1: String(profile.scope.length) }),
+      }),
+    )
+  },
+
+  /**
+   * **范围内的卡满足所选包**（C-43 / C-84）：按**当前** profile 复核范围内**已完成**的卡。
+   *
+   * 用的是与 `claim`/`done` **同一套**检查器（现算）：开工侧"契约先冻结"（拿台账里那次认领的序号比）、
+   * 收工侧"红→绿 / critical 变异 / 契约测试"。复议本身不追溯，但要放过历史卡请写**豁免**（有据可查）。
+   */
+  'construction.packages-satisfied': (ctx) => {
+    const read = readConstructionProfile(ctx.store)
+    if (read.status !== 'ok' || read.profile === undefined) {
+      return na('construction.packages-satisfied', t('uiGates.kConstructionProfileNa'))
+    }
+    const profile = read.profile
+    if (profile.packages.length === 0) {
+      return na('construction.packages-satisfied', t('uiGates.kConstructionProfileNa'))
+    }
+    const scale = readProjectConfig(ctx.store).config.scale
+    const inScope = listTasks(ctx.store).filter((card) => card.status === 'done' && scopeCovers(profile, card.id))
+    const gaps: string[] = []
+    for (const card of inScope) {
+      const claims = ctx.journal.read().events.filter((event) => event.type === 'task/claimed' && event.data.id === card.id)
+      const claimSeq = claims[claims.length - 1]?.seq
+      if (claimSeq !== undefined) {
+        gaps.push(...claimGaps(ctx.store, ctx.journal, card, claimSeq, profile).map((item) => `${card.id}：${item.detail}`))
+      }
+      gaps.push(...doneGaps(ctx.store, ctx.journal, card, profile, { scale }).map((item) => `${card.id}：${item.detail}`))
+    }
+    return gaps.length === 0
+      ? ok('construction.packages-satisfied', fmt('uiGates.kConstructionPackagesOk', { p1: String(inScope.length) }))
+      : fail('construction.packages-satisfied', gaps.join('；'), t('uiGates.kConstructionPackagesRemedy'))
+  },
+
   'tasks.all_done': (ctx) => {
     const stats = planStats(listTasks(ctx.store))
     if (stats.total === 0) return fail('tasks.all_done', t('uiGates.k93'), t('uiGates.k94'))
@@ -1028,9 +1128,30 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   },
 
   'tests.passed': (ctx) => {
-    const stats = verificationStats(ctx.store)
+    const stats = verificationStats(ctx.store, ctx.journal)
     if (stats.cases === 0) return fail('tests.passed', t('uiGates.k100'), t('uiGates.k101'))
     if (stats.results === 0) return fail('tests.passed', t('uiGates.k102'), t('uiGates.k103'))
+    // **D4 硬化（整仓评审 major）**：结果必须有真源事件（`test/recorded`）佐证 ——
+    // 旧实现只读 `tests/results/*.yml`，于是「手写一条 pass 的 YAML」（journal 零事件）就能把这条判据判绿，
+    // 而 `recordTestResult(fail)` 之后把文件改成 pass 也查不出来。
+    // 判据：
+    //   ① journal 被坏行**截断** ⇒ 无法证明（可能只是记在坏行之后）⇒ 按"无法判定"判红（附修法，不假装绿）；
+    //   ② 有结果文件却查不到事件 ⇒ 判红并点名，话术给出"用工具重记/重跑"的补救动作。
+    // **R1（复审 major）**：文件状态 ≠ 真源事件状态 ⇒ 结果文件被改写（"把红改成绿"）⇒ 判红并点名
+    if (stats.tampered.length > 0) {
+      const list = stats.tampered.map((item) => fmt('uiGates.kTestsTamperedItem', { p1: item.id, p2: item.journal, p3: item.file })).join('; ')
+      return fail('tests.passed', fmt('uiGates.kTestsTampered', { p1: list }), t('uiGates.kTestsTamperedRemedy'))
+    }
+    if (stats.unjournaled.length > 0) {
+      if (ctx.journal.read().truncated) {
+        return fail('tests.passed', fmt('uiGates.kTestsUnknown', { p1: String(stats.unjournaled.length) }), t('uiGates.kTestsUnknownRemedy'))
+      }
+      return fail(
+        'tests.passed',
+        fmt('uiGates.kTestsUnjournaled', { p1: String(stats.unjournaled.length), p2: stats.unjournaled.join(' ') }),
+        t('uiGates.kTestsUnjournaledRemedy'),
+      )
+    }
     if (stats.failed > 0) return fail('tests.passed', fmt('uiGates.k104', { p1: stats.failedCaseIds.join(' ') }), t('uiGates.k105'))
     const unrun = listTestCases(ctx.store)
       .filter((testCase) => !listTestResults(ctx.store).some((result) => result.caseId === testCase.id))
@@ -1070,12 +1191,49 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     if (violations.length > 0) {
       return fail('review.independent', violations.map((item) => item.detail).join('；'), t('uiGates.k114'))
     }
-    const doneTasks = tasks.filter((task) => task.status === 'done' || task.status === 'verified')
-    const unreviewed = doneTasks.filter((task) => !reviews.some((review) => review.taskId === task.id && review.verdict === 'pass')).map((task) => task.id)
-    if (unreviewed.length > 0) {
-      return fail('review.independent', fmt('uiGates.k115', { p1: unreviewed.join(' ') }), t('uiGates.k116'))
+    // **2026-10-08 口径**：评审「任务」完成不需要被评审，但**评审结果要被核实才能采纳** ——
+    //   · `role === 'reviewer'` 的卡不在此列（与 SDO-35 / C-42 同一理由：评审卡自我递归没有意义）；
+    //   · 其余完成卡的 `pass` 评审必须是**已采纳**的（每条发现都由实现会话核实过，评审与核实都能被真源佐证）。
+    const doneTasks = tasks.filter((task) => (task.status === 'done' || task.status === 'verified') && task.role !== 'reviewer')
+    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal).map((item) => [item.review.id, item]))
+    const unreviewed: string[] = []
+    const unadopted: string[] = []
+    for (const task of doneTasks) {
+      const pass = reviews.filter((review) => review.taskId === task.id && review.verdict === 'pass')
+      if (pass.some((review) => adoptions.get(review.id)?.state === 'adopted')) continue
+      if (pass.length === 0) {
+        unreviewed.push(task.id)
+        continue
+      }
+      unadopted.push(
+        `${task.id}（${pass
+          .map((review) => `${review.id}：${reviewAdoptionLabel(adoptions.get(review.id)?.state ?? 'unverified')}`)
+          .join('，')}）`,
+      )
     }
-    return ok('review.independent', fmt('uiGates.k117', { p1: reviews.length }))
+    // **G-1（sdo-test 2026-10-08 报告）**：两个桶**一起报** —— 旧实现先在 `unreviewed` 上提前 return，
+    // 于是"有 pass 评审但永远采纳不了"的那几张卡被挡在身后（真机：22 张无评审的卡把 2 张死锁卡藏了）。
+    if (unreviewed.length > 0 || unadopted.length > 0) {
+      const parts: string[] = []
+      const remedies: string[] = []
+      if (unreviewed.length > 0) {
+        parts.push(fmt('uiGates.k115', { p1: unreviewed.join(' ') }))
+        remedies.push(t('uiGates.k116'))
+      }
+      if (unadopted.length > 0) {
+        parts.push(fmt('uiGates.kReviewUnadopted', { p1: unadopted.join(' ') }))
+        remedies.push(t('uiGates.kReviewUnadoptedRemedy'))
+      }
+      return fail('review.independent', parts.join('；'), remedies.join('；'))
+    }
+    // **G-2 可见性**：被采纳的 `pass` 评审里若有**老格式**（没有内容指纹）的，如实标注 ——
+    // 否则"已采纳"会读成"已防篡改"，而老条目其实检出不了"改 verdict / 改正文"。
+    const legacy = adoptedPassIds(doneTasks.map((task) => task.id), reviews, adoptions)
+    return ok(
+      'review.independent',
+      fmt('uiGates.k117', { p1: reviews.length })
+        + (legacy.length === 0 ? '' : '；' + fmt('uiGates.kReviewLegacyAdopted', { p1: legacy.join(' ') })),
+    )
   },
 
   /**
@@ -1087,14 +1245,50 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
    */
   'review.required': (ctx) => {
     const tasks = listTasks(ctx.store)
-    const big = tasks.filter((task) => task.status === 'done' && (task.size === 'medium' || task.size === 'large'))
+    // **SDO-35（真机）**：**评审卡不参与这条判据**，否则每批评审卡又要被评审（自我递归：TASK-142/147 先后被点名）；
+    // 而"再评一次"在池子里不成立（可复用的 reviewer 只有一个，派发器无法保证评审者 ≠ 卡 owner）。
+    const big = tasks.filter(
+      (task) => task.status === 'done' && (task.size === 'medium' || task.size === 'large') && task.role !== 'reviewer',
+    )
     if (big.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
+    // 与 G6/C-52 **同一份采纳口径**（2026-10-08）：`pass` 评审必须**已核实采纳**才算数 ——
+    // 否则"有通过评审"的账在那里、发现却没人核实过，G5 就先放行了（两条判据不许各写一份）。
     const reviews = listReviews(ctx.store)
-    const missing = big.filter((task) => !reviews.some((review) => review.taskId === task.id && review.verdict === 'pass')).map((task) => task.id)
-    if (missing.length > 0) {
-      return fail('review.required', fmt('uiGates.kWorkReviewMissing', { p1: missing.join(' ') }), t('uiGates.kWorkReviewRemedy'))
+    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal).map((item) => [item.review.id, item]))
+    const missing: string[] = []
+    const unadopted: string[] = []
+    for (const task of big) {
+      const pass = reviews.filter((review) => review.taskId === task.id && review.verdict === 'pass')
+      if (pass.some((review) => adoptions.get(review.id)?.state === 'adopted')) continue
+      if (pass.length === 0) {
+        missing.push(task.id)
+        continue
+      }
+      unadopted.push(
+        `${task.id}（${pass
+          .map((review) => `${review.id}：${reviewAdoptionLabel(adoptions.get(review.id)?.state ?? 'unverified')}`)
+          .join('，')}）`,
+      )
     }
-    return ok('review.required', fmt('uiGates.kWorkReviewOk', { p1: String(big.length) }))
+    if (missing.length > 0 || unadopted.length > 0) {
+      const parts: string[] = []
+      const remedies: string[] = []
+      if (missing.length > 0) {
+        parts.push(fmt('uiGates.kWorkReviewMissing', { p1: missing.join(' ') }))
+        remedies.push(t('uiGates.kWorkReviewRemedy'))
+      }
+      if (unadopted.length > 0) {
+        parts.push(fmt('uiGates.kReviewUnadopted', { p1: unadopted.join(' ') }))
+        remedies.push(t('uiGates.kReviewUnadoptedRemedy'))
+      }
+      return fail('review.required', parts.join('；'), remedies.join('；'))
+    }
+    const legacy = adoptedPassIds(big.map((task) => task.id), reviews, adoptions)
+    return ok(
+      'review.required',
+      fmt('uiGates.kWorkReviewOk', { p1: String(big.length) })
+        + (legacy.length === 0 ? '' : '；' + fmt('uiGates.kReviewLegacyAdopted', { p1: legacy.join(' ') })),
+    )
   },
 
   'iteration.increment': (ctx) => {
@@ -1283,3 +1477,30 @@ export function satisfiedGates(evaluations: Iterable<GateEvaluation>): Set<strin
   }
   return set
 }
+
+/**
+ * 该事件是否算「会改 `DESIGN.md` 的真源变更」（C-25 的唯一判据，导出以便单测）。
+ *
+ * 三条口径（都由真机缺陷换来，缺一条就会误判）：
+ *   · 类型不在 {@link DESIGN_DOC_SOURCE_EVENTS} 里 ⇒ 不算；
+ *   · `trace/linked|unlinked` 按 `kind` 分流：施工期覆盖边（`req-task`/`req-tc`）不进文档（SDO-18）；
+ *   · `truth/file-written` 按**路径**分流：只有设计文档真正渲染的那几个真源目录算（SDO-19 复审），
+ *     手改构造/测试/成本类真源不再让文档判陈旧（报警疲劳）。缺 `docSource` 的旧事件回退到路径判定；
+ *     路径也读不出 ⇒ **保守算作会改文档**（黑名单方向不变）。
+ */
+export function isDesignDocSourceEvent(event: { type: string; data?: unknown }): boolean {
+  if (!(DESIGN_DOC_SOURCE_EVENTS as readonly string[]).includes(event.type)) return false
+  if (nonDocTraceEdge(event)) return false
+  if (event.type !== 'truth/file-written') return true
+  const data = (event.data ?? {}) as { docSource?: unknown; path?: unknown }
+  if (typeof data.docSource === 'boolean') return data.docSource
+  return typeof data.path === 'string' ? isDesignDocTruthPath(data.path) : true
+}
+
+/** `trace/linked|unlinked` 且 `kind` 是施工期覆盖边（`req-task`/`req-tc`）⇒ 不进设计文档（SDO-18）。 */
+function nonDocTraceEdge(event: { type: string; data?: unknown }): boolean {
+  if (event.type !== 'trace/linked' && event.type !== 'trace/unlinked') return false
+  const kind = (event.data as { kind?: unknown } | undefined)?.kind
+  return kind === 'req-task' || kind === 'req-tc'
+}
+

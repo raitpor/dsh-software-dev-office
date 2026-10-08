@@ -93,6 +93,16 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
     const open = status.openDesignQuestions ?? 0
     lines.push(open > 0 ? fmt('status.designOpen', { n: open }) : t('status.designNone'))
   }
+
+  // **2026-10-08 评审核实**：有"还没核实"的评审就必须每轮说出来 ——
+  // 评审结果不会被自动采纳，模型要派该卡的实现会话逐条核实（复现 / 反证）。
+  const pendingReviews = status.pendingReviewVerifications
+  if ((pendingReviews?.count ?? 0) > 0) {
+    lines.push(fmt('status.reviewVerify', {
+      n: String(pendingReviews?.count ?? 0),
+      ids: (pendingReviews?.ids ?? []).slice(0, 3).join(' '),
+    }))
+  }
   // **§7.1「不得静默」（注入块那一处）**：设计适用性声明必须每轮出现在状态块里 ——
   // 用户要在模型动手之前就看到"哪些视图做、哪些不做及理由"，以及"还差用户签字"。
   // 只在**设计语境**（已进架构阶段或已起草声明）出现，避免在需求早期变成噪声。

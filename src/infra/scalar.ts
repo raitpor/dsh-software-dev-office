@@ -183,6 +183,38 @@ export function textListOf(value: unknown): ContainerRead<string> {
 }
 
 /**
+ * **记录列表 + 标量项**的宽容读法（**D-9**，sdo-test-new 2026-10-08，minor）。
+ *
+ * `recordListOf` 只收映射项：一串**字符串**会被判成"形状不对"，值被读成空列表 + 一条
+ * 「是 string 类型：无法判断列表内容，已按**空列表**处理」的提示 —— 而盘上那份 YAML 明明是
+ * 一个合法列表，提示给出的补救（"写成 `- 值` 列表"）也正是作者已经写的样子。真机症状：
+ * `design/method-dfd.yml` 的 `levels[].flows`（一串流名）被静默读空，**父/子层流量平衡校验因此空洞通过**。
+ *
+ * 这里把"标量项"按调用方给的 `fromScalar` 收回（这正是 `recordListOf` 的 `fromScalar` 参数本来的用意），
+ * 只对**既不是标量也不是映射**的项报形状问题。用法限定在"对象里只有名字是本质、其余字段可缺省"的列表。
+ */
+export function looseRecordListOf<T>(value: unknown, fromScalar: (text: string) => T): ContainerRead<T> {
+  if (!Array.isArray(value)) return recordListOf<T>(value, fromScalar)
+  const out: T[] = []
+  let bad: string | undefined
+  for (const item of value) {
+    if (item !== null && typeof item === 'object' && !Array.isArray(item)) {
+      out.push(item as T)
+      continue
+    }
+    const scalar = scalarText(item)
+    if (scalar.usable && scalar.text !== '') {
+      out.push(fromScalar(scalar.text))
+      continue
+    }
+    // 空串 / null 是"这一项没写"，不算形状问题
+    if (scalar.actualType === 'string' || scalar.actualType === 'null' || scalar.actualType === 'undefined') continue
+    bad ??= scalar.actualType
+  }
+  return { value: out, issue: bad === undefined ? undefined : listIssue(bad, 'empty', '') }
+}
+
+/**
  * **记录列表位置**（形如 `- id: …`）的口径。
  *
  * 与字符串列表同一口径：标量 → 单元素列表（由调用方给出的 `fromScalar` 决定把它放进哪个字段），

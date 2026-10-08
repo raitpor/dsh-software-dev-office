@@ -171,6 +171,11 @@ class Parser {
         list.push(next !== undefined && next.indent > line.indent ? this.parseNode(next.indent) : null)
         continue
       }
+      // **§4.1**：列表项的块标量（`- |-` / `- |` / `- >`）也要能读 —— 存量文件与手写真源都是这个形状
+      if (rest.startsWith('|') || rest.startsWith('>')) {
+        list.push(this.parseBlockScalar(rest, itemIndent, line.lineNo))
+        continue
+      }
       const split = splitKey(rest)
       if (split === undefined) {
         list.push(parseValueToken(rest, line.lineNo))
@@ -404,6 +409,8 @@ export function parseYaml(text: string): unknown {
 }
 
 const NEEDS_QUOTE = /^(?:[-?:,[\]{}#&*!|>%@`'"]|.*[:#]\s|.*\s$)/s
+/** 必须用转义双引号（而不是单引号/裸值）的字符：tab / CR / 双引号 / 反斜杠 / 控制字符。 */
+const NEEDS_ESCAPE_QUOTE = /[\t\r"\\]|[\u0000-\u001f]/u
 const LOOKS_LIKE_SCALAR = /^(?:~|null|Null|NULL|true|True|TRUE|false|False|FALSE|-?(?:0|[1-9]\d*)(?:\.\d+)?)$/
 
 function quoteIfNeeded(value: string): string {
@@ -413,6 +420,25 @@ function quoteIfNeeded(value: string): string {
   return value
 }
 
+/**
+ * **多行字符串的转义双引号形式**（第二轮评审 §4.1/§4.2 的修法）。
+ *
+ * 病根：写出侧把多行串写成块标量（`key: |-` 或列表项 `- |-`），而**列表项**那种形式解析侧
+ * （`parseList`）根本不认 ⇒ 写成功、台账记"已记录"，文件却**永久不可读**（真机路径：`sdo_quality`
+ * 的 risks/sensitivities 元素含换行）。另外块标量里的**空行**在读取时被 `preprocess` 丢掉 ⇒ 多段正文掉空行。
+ * 解析侧本来就支持转义双引号（`"p\n\nq"` 读回 `p\n\nq`），所以从**写出侧**收口：多行串一律用转义引号，
+ * 写读往返天然成立，也不必再教解析器认列表块标量（那条仍补上，用于读**存量/手写**文件）。
+ */
+function quoteMultiline(value: string): string {
+  const escaped = value
+    .replace(/\\/gu, '\\\\')
+    .replace(/"/gu, '\\"')
+    .replace(/\r/gu, '\\r')
+    .replace(/\t/gu, '\\t')
+    .replace(/\n/gu, '\\n')
+  return `"${escaped}"`
+}
+
 function emitScalar(value: unknown): string {
   if (value === null) return 'null'
   if (typeof value === 'boolean') return value ? 'true' : 'false'
@@ -420,22 +446,16 @@ function emitScalar(value: unknown): string {
     if (!Number.isFinite(value)) throw new Error('YAML 子集不支持 NaN / Infinity')
     return String(value)
   }
-  if (typeof value === 'string') return quoteIfNeeded(value)
+  if (typeof value === 'string') {
+    // **§4.1/§4.2**：换行、制表符、双引号、反斜杠、控制字符一律走**转义双引号** ——
+    // 单引号形式写不出 tab（读侧直接判"不允许用 Tab 缩进"），原样输出又可能破坏引号语义。
+    return value.includes('\n') || NEEDS_ESCAPE_QUOTE.test(value) ? quoteMultiline(value) : quoteIfNeeded(value)
+  }
   throw new Error(`YAML 子集不支持的类型：${typeof value}`)
 }
 
 function isCollection(value: unknown): boolean {
   return typeof value === 'object' && value !== null
-}
-
-function emitBlockScalar(value: string, indent: number): string[] {
-  const trailing = /\n+$/.exec(value)
-  const trailingCount = trailing === null ? 0 : trailing[0].length
-  const body = trailingCount === 0 ? value : value.slice(0, -trailingCount)
-  const header = trailingCount === 0 ? '|-' : trailingCount === 1 ? '|' : '|+'
-  const pad = ' '.repeat(indent + 2)
-  const lines = body.split('\n').map((l) => (l === '' ? '' : pad + l))
-  return [header, ...lines]
 }
 
 function emitValue(value: unknown, indent: number, lines: string[]): void {
@@ -447,11 +467,6 @@ function emitValue(value: unknown, indent: number, lines: string[]): void {
         const first = nested.shift() ?? ''
         lines.push(' '.repeat(indent) + '- ' + first.trimStart())
         for (const l of nested) lines.push(l)
-      } else if (typeof item === 'string' && item.includes('\n')) {
-        const block = emitBlockScalar(item, indent + 2)
-        const header = block.shift() ?? '|'
-        lines.push(' '.repeat(indent) + '- ' + header)
-        for (const l of block) lines.push(l)
       } else {
         lines.push(' '.repeat(indent) + '- ' + emitScalar(item))
       }
@@ -462,12 +477,7 @@ function emitValue(value: unknown, indent: number, lines: string[]): void {
     emitCollectionInline(value, indent, lines)
     return
   }
-  if (typeof value === 'string' && value.includes('\n')) {
-    const block = emitBlockScalar(value, indent)
-    lines.push(' '.repeat(indent) + (block.shift() ?? '|'))
-    for (const l of block) lines.push(l)
-    return
-  }
+
   lines.push(' '.repeat(indent) + emitScalar(value))
 }
 
@@ -491,13 +501,7 @@ function emitCollectionInline(value: unknown, indent: number, lines: string[]): 
   for (const [key, item] of entries) {
     const keyText = quoteIfNeeded(key) + ':'
     if (item === null || !isCollection(item)) {
-      if (typeof item === 'string' && item.includes('\n')) {
-        const block = emitBlockScalar(item, indent)
-        lines.push(' '.repeat(indent) + keyText + ' ' + (block.shift() ?? '|'))
-        for (const l of block) lines.push(l)
-      } else {
-        lines.push(' '.repeat(indent) + keyText + ' ' + emitScalar(item))
-      }
+      lines.push(' '.repeat(indent) + keyText + ' ' + emitScalar(item))
       continue
     }
     if (Array.isArray(item) && item.length === 0) {
