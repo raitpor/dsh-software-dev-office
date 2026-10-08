@@ -185,14 +185,14 @@ test('M30-05 A1 纯函数层：解析路径/哈希的三种写法 + 对账结果
 
 test('M30-06 A2 采集开关与工作区判定：关掉不写、没有 .sdo/ 不写、开启才记', () => {
   const before = store.listNames('evidence')
-  const off = recordWorkspaceChanges({ store, sessionId: 's1', seq: 3, summary: { files: [{ path: 'src/a.ts' }] }, enabled: false, hasProject: true })
+  const off = recordWorkspaceChanges({ store, sessionId: 's1', seq: 3, journalSeq: 3, summary: { files: [{ path: 'src/a.ts' }] }, enabled: false, hasProject: true })
   assert.equal(off, undefined)
   assert.deepEqual(store.listNames('evidence'), before, '关闭时不得落盘')
 
-  const noProject = recordWorkspaceChanges({ store, sessionId: 's1', seq: 3, summary: { files: [{ path: 'src/a.ts' }] }, enabled: true, hasProject: false })
+  const noProject = recordWorkspaceChanges({ store, sessionId: 's1', seq: 3, journalSeq: 3, summary: { files: [{ path: 'src/a.ts' }] }, enabled: true, hasProject: false })
   assert.equal(noProject, undefined, '没有 .sdo/ 的工作区不记账')
 
-  const on = recordWorkspaceChanges({ store, sessionId: 's1', seq: 3, summary: { turn: 2, files: [{ path: 'src/a.ts' }, { display: 'docs/b.md' }] }, enabled: true, hasProject: true })
+  const on = recordWorkspaceChanges({ store, sessionId: 's1', seq: 3, journalSeq: 3, summary: { turn: 2, files: [{ path: 'src/a.ts' }, { display: 'docs/b.md' }] }, enabled: true, hasProject: true })
   assert.equal(on?.files.length, 2, 'path 与 display 两种写法都要收')
   const read = readWorkspaceChanges(store)
   assert.equal(read.entries.length, 1)
@@ -200,9 +200,9 @@ test('M30-06 A2 采集开关与工作区判定：关掉不写、没有 .sdo/ 不
 })
 
 test('M30-07 A2 changedFilesSince：只取"本会话 + 基线之后"的清单，坏行不毁对账', () => {
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: 5, summary: { files: [{ path: 'src/old.ts' }] }, enabled: true, hasProject: true })
-  recordWorkspaceChanges({ store, sessionId: 's2', seq: 9, summary: { files: [{ path: 'src/other-session.ts' }] }, enabled: true, hasProject: true })
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: 9, summary: { files: [{ path: 'src/new.ts' }, { path: 'src/old.ts' }] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: 5, journalSeq: 5, summary: { files: [{ path: 'src/old.ts' }] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's2', seq: 9, journalSeq: 9, summary: { files: [{ path: 'src/other-session.ts' }] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: 9, journalSeq: 9, summary: { files: [{ path: 'src/new.ts' }, { path: 'src/old.ts' }] }, enabled: true, hasProject: true })
   store.appendLine(['evidence', 'workspace-changes.jsonl'], '{ 这不是 JSON\n')
   const hit = changedFilesSince(store, 's1', 5)
   assert.deepEqual(hit.files, ['src/new.ts', 'src/old.ts'], '只取 s1 且 seq>5，去重')
@@ -220,7 +220,7 @@ test('M30-08 A2 done 写范围对账：越界即判红并点名；范围内放�
   const claimed = claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', sessionId: 's1', expectedRevision: 1 })
   assert.equal(claimed.ok, true)
   const claimSeq = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: claimSeq + 1, summary: { files: [{ path: 'src/other/escape.ts' }] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: claimSeq + 1, journalSeq: claimSeq + 1, summary: { files: [{ path: 'src/other/escape.ts' }] }, enabled: true, hasProject: true })
   const violated = report(store, journal, {
     taskId: 'TASK-001',
     owner: 'cockpit',
@@ -235,7 +235,7 @@ test('M30-08 A2 done 写范围对账：越界即判红并点名；范围内放�
   writeCard({ writeScopes: ['src/det/'], evidenceRequired: ['artifact'] })
   claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', sessionId: 's1', expectedRevision: 1 })
   const seq2 = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq2 + 1, summary: { files: [{ path: 'src/det/inside.ts' }] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq2 + 1, journalSeq: seq2 + 1, summary: { files: [{ path: 'src/det/inside.ts' }] }, enabled: true, hasProject: true })
   const ok = report(store, journal, {
     taskId: 'TASK-001',
     owner: 'cockpit',
@@ -263,6 +263,11 @@ test('M30-08 A2 done 写范围对账：越界即判红并点名；范围内放�
 /** 写一份项目台账（只为规模档位）。 */
 function writeProject(scale: string): void {
   store.writeJson(['project.json'], { id: 'PRJ-001', name: 'M30', process: 'waterfall', phase: 'construction', tailoring: { scale } })
+  // 本文件测的是 C7/A1/A2 语义，不测实现阶段方法包：写一份**显式不选包**的中立 profile
+  // （对照 `test/m33.test.ts` —— 那边才是方法包门禁本身的用例）
+  store.writeYaml(['construction', 'profile.yml'], {
+    profile: { version: 1, decidedAt: '', decidedBy: 'office', packages: [], scope: 'all', derivedFrom: [], reason: '本夹具不启用实现阶段方法包', exempt: [], history: [] },
+  })
 }
 
 test('M30-09 C7 normal 档：需求没有用例计划就不给认领；有计划后放行', () => {
@@ -350,11 +355,17 @@ test('M30-12 D9 G5-C-42：size ≥ medium 的完成卡没有通过评审即判�
   assert.equal(red.ok, false, '中大卡无通过评审必须判红')
   assert.match(red.detail, /TASK-001/u, '要点名是哪张卡')
 
-  // ② 记一条别人（评审人）给的 pass 评审 → 放行
-  office.addReview(call(), { taskId: 'TASK-001', reviewer: 'reviewer-b', verdict: 'pass', findings: [] })
-  assert.equal(gate().ok, true, `有通过评审应放行：${JSON.stringify(gate())}`)
+  // ② 记一条别人（评审人）给的 pass 评审 → **还不够**（2026-10-08 口径：评审结果要被核实才能采纳）
+  const review = office.addReview(call(), { taskId: 'TASK-001', reviewer: 'reviewer-b', verdict: 'pass', findings: ['已逐条核对，无阻塞问题'] })
+  const beforeVerify = gate()
+  assert.equal(beforeVerify.ok, false, '没核实的通过评审不得被采纳（原来这里直接放行）')
+  assert.match(beforeVerify.detail, /未核实/u, `理由要说清是"没核实"而不是"没评审"：${beforeVerify.detail}`)
 
-  // ③ 反向：**另一张 small 卡**完成、且完全没有评审 → 这条不拦（拦它是 G6 的 C-52 的事）
+  // ③ 由实现方逐条核实（复现）→ 才被采纳、才放行
+  office.verifyReviewFinding(call(), { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复核：确无阻塞问题', by: 'dev-a' })
+  assert.equal(gate().ok, true, `核实后应放行：${JSON.stringify(gate())}`)
+
+  // ④ 反向：**另一张 small 卡**完成、且完全没有评审 → 这条不拦（拦它是 G6 的 C-52 的事）
   //    用第二张卡是为了让"忽略 size 的变异"能被这条咬住：若把 size 判定删掉，这里就会红。
   store.writeYaml(['tasks', 'TASK-002.yml'], {
     task: {
@@ -372,7 +383,7 @@ test('M30-13 A2 缺陷同路径：采到条目但**没有文件信息**时必须
   writeCard({ writeScopes: ['src/det/'], evidenceRequired: ['artifact'] })
   claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', sessionId: 's1', expectedRevision: 1 })
   const seq = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
-  const entry = recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, summary: undefined, enabled: true, hasProject: true })
+  const entry = recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, journalSeq: seq + 1, summary: undefined, enabled: true, hasProject: true })
   assert.equal(entry?.summaryAvailable, false, '采到了条目，但要如实记下"没有摘要"')
   assert.deepEqual(changedFilesSince(store, 's1', seq).audited, false, '无摘要 → 不算已对账')
   const blind = report(store, journal, {
@@ -390,7 +401,7 @@ test('M30-13 A2 缺陷同路径：采到条目但**没有文件信息**时必须
   writeCard({ writeScopes: ['src/det/'], evidenceRequired: ['artifact'] })
   claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', sessionId: 's1', expectedRevision: 1 })
   const seq2 = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq2 + 1, summary: { files: [] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq2 + 1, journalSeq: seq2 + 1, summary: { files: [] }, enabled: true, hasProject: true })
   const looked = report(store, journal, {
     taskId: 'TASK-001',
     owner: 'cockpit',
@@ -487,12 +498,12 @@ test('M30-17 A2 竞态修复：采集时拿不到清单 → done 时补记，对
   writeCard({ writeScopes: ['src/det/'], evidenceRequired: ['artifact'] })
   claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', sessionId: 's1', expectedRevision: 1 })
   const seq = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, summary: undefined, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, journalSeq: seq + 1, summary: undefined, enabled: true, hasProject: true })
   assert.deepEqual(unresolvedSeqs(store, 's1', seq), [seq + 1], '没有摘要的 seq 要列出来供 done 补取')
   assert.equal(changedFilesSince(store, 's1', seq).audited, false, '补取之前：未对账')
 
   // done 时再取一次并补记（带越界文件）→ 对账成立并且**真的判红**
-  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, summary: { files: [{ path: 'src/other/escape.ts' }] }, enabled: true, hasProject: true })
+  recordWorkspaceChanges({ store, sessionId: 's1', seq: seq + 1, journalSeq: seq + 1, summary: { files: [{ path: 'src/other/escape.ts' }] }, enabled: true, hasProject: true })
   assert.deepEqual(unresolvedSeqs(store, 's1', seq), [], '同一 seq 已有带摘要的记录 → 不再缺')
   const after = changedFilesSince(store, 's1', seq)
   assert.equal(after.audited, true, '同一 seq 只要有一条带摘要就算对过账')
@@ -526,4 +537,25 @@ test('M30-19 文档守卫：CHANGELOG 不许写死"全量 N/N"（两次漂移后
   const hardcoded = [...changelog.matchAll(/全量 \*\*\d+\/\d+\*\*/gu)].map((match) => match[0])
   assert.deepEqual(hardcoded, [], `CHANGELOG 里不要写死测试计数（会漂移）：${hardcoded.join('、')}`)
   assert.match(changelog, /run-tests\.mjs/u, '要指向真正的计数来源')
+})
+
+test('M30-20 C7 也有来源核对（评审建议 1）：结果文件在 journal 里没有事件 ⇒ 不算数、done 判红', () => {
+  writeProject('normal')
+  writeCard({ requirements: ['REQ-001'], evidenceRequired: ['artifact'] })
+  const caseId = office_addCase('REQ-001')
+  assert.equal(claim(store, journal, { taskId: 'TASK-001', owner: 'cockpit', expectedRevision: 1 }).ok, true)
+  const evidence = [artifact('src/det/g.ts', 'export const g = 7\n', false)]
+
+  // ① **只写文件**、不写 journal 事件（模拟手写/伪造）⇒ 来源不可追溯，done 判红
+  store.writeYaml(['tests', 'results', 'TR-001.yml'], { result: { id: 'TR-001', caseId, status: 'pass', evidence: 'x', at: '' } })
+  const forged = report(store, journal, { taskId: 'TASK-001', owner: 'cockpit', status: 'done', evidence })
+  assert.equal(forged.ok, false)
+  assert.equal(forged.ok === false ? forged.code : '', 'tdd-result-untraceable')
+  assert.ok(forged.ok === false && forged.detail.includes('TR-001'), `要点名是哪些结果：${forged.ok === false ? forged.detail : ''}`)
+
+  // ② 把那条伪造文件删掉，再走**真实路径**（文件 + 事件都写）⇒ 放行
+  rmSync(join(workspace, '.sdo', 'tests', 'results', 'TR-001.yml'), { force: true })
+  recordTestResult(store, journal, { caseId, status: 'pass', evidence: 'exit=0' })
+  const ok = report(store, journal, { taskId: 'TASK-001', owner: 'cockpit', status: 'done', evidence })
+  assert.equal(ok.ok, true, ok.ok === false ? ok.detail : '')
 })

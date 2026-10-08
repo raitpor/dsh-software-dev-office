@@ -34,9 +34,22 @@ export interface SdoConfig {
    * `suggest`=只提示（L1）；`enforce`=门禁 + 工具前置（L2，默认）；`strict`=L2 + 拦截写类工具（L3）
    */
   gateLevel: 'suggest' | 'enforce' | 'strict'
-  /** L3 拦截的工具名（仅 `gateLevel: strict` 生效） */
+  /**
+   * **受写入范围纪律管辖的工具**（`domain/writeScope.ts`）。
+   *
+   * 带路径参数的（`write`/`edit`）会**逐路径**核对本卡的 `writeScopes`；
+   * 不带路径参数的（`bash`）**没有路径可判** ⇒ 纪律只能如实标 `checked: false`，
+   * 越界写仍由 `done` 时的 A2 写范围对账兜底（**不许假装拦住了**）。
+   * （2026-10-08 之前这个字段**没人读**，是死配置。）
+   */
   disciplineTools: string[]
-  /** L3 允许写入的相对路径前缀（放行白名单） */
+  /**
+   * **公共放行面**（相对路径前缀）：这些位置**不受卡级 `writeScopes` 约束**。
+   *
+   * 默认 `.sdo/`（台账，由 SDO 工具自己落 —— SDO-34）、`docs/`（派生文档）、
+   * `test/`（用例是跨卡共用面）。卡写范围只管产品文件（`src/`、`lib/` 之类）。
+   * （2026-10-08 之前这个字段**没人读**，是死配置。）
+   */
   disciplineAllowPaths: string[]
   registerTools: boolean
   registerCommands: boolean
@@ -44,6 +57,24 @@ export interface SdoConfig {
   orchestrator: 'subagent' | 'native-team' | 'inline'
   /** 并行派发上限（派发前的自我容量预算；`maxActiveSubagents` 默认 8） */
   maxParallelDispatch: number
+  /**
+   * **未结算派发的孤儿 TTL（分钟）**：`dispatch/started` 之后迟迟没有 `dispatch/finished`
+   * （子会话被强杀、宿主重启、派发丢了）时，超过这个时长就**不再占用池位**（并如实标注"已超时"）。
+   *
+   * 为什么需要它（真机缺陷）：池状态从台账现算，没有回收 ⇒ 历史僵尸派发会把池永久占满，
+   * 「空闲可复用」恒为 0、真复用永不发生、池满的卡只排队不放行。真机实测 developer 池被 5 笔
+   * 跨了两天重启的未结算派发占满（上限 4）。
+   *
+   * 代价如实说：这是**启发式**（真跑超过这个时长的子代理会被误判），所以① 可配、② 回执里点名 TTL，
+   * ③ 被误判者只影响"占位"，**不会**被复用（它们不进"空闲可复用"清单）。
+   */
+  dispatchOrphanTtlMinutes: number
+  /**
+   * **按角色的子代理池上限**（子代理复用）：`{ developer: 2, tester: 1 }`。
+   * 没写的角色用 `maxParallelDispatch`（⇒ 默认行为不变：不额外收紧）。
+   * 池满的卡**排队**（不丢），等池里有子代理结算后由下一次派发放行。
+   */
+  poolCaps: Record<string, number>
   /** 是否采集 `workspace/changes` 证据（M4 起生效） */
   captureWorkspaceChanges: boolean
   /**
@@ -98,6 +129,8 @@ export const Config: z<SdoConfig> = z.object({
   registerCommands: z.boolean().default(true),
   orchestrator: z.union([z.const('subagent'), z.const('native-team'), z.const('inline')]).default('subagent'),
   maxParallelDispatch: z.natural().min(1).max(8).default(4),
+  poolCaps: z.dict(z.natural().min(1).max(8)).default({}),
+  dispatchOrphanTtlMinutes: z.natural().min(1).max(1440).default(60),
   captureWorkspaceChanges: z.boolean().default(true),
   enforceRoleMask: z.boolean().default(true),
   dispatchProvider: z.string().default('spawn'),

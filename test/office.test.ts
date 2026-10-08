@@ -82,6 +82,11 @@ test('status：阶段、门禁缺口、计数与投影来源', () => {
   assert.equal(status.project?.phase, 'intake')
   assert.equal(status.pendingGate, 'G0', 'intake 的出口门禁是 G0')
   assert.deepEqual(status.counts, { requirements: 0, questions: 0, openQuestions: 0, gates: 0, evidence: 0 })
+  // **SDO-08**：立项时要把插件/宿主/node 版本记进真源（跨版本复现的外部线索）
+  const env = office.journalFor(workspace).read().events.filter((event) => event.type === 'project/environment')
+  assert.equal(env.length, 1)
+  assert.equal(env[0]?.data.plugin, 'dsh-software-dev-office')
+  assert.equal(typeof env[0]?.data.pluginVersion, 'string')
   assert.equal(status.configSource, 'file')
   assert.equal(status.rebuilt, false, 'init 时已物化投影，因此这里是读缓存')
   assert.equal(status.truncated, false)
@@ -107,12 +112,14 @@ test('status：journal 损坏 → 截断并报告（不静默，且说明事件�
   writeFileSync(join(workspace, '.sdo', 'journal.jsonl'), '{"seq":1,"at":"x"\n', { flag: 'a' })
   const status = office.status(call())
   assert.equal(status.truncated, true)
-  assert.equal(status.badLine, 2)
+  // **SDO-08** 让 `init` 多写一条 `project/environment`（插件/宿主/node 版本入账）⇒ 坏行行号随合法事件数走
+  assert.equal(status.badLine, office.journalFor(workspace).read().events.length + 1)
   // 口径（第四份评审员报告 §3）：坏行**不一定是尾部**（中段同样触发），且此刻凡以事件流为证据的判定
   // （签字失效 / 渲染佐证 / 红队记录 / 回退留痕）都必须声明「无法判定」，不能拿截断前缀自信作答。
   const receipt = describeStatus(status, '.sdo')
   assert.match(receipt, /journal\.jsonl/u, '必须点名坏真源')
-  assert.match(receipt, /第 2 行/u, '必须点名坏行')
+  // 坏行行号随合法事件数走（SDO-08 让 init 多写一条 project/environment）
+  assert.match(receipt, new RegExp(`第 ${office.journalFor(workspace).read().events.length + 1} 行`, 'u'), '必须点名坏行')
   assert.match(receipt, /损坏/u, '必须说明真源损坏')
   assert.match(receipt, /无法判定/u, '必须说明事件流类判定此刻无法判定')
   assert.match(receipt, /不会被重建/u, '必须说明派生投影不会被重建')

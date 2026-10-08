@@ -13,7 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import { startDispatch } from '../src/integration/dispatch.js'
+import { reuseCapability, startDispatch } from '../src/integration/dispatch.js'
 import { describeDispatchStarted } from '../src/interface/describe.js'
 import { toolNamesOfHeader } from '../src/domain/dispatchFace.js'
 import type { DispatchRequest } from '../src/integration/orchestrator.js'
@@ -25,7 +25,8 @@ const request: DispatchRequest = {
   backend: 'subagent',
   owner: 'subagent:developer:1',
   persona: 'sdo-developer',
-  toolFilter: ['skill', 'read', 'edit', 'sdo_task'],
+  toolDeny: ['sdo_review', 'sdo_gate'],
+  sdoAllow: ['sdo_task'],
   prompt: '你是 sdo-developer……协议：① claim ② 只改写范围内文件 ③ done 附证据',
   expectedRevision: 3,
   writeScopes: ['src/det/'],
@@ -61,14 +62,17 @@ test('M32-01 P-1 真派发：参数逐项下发（提示词/persona/allow=掩码
   })
   assert.deepEqual(
     outcome,
-    { started: true, provider: 'spawn', childSessionId: 'session-child-1', toolFilterDeclared: true },
+    // 本轮新增：宿主给这个子代理的模式 + 这次是否复用（角色池/队列的判据）
+    { started: true, provider: 'spawn', childSessionId: 'session-child-1', toolFilterDeclared: true, reuseSupported: false, reused: false, mode: 'one-shot' },
     '能力值只是"provider 的声明"，不代表"宿主已经收窄了工具面"（见 M32-06）',
   )
   assert.equal(calls.length, 1)
   const sent = calls[0] as { name: string; request: Record<string, unknown> }
   assert.equal(sent.name, 'spawn')
   assert.deepEqual(sent.request.prompt, [{ type: 'text', text: request.prompt }], '提示词要原样交给宿主')
-  assert.deepEqual(sent.request.toolFilter, { allow: request.toolFilter, deny: ['sdo_review', 'sdo_gate'] }, 'allow 用角色掩码、deny 用角色 deny')
+  // **2026-10-08 口径纠正**：只发 deny。发 allow 会把宿主/harness 的整个通用面
+  // （技能/记忆/联网…）也隐藏掉 —— 真机事故就是子代理报「无法使用 technique_apply」。
+  assert.deepEqual(sent.request.toolFilter, { deny: ['sdo_review', 'sdo_gate'] }, '只发 deny，不发 allow')
   assert.equal(sent.request.persona, 'sdo-developer')
   assert.equal(sent.request.maxDepth, 1, '深度要限住（子代理不再开子代理）')
   assert.deepEqual(sent.request.parent, { id: 'session-parent' }, 'parent 必须是发起 agent')
@@ -148,7 +152,7 @@ test('M32-05 P-1 能力**声明**如实带回（注意：声明 ≠ 生效，真
 test('M32-06 P-1 回执按事实说话：不支持 toolFilter 时不得写「它看不到掩码外的工具」', () => {
   // 两种声明值下，回执都**不得**断言"它看不到掩码外的工具"（真机已推翻），且都必须写明"不可自证"
   for (const declared of [true, false]) {
-    const text = describeDispatchStarted(request, 'spawn', 'session-child-1', 9, declared)
+    const text = describeDispatchStarted(request, 'spawn', 'session-child-1', request.toolDeny, declared)
     assert.match(text, /下发给宿主/u, '要说明我们做了下发')
     assert.match(text, /capabilities\.toolFilter/u, '要给出 provider 声明的能力值（作为事实，不作为保证）')
     assert.match(text, /无法自证|不可自证/u, '必须明说"是否收窄本插件不能自证"')
@@ -156,7 +160,7 @@ test('M32-06 P-1 回执按事实说话：不支持 toolFilter 时不得写「它
     assert.doesNotMatch(text, /看不到掩码外的工具/u, '不得写与真机事实相反的断言')
   }
   // 真机反例要留在文案里（评审要求：把宿主侧发现如实带出）
-  const text = describeDispatchStarted(request, 'spawn', 'session-child-1', 9, true)
+  const text = describeDispatchStarted(request, 'spawn', 'session-child-1', request.toolDeny, true)
   assert.match(text, /sdo_plan|sdo_review|sdo_gate/u, '要带上真机反例的工具名')
 
   const index = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
@@ -174,7 +178,7 @@ test('M32-07 观测的纯函数：从头里取工具名；回执按观测结果�
   assert.deepEqual(toolNamesOfHeader(undefined), [])
 
   // 回执：**公告面与执行面分开讲**（真机那个子会话公告面干净、执行面却有 3 次越界调用）
-  const real = describeDispatchStarted(request, 'spawn', 'child-1', 9, true, [
+  const real = describeDispatchStarted(request, 'spawn', 'child-1', request.toolDeny, true, false, [
     { childSessionId: 'child-1', tools: ['bash', 'edit', 'read', 'sdo_task'], violations: [], calls: ['sdo_plan', 'sdo_review', 'sdo_gate'] },
   ])
   assert.match(real, /公告面/u, '要有公告面那行')
@@ -184,7 +188,7 @@ test('M32-07 观测的纯函数：从头里取工具名；回执按观测结果�
   assert.match(real, /child-tools\.jsonl/u, '要指路：观测持续写进台账（否则这份数据没人看）')
 
   // 同一次调用重复 3 次：次数 3、去重 1 —— 数字与口径必须对得上
-  const repeated = describeDispatchStarted(request, 'spawn', 'child-2', 9, true, [
+  const repeated = describeDispatchStarted(request, 'spawn', 'child-2', request.toolDeny, true, false, [
     { childSessionId: 'child-2', tools: ['read'], violations: [], calls: ['sdo_gate'], callCount: 3 },
   ])
   assert.match(repeated, /3 次/u)
@@ -192,11 +196,11 @@ test('M32-07 观测的纯函数：从头里取工具名；回执按观测结果�
   assert.match(real, /sdo_gate/u, '要点名越界调用')
   assert.match(real, /不等于调用被挡住/u, '公告面干净时必须说明它不等于调用被挡住')
 
-  const announcedDirty = describeDispatchStarted(request, 'spawn', 'child-1', 9, true, [
+  const announcedDirty = describeDispatchStarted(request, 'spawn', 'child-1', request.toolDeny, true, false, [
     { childSessionId: 'child-1', tools: ['read', 'sdo_gate'], violations: ['sdo_gate'], calls: [] },
   ])
   assert.match(announcedDirty, /仍被公告/u, '公告面就有越界时要单独说')
-  const allClean = describeDispatchStarted(request, 'spawn', 'child-1', 9, true, [
+  const allClean = describeDispatchStarted(request, 'spawn', 'child-1', request.toolDeny, true, false, [
     { childSessionId: 'child-1', tools: ['read', 'edit'], violations: [], calls: [] },
   ])
   assert.match(allClean, /未观测到掩码外调用/u, '执行面干净也要说清')
@@ -205,12 +209,47 @@ test('M32-07 观测的纯函数：从头里取工具名；回执按观测结果�
   const index = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
   assert.match(index, /eventType === 'request\/header'/u, '要处理 request/header')
   assert.match(index, /office\.dispatchedChildren\(/u, '只认我们自己派发出去的子会话')
-  assert.match(index, /maskAllows\(role, tool\)/u, '按角色掩码算越界工具')
+  assert.match(index, /maskAllows\(role, tool, \{ executor: true \}\)/u, '按角色掩码算越界工具（子会话 = 执行者）')
   assert.match(index, /eventType === 'tool\/call'/u, '执行面也要观测（对未公告工具的调用）')
   assert.match(index, /toolCallNameOf\(event\)/u, '从 tool/call 取工具名')
   assert.match(index, /k208FaceBlockHeader/u, 'sdo_status 要有观测块头')
   assert.match(index, /childFaceLines\(faces\)\.join/u, 'sdo_status 要真的把观测行拼进去')
-  assert.match(index, /return text \+ faceBlock/u, 'status 的无参数分支要带上观测块')
-  assert.match(index, /\+ faceBlock$/mu, 'status 的另一条分支（--rebuild）也要带上观测块')
+  // 状态块会随新块（未消化变更、角色池）继续长，所以判据只钉"**两条分支都带观测块**"这件事：
+  // 写死整条拼接表达式会随每次加块而漂（本守卫已经因此改过两轮）。
+  const statusReturns = index
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.includes('return') && line.includes('finishedBlock'))
+  assert.equal(statusReturns.length, 2, `status 的两条分支（无参数 / --rebuild）都要带上观测块：${statusReturns.join(' | ')}`)
+  for (const line of statusReturns) assert.match(line, /faceBlock/u, `这两条分支都要拼上观测块：${line}`)
   assert.match(index, /office\.childFaces\(call\)/u, '派发回执要展示已观测的工具面')
+})
+
+test('M32-08 复用探测（方案 1 的插件侧半个）：宿主没有 continuable 入口就如实说 one-shot，探到才改口径', async () => {
+  // 宿主事实（读码，2026-10-05 更正）：`dsh-subagent` 的**便捷方法** `start(name, request)` 把描述符
+  // 写死 `mode:"one-shot"`，但**同一个服务**还暴露 `startContinuable(spec)`（L2879 → 实现 L1671）与
+  // `sendMessage(...)`（L2897，"空闲的目标会起一轮"）⇒ 复用**是可用的**，缺的只是插件侧实现。
+  // 本用例钉的是**探测口径**：只看"显式入口在不在"，不看宿主版本号或猜测。
+  const base = { start: async () => ({}) }
+  assert.equal(reuseCapability(base).supported, false, '没有显式入口就按不支持（fail-safe）')
+  for (const name of ['startContinuable', 'activate', 'resume']) {
+    assert.equal(reuseCapability({ ...base, [name]: () => undefined }).supported, true, `探到 ${name} 就要认`)
+  }
+  const notSupported = describeDispatchStarted(request, 'spawn', 'child-1', request.toolDeny, false, false, [])
+  assert.match(notSupported, /复用\*\*能力\*\*/u, '要有这一行，且必须说清是"能力"')
+  assert.match(notSupported, /没暴露可续聊入口|每次派发都是新会话/u, '不支持时要说清每次派发都是新会话')
+  const supported = describeDispatchStarted(request, 'spawn', 'child-1', request.toolDeny, false, true, [])
+  assert.match(supported, /宿主提供了可续聊入口/u, '支持时口径要变')
+  assert.doesNotMatch(supported, /没暴露可续聊入口/u)
+  // **F-4（2026-10-05 真机）**：能力那句**不许**被读成"本次复用了" —— 传了本次事实就必须另起一句写清
+  const withFact = describeDispatchStarted(request, 'spawn', 'child-1', request.toolDeny, false, true, [], { reused: false, mode: 'one-shot' })
+  assert.match(withFact, /本次派发：.*新起了一个子代理/u, '本次没复用就要直说（真机 10 次派发 0 次复用）')
+
+  const outcome = await startDispatch({ runtime: fakeRuntime().runtime, provider: 'spawn', agent: { id: 'a' }, request, deny: [], maxDepth: 1 })
+  assert.equal(outcome.started && outcome.reuseSupported, false, 'startDispatch 要把它带回来（否则回执拿不到）')
+  const withActivate = await startDispatch({
+    runtime: { ...fakeRuntime().runtime, activate: () => undefined },
+    provider: 'spawn', agent: { id: 'a' }, request, deny: [], maxDepth: 1,
+  })
+  assert.equal(withActivate.started && withActivate.reuseSupported, true)
 })

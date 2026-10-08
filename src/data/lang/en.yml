@@ -211,10 +211,17 @@ tool:
   sdo_lang: "Show or switch the UI language (tool and command descriptions, the status block, gate wording). `action=show` reports the current language and pack coverage; `action=set lang=en` switches immediately (**effective for this process** until restart)."
 
 param:
+  designBasisSource: 'action=confirm: `user` (the user confirmed in person, default) or `proxy` (stamped on the user behalf — required when the authorizer is not the executor so the event stays distinguishable)'
+  runsRequired: "action=package: runtime targets this delivery REQUIRES (comma separated, e.g. 'server,client'). A missing target downgrades every pass row to unverified"
+  designConfirmBasis: 'action=confirm: the authorized user wording (takes precedence over note/reason; the old implementation ignored it and left only the tool own wording in the event)'
+  planFreshChild: 'action=next: force a fresh subagent (do not reuse an idle one). Observed: a single subagent reused for 19 rounds until its context ran out'
   redteamAction: "attack = attack from the question bank; propose = ask the model to generate challenges for a requirement; file = write back model-generated challenges (the plugin validates them); on/off = toggle red-team mode; status = report the current mode."
   requirementId: "Target requirement id for a write-back (REQ-xxx)."
-  questions: "JSON array shaped like `[{\"text\":\"…?\",\"dimension\":\"data\"}]` (only used with action=file)."
+  questions: "JSON array shaped like `[{\"text\":\"…?\",\"dimension\":\"data\",\"options\":[{\"label\":\"…\",\"cost\":\"…\"}],\"recommendation\":\"…\"}]` (only used with action=file). **Only a question with `options` can be answered via `pickedOption`**; one without options takes free-text `answer` only."
   action: Action
+  issueId: "Issue id to dispose (only action=dispose): REQ-ISSUE-001."
+  disposition: "Where the issue goes: `risk` (converted into a risk) or `requirement` (settled back into the requirements). Only action=dispose."
+  disposeNote: "Why it is disposed — written into the issue file and the `issue/closed` event. Only action=dispose."
   id: Identifier (such as REQ-001 / TASK-001 / Q-0001)
   name: Name
   owner: Owner / assignee
@@ -241,7 +248,7 @@ param:
   decision: Decision
   decidedBy: Decision maker
   requirements: Requirement ids (JSON array)
-  suggestions: Card suggestions (JSON array)
+  suggestions: "Card suggestions (JSON array). Field names must match the task card: `title` / `dod` (string array) / `writeScopes` (string array, **not** `scope`) / `evidenceRequired` / `blockedBy` (**supports `[「*」]` = after every other card**, for final build / full-verification cards that need an exclusive window) / `role` / `size` / `requirements`. **A wrong key is not reported** and silently lands as empty (observed on a real machine: `scope` produced `writeScopes: []`). Without `writeScopes`, the value is derived in order: the design element responsibility line that declares its scope (see `parseWriteScopes` in `plan.ts`) -> `plan.scopeTemplate` in config.yml -> the `src/<slug>/` placeholder."
   goal: Goal
   backend: Preferred dispatch backend
   expectedRevision: The revision you read (compare-and-swap, used when claiming)
@@ -254,6 +261,11 @@ param:
   reviewer: Reviewer
   verdict: Verdict
   findings: Findings (JSON array)
+  # —— verify (verifying review findings): a review is a claim; the implementer verifies each finding ——
+  reviewId: The review id to verify (`REV-*`)
+  reviewIndex: Which finding (**1-based**, matching the "finding N" printed in receipts)
+  reviewOutcome: 'Outcome: reproduced (the finding checks out) / refuted (it does not; give counter-evidence)'
+  reviewProof: The command and result you reproduced with, or the counter-evidence (required; a bare claim is not verification)
   steps: Steps (JSON array)
   expected: Expected result
   caseId: Test case id
@@ -310,7 +322,7 @@ param:
   taskId: Task card id
   sourceStakeholder: "Source stakeholder id (such as STK-01). Supply this or sourceRaw — otherwise the requirement is **refused**: every requirement needs a source."
   sourceRaw: "The user's own words / the source document text (**every requirement needs a source**). Supply this or sourceStakeholder."
-  pickedOption: "Index of the option the user picked (zero-based)."
+  pickedOption: "Index of the option the user picked (zero-based). **The index is bound to the plugin's stored `options` array**: if you reordered or reworded the options while relaying them, give the index from the plugin's original list and keep the user's own words in `answer` (the ledger records the index and the label separately so both can be checked later)."
   ids: "Requirement id list, comma separated (default: all requirements)."
   context: "Extra context (free text, recorded in the trace)."
   producer: "The depended-on side: pass its raw dependsOn string (usually the id or name of the design element being depended on). The consumer depends on the producer."
@@ -331,12 +343,13 @@ param:
   designState: "issues: 'open' (default, only unresolved) | 'all' (including answered)."
   designUi: "create kind=ui: UI view JSON, e.g. {style:{source:minimal,tokens:{},rationale:...},screens:[...]}; source is follow-host / minimal / enterprise / custom; screens[].layout may carry stack:vertical|horizontal to declare the region stacking direction explicitly (default vertical; the wireframe states where the direction came from)."
   designArtifactKind: "artifact: method-artefact kind (dictionary | dfd | erd | classes | sequences | layers | debt | reversibility | increments | mapping | invariants | diffVerify)."
-  designArtifactData: "artifact: the artefact body as JSON. The only common fields are summary / requires; the body must sit under THIS kind's field (misplaced fields are named in the receipt and no half artefact is written). Shapes by kind: dictionary→{dictionary:[{name,type,source,sink,validation}]}; dfd→{levels:[{level,name,flows,processes}]}; erd→{entities:[{name,identifier}],relations:[{name,from,to,cardinality}]}; classes→{types:[{name,kind,layer,responsibility,collaborators}]} (declare a leaf type with leaf:true); sequences→{sequences:[{name,participants,messages}]} (cite the requirement via requires:[REQ-xxx] or requirement:REQ-xxx; the two are normalised on write); layers→{rules:{layers,assignments,allowed}}; debt→{debts:[...]}; reversibility→{decisions:[...]}; increments→{increments:[...]}; mapping→{mappings:[...]}; invariants→{invariants:[...]}; diffVerify→{diffVerify:{...}}."
+  designArtifactData: "artifact: the artefact body as JSON. The only common fields are summary / requires; the body must sit under THIS kind's field (misplaced fields are named in the receipt and no half artefact is written). **List fields are whole-list overwrites**: sending `dictionary` / `sequences` etc. replaces the **entire list** (only `summary` / `requires` leave them untouched); a copy is kept before the overwrite and the receipt says how many entries were replaced. Shapes by kind: dictionary→{dictionary:[{name,type,source,sink,validation}]}; dfd→{levels:[{level,name,flows,processes}]}; erd→{entities:[{name,identifier}],relations:[{name,from,to,cardinality}]}; classes→{types:[{name,kind,layer,responsibility,collaborators}]} (declare a leaf type with leaf:true); sequences→{sequences:[{name,participants,messages}]} (cite the requirement via requires:[REQ-xxx] or requirement:REQ-xxx; the two are normalised on write); layers→{rules:{layers,assignments,allowed}}; debt→{debts:[...]}; reversibility→{decisions:[...]}; increments→{increments:[...]}; mapping→{mappings:[...]}; invariants→{invariants:[...]}; diffVerify→{diffVerify:{...}}."
   designPuml: "render: optional. Pass true for the default target .sdo/design/ui.puml, or a relative path inside the workspace; only the .puml skeleton source is written (this repository has no renderer and produces no diagram)."
 redteam:
+  fileOptionCount: "　[options: {p1}]"
   proposeHeader: "Red-team challenge proposals (generated by the **model** for specific requirements; the plugin only validates them)"
-  proposeInstruction: "For each requirement below, generate {count} adversarial challenges. Requirements: (1) **words from that requirement's statement must appear** (quote the original wording, do not paraphrase); (2) each ends with a question mark and is 6–200 characters; (3) no duplicates of existing questions; (4) state the dimension (goal / user / scenario / data / interface / constraint / acceptance / boundary)."
-  proposeMustQuote: "Validation rule: challenges that do not quote the original wording, do not end with a question mark, or duplicate an existing question are **refused** with the reason reported."
+  proposeInstruction: "For each requirement below, generate {count} adversarial challenges. Requirements: (1) **quote a fragment of that requirement's statement** (a run of 4+ consecutive CJK characters, or a number/word of 3+ characters from the original; generic two-character words do not count); (2) each ends with a question mark and is 6–200 characters; (3) no duplicates of existing questions; (4) state the dimension (goal / user / scenario / data / interface / constraint / acceptance / boundary)."
+  proposeMustQuote: "Validation rule: challenges that quote no fragment of the original, do not end with a question mark, or duplicate an existing question are **refused**, and the reason spells out what to add."
   proposeStatement: Requirement statement
   proposeWeak: Dimensions still unclarified for this requirement
   proposeWeakNone: "(all eight dimensions are clarified — ask from an implementation-and-operations risk angle)"
@@ -352,7 +365,7 @@ redteam:
   fileTooShort: Too short (under 6 characters)
   fileTooLong: Too long (over 200 characters)
   fileNotQuestion: Does not end with a question mark
-  fileNoKeyword: Does not quote the requirement's own wording (use words that appear in the requirement)
+  fileNoKeyword: Does not quote the requirement's own wording (quote a run of 4+ consecutive CJK characters, or a number/word of 3+ characters from the original; generic two-character words do not count)
   fileDuplicate: Duplicates an existing question
 
 status:
@@ -370,7 +383,8 @@ status:
   gateLine: "- Gates: awaiting decision {gate} | {gates} gate records | {requirements} requirements | {questions} ledger questions"
   noGate: (none)
   designOpen: "- **Design phase**: {n} design question(s) await your confirmation -> run `sdo_design action=grill` (draft + question list) and answer them with `action=answer`; `action=issues` lists what is open at any time."
-  designNone: "- **Design phase**: no design question is open -> confirm each key item with `sdo_design action=confirm target=...`, then `action=render` to produce `docs/DESIGN.md` for human review."
+  reviewVerify: "Reviews awaiting verification: {n} ({ids}) — a review is not adopted automatically: the card's **implementing session** must verify each finding (reproduce it, or give counter-evidence) first (`sdo_task action=verify-review id=<card> review=REV-... index=... outcome=reproduced|refuted proof=...`)"
+  designNone: "- **Design phase**: no design question is open -> confirm each key item with `sdo_design action=confirm target=...`, then `action=render` to produce `docs/DESIGN.md` for human review. **Order matters**: before writing any design you must also run `sdo_requirement action=baseline` to **freeze the requirements baseline** — a passing G2 is not the same as a frozen baseline (observed on a real machine: 7 DoR criteria green and a valid signature, still refused with \"requirements not baselined\")."
   redTeamLine: "- Red team: {state} (this session: {reason})"
   enabled: Enabled
   disabled: Disabled
@@ -489,6 +503,13 @@ uiClamp:
   truncated: "… (truncated — original {p1} characters, showing only the first {p2}. The full content is in the `.sdo/` source of truth — or re-fetch it with more specific filter parameters)"
 
 uiGates:
+  kTestsTamperedItem: '{p1} (journal says {p2}, file says {p3})'
+  kTestsTampered: 'test result file(s) contradict the journal event: {p1} — the result file was rewritten (events are append-only and do not accept rewrites)'
+  kTestsTamperedRemedy: 're-record the real verdict with `sdo_test action=record`; to change a verdict **append** a new result (history and re-verdict both stay in the journal; never overwrite an old verdict) — this closes the turn-red-into-green shortcut (R1)'
+  kTestsUnjournaled: '{p1} test result(s) have **no backing journal event** ({p2}) — the file exists but there is no `test/recorded` event, so it is not evidence'
+  kTestsUnjournaledRemedy: 're-record with `sdo_test action=record` (writes the event and binds time/environment), or re-run the case; hand-written or later-rewritten YAML never counts as evidence (D4)'
+  kTestsUnknown: '{p1} test result(s) cannot be corroborated — the journal is **truncated** by a bad line (events after it are unreadable)'
+  kTestsUnknownRemedy: 'fix the bad line in `.sdo/journal.jsonl` (or restore from backup), then re-run `sdo_gate action=check`; a truncated journal must not be judged green (unknown is not pass, D4)'
   k1: "Scope (in) — {p1} items"
   k2: "Scope (in) is empty"
   k3: "Use `sdo_project action=update scopeIn=…` to state what is in scope"
@@ -606,6 +627,9 @@ uiGates:
   k115: "Completed without a passing review — {p1}"
   k116: "Use `sdo_review action=record` (reviewer ≠ author)"
   k117: "Reviews — {p1}; no independence violations"
+  kReviewUnadopted: "Pass reviews on completed cards are **not verified yet, so not adopted**: {p1} — a review is a claim, not a conclusion: the card's implementing session must verify each finding (reproduce it, or give counter-evidence) before it counts; if that session has retired (one-shot subagents do), another session may verify on its behalf, and the record is marked `owner-tenure-over`/`owner-settled`"
+  kReviewUnadoptedRemedy: "Verify the review's findings one by one (`sdo_task action=verify-review id=<card> review=REV-... index=... outcome=reproduced|refuted proof=...`); only then is the review adopted"
+  kReviewLegacyAdopted: "{p1} is a **legacy-format review** (recorded before content fingerprints existed) — such entries **cannot detect** tampering with the verdict or the finding text; seal it with `sdo_review action=rehash id=REV-...` (changes made **before** the seal remain unverifiable; after the seal they are detectable)"
   k118: "No iteration started yet"
   k119: "Use `sdo_plan action=iteration goal=…` to start an iteration"
   k120: "Iteration {p1} has no task cards"
@@ -702,9 +726,11 @@ uiGates:
   kViewConflictRemedy: 'A view can only be one of the two: put it in `viewsPresent` if you build it, or in `viewsAbsent` with a reason if you do not, then re-draft'
   kViewsUiDeclaredButAbsent: 'The declaration says the UI view (ui) is present, but the source of truth holds no UI evidence (requirement kind=ui or project surfaces) — C-27 is therefore not applicable'
   kViewsUiRemedy: 'Either add the UI source (`sdo_requirement action=update kind=ui` or `sdo_project action=update surfaces=[...]`) or drop `ui` from viewsPresent'
+  kViewsUiAbsentButReal: 'The declaration marks the UI view (ui) as NOT produced, but the source of truth says this project does have a UI: {p1} — the declaration contradicts the source (moving ui into viewsAbsent does not exempt UI confirmation C-27)'
+  kViewsUiAbsentButRealRemedy: 'Pick one, then re-draft the declaration and have the user sign it: if you do build the UI, put `ui` back into `viewsPresent` and complete the UI confirmations (`sdo_ui`); if you truly have no UI, remove the UI evidence from the source (`sdo_requirement action=update` for UI-kind requirements, or `sdo_project action=update surfaces=[]`)'
   kOrphanConfirmations: '{p1} confirmation stamp(s) no longer match any item (deleted / renamed / lost requires) and are no longer required: {p2}'
   kDorCriterionUnknown: 'Internal inconsistency: the DoR verdict has no criterion {p1} (process data and implementation diverge; treated as failed)'
-  kGateUnknownRemedy: 'Check that the plugin and the process data versions match (`sdo_gate action=list` shows the gates and criteria the current process declares)'
+  kGateUnknownRemedy: 'Check that the plugin and the process data versions match (`sdo_status` / `/sdo-board` list the gates the current process declares; use `sdo_gate action=check gate=<gate id>` to see one gate criterion by criterion)'
   kArtifactsAbsentNoWhy: 'Declared-as-absent non-view artefacts lack a reason: {p1} (same rule as absent views: every entry needs a why)'
   kTraceBadLines: 'The trace file `trace/links.jsonl` has {p1} unreadable line(s) (out of {p2} non-empty lines, {p3} parsed) — coverage and orphan checks are computed on this **incomplete graph**, so it cannot count as a pass'
   kTraceBadLinesRemedy: 'Open `.sdo/trace/links.jsonl` and fix or delete those malformed JSON lines (each line must be a JSON object with from/to/kind), or re-create the missing edges after checking with `sdo_design action=view`'
@@ -725,7 +751,19 @@ uiGates:
   kWorkReviewMissing: "These medium/large cards (size >= medium) are done without a passing review: {p1} (record one with sdo_review action=record verdict=pass; the reviewer must not be the card owner)"
   kWorkReviewRemedy: "Record a pass review for every medium/large card (author != reviewer); if a card truly needs no review, split it down to small/trivial"
   kWorkReviewOk: "All {p1} medium/large cards have a passing review"
+  kConstructionProfileMissing: "construction method packages are not decided yet (construction claims are refused without it)"
+  kConstructionProfileRemedy: "have the flow officer run `sdo_plan action=profile`: at least one `packages` entry and at least one machine-checkable `derivedFrom` (`reqKind=...` / `contractCount=...` / `scale=...`); to opt out use `packages=[]` with a stated reason"
+  kConstructionProfileOptOut: "explicitly no method packages (N/A): {p1}"
+  kConstructionProfileOk: "selected: {p1}; scope: {p2}"
+  kConstructionScopeTasks: "{p1} cards"
+  kConstructionProfileNa: "method packages not decided or explicitly opted out: this criterion is N/A (the decide criterion reports the failure)"
+  kConstructionPackagesOk: "all {p1} completed cards in scope satisfy the selected method packages"
+  kConstructionPackagesRemedy: "add the missing deliverables (`.sdo/construction/*.yml`), freeze contracts before claiming, or write an **exemption** (`exempt: [{task, check, why}]`, reason required)"
 uiPlan:
+  kWriteScopeEmpty: 'the card declares no write scope (writeScopes is empty) — an empty scope neither reserves anything nor is audited for out-of-scope writes (C-31 requires scopes)'
+  kWriteScopeEmptyRemedy: 'give the card the path prefixes it will write (e.g. src/booking/); for cards that write no code, reshape them with a scope or drop them explicitly'
+  kBlockedHolderNote: ' (that card is blocked: it may resume writing the same scope, so it still holds it exclusively)'
+  kScopeReleaseHint: '  (SDO-46) when a blocked card holds it: `sdo_task action=release` or `drop` it first to free the scope.'
   k1: "The change has artifact evidence (path + hash)"
   k2: "Caller implementation"
   k3: "Tests for failure semantics (timeout/retry/idempotency)"
@@ -867,7 +905,7 @@ uiDescribe:
   k103: "❌ {p1} decomposition checks failed (see `sdo_plan action=decompose`)"
   k104: "- WARNING: no subagent was actually started this time (reason on the next line)."
   k105: "Ask the process officer (the cockpit session; dispatched roles have no `send_message`) to hand the prompt below to the executor, or run it inline."
-  k106: "Tool surface: {p1}　| Write scope: {p2}"
+  k106: "- Write scope: {p1}"
   k107: "Claiming requires `expectedRevision={p1}`"
   k108: "owner recorded as {p1}; when done you must report back with `sdo_task action=done id={p2} owner={p3} evidence=…`."
   k109: "Artifacts {p1}:"
@@ -889,6 +927,7 @@ uiDescribe:
   k125: "   - Option {p1}: {p2} (cost: {p3})"
   k126: "   - Default suggestion (adopted and recorded as an assumption when the user answers \"I don't know\"): {p1}"
   k127: "How to answer: `sdo_requirement action=answer id=<question ID> answer=\"…\" pickedOption=<index>`; if the user does not know, use `assume=true`."
+  kNonGoalConflict: "   WARNING: this question collides with a **non-goal** you declared in `scope.out` (\"{p1}\") — answer it if you still want it; otherwise mark it `status=obsolete` or record it with `assume=true`."
   k128: "Answer: {p1}"
   k129: "Answered by: {p1}"
   k130: "Score after updating goal {p1}: {p2}"
@@ -998,7 +1037,7 @@ uiDescribe:
   k228: "none"
   k229: "none"
   k230: "Yes"
-  k231: "(rule/model disagree; the stricter one wins, needs review)"
+  k231: "(the rule and model channels **disagree**: the gate uses the **stricter** score; the disagreement itself does **not** block — it is a pointer for human attention)"
   k232: "Disable"
   k233: "Disabled"
   k234: "An attack has been run"
@@ -1072,9 +1111,13 @@ uiDescribe:
   m2: "Quality scenario {p1} recorded ({p2}/{p3})"
   m3: "Rendered {p1} → `{p2}`"
   m7: "Gate passed ({p1})."
-  kSignScope: "- **Scope of this signature**: the design source of truth (views / elements / contracts / ADRs / trace edges). Quality-attribute scenarios (`quality/recorded`, ATAM) are **supporting evidence**, not part of the signature — adding them does not invalidate it (only design-source changes require re-signing)."
+  kSignScope: "- **Scope of this signature**: the design source of truth (views / elements / contracts / ADRs / trace edges — design-side `req-des` only; build-time coverage edges `req-task` / `req-tc` are bookkeeping and out of scope). Quality-attribute scenarios (`quality/recorded`, ATAM) are **supporting evidence**, not part of the signature — adding them does not invalidate it (only design-source changes require re-signing)."
   k199DispatchStarted: "OK: started for real - {p1} (owner={p2}) via provider {p3}, child session {p4}."
-  k200DispatchTools: "- Tool face handed to it: {p1} tools (persona={p2})"
+  k200DispatchTools: "- Tool face: **SDO flow-plane allow list = {p1}** (persona={p2}) | the **general plane is inherited from the host** (skills/memory/web/...); only the deny face of {p3} is blocked"
+  kMaskSdoPlane: "- SDO flow-plane allow list: {p1} (this layer is **role separation**: only the listed `sdo_*` tools may be used; the general plane — read/write/bash/skill/memory/technique/web/... — is inherited from the host, filtered only by the **deny blacklist**)"
+  kDispatchDenyFace: "- Deny face handed over: {p1} tool(s): {p2}"
+  kDispatchEmptyFace: "- BLOCKING WARNING: the deny face sent is EMPTY — this role has **no restriction at all** on the SDO flow plane (the mask did not take effect). That plane is an allow list, so every `sdo_*` tool the role may not use must appear in deny; an empty face means the role name was unrecognised or the tool names were not collected."
+  kDispatchDegraded: "- WARNING: {p1}"
   kDispatchNotStarted: "- WARNING: not started for real ({p1}): {p2}"
   k201MaskHandedOver: "Handed `toolFilter` to the host; provider {p1} declares `capabilities.toolFilter` = {p2}"
   k202MaskNotSelfVerifiable: "WARNING: whether the child tool face was ACTUALLY narrowed cannot be self-verified by this plugin: in the real counterexample (sdo-test 8.4-2) a child dispatched via `spawn` can still CALL out-of-mask tools (`sdo_plan` / `sdo_review` / `sdo_gate`), all stopped by the hook. To confirm, inspect the child session own tool list or its rejected calls"
@@ -1086,6 +1129,30 @@ uiDescribe:
   k206FaceCalledViolations: "- WARNING execution face: child {p1} made {p2} out-of-mask call(s) ({p3} distinct tools: {p4}) - the model can still CALL unannounced tools; the hook rejects them"
   k207FaceLedgerPointer: "- (Observations keep being appended to `.sdo/evidence/child-tools.jsonl`: 'none observed' here only means at dispatch time; use `sdo_status` for the latest summary)"
   k208FaceBlockHeader: "**Dispatched child observations ({p1})**"
+  changeRolledBack: '(semantics A) The approved requirement change **forced a phase rollback**: {p1} → {p2}; gate verdicts for that phase and later were invalidated and must be re-passed'
+  changeRollbackGates: '  Invalidated gates: {p1} (recomputed from truth when you come back; old verdict records no longer admit you)'
+  changeRollbackWaived: '  Of those, {p1} remain waived (waivers are your earlier decision; a rollback does not revoke them)'
+  changeRollbackAlready: '(semantics A) The project is already in the requirements phase ({p1}) — there is no rollback edge and none is needed'
+  changeRollbackNoEdge: '(semantics A) **Phase not rolled back**: {p2} (current phase {p1})'
+  changeRollbackSteps: 'You must finish these in order before development continues: (1) update the affected requirements (`sdo_requirement action=update`) → (2) re-freeze G2 (`sdo_requirement action=baseline`) → (3) redo the design and re-pass G3; until then `sdo_task action=claim` is refused with `change-not-digested`'
+  kPoolHeader: '**Role pools (subagent reuse; you trigger delivery)**'
+  kPoolLine: '  {p1}: in flight {p2}/{p3} | idle reusables {p4} | retired (one-shot) {p5} | stale unsettled {p6}'
+  kPoolQueued: '  Queued {p1}: {p2} (a full pool **never drops a card**; the next `sdo_plan action=next` dispatches it)'
+  kPoolNoReuse: '  The host exposes no continuable entry => a pool degrades to a **concurrency cap** (every dispatch is a new session; subagents cannot be reused)'
+  kReusedChild: '  ♻️ Reused: {p1} handed to the **existing** subagent {p2} (role {p3}, round {p4} for that subagent)'
+  kReuseFailed: '  ⚠️ Reuse failed: {p1} (fell back to starting a new subagent; this card is still dispatched)'
+  kContinuableFailed: '  ⚠️ The continuable entry is unavailable: {p1} (dispatched as one-shot this time => **not reusable after it settles**)'
+  kPoolOrphanNote: '  {p1} unsettled dispatch(es) exceed the orphan TTL ({p2} min) — they no longer hold a pool slot and are never offered as idle reusables (we cannot tell whether they still exist). If they are in fact still running, raise `dispatchOrphanTtlMinutes`'
+  kPoolUnusable: '  WARNING: {p1} more idle subagent(s) are **not reusable and do not hold a pool slot**: {p2} — reuse needs positive evidence (this session was observed to have tools); zero tools or no observation means start a fresh one rather than sending a card into an unusable session'
+  kPoolUnusableMore: 'and {p1} more'
+  kDispatchRepeatBlocked: '  WARNING: this card was blocked and then dispatched again with **unchanged content**; the blocking reason was: {p2} — confirm that gap is actually closed (edit the card / finish the dependency first), otherwise it will hit the same wall again'
+  k203ReuseSupported: "Subagent reuse **capability**: the host exposes a continuable entry (the next line says whether THIS dispatch reused one)"
+  k204ReuseOneShot: "Subagent reuse **capability**: the host exposes no continuable entry, so every dispatch is a fresh session (this states capability only, not what this dispatch did)"
+  kReuseThisDispatch: "  This dispatch: {p1} (mode={p2})"
+  kReuseThisYes: "reused the same subagent"
+  kReuseThisNo: "started a new subagent (no reuse)"
+  kSignBeforeG2: "- **Finish registering requirements / questions / risks / red-team before signing**: G2 uses a whitelist of invalidating events, so **any** later change to those sources (including `risk/logged`) voids this signature and forces a re-sign. Observed on a real machine: signing G2 and then logging one risk voided it immediately."
+  kSignBeforeG3: "- **Finish contracts and other design sources before signing**: `contract/recorded` / `contract/updated` are design sources (they void this signature) while G4 criterion C-30 requires complete contracts => adding contracts after signing necessarily forces a re-sign plus per-item re-confirmation. To avoid that churn: write the contracts -> `sdo_design action=confirm target=CT-...` each one -> `action=render` to regenerate `DESIGN.md` -> then sign G3."
 shapeEntity:
   view: "Design view"
   question: "Grill question"
@@ -1106,7 +1173,75 @@ shapeEntity:
   signature: "Gate signature ledger"
   budget: "Cost budget"
 uiIndex:
+  kAdrSupersedeMissing: 'REJECTED: no ADR to supersede: `{p1}` — nothing was superseded and no new record was written (check the id, or use `action=record`)'
+  kAdrIdBad: 'REJECTED: `id` has an invalid shape: `{p1}` — ADR ids look like `ADR-001` (three or more digits). **Nothing was written.**'
+  kAdrIdTaken: 'REJECTED: `id` is already taken: `{p1}` — the record exists (ADR ids must be unique in one ledger, otherwise another decision history would be **overwritten**). Use another id, or omit `id` to let the plugin number it. **Nothing was written.**'
+  kIssueDisposeNeedId: 'REJECTED: `action=dispose` needs `id` (an issue id such as `REQ-ISSUE-001`; see `sdo_design action=issues`). **Nothing was written.**'
+  kIssueDisposeNeedDisposition: 'REJECTED: `action=dispose` needs `disposition`: `risk` (converted into a risk) or `requirement` (settled back into requirements). **Nothing was written.**'
+  kIssueDisposeMissing: 'REJECTED: issue `{p1}` not found (see `sdo_design action=issues`). **Nothing was written.**'
+  kIssueDisposed: 'OK: issue {p1} disposed -> {p2} (written into the issue file and traced by `issue/closed`). {p3}'
+  kIssueDispositionRisk: 'converted into a risk'
+  kIssueDispositionRequirement: 'settled back into requirements'
+  kIssueDisposeWasOpen: 'This disposal closed it for **real** (the gate also judged it open before) — file and gate now agree.'
+  kObserveEmptyToolFace: 'The child session request/header carries **no tools at all** (the direct symptom of a zero-tool dispatch; card {p1})'
+  kIssueDisposeAlreadyClosed: 'Note: the gate had already judged it closed by **derivation** (related questions all answered) while the file still said `status: open` (two sources of truth contradicting each other) — this only catches the **file** up; the gate verdict does not change.'
+  kTestUnjournaled: 'WARNING: {p1} test result(s) have **no `test/recorded` event** ({p2}) — the journal cannot show they were produced by a run, so they cannot count as evidence (hand-written files and later rewrites surface here)'
+  kTaskAdminOnly: 'REJECTED: this action belongs to the flow officer / cockpit (drop, reassign, card edits); the claiming session may `release`/`update` its own card — on a real machine a subagent dropping an unfinished card turned C-40 green (D6)'
+  kWriteScopeViolation: "BLOCKED (out of scope): role {p1} is working card whose write scopes are {p3}, but this call writes {p2} — card write scopes are a **mechanical constraint**, not a suggestion: move the change inside the scopes, or have the flow officer update the card and re-claim. The ledger (`.sdo/`), derived docs (`docs/`) and tests (`test/`) are a shared face, not bound by card scopes."
+  kWriteScopeNoClaim: "BLOCKED (out of scope): role {p1} writes {p2} but has **no live claimed card** — claim first with `sdo_task action=claim` (the card decides the write scopes); before that only the shared face (`.sdo/`, `docs/`, `test/`) may be written."
+  kWriteScopeEmptyScope: "BLOCKED (out of scope): the card claimed by role {p1} has **no write scopes** (`writeScopes` empty; C-31 flags it) so nothing outside the shared face can be authorised. Have the flow officer fill in the card scopes and re-claim."
+  kReviewEmptyPass: "❌ A review must carry findings — an empty `pass` review turns C-42 green (D9); a `changes-requested`/`reject` review with no findings has nothing to verify or act on (2026-10-08: findings are adopted only after per-finding verification). If there really is nothing, write it explicitly (e.g. \"checked every item, no findings\")."
+  kReviewVerifyNoTask: "❌ verify-review needs the card: `sdo_task action=verify-review id=TASK-001 review=REV-001 index=1 outcome=reproduced proof=...`"
+  kReviewRehashNoId: "❌ rehash needs the review id: `sdo_review action=rehash id=REV-001`"
+  kReviewRehashed: "✅ {p1} now carries a content fingerprint ({p2}...) — from now on edits to the verdict or finding text are judged `tampered`; changes made before the seal remain unverifiable"
+  kReviewRehashAlready: "{p1} already has a fingerprint matching the current content (nothing to seal); if you suspect an edit, compare with `review/recorded.contentHash` in the journal"
+  kReviewNoTamperGuard: " | legacy format: no tamper fingerprint (an edited verdict would go undetected) — seal it with `sdo_review action=rehash id=<this one>`"
+  kReviewVerifyNoId: "❌ verify needs the review id: `sdo_task action=verify-review id=TASK-001 review=REV-001 index=1 outcome=reproduced proof=..."
+  kReviewVerifyNoIndex: "❌ verify needs the finding index (1-based): `sdo_task action=verify-review id=TASK-001 review=REV-001 index=1 ...`"
+  kReviewVerifyNoOutcome: "❌ verify needs an outcome: reproduced (the finding checks out) or refuted (it does not, give counter-evidence)"
+  kReviewVerified: "✅ {p1} finding {p2}: {p3} | review verified {p4}/{p5} ⇒ {p6}"
+  kReviewAdopted: "the whole review is now adoptable"
+  kReviewNotAdoptedYet: "some findings are still unverified ⇒ not adopted yet"
+  kReviewState: " | verified {p1}/{p2} {p3}"
+  kReviewAwaitingVerification: "ℹ️ {p1} finding(s): **a review is not adopted automatically** — this card's implementing session must verify each finding (reproduce it, or give counter-evidence) first: `sdo_task action=verify-review id=<card> review={p2} index=1 outcome=... proof=...`"
+  kRecordBadStatus: 'REJECTED: invalid case-result status `{p1}` (allowed: pass / fail / skip) — it is NOT defaulted to pass (a real machine sent passed and it was silently written as pass)'
+  kRunBadOutcome: 'REJECTED: the real-run outcome is invalid/missing: `{p1}` (pass or fail must be stated explicitly) — a forgotten verdict must not be recorded as passing'
+  kDefectBadStatus: 'REJECTED: invalid defect status `{p1}` (allowed: open / fixed / closed / wontfix) — it is NOT silently coerced to open. Note: omitting `status` means KEEP IT UNCHANGED (SDO-59)'
+  kFaceMismatch: 'WARNING: subagent {p1} (card {p2} / role {p3}) tool face differs from what we DECLARED: missing {p4}; extra {p5} — SDO-53: the announced list is not the effective one; the diff must be stated out loud (out-of-mask calls are still stopped by the hook)'
+  kEnvRecorded: 'OK: environment fingerprint recorded: {p1} ({p2}) — evidence recorded from now on is attributed to it, so "was this produced in the current environment?" becomes machine-checkable'
+  kEnvMissing: 'REJECTED: action=env requires `env=` (e.g. `jdk=21.0.2; probe=run_checks.py@v3`) — an empty fingerprint is no registration'
+  kEvidenceStale: 'WARNING: evidence {p1} (case {p2}) is **STALE**: {p3}'
+  kEvidenceNoEnv: 'WARNING: this result has **no environment fingerprint** — staleness cannot be checked (run `sdo_test action=env env=…` first, or pass `env=` per record)'
+  kEvidenceEnvInherited: ' (no explicit env declared; attributed to the latest registered environment: {p1})'
+  kEvidenceUnrecorded: 'WARNING: {p1} passing result(s) have no environment fingerprint ({p2}) — staleness cannot be checked'
+  kChildReportShort: 'WARNING: the child report for {p1} is only {p2} bytes (< 400): likely a **fragment** — the key steps are unrecoverable (SDO-58). Path: {p3}'
+  kChildReportMissing: 'WARNING: {p1} was dispatched but its **child report is missing** (the settle record path cannot be read) — the audit chain has a gap (SDO-58)'
+  kDefectPayloadRecorded: '  (`evidence`/`reason` were written verbatim into the `defect/updated` event — the correction payload no longer lives only in the YAML)'
+  kPlanIssueLine: '  · [{p1}] {p2}: {p3} -> {p4}'
+  kReuseSkipped: 'WARNING: {p1} idle subagent(s) were NOT reused: {p2} — when the tool face (mask fingerprint) differs or is unknown we force a fresh child instead of posting into a session with a stale face'
+  kDefectDiff: '  effective diff: {p1}'
+  kDefectNoOp: 'REJECTED: defect {p1} update refused (no-op-update): {p2}'
+  kDefectTitleStale: '  WARNING: {p1} title still carries a stale `[{p2}]` while status={p3} — the field is authoritative (derive the prefix from status; `sdo_test action=defect defectId=… title=…`)'
+  kToolFilterDropped: 'WARNING: the tool face named tools the host has NOT registered; they were removed from `toolFilter` (otherwise the host tools.restrict() throws and the whole face is lost): {p1} (card {p2})'
+  kToolFilterProbeBlind: 'WARNING: the tool-face probe is **unusable**: it judged the entire list ({p2} names) as unknown to the host — that is not "the host does not know these tools", it means the probe asked the wrong scope or the service is unavailable. The role list was dispatched **as-is** (no intersection filtering): if a name really is unregistered, the host `tools.restrict()` throws **loudly** rather than silently sending a subagent with no tools at all. (card {p1})'
+  kTaskUpdated: 'OK: card {p1} updated: fields {p2} (revision -> r{p3}). Re-claim before working if the write scope changed.'
+  kTaskUpdateRejected: 'REJECTED: card update refused ({p1}): {p2}'
+  kDispatchHeldByScope: 'BLOCKED: **nothing was dispatched** this round: {p1} ready card(s) are held by a write-scope conflict ({p2}). Details: {p3} -> to free the scope run `sdo_task action=release` (or `drop`) on the holding card, or have the flow officer change this card scope and re-claim.'
+  kDispatchBlockedByPlan: 'BLOCKED: **nothing was dispatched** this round: the plan has {p1} issue(s) (below).'
+  kScopeReleaseHint: '  Free the scope: `sdo_task action=release taskId=<holding card>` (or drop); changing a write scope requires the flow officer to edit the card and re-claim.'
+  kSelfReviewSameSession: 'REJECTED: same session cannot self-review: {p1} was claimed by session `{p2}` and this review comes from that same session — independence is judged by **session id**, renaming `reviewer` is not a different person. Use another dispatch/sub-session.'
+  kRunRecorded: 'OK: real-run recorded: {p1} | target={p2} | outcome={p3} | {p4}'
+  kRunRejected: 'REJECTED: real-run record refused: {p1}'
+  kRunBound: 'bound to artifact `{p1}` (sha256 prefix {p2}) — at delivery it must equal a delivered artifact hash to count as running THIS build'
+  kRunUnbound: 'WARNING: no artifact bound — this record will NOT count at delivery (pass `artifact=<path you ran>` to prove which build you ran)'
+  kRunGap: 'WARNING: real-run evidence is insufficient: {p1} -> every `pass` row was downgraded to `unverified` (offline green does not mean the artifact runs)'
+  kAcceptanceVerdictRewritten: 'WARNING: {p1} acceptance row(s) carried an invalid `verdict` (allowed: `pass`/`fail`/`unverified`/`blocked`/`waived`); they were recorded as **unverified** (never defaulted to pass): {p2}'
+  kAcceptanceNotPass: 'WARNING: {p1} acceptance row(s) are not `pass` (the delivery gate will block): {p2}'
+  kFreshChild: '  (this round used `freshChild=true`: a **fresh** subagent was started instead of reusing an idle one.)'
+  kPoolBlockedLine: '  - {p1} ({p2}) queued: {p3}'
   kMaskDenied: "Out of scope: tool {p2} is not in the {p1} tool face (mask in src/data/roles.yml). Allowed for this role: {p3}; role card: {p4}. Change the data file if the mask is wrong (do not bypass); if the action truly belongs here, dispatch it to a role that has it."
+  kMaskExecutorForbidden: "BLOCKED: role {p1} is a **dispatched executor** and may not call {p2} — the subagent it would start carries **no role mask**, which bypasses the whole mask table (`subagent`/`subagent_fork`/`workflow`/`sdo_plan` are all forbidden). Dispatching is the cockpit's job. Role card: {p3}"
+  kMaskExecutorDenied: "BLOCKED: role {p1} is a **dispatched executor** and may not call {p2} — platform administration (`plugin_manager`), user interaction and session mode (`exit_plan_mode`), irreversible deletion in the shared knowledge store (`memory_forget`/`technique_forget`), discipline exemption (`failure_forgive`) and session lifecycle (`create_goal`/`update_goal`) all belong to the cockpit: an executor does its card and nothing else. Role card: {p3}"
   k2: "The host has no tokenMeter service"
   k8: "\n- If the stakeholders do not match reality (for example, you are a solo developer but several stakeholders show up), correct it immediately: `sdo_project action=update stakeholders=...`."
   k9: "Unknown action: {p1} (available: {p2})"
@@ -1262,6 +1397,8 @@ uiIndex:
   dropContractMissing: "Voiding a contract requires id (for example `sdo_design action=drop-contract id=CT-010 reason=...`)"
   dropContractNotFound: "Contract {p1} was not found (use `sdo_design action=view` to see the list)"
   k1: "Budget updated: {p1}"
+  kJsonParseFailed: "ERROR: argument {p1} is not valid JSON: {p2}. **This call wrote NOTHING** (fix the JSON and retry)."
+  kMethodShapeRejected: "REJECTED: method artifact {p1} was **NOT written**: these fields have a shape that would **lose their content** (they read back empty) — {p2}. Rewrite them in the declared shape and retry (same rule as `sdo_plan action=profile`: a failed validation rejects the whole call and writes nothing; otherwise C-29 reads that shape and goes red, and a signature has already been invalidated for nothing)."
   k3: "The session object for this agent is unavailable: only cockpit-session usage can be counted"
   k4: "WARNING: these questions are **for the user**: ask them one by one with the host's question tool (`ask_user_question`), at most 4 at a time;"
   k5: "Entering the design phase is blocked: plan mode cannot be driven for this call (missing agent reference or service error)."
@@ -1294,8 +1431,16 @@ uiIndex:
   kUnlinkNeeds: "Unlinking a trace edge needs `from` and `to` (optional `kind` removes only that type)"
   kUnlinkNone: "No trace edge {p1} → {p2} was found (nothing changed)"
   kUnlinkDone: "Removed {p1} trace edge(s) ({p2} → {p3})"
-  kWorkScopeNotAudited: "(note: no workspace/changes were captured for this session, so the card's **write scope was not audited** — re-run in a session with capture enabled to audit it.)"
+  kWorkScopeNotAudited: '⚠️ **write scope not reconciled (an explicit warning, not a footnote)**: no `workspace/changes` was collected in this session (two known causes: the host only announces it for **top-level turns**, so subagent sessions see none; or the workspace is **not a git repository**, which the host cannot collect structurally), so the scope declared on the card was **never checked** — that is neither no-violation nor evidence of one (SDO-15). Fallbacks: (1) re-run in a session that can collect `workspace/changes`; (2) list the files you actually wrote through `evidence` `artifact` entries (dispatch protocol rule 5 already asks for this) and compare by hand. **We deliberately do not fall back to mtime scanning**: on the real machine mtime made a previous interrupted session-s files look like this round-s changes (incident F-7), which is more dangerous than not-reconciled.'
   kDispatchNotStarted: "(not started for real: {p1} - {p2})"
+  kProfileDecided: "Construction method packages decided: **{p1}**; scope: {p2}; basis: {p3} ({p4} checked, {p5} unchecked); reason: {p6}. Written to `.sdo/construction/profile.yml` (re-deciding appends history)."
+  kProfileRejected: "Cannot decide construction method packages (**nothing written**): {p1}"
+  kProfileNoReason: "(not given)"
+  kMutationRecorded: "mutation evidence recorded: {p1} | {p2} | killed {p3} / survived {p4} (written to `.sdo/construction/tdd.yml`)"
+  kMutationRejected: "mutation record rejected (**nothing written**): {p1}"
+  kContractTestRecorded: "contract test recorded: {p1} | {p2} (written to `.sdo/construction/contract-first.yml`)"
+  kContractTestRejected: "contract test record rejected (**nothing written**): {p1}"
+  kMutationTargetHint: "Note: `target` is empty - state WHAT you changed (file/function) so a reviewer can reproduce it (this is a hint, not a failure)"
 uiLang:
   current: "- Current UI language: **{p1}** (base language {p2})"
   available: "- Language packs shipped: {p1}"
@@ -1306,6 +1451,9 @@ uiLang:
   extraKeys: "- {p1} of its keys are pack-specific (under the base language those strings come from the process data)"
 
 uiMethod:
+  artifactNoStableKey: "WARNING: {p1} entr(ies) have no `name` (stable key) — **every rewrite allocates fresh ids and old entries are never removed**, so fixing a schema leaves orphan entries that block G3 (C-21 / C-2F). Remedy: clear the kind first with an empty array (e.g. `{\"mappings\":[]}`, the receipt shows 0 entries), then rewrite with `name` (ids are reused)."
+  artifactWholeListOverwrite: "⚠️ **whole-list overwrite**: {p1} — a list field of a method artefact is replaced **as a whole** (entries you did not resend were removed from the file); the pre-overwrite copy is {p2} (under `evidence/file-history/`; restore from there)"
+  artifactSnapshotUnavailable: "(no copy was kept this time: there was no previous artefact of this kind, or the snapshot failed)"
   # Parsing aliases for the method answer (kept in the language pack, never hard-coded in code)
   aliasStructured: "structured"
   aliasOo: "object-oriented,object oriented,oo"
@@ -1463,7 +1611,27 @@ uiApplicability:
   confirmedLine: "Signed off by the user: {p1} (basis: {p2})"
   listSep: ", "
   viewBoth: 'View {p1} appears in both viewsPresent and viewsAbsent — one declaration cannot contradict itself; pick one side and re-draft'
+uiReview:
+  # —— Review-finding verification (2026-10-08: a review is a claim; the implementer must verify each finding before it is adopted) ——
+  noReview: "No such review: {p1}"
+  badIndex: "{p1} has {p2} finding(s); there is no finding {p3}"
+  badOutcome: "The outcome must be reproduced or refuted; got {p1}"
+  emptyEvidence: "Verification needs evidence: the command and its result (reproduced), or the counter-evidence (refuted). A bare claim is not verification"
+  selfVerify: "{p1} was recorded by session {p2} — the same session cannot verify its own review"
+  notImplementer: "{p1} reviews {p2}, and that card's implementing session is {p3} — findings must be verified by the **implementer** (reproduce them, or give counter-evidence)"
+  openFindings: "{p1} still has unverified review findings: {p2} ({p3}) finding(s) {p4} — a review is a claim, not a conclusion: have this card's implementing session verify each finding (act on the ones you can reproduce; give counter-evidence for the ones you cannot), then record it: `sdo_task action=verify-review id={p5} review={p2} index=<n> outcome=reproduced|refuted proof=...`"
+  stateVerified: "verified and adopted"
+  stateUnverified: "not verified"
+  statePartial: "partly verified"
+  stateStale: "finding text changed after verification"
+  stateForged: "verification has no source-of-truth backing (forged)"
+  stateTampered: "review file differs from the source of truth (edited)"
+  stateUnrecorded: "review has no source-of-truth event (hand-written)"
+  rehashTampered: "{p1} already has a recorded fingerprint that does **not** match the current content (it may have been edited) — sealing now would erase that evidence, so it is refused; find out what changed (file a defect if warranted), then seal"
+
 uiSignature:
+  journalOnly: 'WARNING: however the journal holds {p1} gate/signed event(s) — the signature file was deleted or rewritten (this is NOT never-signed, it is an inconsistency, D8)'
+  noEvent: 'WARNING: no gate/signed event in the journal matches this signature ({p1} {p2}) — it was hand-written or written around the tool (D8)'
   basisRequired: "A signature must carry quoted text: give the user's own words (channel=statement) or go through the human question channel (channel=question)"
   missing: "Gate {p1} has no user signature yet"
   unquoted: "The signature for gate {p1} ({p2}) carries no quoted text and is therefore invalid"
@@ -1496,6 +1664,9 @@ uiOffice:
   rollbackNoEdge: "The current phase ({p1}) declares no legal rollback edge"
   rollbackIllegal: "Rolling back from «{p1}» to «{p2}» is not allowed; legal targets are: {p3}"
 uiDesign:
+  uiConfirmProxy: 'WARNING: this confirmation is recorded as **proxy-stamped** (`basisSource=proxy`): the authorizer is not the executor; put the authorizing words in basis.'
+  docElementResp: 'responsibility'
+  docContractSchema: 'schema body'
   # UI-presence rule (§2.1) — the source of truth is always the requirements, never the model's self-report
   uiReasonYes: "Has UI: requirements {reqs}; project surfaces {surfaces}"
   uiReasonNo: "No UI: no requirement declares a UI/screen surface (kind: ui), and project surfaces declares no web/desktop/mobile"
@@ -1924,13 +2095,22 @@ uiDesign:
   docUiAssignmentGuessed: "WARNING: the region assignment above is a **count-based guess** (the ledger does not declare which region each column belongs to); add `region: <region name>` to the columns and re-render to remove the guess."
   docUiRegionUnknown: "WARNING: column {p1} declares region {p2}, which does not exist on this screen — available regions: {p3}. Use one of them, or add that region to `layout.regions`."
 uiGrill:
+  assumeOverridesAnswer: 'Q {p1}: `assume=true` (adopt the bank recommendation) and `answer=<your own text>` cannot be passed together — the old implementation **silently dropped answer**. Two legal forms: (1) to keep your own text, do not pass `assume`; (2) to adopt the recommendation, pass `assume=true` and no `answer`.'
   pickedOptionOutOfRange: 'Option index out of range: {p1} is not a valid option of question {p2} (it has {p3} option(s)) — refusing to record; check and retry with a 0-based index'
+  noOptionsFreeText: 'Q {p1} has **no options** (the model channel `sdo_redteam action=file` submitted it without `options`), so `pickedOption` cannot be used. Answer with free text instead: `sdo_requirement action=answer id={p1} answer="…"` (spell out the candidates and their costs in the prose). To give such a question options, add `options: [{"label":"…","cost":"…"}]` to that item in `file`''s `questions`.'
 
 uiChange:
   impactNoteEmpty: 'The trace graph is empty (maintained by `sdo_trace` since M2), so this impact analysis can only return the empty set — confirm the affected scope by hand before approving'
   impactNoteOk: 'Computed automatically from the trace graph ({p1} link(s))'
   impactNoteBadLines: '; {p1} more line(s) could not be parsed and were left out (the impact may be underestimated)'
+  rollbackReason: '{p1} was approved: after a requirement change the project must re-walk requirements → design (update requirements → re-freeze G2 → re-pass G3) before development continues'
+  notDigestedTitle: 'There are **approved but not yet digested** requirement changes: {p1} — an approved change must re-walk "update requirements → re-freeze G2 → redo design and re-pass G3", and until then no task card may be claimed to continue development'
+  notDigestedNoBaseline: '  - {p1}: no **re-baseline** covering {p2} happened after the approval (first `sdo_requirement action=update id={p2}` to write the change into the requirement, then `action=baseline`)'
+  notDigestedNoRedesign: '  - {p1}: {p2} was re-baselined, but the design gate ({p3}) has not been re-passed since — the change already invalidated the old signature, so the design must be re-walked and re-signed'
+  notDigestedNoRequirement: 'the change request does not name an affected requirement'
+  notDigestedSteps: 'Next: (1) update the affected requirements → (2) re-freeze G2 (`sdo_requirement action=baseline`) → (3) redo the design so `sdo_gate action=check gate=G3` passes; claiming is released once both are done'
 
+  notDigestedDigestPath: '  **How to thaw**: cards for the requirements/architecture roles (`analyst` / `architect` / `office`) **can be claimed** — they are exactly the path that digests the change (`sdo_requirement action=update` -> `action=baseline` -> re-walk the design with `sdo_design ...`); other roles stay blocked until G3 passes again.'
 uiDor:
   c1Remedy: 'Ask about the weakest dimensions with `sdo_requirement action=grill` and record answers with `action=answer`; note the answer text itself does not move the score — pass `dimensions` (model-channel semantic scores) when answering, then fill in priority / source / acceptance criteria'
   detailSep: "; "
@@ -1960,7 +2140,7 @@ skillBody:
   tableHead: "| Role | Name | When to use (mask rationale) | Card |"
   tableRow: "| `{p1}` | {p2} | {p3} | `{p4}` |"
   sectionsNote: "Every card contains: goal / input contract / output contract / definition of done (DoD) / prohibitions / question and review templates."
-  maskHead: "Hard constraints (tool mask; tools outside allow are invisible to you):"
+  maskHead: "Hard constraint (tool mask): tools outside the DECLARED face must not be called (on a real machine the host may not hide them for you; out-of-mask calls are rejected by the tools/pre-execute hook):"
   maskLine: "- `{p1}`: allow = {p2}; deny = {p3}"
   dirLine: "Card directory: `{p1}`"
   protocolHead: "Execution protocol (same source as the dispatch prompt; follow it when stuck):"
@@ -1968,3 +2148,47 @@ skillBody:
   protocol2: "2) change only files inside your write scope;"
   protocol3: "3) `sdo_task action=done` requires evidence items (command / workspace-changes / artifact) — claiming completion is not completion;"
   protocol4: "4) when stuck use `sdo_task action=block note=…` — do not push through and do not silently change scope."
+
+uiConstruction:
+  c01: "{p1} has the wrong shape (expected a top-level profile:)"
+  c02: "Unknown method package: {p1}"
+  c03: "scope must be `all` or an array of task ids"
+  c04: "`derivedFrom` must not be empty (a model-chosen profile must leave its basis)"
+  c05: "Every `exempt` entry needs task / check / why (why must not be empty)"
+  c06: "{p1}: requirement {p2} not found"
+  c07: "{p1}: {p2} has kind {p3}, not the declared {p4}"
+  c08: "{p1}: the ledger actually holds {p2} contracts"
+  c09: "{p1}: unknown scale (expected {p2})"
+  c10: "{p1}: this project scale is {p2}"
+  c11: "`derivedFrom` needs at least one machine-checkable basis (`reqKind=...` / `contractCount=...` / `scale=...`)"
+  c12: "{p1} is not frozen yet (no `design/confirmed` record) - freeze the contract before claiming the implementation"
+  c13: "{p1} was only frozen at seq {p2}, after this claim (seq {p3}) - freeze the contract before claiming the implementation"
+  c14: "{p1} has no test case"
+  c15: "the cases for {p1} ({p2}) have no fail-then-pass ordering evidence (pass-only does not count as TDD)"
+  c16: "{p1} needs mutation evidence at critical scale ({p2} holds no record with killed >= 1)"
+  c17: "{p1} has no contract test record ({p2})"
+  c18: "`packages` must not be empty (pick at least one method package)"
+  c19: "{p1} in `scope` does not exist"
+  c20: "exemption {p1}/{p2} must state a reason"
+  c21: "exemption references an unknown check code: {p1}"
+  c22: "the construction profile is broken (inspect the file by hand): {p1}"
+  c23: "no construction method packages decided yet: have the flow officer run `sdo_plan action=profile` (model-chosen, with a checkable basis)"
+  c24: "choosing no method packages requires a stated reason (criteria go N/A, but the reason must be recorded)"
+  c25: "deliverable is missing `task`"
+  c26: "mutation record is missing `tool`"
+  c27: "`killed` must be a non-negative number"
+  c28: "`survived` must be a non-negative number"
+  c29: "contract test is missing `contract`"
+  c30: "contract {p1} does not exist in the ledger"
+  c31: "contract test needs `tool` or `cmd`"
+  c32: "these result files have **no matching journal event** (hand-written or forged - not accepted): {p1}"
+
+uiTestFirst:
+  kUntraceable: "these result files have **no matching journal event** (hand-written or forged - not accepted): {p1}"
+
+uiDispatch:
+  kFinishedHeader: "**Recently finished dispatches**"
+  kFinishedLine: "- {p1} (child {p2}): the **child run** ended with reason = {p3} (which is NOT the card being done), {p4}s | report: `.sdo/{p5}`"
+  kReportedHeader: "**Subagent report (delivered automatically)**"
+  kReportedLine: "- {p1}: the **child run** ended (reason: {p2}; that only means one turn ran out — check `status` for the card) | report: `.sdo/{p3}`"
+  kReportedMore: "({p1} more undelivered report(s) will follow next time)"

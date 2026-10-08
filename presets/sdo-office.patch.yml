@@ -26,7 +26,10 @@
               lang: zh-CN
               gateLevel: enforce                 # suggest | enforce | strict
               commandEcho: echo
+              # 受**写入范围纪律**管辖的工具：带路径的（write/edit）逐路径核对本卡 writeScopes；
+              # bash 没有路径可判 ⇒ 如实标 unchecked，靠 `done` 的 A2 对账兜底（2026-10-08 起这两个字段真的生效了）
               disciplineTools: [write, edit, bash]
+              # **公共放行面**：不受卡写范围约束（台账 / 派生文档 / 用例）
               disciplineAllowPaths: ['.sdo/', 'docs/', 'test/']
               registerTools: true
               registerCommands: true

@@ -7,7 +7,7 @@
 import { DIMENSIONS } from '../types.js'
 import { textOf } from '../infra/scalar.js'
 import type { DeliveryManifest } from '../domain/records.js'
-import type { Adr, ChangeRequest, Contract, DesignApplicability, DesignElement, DesignView, FeasibilityAssessment, GateEvaluation, GateSignature, GrillQuestion, QualityAssessment, QualityScenario, Requirement, RiskItem, SdoProject, TaskCard, TraceReport } from '../types.js'
+import type { Adr, ChangeRequest, ChangeRollback, Contract, DesignApplicability, DesignElement, DesignView, FeasibilityAssessment, GateEvaluation, GateSignature, GrillQuestion, QualityAssessment, QualityScenario, Requirement, RiskItem, SdoProject, TaskCard, TraceReport } from '../types.js'
 import type { SignatureState } from '../domain/signature.js'
 import { channelLabel, signatureInvalidatingEventLine } from '../domain/signature.js'
 import { applicabilityLines } from '../domain/applicability.js'
@@ -24,6 +24,7 @@ import { shapeNoteBlock } from '../domain/shapeNotes.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
 import { planStats } from '../domain/plan.js'
 import type { PlanIssue } from '../domain/plan.js'
+import type { RolePool } from '../domain/pool.js'
 import type { DispatchRequest } from '../integration/orchestrator.js'
 
 /** `sdo_init` 的回执。 */
@@ -245,6 +246,8 @@ export function describeChange(
     reason?: string | undefined
     /** §6.7：本次重算评分时语义分的来源（显式重给 / 沿用 / 本来就没有） */
     dimensionsFrom?: 'explicit' | 'carried' | 'none' | undefined
+    /** 语义 A：批准触发的强制回退结果（未触发时不给） */
+    rollback?: ChangeRollback | undefined
   },
   shapeNotes: FieldShapeNote[] = [],
 ): string {
@@ -265,6 +268,26 @@ export function describeChange(
           ? 'uiDescribe.changeDimsCarried'
           : 'uiDescribe.changeDimsNone',
     ))
+  }
+  // 语义 A（2026-10-04）：批准的需求变更必须把"接下来做什么"写进回执 ——
+  // 只报"已回退"会让用户以为"回到需求阶段"就够了，而真正决定能不能继续开发的是
+  // "重新基线 + 重过设计门"这两步（`claim` 由 `change-not-digested` 拦着）。
+  if (result.rollback !== undefined) {
+    const rollback = result.rollback
+    if (rollback.error !== undefined) {
+      lines.push(fmt('uiDescribe.changeRollbackNoEdge', { p1: rollback.from, p2: rollback.error }))
+    } else if (rollback.alreadyThere) {
+      lines.push(fmt('uiDescribe.changeRollbackAlready', { p1: rollback.from }))
+    } else {
+      lines.push(fmt('uiDescribe.changeRolledBack', { p1: rollback.from, p2: rollback.to }))
+      if (rollback.invalidatedGates.length > 0) {
+        lines.push(fmt('uiDescribe.changeRollbackGates', { p1: rollback.invalidatedGates.join(' ') }))
+      }
+      if (rollback.stillWaivedGates.length > 0) {
+        lines.push(fmt('uiDescribe.changeRollbackWaived', { p1: rollback.stillWaivedGates.join(' ') }))
+      }
+    }
+    lines.push(t('uiDescribe.changeRollbackSteps'))
   }
   lines.push(...shapeNoteBlock(shapeNotes))
   return lines.join('\n')
@@ -460,6 +483,43 @@ export function describeTask(task: TaskCard, shapeNotes: FieldShapeNote[] = []):
   return lines.join('\n')
 }
 
+/**
+ * **角色池块**（子代理复用）：派发回执与 `sdo_status` 共用同一份渲染 —— 口径只有一份。
+ *
+ * 为什么必须有这一块：池上限与排队是**限制**，限制必须在回执里可见（否则用户只会看到
+ * "有几张卡这次没派出去"，猜不出是池满了还是在等预算）。
+ */
+export function describePoolBlock(pools: RolePool[], queued: string[], reuseSupported: boolean, orphanTtlMinutes = 0): string {
+  if (pools.length === 0) return ''
+  const lines = [t('uiDescribe.kPoolHeader')]
+  for (const pool of pools) {
+    lines.push(
+      fmt('uiDescribe.kPoolLine', {
+        p1: pool.role,
+        p2: String(pool.busy.length),
+        p3: String(pool.cap),
+        p4: String(pool.idle.length),
+        p5: String(pool.retired),
+        p6: String(pool.stale.length),
+      }),
+    )
+  }
+  const stale = pools.reduce((sum, pool) => sum + pool.stale.length, 0)
+  if (stale > 0) lines.push(fmt('uiDescribe.kPoolOrphanNote', { p1: String(stale), p2: String(orphanTtlMinutes) }))
+  // **R-1**：不能复用、也**不占池位**的空闲子代理必须看得见（否则"池里明明有人却新起了一个"无法解释）
+  const unusable = pools.flatMap((pool) => pool.unusable.map((item) => ({ ...item, role: pool.role })))
+  if (unusable.length > 0) {
+    const shown = unusable.slice(0, 3).map((item) => `${item.childSessionId.slice(0, 8)}（${item.reason}）`)
+    const more = unusable.length > shown.length
+      ? ` ${fmt('uiDescribe.kPoolUnusableMore', { p1: String(unusable.length - shown.length) })}`
+      : ''
+    lines.push(fmt('uiDescribe.kPoolUnusable', { p1: String(unusable.length), p2: shown.join('；') + more }))
+  }
+  if (queued.length > 0) lines.push(fmt('uiDescribe.kPoolQueued', { p1: String(queued.length), p2: queued.join(' ') }))
+  if (!reuseSupported) lines.push(t('uiDescribe.kPoolNoReuse'))
+  return lines.join('\n')
+}
+
 /** 认领冲突（CAS 失败等）。 */
 export function describeTaskConflict(detail: string, current: TaskCard | undefined, code: string): string {
   const lines = [fmt('uiDescribe.k195', { p1: code, p2: detail })]
@@ -501,6 +561,16 @@ export function describeTaskBoard(input: {
 }
 
 /**
+ * **工具面的两条口径**（2026-10-08 纠正后）：SDO 流程面是**白名单**，通用面是**黑名单**。
+ *
+ * 回执必须把这两层分开说 —— 之前只有一句"工具面：read write …"，读的人无法知道
+ * "通用面（技能/记忆/联网…）到底给没给"，而真机缺陷正是**通用面被静默清空**。
+ */
+export function maskPlaneLine(request: DispatchRequest): string {
+  return fmt('uiDescribe.kMaskSdoPlane', { p1: request.sdoAllow.join(' ') || t('uiDescribe.k169') })
+}
+
+/**
  * 派发请求（宿主后端）——**这是"没派出去"时的回执**：提示词与掩码都在这儿，交给流程官自行转交。
  * 真派发成功走 {@link describeDispatchStarted}（P-1）。
  */
@@ -510,8 +580,9 @@ export function describeDispatch(request: DispatchRequest, degradedReason?: stri
     t('uiDescribe.k104')
     + t('uiDescribe.k105'),
   )
-  if (degradedReason !== undefined) lines.push(`- ⚠️ ${degradedReason}`)
-  lines.push(fmt('uiDescribe.k106', { p1: request.toolFilter.join(' '), p2: request.writeScopes.join('、') || t('uiDescribe.k169') }))
+  if (degradedReason !== undefined) lines.push(fmt('uiDescribe.kDispatchDegraded', { p1: degradedReason }))
+  lines.push(maskPlaneLine(request))
+  lines.push(fmt('uiDescribe.k106', { p1: request.writeScopes.join('、') || t('uiDescribe.k169') }))
   lines.push(fmt('uiDescribe.k107', { p1: request.expectedRevision }))
   lines.push('')
   lines.push(request.prompt)
@@ -526,21 +597,56 @@ export function describeDispatch(request: DispatchRequest, degradedReason?: stri
  * 与它声明的能力值）；② **子代理的工具面是否真的收窄，本插件无法自证**。真机反例见
  * sdo-test §8.4②（`spawn` 派发出去的子代理仍然调用了 `sdo_plan`/`sdo_review`/`sdo_gate`，被钩子拒绝）。
  * 所以这里**不再**写"它看不到掩码外的工具" —— 那是替宿主打包票。
+ *
+ * **D-14（sdo-test-new 2026-10-08，blocker）连带②**：`dispatched` 必须是**实际下发**的那份名单
+ * （过滤后的 `applied`），不是"角色意图"的名单 —— 旧写法把 `request.toolFilter` 当已下发事实写进
+ * 回执，于是同一份回执里「下发给它的工具面共 11 个」与「`dispatch/started.tools: 0`」并存，
+ * 而子会话实录证明**真正发出去的是空集**；读回执的人无法知道真相。空集必须显式告警。
  */
 export function describeDispatchStarted(
   request: DispatchRequest,
   provider: string,
   childSessionId: string,
-  tools: number,
+  /**
+   * **实际下发的 deny 面**（只发 deny、不发 allow —— 见 `DispatchRequest.toolDeny`）。
+   * 空数组 = 什么都没挡（在真机上这本身就是可疑信号，回执会告警）。
+   */
+  denyFace: readonly string[],
   toolFilterDeclared = false,
+  reuseSupported = false,
   faces: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }[] = [],
+  /** 本次派发的复用事实（F-4：能力与"本次是否复用"必须分开说，别让回执变成假阳性） */
+  dispatch?: { reused: boolean; mode: 'continuable' | 'one-shot' } | undefined,
+  /** **D-15**：降级/覆盖原因在**成功路径**上也要回显（旧实现只有失败路径才渲染它） */
+  degradedReason?: string | undefined,
+  /** **D-15**：显式指定覆盖了本迭代锁时的留痕说明 */
+  overrideNote?: string | undefined,
 ): string {
   const lines = [fmt('uiDescribe.k199DispatchStarted', { p1: request.task.id, p2: request.owner, p3: provider, p4: childSessionId })]
-  lines.push(fmt('uiDescribe.k200DispatchTools', { p1: String(tools), p2: request.persona }))
+  lines.push(fmt('uiDescribe.k200DispatchTools', {
+    p1: String(request.sdoAllow.length),
+    p2: request.persona,
+    p3: String(denyFace.length),
+  }))
+  if (denyFace.length === 0) lines.push(t('uiDescribe.kDispatchEmptyFace'))
+  if (degradedReason !== undefined) lines.push(fmt('uiDescribe.kDispatchDegraded', { p1: degradedReason }))
+  if (overrideNote !== undefined) lines.push(fmt('uiDescribe.kDispatchDegraded', { p1: overrideNote }))
   // 只报"我们做了什么"与"provider 声明了什么"，并**明说本插件不能自证生效**（越界由钩子兜底）
   lines.push(fmt('uiDescribe.k201MaskHandedOver', { p1: provider, p2: toolFilterDeclared ? t('uiDescribe.k231Yes') : t('uiDescribe.k232No') }))
   lines.push(t('uiDescribe.k202MaskNotSelfVerifiable'))
-  lines.push(fmt('uiDescribe.k106', { p1: request.toolFilter.join(' '), p2: request.writeScopes.join('、') || t('uiDescribe.k169') }))
+  // 复用（方案 1）：宿主今天没有 continuable 入口 ⇒ 如实说 one-shot；探到就自动改口径
+  lines.push(reuseSupported ? t('uiDescribe.k203ReuseSupported') : t('uiDescribe.k204ReuseOneShot'))
+  // **F-4（2026-10-05 真机）**：只报"宿主有可续聊入口"会让模型读成"这次复用了" —— 真机 10 次派发
+  // 全 `reused:false` 却只看到「复用：可用」。所以能力与本次事实分两句，并写出观测到的取值。
+  if (dispatch !== undefined) {
+    lines.push(fmt('uiDescribe.kReuseThisDispatch', {
+      p1: dispatch.reused ? t('uiDescribe.kReuseThisYes') : t('uiDescribe.kReuseThisNo'),
+      p2: dispatch.mode,
+    }))
+  }
+  lines.push(maskPlaneLine(request))
+  lines.push(fmt('uiDescribe.kDispatchDenyFace', { p1: String(denyFace.length), p2: denyFace.join(' ') || t('uiDescribe.k169') }))
+  lines.push(fmt('uiDescribe.k106', { p1: request.writeScopes.join('、') || t('uiDescribe.k169') }))
   lines.push(...childFaceLines(faces))
   // 观测是**持续**写入的：派发这一刻子代理还没跑，所以这里必然可能"未观测到"——指路，别让它成为死数据
   lines.push(t('uiDescribe.k207FaceLedgerPointer'))
@@ -585,8 +691,14 @@ export function childFaceLines(faces: { childSessionId: string; tools: string[];
 }
 
 /** 就地执行（inline 降级）：把任务卡交给主模型。 */
-export function describeInlineHandoff(request: DispatchRequest, degradedReason?: string | undefined): string {
+export function describeInlineHandoff(
+  request: DispatchRequest,
+  degradedReason?: string | undefined,
+  /** **D-15**：显式指定覆盖了本迭代锁时的留痕说明（与降级是两件事，都要看得见） */
+  overrideNote?: string | undefined,
+): string {
   const lines = [fmt('uiDescribe.k198', { p1: request.task.id, p2: degradedReason === undefined ? '' : `：${degradedReason}` })]
+  if (overrideNote !== undefined) lines.push(fmt('uiDescribe.kDispatchDegraded', { p1: overrideNote }))
   lines.push(fmt('uiDescribe.k108', { p1: request.owner, p2: request.task.id, p3: request.owner }))
   lines.push('')
   lines.push(request.prompt)
@@ -663,6 +775,11 @@ export function describeQuestions(questions: GrillQuestion[], skipped: string[] 
       lines.push(fmt('uiDescribe.k125', { p1: optionIndex, p2: option.label, p3: option.cost }))
     })
     lines.push(fmt('uiDescribe.k126', { p1: question.defaultRecommendation }))
+    // **D-2 残留**：撞上项目声明的非目标 ⇒ 当场点名（不静默跳过：非目标也可能需要确认，
+    // 但使用者必须知道"这条问的是一件项目已明确不做的事"）
+    if (question.nonGoalConflict !== undefined) {
+      lines.push(fmt('uiDescribe.kNonGoalConflict', { p1: question.nonGoalConflict }))
+    }
   })
   lines.push('')
   lines.push(t('uiDescribe.k127'))
@@ -875,6 +992,11 @@ export function describeSignature(signature: GateSignature, state: SignatureStat
   // §2.5/§3.4（评审员）：签字范围必须在**用户可见处**写明 —— 否则用户以为签了字就覆盖了
   // 质量属性场景（它们是补充证据，`quality/recorded` 属中性事件，改它们不会让签字失效）。
   lines.push(t('uiDescribe.kSignScope'))
+  // **SDO-05 / SDO-13（2026-10-05 真机）**：失效集合只是"事后列举"，用户看不出**顺序**要求 ——
+  // 真机上「签 G2 后再登记一条风险」「签 G3 后再补 20 条契约（G4 强制）都各自当场作废签字。
+  // 所以按门禁把"签之前该做完什么"直接写在回执里（承诺必须可读，而不是靠读失效集合倒推）。
+  if (signature.gate === 'G2') lines.push(t('uiDescribe.kSignBeforeG2'))
+  else if (signature.gate === 'G3') lines.push(t('uiDescribe.kSignBeforeG3'))
   return lines.join('\n')
 }
 

@@ -177,10 +177,16 @@ test('派发：后端选择、降级说明、二选一约束与容量预算', ()
   assert.equal(none.backend, 'inline')
   assert.match(none.degradedReason ?? '', /降级/u)
 
-  // 二选一约束：同迭代内不换后端
-  const keep = pickBackend('native-team', { subagent: true, nativeTeam: true, inline: true }, { backend: 'subagent', iteration: 1 }, 1)
-  assert.equal(keep.backend, 'subagent')
-  assert.match(keep.degradedReason ?? '', /二选一/u)
+  // 二选一约束：同迭代内不换后端 —— **只对没点名后端的自动选择生效**
+  //（D-15：显式点名必须能覆盖它，否则「如需切换请显式指定」这句承诺没有入口）
+  const locked = pickBackend('auto', { subagent: false, nativeTeam: true, inline: true }, { backend: 'subagent', iteration: 1 }, 1)
+  assert.equal(locked.backend, 'subagent', 'auto 也要守二选一锁')
+  assert.match(locked.degradedReason ?? '', /二选一/u)
+  // 显式点名 ⇒ 锁让路，并留下 overrideNote（进回执、进 journal）
+  const override = pickBackend('native-team', { subagent: true, nativeTeam: true, inline: true }, { backend: 'subagent', iteration: 1 }, 1)
+  assert.equal(override.backend, 'native-team', '显式指定必须生效（D-15）')
+  assert.equal(override.degradedReason, undefined, '这不是降级：结果等于请求')
+  assert.match(override.overrideNote ?? '', /显式指定/u, '覆盖要有留痕')
   // 换迭代则可以切换
   assert.equal(pickBackend('native-team', { subagent: true, nativeTeam: true, inline: true }, { backend: 'subagent', iteration: 1 }, 2).backend, 'native-team')
 
@@ -200,18 +206,19 @@ test('派发请求与越界写复核', () => {
   assert.match(request.prompt, /expectedRevision=/u, '提示词必须带 CAS 版本号')
   assert.match(request.prompt, /证据要求/u)
   assert.equal(request.persona, 'sdo-developer')
-  assert.ok(request.toolFilter.includes('edit'))
+  // **2026-10-08 口径**：下发给宿主的只有 **deny 面**；`edit` 不在 deny 里 = developer 能写
+  assert.equal(request.toolDeny.includes('edit'), false, 'developer 要能改文件 ⇒ edit 不进 deny 面')
+  assert.equal(request.toolDeny.includes('skill'), false, 'skill 是通用面 ⇒ 不该被挡（否则提示在骗人）')
 
   // B4：派发提示的第 0 步必须让执行者**先加载角色卡**（提示是它唯一必然读到的上下文），
   // 并且这个承诺必须可兑现 —— 角色工具面里真的要有 `skill`（两个方向都断言）。
   assert.match(request.prompt, /sdo-role-cards/u, '提示要指名索引技能')
   assert.match(request.prompt, /skills\/role-developer\.md/u, '提示要给出本角色的卡片路径')
-  assert.ok(request.toolFilter.includes('skill'), '承诺加载技能，工具面就必须含 skill')
   for (const role of ROLES) {
     const perRole = buildDispatch({ task: { ...task, role }, backend: 'inline', owner: 'cockpit', projectName: 'M4 测试' })
     assert.ok(perRole.prompt.includes('sdo-role-cards'), `${role} 的提示也应含角色卡指引`)
     assert.ok(perRole.prompt.includes(`skills/role-${role}.md`), `${role} 的提示应给出它自己的卡片路径`)
-    assert.ok(perRole.toolFilter.includes('skill'), `${role} 的工具面必须含 skill（否则提示在骗人）`)
+    assert.equal(perRole.toolDeny.includes('skill'), false, `${role} 的 deny 面不许挡 skill（否则提示在骗人）`)
   }
 
   assert.deepEqual(auditWriteScopes(['src/des-001/index.ts'], ['src/des-001/']).violations, [])
@@ -291,7 +298,7 @@ test('验证与评审：用例覆盖 must、失败即拦、阻塞缺陷拦门禁
     `失败用例必须拦住验证门禁：${JSON.stringify(office.evaluate(call(), 'G6').criteria)}`)
   office.addDefect(call(), { title: '时延超标', severity: 'blocker', caseId: testCase.id, status: 'open' })
   assert.equal(office.evaluate(call(), 'G6').criteria.find((criterion) => criterion.id === 'C-51')?.ok, false)
-  office.setDefectStatus(call(), 'DEF-001', 'closed')
+  office.updateDefect(call(), 'DEF-001', { status: 'closed' })
   assert.equal(office.evaluate(call(), 'G6').criteria.find((criterion) => criterion.id === 'C-51')?.ok, true)
 
   // 评审独立性
@@ -312,6 +319,10 @@ test('验证与评审：用例覆盖 must、失败即拦、阻塞缺陷拦门禁
 })
 
 test('迭代：开/关迭代，增量与 DoD 由任务卡与证据决定（GI 门禁属于敏捷流程）', () => {
+  // 本用例不测实现阶段方法包：写一份**显式不选包**的中立 profile（对照 test/m33.test.ts）
+  office.storeFor(workspace).writeYaml(['construction', 'profile.yml'], {
+    profile: { version: 1, decidedAt: '', decidedBy: 'office', packages: [], scope: 'all', derivedFrom: [], reason: '本夹具不启用实现阶段方法包', exempt: [], history: [] },
+  })
   office.updateProject(call(), { process: 'agile' }) // GI（迭代 DoD）只在敏捷流程里定义
   assert.equal(office.iteration(call()), undefined)
   office.startIteration(call(), '完成差异检测的最小闭环')
@@ -335,8 +346,10 @@ test('迭代：开/关迭代，增量与 DoD 由任务卡与证据决定（GI �
   const testCase = office.addTestCase(call(), { title: '冒烟', kind: 'e2e', steps: ['跑起来'], expected: '不报错' })
   office.addTestResult(call(), { caseId: testCase.id, status: 'pass', evidence: 'exit=0' })
   // GI 还要求"完成的卡都有通过评审且评审者 != 作者"
+  // **2026-10-08 口径**：评审结果要由**实现方逐条核实**才被采纳，所以这里补上核实这一步。
   for (const task of office.tasks(call())) {
-    office.addReview(call(), { taskId: task.id, reviewer: 'reviewer-b', verdict: 'pass', findings: ['无阻塞问题'] })
+    const review = office.addReview(call(), { taskId: task.id, reviewer: 'reviewer-b', verdict: 'pass', findings: ['无阻塞问题'] })
+    office.verifyReviewFinding(call(), { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复核确认', by: 'dev-a' })
   }
   const gi = office.evaluate(call(), 'GI')
   assert.equal(gi.status, 'passed', `迭代门应通过：${gi.criteria.filter((c) => !c.ok).map((c) => `${c.id}:${c.detail}`).join(' | ')}`)
@@ -358,6 +371,27 @@ test('交付包：sha256 清单 + 验收矩阵 + 回滚点 + 原型排除（G7 �
     id: requirement.id,
     addAcceptance: [{ id: 'AC-001', given: '已导入两日文件', when: '执行对账', then: '输出差异清单' }],
   })
+
+  // **真机运行证据**（用户要求 2026-10-06）：交付前必须在真实环境跑过并**绑定被运行产物**，
+  // 否则 `packageDelivery` 会把所有 `pass` 行降级成 `unverified`（离线判据全绿 ≠ 产物能跑）。
+  const ran = office.recordRun(call(), {
+    target: 'desktop',
+    command: './gradlew run',
+    outcome: 'pass',
+    evidence: 'logs/latest.log',
+    artifact: 'deliverable.txt',
+    by: '验收人',
+  })
+  assert.equal(ran.ok, true, '夹具前置：先记一条绑定产物的通过运行')
+
+  // **SDO-40（真机）**：交付必须发生在**验证之后** —— 阶段要走到验证阶段，且验证门禁要有通过留痕；
+  // 验收行还要能追到「用例 → 通过结果」，否则所有 pass 行被降级为 unverified（夹具按新口径补齐）。
+  const journal = office.journalFor(workspace)
+  const store = office.storeFor(workspace)
+  journal.append('phase/entered', { phase: 'verification' })
+  journal.append('gate/result', { gate: 'G6', status: 'passed', phase: 'verification', reason: '夹具' })
+  store.writeYaml(['tests', 'TC-001.yml'], { testCase: { id: 'TC-001', title: '对账夹具', kind: 'unit', requirement: requirement.id, steps: [], expected: '输出差异清单', at: '' } })
+  store.writeYaml(['tests', 'results', 'TR-001.yml'], { result: { id: 'TR-001', caseId: 'TC-001', status: 'pass', evidence: 'jest 输出', at: '2026-10-06T00:00:00Z' } })
 
   const result = office.packageDelivery(call(), {
     by: '验收人',

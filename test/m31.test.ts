@@ -63,17 +63,20 @@ function writeCard(id: string, role: string, status = 'ready'): void {
 
 test('M31-01 B5 角色推导四态：认领过的卡 → 卡上的角色；根会话 → 驾驶舱；未认领子会话 → 非驾驶舱；无会话 → fail-open', () => {
   const claims = [{ sessionId: 's-dev', cardId: 'TASK-001', role: 'developer' }]
-  assert.deepEqual(attributeRole({ sessionId: 's-dev', claims }), { kind: 'dispatched', role: 'developer', cardId: 'TASK-001' })
-  assert.deepEqual(attributeRole({ sessionId: 's-root', delegationDepth: 0, claims }), { kind: 'cockpit', role: 'cockpit' })
+  // **R-1（2026-10-05 真机）**：身份由血缘决定 —— 只有**子会话**才按认领卡的角色走掩码；
+  // 根会话（父会话 + 流程官）即使认领过 developer 卡也仍是驾驶舱（真机症状：掩码开始拦它自己的工具）。
+  assert.deepEqual(attributeRole({ sessionId: 's-dev', delegationDepth: 1, claims }), { kind: 'dispatched', role: 'developer', cardId: 'TASK-001' })
+  assert.deepEqual(attributeRole({ sessionId: 's-dev', claims }), { kind: 'cockpit', role: 'cockpit' }, '没有血缘信息 ⇒ 按根会话（驾驶舱）')
+  assert.deepEqual(attributeRole({ sessionId: 's-root', delegationDepth: 0, claims }) /*ROOT*/, { kind: 'cockpit', role: 'cockpit' })
   assert.deepEqual(attributeRole({ sessionId: 's-child', delegationDepth: 1, claims }), { kind: 'unclaimed-child', role: 'dispatched' })
   assert.deepEqual(attributeRole({ sessionId: undefined, claims }), { kind: 'unknown', role: 'cockpit' })
   assert.deepEqual(attributeRole({ sessionId: '', claims }), { kind: 'unknown', role: 'cockpit' })
   // 卡上的 role 不是八个角色之一（真源被手改坏）→ 不施加掩码，但**不**当成驾驶舱
-  assert.deepEqual(attributeRole({ sessionId: 's-bad', claims: [{ sessionId: 's-bad', cardId: 'TASK-009', role: 'wizard' }] }),
+  assert.deepEqual(attributeRole({ sessionId: 's-bad', delegationDepth: 1, claims: [{ sessionId: 's-bad', cardId: 'TASK-009', role: 'wizard' }] }),
     { kind: 'unclaimed-child', role: 'dispatched' })
   // 同一会话多次认领 → 取最后一次
   assert.deepEqual(
-    attributeRole({ sessionId: 's-dev', claims: [...claims, { sessionId: 's-dev', cardId: 'TASK-002', role: 'tester' }] }),
+    attributeRole({ sessionId: 's-dev', delegationDepth: 1, claims: [...claims, { sessionId: 's-dev', cardId: 'TASK-002', role: 'tester' }] }),
     { kind: 'dispatched', role: 'tester', cardId: 'TASK-002' },
   )
 })
@@ -100,7 +103,9 @@ test('M31-03 B6 掩码判定：allow 里放行、deny 与"没列出的"一律拒
     for (const tool of card.deny) {
       assert.equal(roleMaskDecision(card.code, tool).kind, 'deny', `${card.code} 的 deny 成员 ${tool} 必须拦`)
     }
-    assert.equal(roleMaskDecision(card.code, '不存在的工具').kind, 'deny', '白名单语义：没列出的工具也拒绝')
+    // **两层语义**：SDO 流程面白名单（没列出的 sdo_* 也拒），通用面黑名单（没列出的宿主工具继承默认）
+    assert.equal(roleMaskDecision(card.code, 'sdo_不存在的工具').kind, 'deny', 'SDO 流程面：没列出的 sdo_* 也拒绝')
+    assert.deepEqual(roleMaskDecision(card.code, 'some-host-tool'), { kind: 'allow' }, '通用面：没列出的宿主工具继承默认')
   }
   for (const role of ['cockpit', '', 'wizard', 'dispatched']) {
     assert.deepEqual(roleMaskDecision(role, '任意工具'), { kind: 'allow' }, `${role} 不应被掩码拦（fail-open）`)
@@ -116,8 +121,8 @@ test('M31-04 B6 两个方向：每个角色**协议必需**的工具必须在掩
     analyst: ['skill', 'sdo_requirement', 'sdo_project', 'sdo_trace', 'ask_user_question', 'sdo_task'],
     'red-team': ['skill', 'sdo_redteam', 'sdo_requirement', 'sdo_task'],
     architect: ['skill', 'sdo_design', 'sdo_adr', 'sdo_quality', 'sdo_trace', 'sdo_task'],
-    office: ['skill', 'sdo_gate', 'sdo_plan', 'sdo_task', 'sdo_risk', 'sdo_redteam', 'sdo_render', 'sdo_deliver'],
-    developer: ['skill', 'edit', 'bash', 'sdo_task', 'sdo_trace'],
+    office: ['skill', 'sdo_feasibility', 'sdo_gate', 'sdo_plan', 'sdo_task', 'sdo_risk', 'sdo_redteam', 'sdo_render', 'sdo_deliver'],
+    developer: ['skill', 'read', 'write', 'edit', 'bash', 'sdo_task', 'sdo_trace', 'sdo_test'],
     tester: ['skill', 'sdo_test', 'sdo_task', 'sdo_trace'],
     reviewer: ['skill', 'sdo_review', 'sdo_task', 'sdo_trace'],
     delivery: ['skill', 'sdo_deliver', 'sdo_render', 'sdo_trace', 'sdo_task'],
@@ -141,13 +146,27 @@ test('M31-04 B6 两个方向：每个角色**协议必需**的工具必须在掩
     }
   }
   assert.ok(ROLES.every((role) => maskAllows(role, 'sdo_task')), 'sdo_task 必须对 8 个角色都可用')
-  // 反向：职责分离类工具必须**不可见**（否则掩码就白设了）
+  // 反向：职责分离类工具必须**不可见**（否则掩码就白设了）。
+  // 注意 `edit` **不在**这里：2026-10-08 起 `write` 与 `edit` 同权（独立性由路径级写范围纪律保证，
+  // 见 test/m76）——只给 write 不给 edit 并不更安全，只会把改一处逼成整篇重写（SDO-23 真机事故）。
   for (const [role, forbidden] of [
-    ['developer', 'sdo_review'], ['developer', 'sdo_gate'], ['tester', 'sdo_review'], ['tester', 'edit'],
-    ['reviewer', 'sdo_design'], ['reviewer', 'write'], ['analyst', 'sdo_redteam'], ['red-team', 'edit'],
-    ['architect', 'sdo_gate'], ['delivery', 'sdo_gate'],
+    ['developer', 'sdo_review'], ['developer', 'sdo_gate'], ['tester', 'sdo_review'],
+    ['reviewer', 'sdo_design'], ['reviewer', 'write'], ['reviewer', 'edit'], ['reviewer', 'bash'],
+    ['analyst', 'sdo_redteam'], ['analyst', 'bash'], ['red-team', 'edit'], ['red-team', 'write'],
+    ['architect', 'sdo_gate'], ['delivery', 'sdo_gate'], ['office', 'bash'], ['tester', 'ask_user_question'],
   ] as const) {
     assert.equal(roleMaskDecision(role, forbidden).kind, 'deny', `${role} 不应能调 ${forbidden}`)
+  }
+  // **同权守卫（防复发）**：`write` 与 `edit` 必须在 **deny 面同进同出**。
+  // 注意断言为什么落在 `deny` 上：通用面是**黑名单**语义（2026-10-08 起），`allow` 不再决定
+  // 通用工具的可见性 —— 只在 `allow` 里删掉 `edit` 是**没有效果**的（`maskAllows` 仍为 true）。
+  for (const card of listRoleCards()) {
+    assert.equal(
+      card.deny.includes('edit'),
+      card.deny.includes('write'),
+      `${card.code}：write 与 edit 必须同权（只禁 write 不禁 edit / 反之 = 把改一处逼成整篇重写，SDO-23）`,
+    )
+    assert.equal(maskAllows(card.code, 'edit'), maskAllows(card.code, 'write'), `${card.code}：结果层也要同权`)
   }
 })
 
@@ -156,7 +175,7 @@ test('M31-05 B5/B6 接线：钩子用推导出的角色（不得回退成写死�
   const source = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
   assert.match(source, /attributeRole\(/u, '钩子必须调用 attributeRole')
   assert.match(source, /role: attributed\.role/u, '阶段纪律必须用推导出的角色')
-  assert.match(source, /roleMaskDecision\(attributed\.role, tool\)/u, '掩码判定必须用推导出的角色与当次工具')
+  assert.match(source, /roleMaskDecision\(attributed\.role, tool, \{ executor: isChildSession \}\)/u, '掩码判定必须用推导出的角色与当次工具（并把"是不是执行者"带上）')
   assert.match(source, /settings\.enforceRoleMask && attributed\.kind === 'dispatched'/u, '掩码硬拦只对"认得出的派发角色"生效')
   assert.doesNotMatch(source, /role: 'cockpit',\n\s+tool: String\(exec\.name/u, '不得再写死 cockpit 传给阶段纪律')
   // 开关真的在配置里（关了就不拦，但声明照旧）
@@ -178,40 +197,42 @@ test('M31-06 B5 角色缓存：只在认领/回报后失效（热路径不重读
 test('M31-07 F2 回归：归属只在「卡正被该会话做着」期间生效（done/blocked/release/换人 都解除）', () => {
   writeCard('TASK-001', 'developer')
   claim(store, journal, { taskId: 'TASK-001', owner: 'dev-a', sessionId: 's1', expectedRevision: 1 })
-  const active = (): unknown => attributeRole({ sessionId: 's1', delegationDepth: 0, claims: claimsBySession(store, journal) })
+  const active = (): unknown => attributeRole({ sessionId: 's1', delegationDepth: 1, claims: claimsBySession(store, journal) })
   assert.deepEqual(active(), { kind: 'dispatched', role: 'developer', cardId: 'TASK-001' }, '进行中 → 认得出角色')
 
   // ① blocked（做不下去挂起）→ 归属解除，驾驶舱拿回流程工具
   report(store, journal, { taskId: 'TASK-001', owner: 'dev-a', status: 'blocked', note: '缺输入' })
-  assert.deepEqual(active(), { kind: 'cockpit', role: 'cockpit' }, 'blocked 之后必须回到驾驶舱')
+  // **R-1 的契约**：身份由血缘决定 —— 子会话解除归属后是 `unclaimed-child`（掩码不再拦它），
+  // 不会"变成驾驶舱"；驾驶舱也不会因为认领过卡而"变成 developer"。
+  assert.deepEqual(active(), { kind: 'unclaimed-child', role: 'dispatched' }, 'blocked 之后归属解除（掩码解除）')
   assert.equal(roleMaskDecision('developer', 'sdo_gate').kind, 'deny')
   assert.deepEqual(roleMaskDecision('cockpit', 'sdo_gate'), { kind: 'allow' }, '驾驶舱必须能推门禁')
 
   // ② done → 同样解除
   writeCard('TASK-002', 'analyst')
   claim(store, journal, { taskId: 'TASK-002', owner: 'ana-a', sessionId: 's2', expectedRevision: 1 })
-  assert.equal(attributeRole({ sessionId: 's2', delegationDepth: 0, claims: claimsBySession(store, journal) }).kind, 'dispatched')
+  assert.equal(attributeRole({ sessionId: 's2', delegationDepth: 1, claims: claimsBySession(store, journal) }).kind, 'dispatched')
   mkdirSync(join(BASE, 'src', 'TASK-002'), { recursive: true })
   writeFileSync(join(BASE, 'src', 'TASK-002', 'ok.ts'), 'export const ok = 1\n', 'utf8')
   report(store, journal, { taskId: 'TASK-002', owner: 'ana-a', status: 'done', evidence: [
     { kind: 'artifact', detail: 'src/TASK-002/ok.ts', at: 'x' },
   ] })
-  assert.deepEqual(attributeRole({ sessionId: 's2', delegationDepth: 0, claims: claimsBySession(store, journal) }),
-    { kind: 'cockpit', role: 'cockpit' }, 'done 之后必须回到驾驶舱')
+  assert.deepEqual(attributeRole({ sessionId: 's2', delegationDepth: 1, claims: claimsBySession(store, journal) }),
+    { kind: 'unclaimed-child', role: 'dispatched' }, 'done 之后归属解除（掩码解除）')
 
   // ③ release（显式释放回 ready）→ 解除
   writeCard('TASK-003', 'tester')
   claim(store, journal, { taskId: 'TASK-003', owner: 'dev-b', sessionId: 's3', expectedRevision: 1 })
   release(store, journal, { taskId: 'TASK-003', actor: 'dev-b', reason: '换手' })
-  assert.deepEqual(attributeRole({ sessionId: 's3', delegationDepth: 0, claims: claimsBySession(store, journal) }),
-    { kind: 'cockpit', role: 'cockpit' }, 'release 之后必须回到驾驶舱')
+  assert.deepEqual(attributeRole({ sessionId: 's3', delegationDepth: 1, claims: claimsBySession(store, journal) }),
+    { kind: 'unclaimed-child', role: 'dispatched' }, 'release 之后归属解除（掩码解除）')
 
   // ④ 被换人（reassign）→ 原会话的归属解除（新 owner 由它自己重新认领）
   writeCard('TASK-004', 'architect')
   claim(store, journal, { taskId: 'TASK-004', owner: 'dev-c', sessionId: 's4', expectedRevision: 1 })
   reassign(store, journal, { taskId: 'TASK-004', actor: 'dev-c', owner: 'dev-d', reason: '换人' })
-  assert.deepEqual(attributeRole({ sessionId: 's4', delegationDepth: 0, claims: claimsBySession(store, journal) }),
-    { kind: 'cockpit', role: 'cockpit' }, '换人之后原会话不再算作该角色')
+  assert.deepEqual(attributeRole({ sessionId: 's4', delegationDepth: 1, claims: claimsBySession(store, journal) }),
+    { kind: 'unclaimed-child', role: 'dispatched' }, '换人之后原会话不再算作该角色')
 })
 
 // —————————————————————— T-4：驱动**真实钩子**，把 B6 的拒绝路径纳入回归 ——————————————————————
@@ -233,7 +254,7 @@ function hookHarness(config: Record<string, unknown> = {}): { drive: (name: stri
   assert.ok(listener !== undefined, '真实装配必须注册 tools/pre-execute 监听器')
   return {
     async drive(name: string, sessionId: string): Promise<{ kind: string; reason?: string }> {
-      const exec = { name, arguments: {}, agent: { session: { header: { id: sessionId, cwd: BASE, delegationDepth: 0 } } } }
+      const exec = { name, arguments: {}, agent: { session: { header: { id: sessionId, cwd: BASE, delegationDepth: sessionId === 's-root' ? 0 : 1 } } } /*HOOK*/ }
       return (await listener(exec, async () => ({ kind: 'allow' }))) as { kind: string; reason?: string }
     },
   }
@@ -291,8 +312,10 @@ test('M31-09 会话 id 的取法：与采集读同一字段，取不到就省略
   assert.ok(claimed !== undefined)
   assert.equal('sessionId' in (claimed.data as Record<string, unknown>), false, '没有会话 id 就不要写这个字段')
   assert.equal(claimsBySession(store, journal).some((item) => item.sessionId === 'undefined'), false, '归属表里不得出现假 id')
-  assert.deepEqual(attributeRole({ sessionId: 'undefined', delegationDepth: 0, claims: claimsBySession(store, journal) }),
-    { kind: 'cockpit', role: 'cockpit' }, '拿 "undefined" 当 id 也认不出角色（不会误拦）')
+  // 假 id 认不出任何卡 ⇒ 不按角色掩码（钩子只对 `kind === 'dispatched'` 施加掩码，所以"不会误拦"照旧成立）。
+  // 注意它仍是**子会话**（depth 1）⇒ `unclaimed-child`，而不是"变成驾驶舱"（R-1 的契约：身份看血缘）。
+  assert.deepEqual(attributeRole({ sessionId: 'undefined', delegationDepth: 1, claims: claimsBySession(store, journal) }),
+    { kind: 'unclaimed-child', role: 'dispatched' }, '拿 "undefined" 当 id 也认不出角色（不会误拦）')
 
   // 接线：工具层与命令层必须共用同一个取法
   const tools = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')

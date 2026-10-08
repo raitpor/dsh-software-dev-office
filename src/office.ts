@@ -7,7 +7,8 @@
  *   · 一切写入都经 `SdoStore`（路径沙箱 + 原子写）与 `Journal`（唯一真源）；
  *   · 投影（project.json）只是派生视图，随时可由 journal 重建（AC-006）。
  */
-import { statSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, join, relative, resolve, sep } from 'node:path'
 
 import type { BoardRequirement } from './board/render.js'
@@ -66,7 +67,7 @@ import { linkMany, renderTraceReport, report, unlink } from './domain/trace.js'
 import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
-import { claim, reassign, release, report as reportTask, staleClaims } from './domain/collab.js'
+import {claim, reassign, release, report as reportTask, staleClaims, updateTask} from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
 import { closeIteration, decompose, dropTask, listTasks, readIteration, readyTasks, startIteration, validatePlan } from './domain/plan.js'
 import type { DecomposeInput, PlanIssue } from './domain/plan.js'
@@ -83,8 +84,8 @@ import {
   renderDelivery,
   renderTestPlan,
   updateDefect,
-  verificationStats,
-} from './domain/records.js'
+  verificationStats, listRuns, recordRun, type DefectUpdate, evidenceFreshness, hashArtifact} from './domain/records.js'
+import type { RunInput, RunRecord } from './domain/records.js'
 import type {
   DeliveryManifest,
   Defect,
@@ -93,7 +94,11 @@ import type {
   TestCase,
   TestResult,
 } from './domain/records.js'
-import { createChange, listChanges } from './domain/change.js'
+import { createChange, listChanges, undigestedChanges as listUndigestedChanges } from './domain/change.js'
+import { isDesignDocTruthPath } from './types.js'
+import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
+import type { PoolAdmission, PoolChild, RolePool } from './domain/pool.js'
+import type { UndigestedChange } from './domain/change.js'
 import { renderHeader } from './infra/render.js'
 import type { CreateChangeInput } from './domain/change.js'
 import { evaluateDor, isEffectivelyOpen } from './domain/dor.js'
@@ -136,6 +141,7 @@ import { SdoStore } from './infra/store.js'
 import type {
   Adr,
   ChangeRequest,
+  ChangeRollback,
   DesignApplicability,
   DesignConfirmation,
   GateSignature,
@@ -167,8 +173,24 @@ import type { ApplicabilityDraftInput, ApplicabilityState } from './domain/appli
 import type { SignatureState } from './domain/signature.js'
 import { methodDocStatus } from './domain/methodDocs.js'
 import type { MethodDocStatus } from './domain/methodDocs.js'
-import { recordWorkspaceChanges, unresolvedSeqs } from './domain/workspaceChanges.js'
-import { readChildFaces, recordChildFace } from './domain/dispatchFace.js'
+import { recordWorkspaceChanges, unresolvedSeqs, readWorkspaceChanges} from './domain/workspaceChanges.js'
+import { faceDiff, readChildFaces, recordChildFace } from './domain/dispatchFace.js'
+import { attributeRole, claimsBySession, listRoleCards, toolAllowList } from './domain/roles.js'
+import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
+import { rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
+import type { RehashResult, ReviewAdoption, VerifyResult } from './domain/reviewVerification.js'
+import type { DispatchFinished } from './domain/dispatchReports.js'
+import {
+  SCOPE_ALL,
+  readConstructionProfile,
+  recordContractTest,
+  recordMutation,
+  validateDerivation,
+  writeConstructionProfile,
+} from './domain/construction.js'
+import { CONSTRUCTION_CHECKS, CONSTRUCTION_PACKAGES } from './types.js'
+import type { ConstructionPackage } from './types.js'
+import type { ConstructionExemption, ConstructionProfile, ContractTestRecord, MutationRecord, ProfileRead } from './domain/construction.js'
 import type { ChildFaceEntry } from './domain/dispatchFace.js'
 import { claimBaseline } from './domain/collab.js'
 
@@ -187,6 +209,21 @@ export function designPhaseOf(phase: string): boolean {
     if (definition !== undefined) return definition.exit.includes('G3')
   }
   return false
+}
+
+/**
+ * 文本内容的 sha256（十六进制）。
+ *
+ * 与 `truthFileHash` 用**同一个算法**，但那份是"读盘现算"，这份是"按**实际写盘的那份内容**算" ——
+ * §2.5b 要判的是"盘上这份还是不是我们上次渲染写下的"，所以两边必须对同一份字节算。
+ */
+function sha256Of(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+/** 旧台账的"已读"退化键：一笔无 `finishedSeq` 的旧登记按 `(子会话, 报告落点)` 顶一笔结算。 */
+function reportKey(childSessionId: string, report: string): string {
+  return `${childSessionId}|${report}`
 }
 
 /**
@@ -351,6 +388,12 @@ export interface StatusSnapshot {
    * 「有 N 个待你确认的设计问题」——不让模型静默推进。
    */
   openDesignQuestions?: number | undefined
+  /**
+   * **待核实的评审**（2026-10-08 口径）：评审结果不会被自动采纳 —— 要由该卡的**实现会话**
+   * 逐条核实（`reproduced` / `refuted`）后才算数。状态块每轮如实列出，别让"有评审但没核实"
+   * 看起来像"没有评审"（那是两种不同的红）。
+   */
+  pendingReviewVerifications?: { count: number; ids: string[] } | undefined
   /** 当前阶段是否已进入"架构/设计"语境（按流程阶段 id 判断，不看项目类型） */
   designPhase?: boolean | undefined
   /**
@@ -403,6 +446,15 @@ const REJECT_KEY: Record<string, string> = {
   noKeyword: 'redteam.fileNoKeyword',
   duplicate: 'redteam.fileDuplicate',
 }
+
+/**
+ * `.sdo/evidence/file-history/` 里**每个真源**最多保留的旧稿份数（§2.5a，第二轮整体评审）。
+ *
+ * 为什么要有上限：这份快照是"直接 `write`/`edit` 覆盖真源"的最后一道可恢复副本，但它**不是真源**、
+ * 也没人读 —— 不设上限就会随直写次数无界增长（真源本身很小，但一次重写就是一份全量副本）。
+ * 20 份足够覆盖"发现改坏了、回头找上一版"的实际窗口；同一个真源更早的旧稿按时间从最旧删起。
+ */
+export const FILE_HISTORY_KEEP = 20
 
 export class SoftwareDevOffice {
   /** 会话 → 工作目录。多会话并存在不同目录时也不会串。 */
@@ -502,12 +554,152 @@ export class SoftwareDevOffice {
     }
   }
 
+  /**
+   * **写前快照**（SDO-19 / SDO-26，2026-10-05 真机事故）：直接 `write`/`edit` 覆盖 `.sdo/` 下
+   * **手可编辑真源**之前，先把旧内容存一份到 `.sdo/evidence/file-history/`。
+   *
+   * 为什么需要它：真机上 `.sdo/design/deviations.yml` 被后续卡用 `write` 整篇重写 ⇒ 27 条 DEV 与
+   * A1–A10 裁决正文**永久丢失**（journal 里没有正文、宿主机存档也没有）。直接写文件既不受门禁监控、
+   * 也不产生事件，所以唯一能救的就是**留一份可恢复的副本**。这不改任何行为（不拦、不判红），
+   * 调用方 fail-open：快照失败绝不影响写操作。
+   */
+  snapshotTruthFile(call: OfficeCall, relative: string): string | undefined {
+    const workspace = this.requireWorkspace(call)
+    const store = this.storeFor(workspace)
+    const normalized = relative.replace(/^\.\//u, '')
+    if (!normalized.startsWith('.sdo/')) return undefined
+    // 不给自己/台账留副本：journal 是真源且已被纪律禁止直接写；file-history 自身避免递归
+    if (normalized.includes('journal.jsonl') || normalized.includes('file-history')) return undefined
+    // 注意：`store` 已经扎根在 `.sdo/`，所以要从相对 `.sdo` 的路径切（带上 `.sdo` 会拼成 `.sdo/.sdo/...`）
+    const segments = normalized.slice('.sdo/'.length).split('/').filter((item) => item !== '')
+    const source = store.path(...segments)
+    if (!existsSync(source)) return undefined
+    return this.snapshotContent(workspace, normalized, readFileSync(source, 'utf8'))
+  }
+
+  /**
+   * **快照正文**（§2.5a/b，第二轮整体评审）：把 `relative` 的当前正文存成一份旧稿，返回落点。
+   *
+   * 两个口径都在这里收口：
+   *   · **名字必须唯一到毫秒以内**：旧实现只用 ISO 时间戳（毫秒级），同一毫秒内的连续写入会
+   *     **互相覆盖** —— 探针实测 `25 次写入 ⇒ 盘上只剩 5 份`，即"防丢正文的机制"自己在丢正文。
+   *     现在追加同毫秒内单调的 4 位序号（`-0001`），名字序 == 时间序（补零保证字典序不乱）；
+   *   · **份数有上限**：每个真源只保留最近 {@link FILE_HISTORY_KEEP} 份（旧的按时间从最旧删起）。
+   *     这是**观测产物**（`evidence/`，不是真源），不产生 journal 事件 —— 新事件类型会流进
+   *     "签字失效/中性表"那两张表，把一次例行清理变成门禁事件（详见 `types.ts` 的 `isNeutralEvent`）。
+   *     上限本身写在 README 里给人看。
+   *
+   * fail-open 由调用方保证（快照失败绝不影响写操作）；这里自己也不抛。
+   */
+  private snapshotContent(workspace: string, relative: string, text: string): string | undefined {
+    try {
+      const store = this.storeFor(workspace)
+      const slug = relative.replace(/[^A-Za-z0-9._-]/gu, '_')
+      const stamp = new Date().toISOString().replace(/[:.]/gu, '-')
+      let name = `${slug}.${stamp}-0001.bak`
+      // 同毫秒撞名 ⇒ 顺延序号（不会覆盖任何已有旧稿）。4 位意味着同一毫秒 9999 次以上才可能回绕，
+      // 那时宁可不写（返回 undefined = 调用方 fail-open），也不覆盖既有副本。
+      let sequence = 1
+      while (existsSync(store.path('evidence', 'file-history', name))) {
+        sequence += 1
+        if (sequence > 9999) return undefined
+        name = `${slug}.${stamp}-${String(sequence).padStart(4, '0')}.bak`
+      }
+      const target = store.writeText(['evidence', 'file-history', name], text)
+      this.pruneFileHistory(store, slug)
+      return this.relativize(workspace, target)
+    } catch {
+      return undefined
+    }
+  }
+
+  /** 把某个真源的旧稿裁到 {@link FILE_HISTORY_KEEP} 份（`listNames` 已排序 ⇒ 从头删 = 删最旧）。 */
+  private pruneFileHistory(store: SdoStore, slug: string): void {
+    const names = store
+      .listNames('evidence', 'file-history')
+      .filter((name) => name.startsWith(`${slug}.`) && name.endsWith('.bak'))
+    const excess = names.length - FILE_HISTORY_KEEP
+    for (const name of names.slice(0, Math.max(0, excess))) {
+      try {
+        store.remove('evidence', 'file-history', name)
+      } catch {
+        /* fail-open：删不掉旧稿不影响本次写入 */
+      }
+    }
+  }
+
+  /**
+   * **SDO-19（2026-10-05 真机）**：把「绕过 SDO 直接 `write`/`edit` 改 `.sdo/` 真源」记成**真源事件**。
+   *
+   * 两个洞是同一机制的两面（报告的结论 #2）：直接写文件**既不掀签字、也不让文档判陈旧**（过松），
+   * 同一机制又被用来在不触发任何门禁反应的情况下整篇覆盖真源（事故 SDO-26，23 条 DEV 正文永久丢失）。
+   * 现在写成功后落一条 `truth/file-written`（含 sha256）：它不在中性表里 ⇒ G3 签字自然失效；
+   * 同时列进 `DESIGN_DOC_SOURCE_EVENTS` ⇒ C-25 判 `DESIGN.md` 陈旧。
+   *
+   * 只认 `.sdo/` 下的**真源**：`journal.jsonl`（纪律已禁直接写）与 `evidence/`（观测产物）不算。
+   */
+  /**
+   * **真源文件当前内容的 sha256**（R2 复审：只记"内容真的变了"的写）。
+   *
+   * 与 `noteTruthFileWrites` 用**同一套路径归一化与哈希口径**（`.sdo/` 相对路径 → `store.path`，
+   * `createHash('sha256')`），读不到 ⇒ 空串（当"新文件/读不到"，调用方按"变了"处理）。
+   */
+  truthFileHash(call: OfficeCall, path: string): string {
+    const normalized = String(path).replace(/^\.\//u, '')
+    if (!normalized.startsWith('.sdo/')) return ''
+    const store = this.storeFor(this.requireWorkspace(call))
+    const segments = normalized.slice('.sdo/'.length).split('/').filter((item) => item !== '')
+    const source = store.path(...segments)
+    if (!existsSync(source)) return ''
+    try {
+      return createHash('sha256').update(readFileSync(source, 'utf8')).digest('hex')
+    } catch {
+      return ''
+    }
+  }
+
+  noteTruthFileWrites(call: OfficeCall, paths: readonly string[]): number {
+    const workspace = this.requireWorkspace(call)
+    const store = this.storeFor(workspace)
+    const journal = new Journal(store)
+    let recorded = 0
+    for (const raw of paths) {
+      const normalized = String(raw).replace(/^\.\//u, '')
+      if (!normalized.startsWith('.sdo/')) continue
+      if (normalized.includes('journal.jsonl') || normalized.startsWith('.sdo/evidence/')) continue
+      const segments = normalized.slice('.sdo/'.length).split('/').filter((item) => item !== '')
+      const source = store.path(...segments)
+      if (!existsSync(source)) continue
+      const text = readFileSync(source, 'utf8')
+      journal.append('truth/file-written', {
+        path: normalized,
+        bytes: text.length,
+        sha256: createHash('sha256').update(text).digest('hex'),
+        // **SDO-19 复审**：是不是"会改 DESIGN.md"的那类真源 —— 由写入侧算一次（口径在 types.ts），
+        // C-25 只读这个字段；**G3 签字失效不受它影响**（任何真源直写都失效）。
+        docSource: isDesignDocTruthPath(normalized),
+      })
+      recorded += 1
+    }
+    return recorded
+  }
+
   /** 追加一条事件（真源写入的统一入口）。 */
   appendEvent(call: OfficeCall, type: SdoEventType, data: Record<string, unknown>, actor = 'sdo'): void {
     this.journalFor(this.requireWorkspace(call)).append(type, data, actor)
   }
 
   /** 初始化项目（幂等）：建目录、写 config.yml、追加 project/created。 */
+  /** 插件版本（读随包 `package.json`；读不到回 `unknown`，绝不假装）。 */
+  private version(): string {
+    try {
+      const pkg = JSON.parse(readFileSync(new URL('../../package.json', import.meta.url), 'utf8')) as { version?: unknown }
+      return typeof pkg.version === 'string' ? pkg.version : 'unknown'
+    } catch {
+      return 'unknown'
+    }
+  }
+
   init(call: OfficeCall, options: InitOptions = {}): InitResult {
     const workspace = this.requireWorkspace(call)
     const store = this.storeFor(workspace)
@@ -517,6 +709,17 @@ export class SoftwareDevOffice {
     const existing = journal.loadProject().project
     if (existing !== undefined) {
       return { project: existing, created: false, dataDir: store.root }
+    }
+    // **SDO-08（真机）**：台账不记版本 ⇒ 跨版本复现只能靠外部线索。落一条环境事件（元数据，不作废签字）。
+    try {
+      journal.append('project/environment', {
+        plugin: 'dsh-software-dev-office',
+        pluginVersion: this.version(),
+        hostVersion: process.env.DSH_VERSION ?? 'unknown',
+        node: process.versions.node,
+      })
+    } catch {
+      /* fail-open：版本读不到不影响立项 */
     }
 
     const config: ProjectConfig = defaultProjectConfig()
@@ -788,11 +991,21 @@ export class SoftwareDevOffice {
       changes: listChanges(store).length,
       openDesignQuestions: openDesignQuestions(store).length,
       designPhase: project !== undefined && designPhaseOf(project.phase),
+      pendingReviewVerifications: (() => {
+        const pending = reviewAdoptions(store, new Journal(store)).filter(
+          (item) => item.review.findings.length > 0 && item.state !== 'adopted',
+        )
+        return { count: pending.length, ids: pending.map((item) => item.review.id) }
+      })(),
       // **§7.1 不得静默（注入块那一处）**：声明的内容必须每轮都出现在状态块里，
       // 用户才能在模型动手之前看到"哪些视图做、哪些不做及理由"。
       applicabilityLines: applicabilityLines(readApplicability(store)),
       applicabilityConfirmed: applicabilityState(store).declaration?.confirmed !== undefined,
-      gateSigned: signatureState(store, new Journal(store), 'G3').status === 'valid',
+      // **R3**：展示口径也要消费 `inconsistent`（与真源对不上的签字不得显示成"已签"）
+      gateSigned: (() => {
+        const state = signatureState(store, new Journal(store), 'G3')
+        return state.status === 'valid' && state.inconsistent !== true
+      })(),
       ...(() => {
         const budget = readBudgetChecked(store).budget
         if (budget === undefined) return {}
@@ -1158,8 +1371,21 @@ export class SoftwareDevOffice {
       phase: gate.phase,
       ...gateResultDetail(gate),
     })
-    journal.append('phase/exited', { phase: 'requirements' })
-    journal.append('phase/entered', { phase: 'architecture' })
+    // **D-6（sdo-test-new 2026-10-08，minor）**：阶段转移**只写一次**，而且如实写"退出的到底是哪个阶段"。
+    // 旧实现无条件写死 `exited requirements` + `entered architecture` —— 于是
+    //   ① 「先 `advance` 再 `baseline`」会**重放**一次转移（真机 journal seq 97/98 与 101/102），
+    //      `phaseHistory` 出现两个 architecture 条目，requirements 被"退出"两次 ⇒ 时长统计与审计失效；
+    //   ② 在 requirements **之前**的阶段（真机夹具里是 intake）调 baseline，台账会记一条
+    //      "退出了 requirements"的**假事件**。
+    // 冻结需求这件事本身照做（那是 baseline 的本职），只有"转移"这一步受这条闸门约束。
+    const phaseOrder = process.phases.map((item) => item.id)
+    const currentPhase = project?.phase ?? ''
+    const currentIndex = phaseOrder.indexOf(currentPhase)
+    const architectureIndex = phaseOrder.indexOf('architecture')
+    if (architectureIndex >= 0 && (currentIndex === -1 ? true : currentIndex < architectureIndex)) {
+      journal.append('phase/exited', { phase: currentPhase === '' ? 'requirements' : currentPhase })
+      journal.append('phase/entered', { phase: 'architecture' })
+    }
     return { ok: true, dor, baselined, gate }
   }
 
@@ -1399,6 +1625,8 @@ export class SoftwareDevOffice {
       journal.append('gate/result', { gate: evaluation.gate, status: evaluation.status, phase: project.phase, ...gateResultDetail(evaluation) })
     }
     const next = nextPhase(process, project.phase)
+    // **D-6**：同一阶段的"转移"是重放（`baseline` 触发过一次的那类 bug），不是推进 —— 不写、且如实说没推进。
+    if (next !== undefined && next.id === project.phase) return { advanced: false, from: project.phase }
     journal.append('phase/exited', { phase: project.phase })
     if (next === undefined) {
       return { advanced: false, from: project.phase }
@@ -1453,8 +1681,12 @@ export class SoftwareDevOffice {
     turn?: string | undefined
     basisChecked?: 'session' | 'unavailable' | undefined
   }): GateSignature {
-    const { store, journal } = this.contextFor(call)
-    return recordSignature(store, journal, input)
+    const { store, journal, project } = this.contextFor(call)
+    // **F-1（2026-10-05 真机，major）**：签字**落盘前**归一成内部编号。旧实现原样落盘调用方字符串
+    // （真机留下 `gate: 架构门禁（G3）`），而判定侧按 `'G3'` 精确过滤 ⇒ 签字永远不被看见。
+    // 复用 `check` 侧同一个解析函数（两侧口径一致），回执里印的是**落盘后的**那个 id。
+    const gate = normalizeGateId(input.gate, processOfProject(project))
+    return recordSignature(store, journal, { ...input, gate })
   }
 
   /** 某门禁的签字状态（缺失 / 无引用 / 已失效 / 有效）。 */
@@ -1735,11 +1967,27 @@ export class SoftwareDevOffice {
   }
 
   /**
+   * **已批准但尚未消化的需求变更**（语义 A）：`claim` 会因此被拒，所以"为什么被拒"必须能主动查出来 ——
+   * 尤其是插件重启 / 上下文压缩之后，那条回执已经不在上下文里了。
+   */
+  undigestedChanges(call: OfficeCall): UndigestedChange[] {
+    const { store, journal } = this.contextFor(call)
+    return listUndigestedChanges(store, journal, this.process(call))
+  }
+
+  /**
    * 基线后走变更控制：建 CR（含影响分析）；`approved` 才应用变更。
    *
    * **§6.7**：重算评分时**规则维度按新内容重算、模型维度沿用**（`input.dimensions`
    * 显式重给时优先）—— 旧实现两次都没传，模型通道的语义分被规则基线抹掉，
    * "变更 → 重新基线"于是被 C1 误拦。
+   *
+   * **语义 A（2026-10-04）**：批准后**强制回退到需求阶段**（`change/rollback` 留痕）。
+   * 真机证据：`CR-001` 批准 23 秒后 `task/claimed` 照常发生 —— 变更控制此前只登记/决策/算影响面，
+   * 不改阶段、不碰基线，"需求变了"于是对开发阶段毫无约束。现在两半一起上：
+   *   ① 阶段拉回需求阶段（实现代码写入随即被阶段纪律挡住）；
+   *   ② `claim` 由 `change-not-digested` 拦住，直到"重新基线 + 重过设计门"两件都做完。
+   * ②是硬约束（①只挡写入，`claim` 本不受阶段纪律约束）——回执必须把两半都写出来。
    */
   change(call: OfficeCall, input: CreateChangeInput): {
     change: ChangeRequest
@@ -1747,6 +1995,8 @@ export class SoftwareDevOffice {
     reason?: string | undefined
     /** 本次重算评分时语义分的来源（回执要如实写出来，不静默） */
     dimensionsFrom?: 'explicit' | 'carried' | 'none' | undefined
+    /** 语义 A：批准触发的阶段回退（未触发时为 `undefined`） */
+    rollback?: ChangeRollback | undefined
   } {
     const { store, journal } = this.contextFor(call)
     const requirement = readRequirement(store, input.requirement)
@@ -1783,6 +2033,42 @@ export class SoftwareDevOffice {
       change,
       applied: true,
       dimensionsFrom: input.dimensions !== undefined ? 'explicit' : modelDimensions !== undefined ? 'carried' : 'none',
+      rollback: this.rollbackForChange(call, change, next.id, input.decidedBy),
+    }
+  }
+
+  /**
+   * 语义 A：批准的变更把阶段**拉回需求阶段**（`change/rollback` + `phase/rolled-back` 留痕）。
+   *
+   * 三处判断都有理由（都不静默）：
+   *   · 已经在需求阶段 ⇒ 无需回退（`alreadyThere`）——没有回退边，也不该报错；
+   *   · 有合法回退边 ⇒ 走 `rollbackPhase`（沿用 R-3/C-2E 的全部留痕与门禁作废口径）；
+   *   · 没有合法回退边 ⇒ 照实回报 `error`（拦截仍由 `change-not-digested` 承担，不假装回退了）。
+   */
+  private rollbackForChange(call: OfficeCall, change: ChangeRequest, requirementId: string, by: string): ChangeRollback {
+    const { journal, project } = this.contextFor(call)
+    const process = processOfProject(project)
+    // 需求阶段 = 出口门禁是 G2 的那个阶段（与 `baseline` 同源；四个随包流程都叫 requirements）
+    const target = process.phases.find((phase) => phase.exit.includes('G2'))?.id ?? 'requirements'
+    const from = project?.phase ?? ''
+    const base: ChangeRollback = { from, to: target, invalidatedGates: [], stillWaivedGates: [], alreadyThere: false }
+    if (project === undefined) return { ...base, error: t('uiOffice.rollbackNoProject') }
+    if (from === target) return { ...base, alreadyThere: true }
+    const outcome = this.rollbackPhase(call, { to: target, reason: fmt('uiChange.rollbackReason', { p1: change.id }), by })
+    if (!outcome.ok) return { ...base, ...(outcome.error === undefined ? {} : { error: outcome.error }) }
+    journal.append('change/rollback', {
+      id: change.id,
+      requirement: requirementId,
+      from: outcome.from,
+      to: outcome.to,
+      by,
+    })
+    return {
+      from: outcome.from,
+      to: outcome.to,
+      invalidatedGates: outcome.invalidatedGates,
+      stillWaivedGates: outcome.stillWaivedGates,
+      alreadyThere: false,
     }
   }
 
@@ -1857,9 +2143,9 @@ export class SoftwareDevOffice {
    * （旧实现照写一条 `contentHash: ''` 的记录，回执却说"确认成功" —— 那条确认永远不被承认，
    * 还顺手作废了 G3 签字）。调用方必须如实报告"没有确认成功"。
    */
-  confirmDesign(call: OfficeCall, target: string, basis: string, by: string): DesignConfirmation | undefined {
+  confirmDesign(call: OfficeCall, target: string, basis: string, by: string, basisSource: 'user' | 'proxy' = 'user'): DesignConfirmation | undefined {
     const { store, journal } = this.contextFor(call)
-    return confirmDesign(store, journal, target, basis, by)
+    return confirmDesign(store, journal, target, basis, by, basisSource)
   }
 
   /** 关键条目确认缺口（`confirm` 的目标校验与门禁提示用）。 */
@@ -1988,6 +2274,12 @@ export class SoftwareDevOffice {
    * `puml`：**可选**。给了（或用 `true` 走默认落点 {@link DEFAULT_PUML_PATH}）就**额外**
    * 写一份 PlantUML **骨架源码**。⚠️ 本仓库没有 PlantUML 渲染器：这里只写 `.puml` 文件，
    * **不会**（也不声称会）把它渲染成图。
+   *
+   * **§2.5b（第二轮整体评审）**：`docs/DESIGN.md` 是人审交付物，可能被人手改（加批注）。
+   * 手改**有人察觉**（C-25 逐字节比对判红），但旧实现的下一次渲染会把它**静默销毁**：既不留副本，
+   * 渲染事件里也没有"覆盖了谁"的痕迹。现在：覆盖前先判断盘上那份**是不是我们上次渲染写下的**
+   * （比 `design/rendered` 事件里记的 `sha256`），不是就先按 `file-history` 口径留一份副本，
+   * 并把副本落点记进渲染事件（`snapshot`）。
    */
   renderDesign(call: OfficeCall, puml?: string | boolean | undefined): { path: string; bytes: number; pumlPath?: string | undefined; pumlBytes?: number | undefined } {
     const { store, journal, project, workspace } = this.contextFor(call)
@@ -2004,19 +2296,65 @@ export class SoftwareDevOffice {
       questions: listQuestions(store),
       seq,
     })
+    // 覆盖前先看盘上那份是不是**上次渲染写下的**（§2.5b）：不是 ⇒ 有人手改过，先留副本再覆盖。
+    const body = text.endsWith('\n') ? text : `${text}\n`
+    const overwritten = this.snapshotHandEditedDesignDoc(call, workspace)
     writeDesignDoc(workspace, text)
     // 字节数由**刚渲染出来的文本**给出：再去读一遍盘既多余，也容易被沙箱差异带偏（回执报 0 字节）
     const bytes = Buffer.byteLength(text, 'utf8')
     // **R-10**：把渲染时的**阶段**也写进事件 —— 头里的 `phase` 只有能被事件背书才可信，
     // 否则任何人都能把它改成"我是在交付阶段渲染的"（阶段只出现在头里、不进正文，
     // 整份文件比对拦不住它）。
-    journal.append('design/rendered', { kind: 'DESIGN.md', seq, bytes, phase: project?.phase ?? '' })
+    // **§2.5b**：`sha256` 让"盘上这份是不是我们写的"变成可判定（下次渲染据此决定要不要留副本），
+    // `snapshot` 则记下"这次覆盖前给谁留了副本"（没留就不写这个键）。
+    journal.append('design/rendered', {
+      kind: 'DESIGN.md',
+      seq,
+      bytes,
+      phase: project?.phase ?? '',
+      sha256: sha256Of(body),
+      ...(overwritten === undefined ? {} : { snapshot: overwritten }),
+    })
     if (target === undefined) return { path: 'docs/DESIGN.md', bytes }
     const pumlPath = target.path
     const pumlBytes = writePlantUml(workspace, pumlPath, plantUmlText(readUiView(store)))
     // F-1：puml 骨架同样记 `phase`（同一渲染动作的两份产物，记录口径一致）
     journal.append('design/rendered', { kind: pumlPath, seq, bytes: pumlBytes, phase: project?.phase ?? '' })
     return { path: 'docs/DESIGN.md', bytes, pumlPath, pumlBytes }
+  }
+
+  /**
+   * **手改交付物在被覆盖前留副本**（§2.5b）。
+   *
+   * 判定"手改"的依据是**真源事件**，不是猜：上一条 `design/rendered`（`kind: DESIGN.md`）记了
+   * 它当时写下的内容哈希；盘上这份对不上 ⇒ 渲染之后有人动过它。留副本走的是与 `.sdo/` 真源
+   * **同一套** `file-history` 口径（同一上限、同一命名），落点返回给调用方记进渲染事件。
+   *
+   * 旧台账兼容：没有 `sha256` 的老事件只有 `bytes`（= **渲染文本**的字节数，而盘上文件由
+   * `writeText` 补过一个尾换行，所以可能差 1）—— 差超过 1 字节才算"被动过"（一定改过 ⇒ 留副本）；
+   * 差在 1 以内 = 无法判定 ⇒ **不留**，宁可少留也不把每次渲染都变成一次备份。
+   * 新事件一律带 `sha256`（按**实际写盘的那份内容**算），这个模糊窗口从此关闭。任何异常都 fail-open。
+   */
+  private snapshotHandEditedDesignDoc(call: OfficeCall, workspace: string): string | undefined {
+    try {
+      const rooted = new SdoStore(workspace)
+      const previous = rooted.readText('docs', 'DESIGN.md')
+      if (previous === undefined) return undefined
+      const last = this.contextFor(call)
+        .journal.read()
+        .events.filter((event) => event.type === 'design/rendered' && String(event.data['kind'] ?? '') === 'DESIGN.md')
+        .at(-1)
+      if (last === undefined) return undefined
+      const recordedHash = typeof last.data['sha256'] === 'string' ? last.data['sha256'] : undefined
+      const touched = recordedHash === undefined
+        ? Math.abs(Buffer.byteLength(previous, 'utf8') - Number(last.data['bytes'] ?? -1)) > 1
+        : sha256Of(previous) !== recordedHash
+      if (!touched) return undefined
+      // 留的是**被覆盖掉的那份**（人手改过的），不是即将写入的新渲染。
+      return this.snapshotContent(workspace, 'docs/DESIGN.md', previous)
+    } catch {
+      return undefined
+    }
   }
 
   adrs(call: OfficeCall): Adr[] {
@@ -2285,14 +2623,16 @@ export class SoftwareDevOffice {
     return capacityPlan(readyTasks(tasks, 64), inProgress, maxParallel)
   }
 
-  /** 记录派发决策（含后端与降级原因）。 */
-  recordDispatch(call: OfficeCall, input: { taskId: string; backend: string; owner: string; degradedReason?: string | undefined }): void {
+  /** 记录派发决策（含后端、降级原因与"显式指定覆盖了迭代锁"的留痕）。 */
+  recordDispatch(call: OfficeCall, input: { taskId: string; backend: string; owner: string; degradedReason?: string | undefined; overrideNote?: string | undefined }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/decided', {
       task: input.taskId,
       backend: input.backend,
       owner: input.owner,
       degradedReason: input.degradedReason ?? '',
+      // **D-15**：与 `degradedReason` 分开记 —— 降级 = 结果不等于请求；覆盖 = 结果等于请求（锁让路）。
+      overrideNote: input.overrideNote ?? '',
     })
   }
 
@@ -2300,14 +2640,154 @@ export class SoftwareDevOffice {
    * **真派发留痕（P-1）**：宿主真的起了一次子代理运行 —— 记下 provider、子会话 id 与下发的工具数。
    * （只在 `startDispatch` 返回 `started:true` 时调用；失败只写 `dispatch/decided`，不写这里。）
    */
-  recordDispatchStarted(call: OfficeCall, input: { taskId: string; provider: string; childSessionId: string; tools: number; role?: string | undefined }): void {
+  recordDispatchStarted(call: OfficeCall, input: {
+    taskId: string
+    provider: string
+    childSessionId: string
+    /** **SDO 流程面白名单**条数（受角色职责分离控制的那一部分） */
+    tools: number
+    /** **实际下发的 deny 面**条数（通用面硬禁止 ∪ SDO 补集） */
+    denyTools?: number | undefined
+    /** 实际下发的 deny 名单（审计用：回执里说"挡了什么"要有台账可查） */
+    deny?: string[] | undefined
+    /** 该角色在 SDO 流程面可用的工具（审计用） */
+    sdoAllow?: string[] | undefined
+    role?: string | undefined
+    /** 宿主给这个子代理的模式：`continuable` 才能被复用（老事件没这个字段 ⇒ 按 one-shot 读） */
+    mode?: 'continuable' | 'one-shot' | undefined
+    /** 这次是**复用**已有子代理（真复用）还是新起一个 */
+    reused?: boolean | undefined
+    /** 这一轮子代理的**掩码指纹**（SDO-52）：复用前要比对，不符即强制新起 */
+    maskHash?: string | undefined
+  }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/started', {
       task: input.taskId,
       provider: input.provider,
       childSessionId: input.childSessionId,
       tools: input.tools,
+      ...(input.denyTools === undefined ? {} : { denyTools: input.denyTools }),
+      ...(input.deny === undefined ? {} : { deny: input.deny }),
+      ...(input.sdoAllow === undefined ? {} : { sdoAllow: input.sdoAllow }),
       ...(input.role === undefined ? {} : { role: input.role }),
+      ...(input.mode === undefined ? {} : { mode: input.mode }),
+      ...(input.maskHash === undefined ? {} : { maskHash: input.maskHash }),
+      ...(input.reused === undefined ? {} : { reused: input.reused }),
+    })
+    // **§2 第 1 条**：派发（尤其**复用**同一子会话换角色）会改变这个会话的血缘角色 ⇒ 让角色缓存立刻失效，
+    // 否则新掩码最多滞后一个 TTL（旧实现只认领/回报时 +1）。
+    this.roleCacheVersion += 1
+  }
+
+  /**
+   * **角色池现状**（子代理复用）：从 `dispatch/started`/`dispatch/finished` 现算 ——
+   * 谁在飞、谁空闲可复用、还能收几张卡。插件重启不会丢（真源是 append-only 台账）。
+   */
+  poolView(call: OfficeCall): RolePool[] {
+    return this.poolSnapshot(call).pools
+  }
+
+  /** 池快照（**只读一次 journal**）：孩子状态 + 每个角色的池 + 待派卡。 */
+  private poolSnapshot(call: OfficeCall): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[] } {
+    const { journal } = this.contextFor(call)
+    const children = [
+      ...foldPoolChildren(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values(),
+    ]
+    const ready = readyTasks(this.tasks(call), 64)
+    return {
+      children,
+      ready,
+      pools: rolePools({
+        children,
+        roles: ready.map((task) => task.role),
+        caps: this.settings.poolCaps,
+        defaultCap: this.settings.maxParallelDispatch,
+        // 真机缺陷修复：未结算的僵尸派发不再永久占位（超时即孤儿），TTL 可配
+        orphanTtlMs: this.settings.dispatchOrphanTtlMinutes * 60_000,
+        nowMs: Date.now(),
+        reuseBlockedOf: this.reuseBlockedOf(call),
+      }),
+    }
+  }
+
+  /**
+   * **R-1（sdo-test-new 2026-10-08 复测，major）**：该空闲子代理**有没有"能用"的证据**。
+   *
+   * 真机事实：修复前构建创建的 `f4ae86fa`（descriptor `toolFilter.allow: []`）在修复后**又被复用了两次**，
+   * 两次都是"无工具 → 把工具调用写成正文 → 1 轮结束"。复用判定当时只比 `maskHash`（角色 allow∪deny 的指纹），
+   * 而"这个会话**创建时**实际拿到几个工具"是**创建期**的事实 —— 掩码指纹覆盖不到它。
+   *
+   * 现在的口径：**复用要求正面证据** —— `child-tools.jsonl` 里观测到这个子会话**公告面非空**。
+   * 观测到零工具、或根本没有观测记录，一律**强制新起**（新起永远是对的；复用只是省一次会话创建的优化），
+   * 原因写进 `reuseSkipped` 由回执点名，并且这类会话**不再占池位**（否则 `cap=1` 的角色会永久排队）。
+   */
+  private reuseBlockedOf(call: OfficeCall): (child: PoolChild) => string | undefined {
+    let faces: ChildFaceEntry[] | undefined
+    try {
+      faces = this.childFaces(call)
+    } catch {
+      faces = undefined // 读不到观测 ⇒ 一律"没有证据"（下面按没有观测处理）
+    }
+    const byId = new Map((faces ?? []).map((face) => [face.childSessionId, face]))
+    return (child: PoolChild): string | undefined => {
+      const face = byId.get(child.childSessionId)
+      if (face === undefined) return '没有该子会话的工具面观测（无法确认它手里有工具）→ 强制新起'
+      if (face.tools.length === 0) return '该会话创建时拿到 0 个工具（历史零工具派发）→ 强制新起'
+      return undefined
+    }
+  }
+
+  /**
+   * 该卡是否「挂起后**原样重派**」（`task/blocked` 之后卡内容没改过就又被派）——派发回执要如实提示。
+   * 真机教训：同一张卡、同一理由挂起后原样重派，等于让它再撞一次同一堵墙。
+   */
+  unresolvedBlock(call: OfficeCall, taskId: string): { reason: string; seq: number } | undefined {
+    const { journal } = this.contextFor(call)
+    return findUnresolvedBlock(
+      journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at })),
+      taskId,
+    )
+  }
+
+  /**
+   * **派发准入（池 + 队列）**：先全局并行预算、再逐角色池；池满的卡**排队**（不丢）。
+   *
+   * @param options.reuseIdle 宿主有没有可续聊入口 —— 没有时"空闲子代理"不可投递（one-shot 结算即消失），
+   *   此时池退化为**并发上限**（这一点必须在回执里说清，不能假装在复用）。
+   */
+  poolPlan(call: OfficeCall, options: { reuseIdle?: boolean | undefined; maskHashOf?: ((role: string) => string) | undefined } = {}): PoolAdmission {
+    const snapshot = this.poolSnapshot(call)
+    const tasks = this.tasks(call)
+    const inProgress = tasks.filter((task) => task.status === 'in-progress').length
+    // **一张卡不许同时在两个子代理里**：已有"在飞"派发（started 未 finished）的卡不重复派 ——
+    // 队列语义是"每张卡只入队一次"。代价要如实说：派发丢了的卡会一直算在飞，直到结算或人工处置。
+    const orphanTtlMs = this.settings.dispatchOrphanTtlMinutes * 60_000
+    const nowMs = Date.now()
+    // 只有**活着的**在飞才挡住同一张卡的重复派发；超时未结算（孤儿）不挡（否则那张卡永远派不出去）
+    const inFlight = new Set(
+      snapshot.children
+        .filter((child) => child.state === 'busy' && !isStaleDispatch(child, nowMs, orphanTtlMs))
+        .map((child) => child.task),
+    )
+    // **SDO-30（2026-10-05 真机）**：把「最近派发过」的卡排到后面 —— 旧实现固定按 `size → id` 排序，
+    // 关键的小卡（如解冻卡）排在 8 张同类卡之后被反复跳过（真机只能靠人肉 `send_message` 直指卡号）。
+    // 「最近派发时间」从 `dispatch/started` 的 `startedAt` 现算：**没派过的排最前**。
+    const lastDispatched = new Map<string, string>()
+    for (const child of snapshot.children) {
+      if (child.task === '') continue
+      if (child.startedAt > (lastDispatched.get(child.task) ?? '')) lastDispatched.set(child.task, child.startedAt)
+    }
+    const fairReady = [...snapshot.ready].sort((a, b) =>
+      (lastDispatched.get(a.id) ?? '').localeCompare(lastDispatched.get(b.id) ?? '') || a.id.localeCompare(b.id),
+    )
+    return admitDispatch({
+      ready: fairReady.filter((task) => !inFlight.has(task.id)),
+      pools: snapshot.pools,
+      globalRoom: Math.max(0, this.settings.maxParallelDispatch - inProgress),
+      reuseIdle: options.reuseIdle === true,
+      ...(options.maskHashOf === undefined ? {} : { maskHashOf: options.maskHashOf }),
+      // **R-1**：复用还要**证据**（该子会话被观测到手里有工具），不只是掩码指纹一致
+      reuseBlockedOf: this.reuseBlockedOf(call),
     })
   }
 
@@ -2316,19 +2796,289 @@ export class SoftwareDevOffice {
    * 所以采集当时拿不到文件清单。`done` 时（会话仍活着）再取一次，取到就补一条带摘要的记录。
    */
   noteResolvedWorkspaceChanges(call: OfficeCall, input: { sessionId: string; seq: number; files: string[] }): void {
-    const { store } = this.contextFor(call)
+    const { store, journal } = this.contextFor(call)
+    // **§2.1（第二轮评审 HIGH）**：补记以前**不带 `journalSeq`**，而读者（`changedFilesSince`）要求它 ——
+    // 于是补记出来的条目**永远不命中**：`unresolvedSeqs` 反复列同一批、越界写永不告警（真机 seq 42）。
+    // 修法：与原记录**同量纲** —— 复用同一 `(sessionId, hostSeq)` 已有条目的 `journalSeq`；
+    // 找不到就退回"该会话最近一条 `workspace/changes` 事件的 journal seq"；两者都拿不到 ⇒ 不写（如实"未对账"）。
+    const existing = readWorkspaceChanges(store).entries.find(
+      (entry) => entry.sessionId === input.sessionId && entry.seq === input.seq && entry.journalSeq !== undefined,
+    )
+    // 抓不到原条目（宿主事件没进插件真源）时，退回"补记这一刻的 journal 序号"——它**同样 > 认领序号**，
+    // 语义是"这批文件是在这个时点被对账到的"，读者照样能命中（关键是**不能缺这个键**）。
+    const journalSeq = existing?.journalSeq ?? journal.read().events.at(-1)?.seq
+    // 连一个 journal 序号都拿不到（真源为空）⇒ **不写**：写一条没有量纲键的条目正是修前那种"永远不命中、
+    // 还被反复列为未对账"的坏状态；宁可让回执如实说"未对账"。
+    if (journalSeq === undefined) return
     recordWorkspaceChanges({
       store,
       sessionId: input.sessionId,
       seq: input.seq,
+      journalSeq,
       summary: { files: input.files.map((path) => ({ path })) },
       enabled: true,
       hasProject: true,
     })
   }
 
+  /**
+   * **决定实现阶段方法包**（增量 3）：把"选了哪些包 / 依据 / 范围 / 豁免"落成真源。
+   *
+   * 设计要点：**不问用户**（由模型自选），但必须**有据可查** —— `derivedFrom` 至少一条能被机械核对，
+   * 校验不通过就整次拒绝（不写盘）。复议 = 再调一次：覆盖 profile，并把这一次追加进 `history`。
+   */
+  decideConstructionProfile(
+    call: OfficeCall,
+    input: {
+      packages: string[]
+      scope: typeof SCOPE_ALL | string[]
+      derivedFrom: string[]
+      reason: string
+      exempt: ConstructionExemption[]
+      by: string
+    },
+  ):
+    | { ok: true; profile: ConstructionProfile; checked: string[]; unchecked: string[] }
+    | { ok: false; problems: string[] } {
+    const { store, journal } = this.contextFor(call)
+    const problems: string[] = []
+    if (input.packages.length === 0) problems.push(t('uiConstruction.c18'))
+    for (const name of input.packages) {
+      if (!(CONSTRUCTION_PACKAGES as readonly string[]).includes(name)) problems.push(fmt('uiConstruction.c02', { p1: name }))
+    }
+    if (input.derivedFrom.length === 0) problems.push(t('uiConstruction.c04'))
+    for (const name of input.scope === SCOPE_ALL ? [] : input.scope) {
+      if (!listTasks(store).some((task) => task.id === name)) problems.push(fmt('uiConstruction.c19', { p1: name }))
+    }
+    for (const item of input.exempt) {
+      if (item.why.trim() === '') problems.push(fmt('uiConstruction.c20', { p1: item.task, p2: item.check }))
+      if (!(CONSTRUCTION_CHECKS as readonly string[]).includes(item.check)) problems.push(fmt('uiConstruction.c21', { p1: item.check }))
+    }
+    const derivation = validateDerivation(store, input.derivedFrom)
+    problems.push(...derivation.problems)
+    if (problems.length > 0) return { ok: false, problems }
+    const previous = readConstructionProfile(store).profile
+    const at = new Date().toISOString()
+    const profile: ConstructionProfile = {
+      version: 1,
+      decidedAt: at,
+      decidedBy: input.by,
+      packages: input.packages as ConstructionPackage[],
+      scope: input.scope,
+      derivedFrom: input.derivedFrom,
+      reason: input.reason,
+      exempt: input.exempt,
+      // history 记的是**被覆盖掉的历次决定**（当前选择在 profile.packages 里，不重复记；
+      // 这样"复议"的历史读起来就是"上一次选了什么、为什么改"）
+      history:
+        previous === undefined
+          ? []
+          : [
+              ...previous.history,
+              { at: previous.decidedAt, packages: previous.packages, reason: previous.reason },
+            ],
+    }
+    writeConstructionProfile(store, profile)
+    journal.append('plan/profile-decided', {
+      packages: input.packages.join(' '),
+      scope: input.scope === SCOPE_ALL ? SCOPE_ALL : input.scope.join(' '),
+      derivedFrom: input.derivedFrom.join(' | '),
+      reason: input.reason,
+      by: input.by,
+    })
+    return { ok: true, profile, checked: derivation.checked, unchecked: derivation.unchecked }
+  }
+
+  /**
+   * 记一条**变异自证**（增量 3 的交付物通道）：写 `.sdo/construction/tdd.yml` + journal。
+   *
+   * 只在 `scale=critical`（或卡另有要求）时才被收工关读取；记录本身不判断"够不够" ——
+   * 判据现算，`killed = 0` 也允许落盘（它是有价值的事实：变异没被杀掉）。
+   */
+  recordMutation(call: OfficeCall, input: { task: string; tool: string; target: string; killed: number; survived: number }):
+    | { ok: true; record: MutationRecord; targetMissing: boolean }
+    | { ok: false; problems: string[] } {
+    const { store, journal } = this.contextFor(call)
+    const problems: string[] = []
+    if (input.task.trim() === '') problems.push(t('uiConstruction.c25'))
+    if (input.tool.trim() === '') problems.push(t('uiConstruction.c26'))
+    if (!Number.isFinite(input.killed) || input.killed < 0) problems.push(t('uiConstruction.c27'))
+    if (!Number.isFinite(input.survived) || input.survived < 0) problems.push(t('uiConstruction.c28'))
+    if (problems.length > 0) return { ok: false, problems }
+    const record: MutationRecord = { ...input, at: new Date().toISOString() }
+    recordMutation(store, record)
+    journal.append('test/mutation-recorded', { task: input.task, tool: input.tool, target: input.target, killed: input.killed, survived: input.survived })
+    // 评审建议 2：`target` 允许为空（不判红），但**建议写清** —— 否则复核者无法跟着复跑一遍
+    return { ok: true, record, targetMissing: input.target.trim() === '' }
+  }
+
+  /** 记一条**契约测试**（增量 3 的交付物通道）：契约必须存在，否则拒收。 */
+  recordContractTest(call: OfficeCall, input: { task: string; contract: string; tool: string; cmd: string }):
+    | { ok: true; record: ContractTestRecord }
+    | { ok: false; problems: string[] } {
+    const { store, journal } = this.contextFor(call)
+    const problems: string[] = []
+    if (input.task.trim() === '') problems.push(t('uiConstruction.c25'))
+    if (input.contract.trim() === '') problems.push(t('uiConstruction.c29'))
+    else if (!listContracts(store).some((item) => item.id === input.contract)) problems.push(fmt('uiConstruction.c30', { p1: input.contract }))
+    if ((input.tool + input.cmd).trim() === '') problems.push(t('uiConstruction.c31'))
+    if (problems.length > 0) return { ok: false, problems }
+    const record: ContractTestRecord = { ...input, at: new Date().toISOString() }
+    recordContractTest(store, record)
+    journal.append('test/contract-test-recorded', { task: input.task, contract: input.contract, tool: input.tool, cmd: input.cmd })
+    return { ok: true, record }
+  }
+
+  /**
+   * **子代理结算**（取汇报 ②）：写报告文件 + 记 `dispatch/finished`。
+   *
+   * 内容 = 它最后一条助手消息的全文（调用方在 `turn/end` 时把缓存交进来）。
+   */
+  noteDispatchFinished(
+    call: OfficeCall,
+    input: { childSessionId: string; task: string; role: string; turn: number; reason: string; startedAt: string; report: string },
+  ): DispatchFinished {
+    const { store, journal } = this.contextFor(call)
+    const finishedAt = new Date().toISOString()
+    const report = writeChildReport(store, input.childSessionId, input.report, input.task)
+    const started = Date.parse(input.startedAt)
+    const record: Omit<DispatchFinished, 'seq'> = {
+      childSessionId: input.childSessionId,
+      task: input.task,
+      role: input.role,
+      turn: input.turn,
+      reason: input.reason,
+      startedAt: input.startedAt,
+      finishedAt,
+      durationMs: Number.isFinite(started) ? Math.max(0, Date.now() - started) : 0,
+      report,
+    }
+    const event = journal.append('dispatch/finished', { ...record })
+    return { ...record, seq: event.seq }
+  }
+
+  /**
+   * **观测/采集失败留痕**：采集类失败仍然 fail-open（不阻塞任何写操作），但**必须记账** ——
+   * 否则"没数据"和"没问题"看起来一模一样（真机上就丢过三次派发的观测）。
+   */
+  noteObserveFailure(call: OfficeCall, input: { childSessionId: string; eventType: string; error: string }): void {
+    const { journal } = this.contextFor(call)
+    journal.append('dispatch/observe-failed', { sessionId: input.childSessionId, eventType: input.eventType, error: input.error.slice(0, 300) })
+  }
+
+  /**
+   * **子代理报告体检**（SDO-58）。
+   *
+   * 真机现象：`TASK-187` 的子代理报告落盘仅 **235 字节**（同批其他轮次 KB 级）⇒ 审计链断裂，
+   * 那一轮的调色板复算等关键内容无处可查。报告是子代理自己写的，插件能做的**机械**动作是：
+   * 结算之后**量一下**，异常短/缺失就**显式告警**（而不是让人事后去翻文件大小）。
+   * 口径：`dispatch/finished.report` 是权威落点（不自己拼文件名）；没结算过 ⇒ `none`（卡可能是内联做的，不告警）。
+   */
+  childReportHealth(call: OfficeCall, taskId: string): { state: 'ok' | 'short' | 'missing' | 'none'; report?: string | undefined; bytes?: number | undefined } {
+    const { store, journal } = this.contextFor(call)
+    const finished = journal
+      .read()
+      .events.filter((event) => event.type === 'dispatch/finished' && String(event.data.task ?? '') === taskId)
+      .pop()
+    if (finished === undefined) return { state: 'none' }
+    const report = String(finished.data.report ?? '')
+    if (report === '') return { state: 'missing' }
+    const text = readChildReportAt(store, report)
+    if (text === undefined) return { state: 'missing', report }
+    const bytes = Buffer.byteLength(text, 'utf8')
+    return bytes < CHILD_REPORT_MIN_BYTES ? { state: 'short', report, bytes } : { state: 'ok', report, bytes }
+  }
+
+  /** 已结算的派发（取汇报 ①/③：状态块与回执用）。 */
+  finishedDispatches(call: OfficeCall): DispatchFinished[] {
+    const { journal } = this.contextFor(call)
+    return journal
+      .read()
+      .events.filter((event) => event.type === 'dispatch/finished')
+      .map((event) => ({
+        childSessionId: String(event.data.childSessionId ?? ''),
+        task: String(event.data.task ?? ''),
+        role: String(event.data.role ?? ''),
+        turn: Number(event.data.turn ?? 0),
+        reason: String(event.data.reason ?? ''),
+        startedAt: String(event.data.startedAt ?? ''),
+        finishedAt: String(event.data.finishedAt ?? ''),
+        durationMs: Number(event.data.durationMs ?? 0),
+        report: String(event.data.report ?? ''),
+        seq: event.seq,
+      }))
+  }
+
+  /**
+   * **未读的子代理报告**（③ 的「推」半）：把驾驶舱还没看过的 `dispatch/finished` 取出来。
+   *
+   * 交付过一次就记 `dispatch/reported`（append-only）⇒「未读」= finished − reported，**重启也不丢**。
+   *
+   * **身份口径（第二轮整体评审 §2.3）**：新登记以 `finishedSeq`（那笔结算事件的 journal `seq`）认身份。
+   * 为什么不能用 `(childSessionId, report)`：同一子会话为**同一张卡**可以结算多次（多轮子代理），
+   * 那时的 `task` 与报告落点逐字相同 —— 键去重会把第二笔算成"第一笔的重复"，于是第一笔送达后
+   * **后面每一笔结算都永远不再推送**（真机形态：第一笔送达 ⇒ 之后再结算 ⇒ `pending` 直接是 0）。
+   * 旧台账里没有 `finishedSeq` 的登记退化为**一条键额度**（一笔旧登记顶一笔结算，按时间顺序消耗）：
+   * 升级既不重推历史，也不会再顺带吞掉后来同键的新结算。
+   */
+  pendingDispatchReports(call: OfficeCall): DispatchFinished[] {
+    const { journal } = this.contextFor(call)
+    const bySeq = new Set<number>()
+    const legacyCredits = new Map<string, number>()
+    for (const event of journal.read().events) {
+      if (event.type !== 'dispatch/reported') continue
+      const finishedSeq = Number(event.data.finishedSeq)
+      if (Number.isFinite(finishedSeq) && finishedSeq > 0) {
+        bySeq.add(finishedSeq)
+        continue
+      }
+      const key = reportKey(String(event.data.childSessionId ?? ''), String(event.data.report ?? ''))
+      legacyCredits.set(key, (legacyCredits.get(key) ?? 0) + 1)
+    }
+    const pending: DispatchFinished[] = []
+    for (const item of this.finishedDispatches(call)) {
+      if (bySeq.has(item.seq)) continue
+      const key = reportKey(item.childSessionId, item.report)
+      const credit = legacyCredits.get(key) ?? 0
+      if (credit > 0) {
+        legacyCredits.set(key, credit - 1)
+        continue
+      }
+      pending.push(item)
+    }
+    return pending
+  }
+
+  /** 标记这些报告已经**送达驾驶舱**（下次不再重复推）。 */
+  markDispatchReported(call: OfficeCall, items: { childSessionId: string; report: string; seq?: number }[]): void {
+    const { journal } = this.contextFor(call)
+    for (const item of items) {
+      journal.append('dispatch/reported', {
+        childSessionId: item.childSessionId,
+        report: item.report,
+        ...(item.seq === undefined ? {} : { finishedSeq: item.seq }),
+      })
+    }
+  }
+
+
+  /**
+   * 子代理报告全文（③ 的"回注"：状态块/回执给摘要，模型不必自己翻文件）。
+   *
+   * **按记录的落点读**（`dispatch/finished.report`），不按 childSessionId 拼文件名 ——
+   * 报告名含卡 id（复用时不覆盖），拼名会漂。
+   */
+  reportText(call: OfficeCall, report: string): string | undefined {
+    return readChildReportAt(this.storeFor(this.requireWorkspace(call)), report)
+  }
+
+  /** 读回实现阶段方法包（供 `claim`/`done`/门禁/状态共用，口径只有一份）。 */
+  constructionProfile(call: OfficeCall): ProfileRead {
+    return readConstructionProfile(this.storeFor(this.requireWorkspace(call)))
+  }
+
   /** 本会话派发出去的子会话（来自 `dispatch/started`；带卡上的角色，用于算"掩码外工具"）。 */
-  dispatchedChildren(call: OfficeCall): { childSessionId: string; taskId: string; role: string; provider: string }[] {
+  dispatchedChildren(call: OfficeCall): { childSessionId: string; taskId: string; role: string; provider: string; startedAt: string }[] {
     const { store, journal } = this.contextFor(call)
     const roleOfCard = new Map(listTasks(store).map((task) => [task.id, task.role]))
     return journal
@@ -2339,8 +3089,30 @@ export class SoftwareDevOffice {
         taskId: String(event.data.task ?? ''),
         provider: String(event.data.provider ?? ''),
         role: String(event.data.role ?? roleOfCard.get(String(event.data.task ?? '')) ?? ''),
+        startedAt: String((event as { at?: unknown }).at ?? ''),
       }))
       .filter((item) => item.childSessionId !== '')
+  }
+
+  /**
+   * **这个子会话被派发时记下的角色**（血缘角色；第一轮整仓评审 §2 第 1 条）。
+   *
+   * 掩码归属不能只看"认领事实"：卡一旦离开 `in-progress`（done / dropped / blocked / ready），
+   * `claimsBySession` 就不再认这个会话 ⇒ 旧实现在钩子里退回 `unclaimed-child`、**整段跳过掩码**
+   * （实测：驾驶舱 drop 掉卡、等过 5 秒角色缓存 TTL 后，仍在飞的 reviewer 子会话调 `write` 由 DENY 变 ALLOW）。
+   * 这里的角色来自追加式真源（`dispatch/started`），不随可手改的卡状态改变；同一会话被复用多次时取
+   * **最新一条**（掩码跟着最近一次派发）。取不到（不是我们派发的会话）就返回 `undefined` = 原口径 fail-open。
+   */
+  dispatchedRoleOf(call: OfficeCall): string | undefined {
+    if (call.sessionId === undefined || call.sessionId === '') return undefined
+    try {
+      const role = this.dispatchedChildren(call)
+        .filter((item) => item.childSessionId === call.sessionId)
+        .at(-1)?.role
+      return role === undefined || role === '' ? undefined : role
+    } catch {
+      return undefined
+    }
   }
 
   /** 记一条"子代理工具面观测"（评审 §4.2：把"是否收窄"变成可核对的事实）。 */
@@ -2352,6 +3124,51 @@ export class SoftwareDevOffice {
   /** 读回观测（供回执里如实展示）。 */
   childFaces(call: OfficeCall): ChildFaceEntry[] {
     return readChildFaces(this.storeFor(this.requireWorkspace(call))).faces
+  }
+
+  /**
+   * 认领这张卡的**会话 id**（SDO-36：评审独立性要按可验证的身份判，而不是调用方自报的名字）。
+   */
+  /**
+   * **调用方的角色归属**（D6）：与 `tools/pre-execute` 钩子**同一口径**（没有认领 ⇒ 驾驶舱）。
+   * 用途：卡是计划产物，`drop`/`reassign` 之类属流程官职权 —— 不能只看调用方自报的 `actor`。
+   */
+  /**
+   * **这个会话是不是被派发出去的子代理**（D6 的权威判据）。
+   *
+   * 为什么不看血缘字段：工具层拿不到 `delegationDepth`（`callOf(exec)` 只给 sessionId/cwd），
+   * 而 `attributeRole` 对"无血缘"的会话按驾驶舱处理 ⇒ 只看它会把子代理当驾驶舱放行。
+   * 真源里 `dispatch/started.childSessionId` 是**插件自己记的**，用它判"谁是被派出去的"最稳。
+   */
+  isDispatchedChild(call: OfficeCall): boolean {
+    if (call.sessionId === undefined || call.sessionId === '') return false
+    try {
+      const { journal } = this.contextFor(call)
+      return journal.read().events.some(
+        (event) => event.type === 'dispatch/started' && String(event.data.childSessionId ?? '') === call.sessionId,
+      )
+    } catch {
+      return false
+    }
+  }
+
+  roleOf(call: OfficeCall): string {
+    try {
+      const { store, journal } = this.contextFor(call)
+      // 与钩子同一口径：没有活的认领时用**血缘角色**兜底（卡被 drop/done 掉不等于这个会话就不是派发角色）
+      return attributeRole({
+        sessionId: call.sessionId,
+        claims: claimsBySession(store, journal),
+        dispatchedRole: this.dispatchedRoleOf(call),
+      }).role
+    } catch {
+      return 'cockpit'
+    }
+  }
+
+  claimSession(call: OfficeCall, taskId: string): string | undefined {
+    const { journal } = this.contextFor(call)
+    return claimBaseline(journal, taskId)?.sessionId
   }
 
   /** A2：列出该卡认领之后、**还缺文件清单**的 `(sessionId, seq)`（供 `done` 时补取）。 */
@@ -2388,9 +3205,93 @@ export class SoftwareDevOffice {
     return recordTestCase(store, journal, input)
   }
 
+  /**
+   * **登记当前环境指纹**（SDO-57 的 C 口径）：`project/environment` 从"立项记一次"变成**时序账本** ——
+   * 每次环境真的变了（换 JDK、升探针、改类路径）就再登记一条；此后记录的证据按**最近一条**归属，
+   * 而"这条证据是不是在当前环境下得出的"从此可判。
+   */
+  noteEnvironment(
+    call: OfficeCall,
+    input: { env: string; note?: string | undefined; by?: string | undefined },
+  ): { ok: true; env: string; at: string } | { ok: false; detail: string } {
+    const declared = input.env.trim()
+    if (declared === '') return { ok: false, detail: '环境指纹不能为空（空指纹等于没登记）' }
+    const { store, journal } = this.contextFor(call)
+    const at = new Date().toISOString()
+    journal.append('project/environment', {
+      plugin: 'dsh-software-dev-office',
+      pluginVersion: this.version(),
+      hostVersion: process.env.DSH_VERSION ?? 'unknown',
+      node: process.versions.node,
+      env: declared,
+      reason: 'declared',
+      ...(input.note === undefined ? {} : { note: input.note }),
+      by: input.by ?? 'human',
+      at,
+    })
+    void store
+    return { ok: true, env: declared, at }
+  }
+
+  /** 最近登记的**环境指纹**（没登记过 ⇒ `undefined`，此时一切"时效"都只能标"无法核验"）。 */
+  currentEnvironment(call: OfficeCall): string | undefined {
+    const { journal } = this.contextFor(call)
+    const events = journal.read().events.filter((event) => event.type === 'project/environment')
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const env = String(events[i]?.data.env ?? '').trim()
+      if (env !== '') return env
+    }
+    return undefined
+  }
+
+  /**
+   * **工具面差异**（SDO-53）：把「我们声明给这个角色的面」（`roles.yml` 的掩码）与
+   * 「子代理实测拿到/公告的面」（`evidence/child-tools.jsonl`）**逐个子会话**对起来，
+   * 返回有差异的那些。只报事实，不做"宿主应该收窄"的承诺。
+   */
+  faceMismatches(call: OfficeCall): { childSessionId: string; role: string; task: string; missing: string[]; extra: string[] }[] {
+    const { store, journal } = this.contextFor(call)
+    const declaredByChild = new Map<string, { role: string; task: string }>()
+    for (const event of journal.read().events) {
+      if (event.type !== 'dispatch/started') continue
+      const child = String(event.data.childSessionId ?? '')
+      if (child === '') continue
+      declaredByChild.set(child, { role: String(event.data.role ?? ''), task: String(event.data.task ?? '') })
+    }
+    const rows: { childSessionId: string; role: string; task: string; missing: string[]; extra: string[] }[] = []
+    const knownRoles = new Set<string>(listRoleCards().map((card) => String(card.code)))
+    for (const face of readChildFaces(store).faces) {
+      if (face.tools.length === 0) continue
+      const declared = declaredByChild.get(face.childSessionId)
+      if (declared === undefined || !knownRoles.has(declared.role)) continue
+      const diff = faceDiff(toolAllowList(declared.role as never), face.tools)
+      if (diff.missing.length === 0 && diff.extra.length === 0) continue
+      rows.push({ childSessionId: face.childSessionId, role: declared.role, task: declared.task, ...diff })
+    }
+    return rows
+  }
+
+  /** **证据时效**（SDO-57）：哪些通过结果已过期、哪些没记环境指纹（交付回执与看板用它说话）。 */
+  evidenceFreshness(call: OfficeCall): ReturnType<typeof evidenceFreshness> {
+    const workspace = this.requireWorkspace(call)
+    const store = this.storeFor(workspace)
+    return evidenceFreshness(store, workspace, this.currentEnvironment(call))
+  }
+
   addTestResult(call: OfficeCall, input: Omit<TestResult, 'id' | 'at'>): TestResult {
     const { store, journal } = this.contextFor(call)
-    return recordTestResult(store, journal, input)
+    const workspace = this.requireWorkspace(call)
+    // **SDO-57**：没声明环境就**按最近登记的环境归属**（并如实标注 `inherited`，不假装是声明的）；
+    // 给了被检产物就**当场绑定 sha256**（交付时重算比对 ⇒ 产物一变，证据立刻"过期"）。
+    const declared = (input.env ?? '').trim()
+    const inherited = declared === '' ? this.currentEnvironment(call) : undefined
+    const env = declared !== '' ? declared : inherited
+    const artifact = (input.artifact ?? '').trim()
+    return recordTestResult(store, journal, {
+      ...input,
+      ...(env === undefined || env === '' ? {} : { env, envSource: declared !== '' ? 'declared' as const : 'inherited' as const }),
+      ...(artifact === '' ? {} : { artifact, artifactSha256: hashArtifact(workspace, artifact) }),
+    })
   }
 
   defects(call: OfficeCall): Defect[] {
@@ -2402,13 +3303,14 @@ export class SoftwareDevOffice {
     return recordDefect(store, journal, input)
   }
 
-  setDefectStatus(call: OfficeCall, id: string, status: Defect['status']): Defect | undefined {
+  updateDefect(call: OfficeCall, id: string, patch: DefectUpdate, by = 'human'): ReturnType<typeof updateDefect> {
     const { store, journal } = this.contextFor(call)
-    return updateDefect(store, journal, id, status)
+    return updateDefect(store, journal, id, patch, by)
   }
 
   verification(call: OfficeCall): ReturnType<typeof verificationStats> {
-    return verificationStats(this.storeFor(this.requireWorkspace(call)))
+    const { store, journal } = this.contextFor(call)
+    return verificationStats(store, journal)
   }
 
   reviews(call: OfficeCall): Review[] {
@@ -2420,6 +3322,35 @@ export class SoftwareDevOffice {
     return recordReview(store, journal, input)
   }
 
+  /**
+   * **核实一条评审发现**（2026-10-08 口径：评审结果是主张，要由实现方逐条核实才能采纳）。
+   *
+   * 会话 id 一并交给域层：它据此拦住"记录评审的会话自己核实自己"，并核对"是不是该卡的实现会话"。
+   */
+  verifyReviewFinding(call: OfficeCall, input: {
+    reviewId: string
+    index: number
+    outcome: 'reproduced' | 'refuted'
+    evidence: string
+    /** 核实者（缺省 human） */
+    by?: string | undefined
+  }): VerifyResult {
+    const { store, journal } = this.contextFor(call)
+    return verifyReviewFinding(store, journal, { ...input, sessionId: call.sessionId })
+  }
+
+  /** **补记老格式评审的内容指纹**（G-2；`sdo_review action=rehash`）。 */
+  rehashReview(call: OfficeCall, input: { reviewId: string; by?: string | undefined }): RehashResult {
+    const { store, journal } = this.contextFor(call)
+    return rehashReview(store, journal, input)
+  }
+
+  /** 全部评审的采纳状态（回执/状态块/门禁同一份口径）。 */
+  reviewAdoptions(call: OfficeCall): ReviewAdoption[] {
+    const { store, journal } = this.contextFor(call)
+    return reviewAdoptions(store, journal)
+  }
+
   /** 评审独立性问题（作者 = 评审者）。 */
   reviewViolations(call: OfficeCall): { reviewId: string; detail: string }[] {
     return independenceViolations(this.reviews(call), this.tasks(call))
@@ -2429,6 +3360,23 @@ export class SoftwareDevOffice {
 
   manifest(call: OfficeCall): DeliveryManifest | undefined {
     return readManifest(this.storeFor(this.requireWorkspace(call)))
+  }
+
+  /** **改卡**（`sdo_task action=update`）：见 `updateTask` 的三条约束。 */
+  updateTask(call: OfficeCall, input: Parameters<typeof updateTask>[2]): ReturnType<typeof updateTask> {
+    const { store, journal } = this.contextFor(call)
+    return updateTask(store, journal, input)
+  }
+
+  /** **真机运行记录**（用户要求：真机测试才能交付）。 */
+  recordRun(call: OfficeCall, input: Omit<RunInput, 'workspace'>): { ok: true; run: RunRecord } | { ok: false; detail: string } {
+    const workspace = this.requireWorkspace(call)
+    const { store, journal } = this.contextFor(call)
+    return recordRun(store, journal, { ...input, workspace })
+  }
+
+  runs(call: OfficeCall): RunRecord[] {
+    return listRuns(this.storeFor(this.requireWorkspace(call)))
   }
 
   packageDelivery(call: OfficeCall, input: Omit<PackageInput, 'workspace' | 'prototypeDir'>): { manifest: DeliveryManifest; missingArtifacts: string[] } {

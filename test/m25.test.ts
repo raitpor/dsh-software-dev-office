@@ -13,6 +13,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Config, resolveSettings } from '../src/config.js'
 import type { SdoConfig } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { createOfficeTools } from '../src/interface/tools.js'
 import { describeInit, describeSignature, describeStatus } from '../src/interface/describe.js'
 import { link, readLinksChecked, report, unlink } from '../src/domain/trace.js'
 import { SdoStore } from '../src/infra/store.js'
@@ -290,17 +291,22 @@ test('语言包类级守卫：被引用的键都取得到（含 fmt()），且 t
   assert.deepEqual(leaking, [], `这些键用 t() 调用，但文案含占位符（必然漏出）：${leaking.join(', ')}`)
 })
 
-test('M25 语言包不得出现重复键（YAML 后者会静默覆盖前者 —— param.evidence 踩过一次）', () => {
-  // 事故背景：2026-10-03 修 A1 的可发现性时，我**新加**了一个已存在的 `param.evidence` 键，
-  // YAML 解析取后者 ⇒ 新文案根本没到模型面前，而一切"看起来都改了"。文本级扫描成本极低，直接钉住。
-  const duplicates: string[] = []
-  for (const locale of ['zh-CN', 'en']) {
-    const lines = readFileSync(new URL(`../../src/data/lang/${locale}.yml`, import.meta.url), 'utf8').split('\n')
+test('M25 语言包不得出现重复键 / 重复段（后者会让前一段的键**整段静默消失**）', () => {
+  // 事故 ①（重复键）：2026-10-03 修 A1 可发现性时新加了一个已存在的 `param.evidence`，YAML 取后者 ⇒ 新文案没到模型面前。
+  // 事故 ②（重复段，同一天）：我用脚本新增段时判断写成了 `if section in lines`（漏冒号）⇒ 文件里出现**第二个 `uiIndex:`**。
+  //   这条比重复键更隐蔽：旧守卫每遇段头就 `seen.clear()`，键不冲突；而 YAML 取后者 ⇒ **第一段的键全部消失**，
+  //   一批用例的文案退化成键名（`truthReadFailed`）。所以段名也必须查重。
+  const scan = (locale: string, text: string): string[] => {
+    const problems: string[] = []
+    const sections = new Set<string>()
     let section = ''
     const seen = new Map<string, number>()
-    for (const [index, line] of lines.entries()) {
+    for (const [index, line] of text.split('\n').entries()) {
       if (/^[A-Za-z][\w]*:/u.test(line)) {
-        section = line.replace(/:.*$/u, '')
+        const name = line.replace(/:.*$/u, '')
+        if (sections.has(name)) problems.push(`${locale}:重复段 ${name}（行 ${index + 1}）—— 前一段的键会被静默覆盖`)
+        sections.add(name)
+        section = name
         seen.clear()
         continue
       }
@@ -308,11 +314,24 @@ test('M25 语言包不得出现重复键（YAML 后者会静默覆盖前者 —�
       if (key === null) continue
       const name = `${locale}:${section}.${key[1]}`
       const previous = seen.get(name)
-      if (previous !== undefined) duplicates.push(`${name}（行 ${previous + 1} 与 ${index + 1}）`)
+      if (previous !== undefined) problems.push(`${name}（行 ${previous + 1} 与 ${index + 1}）`)
       else seen.set(name, index)
     }
+    return problems
   }
-  assert.deepEqual(duplicates, [], `语言包里有重复键，后者会静默覆盖前者：${duplicates.join('；')}`)
+
+  // **反例自证**：喂一段重复段/重复键的假语言包，扫描必须报出来（否则这条守卫只是装饰）
+  const fake = ['uiIndex:', '  kA: "a"', 'uiGates:', '  kA: "g"', 'uiIndex:', '  kB: "b"'].join('\n')
+  const fakeProblems = scan('fake', fake)
+  assert.ok(fakeProblems.some((item) => item.includes('重复段 uiIndex')), `重复段必须被抓到：${fakeProblems.join('；')}`)
+  const fakeDupKey = ['uiGates:', '  kA: "a"', '  kA: "b"'].join('\n')
+  assert.ok(scan('fake', fakeDupKey).some((item) => item.includes('uiGates.kA')), '重复键也必须被抓到')
+
+  const problems: string[] = []
+  for (const locale of ['zh-CN', 'en']) {
+    problems.push(...scan(locale, readFileSync(new URL(`../../src/data/lang/${locale}.yml`, import.meta.url), 'utf8')))
+  }
+  assert.deepEqual(problems, [], `语言包里有重复键/重复段（后者会静默覆盖前一段）：${problems.join('；')}`)
 })
 
 test('M25 语言包哨兵：不同段的同号键文案必须各就各位（我按行首匹配改语言包时顶掉过别段）', () => {
@@ -366,4 +385,84 @@ test('M25 语言包 markdown 守卫：`**` 要成对**且不能是空粗体**（
     }
   }
   assert.deepEqual(problems, [], `这些语言包值的 ** 不成对或是空粗体：${problems.join('；')}`)
+})
+
+test('M25 工具声明与参数类型必须同源：`*Args` 里有的字段，工具 schema 与 execute 映射里都要有（B1/PLAN-1 那类静默丢弃）', () => {
+  // 事故史：`TestArgs` 加了 `mutation`/`contractTest`、`PlanArgs` 加了 `packages/derivedFrom/…`，
+  // 但 **`sdo_test`/`sdo_plan` 的工具声明没同步** ⇒ 参数在工具边界被**静默丢掉**，分支永远进不去
+  // （两次都是"全绿却功能整条是死的"）。这条守卫把"接口有、schema 没有"直接判红。
+  // 只查**基本类型**字段：模型参数都是 string/number/boolean；`agent` 这类调用上下文/函数类型不是模型参数，排除掉。
+  const fieldsIn = (source: string, interfaceName: string): string[] => {
+    const start = source.indexOf(`export interface ${interfaceName} {`)
+    if (start === -1) return []
+    const body = source.slice(start, source.indexOf('\n}', start))
+    return [...body.matchAll(/^  ([A-Za-z][\w]*)\??:\s*([^\n]*)$/gmu)]
+      .filter((match) => /^(string|number|boolean)\b/u.test((match[2] ?? '').trim()))
+      .map((match) => match[1] ?? '')
+      .filter((name) => name !== '')
+  }
+  // 工具的**自身块**：从 `name: 'x'` 到下一个 `name: '`。映射检查必须只看自己那块 ——
+  // 全文件搜 `args.id` 会被别的工具满足（我正是这样把 `sdo_requirement` 的 id 映射误删而守卫没红）。
+  const blockOf = (source: string, toolName: string): string => {
+    const start = source.indexOf(`name: '${toolName}'`)
+    if (start === -1) return ''
+    const next = source.indexOf("name: 'sdo_", start + 10)
+    return source.slice(start, next === -1 ? source.length : next)
+  }
+  const detect = (source: string, interfaceName: string, toolName: string, properties: Record<string, unknown>): string[] => {
+    const problems: string[] = []
+    const block = blockOf(source, toolName)
+    for (const field of fieldsIn(source, interfaceName)) {
+      if (field === 'action') continue
+      if (!(field in properties)) problems.push(`${toolName}：${interfaceName}.${field} 没进 schema ⇒ 工具层会静默丢掉它`)
+      if (!new RegExp(`args\\.${field}\\b`, 'u').test(block)) problems.push(`${toolName}：${interfaceName}.${field} 没进 execute 映射`)
+    }
+    return problems
+  }
+
+  // **反例自证**：喂一段"接口有 ghost、schema 没有"的假数据，判据必须报出来
+  // 反例 ①：schema 缺字段；反例 ②：**别的工具**有 `args.ghost` 但自己那块没有（分块检查必须抓住后者）
+  const fakeSource = [
+    'export interface FakeArgs {',
+    '  action: string',
+    '  ghost: string',
+    '}',
+    "name: 'sdo_fake'",
+    "        action: typeof args.action === 'string' ? args.action : 'list',",
+    "name: 'sdo_other'",
+    "        ghost: typeof args.ghost === 'string' ? args.ghost : undefined,",
+  ].join('\n')
+  const fakeProblems = detect(fakeSource, 'FakeArgs', 'sdo_fake', { action: {}, ghost: {} })
+  assert.ok(fakeProblems.some((item) => item.includes('没进 execute 映射')), `分块检查必须抓住"自己那块没有"：${fakeProblems.join('；')}`)
+
+  const source = readFileSync(new URL('../../src/interface/tools.ts', import.meta.url), 'utf8')
+  const tools = createOfficeTools({ office: {} as never, lang: 'zh-CN' } as never)
+  // 接口 → 工具名（新增工具时在这一行加一项即可进入守卫）
+  const map: Record<string, string> = {
+    LangArgs: 'sdo_lang',
+    InitArgs: 'sdo_init',
+    ProjectArgs: 'sdo_project',
+    GateArgs: 'sdo_gate',
+    FeasibilityArgs: 'sdo_feasibility',
+    RiskArgs: 'sdo_risk',
+    DesignArgs: 'sdo_design',
+    AdrArgs: 'sdo_adr',
+    QualityArgs: 'sdo_quality',
+    TraceArgs: 'sdo_trace',
+    PlanArgs: 'sdo_plan',
+    TaskArgs: 'sdo_task',
+    TestArgs: 'sdo_test',
+    ReviewArgs: 'sdo_review',
+    DeliverArgs: 'sdo_deliver',
+    RequirementArgs: 'sdo_requirement',
+    RedTeamArgs: 'sdo_redteam',
+  }
+  const problems: string[] = []
+  for (const [interfaceName, toolName] of Object.entries(map)) {
+    const tool = tools.find((item) => item.name === toolName)
+    if (tool === undefined) { problems.push(`${toolName}：工具不存在（映射表过时？）`); continue }
+    const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+    problems.push(...detect(source, interfaceName, toolName, properties))
+  }
+  assert.deepEqual(problems, [], `工具声明与参数类型不同源（模型会被静默丢弃参数）：${problems.join('；')}`)
 })

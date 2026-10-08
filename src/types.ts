@@ -235,6 +235,26 @@ export interface GrillQuestion {
    */
   decidedBy?: string | undefined
   answer: string | null
+  /**
+   * **D-1（sdo-test-new 2026-10-08，major）**：用户实际选中项的**结构化留痕**。
+   *
+   * 真机症状：`answer` 正文与「（选择：…）」互相矛盾（正文是题库第 2 项，括号里是第 0 项）——
+   * 因为模型把题目转述给用户时**会重排/改写选项**，而 `pickedOption` 的下标绑的是**插件自己的**
+   * `options` 表。只把两者拼成一句话写进 `answer`，事后无法复原"用户到底选了什么"。
+   * 因此下标与标签**各记一份**（标签按插件表解析 = 台账可复算的那一份；正文仍是模型写的自由文本）。
+   */
+  pickedOption?: number | undefined
+  /** 与 `pickedOption` 同一份记录的**选项标签**（按插件 `options` 表解析）。 */
+  pickedLabel?: string | undefined
+  /**
+   * **D-2 残留（sdo-test-new 2026-10-08 复测）**：这条问题与项目**声明的非目标**（`scope.out`）撞了，
+   * 这里记下撞上的那个词（如「鉴权」）。
+   *
+   * 真机：`scope.out` 明写「鉴权与多用户」，`grill` 却仍生成 4 条「谁不能看到这些数据？」。
+   * 口径选择：**不静默跳过**（"问的是非目标"不等于"这条问题没有价值"——非目标也可能需要确认），
+   * 而是把冲突**记进真源并在回执里点名**，由人来决定答/降级为假设/作废。
+   */
+  nonGoalConflict?: string | undefined
   status: QuestionStatus
   /**
    * 该"假设"是否由**用户**授权。
@@ -400,6 +420,26 @@ export interface ChangeRequest {
   at: string
 }
 
+/**
+ * 批准的变更触发的**阶段回退结果**（语义 A，2026-10-04）。
+ *
+ * 「需求变更后必须重走需求 → 设计」由两半承担：① 阶段被拉回需求阶段（本结构描述这一半）；
+ * ② 未消化期间 `claim` 被拒（`change-not-digested`）。因此回执**不能只报"已回退"** ——
+ * 那会让用户以为"回到需求阶段"就够了，而真正决定能不能继续开发的是第 ② 半。
+ */
+export interface ChangeRollback {
+  from: string
+  to: string
+  /** 被作废（回来必须重新通过）的门禁判定留痕 */
+  invalidatedGates: string[]
+  /** 其中**仍处于豁免状态**的（豁免是用户的显式决定，回退不撤销它） */
+  stillWaivedGates: string[]
+  /** 当前已经在目标阶段：没有可回退的边，也不需要回退 */
+  alreadyThere: boolean
+  /** 回退没做成的原因（没有合法回退边等）—— 如实回报，不静默 */
+  error?: string | undefined
+}
+
 /** 架构视图的种类（设计 §6.1 的五视图）。 */
 export const VIEW_KINDS = ['context', 'component', 'runtime', 'data', 'deployment'] as const
 export type ViewKind = (typeof VIEW_KINDS)[number]
@@ -534,6 +574,12 @@ export interface DesignConfirmation {
   target: string
   /** 确认依据（用户的原话或批注） */
   basis: string
+  /**
+   * **SDO-48**：这一戳是**用户本人**确认的，还是**别人代盖**的（`proxy`）。
+   * 真机上流程官授权架构师代盖，工具却把 basis 强制写成「用户在会话中确认」，而 journal 追加式**不可改写**
+   * ⇒ 真源里永久留下与事实相反的措辞。现在代盖必须自报 `basisSource=proxy`，事件里可辨。
+   */
+  basisSource?: 'user' | 'proxy' | undefined
   by: string
   at: string
   /**
@@ -765,11 +811,32 @@ export type MethodArtifactKind = (typeof METHOD_ARTIFACT_KINDS)[number]
  */
 export const PROJECT_ACTIONS = ['update', 'show'] as const
 export const COST_ACTIONS = ['report'] as const
-export const PLAN_ACTIONS = ['decompose', 'iteration', 'next'] as const
-export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'release', 'reassign'] as const
-export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list'] as const
-export const REVIEW_ACTIONS = ['record', 'list'] as const
-export const DELIVER_ACTIONS = ['package', 'show'] as const
+export const PLAN_ACTIONS = ['decompose', 'iteration', 'next', 'profile'] as const
+
+/**
+ * **实现阶段方法包**（增量 3）：词表集中在这里，落盘与判据只引用这些常量。
+ *
+ * MVP 只实现 `tdd` 与 `contract-first`（两者都有可现算的硬检查）；
+ * `small-batch`/`hardened-critical` 已在词表里，属阶段 2。
+ */
+export const CONSTRUCTION_PACKAGES = ['tdd', 'contract-first', 'small-batch', 'hardened-critical'] as const
+export type ConstructionPackage = (typeof CONSTRUCTION_PACKAGES)[number]
+
+/** 实现阶段方法包的检查码：回执与判据用它做稳定标识（文案在语言包里）。 */
+export const CONSTRUCTION_CHECKS = [
+  'construction-profile-missing',
+  'contract-not-frozen',
+  'tdd-red-green-missing',
+  'tdd-result-untraceable',
+  'tdd-mutation-missing',
+  'contract-test-missing',
+] as const
+export type ConstructionCheck = (typeof CONSTRUCTION_CHECKS)[number]
+
+export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'release', 'reassign', 'update', 'verify-review'] as const
+export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list', 'env'] as const
+export const REVIEW_ACTIONS = ['record', 'rehash', 'list'] as const
+export const DELIVER_ACTIONS = ['run', 'package', 'show'] as const
 export const GATE_ACTIONS = ['check', 'advance', 'sign', 'waive', 'rollback'] as const
 export const FEASIBILITY_ACTIONS = ['assess'] as const
 export const RISK_ACTIONS = ['log', 'update', 'list', 'conclude'] as const
@@ -785,7 +852,16 @@ export const REQUIREMENT_ACTIONS = [
   'applicability',
   'applicability-confirm',
 ] as const
-export const REDTEAM_ACTIONS = ['attack', 'propose', 'file', 'on', 'off', 'status'] as const
+/**
+ * 红队动作面。
+ *
+ * **D-5（sdo-test-new 2026-10-08，major）**：`dispose` 是**新增**的 —— 在此之前
+ * `disposeIssue()`（唯一写 `issue/closed` 的地方）被 `office.ts` 包了一层却**没有任何 action 接到它**：
+ * 议题文件永远停在 `status: open` / `disposition: none`，而 C8 用 `issueClosure()` 从问题/风险**现算**闭环
+ * ⇒ 读者看到"还有 6 个未闭环议题"，门禁说"已全部闭环"，两份真源给出相反结论；
+ * 同时 `issue/closed` 还挂在 G2 的签字失效事件集合里 —— 一个**不可达事件**。
+ */
+export const REDTEAM_ACTIONS = ['attack', 'propose', 'file', 'dispose', 'on', 'off', 'status'] as const
 export const DESIGN_ACTIONS = [
   'view',
   'create',
@@ -1213,6 +1289,8 @@ export interface GateSignature {
 export const G2_SIGNATURE_INVALIDATING_EVENTS = [
   'project/created',
   'project/updated',
+  // **SDO-08**：插件/宿主/node 版本入账（跨版本复现的外部线索）—— 元数据，不作废签字
+  'project/environment',
   'tailoring/updated',
   'requirement/captured',
   'requirement/updated',
@@ -1263,6 +1341,15 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'plan/review-waived',
   'dispatch/decided',
   'dispatch/started',
+  // 派发的收尾与回报（2026-10-05 真机）：子代理干完活 / 交回报告都不改 `DESIGN.md`
+  // （实测：设计文档里没有派发台账，只有 ADR 正文出现过"派发"这个词），属纯记账。
+  'dispatch/finished',
+  'dispatch/reported',
+  // 采集失败留痕（真机曾整段静默吞异常）：同样是台账记账，与 `DESIGN.md` 无关。
+  'dispatch/observe-failed',
+  // 实现阶段**方法包**的选择（tdd / contract-first）：`DESIGN.md` 的「设计方法与采用理由」讲的是
+  // **设计**方法（结构化 / OO），不含实现包（真机实测 grep 命中 0），故属记账。
+  'plan/profile-decided',
   'iteration/updated',
   'task/created',
   'task/updated',
@@ -1270,12 +1357,28 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'task/released',
   'task/done',
   'task/blocked',
+  // **SDO-21**：认领被门禁拒后卡没有 owner，`block` 也要能留痕（与 task/blocked 同类的记账）
+  'task/claim-blocked',
   'task/dropped',
   // 验证 / 交付 / 证据（发生在设计之后，不改设计内容）
   'review/recorded',
+  // **评审核实**与 review/recorded 同类：它只决定「评审能不能被采纳」，不改设计真源
+  'review/verified',
+  // **补记评审指纹**（G-2）：纯记账，同样不改设计真源
+  'review/hashed',
   'test/recorded',
+  // 施工期的**交付物**记录（变异证据、契约测试）：与 `test/recorded` 同类 ——
+  // `DESIGN.md` 的 11 个固定章节里没有它们（真机实测 grep：变异 / 契约测试命中 0）。
+  // **`risk/logged` / `risk/updated` 不在此列**：§11 会把风险渲染进设计文档（实测 §11 列有 RISK-006），
+  // 登记风险确实改文档 ⇒ 仍须重签。
+  'test/mutation-recorded',
+  'test/contract-test-recorded',
   'defect/recorded',
+  // **SDO-55**：更正走 append-only 差异事件（与创建分开，审计能看出改过什么）
+  'defect/updated',
   'delivery/packaged',
+  // **真机运行记录**：它是**证据**而非真源变更 —— 记一条不该把 G3 签字作废
+  'delivery/run-recorded',
   'evidence/recorded',
   // 成本与预算：只计量，不是真源
   'cost/updated',
@@ -1284,6 +1387,8 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // 变更控制单的**记录**本身（其内容变更由 `requirement/updated` 等背书）
   'change/requested',
   'change/decided',
+  // **`change/rollback` 有意不在本表**（语义 A，2026-10-04）：它是"批准的需求变更把阶段拉回需求阶段"，
+  // 标志设计必须**重签**（旧 G3 签字随需求变更失效正是本机制要的效果）；放进中性表会把它静默抹掉。
   // 可行性评估：G2 之前的真源，不属于架构签字背书的内容
   'feasibility/assessed',
   // **P-16**：红队/议题/质量场景这三类**跑一轮并不会改变 `DESIGN.md` 的渲染结果**
@@ -1309,9 +1414,48 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
  * G2 用白名单（需求侧真源；改设计/契约不该作废需求基线签字）；
  * 其余门禁（当前只有 G3）用**黑名单**：不在 {@link SIGNATURE_NEUTRAL_EVENTS} 里即失效。
  */
-export function isSignatureInvalidatingEvent(gate: string, type: string): boolean {
+export function isSignatureInvalidatingEvent(gate: string, type: string, data?: unknown): boolean {
   if (gate === 'G2') return (G2_SIGNATURE_INVALIDATING_EVENTS as readonly string[]).includes(type)
+  // **追溯边按作用域区分（2026-10-05 真机）**：设计侧边（`kind: req-des`）进 `DESIGN.md` 的
+  // 「追溯矩阵」§8，改的是设计承诺 ⇒ 失效；施工期覆盖边（`req-task` / `req-tc`）**不进设计文档**
+  // （实测：§8 只有需求↔设计元素/契约/界面条目四列）⇒ 属记账。开发者一开工就要挂这两类边，
+  // 若它们也作废签字，"签完 G3 再开发"在机械上就不成立（真机：签 G3 后仅因 3 条 `req-task/req-tc`
+  // 边 #591-593 就被判 stale）。原口径担心的"新边喂 C-21"由 C-21 每次判定**现算**兜底。
+  // **不传 `data` 的调用保守失效**（黑名单默认方向不变，老调用与既有断言口径不变）。
+  if (type === 'trace/linked' || type === 'trace/unlinked') {
+    const kind = (data as { kind?: unknown } | undefined)?.kind
+    return !(kind === 'req-task' || kind === 'req-tc')
+  }
   return !(SIGNATURE_NEUTRAL_EVENTS as readonly string[]).includes(type)
+}
+
+/**
+ * **`DESIGN.md` 的真源路径**（SDO-19 复审，2026-10-05）。
+ *
+ * 为什么需要它：`truth/file-written` 会被记在**任意** `.sdo/` 真源写入上，而 C-25（文档新鲜度）
+ * 把该事件类型整类算作"会改文档"。于是**手改一个构造期文件**（`.sdo/construction/*.yml`、
+ * `.sdo/tests/*`、`.sdo/costs/*`…）也会把 `DESIGN.md` 判陈旧 —— 正是本表注释里自己警告过的
+ * "报警疲劳"（那里特意不列 `phase/*` 就是这个理由）。所以 C-25 侧**按路径前缀**收敛到设计文档
+ * 真正渲染的那些真源；**G3 签字失效那一面不变**（任何真源直写都失效：宁可重签，也别静默放过）。
+ */
+export const DESIGN_DOC_TRUTH_PREFIXES = [
+  '.sdo/design/',
+  '.sdo/contracts/',
+  '.sdo/decisions/',
+  '.sdo/quality/',
+  '.sdo/requirements/',
+  '.sdo/questions/',
+  '.sdo/risks/',
+] as const
+
+/** 单文件形态的设计真源（`.sdo/project.json`：名称/范围/干系人都会进文档）。 */
+export const DESIGN_DOC_TRUTH_FILES = ['.sdo/project.json'] as const
+
+/** 该 `.sdo/` 真源路径是否属于 `DESIGN.md` 的来源（决定 C-25 是否判它陈旧）。 */
+export function isDesignDocTruthPath(path: string): boolean {
+  const normalized = String(path).replace(/^\.\//u, '')
+  if ((DESIGN_DOC_TRUTH_FILES as readonly string[]).includes(normalized)) return true
+  return (DESIGN_DOC_TRUTH_PREFIXES as readonly string[]).some((prefix) => normalized.startsWith(prefix))
 }
 
 /** 该事件类型是否**明确**属于"不改真源"的中性表（P-13：用于给失效理由标注"未分类"）。 */
@@ -1351,6 +1495,8 @@ export const DESIGN_DOC_SOURCE_EVENTS = [
   'design/updated',
   'design/ui-updated',
   'design/artifact-updated',
+  // **SDO-19（2026-10-05 真机）**：绕过 SDO 直接 `write`/`edit` 改真源也是真源变更 —— 必须让 `DESIGN.md` 判陈旧（签字侧它会自然失效：不在中性表里）
+  'truth/file-written',
   'design/applicability-drafted',
   'design/applicability-updated',
   'design/applicability-confirmed',
@@ -1364,6 +1510,7 @@ export const DESIGN_DOC_SOURCE_EVENTS = [
 export type SdoEventType =
   | 'project/created'
   | 'project/updated'
+  | 'project/environment'
   | 'phase/entered'
   | 'phase/exited'
   | 'requirement/captured'
@@ -1383,6 +1530,7 @@ export type SdoEventType =
   | 'risk/updated'
   | 'change/requested'
   | 'change/decided'
+  | 'change/rollback'
   | 'tailoring/updated'
   | 'design/updated'
   | 'design/ui-updated'
@@ -1392,6 +1540,7 @@ export type SdoEventType =
   | 'design/rendered'
   | 'design/method-selected'
   | 'design/artifact-updated'
+  | 'truth/file-written'
   | 'design/applicability-drafted'
   | 'design/applicability-updated'
   | 'design/applicability-confirmed'
@@ -1404,6 +1553,12 @@ export type SdoEventType =
   | 'contract/dropped'
   | 'trace/linked'
   | 'trace/unlinked'
+  | 'plan/profile-decided'
+  | 'dispatch/finished'
+  | 'dispatch/reported'
+  | 'dispatch/observe-failed'
+  | 'test/mutation-recorded'
+  | 'test/contract-test-recorded'
   | 'plan/mode'
   | 'plan/review-blocked'
   | 'task/dropped'
@@ -1415,13 +1570,20 @@ export type SdoEventType =
   | 'task/released'
   | 'task/done'
   | 'task/blocked'
+  | 'task/claim-blocked'
   | 'dispatch/decided'
   | 'dispatch/started'
   | 'iteration/updated'
   | 'review/recorded'
+  // **评审核实**（2026-10-08 口径：评审结果要由实现方逐条核实才能采纳）
+  | 'review/verified'
+  // **G-2**：给老格式评审**补记**内容指纹（补记之后才能检出「改 verdict」这类篡改）
+  | 'review/hashed'
   | 'test/recorded'
   | 'defect/recorded'
+  | 'defect/updated'
   | 'delivery/packaged'
+  | 'delivery/run-recorded'
   | 'cost/updated'
   | 'budget/decision'
   | 'gate/result'
@@ -1437,6 +1599,7 @@ export type SdoEventType =
   | 'task/released'
   | 'task/done'
   | 'task/blocked'
+  | 'task/claim-blocked'
   | 'dispatch/decided'
   | 'dispatch/started'
   | 'iteration/updated'

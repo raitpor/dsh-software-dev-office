@@ -21,6 +21,7 @@ import { Config, resolveSettings } from './config.js'
 import { registerRoleCardsSkill } from './domain/skills.js'
 import type { SdoConfig } from './config.js'
 import { contractCoverage } from './domain/contracts.js'
+import { describeUndigestedChanges } from './domain/change.js'
 import { makeAcceptanceIds } from './domain/requirements.js'
 import { SdoStore } from './infra/store.js'
 import {
@@ -67,6 +68,7 @@ import {
   describeTrace,
   describeDispatchStarted,
   childFaceLines,
+  describePoolBlock,
 } from './interface/describe.js'
 import { renderStatusBlock } from './interface/inject.js'
 import {
@@ -78,7 +80,7 @@ import {
 } from './interface/designReceipt.js'
 import { decideBudgetReceipt, setBudgetReceipt } from './interface/budgetReceipt.js'
 import { createOfficeCommands } from './interface/commands.js'
-import { createOfficeTools, parseList } from './interface/tools.js'
+import { callOf, createOfficeTools, parseList } from './interface/tools.js'
 import type { GateSignAnswer, LangArgs } from './interface/tools.js'
 import { clampToolResult } from './interface/clamp.js'
 import { resolveScopeCall } from './interface/scope.js'
@@ -121,15 +123,20 @@ import {
 } from './types.js'
 import type { AcceptanceCriterion, Dimension, EvidenceItem, ViewKind } from './types.js'
 import { recordWorkspaceChanges } from './domain/workspaceChanges.js'
-import { attributeRole, claimsBySession, roleCardPath, roleMaskDecision, toolAllowList } from './domain/roles.js'
+import { attributeRole, claimsBySession, filterKnownTools, maskFingerprint, roleCardPath, roleMaskDecision, toolAllowList } from './domain/roles.js'
 import type { RoleAttribution } from './domain/roles.js'
-import { startDispatch } from './integration/dispatch.js'
+import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
-import { roleCard } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
 import { sessionIdOf } from './interface/scope.js'
 import { toolCallNameOf, toolNamesOfHeader } from './domain/dispatchFace.js'
+import { reviewAdoptionLabel } from './domain/reviewVerification.js'
+import { excerpt as excerptOf } from './domain/dispatchReports.js'
+import type { DispatchFinished } from './domain/dispatchReports.js'
 import { maskAllows } from './domain/roles.js'
+import { isAdrId } from './domain/adr.js'
+import { evaluateWriteScope, normalizeWorkspacePath } from './domain/writeScope.js'
+import type { ProposedQuestion } from './domain/grill.js'
 
 export const name = 'dsh-software-dev-office'
 
@@ -165,13 +172,22 @@ function parseContractKind(value: string | undefined): 'http' | 'event' | 'rpc' 
   return value === 'http' || value === 'event' || value === 'rpc' ? value : 'schema'
 }
 
-/** 解析 JSON 参数；失败时给出可读错误。 */
+/**
+ * 解析 JSON 参数；失败时给出可读错误。
+ *
+ * **D-7（sdo-test-new 2026-10-08，major）**：旧实现用的是 `uiIndex.k1`，而那个键的文案是
+ * **「预算已更新：{p1}」**（同一个 `uiIndex` 段里的预算回执），且模板里**没有 `{p2}`** ⇒
+ * 任何一个复合 JSON 参数写坏（`jsonOr` 有 34 个调用点：`alternatives`/`consequences`/
+ * `dimensions`/`steps`/`findings`…），用户看到的都是一句**与事实无关的"预算已更新"**，
+ * 真正的解析错误被丢掉，操作静默未执行 —— 真机上因此把一次解析失败误判成"并行写台账踩踏"。
+ * 现在：专用的解析失败键 + 带上宿主给的错误正文 + 明说"本次没有写入任何东西"。
+ */
 function jsonOr<T>(value: string | undefined, label: string): { value?: T; error?: string } {
   if (value === undefined || value.trim() === '') return {}
   try {
     return { value: JSON.parse(value) as T }
   } catch (error) {
-    return { error: fmt('uiIndex.k1', { p1: label, p2: error instanceof Error ? error.message : String(error) }) }
+    return { error: fmt('uiIndex.kJsonParseFailed', { p1: label, p2: error instanceof Error ? error.message : String(error) }) }
   }
 }
 
@@ -307,7 +323,22 @@ export function apply(ctx: Context, config: SdoConfig): void {
    * 或拿不到会话 cwd 就静默跳过 —— 采集失败只会让 `done` 如实回一句「本会话的写范围未对账」，
    * 绝不假装核对过。
    */
+  // 子代理**最后一条助手消息**的缓存（取汇报 ②：`turn/end` 时落盘）。
+  // 只放在内存里：一次性运行的子会话与插件实例同生命周期；插件重载会丢，这属已知边界（README 写明）。
+  const childLastMessage = new Map<string, string>()
+  const rememberChildMessage = (sessionId: string, text: string): void => {
+    if (text.trim() === '') return
+    childLastMessage.set(sessionId, text)
+    if (childLastMessage.size > 32) {
+      const oldest = childLastMessage.keys().next().value
+      if (oldest !== undefined) childLastMessage.delete(oldest)
+    }
+  }
+
   ctx.on('session/event', (session, event) => {
+    const rawType = String((event as { type?: unknown }).type ?? '')
+    const rawSessionId = sessionIdOf(session)
+    const rawCwd = ((session as { header?: { cwd?: unknown } }).header)?.cwd
     try {
       const eventType: string = String((event as { type?: unknown }).type ?? '')
       const header = (session as { header?: { id?: unknown; cwd?: unknown } }).header
@@ -323,10 +354,53 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const mine = dispatched.find((item) => item.childSessionId === sessionId)
         if (mine === undefined) return
         const tools = toolNamesOfHeader((event as { data?: { header?: unknown } }).data?.header)
-        if (tools.length === 0) return
+        // **D-14 连带①（blocker 同案）**：旧实现在这里**直接 return** —— 于是"子代理一个工具都没有"
+        // 这一态在台账里**完全静默**：`child-tools.jsonl` 不生成、journal 里也没有 `dispatch/observe-failed`，
+        // 而 README §9.1c 的承诺是"观测失败不再静默"（真机上因此只能靠读子会话原始记录才发现零工具）。
+        // 采集失败仍然 fail-open（不阻塞任何东西），但**必须留痕**。
+        if (tools.length === 0) {
+          office.noteObserveFailure({ sessionId, cwd }, {
+            childSessionId: sessionId,
+            eventType: 'request/header',
+            error: fmt('uiIndex.kObserveEmptyToolFace', { p1: mine.taskId }),
+          })
+          return
+        }
         const role = mine.role
-        const violations = isRole(role) ? tools.filter((tool) => !maskAllows(role, tool)) : []
+        // 这是**我们自己派发的子会话** ⇒ 按执行者判（`subagent`/`workflow`/`sdo_plan` 出现在它的公告面
+        // 就是一条该被抓到的越界：那条路能派出不带掩码的子代理）
+        const violations = isRole(role) ? tools.filter((tool) => !maskAllows(role, tool, { executor: true })) : []
         office.noteChildFace({ sessionId, cwd }, { childSessionId: sessionId, tools, violations })
+        return
+      }
+      // **取汇报 ②③**：子代理的结算与它的最终报告。
+      //  - `assistant/message`：记住最后一条（带全文）；
+      //  - `turn/end`：one-shot 子会话**没有** `session/end`，这就是结算信号 ⇒ 落报告 + 记 `dispatch/finished`。
+      if (eventType === 'assistant/message' || eventType === 'turn/end') {
+        if (sessionId === undefined || cwd === undefined) return
+        // 取**最新**一条（复用方案 3：同一子会话会服务多张卡，`find` 会一直认第一张卡 ⇒ 报告落点撞车）
+        const mine = office.dispatchedChildren({ sessionId, cwd }).filter((item) => item.childSessionId === sessionId).at(-1)
+        if (mine === undefined) return
+        if (eventType === 'assistant/message') {
+          const message = (event as { data?: { message?: { content?: unknown } } }).data?.message?.content
+          const text = Array.isArray(message)
+            ? message.map((block) => (block as { type?: string; text?: string }).type === 'text' ? String((block as { text?: string }).text ?? '') : '').join('')
+            : ''
+          rememberChildMessage(sessionId, text)
+          return
+        }
+        const turn = Number((event as { data?: { turn?: unknown } }).data?.turn ?? 0)
+        const reason = String(((event as { data?: { reason?: { kind?: unknown } } }).data?.reason)?.kind ?? '')
+        office.noteDispatchFinished({ sessionId, cwd }, {
+          childSessionId: sessionId,
+          task: mine.taskId,
+          role: mine.role,
+          turn: Number.isFinite(turn) ? turn : 0,
+          reason,
+          startedAt: mine.startedAt,
+          report: childLastMessage.get(sessionId) ?? '',
+        })
+        childLastMessage.delete(sessionId)
         return
       }
       // **执行面**：模型可能对**未被公告**的工具发起调用（宿主会把它路由到工具层，只有钩子拦得住）。
@@ -351,9 +425,24 @@ export function apply(ctx: Context, config: SdoConfig): void {
         | undefined
       const seq = Number((event as { seq?: unknown }).seq)
       if (!Number.isFinite(seq)) return
-      recordWorkspaceChanges({ store, sessionId, seq, summary: changes?.summary?.(sessionId, seq), enabled: true })
-    } catch {
-      /* fail-open：采集失败不影响任何写操作（只是 `done` 会如实报"未对账"） */
+      // **SDO-15**：同时记下**采集这一刻的 journal 序号** —— 写范围对账必须与 `task/claimed`
+      // 的判断序号同量纲（真机反例：宿主 seq 883 vs journal 444，导致任何卡都被判越界）。
+      const journalSeq = office.journalFor(cwd).read().events.length
+      recordWorkspaceChanges({ store, sessionId, seq, journalSeq, summary: changes?.summary?.(sessionId, seq), enabled: true })
+    } catch (error) {
+      // 采集/观测仍然 **fail-open**（不阻塞任何写操作），但**必须留痕**：
+      // 真机上就丢过三次派发的观测，而"没数据"与"没问题"从回执上分不出来（禁止静默的原则）。
+      try {
+        if (rawSessionId !== undefined && typeof rawCwd === 'string') {
+          office.noteObserveFailure({ sessionId: rawSessionId, cwd: rawCwd }, {
+            childSessionId: rawSessionId,
+            eventType: rawType,
+            error: error instanceof Error ? error.message : String(error),
+          })
+        }
+      } catch {
+        /* 连留痕都失败时不再递归；采集本身从不影响写路径 */
+      }
     }
   })
 
@@ -543,6 +632,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
     return lines.join('\n')
   }
 
+  /**
+   * **本插件真实注册的 `sdo_*` 工具名**（在下面的注册循环里填充）。
+   *
+   * 用途：算每个角色的 **deny 面**（SDO 流程面白名单的补集）。从**真实注册表**取而不是硬编码一张名单 ——
+   * 硬编码会随工具增减而漂移，而 deny 面里多一个/少一个名字的后果是"某个 sdo 工具对所有角色都不可达"
+   * 或"某个角色拿到了本不该有的流程工具"，两种都是静默的（2026-10-08 真机口径纠正）。
+   */
+  const officeToolNames: string[] = []
+
   const deps = {
     lang: async (_call: OfficeCall, args: LangArgs): Promise<string> => langAction(args),
     langSwitch: async (input?: string | undefined): Promise<string> => langAction(input ?? ''),
@@ -571,15 +669,56 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const text = describeStatus(office.status(call), settings.projectDirName, office.shapeNotes(call))
       // **观测的事后出口（评审第三轮 C）**：派发回执那一刻子代理还没跑，观测数据只有到了这里（或看板）才看得到
       const faces = office.childFaces(call)
+      // **取汇报 ①③**：最近完成的派发（卡 / 子会话 / 结论 / 耗时 / 报告落点 + 报告摘要）
+      const finished = office.finishedDispatches(call).slice(-5).reverse()
+      const finishedBlock = finished.length === 0
+        ? ''
+        : '\n' + t('uiDispatch.kFinishedHeader') + '\n' + finished.map((item) => {
+            const report = office.reportText(call, item.report)
+            const excerpt = report === undefined ? '' : '\n  ' + excerptOf(report)
+            return fmt('uiDispatch.kFinishedLine', {
+              p1: item.task === '' ? item.childSessionId.slice(0, 8) : item.task,
+              p2: item.childSessionId.slice(0, 8),
+              p3: item.reason === '' ? '?' : item.reason,
+              p4: String(Math.round(item.durationMs / 1000)),
+              p5: item.report,
+            }) + excerpt
+          }).join('\n')
+      // **语义 A 的事后出口**：批准但未消化的需求变更。认领会被拒（`change-not-digested`），
+      // 但"为什么"必须能主动看到 —— 重启/压缩之后那条回执已经不在上下文里了。
+      // 文案直接复用 `describeUndigestedChanges`（与拒认领同一份口径，一处定义两处使用）。
+      const pending = office.undigestedChanges(call)
+      const pendingBlock = pending.length === 0 ? '' : '\n' + describeUndigestedChanges(pending, office.process(call)) + '\n'
+      // **角色池**（子代理复用）：谁在飞、谁空闲可复用、还有几张卡排队 —— 与派发回执同一份渲染
+      const poolReuse = reuseCapability((subagentsApi ?? {}) as unknown as SubagentRuntimeLike).supported
+      // **§2.2（第二轮评审 HIGH）**：状态路径不传 `maskHashOf` ⇒ 与派发路径**两套口径**
+      // （真机：同一状态下 `queued/blocked=pool-full` 而派发路径 `dispatch=[TASK-9/复用]`）。
+      const poolPlan = office.poolPlan(call, {
+        reuseIdle: poolReuse,
+        maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
+      })
+      const poolText = describePoolBlock(poolPlan.pools, poolPlan.queued.map((task) => task.id), poolReuse, settings.dispatchOrphanTtlMinutes)
+      const poolBlock = poolText === '' ? '' : '\n' + poolText + '\n'
+      // **SDO-53**：公告清单 ≠ 实际可调 —— 把「我们声明的面」与「子代理实测拿到的面」的差集摆出来
+      const faceMismatches = office.faceMismatches(call)
+      const faceMismatchBlock = faceMismatches.length === 0
+        ? ''
+        : '\n' + faceMismatches.map((row) => fmt('uiIndex.kFaceMismatch', {
+          p1: row.childSessionId.slice(0, 8),
+          p2: row.task,
+          p3: row.role,
+          p4: row.missing.join(' ') || '-',
+          p5: row.extra.join(' ') || '-',
+        })).join('\n') + '\n'
       const faceBlock =
         faces.length === 0
           ? ''
           : '\n' + fmt('uiDescribe.k208FaceBlockHeader', { p1: String(faces.length) }) + '\n' + childFaceLines(faces).join('\n')
-      if (forced === undefined) return text + faceBlock
+      if (forced === undefined) return text + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock
       const note = forced.truncated
         ? fmt('uiIndex.kRebuildTruncated', { p1: String(forced.badLine ?? '?') })
         : t('uiIndex.kRebuildForced')
-      return `${note}\n${text}` + faceBlock
+      return `${note}\n${text}` + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock
     },
 
     async board(
@@ -653,6 +792,43 @@ export function apply(ctx: Context, config: SdoConfig): void {
     },
 
     async plan(call: OfficeCall, args: PlanArgs): Promise<string> {
+      // **决定实现阶段方法包**（增量 3）：模型自选、不问用户，但必须有据可查（derivedFrom 至少一条可核对）。
+      if (args.action === 'profile') {
+        const packages = jsonOr<string[]>(args.packages, 'packages')
+        if (packages.error !== undefined) return packages.error
+        const derivedFrom = jsonOr<string[]>(args.derivedFrom, 'derivedFrom')
+        if (derivedFrom.error !== undefined) return derivedFrom.error
+        const exempt = jsonOr<{ task?: unknown; check?: unknown; why?: unknown }[]>(args.exempt, 'exempt')
+        if (exempt.error !== undefined) return exempt.error
+        const scopeRaw = (args.scope ?? '').trim()
+        let scope: 'all' | string[] = 'all'
+        if (scopeRaw !== '' && scopeRaw !== 'all') {
+          const parsed = jsonOr<string[]>(scopeRaw, 'scope')
+          if (parsed.error !== undefined) return parsed.error
+          scope = parsed.value ?? []
+        }
+        const outcome = office.decideConstructionProfile(call, {
+          packages: packages.value ?? [],
+          scope,
+          derivedFrom: derivedFrom.value ?? [],
+          reason: args.reason ?? '',
+          exempt: (exempt.value ?? []).map((item) => ({
+            task: typeof item.task === 'string' ? item.task : '',
+            check: typeof item.check === 'string' ? item.check : '',
+            why: typeof item.why === 'string' ? item.why : '',
+          })),
+          by: 'office',
+        })
+        if (!outcome.ok) return fmt('uiIndex.kProfileRejected', { p1: outcome.problems.join('；') })
+        return fmt('uiIndex.kProfileDecided', {
+          p1: outcome.profile.packages.join(' + '),
+          p2: outcome.profile.scope === 'all' ? 'all' : outcome.profile.scope.join(' '),
+          p3: outcome.profile.derivedFrom.join('；'),
+          p4: String(outcome.checked.length),
+          p5: String(outcome.unchecked.length),
+          p6: outcome.profile.reason === '' ? t('uiIndex.kProfileNoReason') : outcome.profile.reason,
+        })
+      }
       if (args.action === 'decompose') {
         const requirements = jsonOr<string[]>(args.requirements, 'requirements')
         if (requirements.error !== undefined) return requirements.error
@@ -700,13 +876,51 @@ export function apply(ctx: Context, config: SdoConfig): void {
 
       if (args.action !== 'next') return fmt('uiIndex.k29', { p1: args.action, p2: PLAN_ACTIONS.join(' | ') })
 
-      const plan = office.dispatchPlan(call)
+      // **子代理复用（角色池 + 卡队列，2026-10-04）**：投递仍由驾驶舱触发（本工具调用），
+      // 但"这一轮能派几张"由池决定 —— 逐角色并行上限、池满排队（不丢卡）。
+      const reuse = reuseCapability((subagentsApi ?? {}) as unknown as SubagentRuntimeLike)
+      // **SDO-27（真机）**：`freshChild=true` ⇒ 这一轮**不复用**空闲子代理（强制新起一个）。
+      // 真机上单一子代理被复用 19 轮直至上下文耗尽（多次交付只剩部分内容），需要一个"换人"入口。
+      const freshChild = args.freshChild === true
+      // **SDO-52**：复用空闲子代理前必须比对**工具面指纹**（掩码改过 ⇒ 旧会话还是旧面）。
+      // 一次 plan 可能横跨多个角色 ⇒ 传**取指纹的函数**，由池在逐卡判定时就地取。
+      const plan = office.poolPlan(call, {
+        reuseIdle: reuse.supported && !freshChild,
+        maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
+      })
       if (plan.dispatch.length === 0) {
         const issues = office.planIssues(call)
-        if (issues.length > 0) return describePlan(office.tasks(call), issues, office.shapeNotes(call))
-        return plan.queued.length === 0
-          ? t('uiIndex.k30')
-          : fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
+        if (issues.length > 0) {
+          // **SDO-46（真机）**：以前这里直接回落到"打印看板"，于是「派发成功」与「没派发」在回执上
+          // 难以区分（真机上被误判为"新卡没建成"，在自动化流水线上就是**静默停摆**）。
+          // 现在先给一句**明确的裁决**，再附看板与原因。
+          const ready = office.tasks(call).filter((task) => task.status === 'planned' || task.status === 'ready')
+          const conflicts = issues.filter((issue) => issue.code === 'write-scope-disjoint')
+          const held = ready
+            .map((task) => conflicts.find((issue) => issue.taskId === task.id))
+            .filter((issue): issue is (typeof conflicts)[number] => issue !== undefined)
+          const verdict = held.length > 0
+            ? fmt('uiIndex.kDispatchHeldByScope', {
+              p1: String(held.length),
+              p2: held.map((issue) => issue.taskId).join(' '),
+              p3: held.map((issue) => issue.detail).join(' ｜ '),
+            })
+            : fmt('uiIndex.kDispatchBlockedByPlan', { p1: String(issues.length) })
+          // **SDO-54**：真机回执是「⛔ 本次没有派发：计划有 10 处问题（见下）」，而「见下」的 10 条诊断
+          // 被随后的看板长文淹没/截断 ⇒ 流程官分不清"计划有问题"还是"通道坏了"。
+          // 现在诊断**紧跟裁决**（看板在后），且 `why=true` 时只输出裁决 + 诊断。
+          const diagnostics = issues
+            .map((issue) => fmt('uiIndex.kPlanIssueLine', { p1: issue.code, p2: issue.taskId, p3: issue.detail, p4: issue.remedy }))
+            .join('\n')
+          if (args.why === true) return verdict + '\n' + diagnostics
+          return verdict + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call))
+        }
+        if (plan.queued.length === 0) return t('uiIndex.k30')
+        // 排队不是"没卡"，而是**被上限挡住**：必须说清是哪个池满，否则用户会以为流程卡住了
+        const blocked = plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })).join('\n')
+        return fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
+          + '\n' + blocked
+          + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
       }
 
       const preference = args.backend === 'subagent' || args.backend === 'native-team' || args.backend === 'inline' ? args.backend : 'auto'
@@ -715,38 +929,133 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const take = Math.max(1, Math.min(args.limit ?? 1, plan.dispatch.length))
       const picked = plan.dispatch.slice(0, take)
       const out: string[] = []
-      for (const [index, task] of picked.entries()) {
+      for (const [index, entry] of picked.entries()) {
+        const task = entry.task
         const owner = decision.backend === 'inline' ? 'cockpit' : `${decision.backend}:${task.role}:${index + 1}`
-        const request = buildDispatch({ task, backend: decision.backend, owner, projectName: office.status(call).project?.name ?? '' })
+        const request = buildDispatch({
+          task,
+          backend: decision.backend,
+          owner,
+          projectName: office.status(call).project?.name ?? '',
+          // **真实注册名**（见 `officeToolNames` 注释）：算 deny 面必须按它来，绝不硬编码
+          sdoNames: officeToolNames,
+        })
         office.recordDispatch(call, {
           taskId: task.id,
           backend: decision.backend,
           owner,
           ...(decision.degradedReason === undefined ? {} : { degradedReason: decision.degradedReason }),
+          // **D-15**：显式指定覆盖了本迭代锁 —— 与降级一样必须留痕（同一份事件里两个不同语义的字段）
+          ...(decision.overrideNote === undefined ? {} : { overrideNote: decision.overrideNote }),
         })
         lastBackend = { backend: decision.backend, iteration: iteration?.number }
         if (decision.backend === 'inline') {
-          out.push(describeInlineHandoff(request, decision.degradedReason))
+          out.push(describeInlineHandoff(request, decision.degradedReason, decision.overrideNote))
           continue
         }
         // P-1：真的把请求交给宿主的 subagents 服务起一次运行；失败如实说明原因（不假装派出去了）
+        // **工具面必须先按宿主注册表过滤**：宿主 `tools.restrict()` 对未注册的名字**直接抛错**
+        // （`names unknown global tool "pdf"`）⇒ 整份工具面失效、子代理连 `read_image` 都拿不到。
+        // 探针拿不到（服务缺失/抛错）时**保持原样**（fail-open）：宁可少拦，也不能让整份工具面炸掉。
+        //
+        // **D-14（sdo-test-new 2026-10-08，blocker）**：探针**必须带上调用方 agent 的作用域**。
+        // 宿主 `tools.get(name)` 省略 scope = **只查全局层**（dsh-tools 的 `get(name, scope?)`：
+        // "omitted = the global view"），而 `sdo-office` preset 挂的工具是 **agent 平面**注册
+        // （宿主源码注释：preset 工具是 "ANCESTOR contribution"）⇒ 旧写法对 15 个名字**全部**返回
+        // undefined，白名单被清空成 `[]` 原样下发，子代理**一个工具都没有**（子会话描述符
+        // `toolFilter.allow: []`，整轮只能把工具调用写成正文，卡零变化、回执却写"已真正派发"）。
+        // 两条一起修：① 按 agent 作用域问（查不到再退回全局视图，取并集）；② 全未知时不当事实用。
+        const toolsProbe = (scope: unknown): ((name: string) => boolean) => {
+          try {
+            const api = ctx.get('tools') as { get?: ((name: string, scope?: unknown) => unknown) | undefined } | undefined
+            if (api === undefined || typeof api.get !== 'function') return () => true
+            return (name: string): boolean => {
+              try {
+                if (scope !== undefined && api.get?.(name, scope) !== undefined) return true
+                return api.get?.(name) !== undefined
+              } catch {
+                return true
+              }
+            }
+          } catch {
+            return () => true
+          }
+        }
+        const probe = toolsProbe(call.agent)
+        // **2026-10-08 口径纠正**：下发的是 **deny 面**，不是 allow 白名单。
+        // 旧写法把 `request.toolFilter`（角色声明的十几个名字）当 allow 下发 ⇒ 宿主把**整个通用面**也隐藏掉，
+        // 子代理连 `technique_apply`/记忆/联网都没有（真机原话「无法使用 technique_apply」）。
+        // 现在：通用面**继承宿主默认**（只有 `roles.yml` 的 deny 明写挡住的才挡），
+        // SDO 流程面用白名单的补集（`toolDenyList`）。
+        const denyFiltered = filterKnownTools(request.toolDeny, probe)
+        const probeBlind = denyFiltered.blind
+        // 盲态没有"剔掉了什么"可言（那批 dropped 是探针的错觉）—— 不许当事实回报。
+        const droppedTools = probeBlind ? [] : denyFiltered.dropped
         const outcome = await startDispatch({
           runtime: subagentsApi,
           provider: settings.dispatchProvider,
           agent: call.agent,
           request,
-          deny: isRole(task.role) ? (roleCard(task.role)?.deny ?? []) : [],
+          deny: denyFiltered.applied,
           maxDepth: settings.dispatchMaxDepth,
+          ...(entry.reuseChildId === undefined ? {} : { reuseChildId: entry.reuseChildId }),
         })
+        if (plan.reuseSkipped.length > 0) {
+          out.push(fmt('uiIndex.kReuseSkipped', {
+            p1: String(plan.reuseSkipped.length),
+            p2: plan.reuseSkipped.map((item) => `${item.childSessionId}（${item.reason}）`).join('；'),
+          }))
+        }
+        if (probeBlind) {
+          // 盲态时**原样下发**（对 deny 面来说，丢掉一条 deny = 给子代理多开一项权限 ⇒ 必须原名单发出）
+          out.push(fmt('uiIndex.kToolFilterProbeBlind', { p1: task.id, p2: String(denyFiltered.applied.length) }))
+        }
+        if (droppedTools.length > 0) {
+          out.push(fmt('uiIndex.kToolFilterDropped', { p1: [...new Set(droppedTools)].join(' '), p2: task.id }))
+        }
         if (outcome.started) {
           office.recordDispatchStarted(call, {
             taskId: task.id,
             provider: outcome.provider,
             childSessionId: outcome.childSessionId,
-            tools: request.toolFilter.length,
+            // **SDO 流程面白名单**条数（这才是"角色面"里真正受控的那部分）
+            tools: request.sdoAllow.length,
+            // deny 面：通用面的硬禁止 ∪ SDO 补集 —— **实际下发**的那份（审计与"掩码到哪一层"的唯一台账线索）
+            denyTools: denyFiltered.applied.length,
+            deny: denyFiltered.applied,
+            sdoAllow: request.sdoAllow,
+            ...(isRole(task.role) ? { maskHash: maskFingerprint(task.role) } : {}),
             ...(isRole(task.role) ? { role: task.role } : {}),
+            mode: outcome.mode,
+            reused: outcome.reused,
           })
-          out.push(describeDispatchStarted(request, outcome.provider, outcome.childSessionId, request.toolFilter.length, outcome.toolFilterDeclared, office.childFaces(call)))
+          // 复用/降级**如实写出来**：静默复用与静默降级都会让"池"变成看不见的行为
+          const rounds = office.dispatchedChildren(call).filter((child) => child.childSessionId === outcome.childSessionId).length
+          const stuck = office.unresolvedBlock(call, task.id)
+          const notes = [
+            stuck === undefined ? '' : fmt('uiDescribe.kDispatchRepeatBlocked', { p1: task.id, p2: stuck.reason.slice(0, 200) }),
+            outcome.reused
+              ? fmt('uiDescribe.kReusedChild', { p1: task.id, p2: outcome.childSessionId.slice(0, 8), p3: task.role, p4: String(rounds) })
+              : '',
+            outcome.reuseFailed === undefined ? '' : fmt('uiDescribe.kReuseFailed', { p1: outcome.reuseFailed }),
+            outcome.continuableFailed === undefined ? '' : fmt('uiDescribe.kContinuableFailed', { p1: outcome.continuableFailed }),
+          ].filter((line) => line !== '')
+          out.push(
+            describeDispatchStarted(
+              request,
+              outcome.provider,
+              outcome.childSessionId,
+              // **实际下发的 deny 面**（D-14 连带 ② 的教训：回执必须报"真发出去的那份"）
+              denyFiltered.applied,
+              outcome.toolFilterDeclared,
+              outcome.reuseSupported,
+              office.childFaces(call),
+              { reused: outcome.reused, mode: outcome.mode },
+              decision.degradedReason,
+              decision.overrideNote,
+            )
+              + (notes.length === 0 ? '' : '\n' + notes.join('\n')),
+          )
           continue
         }
         out.push(
@@ -756,22 +1065,99 @@ export function apply(ctx: Context, config: SdoConfig): void {
         )
       }
       const tail = plan.queued.length === 0 ? '' : fmt('uiIndex.k32', { p1: plan.queued.length })
-      return `${out.join('\n\n')}${tail}`
+      // 池视图（在飞/空闲可复用/已退役）+ 还在排队的卡：一次派发之后"池子长什么样"要能看见
+      const freshNote = freshChild ? '\n' + t('uiIndex.kFreshChild') : ''
+      const poolBlock = describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
+      return `${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}`
     },
 
     async task(call: OfficeCall, args: TaskArgs): Promise<string> {
       switch (args.action) {
+        case 'update': {
+          // **D6**：改卡同属流程官职权；**认领会话本人**可以改自己正在做的卡（改完仍需重新认领）
+          {
+            const ownSession = args.id !== undefined && office.claimSession(call, args.id) === call.sessionId
+            if (!ownSession && office.isDispatchedChild(call)) return t('uiIndex.kTaskAdminOnly')
+          }
+          // **SDO-14(3) / SDO-15(3)（真机）**：卡是流程真源，却没有受约束的修改入口 —— 真机只能人肉改 YAML
+          // 或重新立卡。这里给出入口，三条约束见 `updateTask`。
+          if (args.id === undefined) return t('uiIndex.k33')
+          const json = <T,>(raw: string | undefined, label: string): { value: T | undefined; error: string | undefined } => {
+            if (raw === undefined) return { value: undefined, error: undefined }
+            const parsed = jsonOr<T>(raw, label)
+            return { value: parsed.error === undefined ? parsed.value : undefined, error: parsed.error }
+          }
+          const fields = {
+            dod: json<string[]>(args.dod, 'dod'),
+            writeScopes: json<string[]>(args.writeScopes, 'writeScopes'),
+            blockedBy: json<string[]>(args.blockedBy, 'blockedBy'),
+            evidenceRequired: json<string[]>(args.evidenceRequired, 'evidenceRequired'),
+            requirements: json<string[]>(args.requirements, 'requirements'),
+          }
+          for (const item of Object.values(fields)) if (item.error !== undefined) return item.error
+          const updated = office.updateTask(call, {
+            taskId: args.id,
+            by: args.actor ?? args.owner ?? 'human',
+            ...(args.expectedRevision === undefined ? {} : { expectedRevision: args.expectedRevision }),
+            ...(args.title === undefined ? {} : { title: args.title }),
+            ...(fields.dod.value === undefined ? {} : { dod: fields.dod.value }),
+            ...(fields.writeScopes.value === undefined ? {} : { writeScopes: fields.writeScopes.value }),
+            ...(fields.blockedBy.value === undefined ? {} : { blockedBy: fields.blockedBy.value }),
+            ...(fields.evidenceRequired.value === undefined ? {} : { evidenceRequired: fields.evidenceRequired.value }),
+            ...(fields.requirements.value === undefined ? {} : { requirements: fields.requirements.value }),
+            ...(args.size === undefined ? {} : { size: args.size }),
+          })
+          if (!updated.ok) return fmt('uiIndex.kTaskUpdateRejected', { p1: updated.code, p2: updated.detail })
+          return fmt('uiIndex.kTaskUpdated', { p1: updated.task.id, p2: updated.changed.join('、'), p3: String(updated.task.revision) })
+        }
         case 'drop': {
           // D3-3 回收路径：建错的卡置为 dropped（留痕不删除），把「误拆不可逆」变成可回收
           if (args.id === undefined) return t('uiIndex.k33')
+          // **D6（整仓评审 major）**：`sdo_task` 对全部 8 个角色可见，而 `drop` 旧实现**没有任何角色/owner 校验**
+          // —— 真机上 developer 子代理 `drop` 掉未完成的卡后，`C-40` 立刻由 fail 变 ok（"已显式放弃，不计入完成率"）。
+          // 卡是**计划产物**：放弃/改派属流程官职权（驾驶舱或 office 角色）。
+          if (office.isDispatchedChild(call)) return t('uiIndex.kTaskAdminOnly')
           const dropped = office.dropTask(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
           return dropped === undefined ? fmt('uiIndex.k34', { p1: args.id }) : describeTask(dropped, office.shapeNotes(call))
+        }
+        case 'verify-review': {
+          // **2026-10-08 口径**：评审发现要由**该卡的实现会话**逐条核实（复现 / 反驳）后才被采纳。
+          // 为什么挂在 `sdo_task` 而不是 `sdo_review`：`sdo_review` 是**评审员的工具**（掩码里
+          // developer / tester / delivery 都显式 deny —— 职责分离），而"核实这张卡上的发现"
+          // 本来就是卡的生命周期动作（它还挡着 `done`）。挂在协议通道 `sdo_task` 上，
+          // 8 个角色都够得着，且不必放宽任何一条职责分离。
+          if (args.id === undefined) return t('uiIndex.kReviewVerifyNoTask')
+          if (args.review === undefined) return t('uiIndex.kReviewVerifyNoId')
+          if (args.index === undefined) return t('uiIndex.kReviewVerifyNoIndex')
+          if (args.outcome === undefined) return t('uiIndex.kReviewVerifyNoOutcome')
+          const result = office.verifyReviewFinding(call, {
+            reviewId: args.review,
+            index: args.index - 1,
+            outcome: args.outcome,
+            evidence: args.proof ?? '',
+            by: args.actor ?? 'human',
+          })
+          if (!result.ok) return `${result.code}：${result.detail}`
+          return fmt('uiIndex.kReviewVerified', {
+            p1: args.review,
+            p2: String(args.index),
+            p3: result.disposition.outcome,
+            p4: String(result.coverage.verified),
+            p5: String(result.coverage.total),
+            p6: result.adopted ? t('uiIndex.kReviewAdopted') : t('uiIndex.kReviewNotAdoptedYet'),
+          })
         }
         case 'claim': {
           if (args.id === undefined || args.owner === undefined || args.expectedRevision === undefined) {
             return t('uiIndex.k33')
           }
-          const result = office.claimTask(call, { taskId: args.id, owner: args.owner, expectedRevision: args.expectedRevision })
+          const result = office.claimTask(call, {
+            taskId: args.id,
+            owner: args.owner,
+            expectedRevision: args.expectedRevision,
+            // 增量 3：构造阶段才检查实现阶段方法包（阶段从投影现读，避免"测试专用参数"）
+            phase: office.status(call).project?.phase,
+          })
           return result.ok ? describeTask(result.task, office.shapeNotes(call)) : describeTaskConflict(result.detail, result.current, result.code)
         }
         case 'done':
@@ -809,21 +1195,36 @@ export function apply(ctx: Context, config: SdoConfig): void {
             taskId: args.id,
             owner: args.owner,
             status: args.action === 'done' ? 'done' : 'blocked',
+            phase: office.status(call).project?.phase,
             ...(items.length === 0 ? {} : { evidence: items }),
             ...(args.note === undefined ? {} : { note: args.note }),
           })
           if (!result.ok) return fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
           const taskText = describeTask(result.task, office.shapeNotes(call))
+          // **SDO-58**：结算后量一下子代理报告 —— 异常短/缺失就显式告警（真机 235 字节的残片报告
+          // 是事后才被复评员发现的，审计链断在这里）
+          const health = args.action === 'done' ? office.childReportHealth(call, args.id) : { state: 'none' as const }
+          const reportWarning = health.state === 'short'
+            ? '\n' + fmt('uiIndex.kChildReportShort', { p1: result.task.id, p2: String(health.bytes ?? 0), p3: health.report ?? '' })
+            : health.state === 'missing'
+              ? '\n' + fmt('uiIndex.kChildReportMissing', { p1: result.task.id })
+              : ''
           // A2：采集不到变更清单时**如实说**"写范围未对账"，不让"没数据"读成"已核对"
-          return result.workspaceAudit !== undefined && !result.workspaceAudit.checked
+          return (result.workspaceAudit !== undefined && !result.workspaceAudit.checked
             ? taskText + '\n' + t('uiIndex.kWorkScopeNotAudited')
-            : taskText
+            : taskText) + reportWarning
         }
         case 'release':
         case 'reassign': {
           if (args.id === undefined) return t('uiIndex.k36')
           const actor = args.actor ?? 'cockpit'
           const reason = args.reason ?? t('uiIndex.k37')
+          // **D6**：`reassign`（改派）属流程官；`release`（自己放手）允许**认领会话本人**或流程官。
+          {
+            const ownSession = args.id !== undefined && office.claimSession(call, args.id) === call.sessionId
+            if (!ownSession && office.isDispatchedChild(call)) return t('uiIndex.kTaskAdminOnly')
+            if (!ownSession && office.isDispatchedChild(call) === false && args.action === 'reassign' && office.roleOf(call) !== 'cockpit') return t('uiIndex.kTaskAdminOnly')
+          }
           const task =
             args.action === 'release'
               ? office.releaseTask(call, { taskId: args.id, actor, reason })
@@ -862,30 +1263,134 @@ export function apply(ctx: Context, config: SdoConfig): void {
           return fmt('uiIndex.k39', { p1: testCase.id, p2: testCase.kind, p3: testCase.title, p4: testCase.requirement === undefined ? '' : fmt('uiIndex.k116', { p1: testCase.requirement }) })
         }
         case 'record': {
+          // 增量 3：**交付物通道**（变异自证 / 契约测试）—— 与"用例结果"是两类记录，先分流。
+          // 它们不要求 caseId/status（那两个是"用例结果"的必填项）。
+          if (args.mutation !== undefined || args.contractTest !== undefined) {
+            // **§2.5c（第二轮评审）**：旧实现在 mutation 分支里**直接 return** ⇒ 同时给 `mutation` 与
+            // `contractTest` 时后者被静默丢弃（工具面声明了两个参数，模型照 README 写也写不进去）。
+            // 现在两条各自落账、回执按顺序拼接。
+            const parts: string[] = []
+            if (args.mutation !== undefined) {
+              const payload = jsonOr<Record<string, unknown>>(args.mutation, 'mutation')
+              if (payload.error !== undefined) return payload.error
+              const item = payload.value ?? {}
+              const outcome = office.recordMutation(call, {
+                task: typeof item.task === 'string' ? item.task : '',
+                tool: typeof item.tool === 'string' ? item.tool : '',
+                target: typeof item.target === 'string' ? item.target : '',
+                killed: Number(item.killed ?? 0),
+                survived: Number(item.survived ?? 0),
+              })
+              if (!outcome.ok) return fmt('uiIndex.kMutationRejected', { p1: outcome.problems.join('；') })
+              const receipt = fmt('uiIndex.kMutationRecorded', {
+                p1: outcome.record.task,
+                p2: outcome.record.tool,
+                p3: String(outcome.record.killed),
+                p4: String(outcome.record.survived),
+              })
+              // 建议非空（不判红）：写清 target 复核者才能跟着复跑
+              parts.push(outcome.targetMissing ? `${receipt}\n${t('uiIndex.kMutationTargetHint')}` : receipt)
+            }
+            if (args.contractTest !== undefined) {
+            const payload = jsonOr<Record<string, unknown>>(args.contractTest, 'contractTest')
+            if (payload.error !== undefined) return payload.error
+            const item = payload.value ?? {}
+            const outcome = office.recordContractTest(call, {
+              task: typeof item.task === 'string' ? item.task : '',
+              contract: typeof item.contract === 'string' ? item.contract : '',
+              tool: typeof item.tool === 'string' ? item.tool : '',
+              cmd: typeof item.cmd === 'string' ? item.cmd : '',
+            })
+            if (!outcome.ok) return fmt('uiIndex.kContractTestRejected', { p1: outcome.problems.join('；') })
+            parts.push(fmt('uiIndex.kContractTestRecorded', { p1: outcome.record.task, p2: outcome.record.contract }))
+            }
+            return parts.join('\n')
+          }
           if (args.caseId === undefined || args.status === undefined) return t('uiIndex.k40')
           if (args.status === 'pass' && (args.evidence ?? '').trim() === '') {
             return t('uiIndex.k41')
           }
+          // **D5（整仓评审）**：旧三元把**非法/缺失**的 `status` 一律落成 `pass`（真机 `status="passed"` ⇒ pass）。
+          // 与 SDO-41/SDO-59 同一口径：取值集合之外 ⇒ 可读拒绝，绝不默认「通过」。
+          if (args.status !== 'pass' && args.status !== 'fail' && args.status !== 'skip') {
+            return fmt('uiIndex.kRecordBadStatus', { p1: String(args.status ?? '') })
+          }
           const result = office.addTestResult(call, {
             caseId: args.caseId,
-            status: args.status === 'fail' ? 'fail' : args.status === 'skip' ? 'skip' : 'pass',
+            status: args.status,
             evidence: args.evidence ?? '',
+            // **SDO-57（C）**：证据自带**时点（at）+ 前置（env/被检产物）** ⇒ 限定语不再静默过期
+            ...(args.env === undefined ? {} : { env: args.env }),
+            ...(args.artifact === undefined ? {} : { artifact: args.artifact }),
           })
           const stats = office.verification(call)
-          return fmt('uiIndex.k42', { p1: result.id, p2: result.caseId, p3: result.status, p4: stats.cases, p5: stats.passed, p6: stats.failed, p7: stats.defectsOpen })
+          // 记完这一条就把"时效"摆出来（只告警、不拦）：过期的证据与没记环境的结果都要被看见
+          const fresh = office.evidenceFreshness(call)
+          const notes: string[] = []
+          for (const item of fresh.stale) notes.push('\n' + fmt('uiIndex.kEvidenceStale', { p1: item.resultId, p2: item.caseId, p3: item.reason }))
+          if ((result.env ?? '') === '') {
+            notes.push('\n' + t('uiIndex.kEvidenceNoEnv'))
+          } else if (result.envSource === 'inherited') {
+            notes.push('\n' + fmt('uiIndex.kEvidenceEnvInherited', { p1: result.env ?? '' }))
+          }
+          if (stats.unjournaled.includes(result.id)) {
+            // **D4**：真源里查不到"这条结果是被跑出来的" ⇒ 不能当证据（手写文件 / 事后改写都在这里现形）
+            notes.push('\n' + fmt('uiIndex.kTestUnjournaled', { p1: '1', p2: result.id }))
+          }
+          return fmt('uiIndex.k42', { p1: result.id, p2: result.caseId, p3: result.status, p4: stats.cases, p5: stats.passed, p6: stats.failed, p7: stats.defectsOpen }) + notes.join('')
+        }
+        case 'env': {
+          // **SDO-57（C）**：环境**时序账本** —— 换 JDK/升探针/改类路径就再登记一条，
+          // 此后"这条证据是不是在当前环境下得出的"可判（限定语不再静默过期）。
+          const recorded = office.noteEnvironment(call, {
+            env: args.env ?? '',
+            ...(args.reason === undefined ? {} : { note: args.reason }),
+            by: 'human',
+          })
+          if (!recorded.ok) return t('uiIndex.kEnvMissing')
+          return fmt('uiIndex.kEnvRecorded', { p1: recorded.env, p2: recorded.at })
         }
         case 'defect': {
           if (args.defectId !== undefined) {
-            const status = args.status === 'fixed' || args.status === 'closed' || args.status === 'wontfix' ? args.status : 'open'
-            const defect = office.setDefectStatus(call, args.defectId, status)
-            return defect === undefined ? fmt('uiIndex.k122', { p1: args.defectId }) : fmt('uiIndex.k43', { p1: defect.id, p2: defect.status })
+            // **SDO-55**：旧实现只取 `status`，`title` **被静默丢掉**（回执说「已更新」、文件一字未改 ⇒
+            // 流程官据此对外误称「已更正」）。现在把给出的字段**都**送进去，并回显**有效差异**；
+            // 与现值完全相同 ⇒ 报 `no-op-update`（不得回「已更新」）。
+            // **SDO-59（真机 2026-10-07）**：旧实现把**省略** `status` 解释成 `open` ⇒ 只补 `evidence`/只清标题前缀
+            // 的更正会**静默把已关闭缺陷重开**（真机 DEF-022/023/024 被重开，seq 2139-2141 留痕）。
+            // 现在：**省略 = 保持不变**；给了但取值非法 ⇒ **可读拒绝**（不再悄悄当成 `open`）。
+            const requestedStatus = args.status === undefined ? undefined : (['open', 'fixed', 'closed', 'wontfix'] as const).find((item) => item === args.status)
+            if (args.status !== undefined && requestedStatus === undefined) {
+              return fmt('uiIndex.kDefectBadStatus', { p1: String(args.status) })
+            }
+            const updated = office.updateDefect(call, args.defectId, {
+              ...(requestedStatus === undefined ? {} : { status: requestedStatus }),
+              ...(args.title === undefined ? {} : { title: args.title }),
+              ...(args.severity === undefined ? {} : { severity: args.severity }),
+              ...(args.caseId === undefined ? {} : { caseId: args.caseId }),
+              // **追加实测（2026-10-07）**：`evidence=` 曾被静默丢弃（回执说「已更新」、journal 零命中）
+              ...(args.evidence === undefined ? {} : { evidence: args.evidence }),
+              ...(args.reason === undefined ? {} : { reason: args.reason }),
+            }, 'human')
+            if (!updated.ok) {
+              return updated.code === 'no-op-update'
+                ? fmt('uiIndex.kDefectNoOp', { p1: args.defectId, p2: updated.detail })
+                : fmt('uiIndex.k122', { p1: args.defectId })
+            }
+            const diffs = updated.changes.map((change) => `${change.field}: ${change.from} -> ${change.to}`).join('; ')
+            const payload = (args.evidence ?? '').trim() === '' && (args.reason ?? '').trim() === ''
+              ? ''
+              : '\n' + t('uiIndex.kDefectPayloadRecorded')
+            return fmt('uiIndex.k43', { p1: updated.defect.id, p2: updated.defect.status }) + '\n' + fmt('uiIndex.kDefectDiff', { p1: diffs }) + payload
           }
           if ((args.title ?? '') === '' || args.severity === undefined) return t('uiIndex.k44')
+          // **SDO-59**：**新建**时省略 `status` 仍默认 `open`（新缺陷本来就是 open），但取值非法同样拒绝
+          const createdStatus = args.status === undefined ? 'open' : (['open', 'fixed', 'closed', 'wontfix'] as const).find((item) => item === args.status)
+          if (createdStatus === undefined) return fmt('uiIndex.kDefectBadStatus', { p1: String(args.status) })
           const defect = office.addDefect(call, {
             title: args.title ?? '',
             severity: args.severity,
             ...(args.caseId === undefined ? {} : { caseId: args.caseId }),
-            status: args.status === 'fixed' || args.status === 'closed' || args.status === 'wontfix' ? args.status : 'open',
+            status: createdStatus,
           })
           return fmt('uiIndex.k45', { p1: defect.id, p2: defect.severity, p3: defect.status, p4: defect.title })
         }
@@ -896,19 +1401,48 @@ export function apply(ctx: Context, config: SdoConfig): void {
           for (const testCase of office.testCases(call)) {
             lines.push(fmt('uiIndex.k137', { p1: testCase.id, p2: testCase.kind, p3: testCase.title, p4: testCase.requirement === undefined ? '' : fmt('uiIndex.k136', { p1: testCase.requirement }) }))
           }
-          for (const defect of office.defects(call)) lines.push(`- ${defect.id}　[${defect.severity}/${defect.status}]　${defect.title}`)
+          for (const defect of office.defects(call)) {
+            // **SDO-56**：状态标记**由字段派生**；标题里若还写着过时的 `[open]` 之类，如实告警（不改写历史）
+            const stale = /^\s*\[(open|fixed|closed|wontfix)\]/u.exec(defect.title)?.[1]
+            lines.push(`- ${defect.id}　[${defect.severity}/${defect.status}]　${defect.title}`
+              + (stale === undefined ? '' : '\n' + fmt('uiIndex.kDefectTitleStale', { p1: defect.id, p2: stale, p3: defect.status })))
+          }
           return lines.join('\n')
         }
       }
     },
 
     async review(call: OfficeCall, args: ReviewArgs): Promise<string> {
+      if (args.action === 'rehash') {
+        // **G-2**：老格式评审（记录时没有内容指纹）补记一条 `review/hashed` —— 之后改 verdict / 改发现正文
+        // 就能判 `tampered`。**不许洗白**：已有指纹且与当前内容不一致 ⇒ 拒绝（那正是"改过"的证据）。
+        if (args.id === undefined) return t('uiIndex.kReviewRehashNoId')
+        const result = office.rehashReview(call, { reviewId: args.id, by: args.actor ?? 'human' })
+        if (!result.ok) return `${result.code}：${result.detail}`
+        return result.alreadySealed
+          ? fmt('uiIndex.kReviewRehashAlready', { p1: args.id })
+          : fmt('uiIndex.kReviewRehashed', { p1: args.id, p2: result.contentHash.slice(0, 12) })
+      }
       if (args.action !== 'record') {
         const reviews = office.reviews(call)
         if (reviews.length === 0) return t('uiIndex.k46')
+        const adoptions = new Map(office.reviewAdoptions(call).map((item) => [item.review.id, item]))
         return [
           fmt('uiIndex.m3', { p1: reviews.length }),
-          ...reviews.map((review) => `- ${review.id}　${review.taskId}　${review.verdict}（${review.reviewer}）`),
+          ...reviews.map((review) => {
+            const adoption = adoptions.get(review.id)
+            const total = review.findings.length
+            const open = (adoption?.pending.length ?? 0) + (adoption?.stale.length ?? 0) + (adoption?.forged.length ?? 0)
+            // **G-2 可见性**：老格式评审必须写明"不具备防篡改保护"（不许静默当正常条目）
+            const guard = adoption?.tamperGuard === 'none-legacy' ? t('uiIndex.kReviewNoTamperGuard') : ''
+            return `- ${review.id}　${review.taskId}　${review.verdict}（${review.reviewer}）`
+              + fmt('uiIndex.kReviewState', {
+                  p1: String(total - open),
+                  p2: String(total),
+                  p3: reviewAdoptionLabel(adoption?.state ?? 'unverified'),
+                })
+              + guard
+          }),
           ...office.reviewViolations(call).map((item) => fmt('uiIndex.k47', { p1: item.detail })),
         ].join('\n')
       }
@@ -917,21 +1451,68 @@ export function apply(ctx: Context, config: SdoConfig): void {
       }
       const findings = jsonOr<string[]>(args.findings, 'findings')
       if (findings.error !== undefined) return findings.error
+      // **D9（整仓评审）**：`verdict=pass` + **零 findings** 的"空评审"会把 C-42 翻绿（真机复现：空评审前
+      // G5/C-42 fail → 一条 findings=[] 的 pass 之后 ok）。评审可以「无发现」，但必须**显式写出来**。
+      // **2026-10-08 扩到所有 verdict**：`changes-requested` / `reject` 不写发现，就没有任何可核实、可改的东西，
+      // 而"逐条核实"正是评审判定被采纳的前提 —— 空壳评审在这里就该被拒。
+      if ((findings.value ?? []).filter((item) => String(item).trim() !== '').length === 0) {
+        return t('uiIndex.kReviewEmptyPass')
+      }
       const task = office.taskById(call, args.taskId)
       if (task === undefined) return fmt('uiIndex.k49', { p1: args.taskId })
       if (task.owner === args.reviewer) {
         return fmt('uiIndex.k50', { p1: args.taskId, p2: args.reviewer })
+      }
+      // **SDO-36（真机 REV-031）**：`reviewer` 是**调用方自报的字符串** —— 同一个人把名字从 `reviewer:1`
+      // 改成 `reviewer:2` 就过了上面那道护栏（"同人自评"）。这里加一条**可验证**的身份判据：
+      // 调用方会话 id 与这张卡的**认领会话 id** 相同 ⇒ 就是同一会话在自评，直接拒。
+      const claimSession = office.claimSession(call, args.taskId)
+      if (call.sessionId !== undefined && claimSession !== undefined && call.sessionId === claimSession) {
+        return fmt('uiIndex.kSelfReviewSameSession', { p1: args.taskId, p2: claimSession })
       }
       const review = office.addReview(call, {
         taskId: args.taskId,
         reviewer: args.reviewer,
         verdict: args.verdict,
         findings: findings.value ?? [],
+        // 记下"谁记的"：同会话不许自己核实自己（域层据此拒）
+        ...(call.sessionId === undefined ? {} : { sessionId: call.sessionId }),
       })
       return fmt('uiIndex.k51', { p1: review.id, p2: review.taskId, p3: review.verdict, p4: review.reviewer, p5: task.owner === undefined ? '' : fmt('uiIndex.k117', { p1: task.owner }) })
+        + '\n' + fmt('uiIndex.kReviewAwaitingVerification', { p1: String(review.findings.length), p2: review.id })
     },
 
     async deliver(call: OfficeCall, args: DeliverArgs): Promise<string> {
+      // **真机运行记录**（用户要求 2026-10-06：「要真机测试才能交付」，其他系统同理）：
+      // `action=run` 记一条「在真实环境跑过」的证据，并**当场绑定被运行产物的 sha256**。
+      // 交付（`action=package`）只有在存在「通过 + 哈希与本次交付产物相等」的运行记录时，
+      // 才允许 `pass` 行；否则全部降级为 `unverified`（绝不默认通过）。
+      if (args.action === 'run') {
+        // **D11（整仓评审）**：旧实现「不是 fail 就是 pass」⇒ **省略/写错 `outcome`** 会被记成 `pass`，
+        // 而交付只认 `outcome==='pass'` 的运行 ⇒ 忘记声明结论就抹掉了真机证据缺口。现在必须显式给。
+        if (args.outcome !== 'pass' && args.outcome !== 'fail') {
+          return fmt('uiIndex.kRunBadOutcome', { p1: String(args.outcome ?? '') })
+        }
+        const recorded = office.recordRun(call, {
+          target: args.target ?? '',
+          command: args.command ?? '',
+          outcome: args.outcome === 'fail' ? 'fail' : 'pass',
+          evidence: args.evidence ?? '',
+          artifact: args.artifact,
+          exitCode: args.exitCode,
+          by: args.by ?? 'human',
+        })
+        if (!recorded.ok) return fmt('uiIndex.kRunRejected', { p1: recorded.detail })
+        const bound = recorded.run.artifactSha256 === ''
+          ? t('uiIndex.kRunUnbound')
+          : fmt('uiIndex.kRunBound', { p1: recorded.run.artifact, p2: recorded.run.artifactSha256.slice(0, 12) })
+        return fmt('uiIndex.kRunRecorded', {
+          p1: recorded.run.id,
+          p2: recorded.run.target,
+          p3: recorded.run.outcome,
+          p4: bound,
+        })
+      }
       if (args.action !== 'package') {
         const manifest = office.manifest(call)
         return manifest === undefined ? t('uiIndex.k123') : describeManifest(manifest, office.shapeNotes(call))
@@ -951,18 +1532,46 @@ export function apply(ctx: Context, config: SdoConfig): void {
               ? row.kind
               : 'source',
         })),
+        // **SDO-41（真机，最严重）**：旧实现把**非法/缺失**的 `verdict` 一律落成 `pass`
+        // ⇒ 提交 `unverified` 被静默改写成「通过」（框架主动生产假绿记录），且没有任何提示。
+        // 现在：取值集合之外一律落 `unverified`（**不是** `pass`），并在回执里逐行点名被改写的那些。
         acceptance: (acceptance.value ?? []).map((row) => ({
           requirement: row.requirement,
           criterion: row.criterion,
           evidence: row.evidence,
-          verdict: row.verdict === 'fail' || row.verdict === 'waived' ? row.verdict : 'pass',
+          verdict: verdictOf(row.verdict),
         })),
         rollbackPoint: args.rollbackPoint ?? '',
+        runsRequired: (args.runsRequired ?? '').split(',').map((item) => item.trim()).filter((item) => item !== ''),
         ...(args.notes === undefined ? {} : { notes: args.notes }),
       })
       const docs = office.renderVerificationDocs(call)
       const lines = [describeManifest(result.manifest, office.shapeNotes(call))]
       if (result.missingArtifacts.length > 0) lines.push(fmt('uiIndex.k54', { p1: result.missingArtifacts.join(' ') }))
+      // **SDO-41**：被改写的 verdict 必须逐行点名（真机症状：13 行 `unverified` 变成 15/15 pass，零提示）
+      const rewritten = (acceptance.value ?? []).filter((row) => verdictOf(row.verdict) !== row.verdict)
+      if (rewritten.length > 0) {
+        lines.push(fmt('uiIndex.kAcceptanceVerdictRewritten', {
+          p1: String(rewritten.length),
+          p2: rewritten.map((row) => `${row.requirement}:${row.verdict}→${verdictOf(row.verdict)}`).join(' '),
+        }))
+      }
+      // **真机运行证据**：缺证据时交付回执必须**先**说这件事（它解释了下游为什么一片 unverified）
+      for (const gap of result.manifest.runGaps) lines.push(fmt('uiIndex.kRunGap', { p1: gap }))
+      // **SDO-57（C）**：交付回执必须摆出**证据时效**（过期 / 没记环境）—— 限定语过期的代价，
+      // 真机上是一整轮复评 + 一次"唯一失败项"的误判
+      const freshness = office.evidenceFreshness(call)
+      for (const item of freshness.stale) lines.push(fmt('uiIndex.kEvidenceStale', { p1: item.resultId, p2: item.caseId, p3: item.reason }))
+      if (freshness.unrecorded.length > 0) {
+        lines.push(fmt('uiIndex.kEvidenceUnrecorded', { p1: String(freshness.unrecorded.length), p2: freshness.unrecorded.join(' ') }))
+      }
+      const notPass = result.manifest.acceptance.filter((row) => row.verdict !== 'pass')
+      if (notPass.length > 0) {
+        lines.push(fmt('uiIndex.kAcceptanceNotPass', {
+          p1: String(notPass.length),
+          p2: notPass.map((row) => `${row.requirement}:${row.verdict}`).join(' '),
+        }))
+      }
       lines.push(fmt('uiIndex.k55', { p1: docs.join('、') }))
       return lines.join('\n')
     },
@@ -1000,7 +1609,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             channel: 'question',
             ...(args.turn === undefined ? {} : { turn: args.turn }),
           })
-          return describeSignature(signature, office.signatureState(call, args.gate))
+          return describeSignature(signature, office.signatureState(call, signature.gate))
         }
         // `channel=statement`（默认）：用户在会话中明确表述过 → 必须给出用户原话
         const quote = (args.quote ?? '').trim()
@@ -1017,7 +1626,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           basisChecked: quoteCheck.basisChecked,
           ...(args.turn === undefined ? {} : { turn: args.turn }),
         })
-        return describeSignature(signature, office.signatureState(call, args.gate))
+        return describeSignature(signature, office.signatureState(call, signature.gate))
       }
       if (args.action === 'waive') {
         if (args.gate === undefined) return t('uiIndex.k56')
@@ -1437,19 +2046,44 @@ export function apply(ctx: Context, config: SdoConfig): void {
         }
         case 'file': {
           if (args.requirementId === undefined) return t('redteam.fileNeedId')
-          const parsed = jsonOr<{ text: string; dimension?: string }[]>(args.questions, 'questions')
+          // **D-3**：`options`/`recommendation` 也在这里接受（模型通道以前结构上不可能带选项）
+          const parsed = jsonOr<ProposedQuestion[]>(args.questions, 'questions')
           if (parsed.error !== undefined) return parsed.error
           const result = office.fileRedTeam(call, args.requirementId, parsed.value ?? [])
           const lines = [
             t('redteam.fileAccepted').replace('{n}', String(result.accepted.length)),
           ]
-          for (const question of result.accepted) lines.push(`- ${question.id}｜${question.text}`)
+          for (const question of result.accepted) {
+            const options = question.options === undefined || question.options.length === 0
+              ? ''
+              : fmt('redteam.fileOptionCount', { p1: String(question.options.length) })
+            lines.push(`- ${question.id}｜${question.text}${options}`)
+          }
           if (result.rejected.length > 0) {
             lines.push(t('redteam.fileRejected').replace('{n}', String(result.rejected.length)))
             for (const item of result.rejected) lines.push(`- ✗ ${item.text}｜${item.reason}`)
           }
           lines.push(t('redteam.fileAskHint'))
           return lines.join('\n')
+        }
+        // **D-5（sdo-test-new 2026-10-08，major）**：显式处置一个红队议题 —— 这条路径以前**完全不可达**
+        // （`disposeIssue()` 是唯一写 `issue/closed` 的地方，却没有任何 action 接到它），于是议题文件
+        // 永远停在 `status: open`，而 C8 从问题/风险**现算**闭环 ⇒ 文件与门禁给出相反结论。
+        case 'dispose': {
+          if (args.id === undefined || args.id.trim() === '') return t('uiIndex.kIssueDisposeNeedId')
+          const disposition = args.disposition === 'risk' || args.disposition === 'requirement' ? args.disposition : undefined
+          if (disposition === undefined) return t('uiIndex.kIssueDisposeNeedDisposition')
+          // 处置**前**它是"现算未闭环"还是"现算已闭环"必须分开说：
+          //  · 现算未闭环 ⇒ 这次是真的把它闭环了（文件与门禁同时变）；
+          //  · 现算已闭环 ⇒ 只是把**文件**追平（门禁结论没变），这正是真机 D-5 的形态。
+          const stillOpen = office.openIssues(call).some((item) => item.issue.id === args.id)
+          const disposed = office.disposeIssue(call, args.id.trim(), disposition, args.note ?? '')
+          if (disposed === undefined) return fmt('uiIndex.kIssueDisposeMissing', { p1: args.id })
+          return fmt('uiIndex.kIssueDisposed', {
+            p1: disposed.id,
+            p2: disposition === 'risk' ? t('uiIndex.kIssueDispositionRisk') : t('uiIndex.kIssueDispositionRequirement'),
+            p3: stillOpen ? t('uiIndex.kIssueDisposeWasOpen') : t('uiIndex.kIssueDisposeAlreadyClosed'),
+          })
         }
         case 'off':
         case 'on': {
@@ -1503,7 +2137,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
       if (action === 'review') {
         // 出口之一：用户在本会话内评审完计划（无 plan mode 的宿主用它）
         office.markPlanApproved(call, args.approvedBy ?? 'human', args.note)
-        return t('uiIndex.planReviewed')
+        // **D10（整仓评审）**：这一分支拿到 `approvedBy` 却用 `t()` 打印 ⇒ 回执漏出占位符 `{x}`
+        return fmt('uiIndex.planReviewed', { p1: args.approvedBy ?? 'human' })
       }
       if (action === 'waive-plan') {
         // 出口之二：显式豁免（设计 §8.5："可显式豁免并留痕"）
@@ -1648,12 +2283,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
           if ((consequences.value ?? []).length === 0) {
             return t('uiIndex.k107')
           }
+          // **§4.4（第二轮评审 HIGH）**：旧实现无论目标存不存在都先记新 ADR，只有找到旧记录才标记它，
+          // 而回执文案却是「已取代 {p1}」⇒ 取代一个不存在的 ADR 会**静默不生效却报已取代**。先做存在性校验。
+          if (args.supersedes !== undefined && !office.adrs(call).some((item) => item.id === args.supersedes)) {
+            return fmt('uiIndex.kAdrSupersedeMissing', { p1: args.supersedes })
+          }
+          // **D-8（sdo-test-new 2026-10-08，major）**：schema 上的 `id` 以前**从不被读**（传 ADR-999 落 ADR-006）。
+          // 现在显式给了就用它，但必须先把两件事挡在前面：形状（它直接变成文件名）与冲突（会覆盖决策史）。
+          if (args.id !== undefined && args.id.trim() !== '') {
+            const wanted = args.id.trim()
+            if (!isAdrId(wanted)) return fmt('uiIndex.kAdrIdBad', { p1: wanted })
+            if (office.adrs(call).some((item) => item.id === wanted)) return fmt('uiIndex.kAdrIdTaken', { p1: wanted })
+            if (args.action === 'supersede' && args.supersedes === wanted) return fmt('uiIndex.kAdrIdTaken', { p1: wanted })
+          }
           const adr = office.recordAdr(call, {
             title: args.title ?? '',
             context: args.context ?? '',
             decision: args.decision ?? '',
             alternatives: alternatives.value ?? [],
             consequences: consequences.value ?? [],
+            ...(args.id !== undefined && args.id.trim() !== '' ? { id: args.id.trim() } : {}),
             ...(args.action === 'supersede' && args.supersedes !== undefined ? { supersedes: args.supersedes } : {}),
           })
           return describeAdr(adr, args.supersedes, office.shapeNotes(call))
@@ -1788,7 +2437,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       toolCtx.effect(() => {
         const off = (
           toolCtx as unknown as {
-            on(event: string, listener: (exec: { name?: string; arguments?: unknown }, next: () => Promise<unknown>) => Promise<unknown>): () => void
+            on(event: string, listener: (exec: { name?: string; arguments?: unknown; agent?: { id?: unknown } }, next: () => Promise<unknown>) => Promise<unknown>): () => void
           }
         ).on('tools/pre-execute', async (exec, next) => {
           try {
@@ -1798,6 +2447,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
             const agent = (exec as { agent?: unknown }).agent
             const call = injectionCall(agent)
             const tool = String(exec.name ?? '')
+            // **执行者禁令**的判据：这个会话是不是**被派发的子会话**（血缘来自会话首部）。
+            // 驾驶舱（depth 0 / 无 parentSession）不是执行者 ⇒ 即使认领了卡也仍能派发。
+            const sessionHeader = (agent as { session?: { header?: { delegationDepth?: unknown; parentSession?: unknown } } } | undefined)?.session?.header
+            const delegationDepth = sessionHeader?.delegationDepth
+            const parentSessionId = sessionHeader?.parentSession
+            const isChildSession = typeof delegationDepth === 'number' ? delegationDepth >= 1 : typeof parentSessionId === 'string'
             const attributed = ((): RoleAttribution => {
               if (call.cwd === undefined) return { kind: 'unknown', role: 'cockpit' }
               const cacheKey = `${call.cwd}#${office.roleCacheVersion}`
@@ -1806,25 +2461,89 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 roleCacheAt = Date.now()
                 roleClaims = claimsBySession(office.storeFor(call.cwd), office.journalFor(call.cwd))
               }
-              const depth = (agent as { session?: { header?: { delegationDepth?: unknown } } } | undefined)?.session?.header?.delegationDepth
+              const depth = delegationDepth
+              const parentSession = parentSessionId
               return attributeRole({
                 sessionId: call.sessionId,
                 delegationDepth: typeof depth === 'number' ? depth : undefined,
+                // **R-1**：把血缘一起传进去 —— 根会话不该因为"认领过 developer 卡"而被判成 developer
+                parentSessionId: typeof parentSession === 'string' ? parentSession : undefined,
                 claims: roleClaims,
+                // **§2 第 1 条**：卡离开 `in-progress` 后认领归属会失效，这时用**派发时记下的角色**兜底
+                // （否则掩码整段消失：实测 drop 掉卡 + 等过角色缓存 TTL ⇒ reviewer 子会话 `write` 变 ALLOW）
+                dispatchedRole: office.dispatchedRoleOf(call),
               })
             })()
 
-            // ——— B6：认得出的派发角色 ⇒ 掩码**硬拦**（白名单：allow 之外一律拒绝） ———
+            // **D1**：宿主 `@deepseek-ai/dsh-tool-fs` 的 `write`/`edit` **只声明 `file_path`**（全包 41 处，
+            // 没有 `path`/`file`/`paths`）⇒ 旧代码读的是插件「期望」的键、`paths` 恒为空，于是
+            // 快照 / `truth/file-written` / L3 路径纪律在真机上**一次都没跑过**。宿主真实键放首位，旧键保留兼容。
+            const args = (exec.arguments ?? {}) as { file_path?: unknown; path?: unknown; file?: unknown; paths?: unknown }
+            const rawPaths = [
+              ...(typeof args.file_path === 'string' ? [args.file_path] : []),
+              ...(typeof args.path === 'string' ? [args.path] : []),
+              ...(typeof args.file === 'string' ? [args.file] : []),
+              ...(Array.isArray(args.paths) ? args.paths.filter((item): item is string => typeof item === 'string') : []),
+            ]
+            // **写范围纪律的前置**：真机传的是**绝对路径**，而卡写范围是相对路径 ——
+            // 不归一就永远比不上（原 L3 纪律的 `startsWith('src/')` 就是这么空转的）。归一一次，三处共用。
+            const paths = rawPaths.map((path) => normalizeWorkspacePath(path, call.cwd))
+
+            // ——— B6：认得出的派发角色 ⇒ 掩码**硬拦**（两层语义：`sdo_*` 白名单 + 通用面黑名单） ———
+            // **执行者禁令**只对**子会话**生效：驾驶舱即使认领了卡（inline 后端就是这么跑的）仍是流程官，
+            // 派发是它的本职（真机 F2：单会话模式下驾驶舱被自己的角色归属锁死，连 sdo_gate 都调不了）。
             if (settings.enforceRoleMask && attributed.kind === 'dispatched') {
-              const mask = roleMaskDecision(attributed.role, tool)
+              const mask = roleMaskDecision(attributed.role, tool, { executor: isChildSession })
               if (mask.kind === 'deny') {
                 return {
                   kind: 'deny',
-                  reason: fmt('uiIndex.kMaskDenied', {
+                  reason: mask.reason === 'executor-forbidden'
+                    ? fmt('uiIndex.kMaskExecutorForbidden', { p1: attributed.role, p2: mask.tool, p3: roleCardPath(attributed.role) })
+                    : mask.reason === 'executor-denied'
+                      ? fmt('uiIndex.kMaskExecutorDenied', { p1: attributed.role, p2: mask.tool, p3: roleCardPath(attributed.role) })
+                      : fmt('uiIndex.kMaskDenied', {
+                        p1: attributed.role,
+                        p2: mask.tool,
+                        p3: toolAllowList(attributed.role).join(' / '),
+                        p4: roleCardPath(attributed.role),
+                      }),
+                }
+              }
+            }
+
+            // ——— **写入范围纪律（3a 公共面 + 3b 卡级，2026-10-08 用户裁定）** ———
+            // "谁能写"是角色掩码的事；"能写到哪里"是这一层。两者的失效方向不同，必须分开：
+            //   · `disciplineAllowPaths`（公共面：台账/派生文档/测试）不受卡范围约束；
+            //   · 其余路径必须落在**这张活卡的 writeScopes** 内，没认领就只能写公共面。
+            // 只对认得出的角色生效（驾驶舱/未知 ⇒ fail-open）；`bash` 没有路径参数 ⇒ 判不了（如实标 unchecked，
+            // 靠 `done` 的 A2 写范围对账兜底）。
+            if (attributed.kind !== 'unknown') {
+              const claimCard = attributed.kind === 'dispatched' && attributed.cardId !== undefined
+                ? office.taskById(call, attributed.cardId)
+                : undefined
+              const scopeDecision = evaluateWriteScope({
+                role: attributed.role,
+                tool,
+                paths: rawPaths,
+                workspace: call.cwd,
+                guardedTools: settings.disciplineTools,
+                sharedPaths: settings.disciplineAllowPaths,
+                ...(attributed.kind === 'dispatched' && attributed.cardId !== undefined
+                  ? { cardScopes: claimCard?.writeScopes.map((scope) => String(scope)) ?? [] }
+                  : {}),
+              })
+              if (scopeDecision.kind === 'deny') {
+                const key = scopeDecision.code === 'write-scope-no-claim'
+                  ? 'uiIndex.kWriteScopeNoClaim'
+                  : scopeDecision.code === 'write-scope-empty-scope'
+                    ? 'uiIndex.kWriteScopeEmptyScope'
+                    : 'uiIndex.kWriteScopeViolation'
+                return {
+                  kind: 'deny',
+                  reason: fmt(key, {
                     p1: attributed.role,
-                    p2: mask.tool,
-                    p3: toolAllowList(attributed.role).join(' / '),
-                    p4: roleCardPath(attributed.role),
+                    p2: scopeDecision.detail,
+                    p3: scopeDecision.scope.join(' / ') || t('uiDescribe.k169'),
                   }),
                 }
               }
@@ -1832,12 +2551,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
 
             // ——— L3 阶段纪律：用**真实角色**判（认不出时按驾驶舱 fail-open） ———
             const status = office.status(call.cwd === undefined ? office.callForScope(undefined) : call)
-            const args = (exec.arguments ?? {}) as { path?: unknown; file?: unknown; paths?: unknown }
-            const paths = [
-              ...(typeof args.path === 'string' ? [args.path] : []),
-              ...(typeof args.file === 'string' ? [args.file] : []),
-              ...(Array.isArray(args.paths) ? args.paths.filter((item): item is string => typeof item === 'string') : []),
-            ]
+            // **SDO-19 / SDO-26（真机事故）**：直接 `write`/`edit` 覆盖 `.sdo/` 下**手可编辑真源**之前
+            // 先把旧内容快照到 `.sdo/evidence/file-history/`。真机上 `.sdo/design/deviations.yml` 被整篇
+            // 重写 ⇒ 27 条 DEV 与 A1–A10 正文**永久丢失**（journal 无正文、宿主存档也没有）。
+            // 只留可恢复副本、不改行为：任何异常都 fail-open（绝不因为快照失败挡住写操作）。
+            if (tool === 'write' || tool === 'edit') {
+              for (const path of paths) {
+                try {
+                  office.snapshotTruthFile(call, path)
+                  // R2：记下写入前的哈希（读不到就当空串 = 新文件）
+                  try {
+                    preWriteHashes.set(`${String(exec.agent?.id ?? '')}|${path}`, office.truthFileHash(call, path))
+                  } catch {
+                    /* fail-open */
+                  }
+                } catch {
+                  /* fail-open */
+                }
+              }
+            }
             const decision = disciplineOrAllow({
               gateLevel: settings.gateLevel,
               phase: status.project?.phase ?? '',
@@ -1855,12 +2587,90 @@ export function apply(ctx: Context, config: SdoConfig): void {
         return () => off()
       }, 'sdo:discipline-guard')
 
+      // **SDO-19（2026-10-05 真机）**：写**成功之后**把"绕过 SDO 直接改 `.sdo/` 真源"记成真源事件
+      // （`truth/file-written`）。为什么必须在 post 阶段：pre 阶段拿不到结果，把**被拒**的写也记成
+      // "真源变了"是另一种撒谎。fail-open：任何异常都照原样放行结果。
+      // R2：pre 阶段记下"写入前的文件哈希"（key = 会话 + 路径），post 只有**真变了**才记账
+      const preWriteHashes = new Map<string, string>()
+      toolCtx.effect(() => {
+        const off = (
+          toolCtx as unknown as {
+            on(
+              event: string,
+              listener: (exec: { name?: string; arguments?: unknown; agent?: unknown }, result: unknown, next: () => Promise<unknown>) => Promise<unknown>,
+            ): () => void
+          }
+        ).on('tools/post-execute', async (exec, result, next) => {
+          try {
+            const tool = String(exec.name ?? '')
+            // **R2（复审 major）**：宿主明确「tool failures still receive post-execute」——
+            // 旧实现不判失败 ⇒ 一次**失败**的 `.sdo` 写入照样记 `truth/file-written`，把 G3 签字作废。
+            // fail-open 的方向是"照原样放行结果"，不是"照原样记账"：写失败 = 真源没变 ⇒ 不记。
+            const failed = typeof result === 'object' && result !== null && (result as { isError?: unknown }).isError === true
+            if ((tool === 'write' || tool === 'edit') && !failed) {
+              // **D1**：同上 —— 宿主真实键是 `file_path`（post 记账这一处以前也恒空）
+              const raw = (exec.arguments ?? {}) as { file_path?: unknown; path?: unknown; file?: unknown; paths?: unknown }
+              const paths = [
+                ...(typeof raw.file_path === 'string' ? [raw.file_path] : []),
+                ...(typeof raw.path === 'string' ? [raw.path] : []),
+                ...(typeof raw.file === 'string' ? [raw.file] : []),
+                ...(Array.isArray(raw.paths) ? raw.paths.filter((item): item is string => typeof item === 'string') : []),
+              ]
+              const postCall = injectionCall(exec.agent)
+              // R2：只记**内容真的变了**的路径（内容相同的重写不该作废签字）
+              const changed = paths.filter((path) => {
+                const key = `${String((exec.agent as { id?: unknown } | undefined)?.id ?? '')}|${path}`
+                const before = preWriteHashes.get(key)
+                preWriteHashes.delete(key)
+                if (before === undefined) return true
+                try {
+                  return office.truthFileHash(postCall, path) !== before
+                } catch {
+                  return true
+                }
+              })
+              if (postCall.cwd !== undefined && changed.length > 0) office.noteTruthFileWrites(postCall, changed)
+            }
+          } catch {
+            /* fail-open */
+          }
+          return next()
+        })
+        return () => off()
+      }, 'sdo:truth-write-observer')
+
       for (const tool of createOfficeTools(deps)) {
+        // 记下**真实注册名**：派发时用它算 deny 面（SDO 流程面白名单的补集）
+        officeToolNames.push(tool.name)
         // 工具输出统一截断（防上下文膨胀）：完整内容在 .sdo/ 真源，回执里会说明如何重取
         const clampExecute = tool.execute as unknown as (args: unknown, exec: unknown) => unknown
         const clamped = {
           ...tool,
-          execute: async (args: unknown, exec: unknown) => clampToolResult(String(await clampExecute(args, exec))),
+          execute: async (args: unknown, exec: unknown) => {
+            const result = clampToolResult(String(await clampExecute(args, exec)))
+            // **子代理报告推送（③ 的"推"半）**：把驾驶舱还没看过的报告**贴在下一次工具回执**上。
+            // 宿主不给子会话→父会话的投递通道（`agent/inbox/splice` 是宿主侧事件），所以用回执当载体：
+            // 模型在下一次调用里就会看到"某某子代理完成了 + 报告摘要"，不必自己去 `sdo_status` 拉。
+            try {
+              const call = callOf(exec as never)
+              const pending = office.pendingDispatchReports(call as never)
+              if (pending.length === 0) return result
+              const shown = pending.slice(0, 3)
+              const lines = shown.map((item: DispatchFinished) => {
+                const report = office.reportText(call, item.report)
+                return fmt('uiDispatch.kReportedLine', {
+                  p1: item.task === '' ? item.childSessionId.slice(0, 8) : item.task,
+                  p2: item.reason === '' ? '?' : item.reason,
+                  p3: item.report,
+                }) + (report === undefined ? '' : `\n  ${excerptOf(report, 900)}`)
+              })
+              office.markDispatchReported(call, shown.map((item) => ({ childSessionId: item.childSessionId, report: item.report, seq: item.seq })))
+              const more = pending.length > shown.length ? '\n' + fmt('uiDispatch.kReportedMore', { p1: String(pending.length - shown.length) }) : ''
+              return result + '\n\n' + t('uiDispatch.kReportedHeader') + '\n' + lines.join('\n') + more
+            } catch {
+              return result // 推送失败绝不影响工具本身的结果
+            }
+          },
         } as typeof tool
         toolCtx.effect(() => tools.register(clamped), `sdo:tool:${tool.name}`)
       }
@@ -1880,4 +2690,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
     `sdo: ready (projectDir=${settings.projectDirName}, gateLevel=${settings.gateLevel}, `
     + `orchestrator=${settings.orchestrator}, tools=${settings.registerTools}, commands=${settings.registerCommands})`,
   )
+}
+
+/**
+ * 验收行的 `verdict` 取值（**SDO-41**）。
+ *
+ * 允许：`pass` / `fail` / `unverified` / `blocked` / `waived`。**其它一律归 `unverified`** ——
+ * 真机上提交 `unverified` 被旧实现静默改写成 `pass`（框架主动生产假绿记录），
+ * 所以原则是：**宁可说「未验证」，绝不默认「通过」**；被改写哪些行由回执逐行点名。
+ */
+function verdictOf(value: unknown): 'pass' | 'fail' | 'unverified' | 'blocked' | 'waived' {
+  const text = String(value ?? '').trim()
+  return text === 'pass' || text === 'fail' || text === 'unverified' || text === 'blocked' || text === 'waived'
+    ? text
+    : 'unverified'
 }

@@ -54,7 +54,16 @@ test('M7-02 掩码表：白名单语义 + 三条硬性禁令 + 无自相矛盾',
   // 三条硬性禁令（计划 T-M7-02 点名）
   assert.equal(maskAllows('analyst', 'sdo_redteam'), false, 'analyst 不得自跑红队')
   assert.equal(maskAllows('developer', 'sdo_review'), false, 'developer 不可见评审（不得自评）')
-  assert.equal(maskAllows('tester', 'edit'), false, 'tester 无编辑类工具（不得改被测实现）')
+  // **2026-10-08 口径**：`write` 与 `edit` 同权（只给 write 不给 edit 不代表安全：write 一样整篇覆盖、
+  // bash 更能；只会把"改一处"逼成"读全文→整篇写回"，真机 architect 正是这么丢过 23 条正文）。
+  // 独立性改由**路径级**写范围纪律保证（见 test/m76），掩码这一层只管"谁能写"。
+  assert.equal(maskAllows('tester', 'edit'), true, 'tester 要能修正自己的测试脚本（写范围另有纪律）')
+  assert.equal(maskAllows('tester', 'write'), true)
+  for (const role of ['red-team', 'reviewer'] as const) {
+    for (const tool of ['write', 'edit', 'bash']) {
+      assert.equal(maskAllows(role, tool), false, `${role} 是**只读**角色：${tool} 不该有`)
+    }
+  }
 
   // 更一般的越界检查
   for (const role of ['red-team', 'reviewer'] as const) {
@@ -64,11 +73,21 @@ test('M7-02 掩码表：白名单语义 + 三条硬性禁令 + 无自相矛盾',
   }
   assert.equal(maskAllows('delivery', 'sdo_review'), false)
   assert.equal(maskAllows('architect', 'sdo_requirement'), false, '架构师不改需求')
-  assert.equal(maskAllows('office', 'edit'), false, '流程官不碰实现')
+  // **2026-10-08 口径**：流程官**有** `write`/`edit`（它要手维 `.sdo/` 手可编辑真源，整篇 write 会丢内容）。
+  // "不碰实现"改由路径级写范围纪律保证：office 在 `src/` 下的写入会被当场拒（见 test/m76）。
+  assert.equal(maskAllows('office', 'edit'), true, '流程官要能外科手术式维护台账真源')
+  assert.equal(maskAllows('office', 'bash'), false, '但流程官不跑 bash（执行类工具不在它的面里）')
 
-  // 白名单语义：allow 之外一律不可见
-  assert.equal(maskAllows('developer', 'some-random-tool'), false)
+  // **两层语义（2026-10-08 口径纠正）**：
+  //   · SDO 流程面（`sdo_*`）—— **白名单**：没列出的也拒绝；
+  //   · 通用面（宿主/harness 的工具）—— **黑名单**：没列出的**继承宿主默认**。
+  // 真机事故就是通用面被白名单一起挡掉（子代理报「无法使用 technique_apply」）。
+  assert.equal(maskAllows('developer', 'sdo_feasibility'), false, 'SDO 流程面：没列出的 sdo_* 一律不可见')
   assert.equal(maskAllows('developer', 'read'), true)
+  assert.equal(maskAllows('developer', 'some-host-tool'), true, '通用面：宿主工具缺省继承（黑名单语义）')
+  assert.equal(maskAllows('reviewer', 'technique_apply'), true, '记忆/技能类工具不该被角色掩码挡掉（真机事故）')
+  assert.equal(maskAllows('developer', 'technique_apply'), true)
+  assert.equal(maskAllows('reviewer', 'write'), false, '但通用面的硬禁止仍然咬人（deny 优先）')
 
   // 派发时用的工具面与掩码表一致（不允许两份真相）
   for (const role of ROLES) {
@@ -369,6 +388,10 @@ test('棘轮守卫：面向用户模块的硬编码中文不得增加（应逐�
     'src/infra/scalar.ts': 0,
     // F-21：手写 YAML 的形状提示（容器族 / `dropped` 非布尔）同样一律走语言包
     'src/domain/shapeNotes.ts': 0,
+    // 增量 3：实现阶段方法包（profile 落盘 / 校验 / 检查器），文案一律走语言包
+    'src/domain/construction.ts': 0,
+    // 2026-10-08：评审发现核实（复现/反驳 + 采纳判定），新模块同样进棘轮、不留硬编码后门
+    'src/domain/reviewVerification.ts': 0,
   }
 
   const root = fileURLToPath(new URL('../../', import.meta.url))

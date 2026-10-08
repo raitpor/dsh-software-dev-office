@@ -1,45 +1,68 @@
 # SDO 角色掩码表（设计 §8.1 / §9.1）：提示层用 skills/role-*.md，硬约束用这里的 allow/deny。
-# 派发时由流程官施加（toolFilter）；allow 之外一律不可见（白名单），deny 里是必须显式挡住的越界工具。
+#
+# **两层语义（2026-10-08 用户裁定）**：
+#   · **SDO 流程面**（`sdo_*`，本插件自己注册的封闭集合）—— **白名单**：`allow` 里没列的 `sdo_*`
+#     一律进下发的 deny 面（developer 拿不到 `sdo_gate`、reviewer 拿不到 `sdo_test`…这是**职责分离**）；
+#   · **通用面**（宿主/harness 的 `read`/`write`/`bash`/`skill`/记忆/技能/联网…）—— **黑名单**：
+#     只有这里的 `deny` 明写挡住的才挡，其余**继承宿主默认**。旧口径把 `allow` 当**整体**白名单下发，
+#     等于连通用面一起清空（真机事故：子代理报「无法使用 `technique_apply`」）。
+#   ⇒ 想把某个**通用**工具限制给特定角色（例如只给 analyst 的 `ask_user_question`），做法是
+#     在**其他角色**的 `deny` 里写它 —— 写在这里才是真源，改提示词不算数。
+#
+# **执行者禁令（代码侧常量，不写进本表）**：被派发的执行者不得再**起一个 agent 运行**
+# （`subagent` / `subagent_fork` / `workflow` / `sdo_plan`）—— 那会派出一个**不带角色掩码**的子代理，
+# 等于绕开本表。它由 `domain/roles.ts` 的 `EXECUTOR_FORBIDDEN_TOOLS` 统一施加（8 个角色一视同仁），
+# 且只对**子会话**生效（驾驶舱即使认领了卡也仍能派发）。
+#
 # **`sdo_task` 是协议通道**：任何角色都要能 claim/done/block 自己那张卡，所以 8 个角色都必须在 allow 里
 # （缺口会导致「认领即锁死」：占住卡却无法完成或挂起 —— 评审 2026-10-03 F1）。
+#
+# **写入控制分两层，别把两层混成一层（2026-10-08 用户裁定）**：
+#   ① **工具级**（本表）：谁能写（`write`/`edit`/`bash`）—— 只读角色（red-team / reviewer）一条都没有。
+#   ② **路径级**（`domain/writeScope.ts` + 配置 `disciplineTools` / `disciplineAllowPaths`）：
+#      写得下去写不下去由**路径**决定 —— 必须落在本次**活卡的 `writeScopes`** 内，公共面
+#      （`.sdo/` 台账、`docs/` 派生文档、`test/`）不受卡范围约束；没认领就只能写公共面。
+#   ⇒ 所以 **`write` 与 `edit` 必须同权**（谁能写谁就能改）：只给 `write` 不给 `edit` 不代表更安全
+#     （`write` 一样能整篇覆盖、`bash` 更能），只会把「改一处」逼成「读全文→整篇写回」——
+#     真机 architect 正是这么把登记簿覆盖掉、23 条 DEV 正文永久丢失的（SDO-23）。
 roles:
   - code: analyst
     name: 产品/需求分析师
-    allow: [skill, read, grep, glob, write, sdo_requirement, sdo_project, sdo_trace, sdo_task, ask_user_question]
-    deny: [sdo_redteam, edit, bash, sdo_review]
-    rationale: 不得自跑红队（红队必须独立）；不改实现
+    allow: [skill, read, grep, glob, write, edit, sdo_requirement, sdo_project, sdo_trace, sdo_task, ask_user_question]
+    deny: [sdo_redteam, bash, sdo_review]
+    rationale: 不得自跑红队（红队必须独立）；不跑 bash；**不改实现**由写范围纪律机械保证（写不了 `src/`）
   - code: red-team
     name: 需求红队
     allow: [skill, read, grep, glob, sdo_requirement, sdo_redteam, sdo_task]
-    deny: [write, edit, bash, sdo_design, sdo_review]
+    deny: [write, edit, bash, ask_user_question, sdo_design, sdo_review]
     rationale: 只质询不落笔（不得改需求：sdo_requirement 只许用 list 读，不许 capture/update/change/baseline）；不得无追溯地提建议
   - code: architect
     name: 架构师
-    allow: [skill, read, grep, glob, write, sdo_design, sdo_adr, sdo_quality, sdo_trace, sdo_task]
-    deny: [edit, bash, sdo_requirement, sdo_deliver]
-    rationale: 设计写入受计划评审约束；不改需求、不打包
+    allow: [skill, read, grep, glob, write, edit, sdo_design, sdo_adr, sdo_quality, sdo_trace, sdo_task]
+    deny: [bash, ask_user_question, sdo_requirement, sdo_deliver]
+    rationale: 设计写入受计划评审约束；不改需求、不打包。**开放 `edit`**（且现已有路径级写范围纪律兜底）（SDO-23：此前无 `edit` 只能「read 全文 → 整篇 write」，真机上直接导致登记簿被覆盖、23 条 DEV 正文永久丢失）
   - code: office
     name: 流程官/PM
-    allow: [skill, read, grep, glob, write, sdo_init, sdo_status, sdo_project, sdo_gate, sdo_plan, sdo_task, sdo_risk, sdo_cost, sdo_render, sdo_trace, sdo_deliver, sdo_redteam]
-    deny: [edit, bash]
-    rationale: 只有流程官能推门禁与派发；不碰实现
+    allow: [skill, read, grep, glob, write, edit, sdo_init, sdo_status, sdo_feasibility, sdo_project, sdo_gate, sdo_plan, sdo_task, sdo_risk, sdo_cost, sdo_render, sdo_trace, sdo_deliver, sdo_redteam]
+    deny: [bash, ask_user_question]
+    rationale: 只有流程官能推门禁与派发；**手维 `.sdo/` 手可编辑真源需要 `edit`**（整篇 write 会丢内容，SDO-23 同类）；不碰实现由写范围纪律保证
   - code: developer
     name: 实现工程师
-    allow: [skill, read, grep, glob, write, edit, bash, sdo_task, sdo_trace]
-    deny: [sdo_review, sdo_gate, sdo_requirement, sdo_design]
+    allow: [skill, read, grep, glob, write, edit, bash, sdo_task, sdo_trace, sdo_test]
+    deny: [ask_user_question, sdo_review, sdo_gate, sdo_requirement, sdo_design]
     rationale: 不可见评审（不得自评）；不得改契约与需求（走 CR）
   - code: tester
     name: 测试工程师
-    allow: [skill, read, grep, glob, write, bash, sdo_test, sdo_task, sdo_trace]
-    deny: [edit, sdo_review, sdo_requirement]
-    rationale: 无编辑类工具 —— 不得修改被测实现（独立性）；只许新建测试文件
+    allow: [skill, read, grep, glob, write, edit, bash, sdo_test, sdo_deliver, sdo_task, sdo_trace]
+    deny: [ask_user_question, sdo_review, sdo_requirement]
+    rationale: 独立性靠**写范围纪律**（只能写本卡 writeScopes + 公共面），不靠「没有 edit」—— 测试脚本写错了要能改（旧口径把改一处逼成整篇重写，SDO-23 同类风险）；不改被测实现 = 写不了 `src/`
   - code: reviewer
     name: 评审员
     allow: [skill, read, grep, glob, sdo_review, sdo_task, sdo_trace]
-    deny: [write, edit, bash, sdo_test]
+    deny: [write, edit, bash, ask_user_question, sdo_test]
     rationale: 只读评审；不得评审自己的产物
   - code: delivery
     name: 交付官
-    allow: [skill, read, grep, glob, write, bash, sdo_deliver, sdo_trace, sdo_render, sdo_task]
-    deny: [edit, sdo_review, sdo_requirement, sdo_design]
-    rationale: 不得发布/上线（非目标）；不得改需求与设计
+    allow: [skill, read, grep, glob, write, edit, bash, sdo_deliver, sdo_trace, sdo_render, sdo_task]
+    deny: [ask_user_question, sdo_review, sdo_requirement, sdo_design]
+    rationale: 不得发布/上线（非目标）；不得改需求与设计（`sdo_*` 白名单）；交付清单要能外科手术式修改

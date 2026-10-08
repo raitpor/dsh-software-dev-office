@@ -271,15 +271,16 @@ function atDelivery(): void {
 
 // —————————————————————— R-1：终止阶段必须有出边 ——————————————————————
 
-test('M14-01 R-1：四套流程的交付阶段都有合法回退边（agile 用自身阶段名），且都不列 requirements', () => {
-  // 报告 §1.4 推荐方案：终止阶段出边 =「重新验证」+「重新设计」两级
+test('M14-01 R-1：四套流程的交付阶段都有合法回退边（agile 用自身阶段名），且都含 requirements（语义 A）', () => {
+  // 交付阶段出边 =「重新验证」+「重新设计」+「按需求变更回到需求」（第三条是 2026-10-04 语义 A 加的：
+  // 批准的需求变更必须能退回需求阶段重走，否则"需求变了"对开发阶段没有任何约束）。
   const expected: Record<string, string[]> = {
-    waterfall: ['verification', 'architecture'],
-    prototype: ['verification', 'architecture'],
-    spiral: ['verification', 'architecture'],
+    waterfall: ['verification', 'architecture', 'requirements'],
+    prototype: ['verification', 'architecture', 'requirements'],
+    spiral: ['verification', 'architecture', 'requirements'],
     // agile 没有 verification / design-plan 这些阶段名，按自身命名推导：
     // 「重新验证」= release（出口门禁就是发布前门 G6）；「重新设计」= architecture。
-    agile: ['release', 'architecture'],
+    agile: ['release', 'architecture', 'requirements'],
   }
   for (const [id, targets] of Object.entries(expected)) {
     const process = loadProcess(id)
@@ -290,8 +291,8 @@ test('M14-01 R-1：四套流程的交付阶段都有合法回退边（agile 用�
     }
     assert.equal(
       legalRollbackTargets(process, 'delivery').includes('requirements'),
-      false,
-      `${id} 不得把 requirements 列为回退边（改需求走变更控制）`,
+      true,
+      `${id} 必须把 requirements 列为回退边：批准的需求变更要能退回需求阶段（语义 A；旧口径"改需求不靠回退"正是真机缺陷的根因）`,
     )
   }
 
@@ -367,7 +368,7 @@ test('M14-02 交付可回退到架构：回执列出作废门禁；G3–G7 的�
   assert.equal(data['reason'], '交付后发现站票变更，需重新设计')
   assert.equal(data['by'], 'human')
   assert.deepEqual(data['invalidatedGates'], result.invalidatedGates, '事件必须记录失效门禁清单')
-  assert.deepEqual(data['legalAtThatTime'], ['verification', 'architecture'], 'R-3：事件必须自证当时的合法边集合')
+  assert.deepEqual(data['legalAtThatTime'], ['verification', 'architecture', 'requirements'], 'R-3：事件必须自证当时的合法边集合')
 })
 
 test('M14-03 回退到架构：只按目标阶段切片（delivery → verification 只作废 G6/G7）', () => {
@@ -520,9 +521,11 @@ test('M14-08 R-3 向后兼容：老事件缺 legalAtThatTime 时按当前流程�
   assert.match(value.detail, /verification/u, '合规回执应逐条列出全部回退事件')
 
   // 双向：同样缺字段、但按当前数据非法的老事件仍须判红（兼容不等于放松）
+  // 反例用 `delivery → intake`：任何一套随包流程的终止阶段都没有到立项的回退边
+  // （2026-10-04 之后 `delivery → requirements` **是**合法边了，不能再拿它当反例）。
   journal.append('phase/rolled-back', {
     from: 'delivery',
-    to: 'requirements',
+    to: 'intake',
     reason: '老事件三（当前数据里非法）',
     invalidatedGates: [],
   })
@@ -532,20 +535,20 @@ test('M14-08 R-3 向后兼容：老事件缺 legalAtThatTime 时按当前流程�
 
 test('M14-09 R-3 事件自证：当时合法、如今已从流程数据删掉的边不得被追溯判红（§4-9 第 2 点）', () => {
   atDelivery()
-  // 模拟"当时 delivery 还能退到 requirements（旧流程数据）"的历史事件。
-  // 当前数据里这条边**已被刻意删掉**（终止阶段出边不含 requirements），
+  // 模拟"当时 delivery 还能一步退到 construction（跳过验证）"的历史事件。
+  // 当前数据里这条边**不存在**（终止阶段出边只有 verification / architecture / requirements），
   // 若判定仍用当前数据追溯历史，这条当时合法的回退会被误判红。
   office.journalFor(workspace).append('phase/rolled-back', {
     from: 'delivery',
-    to: 'requirements',
+    to: 'construction',
     reason: '当时合法（旧流程数据含该边）',
-    invalidatedGates: ['G2', 'G3', 'G4', 'G5', 'G6', 'G7'],
-    legalAtThatTime: ['verification', 'architecture', 'requirements'],
+    invalidatedGates: ['G5', 'G6', 'G7'],
+    legalAtThatTime: ['verification', 'architecture', 'construction'],
   })
 
   const process = office.process(call())
   assert.equal(
-    legalRollbackTargets(process, 'delivery').includes('requirements'),
+    legalRollbackTargets(process, 'delivery').includes('construction'),
     false,
     '当前流程数据里确实没有这条边（本用例的前提）',
   )
@@ -645,6 +648,10 @@ function atDesignPlanWithoutWaiver(): string {
 }
 
 test('M14-10 §3.5-1 回退后未豁免的门禁必须被重判：陈旧的 G4 passed 不得放行，补齐后重判才放行', () => {
+  // 本用例不测实现阶段方法包：写一份**显式不选包**的中立 profile（对照 test/m33.test.ts）
+  office.storeFor(workspace).writeYaml(['construction', 'profile.yml'], {
+    profile: { version: 1, decidedAt: '', decidedBy: 'office', packages: [], scope: 'all', derivedFrom: [], reason: '本夹具不启用实现阶段方法包', exempt: [], history: [] },
+  })
   const requirementId = atDesignPlanWithoutWaiver()
 
   // 回退把 G4 的判定留痕作废了（"作废"= 不再有记录，而不是"记录仍说 passed"）

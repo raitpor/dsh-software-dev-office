@@ -220,6 +220,10 @@ export interface DesignArgs {
   // —————————————— 增量 2：设计方法论方法包 ——————————————
   /** action=artifact：方法产物种类（dictionary|dfd|erd|classes|sequences|layers|debt|reversibility|increments） */
   artifactKind?: string | undefined
+  /** action=confirm：用户授权原话（SDO-25：旧实现忽略它，事件里只能留下工具自己的文案） */
+  basis?: string | undefined
+  /** action=confirm：`user`（本人确认，默认）或 `proxy`（代盖）—— SDO-48 */
+  basisSource?: string | undefined
   /** action=artifact：产物正文 JSON */
   artifactData?: string | undefined
   // —————————————— 界面线框图 / PlantUML 骨架 ——————————————
@@ -282,6 +286,20 @@ export interface PlanArgs {
   limit?: number | undefined
   /** next：后端偏好 auto | subagent | native-team | inline */
   backend?: string | undefined
+  /** action=next：**强制新起**子代理（不复用空闲者；真机上单一子代理被复用 19 轮至上下文耗尽） */
+  freshChild?: boolean | undefined
+  /** action=next：**只输出诊断**（SDO-54：真机上「见下」的 10 条诊断被看板淹没） */
+  why?: boolean | undefined
+  /** profile：选中的方法包（JSON 数组，取值见 CONSTRUCTION_PACKAGES） */
+  packages?: string | undefined
+  /** profile：范围 —— `all` 或任务 id 的 JSON 数组 */
+  scope?: string | undefined
+  /** profile：决策依据（JSON 数组；至少一条要能被机械核对） */
+  derivedFrom?: string | undefined
+  /** profile：给人看的理由 */
+  reason?: string | undefined
+  /** profile：逐检查项的豁免（JSON 数组：{task, check, why}） */
+  exempt?: string | undefined
 }
 
 export interface TaskArgs {
@@ -294,6 +312,22 @@ export interface TaskArgs {
   note?: string | undefined
   reason?: string | undefined
   actor?: string | undefined
+  /** action=update：要改的字段（都给 JSON 数组/字符串；SDO-14(3)/SDO-15(3)） */
+  title?: string | undefined
+  dod?: string | undefined
+  writeScopes?: string | undefined
+  blockedBy?: string | undefined
+  evidenceRequired?: string | undefined
+  requirements?: string | undefined
+  size?: string | undefined
+  /** verify-review：要核实的评审 id（`REV-*`） */
+  review?: string | undefined
+  /** verify-review：发现序号（**1 起**，与回执里印的「第 N 条」一致） */
+  index?: number | undefined
+  /** verify-review：核实结论 —— `reproduced`（复现）/ `refuted`（反驳，不采信该条） */
+  outcome?: 'reproduced' | 'refuted' | undefined
+  /** verify-review：复现命令与结果 / 反驳的反证（必填，空口核实不算） */
+  proof?: string | undefined
 }
 
 export interface TestArgs {
@@ -309,6 +343,16 @@ export interface TestArgs {
   severity?: 'blocker' | 'major' | 'minor' | undefined
   /** defect：更新既有缺陷的状态时给 id */
   defectId?: string | undefined
+  /** defect：更正原因 —— **原样写进 `defect/updated` 事件**（2026-10-07 追加实测：载荷曾被静默丢弃） */
+  reason?: string | undefined
+  /** env/record：**环境指纹**（SDO-57），如 `jdk=21.0.2; probe=run_checks.py@v3` */
+  env?: string | undefined
+  /** record：**被检产物**（相对路径）——记录时绑定 sha256，交付时重算比对 */
+  artifact?: string | undefined
+  /** record：进度 3 的**变异自证**交付物（JSON 对象：{task, tool, target?, killed, survived?}） */
+  mutation?: string | undefined
+  /** record：增量 3 的**契约测试**交付物（JSON 对象：{task, contract, tool, cmd}） */
+  contractTest?: string | undefined
 }
 
 export interface ReviewArgs {
@@ -317,10 +361,28 @@ export interface ReviewArgs {
   reviewer?: string | undefined
   verdict?: 'pass' | 'changes-requested' | 'reject' | undefined
   findings?: string | undefined
+  /** rehash：要给哪条**老格式**评审补记内容指纹（`REV-*`） */
+  id?: string | undefined
+  /** rehash：补记人（缺省 human） */
+  actor?: string | undefined
 }
 
 export interface DeliverArgs {
   action: string
+  /** action=run：运行目标（server / client / desktop / device…）—— 通用系统同样适用 */
+  target?: string | undefined
+  /** action=run：真实执行的命令（要可复跑） */
+  command?: string | undefined
+  /** action=run：pass | fail */
+  outcome?: string | undefined
+  /** action=run：运行证据（日志路径 / 截图 / 人工确认说明） */
+  evidence?: string | undefined
+  /** action=run：被运行的产物（相对路径）—— 记录时**绑定当时的 sha256** */
+  artifact?: string | undefined
+  /** action=run：退出码（有就写） */
+  exitCode?: string | undefined
+  /** action=package：本次交付要求覆盖的真机运行目标（如 "server,client"） */
+  runsRequired?: string | undefined
   /** JSON：[{"path":"src/x.ts","kind":"source"}] */
   artifacts?: string | undefined
   /** JSON：[{"requirement":"REQ-001","criterion":"…","evidence":"…","verdict":"pass"}] */
@@ -389,6 +451,12 @@ export interface RedTeamArgs {
   reason?: string | undefined
   requirementId?: string | undefined
   questions?: string | undefined
+  /** **D-5**：`action=dispose` 要处置的议题 id（`REQ-ISSUE-00x`） */
+  id?: string | undefined
+  /** **D-5**：处置去向 —— 转为风险 / 回到需求 */
+  disposition?: string | undefined
+  /** **D-5**：处置理由（写入议题文件与 `issue/closed`） */
+  note?: string | undefined
 }
 
 /** 从一次工具执行里取出调用上下文（会话身份 + 不透明的 agent 引用，后者供 plan mode 适配器用）。 */
@@ -620,6 +688,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         ids: { type: 'string', description: t('param.ids', 'Comma-separated requirement ids to attack (default: all requirements).') },
         limit: { type: 'number', description: t('param.limit') },
         reason: { type: 'string', description: t('param.reason') },
+        id: { type: 'string', description: t('param.issueId', 'Issue id to dispose (only action=dispose): REQ-ISSUE-001.') },
+        disposition: { type: 'string', description: t('param.disposition', "Where the issue goes: 'risk' (converted into a risk) or 'requirement' (settled back into the requirements). Only action=dispose.") },
+        note: { type: 'string', description: t('param.disposeNote', 'Why it is disposed — written into the issue file and the `issue/closed` event. Only action=dispose.') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -630,6 +701,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           reason: typeof args.reason === 'string' ? args.reason : undefined,
           requirementId: typeof args.requirementId === 'string' ? args.requirementId : undefined,
           questions: typeof args.questions === 'string' ? args.questions : undefined,
+          id: typeof args.id === 'string' ? args.id : undefined,
+          disposition: typeof args.disposition === 'string' ? args.disposition : undefined,
+          note: typeof args.note === 'string' ? args.note : undefined,
         })
       },
     }),
@@ -656,16 +730,32 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         goal: { type: 'string', description: t('param.goal') },
         limit: { type: 'number', description: t('param.limit') },
         backend: { type: 'string', description: "next: 'auto' | 'subagent' | 'native-team' | 'inline'." },
+        freshChild: { type: 'boolean', description: t('param.planFreshChild') },
+        why: { type: 'boolean', description: 'next: print ONLY the diagnostics (no board) — use it when nothing was dispatched and you need the reason.' },
+        // `profile` 动作的入参（增量 3 的**决策入口**）：与 `TestArgs` 同理 —— 工具边界上没有的字段会被静默丢掉。
+        packages: { type: 'string', description: "profile: JSON array of method packages to enable, e.g. '[\"tdd\",\"contract-first\"]'. Empty array = explicit opt-out (then `reason` is required)." },
+        scope: { type: 'string', description: "profile: 'all' (default) or a JSON array of task ids." },
+        derivedFrom: { type: 'string', description: "profile: JSON array of the basis for the choice; at least one must be machine-checkable, e.g. '[\"scale=normal\",\"contractCount=12\"]'." },
+        reason: { type: 'string', description: 'profile: human-readable reason for the choice (required when `packages` is empty).' },
+        exempt: { type: 'string', description: "profile: JSON array of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\"}]'." },
       },
       output: OUTPUT,
       async execute(args, exec) {
         return deps.plan(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'next',
+          freshChild: args.freshChild === true,
+          why: args.why === true,
           requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
           suggestions: typeof args.suggestions === 'string' ? args.suggestions : undefined,
           goal: typeof args.goal === 'string' ? args.goal : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
           backend: typeof args.backend === 'string' ? args.backend : undefined,
+          // profile 动作的入参：**必须逐字段搬进来**（漏一行 = 工具层静默丢弃；B1 与 PLAN-1 都是这么死的）
+          packages: typeof args.packages === 'string' ? args.packages : undefined,
+          scope: typeof args.scope === 'string' ? args.scope : undefined,
+          derivedFrom: typeof args.derivedFrom === 'string' ? args.derivedFrom : undefined,
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
+          exempt: typeof args.exempt === 'string' ? args.exempt : undefined,
         })
       },
     }),
@@ -675,6 +765,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       description: t('tool.sdo_task'),
       parameters: {
         action: { type: 'string', required: true, description: actionList(TASK_ACTIONS) },
+        title: { type: 'string', description: 'update: new title.' },
+        dod: { type: 'string', description: 'update: JSON array of DoD items.' },
+        writeScopes: { type: 'string', description: 'update: JSON array of write scopes (refused while another owner is working the card).' },
+        blockedBy: { type: 'string', description: 'update: JSON array of blocking task ids (supports [\"*\"] = after every other card).' },
+        evidenceRequired: { type: 'string', description: 'update: JSON array of required evidence kinds.' },
+        requirements: { type: 'string', description: 'update: JSON array of requirement ids.' },
+        size: { type: 'string', description: 'update: small | medium | large.' },
         id: { type: 'string', description: t('param.id') },
         owner: { type: 'string', description: t('param.owner') },
         expectedRevision: { type: 'number', description: t('param.expectedRevision') },
@@ -682,11 +779,22 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         note: { type: 'string', description: t('param.note') },
         reason: { type: 'string', description: t('param.reason') },
         actor: { type: 'string', description: t('param.actor') },
+        review: { type: 'string', description: t('param.reviewId') },
+        index: { type: 'number', description: t('param.reviewIndex') },
+        outcome: { type: 'string', description: t('param.reviewOutcome') },
+        proof: { type: 'string', description: t('param.reviewProof') },
       },
       output: OUTPUT,
       async execute(args, exec) {
         return deps.task(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'list',
+          title: typeof args.title === 'string' ? args.title : undefined,
+          dod: typeof args.dod === 'string' ? args.dod : undefined,
+          writeScopes: typeof args.writeScopes === 'string' ? args.writeScopes : undefined,
+          blockedBy: typeof args.blockedBy === 'string' ? args.blockedBy : undefined,
+          evidenceRequired: typeof args.evidenceRequired === 'string' ? args.evidenceRequired : undefined,
+          requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
+          size: typeof args.size === 'string' ? args.size : undefined,
           id: typeof args.id === 'string' ? args.id : undefined,
           owner: typeof args.owner === 'string' ? args.owner : undefined,
           expectedRevision: typeof args.expectedRevision === 'number' ? args.expectedRevision : undefined,
@@ -694,6 +802,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           note: typeof args.note === 'string' ? args.note : undefined,
           reason: typeof args.reason === 'string' ? args.reason : undefined,
           actor: typeof args.actor === 'string' ? args.actor : undefined,
+          review: typeof args.review === 'string' ? args.review : undefined,
+          index: typeof args.index === 'number' ? args.index : undefined,
+          outcome: parseEnum(args.outcome, ['reproduced', 'refuted'] as const),
+          proof: typeof args.proof === 'string' ? args.proof : undefined,
         })
       },
     }),
@@ -713,11 +825,31 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         evidence: { type: 'string', description: t('param.evidence') },
         severity: { type: 'string', description: "defect: 'blocker' | 'major' | 'minor'." },
         defectId: { type: 'string', description: t('param.defectId') },
+        reason: { type: 'string', description: 'defect: correction reason — recorded verbatim in the defect/updated event (evidence is recorded the same way).' },
+        env: { type: 'string', description: 'env/record: environment fingerprint, e.g. "jdk=21.0.2; probe=run_checks.py@v3". Recorded with the result so staleness is machine-checkable (SDO-57).' },
+        artifact: { type: 'string', description: 'record: the artifact this result was produced against (relative path) — its sha256 is bound now and re-checked at delivery.' },
+        // 增量 3 的**交付物通道**：与"用例结果"在同一动作里分流（caseId/status 对它们非必填）。
+        // 参数名与形状必须写在这里 —— 工具边界上没有的字段会被**静默丢掉**（模型照 README 写也写不进去）。
+        mutation: {
+          type: 'string',
+          description:
+            "record: JSON string for **mutation evidence** (deliverable, not a case result) - "
+            + '{"task":"TASK-004","tool":"node --test","target":"lib/x.js","killed":3,"survived":0}. '
+            + "`target` is optional but recommended. Required at scale=critical / for tdd package.",
+        },
+        contractTest: {
+          type: 'string',
+          description:
+            "record: JSON string for a **contract test** record (deliverable) - "
+            + '{"task":"TASK-005","contract":"CT-003","tool":"node --test","cmd":"node --test test/ct003.test.js"}. '
+            + "The contract id must exist in the ledger. Required for the contract-first package.",
+        },
       },
       output: OUTPUT,
       async execute(args, exec) {
         return deps.test(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'list',
+          reason: typeof args.reason === 'string' ? args.reason : undefined,
           title: typeof args.title === 'string' ? args.title : undefined,
           kind: parseEnum(args.kind, ['unit', 'integration', 'e2e'] as const),
           requirement: typeof args.requirement === 'string' ? args.requirement : undefined,
@@ -728,6 +860,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
           severity: parseEnum(args.severity, ['blocker', 'major', 'minor'] as const),
           defectId: typeof args.defectId === 'string' ? args.defectId : undefined,
+          env: typeof args.env === 'string' ? args.env : undefined,
+          artifact: typeof args.artifact === 'string' ? args.artifact : undefined,
+          // 交付物通道：**必须逐字段搬进来**（漏一行 = 工具层静默丢弃，B1 那次就是这么死的）
+          mutation: typeof args.mutation === 'string' ? args.mutation : undefined,
+          contractTest: typeof args.contractTest === 'string' ? args.contractTest : undefined,
         })
       },
     }),
@@ -741,6 +878,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         reviewer: { type: 'string', description: t('param.reviewer') },
         verdict: { type: 'string', description: "'pass' | 'changes-requested' | 'reject'." },
         findings: { type: 'string', description: t('param.findings') },
+        id: { type: 'string', description: t('param.reviewId') },
+        actor: { type: 'string', description: t('param.actor') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -750,6 +889,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
           verdict: parseEnum(args.verdict, ['pass', 'changes-requested', 'reject'] as const),
           findings: typeof args.findings === 'string' ? args.findings : undefined,
+          id: typeof args.id === 'string' ? args.id : undefined,
+          actor: typeof args.actor === 'string' ? args.actor : undefined,
         })
       },
     }),
@@ -759,6 +900,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       description: t('tool.sdo_deliver'),
       parameters: {
         action: { type: 'string', required: true, description: actionList(DELIVER_ACTIONS) },
+        target: { type: 'string', description: "run: runtime target (server / client / desktop / device ...)." },
+        command: { type: 'string', description: 'run: the real command you executed (must be re-runnable).' },
+        outcome: { type: 'string', enum: ['pass', 'fail'], description: "run: did the real run succeed? REQUIRED for run (omitting it is rejected — a forgotten verdict must not be recorded as pass). Not schema-`required` on purpose: package/show do not use it and the host validates per tool, not per action (R4)." },
+        evidence: { type: 'string', description: 'run: evidence path or note (log / screenshot / manual confirmation).' },
+        artifact: { type: 'string', description: 'run: the artifact you actually ran (relative path); its sha256 is bound at record time.' },
+        exitCode: { type: 'string', description: 'run: exit code, if any.' },
+        runsRequired: { type: 'string', description: t('param.runsRequired') },
         artifacts: { type: 'string', description: 'JSON array: [{"path":"src/x.ts","kind":"source|docs|config|schema|test"}].' },
         acceptance: { type: 'string', description: 'JSON array: [{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}].' },
         rollbackPoint: { type: 'string', description: t('param.rollbackPoint') },
@@ -769,6 +917,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       async execute(args, exec) {
         return deps.deliver(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'show',
+          target: typeof args.target === 'string' ? args.target : undefined,
+          command: typeof args.command === 'string' ? args.command : undefined,
+          outcome: typeof args.outcome === 'string' ? args.outcome : undefined,
+          evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
+          artifact: typeof args.artifact === 'string' ? args.artifact : undefined,
+          exitCode: typeof args.exitCode === 'string' ? args.exitCode : undefined,
+          runsRequired: typeof args.runsRequired === 'string' ? args.runsRequired : undefined,
           artifacts: typeof args.artifacts === 'string' ? args.artifacts : undefined,
           acceptance: typeof args.acceptance === 'string' ? args.acceptance : undefined,
           rollbackPoint: typeof args.rollbackPoint === 'string' ? args.rollbackPoint : undefined,
@@ -927,6 +1082,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         // 过滤入参后 handler 收到空种类，`action=artifact` 在工具通道上根本不可用。
         // 由 `test/m15.test.ts` 的「schema ↔ handler」机械守卫防回归。
         artifactKind: { type: 'string', description: t('param.designArtifactKind') },
+        basis: { type: 'string', description: t('param.designConfirmBasis') },
+        basisSource: { type: 'string', enum: ['user', 'proxy'], description: t('param.designBasisSource') },
         artifactData: { type: 'string', description: t('param.designArtifactData') },
         puml: { type: 'string', description: t('param.designPuml') },
         approvedBy: { type: 'string', description: t('param.approvedBy') },
@@ -962,6 +1119,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           state: typeof args.state === 'string' ? args.state : undefined,
           ui: typeof args.ui === 'string' ? args.ui : undefined,
           artifactKind: typeof args.artifactKind === 'string' ? args.artifactKind : undefined,
+          basis: typeof args.basis === 'string' ? args.basis : undefined,
+          basisSource: typeof args.basisSource === 'string' ? args.basisSource : undefined,
           artifactData: typeof args.artifactData === 'string' ? args.artifactData : undefined,
           puml: typeof args.puml === 'string' ? args.puml : undefined,
           approvedBy: typeof args.approvedBy === 'string' ? args.approvedBy : undefined,
@@ -977,6 +1136,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       description: t('tool.sdo_adr'),
       parameters: {
         action: { type: 'string', required: true, description: actionList(ADR_ACTIONS) },
+        // `supersede`/定位既有 ADR 要用 id：**工具边界上必须有**，否则这条动作不可达（与 B1/PLAN-1 同类）
+        id: { type: 'string', description: t('param.id') },
         title: { type: 'string', description: t('param.title') },
         context: { type: 'string', description: t('param.context', 'The forces at play: what makes this a decision at all.') },
         decision: { type: 'string', description: t('param.decision') },
@@ -993,6 +1154,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           decision: typeof args.decision === 'string' ? args.decision : undefined,
           alternatives: typeof args.alternatives === 'string' ? args.alternatives : undefined,
           consequences: typeof args.consequences === 'string' ? args.consequences : undefined,
+          id: typeof args.id === 'string' ? args.id : undefined,
           supersedes: typeof args.supersedes === 'string' ? args.supersedes : undefined,
         })
       },
