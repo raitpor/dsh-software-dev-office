@@ -94,7 +94,7 @@ import type {
   TestCase,
   TestResult,
 } from './domain/records.js'
-import { createChange, listChanges, undigestedChanges as listUndigestedChanges } from './domain/change.js'
+import { createChange, listChanges, markChangeNoop, undigestedChanges as listUndigestedChanges } from './domain/change.js'
 import { isDesignDocTruthPath } from './types.js'
 import { textOf } from './infra/scalar.js'
 import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
@@ -117,7 +117,7 @@ import {
   draftApplicability,
   readApplicability,
 } from './domain/applicability.js'
-import { recordSignature, signoffInput, signatureState } from './domain/signature.js'
+import { basisReplay, recordSignature, signoffInput, signatureState } from './domain/signature.js'
 import { gateIdOf, fmt, t } from './domain/i18n.js'
 import type { RiskConclusion } from './domain/risks.js'
 import { listRisks, logRisk, readConclusion, riskStats, updateRisk, writeConclusion } from './domain/risks.js'
@@ -128,7 +128,9 @@ import {
   captureRequirement,
   listRequirementIds,
   listRequirements,
+  mergeAcceptance,
   readRequirement,
+  sameAcceptance,
   scoringContext,
   updateRequirement,
   writeRequirement,
@@ -1576,7 +1578,7 @@ export class SoftwareDevOffice {
         try {
           const store = this.storeFor(workspace)
           const journal = new Journal(store)
-          store.writeJson(['gates', `${gateId}.json`], failure)
+          store.writeJson(['gates', `${gateId}.json`], { ...failure, persisted: true })
           journal.append('gate/result', { gate: gateId, status: failure.status, phase: failure.phase, unjudged: true, ...gateResultDetail(failure) })
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
@@ -1591,14 +1593,15 @@ export class SoftwareDevOffice {
     // 回执与事实不符，且别名文件会积累成"最后一次判定"的多个副本（并集语义下可能掩盖后续失败）。
     const id = normalizeGateId(gateId, process)
     const evaluation = evaluateGate(process, id, context)
-    store.writeJson(['gates', `${id}.json`], evaluation)
+    const persisted: GateEvaluation = { ...evaluation, persisted: true }
+    store.writeJson(['gates', `${id}.json`], persisted)
     journal.append('gate/result', {
-      gate: evaluation.gate,
-      status: evaluation.status,
-      phase: evaluation.phase,
-      ...gateResultDetail(evaluation),
+      gate: persisted.gate,
+      status: persisted.status,
+      phase: persisted.phase,
+      ...gateResultDetail(persisted),
     })
-    return evaluation
+    return persisted
   }
 
   /**
@@ -1618,6 +1621,8 @@ export class SoftwareDevOffice {
     to?: string | undefined
     blockedBy?: string | undefined
     remedy?: string[] | undefined
+    /** **R-26**：推进成功、但账本里仍有"已批准却未重新基线"的变更时必须点名（判定通过 ≠ 已重新冻结） */
+    notes?: string[] | undefined
   } {
     const prepared = this.safeGateContext(call)
     if (!prepared.ok) {
@@ -1631,17 +1636,26 @@ export class SoftwareDevOffice {
     }
     const { store, journal, project, process, context } = prepared.value
     if (project === undefined) throw new Error('项目尚未初始化：请先调用 `sdo_init`。')
+    // **R-26**：推进成功时也要如实说"账本里还有已批准却**没重新基线**的变更"——
+    // 真机形态：G2 判 ✅、阶段也推进了，可 `requirement/baselined` 事件始终没写 ⇒ 变更仍算未消化，
+    // 直到下一次 `claim` 才被 `change-not-digested` 拦住（白跑一张探测卡）。
+    const pendingBaseline = listUndigestedChanges(store, journal, process)
+      .filter((item) => item.rebaselinedSeq === undefined)
+      .map((item) => item.id)
+    const advanceNotes = pendingBaseline.length === 0
+      ? []
+      : [fmt('uiIndex.kAdvanceBaselinePending', { p1: pendingBaseline.join('、') })]
     const exits = exitGates(process, project.phase)
     const evaluations = exits.map((gate) => evaluateGate(process, gate, context))
     const blocked = evaluations.find((evaluation) => evaluation.status !== 'passed' && evaluation.status !== 'waived')
     if (blocked !== undefined) {
-      store.writeJson(['gates', `${blocked.gate}.json`], blocked)
+      store.writeJson(['gates', `${blocked.gate}.json`], { ...blocked, persisted: true })
       journal.append('gate/result', { gate: blocked.gate, status: blocked.status, phase: project.phase, ...gateResultDetail(blocked) })
       return { advanced: false, from: project.phase, blockedBy: blocked.gate, remedy: blocked.remedy }
     }
     for (const evaluation of evaluations) {
       // 现算结果**照写留痕**：即便与盘上旧记录不同，也以本次判定为准（这正是 D2 的语义）。
-      store.writeJson(['gates', `${evaluation.gate}.json`], evaluation)
+      store.writeJson(['gates', `${evaluation.gate}.json`], { ...evaluation, persisted: true })
       journal.append('gate/result', { gate: evaluation.gate, status: evaluation.status, phase: project.phase, ...gateResultDetail(evaluation) })
     }
     const next = nextPhase(process, project.phase)
@@ -1649,10 +1663,10 @@ export class SoftwareDevOffice {
     if (next !== undefined && next.id === project.phase) return { advanced: false, from: project.phase }
     journal.append('phase/exited', { phase: project.phase })
     if (next === undefined) {
-      return { advanced: false, from: project.phase }
+      return { advanced: false, from: project.phase, ...(advanceNotes.length === 0 ? {} : { notes: advanceNotes }) }
     }
     journal.append('phase/entered', { phase: next.id })
-    return { advanced: true, from: project.phase, to: next.id }
+    return { advanced: true, from: project.phase, to: next.id, ...(advanceNotes.length === 0 ? {} : { notes: advanceNotes }) }
   }
 
   // —————————————— §7.1 设计适用性声明 ——————————————
@@ -1700,6 +1714,10 @@ export class SoftwareDevOffice {
     channel: 'command' | 'question'
     turn?: string | undefined
     basisChecked?: 'session' | 'unavailable' | undefined
+    /** **R-27**：依据在会话派生消息里的位置（用户又原样说了一次时更大） */
+    basisAt?: number | undefined
+    /** **R-27**：依据是本次调用当场取回的（`channel=question`）⇒ 不参与重放判定 */
+    basisFresh?: boolean | undefined
   }): GateSignature {
     const { store, journal, project } = this.contextFor(call)
     // **F-1（2026-10-05 真机，major）**：签字**落盘前**归一成内部编号。旧实现原样落盘调用方字符串
@@ -1707,6 +1725,37 @@ export class SoftwareDevOffice {
     // 复用 `check` 侧同一个解析函数（两侧口径一致），回执里印的是**落盘后的**那个 id。
     const gate = normalizeGateId(input.gate, processOfProject(project))
     return recordSignature(store, journal, { ...input, gate })
+  }
+
+  /**
+   * **签字依据重放预检**（R-27）：这句话是不是"上次失效之前的老话"？
+   *
+   * 工具层用它给出**可操作的拒绝回执**（让用户重新表态，或改用 `channel=question` 当场问）；
+   * `recordSignature` 里还有一道强制拒绝（任何直接调用都绕不过去）。
+   */
+  basisReplay(call: OfficeCall, gate: string, basis: string, basisAt?: number | undefined): {
+    replayed: boolean
+    usedAtSeq?: number | undefined
+    lastInvalidation?: number | undefined
+  } {
+    const { store, journal, project } = this.contextFor(call)
+    return basisReplay(store, journal, normalizeGateId(gate, processOfProject(project)), basis, basisAt)
+  }
+
+  /**
+   * **记录一次被拒的签字尝试**（R-28 建议 5）：`gate/sign-rejected`。
+   *
+   * 三条设计约束：① 只记"谁在什么时候想对哪个门签什么字、为什么被拒"，**不改任何真源**；
+   * ② 它在 `SIGNATURE_NEUTRAL_EVENTS` 里 ⇒ 不会顺带作废已有的签字（被拒 ≠ 真源变更）；
+   * ③ 依据原文照录（审计要看得出"被拒的是哪句话"）。
+   */
+  noteSignRejected(call: OfficeCall, gate: string, channel: 'command' | 'question', basis: string): void {
+    const { journal, project } = this.contextFor(call)
+    journal.append('gate/sign-rejected', {
+      gate: normalizeGateId(gate, processOfProject(project)),
+      channel,
+      basis: basis.slice(0, 200),
+    })
   }
 
   /** 某门禁的签字状态（缺失 / 无引用 / 已失效 / 有效）。 */
@@ -1733,7 +1782,12 @@ export class SoftwareDevOffice {
   }
 
   /** 原话核对 + **核对口径**（R-7：调用点应把 `basisChecked` 落进签字台账）。 */
-  checkUserQuote(call: OfficeCall, quote: string): { ok: boolean; basisChecked: 'session' | 'unavailable' } {
+  checkUserQuote(call: OfficeCall, quote: string): {
+    ok: boolean
+    basisChecked: 'session' | 'unavailable'
+    /** **R-27**：最后一条命中这句话的**用户消息下标**（用户"又说了一次"时就更大） */
+    basisAt?: number | undefined
+  } {
     const wanted = quote.trim().replace(/\s+/gu, ' ')
     if (wanted === '') return { ok: false, basisChecked: 'session' }
     const agent = call.agent as {
@@ -1747,27 +1801,32 @@ export class SoftwareDevOffice {
     } catch {
       return { ok: true, basisChecked: 'unavailable' }
     }
-    const texts: string[] = []
-    for (const message of messages) {
+    const texts: { index: number; text: string }[] = []
+    for (const [index, message] of messages.entries()) {
       if (message.role !== 'user') continue
       const content = message.content
       if (typeof content === 'string') {
-        texts.push(content)
+        texts.push({ index, text: content })
         continue
       }
       if (!Array.isArray(content)) continue
+      let joined = ''
       for (const block of content) {
         if (typeof block === 'string') {
-          texts.push(block)
+          joined += block
           continue
         }
         if (typeof block === 'object' && block !== null) {
           const text = (block as { text?: unknown }).text
-          if (typeof text === 'string') texts.push(text)
+          if (typeof text === 'string') joined += text
         }
       }
+      if (joined !== '') texts.push({ index, text: joined })
     }
-    return { ok: texts.some((text) => text.replace(/\s+/gu, ' ').includes(wanted)), basisChecked: 'session' }
+    const hits = texts.filter((item) => item.text.replace(/\s+/gu, ' ').includes(wanted))
+    if (hits.length === 0) return { ok: false, basisChecked: 'session' }
+    // 取**最后一条**命中：用户"又说了一次"时下标更大（R-27 用它区分重放与新的表态）
+    return { ok: true, basisChecked: 'session', basisAt: hits[hits.length - 1]?.index }
   }
 
   // —————————————— §6.1 阶段回退 ——————————————
@@ -1888,7 +1947,20 @@ export class SoftwareDevOffice {
   }
 
   /** 豁免一个门禁（留痕：写 tailoring.waivedGates + `gate/result: waived`）。 */
-  waiveGate(call: OfficeCall, gateId: string, reason: string, approver: string): GateEvaluation {
+  waiveGate(
+    call: OfficeCall,
+    gateId: string,
+    reason: string,
+    approver: string,
+    /**
+     * **R-27 连带（sdo-test-new 2026-10-09）**：这次豁免的**用户原话依据**（可选）。
+     *
+     * 为什么要有：`approver` 是**调用方自述**的批准人（模型可以写任何名字）。豁免是"自救出口"，
+     * 不该被依据卡死（那会在真机最需要它的时候失效）；但**有没有依据**必须留在真源里、印在回执上 ——
+     * 否则一条"我编的批准人"看起来就是一次正常的人类批准。
+     */
+    basis?: { quote: string; checked: 'session' | 'unavailable' } | undefined,
+  ): GateEvaluation {
     // **R-7**：豁免只需要项目台账（tailoring），不必读 requirements/questions/risks/issues ——
     // 用 `gateContext` 会让"某类真源被写坏"顺带把豁免也弄成异常，而豁免恰恰是用户此时的自救手段。
     const { store, journal, project } = this.contextFor(call)
@@ -1900,17 +1972,46 @@ export class SoftwareDevOffice {
       approver,
       at: new Date().toISOString(),
     }
-    const resolved = normalizeGateId(gateId, processOfProject(project))
+    const process = processOfProject(project)
+    const resolved = normalizeGateId(gateId, process)
+    // **R-23（sdo-test-new 2026-10-09）**：先校验这个门禁**属于当前流程**。旧实现在校验之前就写了
+    // `project/updated` + `tailoring/updated` —— 一处"豁免某个用不上的门禁"的探索动作会：
+    //   ① 把一条**指向不存在门禁**的豁免留在项目裁剪里（该流程日后新增同名门禁就**静默生效**）；
+    //   ② 连带作废刚签的人类签字（这两类写入都在 G2 的失效集合里）。
+    // 现在：不属于当前流程 ⇒ 直接拒绝（不写 tailoring、不写门禁记录、不作废签字）。
+    if (!process.gates.some((gate) => gate.id === resolved)) {
+      return {
+        gate: resolved,
+        phase: project.phase,
+        status: 'failed',
+        at: new Date().toISOString(),
+        // **R-29**：这条路径**没有**写任何文件（也不该写）⇒ 回执不许说"判定记录已写入"
+        persisted: false,
+        criteria: [
+          {
+            id: 'gate.unknown',
+            ok: false,
+            detail: fmt('uiGates.k139', { p1: process.id, p2: resolved }),
+            remedy: fmt('uiGates.k140', { p1: process.gates.map((gate) => gate.id).join(' ') }),
+          },
+        ],
+        remedy: [fmt('uiGates.k141', { p1: process.id, p2: resolved })],
+      }
+    }
     const waivedGates = [...new Set([...tailoring.waivedGates, resolved])]
     journal.append('project/updated', {
       patch: { tailoring: { ...tailoring, waivedGates, reason, approver, at: new Date().toISOString() } },
     })
-    journal.append('tailoring/updated', { waivedGates, reason, approver })
+    // **R-27 连带**：批准人的**依据口径**要留痕（`none` = 调用方自述、没有任何用户原话背书）
+    const approverBasis = basis === undefined
+      ? { approverChecked: 'none' as const }
+      : { approverBasis: basis.quote, approverChecked: basis.checked }
+    journal.append('tailoring/updated', { waivedGates, reason, approver, ...approverBasis })
     const refreshed = this.gateContext(call, approver)
     const evaluation = evaluateGate(refreshed.process, resolved, refreshed.context)
-    const recorded: GateEvaluation = { ...evaluation, status: 'waived', remedy: [] }
+    const recorded: GateEvaluation = { ...evaluation, status: 'waived', remedy: [], persisted: true }
     store.writeJson(['gates', `${resolved}.json`], recorded)
-    journal.append('gate/result', { gate: resolved, status: 'waived', phase: recorded.phase, reason, approver })
+    journal.append('gate/result', { gate: resolved, status: 'waived', phase: recorded.phase, reason, approver, ...approverBasis })
     return recorded
   }
 
@@ -2017,13 +2118,28 @@ export class SoftwareDevOffice {
     dimensionsFrom?: 'explicit' | 'carried' | 'none' | undefined
     /** 语义 A：批准触发的阶段回退（未触发时为 `undefined`） */
     rollback?: ChangeRollback | undefined
+    /** **D-21 / R-25**：`replaceAcceptance` 造成的 AC 编号变动（交付矩阵的追溯键会失配） */
+    acceptanceRenumbered?: { from: string; to: string }[] | undefined
   } {
     const { store, journal } = this.contextFor(call)
     const requirement = readRequirement(store, input.requirement)
-    if (requirement === undefined) return { change: createChange(store, journal, input), applied: false, reason: `找不到需求 ${input.requirement}` }
+    // **D-21**：AC 的合并与唯一性校验在**写 CR 之前**做完 —— 校验抛错时若 CR 已落盘，
+    // 就会留下"变更单在册、内容没动"的半写状态（本项目最忌讳的"无声"）。
+    // 合并实现与 `update` **同一份**（`mergeAcceptance`），两个入口不许漂移。
+    const acceptance =
+      requirement === undefined ? undefined : mergeAcceptance(store, requirement.acceptance, input)
+    if (requirement === undefined) {
+      const change = createChange(store, journal, input)
+      markChangeNoop(journal, change, 'no-requirement')
+      return { change, applied: false, reason: `找不到需求 ${input.requirement}` }
+    }
     if (requirement.status !== 'baselined' && requirement.status !== 'changed') {
+      const change = createChange(store, journal, input)
+      // 需求还是草稿 ⇒ 没有任何"已冻结的内容"需要走变更控制（回执让调用方改用 `update`）：
+      // 这条 CR 同样无内容可消化，不许拿它去锁 claim。
+      markChangeNoop(journal, change, 'requirement-not-baselined')
       return {
-        change: createChange(store, journal, input),
+        change,
         applied: false,
         reason: '需求尚未基线：直接更新即可，不必走变更控制（设计 §5.5）',
       }
@@ -2032,9 +2148,27 @@ export class SoftwareDevOffice {
     if (input.decision !== 'approved') {
       return { change, applied: false, reason: `决策为 ${input.decision}，未应用变更（已留档）` }
     }
+    // **D-22**：批准一条**什么都没改**的 CR 不许产生任何副作用（真机：空批准把阶段从 iteration
+    // 打回 requirements、作废 G2/G3/GI/G6/G7、锁死全部 `claim`，代价是两次人工签字）。
+    // 判定按**载荷与现值的差异**算，不解析 `changes[]` 的人读文案（文案会被改写、也会被本地化）。
+    // 逐字段比现值的意义：把"同一个 statement 又提交了一遍"也如实算作"没有可变更的内容"。
+    const patch = input.patch ?? {}
+    const changedFields = (['title', 'statement', 'rationale', 'priority', 'kind'] as const).filter(
+      (field) => field in patch && patch[field] !== requirement[field],
+    )
+    const acceptanceChanged = acceptance !== undefined && !sameAcceptance(requirement.acceptance, acceptance)
+    if (changedFields.length === 0 && !acceptanceChanged) {
+      markChangeNoop(journal, change, 'no-content-change')
+      return {
+        change,
+        applied: false,
+        reason: '本次变更**未改动任何字段**（与现值逐字段相同、验收标准也未变）：未改需求、未涨版本、未回退阶段、未作废门禁、认领不受影响',
+      }
+    }
     const next: Requirement = {
       ...requirement,
       ...(input.patch ?? {}),
+      ...(acceptance === undefined ? {} : { acceptance }),
       status: 'changed',
       version: Math.round((requirement.version + 0.1) * 10) / 10,
       updatedAt: new Date().toISOString(),
@@ -2049,11 +2183,20 @@ export class SoftwareDevOffice {
     next.ambiguity = scored.ambiguity
     writeRequirement(store, next)
     journal.append('requirement/updated', { id: next.id, via: change.id, version: next.version })
+    // **R-25 在变更路径上的同一条病**：`replaceAcceptance` 会改号，而 AC 编号是交付验收矩阵的
+    // 追溯键 —— 编号变了必须**当场报出来**，否则"改一条 AC 文本"会静默作废已出的交付包。
+    const renumbered =
+      input.replaceAcceptance === undefined
+        ? []
+        : next.acceptance
+            .map((ac, index) => ({ from: requirement.acceptance[index]?.id ?? '', to: ac.id }))
+            .filter((item) => item.from !== '' && item.from !== item.to)
     return {
       change,
       applied: true,
       dimensionsFrom: input.dimensions !== undefined ? 'explicit' : modelDimensions !== undefined ? 'carried' : 'none',
       rollback: this.rollbackForChange(call, change, next.id, input.decidedBy),
+      ...(renumbered.length === 0 ? {} : { acceptanceRenumbered: renumbered }),
     }
   }
 
@@ -2163,9 +2306,16 @@ export class SoftwareDevOffice {
    * （旧实现照写一条 `contentHash: ''` 的记录，回执却说"确认成功" —— 那条确认永远不被承认，
    * 还顺手作废了 G3 签字）。调用方必须如实报告"没有确认成功"。
    */
-  confirmDesign(call: OfficeCall, target: string, basis: string, by: string, basisSource: 'user' | 'proxy' = 'user'): DesignConfirmation | undefined {
+  confirmDesign(
+    call: OfficeCall,
+    target: string,
+    basis: string,
+    by: string,
+    basisSource: 'user' | 'proxy' = 'user',
+    basisChecked?: 'session' | 'unavailable' | undefined,
+  ): { confirmation: DesignConfirmation } | { refused: 'no-basis' | 'replayed-basis' | 'unresolvable' } {
     const { store, journal } = this.contextFor(call)
-    return confirmDesign(store, journal, target, basis, by, basisSource)
+    return confirmDesign(store, journal, target, basis, by, basisSource, basisChecked)
   }
 
   /** 关键条目确认缺口（`confirm` 的目标校验与门禁提示用）。 */

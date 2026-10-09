@@ -211,7 +211,11 @@ function declareApplicability(input: {
 }
 
 /** G3 门禁级签字（带引用文本才算有效）。 */
-function signG3(basis = '我签字确认这次设计可以放行'): void {
+let signG3Round = 0
+function signG3(basis?: string): void {
+  // **R-27**：同一句用户原话只代表**一次**表态（失效之后复用会被拒）⇒ 夹具每次给一句新的表态
+  signG3Round += 1
+  basis = basis ?? `我签字确认这次设计可以放行（第 ${signG3Round} 次表态）`
   office.signGate(call(), { gate: 'G3', by: '张三', basis, channel: 'command' })
   // X-1：签字后重渲染一次，使判定时刻的文档与真源一致。
   office.renderDesign(call())

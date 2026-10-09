@@ -147,7 +147,7 @@ tool:
   sdo_init: 初始化 SDO 项目（在当前工作目录建 `.sdo/` 台账）。**关键参数缺一不可**：项目名/开发流程/规模档/干系人——缺了不会拿默认值立项，而是先给出一张问询单让你去确认。
   sdo_status: 查看项目状态：当前阶段、待判定门禁、需求与问题计数、最近一次门禁判定、派生投影是否需要重建。只读。
   sdo_project: 维护项目台账（第 19 个工具）：范围与**非目标**、干系人、术语表、成功度量、开发流程与规模。`update` 只写显式给出的字段（术语表按 key 合并）；`show` 打印当前台账。
-  sdo_requirement: 需求工程。`capture` 捕获需求（自动做八维歧义评分）、`grill` 审讯提问（每题带选项与代价）、`answer` 记录答复（可标为假设）、`update` 修改或补 Given/When/Then 验收标准、`change` 基线后走变更控制（含影响分析与决策）、`list`、`baseline` 冻结基线并判定需求基线门禁。
+  sdo_requirement: 需求工程。`capture` 捕获需求（自动做八维歧义评分）、`grill` 审讯提问（每题带选项与代价）、`answer` 记录答复（可标为假设）、`update` 修改或补 Given/When/Then 验收标准、`change` 基线后走变更控制（含影响分析与决策；变更内容可以是字段，也可以是 `acceptance` 验收标准）、`list`、`baseline` 冻结基线并判定需求基线门禁。
   sdo_redteam: 需求红队：对抗式攻击需求集，产出缺陷式议题（每条必须回到需求或转为风险）。`off`/`on` 切换**本会话**红队开关（留痕）；`status` 查看。
   sdo_render: 把真源渲染成文档（派生视图，带真源序号与"请勿手改"标注）。目前支持需求规格 `srs`。
   sdo_plan: 任务拆分与派发。`decompose` 双通道拆卡（结构通道按追溯图、模型通道吃建议）并跑六条机械校验；`iteration` 开一个迭代；`next` 按容量预算挑出可派发的卡并产出派发请求。
@@ -166,6 +166,7 @@ tool:
   sdo_lang: "查看或切换界面语言（工具/命令描述、状态块、门禁文案）。`action=show` 看当前语言与语言包覆盖率；`action=set lang=en` 立即切换（**进程内生效**，重启前一直有效）。"
 param:
   designBasisSource: 'action=confirm：`user`（用户本人确认，默认）或 `proxy`（**代盖** —— 授权人不是执行人时必须写 proxy，事件里才可辨）'
+  signQuote: "用户**针对本次签署/豁免**的原话（逐字引用；`action=sign` 与 `action=waive` 共用这个参数）。`sign`：必须能在本次会话的用户发言里找到，且**不许复用**上次失效之前的旧话（R-27，会被拒）；要重新取得就走 `channel=question`。`waive`：可选 —— 给了就核对（核不过则拒绝），不给也放行但台账记 `approverChecked: none`、回执明说批准人没有用户原话依据。"
   runsRequired: "action=package：本次交付**要求**覆盖的真机运行目标（逗号分隔，如 'server,client'）。缺哪个目标的通过记录就把所有 pass 行降级为 unverified"
   designConfirmBasis: 'action=confirm 的**用户授权原话**（优先于 note/reason；旧实现忽略它，事件里只留下工具自己的文案）'
   planFreshChild: 'action=next：**强制新起**子代理（不复用空闲者）。真机教训：单一子代理被复用 19 轮直至上下文耗尽'
@@ -237,7 +238,7 @@ param:
   retry: 重试语义
   idempotency: 幂等语义
   alternatives: 备选方案（JSON 文本，含各自利弊）
-  consequences: 后果（JSON 文本）
+  consequences: "后果（**JSON 文本**）：数组元素可以是字符串，也可以是 `{\"item\":\"后果\",\"mitigation\":\"缓解措施\"}`（`mitigation` 可选、会被保留并渲染）。**写进去就一定读得出来**（读写同一形状）"
   supersedes: 取代哪条记录
   attribute: 质量属性
   stimulus: 刺激（什么事件触发）
@@ -499,6 +500,7 @@ uiDescribe:
   k45: "「{p1}」已是流程末尾，无可推进。"
   k46: "- 补救：{p1}"
   k47: "- 先运行 `sdo_gate action=check gate={p1}` 看逐条准则；确有正当理由时用 `sdo_gate action=waive`（会留痕）。"
+  kAdvanceNote: "　⚠️ {p1}"
   k48: "- 理由：{p1}"
   k49: "- PoC / 验证建议：{p1}"
   k50: "- ⚠️ 未给出 PoC / 验证建议：G1 会因此拒绝（高风险项必须先验证）"
@@ -567,6 +569,7 @@ uiDescribe:
   k113: "- 类型：{p1} ｜ 优先级：{p2}"
   k114: " ｜ 状态：{p1} ｜ 歧义评分：{p2}/16"
   k115: "- 验收标准：{p1} 条"
+  kAcceptanceRenumbered: "⚠️ **验收标准编号已变 {p1} 条**：{p2} —— AC 编号是**交付验收矩阵的追溯键**（C-60/P-3），已出的交付包会因引用旧编号而判红；请按新编号重出交付包（`sdo_deliver action=package`）。"
   k116: "- 类型：{p1} ｜ 优先级：{p2} ｜ 状态：{p3}"
   k117: "- 歧义评分：{p1}"
   k118: "- 硬信号：{p1}（其中 `banned:*` 会生成强制量化问题）"
@@ -736,6 +739,9 @@ uiDescribe:
   kApplicabilityVisible: "这份声明必须在注入块、本回执与 docs/DESIGN.md 三处对用户可见（不得静默）。"
   kSignRecorded: "已记录门禁签字：{p1}｜签字人 {p2}｜来源 {p3}"
   kSignBasis: "引用依据（用户原话/所选选项原文）：{p1}"
+  kSignBasisRef: "　依据出处：本条 #{p1}（该原话最早用于 #{p2}）；{p3}"
+  kSignBasisStale: "该门此后失效过 —— 若依据早于那次失效，本条本该被拒（请核对）"
+  kSignBasisFresh: "该门此后没有失效事件（依据仍然新鲜）"
   kSignTurn: "会话轮次引用：{p1}"
   kSignValid: "✅ 该签字当前有效。"
   kSignBasisUnchecked: "⚠️ 但本次**未经过会话历史核对**：宿主没有提供会话记录，只保证了引用非空——需要强审计时请在有核对能力的会话里重签（签字台账里的 basisChecked=unavailable 会一直留着这条口径）。"
@@ -829,7 +835,7 @@ shapeEntity:
 uiIndex:
   kAdrSupersedeMissing: '❌ 找不到要取代的 ADR：`{p1}` —— 没有记录被取代，**也不会**记一条新的（先确认 id，或用 `action=record` 新记一条）'
   kAdrIdBad: '❌ `id` 形状不合法：`{p1}` —— ADR 编号形如 `ADR-001`（三位以上数字）。**本次没有写入任何东西**。'
-  kAdrIdTaken: '❌ `id` 已被占用：`{p1}` —— 已有记录（ADR 编号在同一台账里必须唯一，否则会**覆盖**别人的决策史）。改用别的 id，或不传 `id` 让插件自动编号。**本次没有写入任何东西**。'
+  kAdrIdTaken: '❌ `id` 已被占用：`{p1}` —— 已有记录（ADR 编号在同一台账里必须唯一，否则会**覆盖**别人的决策史）。改用别的 id、不传 `id` 让插件自动编号，或**用 `action=supersede supersedes={p1}` 记一条取代它的新 ADR**（旧记录会标 `superseded` 并**退出** `design.adr` 判据 —— 这是"写坏了想修正"的正路）。**本次没有写入任何东西**。'
   kIssueDisposeNeedId: '❌ `action=dispose` 需要 `id`（议题编号，形如 `REQ-ISSUE-001`；用 `sdo_design action=issues` 看清单）。**本次没有写入任何东西**。'
   kIssueDisposeNeedDisposition: '❌ `action=dispose` 需要 `disposition`：`risk`（转为风险）或 `requirement`（回到需求）。**本次没有写入任何东西**。'
   kIssueDisposeMissing: '❌ 找不到议题 `{p1}`（用 `sdo_design action=issues` 看清单）。**本次没有写入任何东西**。'
@@ -859,6 +865,7 @@ uiIndex:
   kReviewAdopted: "整条评审已可采纳"
   kReviewNotAdoptedYet: "还有发现没核实 ⇒ 尚未被采纳"
   kReviewState: "　｜ 核实 {p1}/{p2}　{p3}"
+  kReviewNotExamined: "　｜ **逐条核实未进行**（{p1}）—— 防篡改校验没过，没看的发现不许算作已核实"
   kReviewAwaitingVerification: "ℹ️ 发现 {p1} 条：**评审结果不会自动被采纳** —— 要由该卡的实现会话逐条核实（复现或给出反证）后才算数：`sdo_task action=verify-review id=<卡> review={p2} index=1 outcome=… proof=…`"
   kRecordBadStatus: '❌ 用例结果的状态取值非法：`{p1}`（只接受 pass / fail / skip）—— **不会**默认成 pass（真机 `status=passed` 曾被静默写成 pass）'
   kRunBadOutcome: '❌ 真机运行的结论取值非法/缺失：`{p1}`（必须显式给 pass 或 fail）—— 「忘记声明结论」不得被记成通过'
@@ -944,6 +951,7 @@ uiIndex:
   k43: "已更新缺陷 {p1} → {p2}"
   k44: "登记缺陷需要 `title` 与 `severity`（blocker/major/minor）。"
   k45: "已登记缺陷 {p1}　[{p2}/{p3}]　{p4}"
+  kAdvanceBaselinePending: "⚠️ **判定通过不等于需求已重新冻结**：这些已批准的变更还没有覆盖它们的**重新基线**事件（{p1}）—— 先跑 `sdo_requirement action=baseline`，否则下一次 `claim` 会被 `change-not-digested` 拦住（那时才知道就白跑一轮）。"
   k46: "还没有评审记录。用 `sdo_review action=record`（评审者 ≠ 作者）。"
   k47: "- ⚠️ 独立性违规：{p1}"
   k48: "记录评审需要 `taskId`、`reviewer` 与 `verdict`。"
@@ -957,6 +965,12 @@ uiIndex:
   k56: "豁免门禁需要 `gate`。"
   k57: "豁免必须留痕：请同时给出 `reason` 与 `approver`（设计 §7.5 / AC-003）。"
   k58: "已豁免门禁「{p1}」（批准人：{p2}，理由：{p3}）。\n{p4}"
+  kWaiveRefused: "⛔ **没有豁免任何门禁**：「{p1}」不在当前流程里（因此**没有**写项目裁剪、**没有**写门禁记录、你已签的字**不受影响**）。\n{p2}"
+  kWaiveNoBasis: "⚠️ 本豁免的批准人（{p1}）是**调用方自述**，没有任何用户原话依据 —— 台账里记的是 `approverChecked: none`，审计读得出这一点。要留下依据就传 `quote=<用户原话>`。"
+  kWaiveBasis: "　依据：{p1}（核对口径：{p2}）"
+  kWaiveChecked_session: "与本次会话的用户发言核对过"
+  kWaiveChecked_unavailable: "宿主没给会话历史 ⇒ 未核对（如实记 unavailable）"
+  kWaiveQuoteMismatch: "⛔ 这条豁免的 `quote` 在本次会话的用户发言里找不到 ⇒ 拒绝（不许把编造的原话当依据）。请传真实原话，或不传 `quote`（回执会如实标注没有依据）。"
   k59: "未知 action：{p1}（可用：{p2}）"
   k60: "判定门禁需要 `gate`（例如 G0 / G1 / G2 / G7）。"
   k61: "未知 action：{p1}（可用：{p2}）"
@@ -1040,7 +1054,7 @@ uiIndex:
   k137: "- {p1}　[{p2}]　{p3}{p4}"
   k138: "看板写盘被禁用（board.text=false），未写入 docs/BOARD.md。"
   k139: "{p1}\n{p2}"
-  planReviewed: "已在**本会话内**记录计划评审通过（由 {x} 评审）。可以继续 sdo_design create。"
+  planReviewed: "已在**本会话内**记录计划评审通过（由 {p1} 评审）。可以继续 sdo_design create。"
   planWaived: "已记录**计划评审豁免**（留痕，理由与豁免人已写入真源）。可以继续 sdo_design create。"
   planWaiveNoReason: "（未写明理由）"
   planBlockedHead: "进入设计被阻塞：本宿主没有交互式计划评审通道（plan mode 不可用）。"
@@ -1065,8 +1079,8 @@ uiIndex:
   kMethodShapeRejected: "❌ 方法产物 {p1} **未写入**：这些字段的形状会让**内容丢失**（读回来是空）—— {p2}。请按该字段声明的形状改写后重试（与 `sdo_plan action=profile` 同一口径：校验不过整次拒绝、不写盘；否则 C-29 会读这份形状判红，而签字已经白作废了一次）。"
   k3: "拿不到本会话的 session 对象：用量只能统计驾驶舱会话"
   k4: "⚠️ 这些问题是**问用户的**：请用宿主提问工具（`ask_user_question`）逐题问，一次最多 4 题；"
-  k5: "进入设计被阻塞：无法为本次调用驱动 plan mode（缺少 agent 引用或服务异常）。"
-  k6: "已进入 plan mode（{p1}）：先做探索与方案比较，不要落笔实现。"
+  k5: "只统计当前会话（没有枚举到后代会话；若确实有子代理在跑，说明宿主没给出会话树）"
+  k6: "含 {p1} 个后代会话：它们的用量一并计入上面的合计"
   k7: "\n- 下一步：补齐范围与非目标（`sdo_project action=update`），再跑 `sdo_feasibility action=assess`。"
   m1: "预算已更新：{p1}"
   m2: "只报消耗（未设 total）"
@@ -1082,8 +1096,11 @@ uiIndex:
   kApplicabilityNoBasis: "声明签字必须带依据（用户原话或所选选项原文）"
   kApplicabilityMissingToConfirm: "还没有可签字的适用性声明：先用 sdo_requirement action=applicability 起草"
   kSignNoQuote: "会话签字必须给出用户原话（quote）；没有引用的签字视为无效"
+  kSignBasisReplayed: "⛔ 给「{p1}」签字被拒：这句原话**已经用过**（首次用于 #{p2}），而该门在 #{p3} 之后失效过 ⇒ 拿它再签一次等于把「曾经说过一句话」当成「此刻为这份内容背书」。请让用户**重新表态**，或改用 `channel=question`（工具当场问）。"
   kChannelInvalid: "`--channel` 只能是 `statement` 或 `question`，收到的是：{p1}"
   kAcceptanceModeInvalid: "`acceptanceMode` 只能是 `append`（追加）或 `replace`（整份替换），收到的是：{p1}"
+  kChangeAcceptanceAdd: "新增验收标准 {p1}：Given {p2}；When {p3}；Then {p4}"
+  kChangeAcceptanceReplace: "替换整份验收标准（{p1} 条）：新编号 {p2}"
   kSignQuoteMismatch: "引用对不上：这段话没有出现在本次会话的用户发言里，因此不能作为签字依据（若确实说过，请原样复制该句；若用户是通过提问选项表态的，改用 `channel=question` 记录所选选项原文）。"
   kSignNoChannel: "人机关口问答通道不可用：请改用会话明确表述并给出用户原话（quote）"
   kSignDeclined: "用户没有选择签字（所选：{p1}），{p2} 保持未签字状态"
@@ -1251,6 +1268,7 @@ uiGates:
   k122: "迭代内未完成：{p1}"
   k123: "完成或移出这些卡"
   k124: "迭代 {p1} 产出增量（{p2} 张卡全部完成）"
+  k124b: "（另有 {p1} 张已显式放弃，**不计入**完成率）"
   k125: "还没有开迭代"
   k126: "用 `sdo_plan action=iteration`"
   k127: "迭代没有目标"
@@ -1602,6 +1620,7 @@ uiSignature:
   journalOnly: '⚠️ 但真源 journal 里有 {p1} 条 gate/signed 事件 —— 签字台账文件被删或被改写（这不是「从来没签过」，是不一致，D8）'
   noEvent: '⚠️ 但真源 journal 里找不到与这条签字（{p1} {p2}）对应的 gate/signed 事件 —— 手写/绕过工具写入（D8）'
   basisRequired: "签字必须带引用文本：请给出用户原话（channel=statement）或走人机关口问答（channel=question）"
+  basisReplayed: "⛔ 这条依据不可用：它是**上次失效之前**的老话（首次用于 #{p2}，而 {p1} 在 #{p3} 已失效）。签字的意义是**人此刻为这份内容背书** —— 请让用户**重新表态**，或改用 `channel=question`（由工具当场问用户，引用不经过模型）。"
   missing: "门禁 {p1} 还没有用户签字"
   unquoted: "门禁 {p1} 的签字（{p2}）没有引用文本，视为无效"
   stale: "门禁 {p1} 的签字已失效：签字之后真源发生变更（序号 {p2} 的 {p3}）"
@@ -1935,6 +1954,7 @@ uiDesign:
   docDecision: "决定"
   docRejected: "被否决的备选"
   docConsequences: "后果"
+  docMitigation: "（缓解：{p1}）"
   docMatrixReq: "需求"
   docMatrixDesign: "设计元素"
   docMatrixContract: "契约"
@@ -1944,6 +1964,8 @@ uiDesign:
   qAlreadyDecided: "已有决策：{p1}（本次仅确认；如要改请说明并先更新该决策）"
   docQuestionCost: "不问的代价"
   docQuestionSuggest: "建议"
+  docQuestionSuggestDisclaimer: "⚠️ 上面这句是**插件的兜底建议**（`grill` 不校验模型是否给过理由），**可能与本项目约束相反**（例如项目声明零外部依赖时，它仍可能建议引入 OSS 库）—— **请勿据此决策**；要按项目口径回答，先看适用性声明与需求约束。"
+  docQuestionNotApplicable: "这一问可以合法地答**不适用 + 理由**（自由文本答法，与选选项同等有效；判据只要求「问题已答复」）—— 与本项目无关的题不必硬选一个选项。"
   docQuestionOptions: "选项与代价"
   docUnconfirmedTargets: "待确认的关键条目"
   docDiffSeq: "生成时的真源事件序号（渲染**前**的最后一条事件；渲染动作本身是下一条）"
@@ -1954,6 +1976,9 @@ uiDesign:
   docOpenRisk: "未决设计问题数"
   # 工具回执
   uiQuestionsHeader: "## 待你确认的设计问题"
+  uiQuestionsSkipped: "➖ 另有 {p1} 问**按适用性声明/裁剪档跳过**（没问，不是没人答）：{p2}"
+  uiQuestionsSkipped_view-not-declared: "适用性声明里没有声明相关视图"
+  uiQuestionsSkipped_trivial-core-only: "trivial 档只问核心几问（形态/错误口径/技术债）"
   uiNoQuestions: "没有未决的设计问题。"
   uiIssuesHeader: "## 设计问题"
   uiIssuesEmpty: "设计问题账本还是空的：先跑 `sdo_design action=grill`。"
@@ -1974,6 +1999,12 @@ uiDesign:
   uiConfirmOk: "{p1} 已确认（依据：{p2}）"
   uiConfirmDefaultBasis: "用户在会话中确认"
   uiConfirmMissing: "确认需要 `target`（元素/契约/界面条目 id）"
+  uiConfirmNoBasis: "⛔ 缺**用户授权原话**：设计确认是「人此刻为这份设计背书」，不是流程动作。请传 `basis=<用户原话>`（工具会核对它确实出现在本次会话的用户发言里），或先用提问工具取得用户明示。**不许**用工具自己的文案充当用户原话。"
+  uiConfirmQuoteMismatch: "⛔ 依据 `{p1}` 在**本次会话的用户发言**里找不到 ⇒ 拒绝（不许用编造的原话盖「用户确认」戳）。请让用户本人说一句，或传真实原话。"
+  uiConfirmRefused: "⛔ 确认未写入（{p1}）：{p2}"
+  uiConfirmRefused_no-basis: "没有用户授权原话"
+  uiConfirmRefused_replayed-basis: "这条条目的**内容已经变过**，而依据还是上次那句旧授权 —— 内容变了就得请用户**重新表态**（旧话只代表对旧内容的背书）"
+  uiConfirmUnchecked: "⚠️ 本次会话历史拿不到 ⇒ 这句原话**未与用户发言核对**（台账如实记 `unavailable`）"
   uiConfirmUnknown: "不是有效的关键条目：{p1}（可用条目见 `sdo_design action=issues` 与界面视图）"
   confirmGapsHeader: "## 必须确认的关键条目"
   confirmGapsMissing: "必须确认但尚未确认（{p1}/{p2}）"

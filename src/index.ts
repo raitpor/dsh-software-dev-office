@@ -1506,13 +1506,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
             const open = (adoption?.pending.length ?? 0) + (adoption?.stale.length ?? 0) + (adoption?.forged.length ?? 0)
             // **G-2 可见性**：老格式评审必须写明"不具备防篡改保护"（不许静默当正常条目）
             const guard = adoption?.tamperGuard === 'none-legacy' ? t('uiIndex.kReviewNoTamperGuard') : ''
-            return `- ${review.id}　${review.taskId}　${review.verdict}（${review.reviewer}）`
-              + fmt('uiIndex.kReviewState', {
-                  p1: String(total - open),
-                  p2: String(total),
-                  p3: reviewAdoptionLabel(adoption?.state ?? 'unverified'),
-                })
-              + guard
+            // **D-23**：`tampered` / `unrecorded` 在"看发现"之前就返回了 ⇒ 三个下标数组恒为空。
+            // 旧写法按"总数 - 0"打印「核实 8/8」，于是同一条回执里既写"被改过"又写"核实 8/8"（假绿）。
+            const state = reviewAdoptionLabel(adoption?.state ?? 'unverified')
+            const counted = (adoption?.examined ?? false) === true
+              ? fmt('uiIndex.kReviewState', { p1: String(total - open), p2: String(total), p3: state })
+              : fmt('uiIndex.kReviewNotExamined', { p1: state })
+            return `- ${review.id}　${review.taskId}　${review.verdict}（${review.reviewer}）` + counted + guard
           }),
           ...office.reviewViolations(call).map((item) => fmt('uiIndex.k47', { p1: item.detail })),
         ].join('\n')
@@ -1687,6 +1687,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // 引用 = **用户所选选项原文**（由本工具自己取回，不经过模型）
             basis: answer.selectedLabel,
             channel: 'question',
+            // **R-27（回归修正）**：question 通道的依据是**本次当场取回**的（工具自己问的用户），
+            // 选项标签逐字重复是设计使然 ⇒ 不参与重放判定（否则第二次点选会被误拒）。
+            basisFresh: true,
             ...(args.turn === undefined ? {} : { turn: args.turn }),
           })
           return describeSignature(signature, office.signatureState(call, signature.gate))
@@ -1697,13 +1700,33 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // 引用要能在**会话记录**里找到（拿不到会话历史时退回"引用非空"的规格最低要求）；
         // **R-7**：核对口径随签字一起落台账，回执与门禁 detail 会如实标注"未核对"。
         const quoteCheck = office.checkUserQuote(call, quote)
-        if (!quoteCheck.ok) return t('uiIndex.kSignQuoteMismatch')
+        if (!quoteCheck.ok) {
+          office.noteSignRejected(call, args.gate, 'command', quote)
+          return t('uiIndex.kSignQuoteMismatch')
+        }
+        // **R-27（major）**：依据不许重放 —— 同一句用户原话只代表**一次**表态。旧实现只校验"这句话
+        // 在会话里出现过"，于是任何旧话都能在任意时刻、对任意门禁反复铸成新签字（真机 `#1132` 复用了
+        // `#1099` 的「确认签字」）。这里给出可操作的拒绝：让用户**重新表态**，或改用 `channel=question`
+        // 由工具当场问（引用不经过模型）。`recordSignature` 里另有一道强制拒绝。
+        const replay = office.basisReplay(call, args.gate, quote, quoteCheck.basisAt)
+        if (replay.replayed) {
+          // **R-28 建议 5**：被拒的签字尝试也要落痕（审计要能看见"有人试图签字并被拦"）。
+          // 该事件在 `SIGNATURE_NEUTRAL_EVENTS` 里 —— **被拒不等于真源变更**，不许顺带作废已签的字。
+          office.noteSignRejected(call, args.gate, 'command', quote)
+
+          return fmt('uiIndex.kSignBasisReplayed', {
+            p1: gateLabel(args.gate),
+            p2: String(replay.usedAtSeq ?? '?'),
+            p3: String(replay.lastInvalidation ?? '?'),
+          })
+        }
         const signature = office.signGate(call, {
           gate: args.gate,
           by: args.approvedBy ?? 'human',
           basis: quote,
           channel: 'command',
           basisChecked: quoteCheck.basisChecked,
+          ...(quoteCheck.basisAt === undefined ? {} : { basisAt: quoteCheck.basisAt }),
           ...(args.turn === undefined ? {} : { turn: args.turn }),
         })
         return describeSignature(signature, office.signatureState(call, signature.gate))
@@ -1713,8 +1736,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
         if ((args.reason ?? '').trim() === '' || (args.approver ?? '').trim() === '') {
           return t('uiIndex.k57')
         }
-        const recorded = office.waiveGate(call, args.gate, args.reason ?? '', args.approver ?? '')
-        return fmt('uiIndex.k58', { p1: gateLabel(recorded.gate), p2: args.approver, p3: args.reason, p4: describeGate(recorded) })
+        // **R-27 连带**：豁免给了用户原话就核对它（给了而核不过 ⇒ 拒绝，与签字同口径）；
+        // 没给也不拦（自救出口），但台账与回执必须说清"这条批准人没有用户原话依据"。
+        const waiveQuote = (args.quote ?? '').trim()
+        let basis: { quote: string; checked: 'session' | 'unavailable' } | undefined
+        if (waiveQuote !== '') {
+          const check = office.checkUserQuote(call, waiveQuote)
+          if (!check.ok) return fmt('uiIndex.kWaiveQuoteMismatch', { p1: waiveQuote })
+          basis = { quote: waiveQuote, checked: check.basisChecked }
+        }
+        const recorded = office.waiveGate(call, args.gate, args.reason ?? '', args.approver ?? '', basis)
+        // **R-29**：对**当前流程不存在**的门禁，"已豁免…"这个断言是假的（真正发生的只有"被拒"）——
+        // 回执只给判定 + 可用清单，不许先说"已豁免"、也不许说"判定记录已写入"（那条已由
+        // `describeGate` 的 `persisted` 条件行收口，这里再挡住开篇的假断言）。
+        if (recorded.status === 'failed') {
+          return fmt('uiIndex.kWaiveRefused', { p1: gateLabel(recorded.gate), p2: describeGate(recorded) })
+        }
+        const basisLine = basis === undefined
+          ? '\n' + fmt('uiIndex.kWaiveNoBasis', { p1: args.approver ?? '' })
+          : '\n' + fmt('uiIndex.kWaiveBasis', { p1: basis.quote, p2: t(`uiIndex.kWaiveChecked_${basis.checked}`) })
+        return fmt('uiIndex.k58', { p1: gateLabel(recorded.gate), p2: args.approver, p3: args.reason, p4: describeGate(recorded) }) + basisLine
       }
       if (args.action !== 'check') return fmt('uiIndex.k59', { p1: args.action, p2: GATE_ACTIONS.join(' | ') })
       if (args.gate === undefined) return t('uiIndex.k60')
@@ -1992,6 +2033,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
             return fmt('uiIndex.kAcceptanceModeInvalid', { p1: mode })
           }
           const replace = mode === 'replace'
+          // **R-25**：改号是 `replace` 的自然结果，但**必须报出来** —— AC 编号是交付验收矩阵的追溯键。
+          // 旧实现在这里静默换号：真机"只改 AC 文本"就把已出的交付包判红（六条引用全部失配）。
+          const beforeAcceptance = office
+            .requirements(call)
+            .find((item) => item.id === args.id)
+            ?.acceptance.map((ac) => ac.id) ?? []
           const result = office.update(call, {
             id: args.id,
             ...(Object.keys(patch).length === 0 ? {} : { patch }),
@@ -2003,7 +2050,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
             modelDimensions: dims.value,
           })
           if (result === undefined) return fmt('uiIndex.k79', { p1: args.id })
-          return describeRequirementUpdate(result, office.shapeNotes(call))
+          const renumbered = replace
+            ? result.requirement.acceptance
+                .map((ac, index) => ({ from: beforeAcceptance[index] ?? '', to: ac.id }))
+                .filter((item) => item.from !== '' && item.from !== item.to)
+            : []
+          return describeRequirementUpdate(
+            { ...result, ...(renumbered.length === 0 ? {} : { acceptanceRenumbered: renumbered }) },
+            office.shapeNotes(call),
+          )
         }
 
         case 'baseline': {
@@ -2023,6 +2078,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // §6.7：变更路径可以**显式重给**语义分；不给则沿用需求上已落盘的模型维度。
           const dims = jsonOr<Partial<Record<Dimension, number>>>(args.dimensions, 'dimensions')
           if (dims.error !== undefined) return dims.error
+          // **D-21**：schema 里 `acceptance`/`acceptanceMode` 一直都声明着，但旧实现只给
+          // `capture`/`update` 读 ⇒「基线后 AC 变了」既进不了 CR 摘要、也不会被应用。
+          // 这里与 `update` 逐字同口径：同一份 JSON 形状、同一套发号、同一个 `acceptanceMode` 校验。
+          const acceptance = jsonOr<{ given?: string; when?: string; then?: string }[]>(args.acceptance, 'acceptance')
+          if (acceptance.error !== undefined) return acceptance.error
+          const mode = args.acceptanceMode ?? 'append'
+          if (mode !== 'append' && mode !== 'replace') {
+            return fmt('uiIndex.kAcceptanceModeInvalid', { p1: mode })
+          }
+          const replace = mode === 'replace'
+          const acRows = acceptance.value ?? []
+          const acIds = acRows.length === 0
+            ? []
+            : makeAcceptanceIds(office.storeFor(office.requireWorkspace(call)), acRows.length)
+          const criteria: AcceptanceCriterion[] = acRows.map((row, index) => ({
+            id: acIds[index] ?? `AC-${index + 1}`,
+            given: row.given ?? '',
+            when: row.when ?? '',
+            then: row.then ?? '',
+          }))
           const patch = {
             ...(args.title === undefined ? {} : { title: args.title }),
             ...(args.statement === undefined ? {} : { statement: args.statement }),
@@ -2034,6 +2109,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
           if (args.statement !== undefined) changes.push(fmt('uiIndex.k84', { p1: args.statement }))
           if (args.priority !== undefined) changes.push(fmt('uiIndex.k85', { p1: args.priority }))
           if (args.title !== undefined) changes.push(fmt('uiIndex.k86', { p1: args.title }))
+          // **D-21**：AC 变更必须进 CR 摘要 —— `changes[]` 是这份变更单"改了什么"的唯一人读记录，
+          // 否则一条只改 AC 的 CR 会写成「仅记录变更请求，未给出具体字段」（真机核实：批准后 AC 一条没动）。
+          if (criteria.length > 0) {
+            if (replace) {
+              changes.push(fmt('uiIndex.kChangeAcceptanceReplace', {
+                p1: criteria.length,
+                p2: criteria.map((item) => item.id).join(' '),
+              }))
+            } else {
+              for (const item of criteria) {
+                changes.push(fmt('uiIndex.kChangeAcceptanceAdd', {
+                  p1: item.id,
+                  p2: item.given,
+                  p3: item.when,
+                  p4: item.then,
+                }))
+              }
+            }
+          }
           if (changes.length === 0) changes.push(t('uiIndex.k87'))
           return describeChange(
             office.change(call, {
@@ -2044,6 +2138,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               decidedBy: args.decidedBy ?? args.by ?? 'human',
               ...(Object.keys(patch).length === 0 ? {} : { patch }),
               ...(dims.value === undefined ? {} : { dimensions: dims.value }),
+              ...(criteria.length === 0 ? {} : replace ? { replaceAcceptance: criteria } : { addAcceptance: criteria }),
             }),
             office.shapeNotes(call),
           )

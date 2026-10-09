@@ -130,9 +130,13 @@ function answerAll(ids: string[]): void {
   for (const id of ids) acceptQuestion(id)
 }
 
+let confirmRound = 0
 function confirmAll(): void {
+  // **R-27 连带**：确认戳的"依据"不许在**内容已变**之后照旧沿用（同一 target + 同一句话 + 内容指纹不同 ⇒ 拒绝）
+  // ⇒ 夹具每次给一句**新的**用户授权原话（真实用法本来就是这样：改动之后要重新表态）。
+  confirmRound += 1
   for (const target of office.designConfirmGaps(call()).required) {
-    office.confirmDesign(call(), target, '用户在会话中确认', '张三')
+    office.confirmDesign(call(), target, `用户在会话中确认（第 ${confirmRound} 次表态）`, '张三')
   }
 }
 
@@ -240,8 +244,11 @@ function declareApplicability(): void {
 }
 
 /** G3 门禁级签字（**必须带引用文本**；无引用的签字视为无效，门禁照样红）。 */
+let signG3Round = 0
 function signG3(): void {
-  office.signGate(call(), { gate: 'G3', by: '张三', basis: '我签字确认这次设计可以放行', channel: 'command' })
+  // **R-27**：同一句用户原话只代表**一次**表态（失效之后复用会被拒）⇒ 夹具每次给一句新的表态
+  signG3Round += 1
+  office.signGate(call(), { gate: 'G3', by: '张三', basis: `我签字确认这次设计可以放行（第 ${signG3Round} 次表态）`, channel: 'command' })
   // X-1：签字后重渲染，保证判定时刻的文档与真源一致（`gate/signed` 本身不改文档内容）
   office.renderDesign(call())
 }
@@ -405,7 +412,8 @@ test('M8-06 含 UI 判定：需求声明界面面 → 未确认失败、三者�
 
   // 三者齐全 + 全部确认 → 通过
   office.writeUiView(call(), uiFixture())
-  office.confirmDesign(call(), 'SCR-001:layout', '用户确认布局', '张三')
+  // 布局被换回完整形状（内容变过）⇒ 依据必须是**新的**表态
+  office.confirmDesign(call(), 'SCR-001:layout', '用户确认布局（调整后重新表态）', '张三')
   const passed = criterion(office.evaluate(call(), 'G3').criteria, 'C-27')
   assert.equal(passed.ok, true, '风格 + 每页栏目 + 每页布局齐备且确认后必须通过')
 })

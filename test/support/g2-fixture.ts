@@ -33,10 +33,24 @@ export function disposeOpenP1(office: SoftwareDevOffice, call: OfficeCall): stri
   return disposed
 }
 
-/** D1：记录一条带用户原话引用的 G2 签字（这是 C7 的唯一放行依据）。 */
-export function signG2(office: SoftwareDevOffice, call: OfficeCall, basis = '我确认需求基线可以冻结'): void {
-  office.signGate(call, { gate: 'G2', by: '张三', basis, channel: 'command' })
+/**
+ * D1：记录一条带用户原话引用的 G2 签字（这是 C7 的唯一放行依据）。
+ *
+ * **R-27（2026-10-09）**：同一句用户原话只代表**一次**表态 —— G2 在签字之后又失效过时，
+ * 拿同一句话再签会被**拒绝**（否则任何旧话都能反复铸成新签字）。夹具默认每次给一句**新的**表态；
+ * 想测"复读旧话会被拒"的用例显式传 `basis` 即可。
+ */
+export function signG2(office: SoftwareDevOffice, call: OfficeCall, basis?: string): void {
+  signG2Round += 1
+  office.signGate(call, {
+    gate: 'G2',
+    by: '张三',
+    basis: basis ?? `我确认需求基线可以冻结（第 ${signG2Round} 次表态）`,
+    channel: 'command',
+  })
 }
+
+let signG2Round = 0
 
 /** D4 + D1：补风险处置 → 签 G2 字。想在"基线应当通过"的夹具里一行搞定时用这个。 */
 export function prepareG2(office: SoftwareDevOffice, call: OfficeCall): string[] {

@@ -192,7 +192,7 @@ tool:
   sdo_init: "Initialise an SDO project (creates the `.sdo/` ledger in the current working directory). **No key parameter may be omitted**: project name / process / scale / stakeholders — if one is missing the tool does not guess defaults, it returns a questionnaire for you to confirm first."
   sdo_status: "Show project status: current phase, gate awaiting decision, requirement and question counts, the latest gate evaluation, and whether derived projections need rebuilding. Read-only."
   sdo_project: "Maintain the project ledger (19th tool): scope and **non-goals**, stakeholders, glossary, success metrics, development process and scale. `update` writes only the fields you pass explicitly (the glossary merges by key); `show` prints the current ledger."
-  sdo_requirement: "Requirements engineering. `capture` records a requirement (with automatic eight-dimension ambiguity scoring), `grill` produces interview questions (each with options and their cost), `answer` records an answer (optionally marked as an assumption), `update` edits or adds Given/When/Then acceptance criteria, `change` runs change control after baselining (impact analysis plus decision), `list`, `baseline` freezes the baseline and evaluates the requirements baseline gate."
+  sdo_requirement: "Requirements engineering. `capture` records a requirement (with automatic eight-dimension ambiguity scoring), `grill` produces interview questions (each with options and their cost), `answer` records an answer (optionally marked as an assumption), `update` edits or adds Given/When/Then acceptance criteria, `change` runs change control after baselining (impact analysis plus decision; the change may carry scalar fields and/or `acceptance` criteria), `list`, `baseline` freezes the baseline and evaluates the requirements baseline gate."
   sdo_redteam: "Requirements red team: adversarially attacks the requirement set and produces defect-style issues (each must map back to a requirement or be converted into a risk). `off`/`on` toggles the red team for **this session** (recorded); `status` shows the current state."
   sdo_render: "Render the source of truth into documents (derived views, stamped with the source sequence number and a do-not-edit-by-hand notice). Currently supports the requirements specification `srs`."
   sdo_plan: "Task decomposition and dispatch. `decompose` runs both channels (the structural channel follows the trace graph, the model channel consumes suggestions) and applies six mechanical checks; `iteration` opens an iteration; `next` picks dispatchable cards within the capacity budget and emits dispatch requests."
@@ -212,6 +212,7 @@ tool:
 
 param:
   designBasisSource: 'action=confirm: `user` (the user confirmed in person, default) or `proxy` (stamped on the user behalf — required when the authorizer is not the executor so the event stays distinguishable)'
+  signQuote: "The user own words **for this signature or waiver** (verbatim; shared by `action=sign` and `action=waive`). For `sign`: it must be findable in this session user messages and must NOT be an old quote reused after the last invalidation (R-27, refused); use `channel=question` to obtain a fresh basis. For `waive`: optional — when given it is checked (a mismatch is refused); when omitted the waiver still goes through, but the ledger records `approverChecked: none` and the receipt says the approver has no user-quote basis."
   runsRequired: "action=package: runtime targets this delivery REQUIRES (comma separated, e.g. 'server,client'). A missing target downgrades every pass row to unverified"
   designConfirmBasis: 'action=confirm: the authorized user wording (takes precedence over note/reason; the old implementation ignored it and left only the tool own wording in the event)'
   planFreshChild: 'action=next: force a fresh subagent (do not reuse an idle one). Observed: a single subagent reused for 19 rounds until its context ran out'
@@ -283,7 +284,7 @@ param:
   retry: Retry semantics
   idempotency: Idempotency semantics
   alternatives: "Alternatives (JSON text, each with its pros and cons)"
-  consequences: Consequences (JSON text)
+  consequences: "Consequences (**JSON text**): each element may be a plain string or `{\"item\":\"consequence\",\"mitigation\":\"mitigation\"}` (mitigation is optional, kept and rendered). What you write is always readable (the read and write shapes are the same)."
   supersedes: Which record this one supersedes
   attribute: Quality attribute
   stimulus: Stimulus (what event triggers it)
@@ -637,6 +638,7 @@ uiGates:
   k122: "Unfinished in the iteration — {p1}"
   k123: "Complete or move these cards out"
   k124: "Iteration {p1} delivers an increment (all {p2} cards complete)"
+  k124b: " ({p1} card(s) were explicitly dropped and are NOT counted in the completion rate)"
   k125: "No iteration started yet"
   k126: "Use `sdo_plan action=iteration`"
   k127: "The iteration has no goal"
@@ -848,6 +850,7 @@ uiDescribe:
   k45: "\"{p1}\" is already the end of the process; there is nothing to advance to."
   k46: "Remedy: {p1}"
   k47: "First run `sdo_gate action=check gate={p1}` to see the criteria one by one; if there is a genuine justification, use `sdo_gate action=waive` (it leaves a trail)."
+  kAdvanceNote: "  WARNING: {p1}"
   k48: "Rationale: {p1}"
   k49: "PoC / validation suggestion: {p1}"
   k50: "⚠️ No PoC / validation suggestion given: G1 will reject on this (high-risk items must be validated first)"
@@ -916,6 +919,7 @@ uiDescribe:
   k113: "Type: {p1} | Priority: {p2}"
   k114: " | Status: {p1} | Ambiguity score: {p2}/16"
   k115: "Acceptance criteria: {p1}"
+  kAcceptanceRenumbered: "WARNING: {p1} acceptance-criterion id(s) changed: {p2} — AC ids are the traceability key of the delivery acceptance matrix (C-60/P-3), so an already-issued delivery package now fails on the old ids; re-issue it with the current ids (`sdo_deliver action=package`)."
   k116: "Type: {p1} | Priority: {p2} | Status: {p3}"
   k117: "Ambiguity score: {p1}"
   k118: "Hard signals: {p1} (of which `banned:*` generates mandatory quantified questions)"
@@ -1085,6 +1089,9 @@ uiDescribe:
   kApplicabilityVisible: "This declaration must be visible to the user in the injected block, this receipt and docs/DESIGN.md — never silently."
   kSignRecorded: "Gate signature recorded: {p1} | signer {p2} | channel {p3}"
   kSignBasis: "Quoted basis (the user's own words / the chosen option label): {p1}"
+  kSignBasisRef: "  basis provenance: this signature is #{p1} (the quote was first used at #{p2}); {p3}"
+  kSignBasisStale: "the gate has been invalidated since — if the basis predates that invalidation, this signature should have been refused (verify)"
+  kSignBasisFresh: "no invalidation event for that gate since (the basis is still fresh)"
   kSignTurn: "Session turn reference: {p1}"
   kSignValid: "The signature is currently valid."
   kSignBasisUnchecked: "WARNING: this time the quote was **not cross-checked against the session history** — the host provided no session record, so only a non-empty quote was guaranteed; when strong audit matters, sign again in a session where the check is available (the ledger keeps basisChecked=unavailable for this signature)."
@@ -1178,7 +1185,7 @@ shapeEntity:
 uiIndex:
   kAdrSupersedeMissing: 'REJECTED: no ADR to supersede: `{p1}` — nothing was superseded and no new record was written (check the id, or use `action=record`)'
   kAdrIdBad: 'REJECTED: `id` has an invalid shape: `{p1}` — ADR ids look like `ADR-001` (three or more digits). **Nothing was written.**'
-  kAdrIdTaken: 'REJECTED: `id` is already taken: `{p1}` — the record exists (ADR ids must be unique in one ledger, otherwise another decision history would be **overwritten**). Use another id, or omit `id` to let the plugin number it. **Nothing was written.**'
+  kAdrIdTaken: 'ID `{p1}` is already taken — ADR ids must be unique in one ledger, otherwise you would overwrite somebody else decision history. Use another id, omit `id` to let the plugin number it, or **record a replacement with `action=supersede supersedes={p1}`** (the old record is marked `superseded` and LEAVES the `design.adr` criterion — that is the supported way to fix a malformed ADR). **Nothing was written this time.**'
   kIssueDisposeNeedId: 'REJECTED: `action=dispose` needs `id` (an issue id such as `REQ-ISSUE-001`; see `sdo_design action=issues`). **Nothing was written.**'
   kIssueDisposeNeedDisposition: 'REJECTED: `action=dispose` needs `disposition`: `risk` (converted into a risk) or `requirement` (settled back into requirements). **Nothing was written.**'
   kIssueDisposeMissing: 'REJECTED: issue `{p1}` not found (see `sdo_design action=issues`). **Nothing was written.**'
@@ -1208,6 +1215,7 @@ uiIndex:
   kReviewAdopted: "the whole review is now adoptable"
   kReviewNotAdoptedYet: "some findings are still unverified ⇒ not adopted yet"
   kReviewState: " | verified {p1}/{p2} {p3}"
+  kReviewNotExamined: " | findings NOT examined ({p1}) — the tamper check did not pass, so unexamined findings must not be reported as verified"
   kReviewAwaitingVerification: "ℹ️ {p1} finding(s): **a review is not adopted automatically** — this card's implementing session must verify each finding (reproduce it, or give counter-evidence) first: `sdo_task action=verify-review id=<card> review={p2} index=1 outcome=... proof=...`"
   kRecordBadStatus: 'REJECTED: invalid case-result status `{p1}` (allowed: pass / fail / skip) — it is NOT defaulted to pass (a real machine sent passed and it was silently written as pass)'
   kRunBadOutcome: 'REJECTED: the real-run outcome is invalid/missing: `{p1}` (pass or fail must be stated explicitly) — a forgotten verdict must not be recorded as passing'
@@ -1293,6 +1301,7 @@ uiIndex:
   k43: "Updated defect {p1} -> {p2}"
   k44: "Logging a defect requires `title` and `severity` (blocker/major/minor)."
   k45: "Logged defect {p1} [{p2}/{p3}] {p4}"
+  kAdvanceBaselinePending: "WARNING: passing the gate is NOT the same as re-freezing the requirements: these approved changes still lack a **re-baseline** event ({p1}) — run `sdo_requirement action=baseline` first, otherwise the next `claim` is refused by `change-not-digested` (finding out then costs a wasted round)."
   k46: "No review records yet. Use `sdo_review action=record` (reviewer != author)."
   k47: "- WARNING: independence violation: {p1}"
   k48: "Recording a review requires `taskId`, `reviewer` and `verdict`."
@@ -1306,6 +1315,12 @@ uiIndex:
   k56: "Waiving a gate requires `gate`."
   k57: "A waiver must leave a trace: provide both `reason` and `approver` (design section 7.5 / AC-003)."
   k58: "Waived gate \"{p1}\" (approver: {p2}, reason: {p3}).\n{p4}"
+  kWaiveRefused: "REFUSED: **no gate was waived** — {p1} is not part of the current process (so nothing was written to the project tailoring, no gate record was created, and existing signatures are untouched).\n{p2}"
+  kWaiveNoBasis: "WARNING: the approver of this waiver is **caller-asserted** and has no user-quote basis — the ledger records `approverChecked: none`, so an audit can tell. Pass `quote=<user own words>` to leave a basis."
+  kWaiveBasis: "  basis: {p1} (checked: {p2})"
+  kWaiveChecked_session: "matched against this session's user messages"
+  kWaiveChecked_unavailable: "session history unavailable, so NOT checked (recorded as unavailable)"
+  kWaiveQuoteMismatch: "REFUSED: that waiver `quote` cannot be found in this session user messages — an invented quote must not serve as a basis. Pass the real words, or omit `quote` (the receipt will state that no basis exists)."
   k59: "Unknown action: {p1} (available: {p2})"
   k60: "Judging a gate requires `gate` (for example G0 / G1 / G2 / G7)."
   k61: "Unknown action: {p1} (available: {p2})"
@@ -1389,7 +1404,7 @@ uiIndex:
   k137: "- {p1} [{p2}] {p3}{p4}"
   k138: "Board file writing is disabled (board.text=false); docs/BOARD.md was not written."
   k139: "{p1}\n{p2}"
-  planReviewed: "Recorded the plan review pass **within this session** (reviewed by {x}). You may continue with sdo_design create."
+  planReviewed: "Recorded the plan review pass **within this session** (reviewed by {p1}). You may continue with sdo_design create."
   planWaived: "Recorded a **plan review waiver** (with a trace; the reason and approver were written to the source of truth). You may continue with sdo_design create."
   planWaiveNoReason: "(no reason given)"
   planBlockedHead: "Entering the design phase is blocked: this host has no interactive plan review channel (plan mode is unavailable)."
@@ -1414,8 +1429,8 @@ uiIndex:
   kMethodShapeRejected: "REJECTED: method artifact {p1} was **NOT written**: these fields have a shape that would **lose their content** (they read back empty) — {p2}. Rewrite them in the declared shape and retry (same rule as `sdo_plan action=profile`: a failed validation rejects the whole call and writes nothing; otherwise C-29 reads that shape and goes red, and a signature has already been invalidated for nothing)."
   k3: "The session object for this agent is unavailable: only cockpit-session usage can be counted"
   k4: "WARNING: these questions are **for the user**: ask them one by one with the host's question tool (`ask_user_question`), at most 4 at a time;"
-  k5: "Entering the design phase is blocked: plan mode cannot be driven for this call (missing agent reference or service error)."
-  k6: "Entered plan mode ({p1}): explore and compare options first; do not start implementing."
+  k5: "only the current session is counted (no descendant sessions were enumerated; if subagents are running, the host gave no session tree)"
+  k6: "includes {p1} descendant session(s): their usage is counted in the total above"
   k7: "\n- Next: fill in scope and non-goals (`sdo_project action=update`), then run `sdo_feasibility action=assess`."
   m1: "Budget updated: {p1}"
   m2: "Consumption only (no total set)"
@@ -1432,8 +1447,11 @@ uiIndex:
   kApplicabilityNoBasis: "Signing the declaration requires a basis (the user's own words or the chosen option label)"
   kApplicabilityMissingToConfirm: "There is no applicability declaration to sign yet: draft one with sdo_requirement action=applicability"
   kSignNoQuote: "An in-session signature must quote the user's own words (quote); a signature without quoted text is invalid"
+  kSignBasisReplayed: "REFUSED: signing {p1} with that quote — it was already used (first at #{p2}) and the gate was invalidated at #{p3}. Re-using it would turn a past remark into a present endorsement of this content. Ask the user to state it again, or use `channel=question` (the tool asks directly)."
   kChannelInvalid: "`--channel` must be `statement` or `question`; got: {p1}"
   kAcceptanceModeInvalid: "`acceptanceMode` must be `append` or `replace`; got: {p1}"
+  kChangeAcceptanceAdd: "New acceptance criterion {p1}: Given {p2}; When {p3}; Then {p4}"
+  kChangeAcceptanceReplace: "Replace all acceptance criteria ({p1}): new ids {p2}"
   kSignQuoteMismatch: "The quote does not match: this passage does not appear in the user messages of this session, so it cannot serve as the basis of a signature (if the user did say it, copy that sentence verbatim; if the user picked a question option, record the chosen option with `channel=question`)."
   kSignNoChannel: "The human question channel is unavailable: state it in the session instead and give the user's own words (quote)"
   kSignDeclined: "The user did not choose to sign (chosen: {p1}); {p2} stays unsigned"
@@ -1648,6 +1666,7 @@ uiSignature:
   journalOnly: 'WARNING: however the journal holds {p1} gate/signed event(s) — the signature file was deleted or rewritten (this is NOT never-signed, it is an inconsistency, D8)'
   noEvent: 'WARNING: no gate/signed event in the journal matches this signature ({p1} {p2}) — it was hand-written or written around the tool (D8)'
   basisRequired: "A signature must carry quoted text: give the user's own words (channel=statement) or go through the human question channel (channel=question)"
+  basisReplayed: "REFUSED: that basis is stale — it was already used before this invalidation (first used at #{p2}, but {p1} was invalidated at #{p3}). A signature means the human endorses THIS content NOW: ask the user to state it again, or use `channel=question` (the tool asks the user directly; the quote never passes through the model)."
   missing: "Gate {p1} has no user signature yet"
   unquoted: "The signature for gate {p1} ({p2}) carries no quoted text and is therefore invalid"
   stale: "The signature for gate {p1} is stale: the source of truth changed after it was recorded (event {p3} at seq {p2})"
@@ -1981,6 +2000,7 @@ uiDesign:
   docDecision: "Decision"
   docRejected: "Rejected alternatives"
   docConsequences: "Consequences"
+  docMitigation: " (mitigation: {p1})"
   docMatrixReq: "Requirement"
   docMatrixDesign: "Design elements"
   docMatrixContract: "Contracts"
@@ -1990,6 +2010,8 @@ uiDesign:
   qAlreadyDecided: "Already decided: {p1} (this round only confirms it; to change it, say so and update that decision first)"
   docQuestionCost: "Cost of not asking"
   docQuestionSuggest: "Recommendation"
+  docQuestionSuggestDisclaimer: "WARNING: the suggestion above is the **plugin fallback** (`grill` does not check whether the model supplied a rationale) and **may contradict this project constraints** (e.g. it may still suggest pulling in OSS libraries for a project that declared zero external dependencies) — do NOT decide based on it; read the applicability declaration and requirement constraints first."
+  docQuestionNotApplicable: "This question may legitimately be answered **not applicable + a reason** (free text, as valid as picking an option; the criterion only requires the question to be answered) — do not force a choice for questions that do not apply."
   docQuestionOptions: "Options and their costs"
   docUnconfirmedTargets: "Key items awaiting confirmation"
   docDiffSeq: "Ledger event sequence at render time (the last event **before** rendering; the render itself is the next one)"
@@ -2000,6 +2022,9 @@ uiDesign:
   docOpenRisk: "Open design questions"
   # Tool receipts
   uiQuestionsHeader: "## Design questions awaiting your confirmation"
+  uiQuestionsSkipped: "SKIPPED: {p1} question(s) were **not asked** at all, per the applicability declaration / tailoring scale (they were not answered — they were never asked): {p2}"
+  uiQuestionsSkipped_view-not-declared: "the applicability declaration does not declare the relevant view"
+  uiQuestionsSkipped_trivial-core-only: "trivial scale asks only the core questions (form / error handling / tech debt)"
   uiNoQuestions: "No design questions are open."
   uiIssuesHeader: "## Design questions"
   uiIssuesEmpty: "The design question ledger is still empty: run `sdo_design action=grill` first."
@@ -2020,6 +2045,12 @@ uiDesign:
   uiConfirmOk: "{p1} confirmed (basis: {p2})"
   uiConfirmDefaultBasis: "Confirmed by the user in session"
   uiConfirmMissing: "Confirmation needs a `target` (element / contract / UI item id)"
+  uiConfirmNoBasis: "REFUSED: missing the **user authorizing words**. A design confirmation means the human endorses THIS design NOW, not a process step. Pass `basis=<user own words>` (the tool checks it really appears in this session user messages), or get an explicit statement via the question tool first. The tool own wording must NOT stand in for the user."
+  uiConfirmQuoteMismatch: "REFUSED: the basis `{p1}` cannot be found in this session user messages — an invented quote must not mint a user confirmation. Ask the user to say it, or pass their real words."
+  uiConfirmRefused: "REFUSED (no confirmation written) for {p1}: {p2}"
+  uiConfirmRefused_no-basis: "no user authorizing words were given"
+  uiConfirmRefused_replayed-basis: "this entry CONTENT has changed while the basis is the same old authorization — a changed design needs a fresh user statement (the old words endorsed the old content)"
+  uiConfirmUnchecked: "WARNING: this session history was unavailable, so the quote was NOT checked against the user messages (recorded as `unavailable`)."
   uiConfirmUnknown: "Not a valid key item: {p1} (see `sdo_design action=issues` and the UI view for the available items)"
   confirmGapsHeader: "## Key items that must be confirmed"
   confirmGapsMissing: "Must be confirmed but not yet confirmed ({p1}/{p2})"

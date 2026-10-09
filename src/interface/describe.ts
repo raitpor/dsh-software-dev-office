@@ -211,16 +211,32 @@ export function describeGate(evaluation: GateEvaluation): string {
   if (evaluation.status === 'failed') {
     lines.push(fmt('uiDescribe.k42', { p1: evaluation.criteria.filter((criterion) => !criterion.ok && criterion.na !== true).map((criterion) => criterion.id).join(', ') }))
   }
-  lines.push(fmt('uiDescribe.k43', { p1: evaluation.gate }))
+  // **R-29**：只有**真的落盘**了才印"判定记录已写入"（提前返回、不落盘的路径不许说假话）
+  if (evaluation.persisted !== false) lines.push(fmt('uiDescribe.k43', { p1: evaluation.gate }))
   return lines.join('\n')
 }
 
 /** `sdo_gate action=advance` 的回执。 */
-export function describeAdvance(result: { advanced: boolean; from: string; to?: string | undefined; blockedBy?: string | undefined; remedy?: string[] | undefined }): string {  if (result.advanced) return fmt('uiDescribe.k44', { p1: phaseText(result.from), p2: phaseText(result.to ?? ''), p3: result.to === undefined ? t('uiDescribe.k220') : '' })
-  if (result.blockedBy === undefined) return fmt('uiDescribe.k45', { p1: phaseText(result.from) })
+export function describeAdvance(result: {
+  advanced: boolean
+  from: string
+  to?: string | undefined
+  blockedBy?: string | undefined
+  remedy?: string[] | undefined
+  /** **R-26**：推进成功也要如实说的"还没重新基线"（判定通过 ≠ 已重新冻结） */
+  notes?: string[] | undefined
+}): string {
+  // **R-26**：notes 必须跟着回执走（真机：G2 判 ✅、阶段也推进了，可变更其实还没消化）
+  const notes = (result.notes ?? []).map((note) => fmt('uiDescribe.kAdvanceNote', { p1: note }))
+  if (result.advanced) {
+    const head = fmt('uiDescribe.k44', { p1: phaseText(result.from), p2: phaseText(result.to ?? ''), p3: result.to === undefined ? t('uiDescribe.k220') : '' })
+    return [head, ...notes].join('\n')
+  }
+  if (result.blockedBy === undefined) return [fmt('uiDescribe.k45', { p1: phaseText(result.from) }), ...notes].join('\n')
   const lines = [fmt('uiDescribe.k180', { p1: phaseText(result.from), p2: gateWithId(result.blockedBy) })]
   for (const remedy of result.remedy ?? []) lines.push(fmt('uiDescribe.k46', { p1: remedy }))
   lines.push(fmt('uiDescribe.k47', { p1: gateLabel(result.blockedBy) }))
+  lines.push(...notes)
   return lines.join('\n')
 }
 
@@ -266,6 +282,8 @@ export function describeChange(
     dimensionsFrom?: 'explicit' | 'carried' | 'none' | undefined
     /** 语义 A：批准触发的强制回退结果（未触发时不给） */
     rollback?: ChangeRollback | undefined
+    /** **D-21 / R-25**：变更单里 `replaceAcceptance` 造成的 AC 编号变动（交付矩阵追溯键会失配） */
+    acceptanceRenumbered?: { from: string; to: string }[] | undefined
   },
   shapeNotes: FieldShapeNote[] = [],
 ): string {
@@ -277,6 +295,15 @@ export function describeChange(
   lines.push(`  （${change.impact.note}）`)
   lines.push(fmt('uiDescribe.k57', { p1: change.decidedBy }))
   lines.push(result.applied ? t('uiDescribe.k221') : fmt('uiDescribe.k58', { p1: result.reason ?? change.decision }))
+  // **D-21 / R-25**：变更单换掉整份 AC ⇒ 编号会变。变更路径此前没有这条提示，
+  // 而它与 `update` 路径毁掉的是同一件东西（交付验收矩阵的追溯键）。
+  const renumberedChange = result.acceptanceRenumbered ?? []
+  if (renumberedChange.length > 0) {
+    lines.push(fmt('uiDescribe.kAcceptanceRenumbered', {
+      p1: String(renumberedChange.length),
+      p2: renumberedChange.map((item) => `${item.from}→${item.to}`).join(' '),
+    }))
+  }
   // §6.7：变更后评分是怎么算的必须说清 —— 「语义分被规则基线抹掉」正是先在这里暴露出来的
   if (result.applied && result.dimensionsFrom !== undefined) {
     lines.push(t(
@@ -737,7 +764,12 @@ export function describeManifest(manifest: DeliveryManifest, shapeNotes: FieldSh
 
 /** `sdo_requirement action=update` 的回执（**不能**复用 capture 的"已捕获"，那是误导）。 */
 export function describeRequirementUpdate(
-  result: { requirement: Requirement; flags: string[] },
+  result: {
+    requirement: Requirement
+    flags: string[]
+    /** **R-25**：`acceptanceMode=replace` 造成的验收标准编号变动（交付矩阵的追溯键会失配） */
+    acceptanceRenumbered?: { from: string; to: string }[] | undefined
+  },
   shapeNotes: FieldShapeNote[] = [],
 ): string {
   const { requirement, flags } = result
@@ -747,6 +779,15 @@ export function describeRequirementUpdate(
     + fmt('uiDescribe.k114', { p1: label('requirementStatus', String(requirement.status ?? 'draft')), p2: requirement.ambiguity.score }),
   )
   lines.push(fmt('uiDescribe.k115', { p1: requirement.acceptance.length }))
+  // **R-25**：编号变了必须当场说 —— AC 编号是交付验收矩阵的追溯键，静默改号会**作废已出的交付包**
+  // （真机：改三处 AC 文本 ⇒ 六条引用全部失配 ⇒ G7 判红，而回执全程没提编号）
+  const renumbered = result.acceptanceRenumbered ?? []
+  if (renumbered.length > 0) {
+    lines.push(fmt('uiDescribe.kAcceptanceRenumbered', {
+      p1: String(renumbered.length),
+      p2: renumbered.map((item) => `${item.from}→${item.to}`).join(' '),
+    }))
+  }
   if (flags.length > 0) lines.push(`- ⚠️ ${flags.join('；')}`)
   lines.push(...shapeNoteBlock(shapeNotes))
   return lines.join('\n')
@@ -982,6 +1023,11 @@ export function describeApplicability(declaration: DesignApplicability, problems
 }
 
 /** `sdo_gate action=sign` 的回执（带引用文本与来源通道）。 */
+/** 签字依据出处那一行的"本门最近一次失效"部分（R-27）。 */
+function basisInvalidationNote(state: SignatureState): string {
+  return state.status === 'stale' ? t('uiDescribe.kSignBasisStale') : t('uiDescribe.kSignBasisFresh')
+}
+
 export function describeSignature(signature: GateSignature, state: SignatureState): string {
   const lines = [
     fmt('uiDescribe.kSignRecorded', {
@@ -991,6 +1037,12 @@ export function describeSignature(signature: GateSignature, state: SignatureStat
     }),
     fmt('uiDescribe.kSignBasis', { p1: signature.basis }),
   ]
+  // **R-27**：依据的出处（首次用于哪条签字；本门最近一次失效是哪条）—— 审计者一眼可辨是否重放
+  lines.push(fmt('uiDescribe.kSignBasisRef', {
+    p1: String(signature.atSeq),
+    p2: String(signature.basisFirstSeq ?? signature.atSeq),
+    p3: basisInvalidationNote(state),
+  }))
   if (signature.turn !== undefined && textOf(signature.turn).trim() !== '') {
     lines.push(fmt('uiDescribe.kSignTurn', { p1: signature.turn }))
   }

@@ -349,6 +349,14 @@ export interface GateCriterionResult {
 /** 门禁判定结果（落 `.sdo/gates/<id>.json`）。 */
 export interface GateEvaluation {
   gate: string
+  /**
+   * **这份判定到底有没有写进 `.sdo/gates/`**（R-29，sdo-test-new 2026-10-09）。
+   *
+   * 回执末尾一直无条件印「判定记录已写入 `.sdo/gates/<id>.json`」—— 而"提前返回、不落盘"的路径
+   * （如对**当前流程不存在**的门禁执行 `waive`）根本没写，于是回执说假话。
+   * `undefined` = 未声明（旧路径按"写了"渲染，保持兼容）；`false` 才收起那一行。
+   */
+  persisted?: boolean | undefined
   phase: string
   status: GateStatus
   at: string
@@ -587,6 +595,14 @@ export interface DesignConfirmation {
    * ⇒ 真源里永久留下与事实相反的措辞。现在代盖必须自报 `basisSource=proxy`，事件里可辨。
    */
   basisSource?: 'user' | 'proxy' | undefined
+  /**
+   * **R-27 连带（sdo-test-new 2026-10-09）**：这句"用户原话"有没有真的和**本次会话的用户发言**核对过。
+   *
+   * 与门禁签字同口径（`session` = 核对过；`unavailable` = 宿主没给会话历史，如实记）。
+   * 病因：设计确认的 `basis` 过去**从不核对**，模型可以自编一句"用户原话"盖上"用户本人确认"的戳，
+   * 而 G3 的 `design.confirmed` 认它。
+   */
+  basisChecked?: 'session' | 'unavailable' | undefined
   by: string
   at: string
   /**
@@ -610,7 +626,15 @@ export interface Adr {
   context: string
   decision: string
   alternatives: { option: string; pros: string; cons: string }[]
-  consequences: string[]
+  /**
+   * **D-17（sdo-test-new 2026-10-09，major）**：后果是**记录项**（`item` + 可选 `mitigation`），
+   * 与 `alternatives` 同口径。
+   *
+   * 病因：写入端原样接受 `{item, mitigation}` 映射，读取端却用 `textListOf`（只认字符串列表）
+   * ⇒ **磁盘上有 3 条、读回来恒为 0 条**，而 `adrCompleteness`（waterfall/prototype 的 G3 判据
+   * `design.adr`）读的正是读路径 ⇒ 门禁判红且"重记也不行"（同 id 被守卫拒绝）。
+   */
+  consequences: { item: string; mitigation?: string | undefined }[]
   supersededBy?: string | undefined
   at: string
 }
@@ -1267,6 +1291,24 @@ export interface GateSignature {
   /** 会话轮次引用（`session:turn`，可空但建议填写） */
   turn?: string | undefined
   /**
+   * **R-27（sdo-test-new 2026-10-09，major）**：这条 `basis` **首次被用作本门签字依据**的事件序号。
+   *
+   * 为什么要有：`channel=statement` 只校验"这句话在会话里出现过"，于是**任何**出现过的用户短句都能在
+   * 任意后来的时刻、对任意门禁、反复铸成新签字（真机 `#1132` 就是复用 `#1099` 的那句「确认签字」）。
+   * 落上这个序号之后：① 同一句话在"本门失效之后再次被拿来签字"会被**拒绝**；
+   * ② 审计者一眼能看出「依据首次出现于 #1099，而本门在 #1128 失效过」。
+   */
+  basisFirstSeq?: number | undefined
+  /**
+   * **R-27（允许"用户又原样说了一次"）**：这条依据在**会话派生消息**里的位置（最后一条命中它的用户消息下标）。
+   *
+   * 与 `basisFirstSeq` 配合使用：同一句话若**又出现在更靠后的消息里**（下标更大）⇒ 那是用户**新的**表态，
+   * 允许再签一次；否则（同一处老话）在"本门已失效"之后复用 ⇒ 拒绝。宿主拿不到会话历史时留空 ⇒ 按保守口径拒绝。
+   */
+  basisAt?: number | undefined
+  /** **依据是本次当场取回的**（`channel=question`：工具自己问用户）⇒ 不参与"重放"判定 */
+  basisFresh?: boolean | undefined
+  /**
    * **R-7**：这次签字有没有真的和"本次会话的用户发言"核对过。
    *
    * `session` = 核对过（引用确实出自用户）；`unavailable` = 宿主没有提供会话历史
@@ -1337,6 +1379,8 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // 门禁与签字自身的产物
   'gate/result',
   'gate/signed',
+  // **R-28（sdo-test-new 2026-10-09）**：被拒的签字尝试（不是签字、也没改任何真源）
+  'gate/sign-rejected',
   // 阶段记账（设计内容不变；DESIGN.md 正文里已不含阶段，见 N-8/N-13）
   'phase/entered',
   'phase/exited',
@@ -1394,6 +1438,8 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // 变更控制单的**记录**本身（其内容变更由 `requirement/updated` 等背书）
   'change/requested',
   'change/decided',
+  // **D-22**：空变更（什么都没改）—— 它连真源都没碰，作废签字就是纯噪声
+  'change/noop',
   // **`change/rollback` 有意不在本表**（语义 A，2026-10-04）：它是"批准的需求变更把阶段拉回需求阶段"，
   // 标志设计必须**重签**（旧 G3 签字随需求变更失效正是本机制要的效果）；放进中性表会把它静默抹掉。
   // 可行性评估：G2 之前的真源，不属于架构签字背书的内容
@@ -1537,6 +1583,8 @@ export type SdoEventType =
   | 'risk/updated'
   | 'change/requested'
   | 'change/decided'
+  /** **D-22**：该 CR 无内容可消化（空变更）—— 判据据此跳过它，不给无内容可改的 CR 上锁 */
+  | 'change/noop'
   | 'change/rollback'
   | 'tailoring/updated'
   | 'design/updated'
@@ -1552,6 +1600,7 @@ export type SdoEventType =
   | 'design/applicability-updated'
   | 'design/applicability-confirmed'
   | 'gate/signed'
+  | 'gate/sign-rejected'
   | 'phase/rolled-back'
   | 'adr/recorded'
   | 'quality/recorded'

@@ -1306,9 +1306,22 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     if (current === undefined) return fail('iteration.increment', t('uiGates.k118'), t('uiGates.k119'))
     const tasks = iterationTasks(ctx.store, current.number)
     if (tasks.length === 0) return fail('iteration.increment', fmt('uiGates.k120', { p1: current.number }), t('uiGates.k121'))
-    const unfinished = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified').map((task) => task.id)
+    // **D-20（sdo-test-new 2026-10-09，major）**：`dropped` **不算未完成**。
+    // 旧实现只看"不是 done/verified"，于是**迭代内做过任何作废**都会让 C-80 永久判红，
+    // 而卡一旦创建就带死 `iteration` 号、`drop` 不清除它、也没有"移出迭代"的动作 ⇒ 工具面无出路
+    // （真机：6 张结构通道粒度产物被显式 drop，GI 直接卡死）。
+    // 口径与 `readyTasks`（`plan.js`：`!== 'dropped'`）和 waterfall 的 C-40（"另有 N 张已显式放弃"）对齐。
+    const unfinished = tasks
+      .filter((task) => task.status !== 'done' && task.status !== 'verified' && task.status !== 'dropped')
+      .map((task) => task.id)
     if (unfinished.length > 0) return fail('iteration.increment', fmt('uiGates.k122', { p1: unfinished.join(' ') }), t('uiGates.k123'))
-    return ok('iteration.increment', fmt('uiGates.k124', { p1: current.number, p2: tasks.length }))
+    const dropped = tasks.filter((task) => task.status === 'dropped').length
+    return ok(
+      'iteration.increment',
+      fmt('uiGates.k124', { p1: current.number, p2: tasks.length })
+      // **如实报告**：作废了多少张要看得见（C-40 的写法："另有 N 张已显式放弃，不计入完成率"）
+      + (dropped === 0 ? '' : fmt('uiGates.k124b', { p1: dropped })),
+    )
   },
 
   'iteration.dod': (ctx) => {

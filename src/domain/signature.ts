@@ -47,6 +47,16 @@ export function readSignaturesChecked(
     channel: textOf(item.channel) as GateSignature['channel'],
     at: textOf(item.at),
     atSeq: typeof item.atSeq === 'number' && Number.isFinite(item.atSeq) ? item.atSeq : Number(textOf(item.atSeq)) || 0,
+    // **R-28**：依据是本次当场取回的（question 通道）
+    ...(item.basisFresh === true ? { basisFresh: true } : {}),
+    // **R-27**：依据在会话里的位置（允许"用户又原样说了一次"）
+    ...(typeof item.basisAt === 'number' && Number.isFinite(item.basisAt) ? { basisAt: item.basisAt } : {}),
+    // **R-27**：依据的首次使用序号（读回时保留，审计与重放判定都要用）
+    ...(typeof item.basisFirstSeq === 'number' && Number.isFinite(item.basisFirstSeq)
+      ? { basisFirstSeq: item.basisFirstSeq }
+      : textOf(item.basisFirstSeq) === ''
+        ? {}
+        : { basisFirstSeq: Number(textOf(item.basisFirstSeq)) || 0 }),
     ...(item.turn === undefined ? {} : { turn: textOf(item.turn) }),
   }))
   return { signatures, notes }
@@ -86,6 +96,58 @@ export function latestSignature(store: SdoStore, gate: string): GateSignature | 
     .at(-1)
 }
 
+/**
+ * **本门最近一次"失效事件"的序号**（R-27）：没有失效事件 ⇒ `undefined`。
+ *
+ * 失效判据复用签字状态那一侧的同一条函数（`isSignatureInvalidatingEvent`）—— 两处口径必须一致，
+ * 否则会出现"状态判 stale、重放判定却当它新鲜"的分叉。
+ */
+export function lastInvalidationSeq(journal: Journal, gate: string): number | undefined {
+  const events = journal.read().events.filter((event) => isSignatureInvalidatingEvent(gate, event.type, event.data))
+  return events.length === 0 ? undefined : events[events.length - 1]?.seq
+}
+
+/**
+ * **依据重放判定**（R-27，major）：同一句用户原话**只代表一次表态**。
+ *
+ * 规则（机械、只用台账 + journal）：这句话此前被用作**本门**签字的依据（首次使用序号 `usedAtSeq`），
+ * 而**此后本门又失效过**（`lastInvalidation > usedAtSeq`）⇒ 这次再拿它签字就是**重放**，必须拒绝。
+ * 反过来说：本门签完之后没再失效过（用户同一句话仍然"当前有效"）⇒ 允许原样再签一次。
+ *
+ * 为什么不直接比对"用户消息的时间"：插件拿到的只有宿主派生的消息文本（没有与 journal 可比的序号），
+ * 所以这里用"**这句话上一次被用来签字的事件序号**"作为它出现时刻的可核对代理 —— 它只会**偏晚**
+ * （用户更早说的），于是判定偏**保守**（宁可要求用户重新表态）。
+ */
+export function basisReplay(
+  store: SdoStore,
+  journal: Journal,
+  gate: string,
+  basis: string,
+  basisAt?: number | undefined,
+): { replayed: boolean; usedAtSeq?: number | undefined; lastInvalidation?: number | undefined; sameOccurrence?: boolean | undefined } {
+  const wanted = basis.trim().replace(/\s+/gu, ' ')
+  const uses = listSignatures(store)
+    .filter((signature) => gateKeyOf(signature.gate) === gateKeyOf(gate))
+    .filter((signature) => signature.basis.trim().replace(/\s+/gu, ' ') === wanted)
+    .sort((a, b) => a.atSeq - b.atSeq)
+  const first = uses[0]
+  const lastInvalidation = lastInvalidationSeq(journal, gate)
+  if (first === undefined) {
+    return { replayed: false, ...(lastInvalidation === undefined ? {} : { lastInvalidation }) }
+  }
+  const stale = lastInvalidation !== undefined && first.atSeq < lastInvalidation
+  // **R-27（反向放宽）**：同一句话**又出现在更靠后的用户消息里** ⇒ 那是用户**新的**表态，不是重放。
+  // 拿不到任何位置证据（宿主没有会话历史 / 直接调 API）时**按拒绝处理** —— 这是保守方向：
+  // 宁可让用户重新说一次，也不许把"曾经说过一句话"当成"此刻为这份内容背书"。
+  const freshOccurrence = basisAt !== undefined && first.basisAt !== undefined && basisAt > first.basisAt
+  return {
+    replayed: stale && !freshOccurrence,
+    usedAtSeq: first.atSeq,
+    ...(basisAt === undefined ? {} : { sameOccurrence: !freshOccurrence }),
+    ...(lastInvalidation === undefined ? {} : { lastInvalidation }),
+  }
+}
+
 export interface RecordSignatureInput {
   gate: string
   by: string
@@ -95,6 +157,16 @@ export interface RecordSignatureInput {
   turn?: string | undefined
   /** R-7：引用是否与本次会话的用户发言核对过（拿不到会话历史时如实记 `unavailable`） */
   basisChecked?: 'session' | 'unavailable' | undefined
+  /** **R-27**：这条依据在会话派生消息里的位置（最后一条命中它的用户消息下标） */
+  basisAt?: number | undefined
+  /**
+   * **依据是本次调用当场取回的**（`channel=question`：工具自己问用户、原话不经过模型）。
+   *
+   * 为什么必须区分（R-27 的回归）：`channel=question` 的"原话"是**固定的选项标签**
+   * （如「确认签字」），逐字重复是**设计使然**；若不区分，同一个门禁第二次点选会被当成"复读旧话"拒绝
+   * —— 而那恰是 R-27 报告推荐的出路，等于把最安全的通道堵死。
+   */
+  basisFresh?: boolean | undefined
 }
 
 /**
@@ -108,12 +180,35 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
   if (basis === '') {
     throw new Error(t('uiSignature.basisRequired'))
   }
+  // **R-27**：依据不许重放 —— 强制在**落盘这一步**（工具层另有更友好的拒绝回执，
+  // 但任何直接调用 `recordSignature` 的路径也必须被拦住，否则"合规靠自律"）。
+  // `basisFresh=true`（question 通道：本次当场问的用户）**不参与**重放判定。
+  const replay = input.basisFresh === true
+    ? { replayed: false, usedAtSeq: undefined, lastInvalidation: undefined }
+    : basisReplay(store, journal, input.gate, basis, input.basisAt)
+  if (replay.replayed) {
+    throw new Error(fmt('uiSignature.basisReplayed', {
+      p1: input.gate,
+      p2: String(replay.usedAtSeq ?? '?'),
+      p3: String(replay.lastInvalidation ?? '?'),
+    }))
+  }
   const by = input.by.trim() === '' ? 'human' : input.by.trim()
+  // 依据的**首次使用序号**（本条是首次使用时等于本条自己的 seq，稍后回填）
+  const prior = listSignatures(store)
+    .filter((signature) => gateKeyOf(signature.gate) === gateKeyOf(input.gate))
+    .filter((signature) => signature.basis.trim().replace(/\s+/gu, ' ') === basis.replace(/\s+/gu, ' '))
+    .sort((a, b) => a.atSeq - b.atSeq)[0]
   const event = journal.append('gate/signed', {
     gate: input.gate,
     by,
     basis,
     channel: input.channel,
+    // **R-27**：依据的出处要进真源（审计一眼可见"这句话最早用在哪儿"）
+    ...(prior === undefined ? {} : { basisFirstSeq: prior.atSeq }),
+    ...(input.basisAt === undefined ? {} : { basisAt: input.basisAt }),
+    // **R-28**：依据是本次当场取回的（question 通道）⇒ 进真源，审计能看出"为什么它不算复读"
+    ...(input.basisFresh === true ? { basisFresh: true } : {}),
     ...(input.turn === undefined ? {} : { turn: input.turn }),
     // R-7：核对口径也要进事件（审计要能看出"这一次到底核没过"）
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),
@@ -124,6 +219,10 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     basis,
     channel: input.channel,
     at: event.at,
+    // 首次使用 ⇒ 记自己的序号（审计读作"这句话出现于本条"）
+    basisFirstSeq: prior?.atSeq ?? event.seq,
+    ...(input.basisAt === undefined ? {} : { basisAt: input.basisAt }),
+    ...(input.basisFresh === true ? { basisFresh: true } : {}),
     ...(input.turn === undefined ? {} : { turn: input.turn }),
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),
     atSeq: event.seq,

@@ -281,14 +281,7 @@ export function updateRequirement(
   const model = loadScoring()
 
   const open = input.openQuestions ?? current.ambiguity.open
-  // N-2：`update` 的显式 AC 编号同样必须全局唯一（自动发号那条路由调用方用
-  // `makeAcceptanceIds` 保证）。检查时把**本需求已有的号**排除，否则"重传自己已有的号"会误报。
-  const replacement = input.replaceAcceptance
-  const own = new Set(current.acceptance.map((ac) => ac.id))
-  assertAcceptanceIdsUnique(
-    store,
-    (replacement ?? input.addAcceptance ?? []).filter((ac) => !(replacement === undefined && own.has(ac.id))),
-  )
+  const acceptance = mergeAcceptance(store, current.acceptance, input)
   // **P-12**：内容被改过的需求必须**退出"已冻结"状态**（`changed`）——
   // 否则它的 `status` 仍是 `baselined`，而下一次 `baseline` 会因"已冻结"把它整条跳过：
   // `baseline.{at,by,evidence}` 停在**上一个内容版本**上（审计读到的冻结时间/签字人与真实版本不符），
@@ -297,8 +290,13 @@ export function updateRequirement(
   // （否则每次答题都会把需求打回 `changed`）。`change` 路径本来就会写 `changed`，这里补齐 `update` 这条。
   const CONTENT_FIELDS = ['title', 'kind', 'statement', 'rationale', 'priority', 'source'] as const
   const patch = input.patch ?? {}
+  // **D-21**：`acceptanceMode=replace` 换掉的是**内容**（真源里的验收标准），不是评分投影 ——
+  // 旧实现只认 `addAcceptance` ⇒ "只换 AC"能改掉内容却把需求留在 `baselined`（冻结时间/签字人
+  // 停在旧版本上，且变更控制被绕过：改了 AC 却没有任何 CR）。两条路径同口径。
   const contentTouched =
-    CONTENT_FIELDS.some((field) => field in patch) || (input.addAcceptance ?? []).length > 0
+    CONTENT_FIELDS.some((field) => field in patch)
+    || (input.addAcceptance ?? []).length > 0
+    || (input.replaceAcceptance ?? []).length > 0
   // **R-8**：内容判定**优先于** `patch.status`（旧写法把 `patch.status` 放在前面 ⇒
   // "改 statement + patch.status='baselined'" 能让内容变了却仍标已冻结，冻结事实随之停在旧版本上）。
   // `status` 仍留在 `UpdateInput.patch` 的类型里（内部调用方要用），但内容变更不可被它绕过。
@@ -316,7 +314,7 @@ export function updateRequirement(
     ...patch,
     status,
     version,
-    acceptance: replacement ?? [...current.acceptance, ...(input.addAcceptance ?? [])],
+    acceptance,
     ambiguity: { ...current.ambiguity, open },
     updatedAt: new Date().toISOString(),
   }
@@ -480,6 +478,49 @@ export function assertAcceptanceIdsUnique(store: SdoStore, criteria: AcceptanceC
     `验收标准编号重复：${detail}。AC 编号是交付验收矩阵的追溯键，全局必须唯一 —— `
     + '请改用其它编号，或不传 id 让插件自动发号。',
   )
+}
+
+/**
+ * **AC 合并的唯一实现**（D-21）—— `update` 与变更控制（`change`）共用这一份口径。
+ *
+ * 两份实现漂移过一次的代价是"同一份 AC 从两个入口进去得到两种结果"；这里明确：
+ *   · `replaceAcceptance` 给了就是**整份替换**（`addAcceptance` 被忽略，与 R-2 同语义）；
+ *   · 查重时排除**本需求已有的号**（追加模式下"重传自己已有的号"不算冲突），其余按全局唯一查（N-2）。
+ * 抛错即拒绝（可读失败）：调用方必须在**写任何东西之前**调用它。
+ */
+export function mergeAcceptance(
+  store: SdoStore,
+  current: AcceptanceCriterion[],
+  input: { addAcceptance?: AcceptanceCriterion[] | undefined; replaceAcceptance?: AcceptanceCriterion[] | undefined },
+): AcceptanceCriterion[] {
+  const replacement = input.replaceAcceptance
+  const own = new Set(current.map((ac) => ac.id))
+  assertAcceptanceIdsUnique(
+    store,
+    (replacement ?? input.addAcceptance ?? []).filter((ac) => !(replacement === undefined && own.has(ac.id))),
+  )
+  return replacement ?? [...current, ...(input.addAcceptance ?? [])]
+}
+
+/**
+ * **两份验收标准是不是同一份**（D-22：判"变更请求到底改了没有"）。
+ *
+ * 口径：逐条比 `id`/`given`/`when`/`then`，**顺序也算**（顺序是台账里的呈现，换了顺序就该算内容变更）；
+ * 只比这四项 —— 其它字段（`at` 之类）不是内容。用来把"批准一条什么都没改的 CR"挡在副作用之外：
+ * 变更控制只该"改多少、控多少"，无差异却回退阶段/作废门禁/锁死认领，是把变更控制的代价与收益倒挂。
+ */
+export function sameAcceptance(a: readonly AcceptanceCriterion[], b: readonly AcceptanceCriterion[]): boolean {
+  if (a.length !== b.length) return false
+  return a.every((item, index) => {
+    const other = b[index]
+    if (other === undefined) return false
+    return (
+      textOf(item.id) === textOf(other.id)
+      && textOf(item.given) === textOf(other.given)
+      && textOf(item.when) === textOf(other.when)
+      && textOf(item.then) === textOf(other.then)
+    )
+  })
 }
 
 /** 便于测试与展示：把评分压成一行。 */

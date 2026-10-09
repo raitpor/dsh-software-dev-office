@@ -312,11 +312,55 @@ export function decidedByAdr(adrs: Adr[], key: string): string | undefined {
  * `askDesignQuestions()` 提出。设计阶段若账本里还没有它，`design.no-open-questions`
  * 会因"一条设计问题都没有"判红，模型据此回去补问 —— 不需要这里再补一道重复的题。
  */
+/**
+ * **D-19 ①（sdo-test-new 2026-10-09，用户裁定"按 1 做"）**：设计问卷的**适用性裁剪表**。
+ *
+ * 病因（真机）：`grill` 一次抛 13 问，其中 10 问对一个"读两个夹具、打一份计数"的 trivial 增量毫无关系；
+ * 而裁剪档只省掉了 G1/G4/G6 三道门，13 次问答原样留下 —— 省的那头小、留的这头大。
+ *
+ * 口径（**不新增真源**）：
+ *   · `view` = 该问题归属的视图（与 `design:<view>` 的 target 后缀一致）；`view === undefined` 表示
+ *     "与视图无关、总是要问"（形态 / 外部依赖 / 错误口径 / 技术债）；
+ *   · 有**适用性声明**时：只问"总是要问的" + `viewsPresent` 里声明过的视图；
+ *     未声明相关视图的问题**跳过**，并在回执里点名"跳过了哪些、因为没声明哪个视图"；
+ *   · `trivial` 档再收一层：只留 `core: true` 的那几问（形态 / 错误口径 / 技术债）。
+ *
+ * ⚠️ **表必须与产出的题双向对齐**（`test/m83.test.ts` 的 M83-10 机械核对）：本表登记的是
+ * "这道题什么时候问"；key 写错会让这道题**悄悄落到"表里没有 ⇒ 照旧要问"的兜底分支上** ——
+ * 首次实现就把技术债登记成 `tech-debt`，而产出用的 key 是 `techdebt`，那一行于是成了**死条目**
+ * （行为碰巧一样，表却在说谎；日后想给它挂视图就会静默失效）。
+ */
+export const GRILL_GAP_SCOPE: Record<string, { view?: ViewKind | undefined; core: boolean }> = {
+  form: { core: true },
+  deployment: { view: 'deployment', core: false },
+  external: { core: true },
+  store: { view: 'data', core: false },
+  consistency: { view: 'data', core: false },
+  retention: { view: 'data', core: false },
+  concurrency: { view: 'runtime', core: false },
+  performance: { view: 'runtime', core: false },
+  failure: { view: 'runtime', core: false },
+  errors: { core: true },
+  observability: { view: 'deployment', core: false },
+  evolution: { view: 'component', core: false },
+  // 实际产出的 key 就是 `techdebt`（无连字符，见下方 `gap('techdebt', …)`）
+  techdebt: { core: true },
+  // 界面五问：问不问由 `uiDecision().hasUi` 决定（判定为假时**一题都不生成**），与适用性声明无关
+  // ⇒ 在"要问"的前提下它们总是要问，故 core。
+  'ui-style': { core: true },
+  'ui-columns': { core: true },
+  'ui-layout': { core: true },
+  'ui-breakpoint': { core: true },
+  'ui-a11y': { core: true },
+}
+
 export function designGaps(
   store: SdoStore,
   project: SdoProject | undefined,
   requirements: Requirement[],
   recommendation?: { method?: string | undefined; rationale?: string | undefined } | undefined,
+  /** **D-19 ①**：把"按适用性/裁剪档跳过了哪些问题、为什么"交回回执（不静默） */
+  skippedOut?: { key: string; reason: 'view-not-declared' | 'trivial-core-only' }[] | undefined,
 ): DesignGap[] {
   void recommendation
   const decision = uiDecision(project, requirements)
@@ -611,7 +655,30 @@ export function designGaps(
   // ④ F-5：与**既有 ADR** 比对 —— 已定案的题仍然要问（用户可能想改），但降级为"仅确认"：
   // 题面与回执都标出「已有决策：ADR-xxx」，不再假装这是一个新决策。
   const adrs = listAdrs(store)
-  return gaps
+  // **D-19 ①**：按**适用性声明 + 裁剪档**收窄问卷（不新增真源：声明本来就存在 `design/applicability.yml`）
+  const declaration = readApplicability(store)
+  const declared = new Set<string>(declaration?.viewsPresent ?? [])
+  const trivial = project?.tailoring?.scale === 'trivial'
+  const kept: DesignGap[] = []
+  for (const item of gaps) {
+    const scope = GRILL_GAP_SCOPE[item.key]
+    // 表里没有的题（新增题、方法题等）**照旧要问** —— 宁可多问，不许因为"忘了登记"而静默漏问
+    if (scope === undefined) {
+      kept.push(item)
+      continue
+    }
+    if (trivial && !scope.core) {
+      skippedOut?.push({ key: item.key, reason: 'trivial-core-only' })
+      continue
+    }
+    // 有声明时：未声明相关视图 ⇒ 跳过（没有声明就照旧全问 —— 声明缺失不该变成"问卷消失"）
+    if (declaration !== undefined && scope.view !== undefined && !declared.has(scope.view)) {
+      skippedOut?.push({ key: item.key, reason: 'view-not-declared' })
+      continue
+    }
+    kept.push(item)
+  }
+  return kept
     .filter((item) => !asked.has(item.key))
     .map((item) => {
       const decidedBy = decidedByAdr(adrs, item.key)
@@ -643,6 +710,12 @@ export interface GrillDesignResult {
   added: string[]
   /** 上一轮未决、这一轮仍未决 */
   stillOpen: string[]
+  /**
+   * **D-19 ①（sdo-test-new 2026-10-09）**：被**适用性声明 / 裁剪档**跳过的问题与原因
+   * （`view-not-declared` = 没声明相关视图；`trivial-core-only` = trivial 档只问核心几问）。
+   * 跳过必须**可见** —— 否则"问卷没问"与"问卷问了但没人答"在回执上分不出来。
+   */
+  skipped: { key: string; reason: 'view-not-declared' | 'trivial-core-only' }[]
   /** 这一轮里由你回答掉的 */
   resolved: string[]
   ui: UiDecision
@@ -728,7 +801,8 @@ export function grillDesign(
 ): GrillDesignResult {
   const before = listDesignQuestions(store)
   const openBefore = new Set(before.filter((question) => isOpen(question)).map((question) => question.id))
-  const gaps = designGaps(store, project, requirements, input.recommendation)
+  const skipped: { key: string; reason: 'view-not-declared' | 'trivial-core-only' }[] = []
+  const gaps = designGaps(store, project, requirements, input.recommendation, skipped)
   const limited = input.limit === undefined ? gaps : gaps.slice(0, Math.max(1, input.limit))
 
   // **§7.2 兼容**：方法论选择题本应在需求阶段提出；若还没有，这里补提（不重复造题）。
@@ -803,6 +877,8 @@ export function grillDesign(
     open,
     answered: after.filter((question) => !isOpen(question)),
     added,
+    // **D-19 ①**：跳过的问题与原因（回执要点名；空数组表示没跳过）
+    skipped,
     stillOpen: open.map((question) => question.id),
     resolved,
     ui: uiDecision(project, requirements),
@@ -1132,18 +1208,32 @@ export function confirmDesign(
   basis: string,
   by: string,
   basisSource: 'user' | 'proxy' = 'user',
-): DesignConfirmation | undefined {
+  /** **R-27 连带（sdo-test-new 2026-10-09）**：调用方对这句"用户原话"的核对结果 */
+  basisChecked?: 'session' | 'unavailable' | undefined,
+): { confirmation: DesignConfirmation } | { refused: 'no-basis' | 'replayed-basis' | 'unresolvable' } {
   const existing = listConfirmations(store)
   // F-19：确认戳**绑定被确认内容的指纹**。目标不可解析 → **拒绝**（绝不凭空背书）。
   const contentHash = fingerprintOf(confirmationSource(store), target)
-  if (contentHash === undefined) return undefined
+  if (contentHash === undefined) return { refused: 'unresolvable' }
+  const text = basis.trim()
+  // **R-27 连带 ①：没有依据就不许盖"用户确认"戳**。旧实现的默认文案是**插件自己写的**
+  // 「用户在会话中确认」—— 模型空手调用就能在真源里留下一条"用户本人确认过"，而 G3 的
+  // `design.confirmed` 认它（真机实测：`basis: 用户在会话中确认, by: human, basisSource: user`）。
+  if (text === '') return { refused: 'no-basis' }
+  // **R-27 连带 ③：同一句旧授权不许在**内容已变**之后继续用** —— 戳绑内容只保证"内容没变时仍有效"，
+  // 不保证"内容变了之后用户还认账"。同一 target 上一次确认用的是同一句话、而内容指纹不同 ⇒ 拒绝。
+  const previous = existing.find((item) => item.target === target)
+  if (previous !== undefined && previous.basis.trim() === text && (previous.contentHash ?? '') !== contentHash) {
+    return { refused: 'replayed-basis' }
+  }
   const record: DesignConfirmation = {
     target,
-    basis,
+    basis: text,
     by,
     basisSource,
     at: new Date().toISOString(),
     contentHash,
+    ...(basisChecked === undefined ? {} : { basisChecked }),
   }
   const next = existing.some((item) => item.target === target)
     ? existing.map((item) => (item.target === target ? record : item))
@@ -1151,13 +1241,15 @@ export function confirmDesign(
   store.writeYaml(['design', 'confirmed.yml'], { confirmations: next })
   journal.append('design/confirmed', {
     target,
-    basis,
+    basis: text,
     by,
     // **SDO-48**：`basisSource=proxy` 时这一戳是**代盖**，审计读 journal 也能分辨（此前只写死了用户口径）
     basisSource,
+    // **R-27 连带**：这次"用户原话"有没有真的和会话里的用户发言核对过（与门禁签字同口径）
+    ...(basisChecked === undefined ? {} : { basisChecked }),
     contentHash: record.contentHash ?? '',
   })
-  return record
+  return { confirmation: record }
 }
 
 /**
@@ -2118,7 +2210,16 @@ export function renderDesignDoc(input: {
     lines.push(`- ${adr.id}｜${adr.title}（${adr.status}）`)
     lines.push(`  - ${t('uiDesign.docDecision')}：${adr.decision === '' ? t('uiDesign.docEmpty') : adr.decision}`)
     lines.push(`  - ${t('uiDesign.docRejected')}：${adr.alternatives.length === 0 ? t('uiDesign.docEmpty') : adr.alternatives.map((item) => item.option).join('；')}`)
-    lines.push(`  - ${t('uiDesign.docConsequences')}：${adr.consequences.length === 0 ? t('uiDesign.docEmpty') : adr.consequences.join('；')}`)
+    // **D-17**：后果是记录项（`item` + 可选 `mitigation`）—— 渲染时把缓解也带上，别丢字段
+    lines.push(
+      `  - ${t('uiDesign.docConsequences')}：${
+        adr.consequences.length === 0
+          ? t('uiDesign.docEmpty')
+          : adr.consequences
+              .map((row) => (row.mitigation === undefined ? row.item : `${row.item}${fmt('uiDesign.docMitigation', { p1: row.mitigation })}`))
+              .join('；')
+      }`,
+    )
   }
 
   // ⑤ 界面方案：判假时**不省略、不留空**

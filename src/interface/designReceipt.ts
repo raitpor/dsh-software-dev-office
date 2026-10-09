@@ -79,7 +79,14 @@ export function renderDesignQuestions(questions: GrillQuestion[]): string {
     lines.push(`  - ${t('uiDesign.docQuestionWhy')}：${question.why}`)
     lines.push(`  - ${t('uiDesign.docQuestionCost')}：${question.consequenceIfUnasked}`)
     lines.push(`  - ${t('uiDesign.docQuestionSuggest')}：${question.defaultRecommendation}`)
+    // **D-19 ③（sdo-test-new 2026-10-09）**：这句建议是**插件的兜底口径**，可能与本项目约束相反
+    // （真机：项目硬约束"零外部依赖"，而这一行建议"复用成熟组件/引入 OSS 库"）。
+    // `sdo_requirement action=design-questions` 早就带同款免责，`grill` 却不带 ⇒ 读者会把兜底当权威。
+    lines.push(`  - ${t('uiDesign.docQuestionSuggestDisclaimer')}`)
     lines.push(`  - ${t('uiDesign.docQuestionOptions')}：${question.options.map((option) => `${option.label}（${option.cost}）`).join('；')}`)
+    // **D-19 ②**："不适用 + 理由"是**合法答法**（自由文本），过去只有选项表、没有这句话 ⇒
+    // 用户以为必须从选项里挑一个（真机：13 问里 10 问只能这么答）
+    lines.push(`  - ${t('uiDesign.docQuestionNotApplicable')}`)
   }
   return lines.join('\n')
 }
@@ -382,9 +389,19 @@ export function designInteraction(office: SoftwareDevOffice, call: OfficeCall, a
     diff.push(`- ${t('uiDesign.uiDiffResolved')}：${result.resolved.length === 0 ? t('uiDesign.uiDiffNone') : result.resolved.join(' ')}`)
     diff.push(`- ${t('uiDesign.uiDiffStillOpen')}：${result.stillOpen.length === 0 ? t('uiDesign.uiDiffNone') : result.stillOpen.join(' ')}`)
     diff.push(`- ${t('uiDesign.uiDiffRecheck')}：${gaps.missing.length === 0 ? t('uiDesign.uiDiffNone') : gaps.missing.join(' ')}`)
+    // **D-19 ①**：按适用性/裁剪档跳过的问卷要如实点名（否则"没问"与"问了没答"分不出来）
+    const skipped = result.skipped.length === 0
+      ? ''
+      : fmt('uiDesign.uiQuestionsSkipped', {
+          p1: String(result.skipped.length),
+          p2: result.skipped
+            .map((item) => `${item.key}（${t(`uiDesign.uiQuestionsSkipped_${item.reason}`)}）`)
+            .join(' '),
+        })
     return joinReceiptParts([
       renderDesignDraft(office, call),
       `${t('uiDesign.uiQuestionsHeader')}\n${renderDesignQuestions(result.open)}`,
+      skipped,
       diff.join('\n'),
       // F-21：手写 YAML 的形状提示（视图元素 / 契约 / 问题）在交互回执里同样可见
       shapeNoteBlock(office.shapeNotes(call)).join('\n'),
@@ -449,13 +466,29 @@ export function designInteraction(office: SoftwareDevOffice, call: OfficeCall, a
     // **SDO-25（2026-10-05 真机）**：调用方写 `basis=` 时旧实现**只读 `note`/`reason`** ⇒ 用户授权的
     // 原话被丢弃、事件里留下工具自己的「用户在会话中确认」（历史不可改写，回执与真源不符）。
     // 现在三者的优先级：`basis`（显式授权原话）> `note` > `reason` > 默认文案。
-    const basis = args.basis ?? args.note ?? args.reason ?? t('uiDesign.uiConfirmDefaultBasis')
+    // **R-27 连带（sdo-test-new 2026-10-09）**：**没有依据就不许盖"用户确认"戳**。
+    // 旧实现在这里填的是**插件自己的**默认文案「用户在会话中确认」—— 模型空手调用就能在真源里
+    // 留下一条"用户本人确认过"，而 G3 的 `design.confirmed` 认它（真机实测过）。
+    const basis = (args.basis ?? args.note ?? args.reason ?? '').trim()
+    if (basis === '') return t('uiDesign.uiConfirmNoBasis')
     // **SDO-48**：代盖必须自报（`basisSource=proxy`）；否则真源里会留下「用户在会话中确认」这种与事实相反的措辞
     const basisSource = args.basisSource === 'proxy' ? ('proxy' as const) : ('user' as const)
-    const confirmed = office.confirmDesign(call, target, basis, args.by ?? 'human', basisSource)
+    // **R-27 连带 ②**：自称"用户本人确认"（或代盖）都要**核对会话里的用户发言**（与门禁签字同口径：
+    // 宿主拿不到会话历史时如实记 `unavailable`，拿得到而找不到这句话 ⇒ 拒绝）。
+    const quoteCheck = office.checkUserQuote(call, basis)
+    if (!quoteCheck.ok) return fmt('uiDesign.uiConfirmQuoteMismatch', { p1: basis })
+    const confirmed = office.confirmDesign(call, target, basis, args.by ?? 'human', basisSource, quoteCheck.basisChecked)
     // Y-1：目标在当前真源里解析不出内容 → **拒绝写入**，如实报告（不再谎报"已确认"）
-    if (confirmed === undefined) return fmt('uiDesign.uiConfirmUnresolvable', { p1: target })
-    const ok = fmt('uiDesign.uiConfirmOk', { p1: target, p2: basis }) + (basisSource === 'proxy' ? '\n' + t('uiDesign.uiConfirmProxy') : '')
+    if ('refused' in confirmed) {
+      return confirmed.refused === 'unresolvable'
+        ? fmt('uiDesign.uiConfirmUnresolvable', { p1: target })
+        : fmt('uiDesign.uiConfirmRefused', { p1: target, p2: t(`uiDesign.uiConfirmRefused_${confirmed.refused}`) })
+    }
+    const ok =
+      fmt('uiDesign.uiConfirmOk', { p1: target, p2: basis })
+      + (basisSource === 'proxy' ? '\n' + t('uiDesign.uiConfirmProxy') : '')
+      // **R-27 连带**：核对口径也要出现在回执里（"没核对过"不能与"核对过"长得一样）
+      + (quoteCheck.basisChecked === 'unavailable' ? '\n' + t('uiDesign.uiConfirmUnchecked') : '')
     // F-19：确认一条之后，仍**因内容变更**而失效的条目要接着列出来 ——
     // 只报"这条确认好了"会让用户以为整批都干净了。
     const remaining = renderInvalidatedConfirmations(office, call)

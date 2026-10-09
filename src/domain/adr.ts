@@ -5,7 +5,8 @@
  * 一条 ADR 被取代时写 `supersededBy`，原记录不改（决策史不可篡改）。
  */
 import { nextId } from '../infra/ids.js'
-import { pushShapeNote, recordListOf, textListOf, textOf, typeNameOf } from '../infra/scalar.js'
+import { pushShapeNote, recordListOf, textOf, typeNameOf } from '../infra/scalar.js'
+import type { ContainerRead } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
@@ -37,7 +38,29 @@ export function readAdrChecked(store: SdoStore, id: string): { adr: Adr | undefi
   const record = raw as Record<string, unknown>
   const alternatives = recordListOf<Adr['alternatives'][number]>(record.alternatives, (text) => ({ option: text, pros: '', cons: '' }))
   pushShapeNote(notes, 'adr', id, 'alternatives', alternatives.issue)
-  const consequences = textListOf(record.consequences)
+  // **D-17**：与 `alternatives` 同口径，但**两种元素形态都合法**：
+  //   · 字符串元素（手写 YAML 的常见写法：`- 成本上升`）；
+  //   · 映射元素（`{item, mitigation}`，写入端归一后的形状）。
+  // 用 `recordListOf` 会把手写字符串列表判成"形状不清 ⇒ 空列表"（它的口径是"只有映射才算数"）
+  // ⇒ 那正是本缺陷的另一半：**手写正确的东西被读成 0 条**。所以数组在这里自己逐项归一。
+  const rawConsequences = record.consequences
+  const consequences: ContainerRead<Adr['consequences'][number]> = Array.isArray(rawConsequences)
+    ? {
+        value: rawConsequences.map((row) =>
+          typeof row === 'string'
+            ? { item: row }
+            : row !== null && typeof row === 'object' && !Array.isArray(row)
+              ? {
+                  item: textOf((row as { item?: unknown }).item),
+                  ...(textOf((row as { mitigation?: unknown }).mitigation) === ''
+                    ? {}
+                    : { mitigation: textOf((row as { mitigation?: unknown }).mitigation) }),
+                }
+              : { item: '' },
+        ),
+        issue: undefined,
+      }
+    : recordListOf<Adr['consequences'][number]>(rawConsequences, (text) => ({ item: text }))
   pushShapeNote(notes, 'adr', id, 'consequences', consequences.issue)
   const declaredId = textOf(record.id)
   const adr: Adr = {
@@ -83,7 +106,12 @@ export interface RecordAdrInput {
   context: string
   decision: string
   alternatives: { option: string; pros: string; cons: string }[]
-  consequences: string[]
+  /**
+   * **D-17**：写入端接受两种形态并**归一**成一种（字符串 ⇒ `{item}`；映射 ⇒ 保留 `mitigation`）。
+   * 归一后的结果同时用于落盘、回执与留痕 —— 旧实现把**入参**直接拼进返回对象，回执的
+   * 「后果 N 项」量的是调用方给了几项，而**读回来能不能看见**它从不核对。
+   */
+  consequences: (string | { item: string; mitigation?: string | undefined })[]
   status?: Adr['status'] | undefined
   /**
    * **调用方指定的编号**（可选）。
@@ -103,6 +131,13 @@ export function isAdrId(value: string): boolean {
 
 /** 记录一条 ADR（`adr/recorded` 留痕）。 */
 export function recordAdr(store: SdoStore, journal: Journal, input: RecordAdrInput): Adr {
+  // **D-17**：写入端**归一**成落盘形状（字符串 ⇒ `{item}`；映射 ⇒ 保留 `mitigation`）。
+  // 归一结果同时用于落盘、返回值与留痕 —— 三处同源，回执里的条数就是"读回来能看见的条数"。
+  const consequences: Adr['consequences'] = input.consequences.map((row) =>
+    typeof row === 'string'
+      ? { item: row }
+      : { item: textOf(row.item), ...(textOf(row.mitigation) === '' ? {} : { mitigation: textOf(row.mitigation) }) },
+  )
   const adr: Adr = {
     id: input.id ?? nextId('ADR', listAdrIds(store)),
     title: input.title,
@@ -110,11 +145,17 @@ export function recordAdr(store: SdoStore, journal: Journal, input: RecordAdrInp
     context: input.context,
     decision: input.decision,
     alternatives: input.alternatives,
-    consequences: input.consequences,
+    consequences,
     at: new Date().toISOString(),
   }
   writeAdr(store, adr)
-  journal.append('adr/recorded', { id: adr.id, title: adr.title, alternatives: adr.alternatives.length })
+  journal.append('adr/recorded', {
+    id: adr.id,
+    title: adr.title,
+    alternatives: adr.alternatives.length,
+    // **D-17**：后果条数过去**根本不记** ⇒ 回执的「后果 N 项」无从被证伪；现在与落盘同源
+    consequences: adr.consequences.length,
+  })
   return adr
 }
 
@@ -134,10 +175,25 @@ export function supersedeAdr(
 }
 
 /** G3 的 `design.adr` 准则：每条 ADR 必须有 ≥1 条备选与 ≥1 条后果。 */
-export function adrCompleteness(store: SdoStore): { ok: boolean; total: number; incomplete: string[] } {
+export function adrCompleteness(store: SdoStore): {
+  ok: boolean
+  total: number
+  incomplete: string[]
+  /** **D-18**：已被取代（`superseded`）的条数 —— 它们**不参与**判据，但要在回执里如实出现 */
+  superseded: number
+} {
   const adrs = listAdrs(store)
-  const incomplete = adrs
+  // **D-18（sdo-test-new 2026-10-09）**：作废（`superseded`）的记录**退出判据**。
+  // 旧行为是"保留了历史，却继续拿作废的历史判你红" ⇒ 一条形状写坏的 ADR 在工具面上**无路可走**
+  // （同 id 重记被守卫正确拒绝、`supersede` 之后旧记录仍计入判据）⇒ waterfall/prototype 的 G3 永久红。
+  const counted = adrs.filter((adr) => adr.status !== 'superseded')
+  const incomplete = counted
     .filter((adr) => adr.alternatives.length === 0 || adr.consequences.length === 0)
     .map((adr) => adr.id)
-  return { ok: adrs.length > 0 && incomplete.length === 0, total: adrs.length, incomplete }
+  return {
+    ok: counted.length > 0 && incomplete.length === 0,
+    total: counted.length,
+    incomplete,
+    superseded: adrs.length - counted.length,
+  }
 }

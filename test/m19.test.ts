@@ -446,15 +446,22 @@ test('Y-1 反例：`confirm target=ui` 不再被裸放行；不可解析的目�
 
   // 旧的裸放行：`target !== 'ui'` 特批 → 写一条 contentHash:'' 的戳，永远不被承认
   const refused = office.confirmDesign(call(), 'ui', '用户原话：确认界面', 'user')
-  assert.equal(refused, undefined, 'target=ui 不是关键条目，必须拒绝写入')
+  assert.deepEqual(refused, { refused: 'unresolvable' }, 'target=ui 不是关键条目，必须拒绝写入')
   assert.equal(existsSync(join(workspace, '.sdo', 'design', 'confirmed.yml')), false, '被拒绝时不得写台账')
   // 合法的 UI target 形态是 `ui:<视图 id>:<部分>`（与 `UI_TARGET`=`design:ui` 无关）
-  assert.equal(office.confirmDesign(call(), 'ui:UI-404:style', '用户原话：确认风格', 'user'), undefined, '目标解析不出内容时同样拒绝')
+  assert.deepEqual(
+    office.confirmDesign(call(), 'ui:UI-404:style', '用户原话：确认风格', 'user'),
+    { refused: 'unresolvable' },
+    '目标解析不出内容时同样拒绝',
+  )
   assert.equal(existsSync(join(workspace, '.sdo', 'design', 'confirmed.yml')), false, '仍然不得写台账')
 
   // 正例：真实元素 → 写入并带上指纹，`isConfirmed` 认得它
   const confirmed = office.confirmDesign(call(), id, '用户原话：元素对', 'user')
-  assert.ok(confirmed !== undefined && (confirmed.contentHash ?? '') !== '', '有效目标必须写入并绑定内容指纹')
+  assert.ok(
+    'confirmation' in confirmed && (confirmed.confirmation.contentHash ?? '') !== '',
+    '有效目标必须写入并绑定内容指纹',
+  )
   assert.equal(isConfirmed(office.storeFor(workspace), id), true)
 })
 
@@ -473,7 +480,7 @@ test('Y-2 反例：签字之后改契约 schema → G3 签字必须失效；重�
   const requirementId = baselineRequirement()
   element('订单服务', requirementId)
   const contract = office.recordContract(call(), { name: '订单服务导出接口', producer: '订单服务', consumer: '外部对账', schema: 'v1' })
-  office.signGate(call(), { gate: 'G3', by: '张三', basis: '我签字确认这次设计可以放行', channel: 'command' })
+  office.signGate(call(), { gate: 'G3', by: '张三', basis: '我签字确认这次设计可以放行（第 2 次表态）', channel: 'command' })
   assert.equal(office.signatureState(call(), 'G3').status, 'valid', '前置：签字有效')
 
   // 绕过尝试：原地改契约（contract/updated），不重新签字

@@ -129,14 +129,19 @@ function readyToBuild(): { office: SoftwareDevOffice; call: OfficeCall; card: Ta
 function approveChange(office: SoftwareDevOffice, call: OfficeCall, decision: 'approved' | 'rejected' | 'deferred' = 'approved') {
   /** 让**变更前**的状态真的经过一次 G3：这样"回退作废了它"才有东西可作废。 */
   journal.append('gate/result', { gate: 'G3', status: 'passed', phase: 'construction' })
+  // **D-22 连带**：`changes[]` 是人读摘要，**不算变更内容**；而且"同一个值再提交一遍"也不算变更。
+  // 所以每次调用给一句**新的**陈述（真实用法本来就是"每次变更改点东西"）。
+  changeRound += 1
   return office.change(call, {
     requirement: 'REQ-012',
-    reason: '上游把计量口径从 A 改成 B',
-    changes: ['计量口径 A → B'],
+    reason: `上游把计量口径改成第 ${changeRound} 版`,
+    changes: [`计量口径 → 第 ${changeRound} 版`],
     decision,
     decidedBy: 'human',
+    patch: { statement: `系统应支持计量口径（第 ${changeRound} 版）` },
   })
 }
+let changeRound = 0
 
 /** 「只冻结 G2」：批准之后的重新基线（内容已改由 `requirement/updated` 背书，这里只补冻结事实）。 */
 function rebaselineOnly(): void {
@@ -326,6 +331,8 @@ test('M35-05 工具层接线：`sdo_requirement action=change` 的回执写清�
     id: 'REQ-012',
     reason: '上游把计量口径从 A 改成 B',
     decision: 'approved',
+    // **D-22**：变更内容要真的给出来（`changes[]` 只是人读摘要）—— 空载荷的批准不再回退阶段。
+    statement: '系统应支持计量口径 B',
   })
   assert.match(receipt, /CR-001/u, `回执要点名变更单：${receipt}`)
   assert.match(receipt, /requirements/u, '回执要写清退到了需求阶段')

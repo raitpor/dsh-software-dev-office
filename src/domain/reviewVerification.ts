@@ -143,6 +143,15 @@ export interface ReviewAdoption {
   stale: number[]
   /** 有核实记录但 journal 无佐证的下标 */
   forged: number[]
+  /**
+   * **D-23**：这份状态**有没有真的逐条看过发现**。
+   *
+   * `tampered`（评审自身对不上真源）与 `unrecorded`（连 `review/recorded` 都没有）都在"看发现"
+   * **之前**就返回了 ⇒ 此时 `pending`/`stale`/`forged` 恒为空数组，而回执旧写法按
+   * `总数 - 空数组长度` 打印「核实 8/8」—— **假绿**：真机 D-23 就是这样同时显示
+   * 「评审文件与真源不符（被改过）」与「核实 8/8」。没看过就说没看过。
+   */
+  examined: boolean
 }
 
 export type VerifyFailure =
@@ -318,7 +327,7 @@ function verifiedEvents(journal: Journal, reviewId: string): JournalEvent[] {
  * 一条评审的**采纳状态**（唯一的判定入口：门禁、`done` 关、回执都读它，不各写一份）。
  */
 export function reviewAdoption(store: SdoStore, journal: Journal, review: Review): ReviewAdoption {
-  const base = { review, tamperGuard: 'none-legacy' as TamperGuard, pending: [] as number[], stale: [] as number[], forged: [] as number[] }
+  const base = { review, tamperGuard: 'none-legacy' as TamperGuard, pending: [] as number[], stale: [] as number[], forged: [] as number[], examined: false }
   const recorded = recordedEvent(journal, review.id)
   if (recorded === undefined) return { ...base, state: 'unrecorded' }
   const recordedHash = typeof recorded.data['contentHash'] === 'string' ? recorded.data['contentHash'] : undefined
@@ -363,7 +372,7 @@ export function reviewAdoption(store: SdoStore, journal: Journal, review: Review
             : pending.length === findings.length
               ? 'unverified'
               : 'partial'
-  return { review, tamperGuard, state, pending, stale, forged }
+  return { review, tamperGuard, state, pending, stale, forged, examined: true }
 }
 
 /** 全部评审的采纳状态（按 id 序，回执与门禁共用）。 */

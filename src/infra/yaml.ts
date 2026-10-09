@@ -7,7 +7,8 @@
  * 因此这里实现一个**严格受限**的子集：越界一律报错，绝不猜测。
  *
  * 支持：
- *   · 注释（整行 / 值后）；单文档
+ *   · 注释：**整行** `#`，或**值后**的 ` # 注释`（井号前后都是空白/行尾才算注释；
+ *     `真机 #1132` 这种"井号后紧跟非空白"的写法是**正文**，见 `isCommentHash`）；单文档
  *   · 缩进嵌套的映射与序列（只用空格，Tab 报错）
  *   · 序列项内联映射（`- id: X` 后跟同列键）
  *   · 标量：plain / 单引号 / 双引号；null / true / false / 整数 / 浮点
@@ -51,9 +52,34 @@ function splitKey(text: string): { key: string; rest: string | undefined } | und
       const rest = i + 1 === text.length ? '' : text.slice(i + 2).trim()
       return { key, rest }
     }
-    if (ch === '#' && i > 0 && text[i - 1] === ' ') return undefined
+    // **D-23**：` #1132`（井号后**不是**空白）不是注释 —— 见 `isCommentHash` 的口径。
+    if (ch === '#' && isCommentHash(text, i)) return undefined
   }
   return undefined
+}
+
+/**
+ * **`#` 在什么位置才算行内注释**（D-23 的真根因，写读两端必须同一口径）。
+ *
+ * 病根（真机）：写端 `NEEDS_QUOTE` 只在"`#` 后面还有空白"时给值加引号，所以
+ * `真机 #1132 复现` 这种（井号后紧接非空白）被当作**安全裸值**写出；而读端旧口径
+ * **只要井号前面是空格就当注释** ⇒ 读回时被**静默截断**成 `真机`。
+ * 后果：① 评审 `reviewContentHash` 写读不等 ⇒ 每条含该写法的评审被判"被改过"（D-23 报的就是这条，
+ * 只是把根因记成了"两套哈希口径"）；② 任何台账文本（需求陈述、验收标准、证据）在**下一次写回**时
+ * 会把截断后的内容**固化**失（本项目最忌讳的"静默丢内容"）。
+ *
+ * 现在的口径（两端一致）：
+ *   · 整行注释：行首（可含缩进）的 `#`；
+ *   · 值后注释：`#` 前是空白**且** `#` 后是空白或行尾（即 ` # 注释` 这种约定写法）；
+ *   · 其余（` #1132`、`\t#TODO`、结尾的 ` #`）**是正文**，一律保留 —— 写端会给它们加引号，
+ *     手写的这类值也不会再被吃掉。
+ */
+function isCommentHash(text: string, i: number): boolean {
+  if (i === 0) return true
+  const before = text[i - 1]
+  if (before !== ' ' && before !== '\t') return false
+  const after = text[i + 1]
+  return after === undefined || after === ' ' || after === '\t'
 }
 
 /** 去掉值后的行内注释（引号内不算）。 */
@@ -77,7 +103,7 @@ function stripInlineComment(text: string): string {
       quote = ch
       continue
     }
-    if (ch === '#' && (i === 0 || text[i - 1] === ' ' || text[i - 1] === '\t')) {
+    if (ch === '#' && isCommentHash(text, i)) {
       return text.slice(0, i).trimEnd()
     }
   }
@@ -408,7 +434,15 @@ export function parseYaml(text: string): unknown {
   return new Parser(preprocess(text)).parseDocument()
 }
 
-const NEEDS_QUOTE = /^(?:[-?:,[\]{}#&*!|>%@`'"]|.*[:#]\s|.*\s$)/s
+/**
+ * 裸值什么时候**必须**加引号（写端唯一的判定，读端 `parsePlainOrQuoted` 是它的逆）。
+ *
+ * **D-23**：原式只覆盖"`#` **后面**还有空白"（`.*[:#]\s`），漏掉"**前面**是空白的井号"
+ * （`.*\s#`）—— 于是 `真机 #1132 复现`、结尾的 ` #` 这类值被裸写出去，
+ * 而读端旧口径把 ` #` 一律当注释剥掉 ⇒ **读回被截断**。两端同源是这条常量的全部意义：
+ * 加一个分支就要能说清"读端为什么不会误解它"。
+ */
+const NEEDS_QUOTE = /^(?:[-?:,[\]{}#&*!|>%@`'"]|.*[:#]\s|.*\s#|.*\s$)/s
 /** 必须用转义双引号（而不是单引号/裸值）的字符：tab / CR / 双引号 / 反斜杠 / 控制字符。 */
 const NEEDS_ESCAPE_QUOTE = /[\t\r"\\]|[\u0000-\u001f]/u
 const LOOKS_LIKE_SCALAR = /^(?:~|null|Null|NULL|true|True|TRUE|false|False|FALSE|-?(?:0|[1-9]\d*)(?:\.\d+)?)$/

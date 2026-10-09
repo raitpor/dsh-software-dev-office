@@ -14,7 +14,7 @@ import { pushShapeNote, recordOf, textListOf, textOf, typeNameOf } from '../infr
 import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
-import type { ChangeRequest, Dimension, ProcessDef, Requirement } from '../types.js'
+import type { AcceptanceCriterion, ChangeRequest, Dimension, ProcessDef, Requirement } from '../types.js'
 
 export const TRACE_FILE = 'trace/links.jsonl'
 
@@ -156,6 +156,17 @@ export interface CreateChangeInput {
   /** 批准时要应用到需求上的字段补丁（拒绝/延期时不应用） */
   patch?: Partial<Pick<Requirement, 'title' | 'statement' | 'rationale' | 'priority' | 'kind'>> | undefined
   /**
+   * **D-21**：批准时要加到需求上的验收标准（与 `update` 的 `addAcceptance` 同名同义）。
+   *
+   * 旧实现只认标量字段 ⇒「基线后 AC 变了」这件事**无法走变更控制**：`change` 收不到 AC，
+   * 回执写「仅记录变更请求，未给出具体字段」，批准后 AC 一条没动 —— 而需求已标 `changed`、
+   * 版本 +0.1、阶段回退，看起来"变更已应用"。AC 是评审与交付验收的依据（C-60/P-3），
+   * 它变了却没有任何 CR 承载，等于最该受变更控制的那部分内容走了旁路。
+   */
+  addAcceptance?: AcceptanceCriterion[] | undefined
+  /** **D-21**：批准时**整份替换**验收标准（同 `update` 的 R-2 语义；给了它就忽略 `addAcceptance`）。 */
+  replaceAcceptance?: AcceptanceCriterion[] | undefined
+  /**
    * 变更后重算评分时，**模型通道**的语义分（§6.7）。
    *
    * 不给则**沿用需求上已落盘的** `ambiguity.modelDimensions`（规则维度照旧按新内容重算）。
@@ -185,9 +196,35 @@ export function createChange(store: SdoStore, journal: Journal, input: CreateCha
     id: change.id,
     requirement: change.requirement,
     impact: change.impact,
+    // **D-21**：AC 变更也要在 journal 里留痕（`changes[]` 是人读摘要，这里是机器可查的那一份）。
+    // 不写 `acceptance: 0`：没带 AC 的 CR 与"要删光 AC"是两件事，不能同形。
+    ...(input.addAcceptance === undefined && input.replaceAcceptance === undefined
+      ? {}
+      : {
+          acceptance: (input.replaceAcceptance ?? input.addAcceptance ?? []).length,
+          acceptanceMode: input.replaceAcceptance === undefined ? 'append' : 'replace',
+        }),
   })
   journal.append('change/decided', { id: change.id, decision: change.decision, by: change.decidedBy })
   return change
+}
+
+/**
+ * **记录"这条已决策的 CR 什么都没改"**（D-22）。
+ *
+ * 为什么需要一条独立事件，而不是在 `change/decided` 里加字段：`undigestedChanges` 只读
+ * `change/decided`，而空变更**没有任何内容要消化** —— 照旧计账的话，一次"什么都没改的批准"就会
+ * 把阶段从 iteration 打回 requirements、作废 5 道门禁、并**锁死全部 `claim`**
+ * （真机 D-22 正是如此，代价是两次人工签字）。这条事件是"该 CR 无内容可消化"的**唯一**机器可读事实。
+ *
+ * 与签字的关系：它不改任何真源 ⇒ 属中性事件（`SIGNATURE_NEUTRAL_EVENTS` 里有它）。
+ */
+export function markChangeNoop(
+  journal: Journal,
+  change: ChangeRequest,
+  reason: 'no-content-change' | 'requirement-not-baselined' | 'no-requirement',
+): void {
+  journal.append('change/noop', { id: change.id, requirement: change.requirement, reason })
 }
 
 /**
@@ -238,6 +275,11 @@ export function undigestedChanges(
   const read = journal.read()
   const requested = new Map<string, string>()
   const approved: { id: string; seq: number }[] = []
+  // **D-22**：被标为"无内容可消化"的 CR（`change/noop`）不算未消化 —— 空变更没有内容可重走，
+  // 若照旧算账，一次误批准就会锁死全部 claim 并要求两次人工签字。
+  const noop = new Set(
+    read.events.filter((event) => event.type === 'change/noop').map((event) => textOf(event.data['id'])),
+  )
   for (const event of read.events) {
     if (event.type === 'change/requested') {
       const id = textOf(event.data['id'])
@@ -249,7 +291,8 @@ export function undigestedChanges(
     // 只有 `approved` 才逼着重走：「拒绝/延期」不动阶段，也不该拦住正在进行的开发
     if (textOf(event.data['decision']) !== 'approved') continue
     const id = textOf(event.data['id'])
-    if (id !== '') approved.push({ id, seq: event.seq })
+    if (id === '' || noop.has(id)) continue
+    approved.push({ id, seq: event.seq })
   }
   if (approved.length === 0) return []
   const designGates = new Set(process === undefined ? [] : designExitGates(process))

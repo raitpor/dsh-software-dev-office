@@ -396,6 +396,10 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 ### 变更控制：批准的需求变更强制回退（语义 A）
 
 需求基线之后改需求必须走 `sdo_requirement action=change`（变更请求 + 影响分析 + 决策）。
+变更内容既可以是标量字段（`title`/`statement`/`rationale`/`priority`/`kind`），也可以是**验收标准**：
+传 `acceptance`（JSON 文本；`acceptanceMode=append` 追加、`replace` 整份替换）——
+只改 AC 的变更单不会再被写成「未给出具体字段」，`replace` 造成的**改号**同样会在回执里点名
+（AC 编号是交付验收矩阵的追溯键）。AC 的合并与查重与 `action=update` 走**同一份实现**。
 **批准**的变更会立刻把项目**拉回需求阶段**，并要求按顺序做完这三步才能继续开发：
 
 ```text
@@ -485,6 +489,8 @@ skills/ 8 张角色卡（analyst / architect / red-team / developer / tester / r
 三条操作规则：
 
 1. **手写真源**（`<projectDir>/` 下的 `*.yml`）可以手改，但必须是合法 YAML 子集（用空格缩进）；写坏会判红并点名相对路径。
+   注释规则：**整行** `#` 或**值后** ` # 注释`（井号前后都是空白/行尾）才是注释；`真机 #1132 复现`
+   这类"井号后紧跟非空白"的写法是**正文**（D-23 修的就是这条：以前它会被静默截断，写回时把截断固化）。
 2. **不要手改派生视图**：`project.json`、`docs/*.md`、看板都从真源现算。`docs/DESIGN.md` 的内容判据要求它与「按渲染头序号从当前真源重渲染」的结果一致 —— 改设计后请重新 `sdo_design action=render`，手改正文会被判红（逐字节比对，`docs/DESIGN.md` 顶部的注释区也算在内）。
    如果你在 `docs/DESIGN.md` 里手写了内容，**下一次渲染覆盖它之前会先留副本**（`.sdo/evidence/file-history/`，同一套上限），并把副本落点记进 `design/rendered` 事件的 `snapshot` 字段 —— 手改不会被"静默销毁"。
 3. **评审结果要核实才能采纳**：评审（`sdo_review action=record`）记下的发现是**主张**，不是结论。
