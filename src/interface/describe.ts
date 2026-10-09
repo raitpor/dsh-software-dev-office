@@ -331,6 +331,18 @@ export function describeChange(
       if (rollback.stillWaivedGates.length > 0) {
         lines.push(fmt('uiDescribe.changeRollbackWaived', { p1: rollback.stillWaivedGates.join(' ') }))
       }
+      // **N-5（D-22 验收口径③）**：设计门为什么也一起作废，必须写出**依据**（真机踩点：只看到
+      // "作废了 G3"会以为插件在无差别惩罚）。依据 = 追溯图里这条需求的设计引用；图里没有时也如实说
+      // "仍按默认口径作废"，不把"图里没写"当放行理由。
+      const designRefs = change.impact.design
+      lines.push(
+        designRefs.length === 0
+          ? t('uiDescribe.changeRollbackDesignWhyNoTrace')
+          : fmt('uiDescribe.changeRollbackDesignWhy', {
+              p1: String(designRefs.length),
+              p2: designRefs.slice(0, 5).join(' ') + (designRefs.length > 5 ? ' …' : ''),
+            }),
+      )
     }
     lines.push(t('uiDescribe.changeRollbackSteps'))
   }
@@ -769,6 +781,12 @@ export function describeRequirementUpdate(
     flags: string[]
     /** **R-25**：`acceptanceMode=replace` 造成的验收标准编号变动（交付矩阵的追溯键会失配） */
     acceptanceRenumbered?: { from: string; to: string }[] | undefined
+    /**
+     * **N-7（D-21④）**：这次 update 动的是**受控字段**（已冻结需求上的验收标准）——
+     * 规范路径是 `action=change`（带影响分析与决策）。这里不拦（`update` 是既有合法路径），
+     * 但必须**出声**，否则「绕过变更控制」这件事在回执上完全不可见。
+     */
+    controlledAcceptance?: boolean | undefined
   },
   shapeNotes: FieldShapeNote[] = [],
 ): string {
@@ -787,6 +805,10 @@ export function describeRequirementUpdate(
       p1: String(renumbered.length),
       p2: renumbered.map((item) => `${item.from}→${item.to}`).join(' '),
     }))
+  }
+  // **N-7**：受控字段被直接改过 ⇒ 点明规范路径（不拦，只提示；这是"绕过变更控制"唯一的可见点）
+  if (result.controlledAcceptance === true) {
+    lines.push(t('uiDescribe.acControlledHint'))
   }
   if (flags.length > 0) lines.push(`- ⚠️ ${flags.join('；')}`)
   lines.push(...shapeNoteBlock(shapeNotes))

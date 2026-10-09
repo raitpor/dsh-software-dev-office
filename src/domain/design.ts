@@ -24,6 +24,7 @@ import { pushShapeNote, recordListOf, recordOf, textListOf, textMapOf, textOf } 
 import type { FieldShapeNote } from '../infra/scalar.js'
 
 import { fmt, locale, t } from './i18n.js'
+import { normalizeBasis } from './signature.js'
 import { nextId } from '../infra/ids.js'
 import type { Journal } from '../infra/journal.js'
 import type {
@@ -1209,7 +1210,7 @@ export function confirmDesign(
   by: string,
   basisSource: 'user' | 'proxy' = 'user',
   /** **R-27 连带（sdo-test-new 2026-10-09）**：调用方对这句"用户原话"的核对结果 */
-  basisChecked?: 'session' | 'unavailable' | undefined,
+  basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined,
 ): { confirmation: DesignConfirmation } | { refused: 'no-basis' | 'replayed-basis' | 'unresolvable' } {
   const existing = listConfirmations(store)
   // F-19：确认戳**绑定被确认内容的指纹**。目标不可解析 → **拒绝**（绝不凭空背书）。
@@ -1223,7 +1224,14 @@ export function confirmDesign(
   // **R-27 连带 ③：同一句旧授权不许在**内容已变**之后继续用** —— 戳绑内容只保证"内容没变时仍有效"，
   // 不保证"内容变了之后用户还认账"。同一 target 上一次确认用的是同一句话、而内容指纹不同 ⇒ 拒绝。
   const previous = existing.find((item) => item.target === target)
-  if (previous !== undefined && previous.basis.trim() === text && (previous.contentHash ?? '') !== contentHash) {
+  // **H3（2026-10-09 整体评审）**：这里曾只 `trim()`，而来源核对（`checkUserQuote`）两边都归一了空白 ⇒
+  // 「…确认 X」加一个空格就成了"新话"，把旧授权重新盖到**新内容**上（而 G3 的 `design.confirmed` 认这枚戳）。
+  // 现在与签字侧共用**同一份**归一化（`normalizeBasis`）：「同一句话」只有一种口径。
+  if (
+    previous !== undefined
+    && normalizeBasis(previous.basis) === normalizeBasis(text)
+    && (previous.contentHash ?? '') !== contentHash
+  ) {
     return { refused: 'replayed-basis' }
   }
   const record: DesignConfirmation = {

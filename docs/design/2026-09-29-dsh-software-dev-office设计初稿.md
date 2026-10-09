@@ -62,7 +62,7 @@
 >
 > **v0.11（2026-09-30，依赖口径修正 + 计划评审通道恢复）**：按用户核准**修正设计——允许官方包**。① **C-03 口径澄清**：宿主侧运行时依赖允许 `@deepseek-ai/*` 官方包（与 §2 第 192 行、NFR-006 的既有措辞一致），仍禁止第三方；② **preset 行仍不得引用官方包**（DEF-03 实测：会导致 preset 注册失败，症状是会话里选不到 sdo-office）；③ 为恢复 §8.5/Q-17 的**计划评审通道**，SDO 以**代码依赖**装载 `@deepseek-ai/dsh-plan-mode`（`dsh-plan-mode@0.2.0-rc.1` + 依赖树 `dsh-brand`/`dsh-invariants`/`dsh-session-projection`/`dsh-user-questions`/`dsh-scope`/`zod`），使 sdo-office 会话内可用 `planMode.set(agent, true)` **在会话中途**切进计划评审；④ **语义更正**：plan-mode 是「引导文本 + 日志协作状态」，物理阻止写操作的是 **sandbox/approval 策略**，plan-mode 本身不读写 plan state——因此「评审前不许落笔」若要机械保证需另加闸门（方案 B，未实施）。登记为 **D-07**。
 >
-> **v0.8（2026-09-29，Q-08/Q-09/Q-10 实测落地）**：三项待实测全部有了结论——**Q-08** ✅ 数组顺序**严格按数组次序**（非文件名序），后列文件可按行 id 覆盖前列，且**同 id 用 `insert` 重复插入不覆盖**（组合树留两行、挂载取后者），覆盖必须用 id 定向补丁；**Q-09** ⚠️ **能同装但不能混用**（团队工具与旧 subagent 控制工具**同名**：`send_message`/`interrupt_agent`/`list_agents`，官方 profile 用 `disabled: true` 二选一），§8.2 的"可混用"据此修正；**Q-10** ✅ **preset 内以包名引用第三方插件行可解析并挂载**，**RISK-15 关闭、M0 入口假设成立**。**实测同时发现：声明式 preset 机制只由 `dsh-web-app` 提供**（全实例随包 patch 里只有 `dsh-web-app/cordis.patch.yml` 含 `agent-preset-registry`）→ 按用户决策 **SDO 先明确 Web-only**，非 web profile 的入口登记为 **Q-21**（后续再议），Q-18/Q-20/RISK-22/§14.3 第 14 条标注"本期不可达"。另新增 **§11.7 开发与验证环境（已实测）** 与证据文档 [`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md)。
+> **v0.8（2026-09-29，Q-08/Q-09/Q-10 实测落地）**：三项待实测全部有了结论——**Q-08** ✅ 数组顺序**严格按数组次序**（非文件名序），后列文件可按行 id 覆盖前列，且**同 id 用 `insert` 重复插入不覆盖**（组合树留两行、挂载取后者），覆盖必须用 id 定向补丁；**Q-09** ⚠️ **能同装但不能混用**（团队工具与旧 subagent 控制工具**同名**：`send_message`/`interrupt_agent`/`list_agents`，官方 profile 用 `disabled: true` 二选一），§8.2 的"可混用"据此修正；**Q-10** ✅ **preset 内以包名引用第三方插件行可解析并挂载**，**RISK-15 关闭、M0 入口假设成立**。**实测同时发现：声明式 preset 机制只由 `dsh-web-app` 提供**（全实例随包 patch 里只有 `dsh-web-app/cordis.patch.yml` 含 `agent-preset-registry`）→ 按用户决策 **SDO 先明确 Web-only**，非 web profile 的入口登记为 **Q-21**（后续再议），Q-18/Q-20/RISK-22/§14.3 第 14 条标注"本期不可达"。另新增 **§11.7 开发与验证环境（已实测）** 与证据文档 [`docs/verification/2026-09-29-q08-q09-q10.md`](../verification/2026-09-29-q08-q09-q10.md)。
 >
 > **v0.9（2026-09-29，评审 D-03/D-04 落进设计）**：**D-03 采用**——§5.2.4 的问题对象补入 `text`（问题正文，必填）；**D-04 改为"新增工具"**——§9.1 新增第 **19** 个工具 **`sdo_project`**（`update` / `show`：维护项目台账的范围/非目标、干系人、术语表、成功度量、流程与规模），`sdo_init` 恢复为**只创建**的语义（幂等、不再补齐台账）；角色掩码表同步（office 可见 19，其余角色显式不可见；并补齐 office 行原先漏掉的 `3–5`），工具计数 18 → 19（§9.1 表、§9.1 说明、§11.4 要点、§14.2.1 Q-01 一并更新）。新工具**追加在编号末尾**，以免打乱既有的 `#5`/`#13` 等交叉引用。
 >
@@ -1967,7 +1967,7 @@ node_modules/.sdo-verify/
 └─ out/                       # dump 与标记等原始证据
 ```
 
-**探针技巧（可复用）**：让探针插件的 `apply()` 往工作区**追加一行 JSON**（收到的 config、PID、可见工具名清单）——比读日志可靠得多，本次三项结论的证据都来自它。详见 [`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md)。
+**探针技巧（可复用）**：让探针插件的 `apply()` 往工作区**追加一行 JSON**（收到的 config、PID、可见工具名清单）——比读日志可靠得多，本次三项结论的证据都来自它。详见 [`docs/verification/2026-09-29-q08-q09-q10.md`](../verification/2026-09-29-q08-q09-q10.md)。
 
 ---
 
@@ -2069,7 +2069,7 @@ node_modules/.sdo-verify/
 | RISK-12 | 可续接子代理容量耗尽（默认 8，**不排队**，`ACTIVATION_LIMIT_REACHED`） | 中 | 中 | 派发前做容量预算；自建排队或降级；状态页显示在飞数量与剩余名额 |
 | RISK-13 | `workspace/changes` 证据在 Host 重启后不可回读 | 中 | 中 | 轮次结束时**立即**把 `(sessionId, seq)` + 摘要紧凑形式落进 `.sdo/`；且不作为唯一证据形态（§10.4） |
 | RISK-14 | preset 声明写错（用目录/`roots`、ID 与内置冲突）导致入口加载失败 | 中 | 中 | 只用 `@deepseek-ai/dsh-agent-preset` 行；只声明**一个** preset；启动自检脚本校验该行可解析；README 给出覆盖内置 preset 的正确写法 |
-| RISK-15 | ~~入口假设失败：preset 的 `config.plugins` 内以包名引用第三方插件行不可解析~~ **已于 2026-09-29 实测关闭** | — | — | **实测通过**：preset 的 `config.plugins` 里以包名引用第三方包能解析并挂载（标记文件记录到 preset 传入的 config，且发生在任何模型调用之前）。证据：[`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md) |
+| RISK-15 | ~~入口假设失败：preset 的 `config.plugins` 内以包名引用第三方插件行不可解析~~ **已于 2026-09-29 实测关闭** | — | — | **实测通过**：preset 的 `config.plugins` 里以包名引用第三方包能解析并挂载（标记文件记录到 preset 传入的 config，且发生在任何模型调用之前）。证据：[`docs/verification/2026-09-29-q08-q09-q10.md`](../verification/2026-09-29-q08-q09-q10.md) |
 | RISK-16 | 跨会话用量**漏计**（`ctx.sessions.get` 只返回存活会话） | 中 | 中 | 结算时刻当场采样（NFR-014）；采不到记 `unattributed` 并在看板显示；用"用量采集完整率"指标盯住 |
 | RISK-17 | 客户端面板引入浏览器侧构建与 React，增加供应链与工程面 | 中 | 中 | 只在 M6 引入、只作**构建期**依赖，宿主侧保持零运行时依赖；面板只读且可整体卸载（C-03） |
 | RISK-18 | 成本数字被当成精确账或用于考核 | 中 | 中 | NFR-012 强制「估算」标注与口径脚注；文档写明 token-meter 的启发式误差（CJK/JSON schema 按每 token 四字符会**低估**）；`contextBreakdown` 是近似构成 |
@@ -2109,7 +2109,7 @@ node_modules/.sdo-verify/
 
 #### 14.2.2 待实测
 
-**无。** Q-08 / Q-09 / Q-10 已于 2026-09-29 实测完毕（结论见 14.2.1，原始证据见 [`docs/verification/2026-09-29-q08-q09-q10.md`](./verification/2026-09-29-q08-q09-q10.md)）。
+**无。** Q-08 / Q-09 / Q-10 已于 2026-09-29 实测完毕（结论见 14.2.1，原始证据见 [`docs/verification/2026-09-29-q08-q09-q10.md`](../verification/2026-09-29-q08-q09-q10.md)）。
 
 唯一遗留的是 **Q-09 的运行期半边**——"同名工具在 agent 作用域叠加时谁生效"：本次实测受限于无凭据（`MISSING_CREDENTIAL` 在会话/agent 创建前就拦下运行，顶层监听零事件），因此**未验**。它已被登记为一条**测试项**（§12.1 "委派工具同名叠加"），在有凭据的真实会话里跑。
 

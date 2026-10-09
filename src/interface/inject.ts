@@ -103,6 +103,15 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
       ids: (pendingReviews?.ids ?? []).slice(0, 3).join(' '),
     }))
   }
+  // **N-11（R-16②）**：已核实**成立**的发现要每轮可见 ——「核实不是终点」。
+  // 只陈述事实与纪律（不声称它们一定没被处置：插件判不出来）。
+  const reproduced = status.reproducedFindings
+  if ((reproduced?.count ?? 0) > 0) {
+    lines.push(fmt('status.reproducedFindings', {
+      n: String(reproduced?.count ?? 0),
+      ids: (reproduced?.items ?? []).slice(0, 6).join(' '),
+    }))
+  }
   // **§7.1「不得静默」（注入块那一处）**：设计适用性声明必须每轮出现在状态块里 ——
   // 用户要在模型动手之前就看到"哪些视图做、哪些不做及理由"，以及"还差用户签字"。
   // 只在**设计语境**（已进架构阶段或已起草声明）出现，避免在需求早期变成噪声。

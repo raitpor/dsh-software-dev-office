@@ -212,7 +212,7 @@ tool:
 
 param:
   designBasisSource: 'action=confirm: `user` (the user confirmed in person, default) or `proxy` (stamped on the user behalf — required when the authorizer is not the executor so the event stays distinguishable)'
-  signQuote: "The user own words **for this signature or waiver** (verbatim; shared by `action=sign` and `action=waive`). For `sign`: it must be findable in this session user messages and must NOT be an old quote reused after the last invalidation (R-27, refused); use `channel=question` to obtain a fresh basis. For `waive`: optional — when given it is checked (a mismatch is refused); when omitted the waiver still goes through, but the ledger records `approverChecked: none` and the receipt says the approver has no user-quote basis."
+  signQuote: "The user own words **for this signature or waiver** (verbatim; shared by `action=sign` and `action=waive`). For `sign`: it must be findable in this session user messages and must NOT be an old quote reused after the last invalidation (R-27, refused); use `channel=question` to obtain a fresh basis. For `waive`: optional — when given it is checked (a mismatch is refused); when omitted the waiver still goes through, but the ledger records `approverChecked: none` and the receipt says the approver has no user-quote basis. The real values of `approverChecked` are `none` (no basis given) / `session` (checked against a HUMAN-sourced utterance) / `role-only` (the host messages carry no provenance, so only the `user` role could be checked — weak calibers) / `unavailable` (session history not reachable) — all four are recorded verbatim in the ledger."
   runsRequired: "action=package: runtime targets this delivery REQUIRES (comma separated, e.g. 'server,client'). A missing target downgrades every pass row to unverified"
   designConfirmBasis: 'action=confirm: the authorized user wording (takes precedence over note/reason; the old implementation ignored it and left only the tool own wording in the event)'
   planFreshChild: 'action=next: force a fresh subagent (do not reuse an idle one). Observed: a single subagent reused for 19 rounds until its context ran out'
@@ -384,6 +384,7 @@ status:
   gateLine: "- Gates: awaiting decision {gate} | {gates} gate records | {requirements} requirements | {questions} ledger questions"
   noGate: (none)
   designOpen: "- **Design phase**: {n} design question(s) await your confirmation -> run `sdo_design action=grill` (draft + question list) and answer them with `action=answer`; `action=issues` lists what is open at any time."
+  reproducedFindings: 'Review findings verified as REAL: {n} ({ids}) — verification is not the end: each must land as a change (visible on a card / in the delivery) or be explicitly declined with a reason; the plugin cannot tell which.'
   reviewVerify: "Reviews awaiting verification: {n} ({ids}) — a review is not adopted automatically: the card's **implementing session** must verify each finding (reproduce it, or give counter-evidence) first (`sdo_task action=verify-review id=<card> review=REV-... index=... outcome=reproduced|refuted proof=...`)"
   designNone: "- **Design phase**: no design question is open -> confirm each key item with `sdo_design action=confirm target=...`, then `action=render` to produce `docs/DESIGN.md` for human review. **Order matters**: before writing any design you must also run `sdo_requirement action=baseline` to **freeze the requirements baseline** — a passing G2 is not the same as a frozen baseline (observed on a real machine: 7 DoR criteria green and a valid signature, still refused with \"requirements not baselined\")."
   redTeamLine: "- Red team: {state} (this session: {reason})"
@@ -763,7 +764,7 @@ uiGates:
   kConstructionPackagesRemedy: "add the missing deliverables (`.sdo/construction/*.yml`), freeze contracts before claiming, or write an **exemption** (`exempt: [{task, check, why}]`, reason required)"
 uiPlan:
   kWriteScopeEmpty: 'the card declares no write scope (writeScopes is empty) — an empty scope neither reserves anything nor is audited for out-of-scope writes (C-31 requires scopes)'
-  kWriteScopeEmptyRemedy: 'give the card the path prefixes it will write (e.g. src/booking/); for cards that write no code, reshape them with a scope or drop them explicitly'
+  kWriteScopeEmptyRemedy: 'give the card the path prefixes it will write (e.g. src/booking/); a card that writes no code (a pure review card) should declare what it really writes — normally [".sdo/"] (a reviewer only writes `.sdo/reviews/*.yml`) — or be reshaped with a scope, or dropped explicitly'
   kBlockedHolderNote: ' (that card is blocked: it may resume writing the same scope, so it still holds it exclusively)'
   kScopeReleaseHint: '  (SDO-46) when a blocked card holds it: `sdo_task action=release` or `drop` it first to free the scope.'
   k1: "The change has artifact evidence (path + hash)"
@@ -1141,9 +1142,12 @@ uiDescribe:
   k208FaceBlockHeader: "**Dispatched child observations ({p1})**"
   changeRolledBack: '(semantics A) The approved requirement change **forced a phase rollback**: {p1} → {p2}; gate verdicts for that phase and later were invalidated and must be re-passed'
   changeRollbackGates: '  Invalidated gates: {p1} (recomputed from truth when you come back; old verdict records no longer admit you)'
+  changeRollbackDesignWhy: '  Why the design gate is invalidated too: this requirement has {p1} design reference(s) in the trace graph ({p2}) — the requirement changed, so those design commitments and contracts must be reconciled again; with an empty trace graph it is invalidated all the same (default caliber: requirement changed ⇒ design must be reconfirmed), never admitted on "it is not in the graph"'
+  changeRollbackDesignWhyNoTrace: '  Why the design gate is invalidated too: the trace graph currently has NO design reference for this requirement — it is still invalidated under the default caliber "requirement changed ⇒ design commitments must be reconfirmed" (an empty graph is not an admission; `sdo_trace` will sharpen this line)'
   changeRollbackWaived: '  Of those, {p1} remain waived (waivers are your earlier decision; a rollback does not revoke them)'
   changeRollbackAlready: '(semantics A) The project is already in the requirements phase ({p1}) — there is no rollback edge and none is needed'
   changeRollbackNoEdge: '(semantics A) **Phase not rolled back**: {p2} (current phase {p1})'
+  acControlledHint: 'WARNING: you just changed a CONTROLLED field (acceptance criteria on a frozen requirement). The canonical path is `sdo_requirement action=change` (impact analysis + decision, then re-baseline and re-pass the design gate); this `update` was persisted and re-baselining is required, but no change request records WHY it changed.'
   changeRollbackSteps: 'You must finish these in order before development continues: (1) update the affected requirements (`sdo_requirement action=update`) → (2) re-freeze G2 (`sdo_requirement action=baseline`) → (3) redo the design and re-pass G3; until then `sdo_task action=claim` is refused with `change-not-digested`'
   kPoolHeader: '**Role pools (subagent reuse; you trigger delivery)**'
   kPoolLine: '  {p1}: in flight {p2}/{p3} | idle reusables {p4} | retired (one-shot) {p5} | stale unsettled {p6}'
@@ -1164,6 +1168,7 @@ uiDescribe:
   kSignBeforeG2: "- **Finish registering requirements / questions / risks / red-team before signing**: G2 uses a whitelist of invalidating events, so **any** later change to those sources (including `risk/logged`) voids this signature and forces a re-sign. Observed on a real machine: signing G2 and then logging one risk voided it immediately."
   kSignBeforeG3: "- **Finish contracts and other design sources before signing**: `contract/recorded` / `contract/updated` are design sources (they void this signature) while G4 criterion C-30 requires complete contracts => adding contracts after signing necessarily forces a re-sign plus per-item re-confirmation. To avoid that churn: write the contracts -> `sdo_design action=confirm target=CT-...` each one -> `action=render` to regenerate `DESIGN.md` -> then sign G3."
 shapeEntity:
+  runs: 'runtime run records'
   view: "Design view"
   question: "Grill question"
   task: "Task card"
@@ -1215,6 +1220,14 @@ uiIndex:
   kReviewAdopted: "the whole review is now adoptable"
   kReviewNotAdoptedYet: "some findings are still unverified ⇒ not adopted yet"
   kReviewState: " | verified {p1}/{p2} {p3}"
+  kSignPrecheckUnmet: 'WARNING: the signature is recorded — but gate {p3} still has {p1} unmet criteria ({p2}). Those do not invalidate your signature: fix them and call `sdo_gate action=check gate={p3}` (no need to sign again unless the truth changed in the meantime).'
+  kUnwaiveNone: '(none)'
+  kUnwaiveNoReason: 'unwaive requires a `reason` (this is a tailoring change; the audit must show why it was removed)'
+  kUnwaiveDone: 'OK: the waiver on {p1} is removed — current waivers: {p2}'
+  kUnwaiveNotInProcess: '  Note: {p1} is not a gate of the current process ({p2}) — this only clears historical residue and does NOT affect current judgments.'
+  kUnwaiveSignatureNote: '  WARNING (same as `waive`): a tailoring change (`tailoring/updated`) invalidates already-recorded G2/G3 signatures — if you removed a waiver that was still in effect, re-check and sign again.'
+  kReviewTamperCaliber: 'Tamper caliber: this compares the SEMANTIC hash stored in `review/recorded` (id/taskId/reviewer/verdict/findings). Editing the verdict or a finding body turns it red; byte-level differences such as indentation or trailing whitespace do NOT (the two quantities are different things; this check only promises the semantic level).'
+  kReviewRehashCaliber: ' (caliber: the backfilled value is the SEMANTIC hash `reviewContentHash`, same source as `review/recorded`; byte-level edits are out of scope for this check)'
   kReviewNotExamined: " | findings NOT examined ({p1}) — the tamper check did not pass, so unexamined findings must not be reported as verified"
   kReviewAwaitingVerification: "ℹ️ {p1} finding(s): **a review is not adopted automatically** — this card's implementing session must verify each finding (reproduce it, or give counter-evidence) first: `sdo_task action=verify-review id=<card> review={p2} index=1 outcome=... proof=...`"
   kRecordBadStatus: 'REJECTED: invalid case-result status `{p1}` (allowed: pass / fail / skip) — it is NOT defaulted to pass (a real machine sent passed and it was silently written as pass)'
@@ -1318,6 +1331,8 @@ uiIndex:
   kWaiveRefused: "REFUSED: **no gate was waived** — {p1} is not part of the current process (so nothing was written to the project tailoring, no gate record was created, and existing signatures are untouched).\n{p2}"
   kWaiveNoBasis: "WARNING: the approver of this waiver is **caller-asserted** and has no user-quote basis — the ledger records `approverChecked: none`, so an audit can tell. Pass `quote=<user own words>` to leave a basis."
   kWaiveBasis: "  basis: {p1} (checked: {p2})"
+  kUnwaiveNotWaived: '{p1} is NOT currently waived, so there is nothing to revoke — current waivers: {p2} (waive a gate first with `sdo_gate action=waive`, or check the gate name/id)'
+  kWaiveChecked_role-only: 'checked against user-role message text (the host messages carry NO provenance, so only the role could be checked — weak caliber)'
   kWaiveChecked_session: "matched against this session's user messages"
   kWaiveChecked_unavailable: "session history unavailable, so NOT checked (recorded as unavailable)"
   kWaiveQuoteMismatch: "REFUSED: that waiver `quote` cannot be found in this session user messages — an invented quote must not serve as a basis. Pass the real words, or omit `quote` (the receipt will state that no basis exists)."
@@ -2216,7 +2231,7 @@ uiConstruction:
   c18: "`packages` must not be empty (pick at least one method package)"
   c19: "{p1} in `scope` does not exist"
   c20: "exemption {p1}/{p2} must state a reason"
-  c21: "exemption references an unknown check code: {p1}"
+  c21: "exemption references an unknown check code: {p1} (the tool layer accepts OUTER codes only; `tdd-env-changed`/`tdd-harness-changed`/`tdd-artifact-unchanged` are engine-internal criterion names and are NOT usable as exemption keys — use `tdd-red-green-missing` to exempt the whole red-green group)"
   c22: "the construction profile is broken (inspect the file by hand): {p1}"
   c23: "no construction method packages decided yet: have the flow officer run `sdo_plan action=profile` (model-chosen, with a checkable basis)"
   c24: "choosing no method packages requires a stated reason (criteria go N/A, but the reason must be recorded)"

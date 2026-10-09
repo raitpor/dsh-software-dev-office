@@ -1490,9 +1490,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
         if (args.id === undefined) return t('uiIndex.kReviewRehashNoId')
         const result = office.rehashReview(call, { reviewId: args.id, by: args.actor ?? 'human' })
         if (!result.ok) return `${result.code}：${result.detail}`
-        return result.alreadySealed
+        // **N-8（D-23③）**：把"比的是哪一套哈希"写在回执里（语义 vs 字节是两个量，读者不该猜）
+        const caliber = t('uiIndex.kReviewRehashCaliber')
+        return (result.alreadySealed
           ? fmt('uiIndex.kReviewRehashAlready', { p1: args.id })
-          : fmt('uiIndex.kReviewRehashed', { p1: args.id, p2: result.contentHash.slice(0, 12) })
+          : fmt('uiIndex.kReviewRehashed', { p1: args.id, p2: result.contentHash.slice(0, 12) })) + caliber
       }
       if (args.action !== 'record') {
         const reviews = office.reviews(call)
@@ -1515,6 +1517,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             return `- ${review.id}　${review.taskId}　${review.verdict}（${review.reviewer}）` + counted + guard
           }),
           ...office.reviewViolations(call).map((item) => fmt('uiIndex.k47', { p1: item.detail })),
+          // **N-8（D-23③）**：有指纹保护的评审存在时，把**口径**写在回执末尾 ——
+          // 真机 D-23 的误判就来自"以为比的是文件字节哈希"，读者不该靠猜。
+          ...([...adoptions.values()].some((item) => item.tamperGuard === 'content-hash') ? [t('uiIndex.kReviewTamperCaliber')] : []),
         ].join('\n')
       }
       if (args.taskId === undefined || args.reviewer === undefined || args.verdict === undefined) {
@@ -1672,6 +1677,23 @@ export function apply(ctx: Context, config: SdoConfig): void {
           ? describeRollback(result)
           : `${result.error ?? ''}\n${describeRollbackTargets(office.rollbackTargets(call))}`
       }
+      /**
+       * **N-18（推进记录里的"白签一次"）**：签完立刻**现算**本门还缺哪些判据，并把它们写进回执。
+       *
+       * 为什么不"签前拦"：G2/G3 的判据里**包含签字本身**（C7），签前现算必然把"缺签字"当成未满足 ⇒
+       * 要么噪声、要么死锁（G2 本来就是先签后 baseline）。所以口径是：**签字照记**，但当场告诉你
+       * 剩下的洞与"不必再签"（除非期间真源又变）。
+       */
+      const signPrecheck = (gate: string): string => {
+        const evaluation = office.evaluate(call, gate)
+        const unmet = evaluation.criteria.filter((item) => item.ok !== true && item.na !== true)
+        if (unmet.length === 0 || evaluation.criteria.length === 0) return ''
+        return fmt('uiIndex.kSignPrecheckUnmet', {
+          p1: String(unmet.length),
+          p2: unmet.map((item) => item.id).join(' '),
+          p3: gateLabel(gate),
+        })
+      }
       if (args.action === 'sign') {
         // §7.2 门禁级签字：**只承认两种来源**，且必须带上用户原话／所选选项原文
         if (args.gate === undefined) return t('uiIndex.k60')
@@ -1679,6 +1701,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const answer = await deps.gateSignQuestion?.(call, args.gate)
           if (answer === undefined) return t('uiIndex.kSignNoChannel')
           if (answer.selectedLabel !== t('uiSign.signOption')) {
+            // **次要 2（2026-10-09 整体评审）**：question 通道的"用户拒绝"以前**不留痕** ⇒
+            // 台账上"问过、被拒"与"没问过"长得一样。与陈述式拒绝同口径记一条中性事件。
+            office.noteSignRejected(call, args.gate, 'question', answer.selectedLabel)
             return fmt('uiIndex.kSignDeclined', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
           }
           const signature = office.signGate(call, {
@@ -1692,7 +1717,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             basisFresh: true,
             ...(args.turn === undefined ? {} : { turn: args.turn }),
           })
-          return describeSignature(signature, office.signatureState(call, signature.gate))
+          return describeSignature(signature, office.signatureState(call, signature.gate)) + signPrecheck(signature.gate)
         }
         // `channel=statement`（默认）：用户在会话中明确表述过 → 必须给出用户原话
         const quote = (args.quote ?? '').trim()
@@ -1708,7 +1733,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // 在会话里出现过"，于是任何旧话都能在任意时刻、对任意门禁反复铸成新签字（真机 `#1132` 复用了
         // `#1099` 的「确认签字」）。这里给出可操作的拒绝：让用户**重新表态**，或改用 `channel=question`
         // 由工具当场问（引用不经过模型）。`recordSignature` 里另有一道强制拒绝。
-        const replay = office.basisReplay(call, args.gate, quote, quoteCheck.basisAt)
+        // **H2a/H4**：重放判定用**消息身份**（`basisMsgId`，跨压缩稳定）；下标只作审计
+        const replay = office.basisReplay(call, args.gate, quote, {
+          ...(quoteCheck.basisAt === undefined ? {} : { basisAt: quoteCheck.basisAt }),
+          ...(quoteCheck.basisMsgId === undefined ? {} : { basisMsgId: quoteCheck.basisMsgId }),
+        })
         if (replay.replayed) {
           // **R-28 建议 5**：被拒的签字尝试也要落痕（审计要能看见"有人试图签字并被拦"）。
           // 该事件在 `SIGNATURE_NEUTRAL_EVENTS` 里 —— **被拒不等于真源变更**，不许顺带作废已签的字。
@@ -1726,10 +1755,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
           basis: quote,
           channel: 'command',
           basisChecked: quoteCheck.basisChecked,
+          ...(quoteCheck.basisMsgId === undefined ? {} : { basisMsgId: quoteCheck.basisMsgId }),
           ...(quoteCheck.basisAt === undefined ? {} : { basisAt: quoteCheck.basisAt }),
           ...(args.turn === undefined ? {} : { turn: args.turn }),
         })
-        return describeSignature(signature, office.signatureState(call, signature.gate))
+        return describeSignature(signature, office.signatureState(call, signature.gate)) + signPrecheck(signature.gate)
       }
       if (args.action === 'waive') {
         if (args.gate === undefined) return t('uiIndex.k56')
@@ -1739,7 +1769,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // **R-27 连带**：豁免给了用户原话就核对它（给了而核不过 ⇒ 拒绝，与签字同口径）；
         // 没给也不拦（自救出口），但台账与回执必须说清"这条批准人没有用户原话依据"。
         const waiveQuote = (args.quote ?? '').trim()
-        let basis: { quote: string; checked: 'session' | 'unavailable' } | undefined
+        let basis: { quote: string; checked: 'session' | 'role-only' | 'unavailable' } | undefined
         if (waiveQuote !== '') {
           const check = office.checkUserQuote(call, waiveQuote)
           if (!check.ok) return fmt('uiIndex.kWaiveQuoteMismatch', { p1: waiveQuote })
@@ -1756,6 +1786,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
           ? '\n' + fmt('uiIndex.kWaiveNoBasis', { p1: args.approver ?? '' })
           : '\n' + fmt('uiIndex.kWaiveBasis', { p1: basis.quote, p2: t(`uiIndex.kWaiveChecked_${basis.checked}`) })
         return fmt('uiIndex.k58', { p1: gateLabel(recorded.gate), p2: args.approver, p3: args.reason, p4: describeGate(recorded) }) + basisLine
+      }
+      if (args.action === 'unwaive') {
+        // **N-10（R-23③ / R-29③）**：撤销一条豁免 —— 误探自愈的唯一出口（`waivedGates` 只增不减）。
+        if (args.gate === undefined) return t('uiIndex.k56')
+        if ((args.reason ?? '').trim() === '') return t('uiIndex.kUnwaiveNoReason')
+        const approver = (args.approver ?? '').trim() === '' ? 'human' : (args.approver ?? '').trim()
+        const removed = office.unwaiveGate(call, args.gate, args.reason ?? '', approver)
+        if (!removed.ok) return `${removed.code}：${removed.detail}`
+        const process = office.process(call)
+        const lines = [
+          fmt('uiIndex.kUnwaiveDone', {
+            p1: gateLabel(removed.gate),
+            p2: removed.waivedGates.length === 0 ? t('uiIndex.kUnwaiveNone') : removed.waivedGates.join(' '),
+          }),
+        ]
+        if (!removed.inProcess && process !== undefined) {
+          lines.push(fmt('uiIndex.kUnwaiveNotInProcess', { p1: gateLabel(removed.gate), p2: process.id ?? '' }))
+        }
+        lines.push(t('uiIndex.kUnwaiveSignatureNote'))
+        return lines.join('\n')
       }
       if (args.action !== 'check') return fmt('uiIndex.k59', { p1: args.action, p2: GATE_ACTIONS.join(' | ') })
       if (args.gate === undefined) return t('uiIndex.k60')
@@ -2039,6 +2089,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
             .requirements(call)
             .find((item) => item.id === args.id)
             ?.acceptance.map((ac) => ac.id) ?? []
+          // **N-7（D-21④）**：动的是不是**受控字段**（已冻结需求上的 AC）—— 规范路径是 `change`。
+          const controlledAcceptance =
+            criteria.length > 0
+            && (office.requirements(call).find((item) => item.id === args.id)?.status === 'baselined')
           const result = office.update(call, {
             id: args.id,
             ...(Object.keys(patch).length === 0 ? {} : { patch }),
@@ -2056,7 +2110,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 .filter((item) => item.from !== '' && item.from !== item.to)
             : []
           return describeRequirementUpdate(
-            { ...result, ...(renumbered.length === 0 ? {} : { acceptanceRenumbered: renumbered }) },
+            {
+              ...result,
+              ...(renumbered.length === 0 ? {} : { acceptanceRenumbered: renumbered }),
+              ...(controlledAcceptance ? { controlledAcceptance: true } : {}),
+            },
             office.shapeNotes(call),
           )
         }

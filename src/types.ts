@@ -602,7 +602,7 @@ export interface DesignConfirmation {
    * 病因：设计确认的 `basis` 过去**从不核对**，模型可以自编一句"用户原话"盖上"用户本人确认"的戳，
    * 而 G3 的 `design.confirmed` 认它。
    */
-  basisChecked?: 'session' | 'unavailable' | undefined
+  basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined
   by: string
   at: string
   /**
@@ -868,7 +868,7 @@ export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'release'
 export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list', 'env'] as const
 export const REVIEW_ACTIONS = ['record', 'rehash', 'list'] as const
 export const DELIVER_ACTIONS = ['run', 'package', 'show'] as const
-export const GATE_ACTIONS = ['check', 'advance', 'sign', 'waive', 'rollback'] as const
+export const GATE_ACTIONS = ['check', 'advance', 'sign', 'waive', 'unwaive', 'rollback'] as const
 export const FEASIBILITY_ACTIONS = ['assess'] as const
 export const RISK_ACTIONS = ['log', 'update', 'list', 'conclude'] as const
 export const REQUIREMENT_ACTIONS = [
@@ -1306,6 +1306,13 @@ export interface GateSignature {
    * 允许再签一次；否则（同一处老话）在"本门已失效"之后复用 ⇒ 拒绝。宿主拿不到会话历史时留空 ⇒ 按保守口径拒绝。
    */
   basisAt?: number | undefined
+  /**
+   * **H2a/H4（2026-10-09 整体评审）**：命中这条依据的**用户消息 id**（跨压缩稳定）。
+   *
+   * 旧口径的重放键是"整串精确相等"的**调用方自选片段** ⇒ 同一句话换个片段就能重签；
+   * 而"用户又说了一次"与"复用旧话"的区别只有消息身份能说清（下标会被压缩改小）。
+   */
+  basisMsgId?: string | undefined
   /** **依据是本次当场取回的**（`channel=question`：工具自己问用户）⇒ 不参与"重放"判定 */
   basisFresh?: boolean | undefined
   /**
@@ -1315,7 +1322,7 @@ export interface GateSignature {
    * （旧实现在这种情况下**静默放行**，于是"防代签"的强度随宿主而变，且用户与审计都不知道）。
    * 口令留痕后，回执与门禁 detail 都会显式标注"本次签字未经过会话历史核对"。
    */
-  basisChecked?: 'session' | 'unavailable' | undefined
+  basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined
   /** 签字时的 journal 序号（用于「签字后声明/需求变更 → 签字失效」） */
   atSeq: number
 }

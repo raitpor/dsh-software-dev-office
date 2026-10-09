@@ -1,37 +1,6 @@
 # dsh-software-dev-office（SDO）
 
-> **一个 agent software dev office**：在同一个会话里，把「可行性 → 需求 → 架构 → 拆分 → 实现 → 测试 → 交付」
-### 9.1b 实现阶段方法包（增量 3）
-
-进**构造阶段**（`construction`；敏捷/螺旋在 `iteration` 里构造）后，**先让流程官决定方法包**，否则**不给认领**：
-
-```text
-sdo_plan action=profile packages='["tdd","contract-first"]' derivedFrom='["reqKind=functional(REQ-001)","contractCount=12"]' \
-                          reason="12 个契约已冻结，普通规模"        # scope 省略 = all；exempt='[{...}]' 逐项豁免
-```
-
-- **模型自选，不问用户**；但 `derivedFrom` **至少一条要能被机械核对**（`reqKind=<kind>(<REQ-id>)` 比对需求台账、
-  `contractCount=<n>` 比对契约数、`scale=<档位>` 比对 `.sdo/config.yml`），校验不过**整次拒绝、不写盘**。
-- **显式不选任何包**（`packages='[]'` + `reason`）是合法的 N/A：判据 N/A，但理由要留下。
-- **哪些会被拦**（开工关 = `claim`）：构造阶段没有 profile → `construction-profile-missing`；
-  选了 `contract-first` 而卡所涉契约**没先冻结** → `contract-not-frozen`。
-- **收工关 = `done`**：`tdd` 要求该卡覆盖的每条需求**先 fail 后 pass**（读 `.sdo/tests/results/TR-*.yml`，与 C7 同源）；
-  `critical` 档位还要**变异自证**（`.sdo/construction/tdd.yml` 里 `killed ≥ 1`）；`contract-first` 要有**契约测试记录**（`.sdo/construction/contract-first.yml`）。
-- **变异记录的 `target` 建议写清**（可空、**不判红**）：只写「用某工具杀了 ≥1 个变异」而没说**改了什么**，复核者没法跟着复跑；回执会在 `target` 为空时提示一句。另需知道：`killed`/`survived` 是**自报数**（插件无法独立验证），证据强度取决于谁在做、以及 `target` 是否写得可复跑。
-- **怎么记交付物**（可选，也可直接手写这两份 yml）：
-  ```text
-  sdo_test action=record mutation='{"task":"TASK-004","tool":"node --test","target":"lib/x.js","killed":3,"survived":0}'
-  sdo_test action=record contractTest='{"task":"TASK-005","contract":"CT-003","tool":"node --test","cmd":"node --test test/ct003.test.js"}'
-  ```
-  契约 id 必须在台账里存在（否则**整次拒收、不写盘**）；`killed = 0` 也允许落盘（"变异没杀掉"是有价值的事实，判据自己会判）。
-- **结果文件的来源会被核对**：C7 与红→绿时序都读 `.sdo/tests/results/TR-*.yml`，但**文件必须在 journal 里有对应 `test/recorded` 事件** —— 只有文件、没有事件的记录判 `tdd-result-untraceable`（堵住「手写结果文件」这条伪造路）。两条路径用的是同一道核对。
-- **交付物只落"无法现算"的事实**：红→绿时序、契约冻结序号都从既有真源现算，不另存一份；
-  `.sdo/construction/*.yml` 可手写，也可由既有工具写入（`sdo_test` 的扩展见增量 3 设计文档第 6 步）。
-- **复议**：随时可再调 `action=profile`（覆盖选择，把**被覆盖的那次**记进 `history`）；**已完成的卡不追溯判红**。
-- **升级影响**：正在构造阶段的项目需要先跑一次 `action=profile`（或显式 `packages='[]'` 表明不启用）；已过 G4/G5 的不追溯。
-- **门禁判据**：顺序流程（waterfall/prototype/spiral）在 **G4** 加 `C-33`（方法包已决定）、**G5** 加 `C-43`（范围内已完成卡满足所选包）；
-  **agile 没有 construction 阶段**（构造发生在迭代里）⇒ 两条挂在迭代门 **GI**（`C-83`/`C-84`）。显式不选包时两条都是 **N/A**（不计入全绿分子）。
-  复议本身不追溯，但要放过历史卡请写**豁免**（`exempt: [{task, check, why}]`，理由必填、且会被判据点名）。
+> **一个 agent software dev office**：在同一个会话里，把「可行性 → 需求 → 架构 → 拆分 → 实现 → 测试 → 交付」整条链走完。
 
 按**门禁**推进；每一步的判据结论、证据、签字都落在可复算的台账里。
 > 基于 **dsh `0.2.0`**（deepseek-harness 原生 Cordis 插件）。覆盖到「可部署产物 + 验收矩阵 + 回滚点」为止，**发布与运维不是它的范围**。
@@ -235,7 +204,7 @@ README 以前写成"已受约束"是**不准确**的（D12）。要用它们做�
 | 计划与协同 | `sdo_plan`（decompose / iteration / next / profile）、`sdo_task`（list / claim / done / block / drop / release / reassign / update / verify-review）（`update` 改卡字段含写范围；已完成卡不改、有人在做时不得改写范围） |
 | 验证与评审 | `sdo_test`（plan / record / defect / list / env）、`sdo_review`（record / rehash / list）—— `rehash` = 给**老格式评审**补记内容指纹（补记之后改 verdict/正文可检出）—— 评审核实在 `sdo_task`（list / … / **verify-review**）：实现方逐条核实评审发现（复现 / 反证），核实过的评审才会被门禁采纳 |
 | 追溯与文档 | `sdo_trace`（link / unlink / query / report）、`sdo_render` |
-| 门禁与成本 | `sdo_gate`（check / advance / sign / waive / rollback）、`sdo_cost`（report） |
+| 门禁与成本 | `sdo_gate`（check / advance / sign / waive / unwaive / rollback）、`sdo_cost`（report） |
 | 交付 | `sdo_deliver`（run / package / show） |
 
 ### 设计方法包（`sdo_design action=grill` 的 `design:method` 题）
@@ -469,6 +438,49 @@ SDO 只对自己派发出去的子会话（台账 `dispatch/started`）记账，
 现在**只下发 `deny`**（不发 `allow`）：`allow` 一填就把整个通用面挡掉了（见上）。
 该下发已在真机上跑通并观测到子会话的公告面（`evidence/child-tools.jsonl`，`violations: []`）。
 
+### 9.1b 实现阶段方法包（增量 3）
+
+进**构造阶段**（`construction`；敏捷/螺旋在 `iteration` 里构造）后，**先让流程官决定方法包**，否则**不给认领**：
+
+```text
+sdo_plan action=profile packages='["tdd","contract-first"]' derivedFrom='["reqKind=functional(REQ-001)","contractCount=12"]' \
+                          reason="12 个契约已冻结，普通规模"        # scope 省略 = all；exempt='[{...}]' 逐项豁免
+```
+
+- **模型自选，不问用户**；但 `derivedFrom` **至少一条要能被机械核对**（`reqKind=<kind>(<REQ-id>)` 比对需求台账、
+  `contractCount=<n>` 比对契约数、`scale=<档位>` 比对 `.sdo/config.yml`），校验不过**整次拒绝、不写盘**。
+- **显式不选任何包**（`packages='[]'` + `reason`）是合法的 N/A：判据 N/A，但理由要留下。
+- **哪些会被拦**（开工关 = `claim`）：构造阶段没有 profile → `construction-profile-missing`；
+  选了 `contract-first` 而卡所涉契约**没先冻结** → `contract-not-frozen`。
+- **收工关 = `done`**：`tdd` 要求该卡覆盖的每条需求**先 fail 后 pass**（读 `.sdo/tests/results/TR-*.yml`，与 C7 同源）；
+  `critical` 档位还要**变异自证**（`.sdo/construction/tdd.yml` 里 `killed ≥ 1`）；`contract-first` 要有**契约测试记录**（`.sdo/construction/contract-first.yml`）。
+- **变异记录的 `target` 建议写清**（可空、**不判红**）：只写「用某工具杀了 ≥1 个变异」而没说**改了什么**，复核者没法跟着复跑；回执会在 `target` 为空时提示一句。另需知道：`killed`/`survived` 是**自报数**（插件无法独立验证），证据强度取决于谁在做、以及 `target` 是否写得可复跑。
+- **怎么记交付物**（可选，也可直接手写这两份 yml）：
+  ```text
+  sdo_test action=record mutation='{"task":"TASK-004","tool":"node --test","target":"lib/x.js","killed":3,"survived":0}'
+  sdo_test action=record contractTest='{"task":"TASK-005","contract":"CT-003","tool":"node --test","cmd":"node --test test/ct003.test.js"}'
+  ```
+  契约 id 必须在台账里存在（否则**整次拒收、不写盘**）；`killed = 0` 也允许落盘（"变异没杀掉"是有价值的事实，判据自己会判）。
+- **结果文件的来源会被核对**：C7 与红→绿时序都读 `.sdo/tests/results/TR-*.yml`，但**文件必须在 journal 里有对应 `test/recorded` 事件** —— 只有文件、没有事件的记录判 `tdd-result-untraceable`（堵住「手写结果文件」这条伪造路）。两条路径用的是同一道核对。
+- **交付物只落"无法现算"的事实**：红→绿时序、契约冻结序号都从既有真源现算，不另存一份；
+  `.sdo/construction/*.yml` 可手写，也可由既有工具写入（`sdo_test` 的扩展见增量 3 设计文档第 6 步）。
+- **复议**：随时可再调 `action=profile`（覆盖选择，把**被覆盖的那次**记进 `history`）；**已完成的卡不追溯判红**。
+- **升级影响**：正在构造阶段的项目需要先跑一次 `action=profile`（或显式 `packages='[]'` 表明不启用）；已过 G4/G5 的不追溯。
+- **门禁判据**：顺序流程（waterfall/prototype/spiral）在 **G4** 加 `C-33`（方法包已决定）、**G5** 加 `C-43`（范围内已完成卡满足所选包）；
+  **agile 没有 construction 阶段**（构造发生在迭代里）⇒ 两条挂在迭代门 **GI**（`C-83`/`C-84`）。显式不选包时两条都是 **N/A**（不计入全绿分子）。
+  复议本身不追溯，但要放过历史卡请写**豁免**（`exempt: [{task, check, why}]`，理由必填、且会被判据点名）。
+
+### 9.1c 派发汇报（子 agent 取汇报）与子代理复用
+
+- **取汇报（推 + 拉）**：子代理结算后的报告会**自动贴在你下一次调用任何 SDO 工具的回执**上（最多 3 份，送达一次后不再重复；载体是工具回执 —— 宿主没有子会话→父会话的投递通道）；`sdo_status` 同时保留「**最近完成的派发**」块供随时拉取（卡 / 子会话 / 结论 / 耗时 / 报告落点 + 摘要）。子代理结算时（`turn/end`）会写
+  `dispatch/finished` 并把它的**最后一条助手消息**落到 `.sdo/evidence/child-reports/<卡>-<子会话前8位>.md`（按卡切，复用时不覆盖；读者按 `dispatch/finished.report` 读回）；派发回执也会给出复用/观测口径。
+- **观测失败不再静默**：采集类失败仍 fail-open，但会记一条 `dispatch/observe-failed`（真机上曾丢过三次派发的观测）。
+- **复用**：宿主 `subagents.start` 目前**只发 one-shot**（宿主 `Service.start()` 里把描述符写死 `mode: one-shot`），所以每次派发都是新会话、无法复用；
+  宿主**已经**提供可续聊入口（`subagents.startContinuable` / `sendMessage`，后者按宿主注释「空闲的目标会起一轮」），
+  插件侧已实现**角色池 + 卡队列**：逐角色并行上限（`poolCaps`）、池满排队不丢卡、结算后把下一张卡**投给空闲的同一个子代理**（真复用）。
+  投递由驾驶舱触发（`sdo_plan action=next`），插件不自主起代理；宿主不可续聊时如实降级为 one-shot + 并发上限。
+- 设计与探测证据见 [`docs/plan/2026-10-04-派发汇报与子代理复用-设计.md`](docs/plan/2026-10-04-派发汇报与子代理复用-设计.md)。
+
 ## 10. 台账与产物
 
 ```text
@@ -522,17 +534,6 @@ skills/ 8 张角色卡（analyst / architect / red-team / developer / tester / r
 
 > 文档索引与权威性（哪些文档是现行、哪些是历史）：见 [`docs/README.md`](docs/README.md)。设计与实现的偏移核实见 [`docs/verification/2026-10-03-设计与实现偏移核实.md`](docs/verification/2026-10-03-设计与实现偏移核实.md)。
 
-### 9.1c 派发汇报（子 agent 取汇报）与子代理复用
-
-- **取汇报（推 + 拉）**：子代理结算后的报告会**自动贴在你下一次调用任何 SDO 工具的回执**上（最多 3 份，送达一次后不再重复；载体是工具回执 —— 宿主没有子会话→父会话的投递通道）；`sdo_status` 同时保留「**最近完成的派发**」块供随时拉取（卡 / 子会话 / 结论 / 耗时 / 报告落点 + 摘要）。子代理结算时（`turn/end`）会写
-  `dispatch/finished` 并把它的**最后一条助手消息**落到 `.sdo/evidence/child-reports/<卡>-<子会话前8位>.md`（按卡切，复用时不覆盖；读者按 `dispatch/finished.report` 读回）；派发回执也会给出复用/观测口径。
-- **观测失败不再静默**：采集类失败仍 fail-open，但会记一条 `dispatch/observe-failed`（真机上曾丢过三次派发的观测）。
-- **复用**：宿主 `subagents.start` 目前**只发 one-shot**（宿主 `Service.start()` 里把描述符写死 `mode: one-shot`），所以每次派发都是新会话、无法复用；
-  宿主**已经**提供可续聊入口（`subagents.startContinuable` / `sendMessage`，后者按宿主注释「空闲的目标会起一轮」），
-  插件侧已实现**角色池 + 卡队列**：逐角色并行上限（`poolCaps`）、池满排队不丢卡、结算后把下一张卡**投给空闲的同一个子代理**（真复用）。
-  投递由驾驶舱触发（`sdo_plan action=next`），插件不自主起代理；宿主不可续聊时如实降级为 one-shot + 并发上限。
-- 设计与探测证据见 [`docs/plan/2026-10-04-派发汇报与子代理复用-设计.md`](docs/plan/2026-10-04-派发汇报与子代理复用-设计.md)。
-
 ## 12. 开发与发布
 
 ```bash
@@ -552,7 +553,7 @@ npm run pack:offline   # 产出离线安装包 → dist/offline/
 发布：
 
 ```bash
-git tag -a v0.1.2 -m "SDO v0.1.2" && git push origin v0.1.2
+git tag -a v0.1.3 -m "SDO v0.1.3" && git push origin v0.1.3
 ```
 
 ### 离线安装包

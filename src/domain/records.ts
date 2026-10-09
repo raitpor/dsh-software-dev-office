@@ -266,7 +266,11 @@ export function evidenceFreshness(
 ): { stale: { resultId: string; caseId: string; reason: string }[]; unrecorded: string[] } {
   const stale: { resultId: string; caseId: string; reason: string }[] = []
   const unrecorded: string[] = []
-  for (const result of listTestResults(store)) {
+  // **P-7（2026-10-09 复测建议评估，真机复跑实证）**：这里旧实现是 `for (const result of listTestResults(store))`
+  // —— 平铺**全部历史**。于是"某用例早年的 pass 绑着旧产物哈希"会被**永久**算作过期证据，
+  // 哪怕同一用例早已有更新的 pass（真机 9 条告警里 7 条属这种）。时效问的是"**我们现在依赖的那份**证据
+  // 还新鲜吗"，所以只看每条用例的**最新**结果 —— 与 `verificationStats` 用**同一份** latest-wins 实现。
+  for (const result of latestResultPerCase(listTestResults(store))) {
     if (result.status !== 'pass') continue
     if ((result.env ?? '') === '') {
       unrecorded.push(result.id)
@@ -289,6 +293,38 @@ export function evidenceFreshness(
     }
   }
   return { stale, unrecorded }
+}
+
+/**
+ * **每条用例只保留最新的一条结果**（latest-wins 的**唯一实现**）。
+ *
+ * 排序口径：`at` 更大的更新；`at` 拿不到（老台账手写的记录）时按 **id 的数字序**兜底 ——
+ * `idOf` 保证 id 递增分配，所以"更大的 TR 号 = 更晚记录"。两者都拿不到就保留先遇到的那条。
+ *
+ * **为什么必须只有一份实现**（D-24 级别的教训）：`verificationStats`（SDO-50 修过）与
+ * `evidenceFreshness`（**漏改**）本来是同一件事的两处代码 —— 后者一直平铺遍历全部历史，
+ * 于是"同用例早已有更新的 pass"的旧记录被**永久**算作过期证据：真机 9 条过期告警里 7 条属这种，
+ * 每份交付都带一串必然出现、且**没有任何动作可做**的告警（报警疲劳，正是本项目反复警惕的那种）。
+ */
+export function latestResultPerCase<T extends { id: string; caseId: string; at?: string | undefined }>(
+  results: readonly T[],
+): T[] {
+  const numeric = (id: string): number => {
+    const match = /(\d+)/u.exec(id)
+    return match === null ? -1 : Number(match[1])
+  }
+  const newer = (candidate: T, current: T): boolean => {
+    const a = textOf(candidate.at)
+    const b = textOf(current.at)
+    if (a !== '' && b !== '' && a !== b) return a > b
+    return numeric(candidate.id) >= numeric(current.id)
+  }
+  const latest = new Map<string, T>()
+  for (const result of results) {
+    const previous = latest.get(result.caseId)
+    if (previous === undefined || newer(result, previous)) latest.set(result.caseId, result)
+  }
+  return [...latest.values()]
 }
 
 /** 验证统计（G5/G6 用）。 */
@@ -319,14 +355,9 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
   // **SDO-50（真机，判据层自锁）**：旧实现把所有历史结果**平铺**统计 ⇒ 一条用例历史上出现过一次 fail
   // 就**永远**留在红名单里，而门禁给的补救话术是「修好并重跑」——重跑只能新增一条 pass，
   // 旧 fail 不会被替代 ⇒ **补救动作在机制上不可能奏效**（真机 TC-053：TR-061 fail 01:04 / TR-066 pass 08:01，
-  // G6 判定 08:12 仍红）。现在按 `caseId` 分组、取 `at` **最新**的一条（latest-wins）；
+  // G6 判定 08:12 仍红）。现在按 `caseId` 分组取**最新**一条（latest-wins）；
   // 完整历史仍留在 `tests/results/` 与 journal 里（「失败→修复→改判」的证据链不丢）。
-  const latest = new Map<string, (typeof allResults)[number]>()
-  for (const result of allResults) {
-    const previous = latest.get(result.caseId)
-    if (previous === undefined || String(result.at) >= String(previous.at)) latest.set(result.caseId, result)
-  }
-  const results = [...latest.values()]
+  const results = latestResultPerCase(allResults)
   const defects = listDefects(store)
   const failed = results.filter((result) => result.status === 'fail')
   // **D4**：逐条核对"这条结果有没有 `test/recorded` 事件佐证"
@@ -630,23 +661,48 @@ export function listManifests(store: SdoStore): DeliveryManifest[] {
     .sort((a, b) => a.id.localeCompare(b.id))
 }
 
+/**
+ * 读真机运行记录（`.sdo/delivery/runs.yml`，手可编辑真源）**并交回形状提示**。
+ *
+ * **B-1（2026-10-09 建议评估的机械普查）**：本文件里只有这一处列表读取**没有 Checked 变体** ——
+ * 形状写坏（`runs:` 写成映射/标量，或列表里混进一个标量）时 `recordListOf` 会把坏元素**丢掉**，
+ * 而调用方只取 `.value` ⇒ 悄无声息地"一条运行记录都没有"。更糟的是 `recordRun` 会以这份读回结果
+ * 为基底**整份重写** `runs.yml` ⇒ 手写坏一行就**永久丢掉**其余历史运行记录。
+ * 现在与其它实体同口径：`*Checked` 交回 notes，`listRuns` 仍只取 runs，`runsShapeNotes` 供回执/门禁，
+ * 而**写入端在形状坏时拒绝覆盖**（读不出就别写，这是本项目"最好的不静默"）。
+ */
+export function readRunsChecked(store: SdoStore): { runs: RunRecord[]; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const record = store.readYaml<{ runs?: unknown }>('delivery', 'runs.yml')
+  const read = recordListOf<RunRecord>(record?.runs, (text) => ({
+    id: text, target: '', command: '', outcome: 'fail', evidence: '', artifact: '', artifactSha256: '', at: '', by: '',
+  }))
+  pushShapeNote(notes, 'runs', 'runs.yml', 'runs', read.issue)
+  return {
+    runs: read.value.map((run) => ({
+      id: textOf(run.id),
+      target: textOf(run.target),
+      command: textOf(run.command),
+      outcome: textOf(run.outcome) === 'pass' ? 'pass' : 'fail',
+      exitCode: textOf(run.exitCode),
+      evidence: textOf(run.evidence),
+      artifact: textOf(run.artifact),
+      artifactSha256: textOf(run.artifactSha256),
+      at: textOf(run.at),
+      by: textOf(run.by),
+    })),
+    notes,
+  }
+}
+
+/** `runs.yml` 上的形状提示（回执 / 门禁共用）。 */
+export function runsShapeNotes(store: SdoStore): FieldShapeNote[] {
+  return readRunsChecked(store).notes
+}
+
 /** 读真机运行记录（`.sdo/delivery/runs.yml`，手可编辑真源）。 */
 export function listRuns(store: SdoStore): RunRecord[] {
-  const record = store.readYaml<{ runs?: unknown }>('delivery', 'runs.yml')
-  return recordListOf<RunRecord>(record?.runs, (text) => ({
-    id: text, target: '', command: '', outcome: 'fail', evidence: '', artifact: '', artifactSha256: '', at: '', by: '',
-  })).value.map((run) => ({
-    id: textOf(run.id),
-    target: textOf(run.target),
-    command: textOf(run.command),
-    outcome: textOf(run.outcome) === 'pass' ? 'pass' : 'fail',
-    exitCode: textOf(run.exitCode),
-    evidence: textOf(run.evidence),
-    artifact: textOf(run.artifact),
-    artifactSha256: textOf(run.artifactSha256),
-    at: textOf(run.at),
-    by: textOf(run.by),
-  }))
+  return readRunsChecked(store).runs
 }
 
 export interface RunInput {
@@ -678,7 +734,17 @@ export function recordRun(
   if (command === '') return { ok: false, detail: '必须写下真实执行的命令（要可复跑）' }
   if (evidence === '') return { ok: false, detail: '必须给出运行证据（日志路径 / 截图 / 人工确认说明）' }
   const artifact = (input.artifact ?? '').trim()
-  const existing = listRuns(store)
+  // **B-1**：`runs.yml` 形状坏时**拒绝写入** —— 这份写入是"整份重写"，以读回结果为基底，
+  // 坏形状会让它把没读出来的历史记录**永久抹掉**（本项目最忌讳的静默丢内容）。
+  const checked = readRunsChecked(store)
+  if (checked.notes.length > 0) {
+    return {
+      ok: false,
+      detail: 'runs.yml 的形状读不动（见形状提示）—— 本次**没有写入**，以免整份覆盖把历史运行记录抹掉；'
+        + '请先按 YAML 子集修好 `.sdo/delivery/runs.yml`（`runs:` 必须是记录列表）再重试',
+    }
+  }
+  const existing = checked.runs
   const run: RunRecord = {
     // **D3**：`RUN-` 旧实现按 `existing.length + 1` 数条数 ⇒ 删一条就复用号；改走并集分配
     id: nextId('RUN', [...existing.map((item) => item.id), ...journalIds(journal, 'RUN')]),

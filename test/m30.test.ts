@@ -530,13 +530,22 @@ test('M30-18 A2 补取的接线：done 之前先补，且补不到不拦', () =>
   assert.match(office, /noteResolvedWorkspaceChanges\(call: OfficeCall/u)
 })
 
-test('M30-19 文档守卫：CHANGELOG 不许写死"全量 N/N"（两次漂移后改为与测试输出同源）', () => {
+test('M30-19 文档守卫：CHANGELOG 不许写死"N/N"计数（两次漂移后改为与测试输出同源）', () => {
   // 事故史：写「全量 430/430」→ 加用例后变 433；改「438」→ 又变 441。写死的计数必然漂移，
   // 所以改成"以 node scripts/run-tests.mjs 输出为准"，并在这里禁止它再出现。
+  //
+  // **2026-10-09 整体评审 N2**：旧守卫只禁 `全量 **N/N**` 这一种字面形式，于是
+  // 「`tsc` 0 错、**722/722**」「变异 **7/7 全杀**」「**459/459**」这些同义写法全都漏过去 ——
+  // 与该项目自己"P-4 第二次复发，改为根治"的结论相悖。现在禁的是**任何** `**N/N**` 形式：
+  // 要报计数就指向命令输出（本轮起全文已按此改写），要报变异条数就写「N 条全部被杀」这类不带斜杠的形式
+  // （变异计数是**该轮的事实**、不会漂移，保留它才有信息量）。
   const changelog = readFileSync(new URL('../../CHANGELOG.md', import.meta.url), 'utf8')
-  const hardcoded = [...changelog.matchAll(/全量 \*\*\d+\/\d+\*\*/gu)].map((match) => match[0])
-  assert.deepEqual(hardcoded, [], `CHANGELOG 里不要写死测试计数（会漂移）：${hardcoded.join('、')}`)
+  const hardcoded = [...changelog.matchAll(/\*\*\d+\/\d+\*\*/gu)].map((match) => match[0])
+  assert.deepEqual(hardcoded, [], `CHANGELOG 里不要写死"N/N"计数（会漂移）：${hardcoded.join('、')}`)
   assert.match(changelog, /run-tests\.mjs/u, '要指向真正的计数来源')
+  // 守卫自证：改坏一份副本必须被报出来（不是空断言）
+  const broken = changelog + '\n（示例）全量 **999/999** 通过。\n'
+  assert.equal([...broken.matchAll(/\*\*\d+\/\d+\*\*/gu)].length, 1, '把计数写回去必须能被这条守卫抓到')
 })
 
 test('M30-20 C7 也有来源核对（评审建议 1）：结果文件在 journal 里没有事件 ⇒ 不算数、done 判红', () => {

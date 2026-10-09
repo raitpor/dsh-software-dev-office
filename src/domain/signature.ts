@@ -97,6 +97,17 @@ export function latestSignature(store: SdoStore, gate: string): GateSignature | 
 }
 
 /**
+ * **依据文本的归一化**（唯一实现，H1/H2/H3 共用）。
+ *
+ * 为什么必须只有一份：H3 的绕过正是"来源核对把空白归一了、防重放却只 `trim()`"——
+ * 同一句话加一个空格就能把旧授权重新盖到新内容上。凡是要比较"这句话是不是同一句"的地方
+ * （来源核对 / 签字重放 / 设计确认重放）都走这里。
+ */
+export function normalizeBasis(text: string): string {
+  return text.trim().replace(/\s+/gu, ' ')
+}
+
+/**
  * **本门最近一次"失效事件"的序号**（R-27）：没有失效事件 ⇒ `undefined`。
  *
  * 失效判据复用签字状态那一侧的同一条函数（`isSignatureInvalidatingEvent`）—— 两处口径必须一致，
@@ -123,25 +134,67 @@ export function basisReplay(
   journal: Journal,
   gate: string,
   basis: string,
-  basisAt?: number | undefined,
-): { replayed: boolean; usedAtSeq?: number | undefined; lastInvalidation?: number | undefined; sameOccurrence?: boolean | undefined } {
-  const wanted = basis.trim().replace(/\s+/gu, ' ')
-  const uses = listSignatures(store)
-    .filter((signature) => gateKeyOf(signature.gate) === gateKeyOf(gate))
-    .filter((signature) => signature.basis.trim().replace(/\s+/gu, ' ') === wanted)
-    .sort((a, b) => a.atSeq - b.atSeq)
-  const first = uses[0]
+  /**
+   * **这次依据的出处身份**（H2a/H4，2026-10-09 整体评审）：
+   *   · `basisMsgId` = 命中那条**用户消息的稳定 id**（跨压缩不变）——**首选**判据；
+   *   · `basisAt` = 会话派生消息的**下标**，只作提示/审计（压缩会让它变小，不能当判据）。
+   */
+  occurrence?: { basisAt?: number | undefined; basisMsgId?: string | undefined },
+): {
+  replayed: boolean
+  usedAtSeq?: number | undefined
+  lastInvalidation?: number | undefined
+  sameOccurrence?: boolean | undefined
+  /** 判定用的是哪一种身份（审计与回执要能说清） */
+  by: 'message-id' | 'text-fallback'
+} {
+  const wanted = normalizeBasis(basis)
   const lastInvalidation = lastInvalidationSeq(journal, gate)
+  const mine = listSignatures(store)
+    .filter((signature) => gateKeyOf(signature.gate) === gateKeyOf(gate))
+    .sort((a, b) => a.atSeq - b.atSeq)
+  // **H2a 修法（关键）**：先按**消息身份**查 —— 一次表态只算一次背书，与"调用方引用了这句话的哪一段"无关。
+  // 旧口径先按"整串相等"筛，于是同一句话换个片段就找不到旧记录 ⇒ 判成新表态（报告里的 (a) 绕行）。
+  const msgId = occurrence?.basisMsgId
+  const byMessage = msgId === undefined || msgId === '' ? [] : mine.filter((signature) => signature.basisMsgId === msgId)
+  if (byMessage.length > 0) {
+    const usedAt = byMessage[0]!.atSeq
+    const staleMessage = lastInvalidation !== undefined && usedAt < lastInvalidation
+    return {
+      replayed: staleMessage,
+      by: 'message-id',
+      usedAtSeq: usedAt,
+      sameOccurrence: true,
+      ...(lastInvalidation === undefined ? {} : { lastInvalidation }),
+    }
+  }
+  const uses = mine.filter((signature) => normalizeBasis(signature.basis) === wanted)
+  const first = uses[0]
   if (first === undefined) {
-    return { replayed: false, ...(lastInvalidation === undefined ? {} : { lastInvalidation }) }
+    return { replayed: false, by: 'message-id', ...(lastInvalidation === undefined ? {} : { lastInvalidation }) }
   }
   const stale = lastInvalidation !== undefined && first.atSeq < lastInvalidation
-  // **R-27（反向放宽）**：同一句话**又出现在更靠后的用户消息里** ⇒ 那是用户**新的**表态，不是重放。
-  // 拿不到任何位置证据（宿主没有会话历史 / 直接调 API）时**按拒绝处理** —— 这是保守方向：
-  // 宁可让用户重新说一次，也不许把"曾经说过一句话"当成"此刻为这份内容背书"。
+  // **H2a/H4 修法**：身份是**消息**，不是调用方挑的片段（`includes` 命中哪条消息就是哪条），
+  // 也不是会随压缩漂移的下标。
+  //   · 本次给得出消息 id、且**历史上用过这条消息** ⇒ 同一次表态被复用 ⇒ 重放；
+  //   · 历史上用过同文本、但**是另一条消息**（用户又原样说了一次）⇒ 新的表态 ⇒ 放行；
+  //   · 拿不到消息 id（旧宿主/直接调 API/老签字）⇒ 退回老口径（同文本即重放），保守方向不变。
+  const withId = uses.filter((signature) => (signature.basisMsgId ?? '') !== '')
+  if (msgId !== undefined && msgId !== '' && withId.length > 0) {
+    const sameMessage = withId.some((signature) => signature.basisMsgId === msgId)
+    return {
+      replayed: stale && sameMessage,
+      by: 'message-id',
+      usedAtSeq: first.atSeq,
+      sameOccurrence: sameMessage,
+      ...(lastInvalidation === undefined ? {} : { lastInvalidation }),
+    }
+  }
+  const basisAt = occurrence?.basisAt
   const freshOccurrence = basisAt !== undefined && first.basisAt !== undefined && basisAt > first.basisAt
   return {
     replayed: stale && !freshOccurrence,
+    by: 'text-fallback',
     usedAtSeq: first.atSeq,
     ...(basisAt === undefined ? {} : { sameOccurrence: !freshOccurrence }),
     ...(lastInvalidation === undefined ? {} : { lastInvalidation }),
@@ -155,10 +208,25 @@ export interface RecordSignatureInput {
   basis: string
   channel: 'command' | 'question'
   turn?: string | undefined
-  /** R-7：引用是否与本次会话的用户发言核对过（拿不到会话历史时如实记 `unavailable`） */
-  basisChecked?: 'session' | 'unavailable' | undefined
-  /** **R-27**：这条依据在会话派生消息里的位置（最后一条命中它的用户消息下标） */
+  /**
+   * R-7：引用是否与本次会话的用户发言核对过。
+   *   · `session`：与**人类出处**（`source.kind === 'user'`）的发言核对过（强口径）；
+   *   · `role-only`：宿主消息没有出处信息，只按 `role === 'user'` 退而求其次（**弱口径，H1**）；
+   *   · `unavailable`：宿主拿不到会话历史（如实记，不当成核对过）。
+   */
+  basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined
+  /**
+   * **R-27**：这条依据在会话派生消息里的位置（最后一条命中它的用户消息下标）。
+   * **H4**：只作审计/提示 —— 压缩会让下标变小，判定不再依赖它（见 `basisMsgId`）。
+   */
   basisAt?: number | undefined
+  /**
+   * **H2a/H4（2026-10-09 整体评审）**：命中这条依据的**用户消息 id**（跨压缩稳定）。
+   *
+   * 为什么它是更对的键：旧口径让调用方**自选片段**（`includes` 命中即可），于是"同一句话换个片段"
+   * 就能重签；而"用户又说了一次"与"复用旧话"的区别，只有**消息身份**能说清（下标会被压缩改小）。
+   */
+  basisMsgId?: string | undefined
   /**
    * **依据是本次调用当场取回的**（`channel=question`：工具自己问用户、原话不经过模型）。
    *
@@ -184,8 +252,11 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
   // 但任何直接调用 `recordSignature` 的路径也必须被拦住，否则"合规靠自律"）。
   // `basisFresh=true`（question 通道：本次当场问的用户）**不参与**重放判定。
   const replay = input.basisFresh === true
-    ? { replayed: false, usedAtSeq: undefined, lastInvalidation: undefined }
-    : basisReplay(store, journal, input.gate, basis, input.basisAt)
+    ? { replayed: false, usedAtSeq: undefined, lastInvalidation: undefined, by: 'message-id' as const }
+    : basisReplay(store, journal, input.gate, basis, {
+        ...(input.basisAt === undefined ? {} : { basisAt: input.basisAt }),
+        ...(input.basisMsgId === undefined ? {} : { basisMsgId: input.basisMsgId }),
+      })
   if (replay.replayed) {
     throw new Error(fmt('uiSignature.basisReplayed', {
       p1: input.gate,
@@ -197,7 +268,7 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
   // 依据的**首次使用序号**（本条是首次使用时等于本条自己的 seq，稍后回填）
   const prior = listSignatures(store)
     .filter((signature) => gateKeyOf(signature.gate) === gateKeyOf(input.gate))
-    .filter((signature) => signature.basis.trim().replace(/\s+/gu, ' ') === basis.replace(/\s+/gu, ' '))
+    .filter((signature) => normalizeBasis(signature.basis) === normalizeBasis(basis))
     .sort((a, b) => a.atSeq - b.atSeq)[0]
   const event = journal.append('gate/signed', {
     gate: input.gate,
@@ -207,6 +278,8 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     // **R-27**：依据的出处要进真源（审计一眼可见"这句话最早用在哪儿"）
     ...(prior === undefined ? {} : { basisFirstSeq: prior.atSeq }),
     ...(input.basisAt === undefined ? {} : { basisAt: input.basisAt }),
+    // **H2a/H4**：消息身份进真源（判定与审计都用它）
+    ...(input.basisMsgId === undefined ? {} : { basisMsgId: input.basisMsgId }),
     // **R-28**：依据是本次当场取回的（question 通道）⇒ 进真源，审计能看出"为什么它不算复读"
     ...(input.basisFresh === true ? { basisFresh: true } : {}),
     ...(input.turn === undefined ? {} : { turn: input.turn }),
@@ -222,6 +295,7 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     // 首次使用 ⇒ 记自己的序号（审计读作"这句话出现于本条"）
     basisFirstSeq: prior?.atSeq ?? event.seq,
     ...(input.basisAt === undefined ? {} : { basisAt: input.basisAt }),
+    ...(input.basisMsgId === undefined ? {} : { basisMsgId: input.basisMsgId }),
     ...(input.basisFresh === true ? { basisFresh: true } : {}),
     ...(input.turn === undefined ? {} : { turn: input.turn }),
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),

@@ -206,6 +206,20 @@ export function budgetShapeNotes(store: { readYaml<T>(...segments: string[]): T 
   return readBudgetChecked(store).notes
 }
 
+/**
+ * **拿不到用量时的成本行**（P-9，2026-10-09 复测建议评估）。
+ *
+ * 病根：没有计量来源时 `summarize([])` 给出 `totalTokens = 0`，而 {@link describeBudgetLine}
+ * 会照常渲染「成本：已消耗 0 tokens」——紧接着才说"用量不可得"。首行读起来就是"确实零消耗"
+ * （真机原话），与 D-23 的"回执假绿"同族。口径：**没有数据就说没有数据**，别拿 0 冒充一个事实。
+ */
+export function describeBudgetLineNoUsage(budget: Budget | undefined): string {
+  const tail = budget === undefined || budget.total === undefined
+    ? ''
+    : ` ｜ 预算已设：${budget.currency} ${budget.total}（消耗未知，故不给剩余/百分比）`
+  return `成本：**无用量来源**（宿主没提供 token 计量）${tail}`
+}
+
 /** 预算面板行：**没有 total 时不给剩余/百分比**。 */
 export function describeBudgetLine(summary: UsageSummary, budget: Budget | undefined): string {
   const tokens = `${summary.totalTokens} tokens`

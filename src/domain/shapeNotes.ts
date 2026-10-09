@@ -31,7 +31,7 @@ import { issueShapeNotes } from './issues.js'
 import { methodShapeNotes } from './method.js'
 import { taskShapeNotes } from './plan.js'
 import { qualityShapeNotes } from './quality.js'
-import { manifestShapeNotes } from './records.js'
+import { manifestShapeNotes, runsShapeNotes } from './records.js'
 import { requirementShapeNotes } from './requirements.js'
 import { signatureShapeNotes } from './signature.js'
 
@@ -50,6 +50,7 @@ export function collectShapeNotes(store: SdoStore): FieldShapeNote[] {
     ...applicabilityShapeNotes(store),
     ...methodShapeNotes(store),
     ...manifestShapeNotes(store),
+    ...runsShapeNotes(store),
     ...adrShapeNotes(store),
     ...changeShapeNotes(store),
     ...feasibilityShapeNotes(store),

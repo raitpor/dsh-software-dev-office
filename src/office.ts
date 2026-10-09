@@ -65,7 +65,7 @@ import { readAssessment, listScenarios, recordScenario, writeAssessment } from '
 import type { RecordScenarioInput } from './domain/quality.js'
 import { linkMany, renderTraceReport, report, unlink } from './domain/trace.js'
 import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
-import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
+import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
 import {claim, reassign, release, report as reportTask, staleClaims, updateTask} from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
@@ -117,7 +117,7 @@ import {
   draftApplicability,
   readApplicability,
 } from './domain/applicability.js'
-import { basisReplay, recordSignature, signoffInput, signatureState } from './domain/signature.js'
+import { basisReplay, normalizeBasis, recordSignature, signoffInput, signatureState } from './domain/signature.js'
 import { gateIdOf, fmt, t } from './domain/i18n.js'
 import type { RiskConclusion } from './domain/risks.js'
 import { listRisks, logRisk, readConclusion, riskStats, updateRisk, writeConclusion } from './domain/risks.js'
@@ -181,7 +181,7 @@ import { readChildFaces, recordChildFace } from './domain/dispatchFace.js'
 import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
 import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
-import { rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
+import { listDispositions, rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
 import type { RehashResult, ReviewAdoption, VerifyResult } from './domain/reviewVerification.js'
 import type { DispatchFinished } from './domain/dispatchReports.js'
 import {
@@ -399,6 +399,15 @@ export interface StatusSnapshot {
    * 看起来像"没有评审"（那是两种不同的红）。
    */
   pendingReviewVerifications?: { count: number; ids: string[] } | undefined
+  /**
+   * **N-11（R-16② 的折中）**：已核实**成立**（`reproduced`）的评审发现。
+   *
+   * 为什么要有：R-16② 指出「`verify-review` 只给评审盖章，没有任何机制保证成立的发现被处置」——
+   * 自动开修复卡会替人做范围决定（不做），但**静默躺着**是真风险。这里只做**状态化披露**：
+   * 每轮把「已核实成立」的条数点出来，让「核实不是终点」在模型动手之前就可见；
+   * **不声称**它们未被处置（插件判不出来），只提醒处置要落到改动或明确不修。
+   */
+  reproducedFindings?: { count: number; items: string[] } | undefined
   /** 当前阶段是否已进入"架构/设计"语境（按流程阶段 id 判断，不看项目类型） */
   designPhase?: boolean | undefined
   /**
@@ -1011,6 +1020,13 @@ export class SoftwareDevOffice {
         )
         return { count: pending.length, ids: pending.map((item) => item.review.id) }
       })(),
+      // **N-11**：已核实成立（reproduced）的发现 —— 逐条列出「评审#序号」，只陈述事实
+      reproducedFindings: (() => {
+        const items = listDispositions(store)
+          .filter((item) => item.outcome === 'reproduced')
+          .map((item) => `${item.reviewId}#${item.index + 1}`)
+        return { count: [...new Set(items)].length, items: [...new Set(items)] }
+      })(),
       // **§7.1 不得静默（注入块那一处）**：声明的内容必须每轮都出现在状态块里，
       // 用户才能在模型动手之前看到"哪些视图做、哪些不做及理由"。
       applicabilityLines: applicabilityLines(readApplicability(store)),
@@ -1023,34 +1039,41 @@ export class SoftwareDevOffice {
       ...(() => {
         const budget = readBudgetChecked(store).budget
         if (budget === undefined) return {}
-        // 状态块里不重复调用宿主计量：只显示"预算已设 + 已问档位"
-        const consumed = readCostSnapshot(store)?.amount ?? 0
-        const line = describeBudgetLine(
-          {
-            at: new Date().toISOString(),
-            sessions: 0,
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            perModel: [],
-            ...(budget.total === undefined ? {} : { estimatedCost: { amount: consumed, currency: budget.currency, label: '估算' as const } }),
-            unpricedTokens: 0,
-          },
-          budget,
-        )
-        const advice = budgetAdvice(
-          {
-            at: new Date().toISOString(),
-            sessions: 0,
-            promptTokens: 0,
-            completionTokens: 0,
-            totalTokens: 0,
-            perModel: [],
-            estimatedCost: { amount: consumed, currency: budget.currency, label: '估算' as const },
-            unpricedTokens: 0,
-          },
-          budget,
-        )
+        // 状态块里不重复调用宿主计量：只显示"预算已设 + 已问档位"。
+        // **P-9**：消耗数字必须读**快照里记的那个值**（旧实现恒传 0 ⇒ 有数据时也印"已消耗 0 tokens"）；
+        // 快照不存在（从没跑过 cost report / 拿不到计量）时如实说"无用量来源"。
+        const cost = readCostSnapshot(store)
+        const consumed = cost?.amount ?? 0
+        const line = cost === undefined
+          ? describeBudgetLineNoUsage(budget)
+          : describeBudgetLine(
+              {
+                at: new Date().toISOString(),
+                sessions: 0,
+                promptTokens: 0,
+                completionTokens: 0,
+                totalTokens: cost.totalTokens,
+                perModel: [],
+                ...(budget.total === undefined ? {} : { estimatedCost: { amount: consumed, currency: budget.currency, label: '估算' as const } }),
+                unpricedTokens: cost.unpricedTokens,
+              },
+              budget,
+            )
+        const advice = cost === undefined
+          ? undefined
+          : budgetAdvice(
+              {
+                at: new Date().toISOString(),
+                sessions: 0,
+                promptTokens: 0,
+                completionTokens: 0,
+                totalTokens: cost.totalTokens,
+                perModel: [],
+                estimatedCost: { amount: consumed, currency: budget.currency, label: '估算' as const },
+                unpricedTokens: cost.unpricedTokens,
+              },
+              budget,
+            )
         return { costLine: line, ...(advice === undefined ? {} : { budgetAdvice: advice }) }
       })(),
     }
@@ -1713,9 +1736,14 @@ export class SoftwareDevOffice {
     basis: string
     channel: 'command' | 'question'
     turn?: string | undefined
-    basisChecked?: 'session' | 'unavailable' | undefined
-    /** **R-27**：依据在会话派生消息里的位置（用户又原样说了一次时更大） */
+    basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined
+    /**
+     * **R-27**：依据在会话派生消息里的位置（用户又原样说了一次时更大）。
+     * **H4**：只作审计/提示 —— 压缩会让它变小，重放判定不再依赖它（用 `basisMsgId`）。
+     */
     basisAt?: number | undefined
+    /** **H2a/H4**：命中这条依据的**用户消息 id**（跨压缩稳定）——重放判定的键 */
+    basisMsgId?: string | undefined
     /** **R-27**：依据是本次调用当场取回的（`channel=question`）⇒ 不参与重放判定 */
     basisFresh?: boolean | undefined
   }): GateSignature {
@@ -1733,13 +1761,21 @@ export class SoftwareDevOffice {
    * 工具层用它给出**可操作的拒绝回执**（让用户重新表态，或改用 `channel=question` 当场问）；
    * `recordSignature` 里还有一道强制拒绝（任何直接调用都绕不过去）。
    */
-  basisReplay(call: OfficeCall, gate: string, basis: string, basisAt?: number | undefined): {
+  basisReplay(
+    call: OfficeCall,
+    gate: string,
+    basis: string,
+    occurrence?: { basisAt?: number | undefined; basisMsgId?: string | undefined },
+  ): {
     replayed: boolean
     usedAtSeq?: number | undefined
     lastInvalidation?: number | undefined
+    sameOccurrence?: boolean | undefined
+    /** 判定用的是哪一种身份（`message-id` = 消息 id；`text-fallback` = 只有文本/下标） */
+    by: 'message-id' | 'text-fallback'
   } {
     const { store, journal, project } = this.contextFor(call)
-    return basisReplay(store, journal, normalizeGateId(gate, processOfProject(project)), basis, basisAt)
+    return basisReplay(store, journal, normalizeGateId(gate, processOfProject(project)), basis, occurrence)
   }
 
   /**
@@ -1781,52 +1817,96 @@ export class SoftwareDevOffice {
     return this.checkUserQuote(call, quote).ok
   }
 
-  /** 原话核对 + **核对口径**（R-7：调用点应把 `basisChecked` 落进签字台账）。 */
+  /**
+   * 原话核对 + **核对口径**（R-7：调用点应把 `basisChecked` 落进签字台账）。
+   *
+   * **H1（critical，2026-10-09 整体评审）：只按 `role === 'user'` 过滤不算"人说的"。**
+   * 宿主把**注入块**（`runtime-context`）、压缩检查点、工具回执回灌、技能调用等**都当 user 角色**交给模型
+   * ⇒ 旧实现里"在没有用户在场的情况下引用注入块里的一句话"就能签成字（真机教训换了一条路又成立）。
+   * 现在按**消息出处**（`Message.source.kind`）白名单：只有 `kind === 'user'`（真正的人类输入，
+   * 含 `user-rpc` 别名）才算"用户原话"，其余一律不计。
+   *
+   * **H1 的第二半（本插件自己在子会话里的情形）**：派发子会话时，父会话写的那段任务提示
+   * 在子会话里也是 `source.kind === 'user'`（宿主 `continuation.js` 就是这么投递的）——
+   * 但那是**机器写的文本**。所以 `delegationDepth ≥ 1` 的会话里不再接受这种"用户原话"，
+   * 如实回报 `basisChecked: 'role-only'` 并要求由驾驶舱会话取得背书。拿不到 depth 时按 depth=0 处理（老宿主）。
+   *
+   * **H2a/H4**：返回值里给出命中消息的**稳定 id**（`basisMsgId`）——签字的重放判定用它，
+   * 不再用会随压缩漂移的下标（`basisAt` 只作审计/提示）。
+   */
   checkUserQuote(call: OfficeCall, quote: string): {
     ok: boolean
-    basisChecked: 'session' | 'unavailable'
-    /** **R-27**：最后一条命中这句话的**用户消息下标**（用户"又说了一次"时就更大） */
+    basisChecked: 'session' | 'role-only' | 'unavailable'
+    /** **R-27**：最后一条命中这句话的用户消息下标（只作提示 —— 压缩会让它变小，见 `basisMsgId`） */
     basisAt?: number | undefined
+    /** **H2a/H4**：命中那条消息的稳定 id（跨压缩不变），签字重放判定的键 */
+    basisMsgId?: string | undefined
   } {
-    const wanted = quote.trim().replace(/\s+/gu, ' ')
+    const wanted = normalizeBasis(quote)
     if (wanted === '') return { ok: false, basisChecked: 'session' }
     const agent = call.agent as {
-      session?: { deriveMessages?: () => { role?: unknown; content?: unknown }[] }
+      session?: {
+        header?: { delegationDepth?: unknown } | undefined
+        deriveMessages?: () => { id?: unknown; role?: unknown; content?: unknown; source?: unknown }[]
+      }
     } | undefined
+    const depthRaw = agent?.session?.header?.delegationDepth
+    const delegated = typeof depthRaw === 'number' && depthRaw >= 1
     const derive = agent?.session?.deriveMessages
     if (typeof derive !== 'function') return { ok: true, basisChecked: 'unavailable' }
-    let messages: { role?: unknown; content?: unknown }[]
+    let messages: { id?: unknown; role?: unknown; content?: unknown; source?: unknown }[]
     try {
       messages = agent?.session?.deriveMessages?.() ?? []
     } catch {
       return { ok: true, basisChecked: 'unavailable' }
     }
-    const texts: { index: number; text: string }[] = []
+    // **H1**：口径 = `source.kind === 'user'`（人类输入）。`source` 缺失才是老宿主 ⇒ 退回 role 口径，
+    // 但如实标成 `role-only`（弱口径），别把"角色是 user"说成"核对过用户发言"。
+    let sawSource = false
+    let sawRoleOnly = false
+    const texts: { index: number; id: string; text: string }[] = []
     for (const [index, message] of messages.entries()) {
       if (message.role !== 'user') continue
+      const source = message.source
+      const kind = typeof source === 'object' && source !== null ? (source as { kind?: unknown }).kind : undefined
+      if (typeof kind === 'string') {
+        sawSource = true
+        // 非人类出处（注入块 / 压缩检查点 / 回执回灌 / 技能调用…）一律不计 —— H1 的要害
+        if (kind !== 'user') continue
+        // 子会话里的 "user" 消息是**父会话写的任务提示**（机器文本），不是人说的
+        if (delegated) continue
+      } else {
+        sawRoleOnly = true
+      }
       const content = message.content
-      if (typeof content === 'string') {
-        texts.push({ index, text: content })
-        continue
-      }
-      if (!Array.isArray(content)) continue
       let joined = ''
-      for (const block of content) {
-        if (typeof block === 'string') {
-          joined += block
-          continue
-        }
-        if (typeof block === 'object' && block !== null) {
-          const text = (block as { text?: unknown }).text
-          if (typeof text === 'string') joined += text
+      if (typeof content === 'string') {
+        joined = content
+      } else if (Array.isArray(content)) {
+        for (const block of content) {
+          if (typeof block === 'string') { joined += block; continue }
+          if (typeof block === 'object' && block !== null) {
+            const text = (block as { text?: unknown }).text
+            if (typeof text === 'string') joined += text
+          }
         }
       }
-      if (joined !== '') texts.push({ index, text: joined })
+      if (joined !== '') texts.push({ index, id: typeof message.id === 'string' ? message.id : '', text: joined })
     }
-    const hits = texts.filter((item) => item.text.replace(/\s+/gu, ' ').includes(wanted))
-    if (hits.length === 0) return { ok: false, basisChecked: 'session' }
-    // 取**最后一条**命中：用户"又说了一次"时下标更大（R-27 用它区分重放与新的表态）
-    return { ok: true, basisChecked: 'session', basisAt: hits[hits.length - 1]?.index }
+    const hits = texts.filter((item) => normalizeBasis(item.text).includes(wanted))
+    if (hits.length === 0) {
+      // 有出处信息却一条都不合格 ⇒ 是"拿注入块/派发提示冒充用户原话"这一类，口径如实回报
+      const basisChecked = sawSource && !sawRoleOnly ? 'session' : sawRoleOnly ? 'role-only' : 'session'
+      return { ok: false, basisChecked }
+    }
+    const last = hits[hits.length - 1]
+    return {
+      ok: true,
+      // 老宿主（消息没有 source）⇒ 弱口径；有出处且命中人类消息 ⇒ 强口径
+      basisChecked: sawRoleOnly ? 'role-only' : 'session',
+      basisAt: last?.index,
+      ...(last !== undefined && last.id !== '' ? { basisMsgId: last.id } : {}),
+    }
   }
 
   // —————————————— §6.1 阶段回退 ——————————————
@@ -1959,7 +2039,7 @@ export class SoftwareDevOffice {
      * 不该被依据卡死（那会在真机最需要它的时候失效）；但**有没有依据**必须留在真源里、印在回执上 ——
      * 否则一条"我编的批准人"看起来就是一次正常的人类批准。
      */
-    basis?: { quote: string; checked: 'session' | 'unavailable' } | undefined,
+    basis?: { quote: string; checked: 'session' | 'role-only' | 'unavailable' } | undefined,
   ): GateEvaluation {
     // **R-7**：豁免只需要项目台账（tailoring），不必读 requirements/questions/risks/issues ——
     // 用 `gateContext` 会让"某类真源被写坏"顺带把豁免也弄成异常，而豁免恰恰是用户此时的自救手段。
@@ -2013,6 +2093,63 @@ export class SoftwareDevOffice {
     store.writeJson(['gates', `${resolved}.json`], recorded)
     journal.append('gate/result', { gate: resolved, status: 'waived', phase: recorded.phase, reason, approver, ...approverBasis })
     return recorded
+  }
+
+  /**
+   * **N-10（R-23③ / R-29③）：撤销一条豁免**（误探自愈的唯一出口）。
+   *
+   * 为什么必须有：`waivedGates` 是 append-only 真源，旧实现**只增不减** —— 一次误探（真机：豁免了
+   * 一个当时不存在的门禁 `原型验收门禁（GP）`）就永久留在裁剪里，且没有任何动作能清掉它，
+   * 只能靠散文披露（R-29 的处置就是"如实交代"，那不该是唯一出路）。
+   *
+   * 口径：
+   *   · **只认"当前确实在 `waivedGates` 里"的门禁**（不在里面 ⇒ 拒绝并列出真正豁免了的门禁）；
+   *   · 与 `waive` **对称**：同两条留痕（`project/updated` 的 tailoring 补丁 + `tailoring/updated`），
+   *     所以**签字的失效口径也一样**（`tailoring/updated` 在 G2 的失效集合里）—— 回执必须如实说；
+   *   · 被撤销的门禁**不属于当前流程**时（R-29 的残留正是这种），回执额外说明"现行判据不受影响"，
+   *     免得用户以为撤销残留会改变当前判定。
+   */
+  unwaiveGate(
+    call: OfficeCall,
+    gateId: string,
+    reason: string,
+    approver: string,
+  ):
+    | { ok: true; gate: string; waivedGates: string[]; inProcess: boolean }
+    | { ok: false; code: 'no-project' | 'not-waived'; detail: string; waivedGates: string[] } {
+    const { journal, project } = this.contextFor(call)
+    if (project === undefined) {
+      return { ok: false, code: 'no-project', detail: '项目尚未初始化：请先调用 `sdo_init`。', waivedGates: [] }
+    }
+    const process = processOfProject(project)
+    const waived = [...new Set(project.tailoring?.waivedGates ?? [])]
+    const normalized = normalizeGateId(gateId, process)
+    // 先按原串精确匹配（历史上写进去的可能就是全名），再按归一后的 id 匹配
+    const removed = waived.includes(gateId) ? gateId : waived.includes(normalized) ? normalized : undefined
+    if (removed === undefined) {
+      return {
+        ok: false,
+        code: 'not-waived',
+        // **§1.3（2026-10-09 整体评审）**：这里曾复用 `uiGates.k142`「检查器 {p1} 尚未实现」——
+        // 回执说了**没发生的事**；而且我传的 `p2`（真正豁免的门禁清单）在那个键里并不存在、被静默丢掉。
+        detail: fmt('uiIndex.kUnwaiveNotWaived', {
+          p1: gateId,
+          p2: waived.length === 0 ? t('uiIndex.kUnwaiveNone') : waived.join(' '),
+        }),
+        waivedGates: waived,
+      }
+    }
+    const next = waived.filter((gate) => gate !== removed)
+    const tailoring = {
+      ...(project.tailoring ?? { scale: 'normal' as const }),
+      waivedGates: next,
+      reason,
+      approver,
+      at: new Date().toISOString(),
+    }
+    journal.append('project/updated', { patch: { tailoring } })
+    journal.append('tailoring/updated', { waivedGates: next, reason, approver, unwaived: removed })
+    return { ok: true, gate: removed, waivedGates: next, inProcess: process.gates.some((gate) => gate.id === removed) }
   }
 
   /** 阶段的中文名（数据驱动）。 */
@@ -2312,7 +2449,7 @@ export class SoftwareDevOffice {
     basis: string,
     by: string,
     basisSource: 'user' | 'proxy' = 'user',
-    basisChecked?: 'session' | 'unavailable' | undefined,
+    basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined,
   ): { confirmation: DesignConfirmation } | { refused: 'no-basis' | 'replayed-basis' | 'unresolvable' } {
     const { store, journal } = this.contextFor(call)
     return confirmDesign(store, journal, target, basis, by, basisSource, basisChecked)
@@ -3702,8 +3839,14 @@ export class SoftwareDevOffice {
       perTokens: this.settings.cost.perTokens,
       prices: this.settings.cost.prices,
     })
-    const line = describeBudgetLine(summary, budget)
-    const advice = budgetAdvice(summary, budget)
+    // **P-9**：拿不到计量来源时，不许渲染「已消耗 0 tokens」，也不许把 0 写进台账 ——
+    // 那会把"没有数据"固化成一条假事实（`cost.yml` + `cost/updated` 都会被后续读成"确实零消耗"）。
+    const line = source.available ? describeBudgetLine(summary, budget) : describeBudgetLineNoUsage(budget)
+    const advice = source.available ? budgetAdvice(summary, budget) : undefined
+    if (!source.available) {
+      void store
+      return { summary, budget, line, ...(advice === undefined ? {} : { advice }) }
+    }
     // 成本快照写进 `.sdo/`：真源是 journal（追加事件），`cost.yml` 是可重建的派生视图。
     // 状态块**只从 `.sdo/` 读**，因此换会话/换进程都一致（不再依赖内存缓存）。
     const snapshot: CostSnapshot = {
