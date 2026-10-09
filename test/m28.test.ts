@@ -56,6 +56,7 @@ const HOST_DISABLED_ROWS_REQUIRED: { id: string; name: string; why: string }[] =
   { id: 'tool-subagent', name: '@deepseek-ai/dsh-tool-subagent', why: 'subagent：派发执行者（orchestrator: subagent）' },
   { id: 'tool-subagent-control', name: '@deepseek-ai/dsh-tool-subagent-control', why: 'send_message / interrupt_agent：`k105` 与 README 都让流程官用 send_message 转交提示词' },
   { id: 'tool-subagent-list-agents', name: '@deepseek-ai/dsh-tool-subagent-control/list-agents', why: 'list_agents：流程官观察已派发的子代理（与 standard preset 同源）' },
+  { id: 'plan-mode', name: '@deepseek-ai/dsh-plan-mode', why: '计划评审通道：`designPrecondition` 依赖 `ctx.planMode`，缺它架构阶段永久阻塞；宿主层被 `dsh-web-app` 关闭，必须由 preset 在 `isolate` 组里补挂' },
   { id: 'compaction-basic', name: '@deepseek-ai/dsh-compaction-basic', why: '上下文压缩：不装会让长会话撞上上下文上限' },
   { id: 'command-compact', name: '@deepseek-ai/dsh-command-compact', why: '手动压缩命令' },
   { id: 'tool-result-pruner', name: '@deepseek-ai/dsh-compaction-tool-result-pruner', why: '工具结果剪枝' },
@@ -156,6 +157,30 @@ test('M28-04 必填 config 不得漏（本轮的真实事故：照抄 id/name �
     /sampleOverCapGlobResults:\s*false/u.test(fsSearch),
     `tool-fs-search 的 config 必须给 sampleOverCapGlobResults: false（与官方 standard/ptc/cordis 三个 preset 一致）：\n${fsSearch}`,
   )
+  // plan-mode 的 `section` 同样是**必填**（空字符串会被 `resolveConfig` 拒；而错误只落在子 fiber、
+  // try/catch 抓不到 ⇒ 服务永不注册），且它必须写在**与消费者同组的 isolate 组里**。
+  const planModeBlock = rowBlock('plan-mode')
+  assert.ok(/section:\s*\|/u.test(planModeBlock), `plan-mode 行必须给 section: | 块（必填且不能为空）：\n${planModeBlock}`)
+  assert.ok(planModeBlock.split('\n').length > 3, `section 块不能是空块：\n${planModeBlock}`)
+  {
+    const lines = presetText().split('\n')
+    const groupLine = lines.findIndex((line: string) => line.trim() === '- id: planning')
+    assert.ok(groupLine > 0, '要有 planning 组（plan-mode 的 isolate realm）')
+    const groupIndent = (lines[groupLine] as string).length - (lines[groupLine] as string).trimStart().length
+    for (const id of ['plan-mode', 'sdo']) {
+      const rowLine = lines.findIndex((line: string) => line.trim() === `- id: ${id}`)
+      assert.ok(rowLine > groupLine, `${id} 必须在 planning 组之内（提供者与消费者同 realm）`)
+      assert.ok(
+        (lines[rowLine] as string).length - (lines[rowLine] as string).trimStart().length > groupIndent,
+        `${id} 的缩进必须深于组行`,
+      )
+    }
+    assert.ok(
+      lines.slice(groupLine, groupLine + 6).some((line: string) => /planMode:\s*true/u.test(line)),
+      'planning 组必须声明 isolate: { planMode: true }（否则 0.2.1 的 preset 泄漏审计会整个拒绝）',
+    )
+  }
+
   // 另一个真正**必填**的字段（`provider: z.string().required()`）：它是既有行，但同样属于"漏了就挂不起来"。
   const subagent = rowBlock('tool-subagent')
   assert.ok(/provider:\s*\S+/u.test(subagent), `tool-subagent 必须给 provider（schema 里是 required）：\n${subagent}`)
@@ -195,6 +220,8 @@ test('M28-03 反向：宿主关闭清单之外的行不必重复挂，且不许�
     'persona',
     'compaction',
     'delegation',
+    // plan-mode 的 isolate realm（提供者与消费者同 realm；行本身在上表）。
+    'planning',
   ])
   const unexplained = presetRowIds(text).filter((id) => !explained.has(id))
   assert.deepEqual(unexplained, [], `preset 里有未说明用途的行：${unexplained.join(', ')}（加行前先想清为什么，并登记到本文件）`)

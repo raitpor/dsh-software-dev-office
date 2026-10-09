@@ -1079,8 +1079,7 @@ uiIndex:
   note: "评审备注（可选，写入留痕）。"
   by: "豁免人（谁批准的豁免），默认 human。"
   planLoadDiag: "- （诊断）自行装载 plan-mode 失败：{p1}"
-  planLoadDeferred: "已尝试装载但服务未注册（多为依赖服务缺失：plan-mode 需要 tools / systemPrompt / sessionProjections）"
-  planLoadNone: "未尝试装载"
+  planLoadNone: "本 preset 的 `planning` 组没能把 planMode 服务注册起来（宿主把该行停用了、或装配层拒绝了该行）"
   planChecklist: "计划必须**结构化**，至少覆盖以下 8 项（每项都要具体到本项目的名字，不要写空话）：\n1) 目标与非目标：本轮架构阶段要产出什么、明确不做什么；\n2) 关键设计决策：每个决策给出 **≥2 个备选方案** + 取舍理由 + 后果（G3 要求每条 ADR 含备选与后果）；\n3) 视图清单：要画哪些视图（逻辑/数据/接口/部署/其他），每个视图准备表达什么；\n4) 组件与契约：组件划分、跨组件交互、哪些交互必须落契约、各自的写范围边界；\n5) 追溯计划：哪些需求（REQ-xxx）会映射到哪些设计元素（DES-xxx），如何避免孤儿；\n6) 风险与缓解：高风险条目**必须**带缓解措施与责任人；\n7) 任务拆分预览：卡片粒度、DoD、依赖顺序、每张卡的写范围（避免互相覆盖）；\n8) 测试计划：must 级需求如何被用例覆盖；\n提交前请用 sdo_gate action=check gate=架构门禁 逐条自检；提交时用 exit_plan_mode，并在计划末尾列出**希望用户重点确认的 2~3 个问题**。"
   dropNoReason: "（未说明理由）"
   scopeDerivedNote: "- 提示：以下元素的写范围是按元素自动派生的。建议二选一：① 在元素职责里写明「写范围：<glob> 独占」；② 在 `.sdo/config.yml` 写 `plan: { scopeTemplate: \"src/main/java/{{slug}}/,src/test/java/{{slug}}/\" }` 让派生规则贴合本项目的真实布局。：{p1}"
@@ -1116,7 +1115,7 @@ uiIndex:
   kAcceptanceModeInvalid: "`acceptanceMode` 只能是 `append`（追加）或 `replace`（整份替换），收到的是：{p1}"
   kChangeAcceptanceAdd: "新增验收标准 {p1}：Given {p2}；When {p3}；Then {p4}"
   kChangeAcceptanceReplace: "替换整份验收标准（{p1} 条）：新编号 {p2}"
-  kSignQuoteMismatch: "引用对不上：这段话没有出现在本次会话的用户发言里，因此不能作为签字依据（若确实说过，请原样复制该句；若用户是通过提问选项表态的，改用 `channel=question` 记录所选选项原文）。"
+  kSignQuoteMismatch: "引用对不上：这段话没有出现在本次会话的用户发言里，因此不能作为签字依据（若确实说过，请原样复制该句；若用户是通过**提问**表态的（选项或文字回答都一样 —— 0.2.1 起这类回答的出处是 `user-question-reply`，不再算「用户原话」），改用 `channel=question` 由本工具当场取回）。"
   kSignNoChannel: "人机关口问答通道不可用：请改用会话明确表述并给出用户原话（quote）"
   kSignDeclined: "用户没有选择签字（所选：{p1}），{p2} 保持未签字状态"
   kRollbackNoTarget: "阶段回退必须给出目标阶段（to=…）"
@@ -1141,9 +1140,6 @@ uiCommands:
   k2: "{p1}\n…（回显已截断，完整体见命令面/文件产物）"
   k3: "需要 `--choice=add-budget|waive|narrow-scope`（旧写法 `choice=add-budget|waive|narrow-scope` 仍被接受）。"
   k4: "（未说明）"
-
-planMode:
-  section: "你正处于【计划模式】：只做只读探索（读文件、搜索、静态分析、跑检查），不要编辑或写入文件、不要改配置、不要提交；用户的口头同意不算批准，必须用 exit_plan_mode 提交计划给用户评审。这是 SDO 架构阶段的评审前置：评审通过前不落设计。【计划要求】计划必须**结构化**，至少覆盖以下 8 项（每项都要具体到本项目的名字，不要写空话）： 1) 目标与非目标：本轮架构阶段要产出什么、明确不做什么； 2) 关键设计决策：每个决策给出 **≥2 个备选方案** + 取舍理由 + 后果（G3 要求每条 ADR 含备选与后果）； 3) 视图清单：要画哪些视图（逻辑/数据/接口/部署/其他），每个视图准备表达什么； 4) 组件与契约：组件划分、跨组件交互、哪些交互必须落契约、各自的写范围边界； 5) 追溯计划：哪些需求（REQ-xxx）会映射到哪些设计元素（DES-xxx），如何避免孤儿； 6) 风险与缓解：高风险条目**必须**带缓解措施与责任人； 7) 任务拆分预览：卡片粒度、DoD、依赖顺序、每张卡的写范围（避免互相覆盖）； 8) 测试计划：must 级需求如何被用例覆盖； 提交前请用 sdo_gate action=check gate=架构门禁 逐条自检；提交时用 exit_plan_mode，并在计划末尾列出**希望用户重点确认的 2~3 个问题**。"
 
 uiClamp:
   truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"

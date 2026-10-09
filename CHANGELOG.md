@@ -9,6 +9,98 @@
 
 （下一轮改动写在这里；发版时把本段落成 `## [x.y.z] - 日期`，并在顶部留一个空段 —— 见 `test/m23.test.ts` R-6 的结构断言。）
 
+## [0.1.4] - 2026-10-09
+
+**主题：支持 dsh `0.2.1-alpha.1`（装配层兼容）+ 把这次兼容核查固化成守卫与工具。**
+
+### 修复（**阻塞级：0.1.3 在 0.2.1-alpha.1 上会被装配层拒绝**）
+
+来源：本机新建的 `0.2.1-alpha.1` 实例（`~/.local/share/hdsl/instances/0.2.1-alpha.1`）上的核查。
+
+- **peer 版本钉死**：0.1.3 把 5 个 `@deepseek-ai/dsh-*` peer 写成**精确** `0.2.0-rc.1`，
+  宿主的判据（`@deepseek-ai/dsh-app-boot` 的 `evaluatePluginCompatibility`：只筛 `dsh` / `dsh-*` 前缀，
+  用 `semver.satisfies(runtime, range, { includePrerelease: true })`——见下"诚实声明"）判为**不兼容** ⇒
+  安装前置检查直接拒绝安装、已装的启动时拒绝加载，除非给精确版本豁免。
+  **修**：改为 **`>=0.2.0-rc.1 <2.0.0-0 || ^0.2.1-alpha.1`**（其余 `dsh-*` 同形）。
+  这个形状同时满足两件互相拉扯的事（用宿主自带的 `semver` 跑过版本矩阵，不是推断）：
+  · **宽分支扛未来**：宿主**闸门**带 `includePrerelease`，宽分支会把 `0.2.2-alpha.1`、`0.3.0-alpha.1`、
+    `0.3.0`、`0.4.0-rc.1`、`1.0.0` 全部放行 ⇒ **dsh 升级不再需要改 manifest**；顶线 `<2.0.0-0` 挡住下个大版本；
+  · **显式分支拉平已核验的预发布线**：**包管理器**用的是普通 semver 语义，它对"非同一元组的预发布"一律不认
+    —— 只写宽分支时，`0.2.1-alpha.1`（当前宿主）会被判成不满足，于是给插件**私装一份 0.2.0-rc.1 的旧副本**
+    （同进程两份 `dsh-session`/`dsh-llm`/`dsh-tools`）。`|| ^0.2.1-alpha.1` 就是把这条线拉进普通语义。
+  维护规则：未来**稳定版**已被宽分支覆盖，不用动；只有当你开始支持某条新的**预发布**线、且希望包管理器
+  也解析宿主那一份时，才补一条 `|| ^<该线>`。底线 `>=0.2.0-rc.1` 是有意的：本项目不做 0.1.x 适配。
+- **插件自挂的两个宿主包**：`@deepseek-ai/dsh-plan-mode` 与 `@deepseek-ai/dsh-session-projection`
+  原本是**钉死 0.2.0-rc.1 的 dependencies**（插件用 `ctx.plugin(...)` 自己挂载）⇒ 换宿主会带一套旧版同进程。
+  **修**：改列 **peerDependencies**（同一并集范围），由装配层给出与宿主同版本的那一份。
+- **plan-mode 改为声明式挂载（真机事故的直接修复）**：装进新实例后启动会话报
+  **`preset services require isolate realms:planMode`**，整个 preset 注册失败。根因链（读码 + 真机）：
+  ① `dsh-web-app/cordis.patch.yml:517` 在**宿主层**把 `- id: plan-mode` 设为 `disabled: true`
+  ⇒ web profile 里 `planMode` 本来就不存在，**必须由 preset 补挂**（`dsh-base` 那行被它盖掉了）；
+  ② 0.2.1 起 `@deepseek-ai/dsh-agent-preset-registry` 的 `mountPreset` 会跑 `leakedServices`：
+  "实现 fiber 在 preset 子树内、服务却写在 **root realm** 符号下"即判泄漏 ⇒ 旧实现"代码里
+  `ctx.plugin(...)` 自挂 plan-mode"正好命中。
+  **修（照抄官方 `standard` preset 的形状）**：`presets/sdo-office.patch.yml` 新增 `planning` 组
+  （`cordis:group` + `isolate: { planMode: true }`），组内**同时**放 `plan-mode` 行与**消费者** `sdo` 行
+  —— `isolate` 让 `planMode` 成为组私有实例，组外的消费者取不到它，所以两者必须同 realm
+  （`designPrecondition` 依赖 `ctx.planMode`，见历史缺陷"架构阶段永久阻塞"）。
+  插件侧**删掉全部自挂代码**（不再 `ctx.plugin` 任何宿主插件、不再自己 `ctx.isolate`），只保留
+  "现取现用 + 拿不到就退回 `sdo_design action=review|waive-plan` 两条手动出口"。
+  `plan-mode` 行的 `section` 文案随之从语言包搬到 preset 行（`resolveConfig` 的必填字段只能由 preset 给），
+  质量守卫（`test/m7`）跟着改读 preset 文件 —— 不留"守着已废弃副本"的假绿。
+- **同批的 peer 与守卫调整**：`@deepseek-ai/dsh-plan-mode` / `dsh-session-projection` 仍是 peer
+  （preset 行要能解析到宿主那一份），但**代码不再 import 它们**；`test/m28` 把 `plan-mode` 登记进
+  "宿主关闭、必须由 preset 补挂"清单（含 `section` 非空、与消费者同组两条断言）；
+  `test/m87` 的 M87-06/07 改为守卫**声明式形状**与"代码里不许再自挂"。
+- **`@deepseek-ai/cordis` / `schemastery`** 同步放宽为 `^4.0.2 || ^4.0.5-alpha.1` / `^3.18.2 || ^3.18.5-alpha.1`
+  （它们**不参与**宿主闸门，但决定包管理器装哪一份）。`package-lock.json` 用
+  `npm install --package-lock-only --offline` 重生成（与 `package.json` 一致，CI 的 `npm ci` 才过得去）。
+
+### 新增：兼容核查的守卫与工具
+
+- **`test/m87.test.ts`（6 条守卫）**：① 任何 `dsh-*` peer 不许写成精确版本（本轮事故的直接成因）；
+  ② 范围必须**扛未来**（闸门语义接受 `0.2.2-alpha.1`/`0.3.0`/`1.0.0` …，未来稳定版还要过普通语义）
+  且**已核验的宿主线**（`0.2.0-rc.1`/`0.2.1-alpha.1`，含预发布）在**普通**语义下也通过，
+  同时**拒绝** `0.1.x`（本项目不做双版本适配）与 `2.x`（未核验的下个大版本）；③ 插件自挂的两个包必须在 peer、不得在 dependencies；
+  ④ `package-lock.json` 与 `package.json` 的版本/peer/dependencies 一致；⑤ **守卫自证**：拿旧的钉死写法和
+  "只放开上界"的写法跑同一匹配器，必须分别被判不通过（后者专门证明"闸门过了但包管理器不认"这一类）；
+  ⑥ **行为验证**自挂策略：宿主已提供 ⇒ 一次都不挂；缺 `planMode` 而宿主给了 `sessionProjections`
+  （生产实况）⇒ **只隔离 `planMode`**；两个都缺 ⇒ 两个都挂且都在隔离 realm 里；老宿主没有
+  `isolate` API ⇒ 退回原 ctx（fail-open）。⑦ **泄漏审计的机械代理**：自挂路径下**根 ctx 上没有任何
+  `plugin()` 调用** —— 这正是 0.2.1 报「require isolate realms」的形状。
+- **`scripts/host-compat.mjs`（可重复运行的三层核查）**：
+  `node scripts/host-compat.mjs --instance <dsh 实例目录>` ⇒ ① 调用**目标实例自带**的
+  `evaluatePluginCompatibility`；② 用该实例的宿主包类型对 `src/` 全量 `--noEmit` 编译；
+  ③ 从源码抽出插件用到的**服务名/事件名**，逐个到该实例的类型声明里核对（hook 改名不会有类型错误，必须这样查）。
+  退出码 0/1，可直接用于下一步决策。它还会用**合成版本号**跑一遍**未来版本矩阵**
+  （`0.2.2-alpha.1` / `0.2.5` / `0.3.0-alpha.1` / `0.3.0` / `0.4.0-rc.1` / `1.0.0` / `2.0.0-alpha.1`）——
+  把"下次 dsh 升级会不会被硬拒"变成看得见的一栏（实测：除 `2.0.0-alpha.1`（顶线，预期被挡）外全部通过）。
+- **变异自证 10 条全部被杀**（先跑基线 `BASELINE pass=6 fail=0`，证明断言面真的执行）：
+  ① 把 peer 改回精确版本；② 只写"当前宿主"的窄范围（不扛未来）；③ 只留宽分支、去掉显式预发布线
+  （**闸门过、包管理器不认**这一类，正是本次最容易漏的坑）；④ 放宽成 `*`（把 0.1.x 也收进来）；
+  ⑤ 把自挂包挪回 `dependencies`；⑥ 改坏 lock 里的版本号；⑦ 去掉"宿主已提供就不自挂"的探测；
+  ⑧ 把 `planning` 组的 `isolate` 去掉；⑨ 把消费者 `sdo` 行移出组（组外取不到私有实例）；
+  ⑩ 把 `section` 块留空；⑪ 把"代码里自挂"加回去（真机报错的形状）。
+
+### 行为说明（0.2.1 的新出处 kind）
+
+- 0.2.1-alpha.1 起，宿主把**对提问的回答**标成出处 `user-question-reply`（0.2.0-rc.1 没有这个 kind）。
+  SDO 的签字来源白名单（H1）**只认 `'user'`** ⇒ 这类回答**不能**充当陈述通道（`quote=`）的依据，
+  会被如实拒绝；**推荐通道 `channel=question`（工具当场取回、`basisFresh` 旁路）不受影响**。
+  这是有意口径：宿主的提问回答**无法与自动应答区分**（已知信任边界），而项目纪律是"签字一律现场取得"。
+  拒绝回执已改成把两种形态（选项 / 文字回答）都说清、并直接点名 `channel=question`。
+
+### 诚实声明（本轮证据与边界）
+
+- **peer 范围的定型依据**：用目标实例自带的 `semver` 把候选范围跑了版本矩阵（`0.1.5-rc.2` … `2.0.0-alpha.1` 共 12 个版本 × 普通/闸门两种语义），
+  而不是凭"看起来对"写；矩阵结论是"宽分支扛未来 + 逐条列出已验证的预发布线"。
+- **核验方式**：三层证据都来自**目标实例自己的代码/类型**，不是读 CHANGELOG 推断——
+  闸门用它的函数跑（改动前判"不兼容"、改动后判"无兼容问题"）；类型面两个宿主各 0 错误；
+  服务 10 项、事件 4 项在 `0.2.0-rc.1` 与 `0.2.1-alpha.1` 上都逐项对得上（`scripts/host-compat.mjs` 的输出）。
+- **未做**：没有在 `0.2.1-alpha.1` 实例里**真机安装并跑一轮**（该实例目前没装本插件）。
+  装配层的门已经打开，但"装进去之后的行为"仍待一次真机验证；`plan-mode` 的自挂/不自挂也应在真机上确认一次。
+- **版本**：本版为 **0.1.4**；**未打 tag、未推送**。
+
 ## [0.1.3] - 2026-10-09
 
 ### 修复（**整体评审的「阻塞项 A：签字/背书」H1–H4** + 次要两条 + 文档真伪 N1/N2）

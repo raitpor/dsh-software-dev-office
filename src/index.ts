@@ -262,40 +262,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
     get(agent: unknown): { active: boolean }
     set(agent: unknown, active: boolean): string
   }
-  /** plan-mode 自行装载失败的原因（用于回执自诊断） */
-  let planModeLoadError: string | undefined
-  /** 是否尝试过自行装载（用于区分「没试过」与「试了但服务没注册」） */
-  let planModeLoadAttempted = false
+  /**
+   * plan-mode 服务（由 preset 的 `planning` 组声明挂载，本插件只消费）。
+   * 拿不到 ⇒ 退回 `sdo_design action=review|waive-plan` 两条手动出口，并在回执里如实说明。
+   */
   let planMode: PlanModeLike | undefined
 
-  // **方案 A（DEF-11 修复）**：preset 里**不能**引用 `@deepseek-ai/dsh-plan-mode`（外部包的
-  // preset 行解析不到它 → 整个 preset 注册失败），但**代码依赖**可以解析：把它作为本包依赖装载，
-  // 于是 sdo-office 会话里也有 `planMode` 服务，SDO 便能在**会话中途** `set(agent, true)` 切进计划评审。
-  // 装载失败不影响其它功能（退回 `sdo_design action=review|waive-plan` 两条出口）。
-  planModeLoadAttempted = true
-  // 【关键设计】plan-mode / session-projection 是**可选**能力：用**动态 import + try/catch**，
-  // 缺包或解析失败只记录原因，**绝不让本插件模块加载失败**。
-  // 教训：曾经用顶层静态 import —— 一旦该包在宿主侧解析不到，整个插件模块 import 失败，
-  // 连带 bundle 注册失败 → **preset 从会话列表消失**（症状离根因极远，排查代价很高）。
-  void (async () => {
-    try {
-      const mod = (await import('@deepseek-ai/dsh-session-projection')) as { default?: unknown }
-      // plan-mode 的依赖服务之一（sessionProjections）；它自身不需要额外服务，先装它。
-      ctx.plugin((mod.default ?? mod) as never, {} as never)
-    } catch (error) {
-      planModeLoadError = 'sessionProjections: ' + (error instanceof Error ? error.message : String(error))
-    }
-    if (planModeLoadError === undefined) {
-      try {
-        const mod = (await import('@deepseek-ai/dsh-plan-mode')) as { default?: unknown }
-        // 方案 D：section 必须是非空字符串（空配置会让构造在子 fiber 抛错、服务永不注册）
-        ctx.plugin((mod.default ?? mod) as never, { section: t('planMode.section') } as never)
-      } catch (error) {
-        planModeLoadError = 'plan-mode: ' + (error instanceof Error ? error.message : String(error))
-      }
-    }
-  })()
-
+  // **plan-mode 由 preset 声明挂载**（2026-10-09 改为标准写法）：
+  // `presets/sdo-office.patch.yml` 里有一个 `planning` 组（`cordis:group` + `isolate: { planMode: true }`），
+  // 组内 **`plan-mode` 行与本插件行 `sdo` 同组** —— 官方的 `standard` preset 是同形。
+  //
+  // 为什么必须是这样（三段都有真机/读码证据）：
+  //   ① 宿主层 `dsh-web-app/cordis.patch.yml` 把 `- id: plan-mode` 设为 `disabled: true` ⇒ web profile 里
+  //      **本来就没有** `planMode` 服务，必须由 preset 自己补挂（与 tool-skill / tool-fs-search 同类）。
+  //   ② `isolate` 让 planMode 成为**本组私有**的实例；`designPrecondition` 依赖 `ctx.planMode`，
+  //      所以消费者（本插件）**必须与服务同组**，否则取不到（历史缺陷：架构阶段永久阻塞）。
+  //   ③ 0.2.1 起 preset 注册表会审计"preset 子树里注册进 root realm 的服务"（`mountPreset` → `leakedServices`）：
+  //      以前那种"代码里 `ctx.plugin(...)` 自挂"会被判 `Preset services require isolate realms: planMode`
+  //      而**整个 preset 注册失败**（真机实测）。改成声明式之后，本插件**一个服务都不自挂**。
+  //
+  // 本插件仍然只做**消费**：`planMode` 现取现用（拿不到就退回 `sdo_design action=review|waive-plan` 两条出口）。
   ctx.inject(['planMode'], (planCtx) => {
     planMode = planCtx.get('planMode') as PlanModeLike
   })
@@ -2389,9 +2375,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             t('uiIndex.planBlockedHead'),
             t('uiIndex.planExitReview'),
             t('uiIndex.planExitWaive'),
-            fmt('uiIndex.planLoadDiag', {
-              p1: planModeLoadError ?? (planModeLoadAttempted ? t('uiIndex.planLoadDeferred') : t('uiIndex.planLoadNone')),
-            }),
+            fmt('uiIndex.planLoadDiag', { p1: t('uiIndex.planLoadNone') }),
             t('uiIndex.k92'),
             t('uiIndex.k93'),
             t('uiIndex.k94'),

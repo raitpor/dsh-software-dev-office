@@ -16,30 +16,52 @@
         order: 1
         plugins:
           # ① 本插件自身：SDO 引擎（工具/命令/注入/门禁/看板/成本）
-          - id: sdo
-            name: 'dsh-software-dev-office'
+          # ① planning 组：SDO 引擎 + plan-mode —— **提供者与消费者必须同 realm**（`isolate` 只隔离 planMode，
+          #    其它服务不受影响）。宿主层 `dsh-web-app/cordis.patch.yml` 把 `- id: plan-mode` 设为 disabled，
+          #    web profile 里本来就没有这个服务 ⇒ **必须由本 preset 补挂**（与 tool-skill / tool-fs-search 同类）。
+          #    形状照抄官方 standard preset 的 planning 组；0.2.1 起 preset 泄漏审计（mountPreset → leakedServices）
+          #    要求"preset 子树里注册的服务写在 isolate realm 里"，否则报 `Preset services require isolate realms: planMode`
+          #    并**整个 preset 注册失败**（2026-10-09 真机实测：装进 0.2.1-alpha.1 新实例后启动会话即报此错）。
+          #    为什么 `sdo` 也在组里：`isolate` 让 planMode 成为**本组私有**实例，组外的消费者取不到它
+          #    （`designPrecondition` 依赖 `ctx.planMode`，见历史缺陷"架构阶段永久阻塞"）。
+          - id: planning
+            name: cordis:group
+            group: true
+            isolate:
+              planMode: true
             config:
-              projectDir: .sdo
-              injectStatus: true
-              promptOrder: 240
-              statusChars: 1500
-              lang: zh-CN
-              gateLevel: enforce                 # suggest | enforce | strict
-              commandEcho: echo
-              # 受**写入范围纪律**管辖的工具：带路径的（write/edit）逐路径核对本卡 writeScopes；
-              # bash 没有路径可判 ⇒ 如实标 unchecked，靠 `done` 的 A2 对账兜底（2026-10-08 起这两个字段真的生效了）
-              disciplineTools: [write, edit, bash]
-              # **公共放行面**：不受卡写范围约束（台账 / 派生文档 / 用例）
-              disciplineAllowPaths: ['.sdo/', 'docs/', 'test/']
-              registerTools: true
-              registerCommands: true
-              orchestrator: subagent             # native-team（实验性，二选一）| subagent | inline
-              maxParallelDispatch: 4
-              captureWorkspaceChanges: true
-              board: { text: true, panel: false } # panel 自 M6 起可用
-              cost: { enabled: true, warnOnBudget: true }
+              - id: sdo
+                name: 'dsh-software-dev-office'
+                config:
+                  projectDir: .sdo
+                  injectStatus: true
+                  promptOrder: 240
+                  statusChars: 1500
+                  lang: zh-CN
+                  gateLevel: enforce                 # suggest | enforce | strict
+                  commandEcho: echo
+                  # 受**写入范围纪律**管辖的工具：带路径的（write/edit）逐路径核对本卡 writeScopes；
+                  # bash 没有路径可判 ⇒ 如实标 unchecked，靠 `done` 的 A2 对账兜底（2026-10-08 起这两个字段真的生效了）
+                  disciplineTools: [write, edit, bash]
+                  # **公共放行面**：不受卡写范围约束（台账 / 派生文档 / 用例）
+                  disciplineAllowPaths: ['.sdo/', 'docs/', 'test/']
+                  registerTools: true
+                  registerCommands: true
+                  orchestrator: subagent             # native-team（实验性，二选一）| subagent | inline
+                  maxParallelDispatch: 4
+                  captureWorkspaceChanges: true
+                  board: { text: true, panel: false } # panel 自 M6 起可用
+                  cost: { enabled: true, warnOnBudget: true }
 
-          # ② 驾驶舱所需的通用行（与 standard preset 同源，按需裁剪）
+              # ② 驾驶舱所需的通用行（与 standard preset 同源，按需裁剪）
+              # plan-mode 行的 `section` 必须非空（空配置会让装载在子 fiber 静默失败、服务永不注册 —— 历史事故）。
+              # 这段文案原先在语言包 `planMode.section`，随声明式改造搬到这里：**preset 行是它的唯一定义处**
+              # （`resolveConfig` 的必填字段只能由 preset 给；语言包那份已删除，质量守卫改为读本文件，见 test/m7）。
+              - id: plan-mode
+                name: '@deepseek-ai/dsh-plan-mode'
+                config:
+                  section: |
+                    你正处于【计划模式】：只做只读探索（读文件、搜索、静态分析、跑检查），不要编辑或写入文件、不要改配置、不要提交；用户的口头同意不算批准，必须用 exit_plan_mode 提交计划给用户评审。这是 SDO 架构阶段的评审前置：评审通过前不落设计。【计划要求】计划必须**结构化**，至少覆盖以下 8 项（每项都要具体到本项目的名字，不要写空话）： 1) 目标与非目标：本轮架构阶段要产出什么、明确不做什么； 2) 关键设计决策：每个决策给出 **≥2 个备选方案** + 取舍理由 + 后果（G3 要求每条 ADR 含备选与后果）； 3) 视图清单：要画哪些视图（逻辑/数据/接口/部署/其他），每个视图准备表达什么； 4) 组件与契约：组件划分、跨组件交互、哪些交互必须落契约、各自的写范围边界； 5) 追溯计划：哪些需求（REQ-xxx）会映射到哪些设计元素（DES-xxx），如何避免孤儿； 6) 风险与缓解：高风险条目**必须**带缓解措施与责任人； 7) 任务拆分预览：卡片粒度、DoD、依赖顺序、每张卡的写范围（避免互相覆盖）； 8) 测试计划：must 级需求如何被用例覆盖； 提交前请用 sdo_gate action=check gate=架构门禁 逐条自检；提交时用 exit_plan_mode，并在计划末尾列出**希望用户重点确认的 2~3 个问题**。
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
@@ -75,16 +97,7 @@
           # 解析路径同源。
           - id: tool-skill
             name: '@deepseek-ai/dsh-tool-skill'
-          # 注：计划评审**不使用** `@deepseek-ai/dsh-plan-mode` 行，改用 `src/index.ts` 的动态
-          # import + try/catch 自行装载（方案 A，真机验证可用；装载失败只记原因，不影响其它功能）。
-          #
-          # 历史理由（"该包只在别处解析得到，preset 里引用会解析失败并拖垮整个 preset"）**没有留存证据**。
-          # 复审（2026-10-02 22:48 §3）与本轮的机械实测都指向相反：`@deepseek-ai/dsh-plan-mode` 就在同一个
-          # pnpm store 里、是 dsh 应用的依赖、且以 loader 自身为基准可解析 —— 与本轮修好的
-          # `@deepseek-ai/dsh-tool-skill` **完全同形**。因此这条结论**可能只是过期**（当时或另有原因）。
-          # 是否改成一行声明，需一次真机实测：加 `- id: plan-mode` / `name: '@deepseek-ai/dsh-plan-mode'`
-          # → 重启 → 确认 preset 仍可选中；成立再把动态 import 换成声明，并把实测证据补进本注释。
-          # 现在**保持现状**（能用且已验证），不拿"未实测的简化"去换"已知能用的路径"。
+          # 计划评审的 plan-mode 行见上方 planning 组（2026-10-09 改为声明式；原"动态 import 自挂"已删除）。
           # Q-17 的"两道评审"由已装配的提问通道承担（见下方 tool-ask-user）。
           # 上下文压缩与工具结果剪枝（照抄官方 standard preset 的形状）。
           # 不装这三行 ⇒ SDO 会话上下文只增不减：实测 599 次工具调用后 messages 涨到 ~803k tokens，

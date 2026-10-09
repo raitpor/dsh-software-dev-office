@@ -3,10 +3,10 @@
 > **一个 agent software dev office**：在同一个会话里，把「可行性 → 需求 → 架构 → 拆分 → 实现 → 测试 → 交付」整条链走完。
 
 按**门禁**推进；每一步的判据结论、证据、签字都落在可复算的台账里。
-> 基于 **dsh `0.2.0`**（deepseek-harness 原生 Cordis 插件）。覆盖到「可部署产物 + 验收矩阵 + 回滚点」为止，**发布与运维不是它的范围**。
+> 基于 **dsh `0.2.x`**（deepseek-harness 原生 Cordis 插件；已在 `0.2.0-rc.1` 与 `0.2.1-alpha.1` 上核验，见 §12 的 `host-compat`）。覆盖到「可部署产物 + 验收矩阵 + 回滚点」为止，**发布与运维不是它的范围**。
 
 [![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
-[![dsh](https://img.shields.io/badge/dsh-0.2.0--rc.1-green)](https://www.npmjs.com/package/@deepseek-ai/dsh)
+[![dsh](https://img.shields.io/badge/dsh-0.2.x-green)](https://www.npmjs.com/package/@deepseek-ai/dsh)
 [![node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](package.json)
 
 ---
@@ -541,7 +541,29 @@ npm run build          # tsc → lib/
 npm run typecheck      # 只做类型检查
 npm test               # build + node --test（测试入口 scripts/run-tests.mjs）
 npm run pack:offline   # 产出离线安装包 → dist/offline/
+node scripts/host-compat.mjs --instance ~/.local/share/hdsl/instances/<版本>   # 换宿主版本时先跑这个
 ```
+
+**换 dsh 版本必做**：`node scripts/host-compat.mjs --instance <实例目录>` 会跑三层核查 ——
+① 调**目标实例自带**的 `evaluatePluginCompatibility`（peer 不匹配 ⇒ 安装/加载会被拒）；
+② 用该实例的宿主包类型对 `src/` 全量编译（0 错误 = 用到的类型面没变）；
+③ 把插件用到的**服务名/事件名**逐个到该实例的类型声明里核对（hook 改名不会有类型错误，只能这样查）。
+退出码 0/1，可直接用于决策。配套守卫见 `test/m87.test.ts`（peer 不许钉死版本、必须扛未来版本、
+已核验的宿主线要过普通 semver 语义等）。
+
+**plan-mode 是声明式挂载的**：`presets/sdo-office.patch.yml` 里有一个 `planning` 组
+（`cordis:group` + `isolate: { planMode: true }`），组内同时是本插件行 `sdo` ——
+官方 `standard` preset 同形。三点原因：① 宿主层 `dsh-web-app/cordis.patch.yml` 把 `- id: plan-mode`
+设为 `disabled: true`，web profile 里本来就没有这个服务，**必须由 preset 补挂**；
+② `isolate` 让 `planMode` 成为**组私有**实例，所以消费者（本插件）必须与服务同组，否则取不到；
+③ 0.2.1 起 preset 注册表会审计"preset 子树里注册进 root realm 的服务"，**代码里自挂会被整个拒绝**
+（`Preset services require isolate realms: planMode`）⇒ 本插件不 `ctx.plugin` 任何宿主插件。
+
+**peer 范围怎么维护**（`package.json`）：写成 `>=0.2.0-rc.1 <2.0.0-0 || ^0.2.1-alpha.1` 这个形状 ——
+宽分支保证**未来的 dsh 版本（含预发布）都能装上**（不用每次升级都改 manifest），
+顶线挡住下一个大版本、底线挡住 0.1.x；`|| ^0.2.1-alpha.1` 这类**显式分支**是为了让**包管理器**
+（普通 semver 语义，不认非同一元组的预发布）也把宿主那一份解析给插件。
+未来**稳定版**已被宽分支覆盖；只有支持新的**预发布**线时才补一条 `|| ^<该线>`。
 
 ### 流水线（GitHub Actions，只用官方 action）
 
@@ -553,7 +575,7 @@ npm run pack:offline   # 产出离线安装包 → dist/offline/
 发布：
 
 ```bash
-git tag -a v0.1.3 -m "SDO v0.1.3" && git push origin v0.1.3
+git tag -a v0.1.4 -m "SDO v0.1.4" && git push origin v0.1.4
 ```
 
 ### 离线安装包

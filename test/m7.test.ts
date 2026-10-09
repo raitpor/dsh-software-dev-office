@@ -326,6 +326,13 @@ test('守卫（DEF-03）：preset 新增插件行必须先登记（未登记的�
     '@deepseek-ai/dsh-tool-subagent-control',
     '@deepseek-ai/dsh-tool-subagent-control/list-agents',
     '@deepseek-ai/dsh-tool-subagent',
+    // plan-mode（2026-10-09 改为**声明式**挂载）：登记依据三层 ——
+    //   ① 宿主层 `dsh-web-app/cordis.patch.yml:517` 把 `- id: plan-mode` 设为 `disabled: true`
+    //      ⇒ web profile 里本来就没有这个服务，**必须由 preset 补挂**（与 tool-skill 同类）；
+    //   ② 官方 `standard` preset 同形：`planning` 组（`cordis:group` + `isolate: { planMode: true }`）；
+    //   ③ 0.2.1 起"代码里自挂"会被 preset 泄漏审计拒绝（`Preset services require isolate realms: planMode`），
+    //      声明式是唯一可行形状。行内 `section` 文案的守卫见本文件下方两条 plan-mode 用例。
+    '@deepseek-ai/dsh-plan-mode',
     '@deepseek-ai/dsh-compaction-basic',
     '@deepseek-ai/dsh-command-compact',
     '@deepseek-ai/dsh-compaction-tool-result-pruner',
@@ -429,6 +436,29 @@ test('lang 守卫：语言包可解析、代码引用到的键都有中文值', 
   assert.deepEqual(missing, [], `这些键在 zh-CN.yml 里没有中文值：${missing.join(', ')}`)
 })
 
+
+/**
+ * 取 preset 里 `plan-mode` 行的 `section: |` 块标量。
+ *
+ * 2026-10-09 改为**声明式**挂载后，这段文案的**唯一定义处**就是 preset 行（`resolveConfig` 的必填字段
+ * 只能由 preset 给，语言包那份已删除）⇒ 质量守卫跟着改读这里，避免"守着已废弃的副本"。
+ */
+function planSectionFromPreset(): string {
+  const lines = readFileSync(new URL('../../presets/sdo-office.patch.yml', import.meta.url), 'utf8').split('\n')
+  const head = lines.findIndex((line) => line.trim() === 'section: |')
+  assert.ok(head >= 0, 'preset 的 plan-mode 行必须有 `section: |` 块（空/缺 section 会让该行装载静默失败）')
+  const indent = (lines[head] as string).length - (lines[head] as string).trimStart().length
+  const body: string[] = []
+  for (const line of lines.slice(head + 1)) {
+    if (line.trim() === '') { body.push(''); continue }
+    if (line.length - line.trimStart().length <= indent) break
+    body.push(line.trim())
+  }
+  const text = body.join('\n').trim()
+  assert.ok(text.length > 0, 'preset 里 plan-mode 的 section 不能为空')
+  return text
+}
+
 test('方案 D 前提：plan-mode 的 section 必须非空（空配置会让装载在子 fiber 静默失败）', async () => {
   const planMode = await import('@deepseek-ai/dsh-plan-mode')
   assert.throws(
@@ -436,16 +466,13 @@ test('方案 D 前提：plan-mode 的 section 必须非空（空配置会让装�
     /non-empty/u,
     '空 section 会抛错——而错误只落在子 fiber，try/catch 抓不到，服务因此永不注册',
   )
-  const text = t('planMode.section')
-  // 关键：必须是 lang 里的**真值**，而不是 t() 兜底返回的键名（否则假绿）
-  assert.notEqual(text, 'section', 'lang 缺 planMode.section 时会兜底返回键名，测试必须识破')
-  assert.ok(text.length > 0, 'lang 里的 planMode.section 不能为空')
-  assert.doesNotThrow(() => planMode.resolveConfig({ section: text }), 'SDO 传入的 section 必须能通过校验')
+  const text = planSectionFromPreset()
+  assert.ok(text.length > 0, 'preset 里的 plan-mode section 不能为空')
+  assert.doesNotThrow(() => planMode.resolveConfig({ section: text }), 'preset 传入的 section 必须能通过校验')
 })
 
-test('planMode.section 必须包含结构化计划要求（否则计划只有一句话）', () => {
-  const text = t('planMode.section')
-  assert.notEqual(text, 'section', 'lang 缺键会兜底返回键名')
+test('preset 的 plan-mode section 必须包含结构化计划要求（否则计划只有一句话）', () => {
+  const text = planSectionFromPreset()
   for (const must of ['备选方案', '视图', '契约', '追溯', '风险', '任务拆分', '测试计划', 'exit_plan_mode']) {
     assert.ok(text.includes(must), `plan 规则缺少要求：${must}`)
   }
