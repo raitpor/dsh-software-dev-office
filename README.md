@@ -581,7 +581,7 @@ node scripts/host-compat.mjs --instance ~/.local/share/hdsl/instances/<版本>  
 发布：
 
 ```bash
-git tag -a v0.1.4 -m "SDO v0.1.4" && git push origin v0.1.4
+git tag -a v0.1.5 -m "SDO v0.1.5" && git push origin v0.1.5
 ```
 
 ### 离线安装包

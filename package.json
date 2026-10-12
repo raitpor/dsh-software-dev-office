@@ -1,6 +1,6 @@
 {
   "name": "dsh-software-dev-office",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "基于软件工程方法论的 Agent 研发办公室：从可行性、需求审讯、架构设计到拆分派发、验证与交付（deepseek-harness 原生 Cordis 插件）",
   "type": "module",
   "license": "MIT",
@@ -57,8 +57,8 @@
         "@deepseek-ai/dsh-api-remotes",
         "@deepseek-ai/dsh-client-locale",
         "@deepseek-ai/dsh-api-session-controller",
-      "@deepseek-ai/dsh-api-workspace-files",
-      "@deepseek-ai/dsh-client-ui-sidebar-right"
+        "@deepseek-ai/dsh-api-workspace-files",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
       ]
     }
   },

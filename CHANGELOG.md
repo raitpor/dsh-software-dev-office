@@ -7,7 +7,11 @@
 
 ## [Unreleased]
 
-**主题：门禁签字的交互优化 —— 签字前先在右侧边栏通读整份审核单。**
+（暂无）
+
+## [0.1.5] - 2026-10-12
+
+**主题：门禁签字的交互优化 —— 签字前先在右侧边栏通读整份审核单；受审载荷按人读形态呈现。**
 
 ### 新增
 
@@ -2561,6 +2565,9 @@ D-6 的 `phaseHistory` 在当前投影里两条 architecture 都已被后来的 
 
 见 README 的「已知边界（诚实清单）」：派发宿主的 `SubagentRuntime.start` 真实调用未接线、子代理用量未归集、Web 面板未实现、L3 纪律守卫的 deny 分支未做真机实测。
 
-[Unreleased]: https://github.com/raitpor/dsh-software-dev-office/compare/v0.1.2...HEAD
+[Unreleased]: https://github.com/raitpor/dsh-software-dev-office/compare/v0.1.5...HEAD
+[0.1.5]: https://github.com/raitpor/dsh-software-dev-office/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/raitpor/dsh-software-dev-office/releases/tag/v0.1.4
+[0.1.3]: https://github.com/raitpor/dsh-software-dev-office/releases/tag/v0.1.3
 [0.1.2]: https://github.com/raitpor/dsh-software-dev-office/releases/tag/v0.1.2
 [0.1.1]: https://github.com/raitpor/dsh-software-dev-office/releases/tag/v0.1.1
