@@ -37,6 +37,7 @@ import { SoftwareDevOffice } from '../src/office.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type { OfficeCall } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
+import { seedSignReview } from './support/sign-review-fixture.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm86')
@@ -138,6 +139,7 @@ test('M86-01 H1：注入块里的"用户原话"不算用户原话（此前可凭
   const check = office.checkUserQuote(callWith(agent), '确认签字')
   assert.equal(check.ok, false, '注入块不得作为用户原话依据')
   // 工具层同一条路：签字被拒，且**留痕**（被拒的尝试可审计）
+  seedSignReview(WORKSPACE, 'G3')
   const receipt = await callTool('sdo_gate', { action: 'sign', gate: 'G3', quote: '确认签字', approvedBy: '张三' }, agent)
   assert.match(receipt, /引用对不上/u, `注入块必须被拒：${receipt}`)
   assert.equal(journal.read().events.filter((event) => event.type === 'gate/signed').length, 0, '不许有任何签字落盘')

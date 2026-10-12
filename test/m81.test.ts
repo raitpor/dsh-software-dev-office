@@ -29,6 +29,7 @@ import { SoftwareDevOffice } from '../src/office.js'
 import { loadPackagedYaml } from '../src/infra/data.js'
 import type { SdoConfig } from '../src/config.js'
 import type { Requirement } from '../src/types.js'
+import { seedSignReview } from './support/sign-review-fixture.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm81')
@@ -199,6 +200,7 @@ test('M81-06 R-27（工具层）：`channel=statement` 复读旧话 ⇒ 回执�
     return String(await tool.execute(args, exec))
   }
   await callTool('sdo_init', { name: 'R27 演练', process: 'waterfall', scale: 'normal', stakeholders: '运维' })
+  seedSignReview(BASE, 'G3')
   const sign = (): Promise<string> => callTool('sdo_gate', { action: 'sign', gate: 'G3', quote: '确认签字', approvedBy: '张三' })
   const first = await sign()
   assert.match(first, /已记录/u, `第一次签字应当成功（宿主没有会话历史 ⇒ 按规格最低要求放行）：${first.slice(0, 200)}`)

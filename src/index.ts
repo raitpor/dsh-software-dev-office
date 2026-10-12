@@ -243,6 +243,12 @@ function guardedRead<T>(label: string, read: () => T): { ok: true; value: T } | 
 }
 
 export function apply(ctx: Context, config: SdoConfig): void {
+  // **客户端半的投递锚点**（`clientHalfOnly: true`）：这一行只用于把本包带进浏览器的模块图，
+  // 由 bundle patch 里那条 **profile 顶层行**（裸包名）设置。这里必须**立刻返回、什么都不注册** ——
+  // 否则"未选 preset 的会话完全不加载 SDO"（E2E-09 / AC-007）就被这一行破坏了。
+  // 为什么锚点行不能写成 `disabled: true` 或子路径名：宿主 `client-modules` 组图时会
+  // **跳过 disabled 行与没有 fiber 的行**，且只认**裸包名**（子路径在 `locatePkgJson` 里直接判不可解析）。
+  if (config.clientHalfOnly === true) return
   // 显示语言由插件行配置驱动（`lang`，默认 `zh-CN`；另有随包的 `en`）。
   // 必须在**注册工具/命令与注入状态块之前**设定：工具描述、命令描述、状态块都取自语言包。
   // 未知语言一律回落到基准语言（`zh-CN`），不会出现空白或键名。
@@ -1684,13 +1690,29 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // §7.2 门禁级签字：**只承认两种来源**，且必须带上用户原话／所选选项原文
         if (args.gate === undefined) return t('uiIndex.k60')
         if (args.channel === 'question') {
-          const answer = await deps.gateSignQuestion?.(call, args.gate)
+          // **交互优化（2026-10-10 定稿）**：签字前摆出待签对象，**卡片只放摘要、全文走侧边栏**。
+          //  · 摘要是判定总览那 5 行 —— 由本工具从真源现读现渲染，**不经过模型**；
+          //  · 全文（逐条判据 + 未通过项修法 + 产物清单）落盘到 `.sdo/reviews/**`，
+          //    客户端半按**固定路径**只读取它并放进右侧边栏（顺带成为"签字时看到过什么"的审计件）。
+          const review = office.signReview(call, args.gate)
+          const answer = await deps.gateSignQuestion?.(call, args.gate, review.summary)
           if (answer === undefined) return t('uiIndex.kSignNoChannel')
           if (answer.selectedLabel !== t('uiSign.signOption')) {
             // **次要 2（2026-10-09 整体评审）**：question 通道的"用户拒绝"以前**不留痕** ⇒
             // 台账上"问过、被拒"与"没问过"长得一样。与陈述式拒绝同口径记一条中性事件。
             office.noteSignRejected(call, args.gate, 'question', answer.selectedLabel)
             return fmt('uiIndex.kSignDeclined', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
+          }
+          // **审核单新鲜度**（2026-10-12）：用户从看到卡片到作答可能过了几分钟，
+          // 期间真源若被改动，用户签的就是**过期审核单**。这里在落签字之前重算指纹核对，
+          // 不一致就**拒签并逐条点名差异**（不许静默按旧审核单存证）。
+          const drift = office.signReviewDrift(call, args.gate, review.record)
+          if (drift.length > 0) {
+            office.noteSignRejected(call, args.gate, 'question', answer.selectedLabel)
+            return fmt('uiIndex.kSignReviewStale', {
+              p1: gateLabel(args.gate),
+              p2: drift.join('；'),
+            })
           }
           const signature = office.signGate(call, {
             gate: args.gate,
@@ -1704,6 +1726,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(args.turn === undefined ? {} : { turn: args.turn }),
           })
           return describeSignature(signature, office.signatureState(call, signature.gate)) + signPrecheck(signature.gate)
+        }
+        // **无审核单 ⇒ 不许盲签**（2026-10-12）：`channel=statement` 的依据是用户"以前说过的话"，
+        // 他可能根本没看过审核单。要求该门禁**先有审核单**且**与当前真源一致**。
+        const record = office.signReviewRecord(call, args.gate)
+        if (record === undefined) {
+          return fmt('uiIndex.kSignNoReview', { p1: gateLabel(args.gate) })
+        }
+        const drift = office.signReviewDrift(call, args.gate, record)
+        if (drift.length > 0) {
+          return fmt('uiIndex.kSignReviewStale', { p1: gateLabel(args.gate), p2: drift.join('；') })
         }
         // `channel=statement`（默认）：用户在会话中明确表述过 → 必须给出用户原话
         const quote = (args.quote ?? '').trim()
@@ -1819,7 +1851,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
      * 宿主没装配该服务（headless / 精简装配）时返回 `undefined`：
      * 回执会要求改用 `channel=statement` 并给出用户原话（规格承认的第二来源）。
      */
-    async gateSignQuestion(call: OfficeCall, gate: string): Promise<GateSignAnswer | undefined> {
+    async gateSignQuestion(call: OfficeCall, gate: string, detail?: string): Promise<GateSignAnswer | undefined> {
       // 动态取服务：本包**不**把 dsh-user-questions 声明为依赖（只有 plan-mode 的依赖树里才有），
       // 静态 import 会在未装配它的宿主上让整个插件模块加载失败。
       const interaction = (ctx as unknown as {
@@ -1848,7 +1880,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
             id: questionId,
             header: t('uiSign.header'),
             question: fmt('uiSign.question', { p1: gateLabel(gate) }),
-            detail: t('uiSign.detail'),
+            // **交互优化（2026-10-09）**：`detail` 里放的是**本次要签的审核单全文**
+            //（`office.signReviewDoc` 从真源现读现渲染），用户在卡片里就能通读、
+            // 客户端半还会把它镜像到右侧边栏。没给 detail 时才退回原来那句固定说明。
+            detail: detail ?? t('uiSign.detail'),
             options: [
               { label: signLabel, description: t('uiSign.signCost') },
               { label: declineLabel, description: t('uiSign.declineCost') },

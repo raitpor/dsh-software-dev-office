@@ -10,7 +10,7 @@
  *   · 原来唯一"按路径"的纪律有两处**都是空转的**：`disciplineAllowPaths` / `disciplineTools` 两个配置
  *     **从来没人读**（死配置）；而 L3 阶段纪律里的 `path.startsWith('src/')` 也判不到真机——宿主传给
  *     `write`/`edit` 的 `file_path` 是**绝对路径**（真机子会话实录：
- *     `{"file_path":"/home/raiptor/gitrepo/…/sdo-test-new/lib/parse.js"}`）⇒ 前缀比对恒 false。
+ *     `{"file_path":"<工作区根>/lib/parse.js"}`）⇒ 前缀比对恒 false。
  *
  * 本模块就是那条"按路径"的纪律，两重限制：
  *   **3b 卡级**：调用方有**活着的认领卡** ⇒ 目标路径必须落在卡的 `writeScopes` 内；

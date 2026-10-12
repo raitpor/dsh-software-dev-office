@@ -31,6 +31,7 @@ import { SoftwareDevOffice } from '../src/office.js'
 import { G2_SIGNATURE_INVALIDATING_EVENTS, isSignatureInvalidatingEvent } from '../src/types.js'
 import type { GateCriterionResult, RiskItem, ViewKind } from '../src/types.js'
 import { disposeOpenP1, prepareG2, signG2 } from './support/g2-fixture.js'
+import { seedSignReview } from './support/sign-review-fixture.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m20/', import.meta.url))
 const ALL_VIEWS: ViewKind[] = ['context', 'component', 'runtime', 'data', 'deployment']
@@ -297,6 +298,7 @@ test('N-7 反例：签字后新增一条"只写结论"的 ADR → G3 签字必�
 test('D1 工具通道：sdo_gate action=sign gate=G2 的回执必须写出失效事件集合', async () => {
   setupThroughG0()
   const harness = toolHarness(workspace)
+  seedSignReview(workspace, 'G2')
   const receipt = await harness.callTool('sdo_gate', {
     action: 'sign',
     gate: 'G2',

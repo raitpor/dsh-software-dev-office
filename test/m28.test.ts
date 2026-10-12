@@ -222,6 +222,12 @@ test('M28-03 反向：宿主关闭清单之外的行不必重复挂，且不许�
     'delegation',
     // plan-mode 的 isolate realm（提供者与消费者同 realm；行本身在上表）。
     'planning',
+    // **客户端半的投递锚点**（0.1.5，真机 OBS-005）：`client-modules` 只按 `ctx.loader.entries()`
+    // 组浏览器模块图，而 preset 里的行**不是** Loader 自己的 entries ⇒ 只 insert preset 时本包的
+    // `dsh.client` 永不进图（真机实测：模块图无本包、`/plugins` 404、`__SDO_REVIEW__` 为 undefined）。
+    // 这一行**故意 `disabled: true`**：只借 Loader 的**枚举**进图，**不挂载**宿主半 ⇒
+    // 「未选 preset 的会话不加载 SDO（宿主侧）」不变（E2E-09 / AC-007）。形状守卫见 test/m88 的 M88-08。
+    'sdo-client-half-anchor',
   ])
   const unexplained = presetRowIds(text).filter((id) => !explained.has(id))
   assert.deepEqual(unexplained, [], `preset 里有未说明用途的行：${unexplained.join(', ')}（加行前先想清为什么，并登记到本文件）`)

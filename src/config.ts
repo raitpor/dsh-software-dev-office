@@ -113,6 +113,19 @@ export interface SdoConfig {
     /** 阈值档位（百分比），每档只问一次 */
     tiers: number[]
   }
+  /**
+   * **只当"客户端半的投递锚点"，不注册任何东西**（默认 `false`）。
+   *
+   * 为什么需要这个开关（2026-10-10 真机 OBS-005）：浏览器的模块图由宿主
+   * `@deepseek-ai/dsh-client-modules` 组合，它**只认 profile 顶层 Loader 行**——
+   * preset 里的行不是 Loader 自己的 entries，且该包 `client-modules` 会**跳过
+   * `disabled` 行与没有 fiber 的行**（`if (… || entry.fiber === void 0 || entry.disabled) continue`），
+   * 行名还必须是**裸包名**（子路径行名在 `locatePkgJson` 里被直接判为不可解析）。
+   * ⇒ 唯一可行形态：bundle patch 里加一条**启用的** profile 顶层行（裸包名），
+   * 由它把包带进模块图；而这条行**不能真的装载 SDO 的宿主半**（否则"未选 preset 的会话
+   * 完全不加载 SDO"就被破坏，E2E-09 / AC-007）⇒ 用本开关让 `apply` 立刻返回。
+   */
+  clientHalfOnly: boolean
 }
 
 /** 配置 schema：所有字段都有默认值。 */
@@ -133,6 +146,9 @@ export const Config: z<SdoConfig> = z.object({
   dispatchOrphanTtlMinutes: z.natural().min(1).max(1440).default(60),
   captureWorkspaceChanges: z.boolean().default(true),
   enforceRoleMask: z.boolean().default(true),
+  // **客户端半的投递锚点**（默认 false）：只有 bundle patch 里那条 profile 顶层锚点行会置 true。
+  // 它让 `apply` 立刻返回、什么都不注册 —— 该行存在的唯一目的是把本包带进浏览器模块图。
+  clientHalfOnly: z.boolean().default(false),
   dispatchProvider: z.string().default('spawn'),
   dispatchMaxDepth: z.number().min(0).max(4).default(1),
   commandEcho: z.union([z.const('none'), z.const('echo')]).default('echo'),

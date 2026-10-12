@@ -34,6 +34,7 @@ import { describeDesignQuestions } from '../src/interface/describe.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { prepareG2 } from './support/g2-fixture.js'
 import type { GateCriterionResult, GateEvaluation, ViewKind } from '../src/types.js'
+import { seedSignReview } from './support/sign-review-fixture.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m15/', import.meta.url))
@@ -512,6 +513,7 @@ test('F-7/F-9 工具通道端到端：create ui 视图 → 写方法产物 → C
   assert.equal(criterion(after.criteria, 'C-2A').ok, true, `C-2A 必须转绿：${criterion(after.criteria, 'C-2A').detail}`)
 
   // ⑦ G3 在工具通道上**整体可达**：签字后整门通过（不残留别的红项）
+  seedSignReview(workspace, 'G3')
   await harness.callTool('sdo_gate', { action: 'sign', gate: 'G3', channel: 'statement', quote: '我签字确认这次设计可以放行', approvedBy: '张三' })
   const final = g3()
   const failures = final.criteria.filter((item) => !item.ok && item.na !== true).map((item) => `${item.id}:${item.detail}`)

@@ -7,7 +7,275 @@
 
 ## [Unreleased]
 
-（下一轮改动写在这里；发版时把本段落成 `## [x.y.z] - 日期`，并在顶部留一个空段 —— 见 `test/m23.test.ts` R-6 的结构断言。）
+**主题：门禁签字的交互优化 —— 签字前先在右侧边栏通读整份审核单。**
+
+### 新增
+
+- **门禁签字的审核单**（`office.signReviewDoc` + `src/domain/reviewDoc.ts`）：`sdo_gate action=sign channel=question`
+  过去只把**一句固定文案**放进问答卡，用户"签字"时看不到自己签的是什么（这正是"看起来同意了"与
+  "有留痕的用户同意"被混为一谈的温床）。现在由工具从真源**现读现渲染**一份审核单，整篇塞进问答卡的
+  `detail`：**逐条判据的三态判定**（✅ 通过 / ❌ 失败 / ➖ N/A，与 `describeGate` **同一口径**）+
+  **未通过项的实测与修法** + **本门建议产物清单**（名字取自**流程数据**的 `suggestedArtifacts`，
+  不写死文件名）。审核单**不经过模型** —— 在传给用户之前不会有人"顺手润色"要签的内容。
+- **客户端半 `client.js`**（本插件第一次带浏览器半）：把同一份审核单镜像到**右侧边栏**，可滚动通读
+  （这正是计划模式的做法，也是宿主驱动不了的部分 —— `sidebarRight` 是客户端服务）。它注册自己的
+  标签页类型（`dsh-resource://sdo-review/**`）与正文/标题座位，并在 `user-questions/request` 这条
+  **waterfall** 上做**旁观者**：读到 `questions[].detail` 后打开侧边栏，然后**无条件 `next()` 委派**
+  给真正的答复者，绝不截断问答链。
+- `package.json` 增加 `dsh.client`（`platform: web` + 依赖的客户端插件）与 `./client` 导出，并把
+  `client.js` / `client.d.ts` 放进 `files`（漏了就等于随包丢失）；`PhaseDef` 增加 `suggestedArtifacts`
+  （流程数据里一直有、类型里一直缺的字段），审核单据此发现产物。
+
+### 修复（**首轮真机反馈：侧边栏专项测试报告 OBS-001/002/003**）
+
+- **OBS-002（major）签字选项说明把门禁写死成 G3**：`uiSign.declineCost` 里硬编码了 `G3`
+  （签**交付门禁 G7** 时，卡片标题说 G7、选项说明却说"G3 不可通过"，自相矛盾）。改为泛称
+  （与相邻的 `uiSign.signCost` 同口径），并加守卫 **M88-07**：`uiSign.*` 的任何文案都不许出现门禁编号。
+- **问答卡被产物原文撑成一堵墙**（首轮把产物原文整篇内联）：审核单**不再内联原文**，只列
+  **清单**（路径 / 在不在 / 字节数）。守卫 **M88-03** 断言"单里不许出现产物正文，且整份单体积有界"。
+- **OBS-003（major）右栏未弹出 —— 已定位并按计划模式的做法改正**：病灶是**打开的时机与位置**。
+  第一版在 `user-questions/request` 的 **waterfall 回调**里直接 `openResource`，而该调用是
+  **对屏幕上那个会话**生效的 —— 回调里没有会话上下文，失败又被 `try/catch` 吞掉，于是真机表现为
+  "右栏没弹、也没有任何报错"。现在照抄 `@deepseek-ai/dsh-client-ui-plan` 的 `PlanReviewOpen`：
+  回调**只把正文收下**（并照旧 `next()` 委派），真正打开交给一个 **session 作用域的座位组件**
+  （`conversation.composer.dock`），它等 **`useSidebarMounted`** 为真后**在 effect 里**打开，
+  并用 **`openResourceIn(sessionId, …)`** 显式指定会话；失败退 `openTabIn` → `openResource`，
+  仍失败最多重试 3 次。同时：失败一律 `console.error` 留痕 + 写入诊断探针
+  `globalThis.__SDO_REVIEW__ = { applied, opened, stage, lastError }`，**不再静默降级**。
+- **OBS-003 第三版（真机读数之后的形态）：投递已成功，但"打开"一次都没发生**。真机探针读数
+  `{ applied: true, opened: 0, stage: 'applied', lastError: '' }` ⇒ 客户端半跑起来了，可
+  `openReviewIn` **从未被调用**。两个前提被证伪：① `conversation.composer.dock` 是**输入框区域**的
+  座位，提问卡出现时它可能根本不渲染；② 那个座位的 catalog 里 `slotInject`/`hookContext` **都是空的**，
+  所以 `hooks: { sidebarMounted }` 未必会被接线（我押的是没验证过的前提）。
+  **现在的形态**：回调里**先取"屏上会话"再开** —— 读 `ctx.sidebarRight.mounted` 的 `get()`
+  （宿主文档：它比 React 渲染更早更新），用 `openResourceIn(sessionId, …)` 显式指定会话；
+  座位只作**兜底重试**，且挂在**两个**"随时都在"的环境位上（`conversation.input.dock` +
+  `conversation.composer.dock`）、用**标准 prop `sessionId`**（不再依赖 `hooks`/`inject`）。
+  探针扩成四段：`captured`（收到几次提问）/ `seatRendered`（兜底座位渲染过没有）/
+  `opened` / `stage`+`lastError` —— 上一版 `{applied:true,opened:0,lastError:''}` 之所以要再跑一轮，
+  就是因为三种成因读出来一模一样。
+- **卡片摘要 / 侧边栏全文的分工定稿**（用户裁定 2026-10-10）：提问卡只放**摘要**（判定总览那
+  5 行：门禁 / 阶段 / 判定 / 判据计数 / 生成时间），全文改走**侧边栏**。必须分两条通道的原因：
+  卡片渲染的就是 `detail`，正文一旦塞进去卡片必然被撑开。做法是：
+  **宿主把全文落盘**到 `.sdo/reviews/<门禁>.md`（按门禁归档）与 **`.sdo/reviews/latest.md`**
+  （**固定名** —— 客户端拿不到门禁名，只能按固定路径取）；客户端半用宿主自己的**只读文件 Remote**
+  （`ctx.remote.workspaceFiles.read(sessionId, …)`）取回全文再开侧边栏；
+  **取不到就退化为摘要**（不回归），原因落进探针的 `fileRead` 字段。
+- **OBS-006（blocker，回归）客户端半碰 `remote.workspaceFiles` 却没声明它 ⇒ 整个打开动作被打断**：
+  cordis 的服务守卫对**未声明的点号服务**在**属性访问那一下就抛**
+  `cannot get property "<prop>" without inject`（`@deepseek-ai/cordis/lib/index.js` 的 Proxy 守卫原文），
+  于是"取全文"抛错 ⇒ `openWithFull` 根本没走到打开那步（真机探针 `captured:1, opened:0, stage:'captured'`）。
+  **修法三处，缺一不可**（逐条对照宿主自带包核实过）：
+  ① 客户端半 `inject` 增加点号服务名 **`'remote.workspaceFiles'`**
+     （对照 `dsh-client-ui-sidebar-files/lib/client.js` 与 `dsh-api-workspace-files/lib/client.js`）；
+  ② `package.json` 的 `dsh.client.inject` 增加 **`"@deepseek-ai/dsh-api-workspace-files"`**
+     —— 宿主自带包凡用它的都声明了提供方（对照 `dsh-client-ui-sidebar-files/package.json`）；
+  ③ 调用形态取**裸 sessionId**：`read(sessionId, path, {}, signal)`
+     （对照 `dsh-client-ui-sidebar-documentpreview/lib/client.js`；上一版"两种形态依次试"里的
+     `read({sessionId}, …)` 是**猜的**，已删）。
+- **OBS-007（major，既有潜在缺陷被本版变成可达路径）**：`sidebar.right.pane.tab.title` 座位注册时
+  **没声明 `locale`**，组件却用了 `t` ⇒ `doc === undefined` 时 `TypeError: t is not a function`，
+  宿主记 `slot entry crashed in 'sidebar.right.pane.tab.title'`。修法：该座位补 `locale: NS`
+  （与正文座位一致）。上一版（09:11）**同样**没声明，只是正常打开时走不到那条分支。
+- **OBS-008（minor，探针契约被违反）**：`ctx.remote.workspaceFiles` 的**属性访问在 `try` 之外** ⇒
+  异常以 `Uncaught (in promise)` 逃逸，`fileRead` 与 `lastError` 都是空 —— 探针给出了"卡在哪一段"
+  却给不出**原因**。修法：属性访问纳入 `try`，并先判可用性直接写 `fileRead: 'failed:no-workspaceFiles'`。
+  **纪律**：探针要成为唯一取证入口，**失败原因必须落进去**，不能只落"阶段"。
+  副产品：`.sdo/reviews/**` 本身就是"**用户签字时看到过什么**"的审计件 —— 与"签字依据不许重放"
+  同一条纪律。摘要与全文的总览**共用同一个 `metaLines`**，两处不会漂（守卫 M88-09 逐字比对）。
+- **签字审核单落点改名**：`reviews/` → **`evidence/sign-reviews/`**。`.sdo/reviews/` 是**评审台账**
+  （`REV-*.yml` + `review-verifications.yml`，README 里就是这么写的），把签字审核单快照混进去会让
+  "评审记录"与"签字时看到的对象"两个概念在同一目录里打架。`listReviews` 有 `REV-\d+\.yml` 白名单
+  过滤（所以**功能上没坏**，属"该分就分"的语义清理），守卫 M88-06 另加反向断言禁止写回 `reviews/`。
+- **OBS-009（blocker，"弹出但只有摘要"的直接原因）`mounted.get()` 应为 `getSnapshot()`**：
+  `ObservableSnapshot<T>` 的契约（`@deepseek-ai/dsh-client-store/lib/types/contract.d.ts`）只有
+  **`getSnapshot()`** 与 `subscribe()`，**没有 `get()`**；宿主 `dsh-client-ui-sidebar-right` 自己读它
+  也是 `this.mounted.getSnapshot()`。写成 `.get()` **不抛错** —— `typeof undefined === 'function'` 为假，
+  静默走 `undefined` 分支 ⇒ 会话 id 恒空 ⇒ 三连后果：① 取全文的作用域非法（`fileRead: 'failed:unreadable'`）；
+  ② `openReviewIn` 的会话显式两段被跳过、退到全局 `openResource` ⇒ **弹出但只有摘要**；
+  ③ `openedKey` 一置位，**带真 sessionId 的兜底座位再也不重试**（正确路径被降级结果永久压掉）。
+  **修法**：正本改 `getSnapshot()`（`get()` 只留兼容退路，且**必须真的调用**）；并按核实报告的建议加一条
+  纪律 —— **没有会话 id 就不开**（`if (sessionId === undefined) return false`），把机会留给兜底座位，
+  绝不用降级内容抢占 `openedKey`。
+- **OBS-011（minor）只读文本是分页的**：`read()` 只回**一页**（`{ offset, lines, eof }`），
+  原实现只取首页 ⇒ 审核单一旦超过一页就**静默截断**。改为按 `eof` 续页（`offset += lines`，上限 20 页），
+  到上限仍未读完时探针记 **`ok:truncated`**（如实标注，不假装取全）。
+- **OBS-012（blocker，"没抛错但没文本"的决定性指纹）客户端 remote 的返回值是 `RemoteResult` 信封**：
+  `@deepseek-ai/dsh-typert-protocol` 的契约原文 —— *What every generated Remote method resolves to*：
+  `{ ok: true, value: T } | { ok: false, error: RemoteFailure }`。上一版**直接读内层字段**
+  （`textOf(result)` 找 `result.text`）⇒ 永远是 `undefined`，而且**不抛错** ⇒ 被压成笼统的
+  `unreadable`、`lastError` 还空着（这正是 OBS-008 想根治的"不可诊断"，换了一层又回来了）。
+  **修法**：① 先判 `result.ok !== true`；② 脱信封取 **`result.value`** 再解析；③ `ok:false` 时把
+  `result.error` 的具体文本（message / code / 序列化，形状不做假设）**写进探针**
+  （`fileRead: 'failed:remote'` + `lastError`）。口径照官方消费者 `dsh-client-ui-sidebar-documentpreview`：
+  `if (!result.ok) { actions.failed(tabId, result.error); return } … result.value`。
+- **OBS-013（minor，交互）作答后右栏标签页没自动关 —— 已修（作答后自动关闭）**：
+  客户端半此前**全文没有任何关闭逻辑**（`grep clos|dismiss|collapse|removeTab` 为空）。修法分两步：
+  ① **结算信号**：客户端可见的问答远端事件**只有 `user-questions/request`**（`@deepseek-ai/dsh-api-remotes`
+  的 remote-events 白名单里没有"已作答"事件），而 `userQuestions` 投影**只记 timed 路径**的调用
+  （SDO 走的是服务级 `ask()`，无 timeout）⇒ 投影不可靠。唯一**必然触发**的信号是：我们**就在这条
+  waterfall 上** —— 把请求委派出去后，**这次 `next()` 的完成**就是"提问已结算"。
+  **保护**：只有真的拿到答复（`answer !== undefined`）才算结算；没人认领时 `next()` 以 `undefined`
+  完成，那时**不许关**（用户还没作答就把页收掉，比不关更糟）。
+  ② **关闭口径**：`ctx.sidebarRight.closeIn(sessionId, tabId)`（宿主 `service.d.ts`：Close a tab of one
+  session, preserving the sole docked guide），`tabId` 取自标准 prop `useTabInfo()` 的 `tab.id`
+  （宿主自带包同款取法）；按**地址里的 key** 认出"是不是我这页"，只关一次，关不掉只留痕、不抛回渲染。
+  探针再加 `closed` / `closeWhy`。
+- **OBS-014（minor，交互）关了标签页但面板没收起 —— 已修（只在"这一栏没别的页"时收起）**：
+  真机读数 `closed:1, closeWhy:'settled'` 证明关闭链路成立、只是面板仍展开。修法：
+  **先数后关** —— `ctx.sidebarRight.tabsIn(sessionId)` 读的是**已提交**记录（契约原文：
+  *Read the committed tabs of a Session … or an empty list before adoption*），
+  关完再读可能还没提交，所以先算出"除了我这一页还有没有别的"，再 `closeIn`；
+  然后**只有 `others === 0` 且 `isExpanded() === true`** 才 `toggleExpanded()`。
+  为什么两道判断都必要（用户口径 2026-10-10）：`toggleExpanded` 是**双向**开关且**会被录制进序列**
+  （用户可见的界面状态变更）—— 用户还开着别的页时替他收起属**越权改动界面**；不先判 `isExpanded()`
+  则可能把"收起"变成"展开"。计数失败时**保守**按"还有别的页"处理（宁可面板不收，也不误收）。
+  探针加 `collapsed`，`closeWhy` 区分 `settled` / `settled-collapsed`。
+- **OBS-014 定因与收窄（报告 §15）："无其他标签才收起"这条判据在原实现下永远不成立**。
+  `tabsIn(sessionId)` 返回的是**该会话 layout 里全部已提交页**（宿主实现就是 `Object.values(layout.tabs)`），
+  而宿主**常驻自己的引导页**（`GUIDE_KIND = 'guide'`，地址 `sidebar://<kind>` ⇒ **`sidebar://guide`**）
+  ⇒ `others` 恒 ≥ 1 ⇒ `toggleExpanded()` 永不触发（真机 `collapsed:0` + `lastError:''`，
+  用户确认作答后剩下的正是宿主「开始」页）。**修法**：计数时排除**自己这一页**与**宿主引导页**——
+  引导页是这一栏常驻的"门"，不是用户开的页；其余任何页（文档、别的插件、别的审核单…）仍算
+  "用户还开着别的东西"，那时**不许**动面板（越权边界不变）。
+  同时按报告要求把守卫的**实际取值**落进探针 `probe.closeGuard = { others, expanded, rest }`
+  （`rest` 是剩余页地址，截断 120 字符）——上一轮就是靠"计数 + 剩下页是什么"才定到守卫上的，
+  只留一个 `collapsed` 计数不足以定案。
+- **签字审核单内联受审载荷 + 指纹失效（方案 3，2026-10-12 用户裁定）**：起因是 dsh-neuro-mimesis
+  会话的实报 —— *"签字弹窗与 `sdo_render target=srs` 的产物都不含审查载荷：需求清单只有正文、
+  没有红队问答、没有风险台账、没有门禁判定。签字人看不到要审什么，只能盲签。"* 用户裁定：
+  **要内联正文**（签字人要能逐条判断"模型理解得对不对、和自己的想法有什么出入"），
+  并加两条硬约束 —— **真源仍是 `.sdo`**、**每次生成审核文档要对应指纹，真源变化审核文档失效**。
+  **实现**：
+  ① 受审集合按**流程数据**声明（`processes/*.yml` 每阶段新增 `reviewPayload: [...]`；与
+     `suggestedArtifacts` 同纪律：只展示、不入门禁）：需求阶段 = 需求/问答/风险/决策，
+     架构 = 设计/契约/质量/决策，开发 = 任务/测试，验证 = 测试/缺陷/任务，交付 = 测试/缺陷/变更…
+  ② 审核单按**逐条正文**内联（通用渲染器展开任意 YAML 结构 ⇒ **结构上不可能漏字段**），
+     每条给出源文件路径与内容指纹；文档头给整篇指纹与生成时的 journal 序号；
+  ③ 落盘 `evidence/sign-reviews/<门禁>.md`（人读）+ **`<门禁>.json`**（机器校验：整篇指纹 +
+     逐条 `(collection, id, path, hash)`）+ `latest.{md,json}` 镜像；
+  ④ **签字前机械核对**：`channel=statement` 无审核单 ⇒ 拒签（不许盲签）；真源在生成之后变过 ⇒
+     **拒签并逐条点名差异**（`~ REQ-007 内容已变` / `+ RISK-013 新增` / `- … 已删除`）；
+     `channel=question` 在**用户作答之后、落签字之前**再核一次 —— 覆盖"用户读卡片期间别处改了真源"。
+  ⑤ 指纹口径**复用**既有纪律（`sha256:` 前缀 + 规范化 JSON，绑内容不绑 mtime；`canonicalJson`
+     从 `design.ts` 抽到 `domain/hash.ts` 共用），所以换行/键序变化不会误判失效。
+  **已知代价**：每次签字落盘 100KB 级（该会话那份包 29 需求 + 28 问答 + 12 风险 ≈ 121KB）——
+  这是"看得到正文"换来的一次性可读体积，真源仍然只有一份。
+- 探针扩到九段现场：新增 `filePages`（取了几页）与 `session`（会话 id 来源 `mounted` / `none`）——
+  本轮两个缺陷本来都能靠它一轮定位：`session:'none'` 直接指向 OBS-009。
+- **OBS-001（minor）导航参数缺类型声明**：新增 `client.d.ts`，对
+  `SidebarRightResourceParamsMap` 补上 `'sdo-review'` 那一片（宿主自带包都这么做），
+  并在 `./client` 导出上给出 `types`。
+- 去掉 `dsh.client.immediately`：它是模板里"开机就要显示的装饰件"用的，而本客户端半是**反应式**的
+  （只在签字提问时动）；能正常工作的 `dsh-client-ui-plan` 也没有这个字段。
+- **OBS-005（major，装配层）preset 挂载的插件拿不到客户端半 —— 已修（补投递锚点行）**：
+  宿主的浏览器模块图由 `@deepseek-ai/dsh-client-modules` 组合，而它**只遍历 `ctx.loader.entries()`**；
+  preset 里的行**不是** Loader 自己的 entries（宿主 `@deepseek-ai/dsh-host-plugin-inventory` 注释原文：
+  那些行 "not the Loader's own \[entries]"）⇒ 本包只 insert preset 行时，`dsh.client` **永不进图**。
+  真机实测（三条独立观测 + 浏览器探针）：模块图 68 行无本包、`/plugins/**` 一律 404、
+  `window.__SDO_REVIEW__ === undefined`。
+  **修法（形态是被三条宿主实现约束逼出来的，绕了两版，改之前先读这段）**：bundle patch 里再 insert
+  一条 **profile 顶层行**（`id: sdo-client-half-anchor`）。三条约束：
+  ① **行名必须是裸包名** —— `client-modules.locatePkgJson` 对子路径名（`pkg/sub`）直接
+     `return undefined`（`if (!pathLike && expectedPackageName === void 0) return void 0`），
+     静默跳过；
+  ② **行不能 `disabled: true`** —— 组图时跳过禁用行与没有 fiber 的行
+     （`if (entry.options.name !== entryName || entry.fiber === void 0 || entry.disabled) continue;`）。
+     **第一版正是写成 `disabled: true`**（只验了 Loader `entries()` 的"枚举"、没验消费方的谓词），
+     真机复测 `delivered: false` —— 白跑一轮，教训记在这里；
+  ③ 因此它必须**真的挂载出 fiber**，而挂载的只能是**本包主入口** ⇒ 新增配置
+     **`clientHalfOnly: true`**（默认 `false`），使 `apply` 首行立刻返回、**不注册任何东西**，
+     于是宿主半（工具/命令/注入/门禁/看板/成本）**仍然只在 preset 里** ⇒
+     「未选 preset 的会话不加载 SDO（宿主侧）」（E2E-09 / AC-007）**守得住**。
+  代价如实写在 patch 注释与 README 的配置键表里：浏览器半是**按页面**加载的，未选 preset 的会话里
+  它也在页面里，但没有 SDO 提问就什么都不做（只注册一个标签页类型与一个渲染 `null` 的打开器）。
+- **OBS-002 的"同类残留 4 处"经核实为误报（反证）**：报告点名的 `uiGates.kSignedRemedy`（`gates.ts:605`，
+  只用于 G3 的 `design.signed`）、`uiDescribe.kSignWaitingHow`（函数注释即"**G3 未签字时**的明确提示"）、
+  `status.gateUnsigned`（设计阶段未签）、`uiDescribe.k61`（缺视图 ⇒ G3）**都只在 G3 路径上产出**，
+  写 G3 是对的。真正的同类缺陷只有 `uiSign.declineCost`（选项说明挂在**任意门禁**的签字卡上），已修。
+- **标签页标题改用宿主的纯文本提取器**（从技术库 `tq_4e2eda88` 学来的）：原先 `client.js` 手写"取首行 +
+   去 `#`"，markdown 语法（`**`、反引号）会漏进**纯文本位**的标签页标题。现在走
+   `primitives.extractMarkdownPlainText(text, { mode: 'first-line' })`（与客户端计划评审同一个提取器），
+   并保留"提取器缺失/抛错"时的退化路径（退化也去强调符）。
+
+### 测试
+
+- 新增 `test/m89.test.ts`（3 条）**文档漂移守卫**：
+  ① 全部文档（`README` / `CHANGELOG` / `docs/**` / `.review/**` / `skills/**`）里**不许出现指向某台机器的
+  绝对路径**（Linux/macOS 家目录、Windows 盘符、宿主把工作区绝对路径转义出来的会话目录名）；
+  ② `docs/README.md`（权威索引）必须**收录 docs/ 下每一篇文档**、**不许有死链**、不许指向 `docs/` 之外；
+  ③ 索引里的"权威顺序"必须仍指向真实存在的目录。
+  **本轮清理实绩**：8 篇文档去掉本机绝对路径/主机产物名（`<仓库根>` / `<测试工作区>` / `<临时目录>` /
+  `<工作区名>` 占位），测试夹具 `test/m76` 的 `/home/<用户名>/proj` 改为 `/work/proj`（不再把用户名带进仓库），
+  `docs/README.md` 补上**当轮交接文档**与**最新复测报告**（此前按索引找不到这两篇）。
+  **变异自证**：往 README 塞一条本地路径 / 索引里删掉当轮交接那一行 / 索引里加一条死链 /
+  签字审核单退回 `reviews/` —— 四种改法各被对应用例杀红，恢复后全绿。
+
+- 新增 `test/m88.test.ts`（8 条）：审核单三态/必带字段/未通过项修法（正反双向）· 首行必须是 `#` 标题
+  （客户端拿它当标题）· **只列产物清单、不得内联原文且体积有界** · 语言包 `uiSignReview` 两包齐备
+  **且原有 `uiReview` 段不得被顶掉** · 客户端半的声明与形状（含"必须委派 `next()`"、
+  **"回调里必须立刻试开、且会话 id 从 `ctx.sidebarRight.mounted` 现取"**、
+  **"必须用 `openResourceIn(sessionId, …)`"**、**"不许再押 `hooks`/`useSidebarMounted`"**、
+  **"探针字面量必须含 applied/captured/seatRendered/opened/stage/lastError"**、
+  **"失败必须留痕"**、`client.d.ts` 的声明合并）· 宿主接线（审核单必须现算并作为 `detail` 传入）·
+  **签字文案不许写死门禁编号** · **客户端半的投递锚点行**（必须存在、必须是**裸包名**、
+  **不许 disabled**、必须带 `clientHalfOnly: true`、`apply` 必须真的按它早退、
+  preset 行不许 disabled / 不许带 `clientHalfOnly`、profile 顶层只许这两条）。
+  **变异自证**：重新内联产物原文 / 去掉 `console.error` / 选项说明重新写死 G3 / `client.d.ts` 参数键改名 /
+  丢掉 `sessionId` / 回调不再 `next()` / 回调里不再立刻试开 / 真代码里塞回 `hooks` /
+  真代码里调用 `useSidebarMounted` / 探针字面量去掉 `captured` / 会话 id 不再读 `mounted` /
+  锚点行去掉 `disabled` / 锚点行整个删掉 / 锚点行改指别的包 / 把 preset 行也 disabled /
+  **锚点行改回 `disabled: true`** / **锚点行改用子路径名** / **锚点行去掉 `clientHalfOnly`** /
+  **`apply` 去掉早退** / **preset 行也开 `clientHalfOnly`** / 退回手写首行 / 退路不去强调符 /
+  改用非 first-line 模式 —— **二十余种改法各被对应用例杀红，恢复后全绿**。
+  （有几条**第一次写守卫时没被杀**：只查字面量／没查调用形态／被注释满足／被"去注释吃掉代码"蒙过，
+  全部按变异结果收紧 —— 见下条。）
+- **守卫自身的教训（本轮四种假绿/假红，都靠变异逼出来）**：
+  ① 只查**字面量**（`openResource` 这个词，而搬回去调的是 `openReviewIn`）；
+  ② 没查**调用形态**（`openResourceIn(` 存在 ≠ 传了 `sessionId`）；
+  ③ **注释满足断言**（`extractMarkdownPlainText` 在注释里也有 ⇒ 正向假绿；`useSidebarMounted`
+  在注释里也有 ⇒ 负向假红）；
+  ④ **去注释时把代码吃掉了**：删注释的顺序若"先块后行"，行注释里的"斜杠+星号"
+  （`sdo-review/**`）会被当成块注释起点、一路吞到下一个结束标记，**实测吞掉约 2KB 代码**，
+  于是负向断言看的是残缺代码、变异照样存活。现在先删行注释再删块注释，并加两道自检
+  （长度不塌陷 + 关键代码标记仍在）；变异双向验证过：真代码里塞回禁止用法必红、
+  只在注释里提到必绿。
+  纪律：**变异必须打到守卫身上；守卫自己也要被两侧打过（真代码/注释）。**
+- `test/m28` 的"加行必登记"表登记了锚点行的用途（否则守卫会红 —— 这是设计如此）。
+
+### 升级影响
+
+- **签名口径不变**：签字依据仍是"用户在问答卡里所选选项的原文"，仍由工具当场取回（`channel=question`）；
+  本轮只是让用户**在签之前看得见**要签的对象。既有签字无需重签。
+- 新增客户端半后，**要重启 dsh**（浏览器端的模块图在启动时按 `dsh.client` 声明组合并投递）；
+  随后刷新页面即可。纯宿主改动不受影响。若某个精简装配没有右侧边栏或客户端服务，
+  插件会自动降级为"只在问答卡里看全文"（且会在控制台留痕，不再静默）。
+- **本插件的 bundle patch 现在有两条 profile 顶层行**：preset 行 + `sdo-client-half-anchor`
+  （**启用**，带 `config.clientHalfOnly: true`）。自定义装配时**不要**删它、也不要给它加 `disabled`
+  —— 两者都会让浏览器端再也拿不到 `./client`（真机 OBS-005 复现）。
+- 新配置键 `clientHalfOnly`（默认 `false`）：**只给锚点行用**。别在 preset 行上开它
+  —— 那会让选了 preset 的会话只剩一个空壳（守卫 M88-08 反向断言拦这条）。
+
+### 升级影响（本轮追加）
+
+- **行为变更（会拦住既有用法，务必先读）**：`sdo_gate action=sign channel=statement`（默认通道）
+  现在**要求该门禁已有一份与当前真源一致的审核单**。此前可以直接凭用户原话签字；
+  现在若从未生成过审核单 ⇒ 拒签（回执给出生成命令）；若生成之后真源变过 ⇒ 拒签并列出差异条目。
+  **迁移办法**：先 `sdo_gate action=sign gate=<门禁> channel=question` 走一次人机关口问答
+  （它会现算并落盘审核单，用户可选择签字或不签），之后再用 `channel=statement` 即可。
+- 审核单落盘从 1 份变 4 份（`<门禁>.md`/`<门禁>.json`/`latest.md`/`latest.json`），
+  体积从 KB 级升到 100KB 级（内联受审载荷的代价）。
+
+### 已知未决
+
+- 投递锚点行已按三条宿主约束改成**启用 + 裸包名 + `clientHalfOnly`**，**待真机复测**：
+  重启 dsh 后应能在 `window.__DSH_BOOT__.entries`（**注意：没有 `client` 这一层**）里看到
+  `dsh-software-dev-office`、`/plugins/**dsh-software-dev-office/client.js` 返回 200、
+  浏览器控制台 `__SDO_REVIEW__` 有值。届时若右栏仍不弹，看 `__SDO_REVIEW__.stage` 与 `lastError`：
+  `applied` 且 `opened === 0` ⇒ 打开环节；`opened >= 1` ⇒ 标签页类型注册/渲染环节。
+- 复测直接用测试工作区 `sdo-test-new` 的三条只读探针（`node .probe/sidebar/{boot-manifest,live-graph}.mjs`），
+  它们把"投递"与"打开"拆成两条独立判据；**别在插件仓库里跑** —— 探针要写证据文件，
+  而插件工作区之外的那份才是权威副本。
 
 ## [0.1.4] - 2026-10-09
 
@@ -590,7 +858,7 @@
 - **R-17（major，R-8 的修复不彻底 —— 用户口径里的"TASK-022 仍全红"确有其事）**：`fail` 与 `pass`
   **各自独立取最新** ⇒ 红灯取本卡的 `TR-053`、绿灯取**别人 4 小时后**的 `TR-070`（`env` 里带会话/角色标记，
   必然不同）⇒ 判据必然红、**越往后越红**。更要紧的是我上轮没看清的一点：**`env` 是自由文本** ——
-  同一张卡红灯写「断言面=/tmp/tc003-harness.mjs（先于实现写好）」、绿灯写「断言面=TC-003（31 条…）」，
+  同一张卡红灯写「断言面=<临时目录>/tc003-harness.mjs（先于实现写好）」、绿灯写「断言面=TC-003（31 条…）」，
   **同一次实验却文字不同**；拿它当"逐字必须相等"的硬判据，会在真项目上把所有卡判死。
   **在只读副本上复算（不给任何豁免）**：修前 **0 张全净 / 46 张判红**（报告按子集报的是 17 张）；
   修后 **46 张全净 / 0 张判红** —— 与报告给出的验收判据（"清空豁免后应无 gap"）一致。
@@ -740,7 +1008,7 @@ R-5C 不输出 held 行 / R-2 无条件印 k136 —— 每条都有用例变红�
   |---|---|---|
   | `disciplineAllowPaths` **声明了但全仓无人读** | 机械扫描 `SdoConfig` 21 个字段：只有它、`disciplineTools` 无人引用 | 变成写范围纪律的**公共放行面**（真源在 `config.ts` + preset 注释） |
   | `disciplineTools` **同样是死配置** | 同上；且 preset 里写了 `[write, edit, bash]`，让人以为 bash 也在纪律内 | 变成"受写范围管辖的工具集"；**bash 没有路径参数** ⇒ 如实标 `checked: false`（不许假装拦住了），越界写仍由 `done` 的 A2 对账兜底 |
-  | L3 的路径判据**在真机上恒不命中** | `path.startsWith('src/')` vs 真机实录 `{"file_path":"/home/raiptor/gitrepo/…/sdo-test-new/lib/parse.js"}`（**绝对路径**） | 钩子里统一 `normalizeWorkspacePath(path, call.cwd)` 归一，三处共用（快照 / 写范围 / L3）；归一**保留目录尾斜杠**，否则 `lib/` 会退化成 `lib` ⇒ `libx/a.js` 被**假放行** |
+  | L3 的路径判据**在真机上恒不命中** | `path.startsWith('src/')` vs 真机实录 `{"file_path":"<测试工作区>/…/lib/parse.js"}`（**绝对路径**） | 钩子里统一 `normalizeWorkspacePath(path, call.cwd)` 归一，三处共用（快照 / 写范围 / L3）；归一**保留目录尾斜杠**，否则 `lib/` 会退化成 `lib` ⇒ `libx/a.js` 被**假放行** |
 
 - **诚实边界（写进 README 与配置文档）**：宿主 `sandbox` 服务只有**模式级**策略（`read-only`/`workspace-write`），
   **没有路径白名单** ⇒ `bash` 的越界写**没有任何机械前置拦得住**，只能靠 `done` 时的 A2 写范围对账兜底

@@ -71,6 +71,7 @@ import {
   screenWireframe,
   type WireframeStrings,
 } from './wireframe.js'
+import { HASH_PREFIX, contentHash, shortHash } from './hash.js'
 
 /** 方法论选择题的目标标记与读取（实现落在 `method.ts`；这里再导出，保持既有调用方不变）。 */
 export { METHOD_TARGET, methodQuestion }
@@ -1055,34 +1056,23 @@ function confirmationContent(source: ConfirmationSource, target: string): unknow
   return undefined
 }
 
-/** 稳定的 JSON 序列化（键排序、跳过 `undefined`），保证同一内容永远同一指纹。 */
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== 'object') return JSON.stringify(value) ?? 'null'
-  if (Array.isArray(value)) return `[${value.map((item) => canonicalJson(item)).join(',')}]`
-  const entries = Object.entries(value as Record<string, unknown>)
-    .filter(([, item]) => item !== undefined)
-    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-  return `{${entries.map(([key, item]) => `${JSON.stringify(key)}:${canonicalJson(item)}`).join(',')}}`
-}
-
 /**
- * 指纹的**存储形态**带算法前缀（`sha256:<hex>`）。
+ * 指纹的**存储形态**带算法前缀（`sha256:<hex>`）—— 口径与实现都在 `./hash.js`（2026-10-12 抽出共用）。
  *
  * 为什么必须带前缀：纯十六进制里"全是数字"的哈希会被 YAML 解析成 number，
  * 于是"指纹不相等"永远成立 → 确认戳永远失效（活锁）。带前缀即永远是字符串。
  */
-export const CONFIRMATION_HASH_PREFIX = 'sha256:'
+export const CONFIRMATION_HASH_PREFIX = HASH_PREFIX
 
 function fingerprintOf(source: ConfirmationSource, target: string): string | undefined {
   const content = confirmationContent(source, target)
   if (content === undefined) return undefined
-  return CONFIRMATION_HASH_PREFIX + createHash('sha256').update(canonicalJson(content)).digest('hex')
+  return contentHash(content)
 }
 
 /** 指纹的短显示（去掉算法前缀，回执里人眼比对用）。 */
 export function shortConfirmationHash(hash: string): string {
-  const hex = hash.startsWith(CONFIRMATION_HASH_PREFIX) ? hash.slice(CONFIRMATION_HASH_PREFIX.length) : hash
-  return hex.slice(0, 8)
+  return shortHash(hash)
 }
 
 /**

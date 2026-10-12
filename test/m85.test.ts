@@ -36,6 +36,7 @@ import { loadPackagedYaml } from '../src/infra/data.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SdoConfig } from '../src/config.js'
 import type { Requirement } from '../src/types.js'
+import { seedSignReview } from './support/sign-review-fixture.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm85')
@@ -264,6 +265,7 @@ test('M85-06 N-8：评审回执要点名防篡改比的是语义哈希（不是�
 
 test('M85-07 N-18：签字回执立刻列出本门还缺的判据（不必再签、也别以为签了就过）', async () => {
   // 设计没做就签 G3 ⇒ 判据必然不全
+  seedSignReview(WORKSPACE, 'G3')
   const receipt = await callTool('sdo_gate', {
     action: 'sign',
     gate: 'G3',

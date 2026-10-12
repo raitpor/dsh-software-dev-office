@@ -109,7 +109,17 @@ import type { AssessInput } from './domain/feasibility.js'
 import { evaluateGate, satisfiedGates } from './domain/gates.js'
 import type { GateContext } from './domain/gates.js'
 import { disposeIssue, listIssues, openIssue, openIssues } from './domain/issues.js'
-import { exitGates, exitGatesFrom, legalRollbackTargets, listProcessIds, loadProcess, nextPhase, pendingGate, phaseLabel } from './domain/process.js'
+import { exitGates, exitGatesFrom, legalRollbackTargets, listProcessIds, loadProcess, nextPhase, pendingGate, phaseDef, phaseLabel } from './domain/process.js'
+import { renderSignReviewDoc, renderSignReviewSummary } from './domain/reviewDoc.js'
+import {
+  diffPayloadIndex,
+  payloadIndex,
+  readReviewPayload,
+  reviewFingerprint,
+} from './domain/reviewPayload.js'
+import type { ReviewPayloadSection as SignReviewPayloadSection } from './domain/reviewPayload.js'
+import type { SignReviewRecord } from './domain/reviewPayload.js'
+import type { SignReviewArtifact, SignReviewCriterion, SignReviewDoc } from './domain/reviewDoc.js'
 import {
   applicabilityLines,
   applicabilityState,
@@ -118,7 +128,7 @@ import {
   readApplicability,
 } from './domain/applicability.js'
 import { basisReplay, normalizeBasis, recordSignature, signoffInput, signatureState } from './domain/signature.js'
-import { gateIdOf, fmt, t } from './domain/i18n.js'
+import { gateIdOf, gateLabel, fmt, textOrProcess, t } from './domain/i18n.js'
 import type { RiskConclusion } from './domain/risks.js'
 import { listRisks, logRisk, readConclusion, riskStats, updateRisk, writeConclusion } from './domain/risks.js'
 import { answerQuestion, askQuestions, listQuestions, validateProposed, weakDimensions, writeProposedQuestions } from './domain/grill.js'
@@ -512,7 +522,7 @@ export class SoftwareDevOffice {
    * 优先级：显式 > 本次调用携带的 cwd（取自 agent.cwd）> 本会话记录的 cwd > **进程 cwd（只看本层）**。
    *
    * **DEF（真机实测）**：曾经加过"从进程 cwd 向上查找含 `.sdo/` 的目录"作为兜底 —— 那会命中
-   * **上层目录里别的项目**（实测 `/home/raiptor/.sdo/` 让所有在 `$HOME` 下的会话都读同一个项目，
+   * **上层目录里别的项目**（实测 `~/.sdo/` 让所有在 `$HOME` 下的会话都读同一个项目，
    * 即"仍串工作区"）。因此现在**只认本层**：
    *   · 本层没有 `.sdo/` → 视为未初始化（`sdo_status` 报"尚未初始化"），
    *   · **绝不向上爬、绝不猜别的项目**（宁可少显示，也不显示错的）。
@@ -1564,6 +1574,202 @@ export class SoftwareDevOffice {
     if (!prepared.ok) return this.truthFailure(gateId, prepared.phase, prepared.error)
     const { process, context } = prepared.value
     return evaluateGate(process, normalizeGateId(gateId, process), context)
+  }
+
+  /**
+   * 门禁签字的**审核单**（完整 Markdown）——签字问答里给用户通读的"审核内容"。
+   *
+   * 为什么要有它：签字入口过去只给一句固定文案，用户**看不到自己签的是什么**（真机教训
+   * 2026-10-09：复用旧原话补签，本质是"替人签字"）。这里把待签对象摆全：
+   *   ① 逐条判据的三态判定（✅ 通过 / ❌ 失败 / ➖ N/A，与 `describeGate` **同一口径**）；
+   *   ② 未通过项的实测与修法；
+   *   ③ 本门**流程数据**声明的建议产物（`suggestedArtifacts`）**清单**（路径 / 在不在 / 多大）。
+   *
+   * **只读真源**（`evaluate` 只算不写；产物只读不写）。真源读不出来时如实渲染"没有逐条判定"，
+   * 绝不假装判过（与 `truthFailure` 同口径）。
+   *
+   * **返回摘要与全文两份**（用户裁定 2026-10-10）：提问卡只放**摘要**（判定总览那 5 行），
+   * 全文落盘到 `.sdo/reviews/` 供**侧边栏**通读 —— 卡片与侧边栏的分工就此确定。
+   */
+  signReview(call: OfficeCall, gateId: string): { summary: string; full: string; record: SignReviewRecord } {
+    let workspace = call.cwd ?? ''
+    try {
+      workspace = this.requireWorkspace(call)
+    } catch {
+      /* 工作区都定位不到时下面的产物一律按"缺失"处理 */
+    }
+    const prepared = this.safeGateContext(call)
+    let process: ProcessDef | undefined
+    let evaluation: GateEvaluation
+    if (prepared.ok) {
+      process = prepared.value.process
+      evaluation = evaluateGate(process, normalizeGateId(gateId, process), prepared.value.context)
+    } else {
+      evaluation = this.truthFailure(gateId, prepared.phase, prepared.error)
+    }
+
+    const criteria: SignReviewCriterion[] = evaluation.criteria.map((item) => ({
+      id: item.id,
+      ok: item.ok === true,
+      na: item.na === true,
+      desc: textOrProcess(`criterion.${item.id}`, item.desc),
+      detail: item.na === true ? (item.naReason ?? item.detail) : item.detail,
+      remedy: item.remedy ?? '',
+      warnings: item.warnings ?? [],
+    }))
+
+    // 建议产物：名字以**流程数据**为唯一真源（阶段 → suggestedArtifacts）。
+    // **只列清单（路径 / 在不在 / 多大），不内联原文** —— 2026-10-09 真机反馈：
+    // 内联产物原文会把问答卡撑成一堵墙；签字要看的是判据与未通过项。
+    const phase = process === undefined ? undefined : phaseDef(process, evaluation.phase)
+    // **受审载荷**：集合名以流程数据的 `reviewPayload` 为唯一真源。
+    // 真源读不出来（store 构造失败等）⇒ 载荷为空 + 指纹按空集算，**不静默假装读过**：
+    // 文档里会显示"（无）"，且签字前的机械核对仍会把它与真源对一遍。
+    const collections = phase?.reviewPayload ?? []
+    let payload: SignReviewPayloadSection[] = []
+    let fingerprint = reviewFingerprint(evaluation.gate, [])
+    let seq = 0
+    if (workspace !== '') {
+      try {
+        const store = this.storeFor(workspace)
+        payload = readReviewPayload(store, collections)
+        fingerprint = reviewFingerprint(evaluation.gate, payload)
+        seq = this.journalFor(workspace).read().events.at(-1)?.seq ?? 0
+      } catch {
+        payload = []
+      }
+    }
+
+    const names = phase?.suggestedArtifacts ?? []
+    const artifacts: SignReviewArtifact[] = []
+    for (const name of names) {
+      // 交付类文档的实际落点是 `docs/<名字>`；也容忍直接放在工作区根（旧工作区的手写产物）。
+      const candidates = [`docs/${name}`, name]
+      const hit = candidates
+        .map((rel) => ({ rel, abs: join(workspace, ...rel.split('/')) }))
+        .find((item) => workspace !== '' && existsSync(item.abs))
+      if (hit === undefined) {
+        artifacts.push({ name, path: candidates[0] ?? name, exists: false, bytes: 0 })
+        continue
+      }
+      let bytes = 0
+      try {
+        bytes = statSync(hit.abs).size
+      } catch {
+        artifacts.push({ name, path: hit.rel, exists: false, bytes: 0 })
+        continue
+      }
+      artifacts.push({ name, path: hit.rel, exists: true, bytes })
+    }
+
+    const record: SignReviewRecord = {
+      gate: evaluation.gate,
+      at: evaluation.at,
+      seq,
+      hash: fingerprint,
+      collections: [...collections],
+      items: payloadIndex(payload),
+    }
+    const doc: SignReviewDoc = {
+      gate: evaluation.gate,
+      gateText: process === undefined ? evaluation.gate : gateLabel(evaluation.gate),
+      phaseText: process === undefined ? evaluation.phase : phaseLabel(process, evaluation.phase),
+      statusText: evaluation.status === 'passed'
+        ? t('uiSignReview.statusPassed')
+        : evaluation.status === 'waived'
+          ? t('uiSignReview.statusWaived')
+          : t('uiSignReview.statusFailed'),
+      at: evaluation.at,
+      criteria,
+      artifacts,
+      unjudged: evaluation.unjudged === true,
+      // **受审载荷**（方案 3，2026-10-12 用户裁定）：按流程数据的 `reviewPayload` 逐条内联真源正文。
+      // 集合名以**流程数据**为唯一真源（与 `suggestedArtifacts` 同纪律：只展示、不入门禁）。
+      payload,
+      fingerprint,
+      seq,
+    }
+    const full = renderSignReviewDoc(doc)
+    const summary = renderSignReviewSummary(doc)
+    // 全文**落盘**：`evidence/sign-reviews/<门禁>.md` 按门禁归档（"用户签字时看到过什么"的审计件），
+    // `latest.md` 是**固定名** —— 客户端半只按固定路径取全文，所以它不能带门禁名。
+    // **为什么不在 `reviews/`**：那是**评审台账**（`REV-*.yml` + `review-verifications.yml`），
+    // 把签字审核单混进去会让"评审"与"签字快照"两个概念在同一目录里打架。
+    // 落盘失败**不影响签字**：卡片摘要与签字流程都不依赖它。
+    if (workspace !== '') {
+      try {
+        const store = this.storeFor(workspace)
+        store.writeText(['evidence', 'sign-reviews', `${doc.gate}.md`], full)
+        store.writeText(['evidence', 'sign-reviews', 'latest.md'], full)
+        // **机器可校验的指纹记录**：签字前会重算真源指纹并与它比对，不一致即拒签。
+        // 存的是逐条 `(collection, id, path, hash)` —— 这样拒签时能**点名哪条变了**，
+        // 而不是只报一句"审核单已失效"。
+        const json = `${JSON.stringify(record, null, 2)}\n`
+        store.writeText(['evidence', 'sign-reviews', `${doc.gate}.json`], json)
+        store.writeText(['evidence', 'sign-reviews', 'latest.json'], json)
+      } catch {
+        /* 只读不写的那条路（摘要）仍然成立 */
+      }
+    }
+    return { summary, full, record }
+  }
+
+  /**
+   * 读某门禁**最后一次生成的审核单记录**（`.sdo/evidence/sign-reviews/<门禁>.json`）。
+   *
+   * 找不到 ⇒ `undefined`：调用方据此**拒绝签字**（"没有审核单 ⇒ 不许盲签"）。
+   */
+  signReviewRecord(call: OfficeCall, gateId: string): SignReviewRecord | undefined {
+    try {
+      const workspace = this.requireWorkspace(call)
+      const store = this.storeFor(workspace)
+      const raw = store.readText('evidence', 'sign-reviews', `${gateId}.json`)
+      if (raw === undefined) return undefined
+      const parsed = JSON.parse(raw) as SignReviewRecord
+      if (typeof parsed?.hash !== 'string' || !Array.isArray(parsed.items)) return undefined
+      return parsed
+    } catch {
+      return undefined
+    }
+  }
+
+  /**
+   * **审核单新鲜度核对**：按当前真源重算受审载荷指纹，与记录里的指纹比对。
+   *
+   * 返回**差异行**（空数组 = 一致）。差异按逐条 `(collection, id, hash)` 算，
+   * 所以能点名"哪条变了/新增/删除"，而不是只报一句"已失效"。
+   *
+   * 三档各不相同、都要能区分：① 真源变了（`~ REQ-007 内容已变`）；
+   * ② 加了新的真源条目（`+ RISK-013 新增`）；③ 受审集合声明本身变了（整篇指纹变、
+   * 逐条差异为空）——第三档用 `uiSignPayload.diffScopeChanged` 单独说明。
+   */
+  signReviewDrift(call: OfficeCall, gateId: string, record: SignReviewRecord): string[] {
+    let workspace = ''
+    try {
+      workspace = this.requireWorkspace(call)
+    } catch {
+      return []
+    }
+    let collections = Array.isArray(record.collections) ? record.collections : []
+    try {
+      const prepared = this.safeGateContext(call)
+      if (prepared.ok) {
+        // 门禁所属阶段 = "出口是本门禁"的那个阶段（与 `evaluateGate` 判定的阶段同源）
+        const gate = normalizeGateId(gateId, prepared.value.process)
+        const phase = prepared.value.process.phases.find((item) => (item.exit ?? []).includes(gate))
+        const declared = phase?.reviewPayload
+        if (declared !== undefined) collections = [...declared]
+      }
+    } catch {
+      /* 取不到声明就用记录里的那批（同批比对仍然有效） */
+    }
+    const payload = readReviewPayload(this.storeFor(workspace), collections)
+    const now = reviewFingerprint(gateId, payload)
+    if (now === record.hash) return []
+    const lines = diffPayloadIndex(record.items ?? [], payloadIndex(payload))
+    // 逐条没差异却整篇不同 ⇒ 是**受审集合声明**变了（覆盖面变了），如实说明，别报个空列表
+    if (lines.length === 0) return [t('uiSignPayload.diffScopeChanged')]
+    return lines
   }
 
   /**

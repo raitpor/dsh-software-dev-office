@@ -11,10 +11,16 @@
       "types": "./lib/src/index.d.ts",
       "default": "./lib/src/index.js"
     },
+    "./client": {
+      "types": "./client.d.ts",
+      "default": "./client.js"
+    },
     "./package.json": "./package.json"
   },
   "files": [
     "lib/src",
+    "client.js",
+    "client.d.ts",
     "presets",
     "skills",
     "src/data",
@@ -44,6 +50,15 @@
   "dsh": {
     "bundle": {
       "patch": "./presets/sdo-office.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-api-remotes",
+        "@deepseek-ai/dsh-client-locale",
+        "@deepseek-ai/dsh-api-workspace-files",
+      "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
     }
   },
   "peerDependencies": {

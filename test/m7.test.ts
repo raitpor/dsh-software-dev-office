@@ -399,6 +399,8 @@ test('棘轮守卫：面向用户模块的硬编码中文不得增加（应逐�
     'src/domain/construction.ts': 0,
     // 2026-10-08：评审发现核实（复现/反驳 + 采纳判定），新模块同样进棘轮、不留硬编码后门
     'src/domain/reviewVerification.ts': 0,
+    // 2026-10-09 交互优化：门禁签字审核单（判据三态 + 本门产物原文）渲染器，文案一律走语言包
+    'src/domain/reviewDoc.ts': 0,
   }
 
   const root = fileURLToPath(new URL('../../', import.meta.url))

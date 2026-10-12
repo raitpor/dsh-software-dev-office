@@ -282,6 +282,22 @@ export interface PhaseDef {
   entry: string[]
   exit: string[]
   artifacts: string[]
+  /**
+   * 流程数据里的**建议产物**（`suggestedArtifacts`）——只作建议、不入门禁。
+   *
+   * 为什么代码要读它：门禁签字的**审核单**（`office.signReviewDoc`）要把"本门该看的产物"
+   * 连同原文一起摆给用户通读；名字以**流程数据**为唯一真源，不在代码里写死文件名。
+   */
+  suggestedArtifacts?: string[] | undefined
+  /**
+   * **签字审核单要内联的受审集合**（2026-10-12 用户裁定：签字人要能逐条判断"模型理解得对不对"）。
+   *
+   * 与 `suggestedArtifacts` 并列、**同一条纪律**：只是**展示**，不入门禁、不校验。
+   * 值 = 台账目录名（`requirements` / `questions` / `risks` / `decisions` / `design` /
+   * `contracts` / `quality` / `tasks` / `tests` / `defects` / `changes` / `issues`）。
+   * 审核单按**逐条正文**内联它们，并对每条算内容指纹；真源一变，审核单即失效（签字前拦）。
+   */
+  reviewPayload?: string[] | undefined
   loop?: LoopSpec | undefined
 }
 

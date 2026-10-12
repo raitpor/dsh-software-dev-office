@@ -121,6 +121,8 @@ SDO：G2 需求基线门禁 ✅（需求冻结为 v0.2）
 | 确有正当理由要跳过 | `sdo_gate action=waive gate=G3 reason=… approver=…`（显式豁免并留痕） |
 | 推进到下一阶段 | `sdo_gate action=advance`（当前阶段出口门禁全绿 / 已豁免后才推进） |
 | 记录用户签字 | `sdo_gate action=sign gate=G2 quote="用户原话"`（无人机对话通道时用 `channel=question`；无引用一律拒绝） |
+| 签字前必须看到什么 | 审核单**内联受审载荷正文**（需求陈述/理由/AC 表、红队与澄清问答、风险影响与缓解、决策…；集合按流程数据 `reviewPayload` 逐阶段声明）。审核单带**整篇指纹**：**真源一变即失效** —— `channel=statement` 在无审核单或真源已变时**拒签并逐条点名差异**；`channel=question` 在用户作答后再核一次（覆盖"读卡片期间真源被改"）|
+| —— `channel=question` 时用户看到什么 | **提问卡只放摘要**（门禁 / 阶段 / 判定 / 判据计数 / 生成时间），**全文**（逐条判据三态 + 未通过项与修法 + 本门建议产物清单）走**右侧边栏**「门禁审核单」；全文同时落盘 `.sdo/evidence/sign-reviews/<门禁>.md`（固定名副本 `latest.md` 供客户端按路径取），是"**用户签字时看到过什么**"的审计件；**作答后该标签页自动关闭**，且**只有这一栏没有别的页时才收起面板**（宿主自己的引导页不算「别的页」）（结算信号取自家这条问答链的委派完成，只有真拿到答复才关；右侧还开着别的页就只关自己那页、不碰用户的栏） |
 | 退回某个阶段 | `sdo_gate action=rollback to=详细设计 reason=…`（回执会说明哪些豁免仍然保留） |
 | 需求变了 | `sdo_requirement action=change id=REQ-002 …`（影响分析 + 决策），或 `action=update`（改内容会退回 `changed` 并涨版本号） |
 | 改验收标准编号 / 删除 | `sdo_requirement action=update … acceptance=[…] acceptanceMode=replace`（整份替换；不传则只追加） |
@@ -301,6 +303,7 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 | `dispatchProvider` | `spawn` | 真派发用的 provider 名（宿主 `subagents.list()` 里的名字；preset 默认装 `spawn`） |
 | `dispatchMaxDepth` | `1` | 派发深度上限（子代理不再开子代理） |
 | `registerTools` / `registerCommands` | `true` | 是否注册工具 / 斜杠命令（headless 可只留工具面） |
+| `clientHalfOnly` | `false` | **只给"客户端半的投递锚点行"用**：置 `true` 时 `apply` 立刻返回、**什么都不注册**。存在的唯一原因是浏览器的模块图只认 **profile 顶层 Loader 行**（且要求该行启用、有 fiber、行名是裸包名），而 preset 里的行不算 —— 于是 preset 挂载的插件拿不到自己的 `./client`（真机 OBS-005）。**别在 preset 行上开它**，否则那个会话只剩空壳 |
 | `board` | `{ text: true, panel: false }` | 看板后端：文本看板默认开；Web 面板未实现 |
 | `cost` | 见 §6 | 成本监视与预算 |
 
@@ -490,7 +493,10 @@ sdo_plan action=profile packages='["tdd","contract-first"]' derivedFrom='["reqKi
 ├── config.yml             项目级配置（可手改）
 ├── requirements/ questions/ risks/ issues/ changes/   需求、问题、风险、议题、变更
 ├── design/ contracts/ decisions/ quality/             设计元素/视图、契约、ADR、质量场景
-├── tasks/ tests/ defects/ reviews/ evidence/          卡、测试、缺陷、评审、证据
+├── tasks/ tests/ defects/ reviews/ evidence/          卡、测试、缺陷、**评审台账**（`REV-*.yml`）、证据
+├── evidence/sign-reviews/                              签字审核单：`<门禁>.md`（内联受审载荷全文）
+│                                                       + `<门禁>.json`（**指纹 + 逐条索引**，签字前机械核对）
+│                                                       + `latest.{md,json}` 镜像；与评审台账分开放
 ├── gates/                 <门禁>.json 判定留痕 + signatures.yml 签字台账
 └── delivery/              交付包与验收矩阵
 

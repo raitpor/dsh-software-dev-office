@@ -8,12 +8,14 @@ name: 螺旋模型
 description: 四象限循环、风险驱动；适合高风险、大型、需求需逐圈细化的项目
 phases:
   - id: intake
+    reviewPayload: [decisions]
     name: 立项
     role: office
     entry: []
     exit: [G0]
     suggestedArtifacts: [VISION.md]
   - id: feasibility
+    reviewPayload: [decisions, risks]
     name: 可行性
     role: analyst
     entry: [G0]
@@ -27,6 +29,7 @@ phases:
     suggestedArtifacts: [RISKS.md]
     loop: { tool: sdo_risk, action: log, until: "risks.converged" }
   - id: requirements
+    reviewPayload: [requirements, questions, risks, decisions]
     name: 需求
     role: analyst
     entry: [GR]
@@ -34,30 +37,35 @@ phases:
     suggestedArtifacts: [SRS.md]
     loop: { tool: sdo_requirement, action: grill, until: "dor.project" }
   - id: architecture
+    reviewPayload: [design, contracts, quality, decisions]
     name: 架构
     role: architect
     entry: [G2]
     exit: [G3]
     suggestedArtifacts: [SDD.md, DECISIONS.md, QUALITY.md]
   - id: design-plan
+    reviewPayload: [tasks, contracts, design]
     name: 详细设计
     role: architect
     entry: [G3]
     exit: [G4]
     suggestedArtifacts: [PLAN.md, TESTPLAN.md]
   - id: construction
+    reviewPayload: [tasks, tests]
     name: 开发
     role: developer
     entry: [G4]
     exit: [G5]
     loop: { tool: sdo_task, action: next, until: "tasks.all_done" }
   - id: verification
+    reviewPayload: [tests, defects, tasks]
     name: 验证
     role: tester
     entry: [G5]
     exit: [G6]
     suggestedArtifacts: [TESTREPORT.md]
   - id: delivery
+    reviewPayload: [tests, defects, changes]
     name: 交付
     role: delivery
     entry: [G6]

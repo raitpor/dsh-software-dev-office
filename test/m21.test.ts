@@ -43,6 +43,7 @@ import type { BaselineOutcome } from '../src/office.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { prepareG2 } from './support/g2-fixture.js'
 import type { GateCriterionResult, GateEvaluation, GrillQuestion, RedTeamIssue } from '../src/types.js'
+import { seedSignReview } from './support/sign-review-fixture.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m21/', import.meta.url))
 const ALL2 = { goal: 2, user: 2, scenario: 2, data: 2, interface: 2, constraint: 2, acceptance: 2, boundary: 2 }
@@ -370,6 +371,7 @@ test('N-14：内容未改的重新基线不再写 requirement/baselined，G3 签
 test('R-7：拿不到会话历史时不得静默放行 —— 签字必须记录 basisChecked=unavailable 并如实告警', async () => {
   dataReadyForG2()
   // 宿主不提供 `deriveMessages`（=headless/精简装配）→ 旧实现 `return true` 静默通过
+  seedSignReview(workspace, 'G2')
   const text = await gateViaTool({ action: 'sign', gate: 'G2', channel: 'statement', quote: '我确认需求基线可以冻结', approvedBy: '张三' })
   assert.match(text, /已记录门禁签字|已由用户签字/u, `签字应成功（不是把路焊死）：\n${text}`)
   assert.match(text, /未经过会话历史核对/u, `回执必须当场告警（不能只在状态行里带过）：\n${text}`)

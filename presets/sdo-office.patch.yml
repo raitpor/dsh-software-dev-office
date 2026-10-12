@@ -137,3 +137,34 @@
               # 配套：流程官要看已派发的子代理（与 standard preset 同源）。
               - id: tool-subagent-list-agents
                 name: '@deepseek-ai/dsh-tool-subagent-control/list-agents'
+
+# ② **客户端半的投递锚点**（0.1.5；真机 OBS-005）—— 这一行把本包带进**浏览器模块图**，
+#    但它**什么都不注册**（靠 `config.clientHalfOnly: true`，见 `src/index.ts` 的 apply 首行）。
+#
+# 为什么必须有它：浏览器端的模块图由宿主 `@deepseek-ai/dsh-client-modules` 组合，而它
+# **只遍历 `ctx.loader.entries()`**（该包全文 `grep preset` 为空）。而 preset 里的行**不是**
+# Loader 自己的 entries —— 宿主 `@deepseek-ai/dsh-host-plugin-inventory` 的注释原文写着：
+# 那些行 "not the Loader's own [entries]"。⇒ 只 insert preset 行时，本包的 `dsh.client`
+# **永远不会被组合**。真机实测（2026-10-09 23:11–23:15，三条独立观测 + 浏览器探针）：
+# 启动清单与实时模块图各 68 行都没有本包、`/plugins/**dsh-software-dev-office/client.js`
+# 一律 404、浏览器里 `window.__SDO_REVIEW__ === undefined`。
+#
+# **这一行的形态是被三条宿主实现约束逼出来的，改之前先读这三条**（2026-10-10 第一版踩过坑）：
+#   ① 行名必须是**裸包名** —— `client-modules.locatePkgJson` 对子路径名（`pkg/sub`）直接
+#      `return undefined`（`if (!pathLike && expectedPackageName === void 0) return void 0`），
+#      写 `'dsh-software-dev-office/presence'` 会被**静默跳过**；
+#   ② 行**不能 `disabled: true`** —— 组图时会跳过禁用行与没有 fiber 的行：
+#      `if (entry.options.name !== entryName || entry.fiber === void 0 || entry.disabled) continue;`
+#      （第一版正是这么写的，真机复测 `delivered: false`，白跑一轮）；
+#   ③ 于是它必须**真的挂载**出 fiber，而挂载的只能是**本包的主入口** ⇒ 用
+#      `config.clientHalfOnly: true` 让 `apply` 立刻返回、**不注册任何东西**，
+#      这样「未选 preset 的会话完全不加载 SDO（宿主侧）」（E2E-09 / AC-007）才守得住。
+#
+# 代价如实声明：浏览器半是**按页面**（profile 级）加载的 —— 宿主没有"按会话投递客户端半"的
+# 通道。所以未选 preset 的会话里，这段客户端代码**也在页面里**，但它**是惰性的**：只注册
+# 一个标签页类型与一个渲染 `null` 的打开器，没有 SDO 的签字提问就什么都不做。
+- insert:
+    - id: sdo-client-half-anchor
+      name: 'dsh-software-dev-office'
+      config:
+        clientHalfOnly: true

@@ -8,18 +8,21 @@ name: 敏捷开发
 description: 迭代循环（1–2 周），backlog + 迭代内冻结；适合需求演进、要早期可用的项目
 phases:
   - id: intake
+    reviewPayload: [decisions]
     name: 立项
     role: office
     entry: []
     exit: [G0]
     suggestedArtifacts: [VISION.md]
   - id: feasibility
+    reviewPayload: [decisions, risks]
     name: 可行性
     role: analyst
     entry: [G0]
     exit: [G1]
     suggestedArtifacts: [FEASIBILITY.md]
   - id: requirements
+    reviewPayload: [requirements, questions, risks, decisions]
     name: 需求
     role: analyst
     entry: [G1]
@@ -27,12 +30,14 @@ phases:
     suggestedArtifacts: [SRS.md, BACKLOG.md]
     loop: { tool: sdo_requirement, action: grill, until: "backlog.ready" }
   - id: architecture
+    reviewPayload: [design, contracts, quality, decisions]
     name: 架构
     role: architect
     entry: [G2]
     exit: [G3]
     suggestedArtifacts: [SDD.md]
   - id: iteration
+    reviewPayload: [tasks, tests, defects]
     name: 迭代
     role: developer
     entry: [G3]
@@ -46,6 +51,7 @@ phases:
     exit: [G6]
     suggestedArtifacts: [DELIVERY.md]
   - id: delivery
+    reviewPayload: [tests, defects, changes]
     name: 交付
     role: delivery
     entry: [G6]

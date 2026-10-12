@@ -8,7 +8,7 @@
  *     23 条 DEV 正文永久丢失 —— SDO-23）⇒ **口径改为 `write`/`edit` 同权，独立性由"写在哪里"机械控制**；
  *   · 原本唯一按路径的两处**都是空转的**：`disciplineAllowPaths` / `disciplineTools` 两个配置
  *     **从来没人读**（死配置），而 L3 的 `path.startsWith('src/')` 也判不到真机 ——
- *     宿主传的是**绝对路径**（实录：`{"file_path":"/home/raiptor/…/sdo-test-new/lib/parse.js"}`）。
+ *     宿主传的是**绝对路径**（实录：`{"file_path":"<工作区根>/lib/parse.js"}`）。
  *
  * 本用例把两重限制都钉住（且**双向**：该拦的拦、不该拦的不拦）：
  *   3b 卡级 —— 有活卡时只能写卡的 `writeScopes`；没活卡只能写公共面；
@@ -114,13 +114,13 @@ function hookHarness(): {
 // ————————————————————————— 纯函数层：归一 —————————————————————————
 
 test('M76-01 路径归一：真机的**绝对路径**必须能归到工作区相对路径（原 L3 纪律就是在这里空转的）', () => {
-  assert.equal(normalizeWorkspacePath('/home/raiptor/proj/lib/parse.js', '/home/raiptor/proj'), 'lib/parse.js')
-  assert.equal(normalizeWorkspacePath('./lib/parse.js', '/home/raiptor/proj'), 'lib/parse.js')
-  assert.equal(normalizeWorkspacePath('lib/../src/x.ts', '/home/raiptor/proj'), 'src/x.ts')
-  assert.equal(normalizeWorkspacePath('lib\\parse.js', '/home/raiptor/proj'), 'lib/parse.js')
-  assert.equal(normalizeWorkspacePath('/home/raiptor/proj', '/home/raiptor/proj'), '')
+  assert.equal(normalizeWorkspacePath('/work/proj/lib/parse.js', '/work/proj'), 'lib/parse.js')
+  assert.equal(normalizeWorkspacePath('./lib/parse.js', '/work/proj'), 'lib/parse.js')
+  assert.equal(normalizeWorkspacePath('lib/../src/x.ts', '/work/proj'), 'src/x.ts')
+  assert.equal(normalizeWorkspacePath('lib\\parse.js', '/work/proj'), 'lib/parse.js')
+  assert.equal(normalizeWorkspacePath('/work/proj', '/work/proj'), '')
   // 工作区外的绝对路径**原样保留**（不会被误当成工作区内路径 ⇒ 不会因为归一而"洗白"成允许）
-  assert.equal(normalizeWorkspacePath('/tmp/elsewhere.ts', '/home/raiptor/proj'), 'tmp/elsewhere.ts')
+  assert.equal(normalizeWorkspacePath('/tmp/elsewhere.ts', '/work/proj'), 'tmp/elsewhere.ts')
 })
 
 // ————————————————————————— 纯函数层：两重限制 —————————————————————————
