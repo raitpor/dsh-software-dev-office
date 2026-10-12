@@ -90,6 +90,9 @@ window.__ModuleLoader__.load({
       fileRead: '',
       filePages: 0,
       session: '',
+      sessionSource: '',
+      paneRead: '',
+      lastMissing: undefined,
       closed: 0,
       collapsed: 0,
       closeWhy: '',
@@ -398,6 +401,7 @@ window.__ModuleLoader__.load({
       const title = firstLine(body) || review.title
       if (openReviewIn(ctx, sessionId, { ...review, markdown: body, title })) {
         openedKey = review.key
+        lastReviewSession = sessionId
         probe.stage = `opened-from-${origin}`
         return true
       }
@@ -433,84 +437,118 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 同一份审核单只关一次（重渲染/切会话会重复触发 effect）。 */
-    let closedKey = ''
+    /** 最近一次**成功打开**用的会话（结算时按它去关自己那页）。 */
+    let lastReviewSession
+    /** 已经关过的 `会话:key`（重复通知/重渲染不重复关）。 */
+    const closedKeys = new Set()
 
     /**
-     * 侧边栏正文：整份审核单，Markdown 渲染，**可滚动**；**作答后自己关掉**。
+     * **结算即关页**（R-2，2026-10-12 真机）：把"关页 + 条件收起面板"提到**插件根**做。
      *
-     * `closeIn(sessionId, tabId)` 是宿主公开的关闭口径（`dsh-client-ui-sidebar-right` 的
-     * `service.d.ts`：「Close a tab of one session, preserving the sole docked guide」），
-     * `tab.id` 来自标准 prop `useTabInfo()`（宿主自带包也是这么取 tabId 的）。
-     * 关不掉**不影响签字**：只留痕，不抛回调用方。
+     * 为什么不能留在 pane 里：pane 只在**可见**时才渲染，用户没切到那一页时它的 effect 根本不跑
+     * ⇒ 陈旧的审核单标签页**永远不会被关**（真机症状：右栏攒着两个打不开正文的页）。
+     * 在根上做就**不依赖可见性**：按**地址**在会话的已提交页里找到自己那页，直接 `closeIn`。
+     *
+     * 收起面板的判据不变（用户口径 2026-10-10）：**除了宿主引导页没有别的页**、且当前是展开态。
+     * 计数时**按地址排除自己**（而不是"先关再数"）—— `tabsIn` 读的是已提交记录，
+     * 关完再数可能把刚关掉的那页又数进来。
+     */
+    function closeSettledReview(ctx, sessionId, key) {
+      if (sessionId === undefined || key === '') return
+      const token = `${sessionId}:${key}`
+      if (closedKeys.has(token)) return
+      closedKeys.add(token)
+      const address = addressFor(key)
+      const addressOf = (record) => String(record?.navigation?.address ?? record?.contentId ?? '')
+      try {
+        for (const record of ctx.sidebarRight.tabsIn?.(sessionId) ?? []) {
+          if (String(record?.navigation?.address ?? '') !== address) continue
+          try {
+            ctx.sidebarRight.closeIn(sessionId, record.id)
+            probe.closed += 1
+            probe.closeWhy = 'settled'
+          } catch (error) {
+            note('close-review', error)
+          }
+        }
+        let others = 1
+        let expanded = false
+        let rest = ''
+        try {
+          const remaining = (ctx.sidebarRight.tabsIn?.(sessionId) ?? []).filter(
+            (record) => addressOf(record) !== address && addressOf(record) !== GUIDE_ADDRESS,
+          )
+          others = remaining.length
+          rest = remaining.map(addressOf).join(' ').slice(0, 120)
+          expanded = ctx.sidebarRight.isExpanded?.() === true
+          probe.closeGuard = { others, expanded, rest }
+        } catch (error) {
+          note('count-tabs', error)
+        }
+        if (others === 0 && expanded) {
+          ctx.sidebarRight.toggleExpanded?.()
+          probe.collapsed += 1
+          probe.closeWhy = 'settled-collapsed'
+        }
+      } catch (error) {
+        note('close-review', error)
+      }
+    }
+
+    /**
+     * 侧边栏正文：整份审核单，Markdown 渲染，**可滚动**。
+     *
+     * **正文只从两处来**：① 打开时随导航参数带进来的快照（正常路径）；
+     * ② 参数里没有（旧构建留下的页 / 参数丢失）时，**按固定路径重读**真源快照并渲染 ——
+     * 这就是 R-3 的处置：不再只显示一句"正文没有取到"，而是**自证 + 自愈**。
+     * 关页**不在这里**（见根上的 `closeSettledReview`）：pane 可能一直不可见，它的 effect 不会跑。
      */
     function makeDocument(ctx) {
       return function ReviewDocument({ sessionId, useTabInfo, t }) {
-      const tab = useTabInfo()
-      const settled = useSettledKey()
-      const doc = documentOf(tab?.tab?.navigation?.params)
-      React.useEffect(() => {
-        const key = keyOfAddress(tab?.tab?.navigation?.address)
-        if (key === '' || settled !== key || closedKey === key) return undefined
-        closedKey = key
-        try {
-          const myTabId = tab.tab.id
-          // **先数、后关**：`tabsIn` 读的是**已提交**的记录，关完再读可能还没提交
-          //（契约原文：Read the committed tabs of a Session … or an empty list before adoption）。
-          // 数不清就**保守**按"还有别的页"处理 —— 宁可面板不收，也不要误收用户的栏。
-          let others = 1
-          let rest = ''
-          let expanded = false
-          try {
-            const records = ctx.sidebarRight.tabsIn?.(sessionId) ?? []
-            const addressOf = (record) => String(record?.navigation?.address ?? record?.contentId ?? '')
-            // 排除**自己这一页**与**宿主引导页**；其余任何页（文档、别的插件、别的审核单…）
-            // 都算"用户还开着别的东西"，那时**不许**动面板。
-            const remaining = records.filter((record) => record?.id !== myTabId && addressOf(record) !== GUIDE_ADDRESS)
-            others = remaining.length
-            rest = remaining.map(addressOf).join(' ').slice(0, 120)
-            expanded = ctx.sidebarRight.isExpanded?.() === true
-            // 把守卫的**实际取值**落进探针：上一轮就是靠"collapsed:0 + lastError:'' + 剩下页是什么"
-            // 才定到守卫上的，只留一个计数不足以定案（报告 §15.4 明确要求）。
-            probe.closeGuard = { others, expanded, rest }
-          } catch (error) {
-            note('count-tabs', error)
+        const tab = useTabInfo()
+        const params = tab?.tab?.navigation?.params
+        const inline = documentOf(params)
+        const [loaded, setLoaded] = React.useState(undefined)
+        const [why, setWhy] = React.useState('')
+        React.useEffect(() => {
+          if (inline !== undefined) return undefined
+          // **R-3 自证**：把"参数就没有"这一现场记进探针 —— 这类页从此能自己说出原因。
+          probe.lastMissing = {
+            address: String(tab?.tab?.navigation?.address ?? ''),
+            hasParams: params !== undefined && params !== null,
           }
-          ctx.sidebarRight.closeIn(sessionId, myTabId)
-          probe.closed += 1
-          probe.closeWhy = 'settled'
-          // **只有这一栏关了之后没有别的标签页，才收起面板**（用户口径 2026-10-10）。
-          // `toggleExpanded` 是**双向**开关且**会被录制进序列**（用户可见的界面状态变更）——
-          // 用户还开着别的页时替他收起，属越权改动界面。`isExpanded()` 先判，避免把"收起"
-          // 变成"展开"。
-          if (others === 0 && expanded) {
-            ctx.sidebarRight.toggleExpanded?.()
-            probe.collapsed += 1
-            probe.closeWhy = 'settled-collapsed'
+          let cancelled = false
+          void readReviewFile(ctx, sessionId).then((file) => {
+            if (cancelled) return
+            probe.paneRead = file.ok
+              ? (file.truncated === true ? 'ok:truncated' : `ok:${file.shape}`)
+              : `failed:${file.why}`
+            if (file.ok) setLoaded({ markdown: file.text, title: firstLine(file.text) || t('tab') })
+            else setWhy(probe.paneRead)
+          })
+          return () => {
+            cancelled = true
           }
-        } catch (error) {
-          note('close-review', error)
+        }, [inline, sessionId, tab])
+        const doc = inline ?? loaded
+        if (doc === undefined) {
+          return React.createElement('div', {
+            role: 'status',
+            style: { padding: '24px', color: 'var(--dsw-alias-label-secondary)', fontSize: 14, lineHeight: 1.75 },
+          }, why === '' ? t('missing') : `${t('missing')}（${why}）`)
         }
-        return undefined
-      }, [settled, sessionId, tab])
-      if (doc === undefined) {
-        return React.createElement('div', {
-          role: 'status',
-          style: { padding: '24px', color: 'var(--dsw-alias-label-secondary)', fontSize: 14, lineHeight: 1.75 },
-        }, t('missing'))
-      }
-      return React.createElement('section', {
-        'data-sdo-review': tab.tab.navigation.address,
-        'aria-label': doc.title,
-        style: { height: '100%', overflow: 'auto', padding: '20px 24px 40px' },
-      }, React.createElement('div', {
-        style: {
-          color: 'var(--dsw-alias-label-primary)',
-          fontSize: 14,
-          lineHeight: 1.75,
-          overflowWrap: 'anywhere',
-        },
-      }, React.createElement(primitives.MarkdownText, { text: doc.markdown })))
+        return React.createElement('section', {
+          'data-sdo-review': tab.tab.navigation.address,
+          'aria-label': doc.title,
+          style: { height: '100%', overflow: 'auto', padding: '20px 24px 40px' },
+        }, React.createElement('div', {
+          style: {
+            color: 'var(--dsw-alias-label-primary)',
+            fontSize: 14,
+            lineHeight: 1.75,
+            overflowWrap: 'anywhere',
+          },
+        }, React.createElement(primitives.MarkdownText, { text: doc.markdown })))
       }
     }
 
@@ -559,15 +597,28 @@ window.__ModuleLoader__.load({
       // ④ 旁观签字提问：收下（此时 `detail` 只有**摘要**），交给 `openWithFull` 取全文并打开，
       //    然后照旧 `next()` 委派给真正的答复者 —— 绝不截断问答链、也不在这里 await
       //    （await 会把提问卡本身推迟到文件读完之后）。
-      ctx.remote.$on('user-questions/request', (request, next) => {
+      // **R-1（多会话正确性）**：处理器必须是 **function**（不是箭头函数）—— 宿主把这条事件派发给
+      // "发起提问的那个 agent"，作用域挂在 `this` 上；官方问答客户端走的正是这条路：
+      //   `ctx.sessions.scopeOf(owner)` ⇒ **提问所属会话**。
+      // 旧实现用 `sidebarRight.mounted`（**屏幕上那个会话**）⇒ 用户正在看别的会话时，审核单会开进
+      // 那个会话的 layout（真机症状：某个会话里出现不属于它的审核单页）。
+      ctx.remote.$on('user-questions/request', function onSdoSignRequest(request, next) {
         let review
+        let owner
         try {
           review = reviewOf(request)
+          owner = ctx.sessions?.scopeOf?.(this)
+        } catch (error) {
+          note('scope-of', error)
+        }
+        const session = typeof owner === 'string' && owner !== '' ? owner : currentSessionId(ctx)
+        probe.sessionSource = typeof owner === 'string' && owner !== '' ? 'owner' : session === undefined ? 'none' : 'mounted'
+        try {
           if (review !== undefined) {
             probe.captured += 1
             probe.stage = 'captured'
             setPendingReview(review)
-            void openWithFull(ctx, currentSessionId(ctx), review, 'event')
+            void openWithFull(ctx, session, review, 'event')
           }
         } catch (error) {
           note('read-question', error)
@@ -585,6 +636,17 @@ window.__ModuleLoader__.load({
         return settled
       })
 
+      // **R-2**：在**根上**监听结算（pane 可能一直不可见，它的 effect 不会跑）。
+      ctx.effect(() => {
+        const listener = () => {
+          closeSettledReview(ctx, lastReviewSession, settledKey)
+        }
+        settledListeners.add(listener)
+        return () => {
+          settledListeners.delete(listener)
+        }
+      }, 'sdo-review: settle closes its tab')
+
       probe.applied = true
       probe.stage = 'applied'
       try {
@@ -595,7 +657,7 @@ window.__ModuleLoader__.load({
     }
 
     return {
-      inject: ['slots', 'sidebarRight', 'sidebarRightTabs', 'locale', 'remote', 'remote.workspaceFiles'],
+      inject: ['slots', 'sidebarRight', 'sidebarRightTabs', 'locale', 'remote', 'remote.workspaceFiles', 'sessions'],
       apply,
     }
   },

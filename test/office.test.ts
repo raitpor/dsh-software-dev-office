@@ -330,7 +330,9 @@ test('项目发现工具：findProjectRoot 仍可用于显式探测（不参与�
   mkdirSync(nested, { recursive: true })
   mkdirSync(join(root, '.sdo'), { recursive: true })
   assert.equal(findProjectRoot(nested, '.sdo'), root, '应从子目录向上发现含 .sdo/ 的目录')
-  assert.equal(findProjectRoot(join(BASE, 'nowhere'), '.sdo'), undefined, '找不到就返回 undefined，不猜')
+  // 用一个**必然不存在**的标记：本仓库自身现在就是一个 SDO 项目（根上有 `.sdo/`），
+  // 拿 `.sdo` 当标记会向上找到它 ⇒ 这条断言会误红（2026-10-12 实测）
+  assert.equal(findProjectRoot(join(BASE, 'nowhere'), '.sdo-absent-marker'), undefined, '找不到就返回 undefined，不猜')
   rmSync(root, { recursive: true, force: true })
 })
 

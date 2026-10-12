@@ -1719,11 +1719,24 @@ export class SoftwareDevOffice {
    *
    * 找不到 ⇒ `undefined`：调用方据此**拒绝签字**（"没有审核单 ⇒ 不许盲签"）。
    */
+  /** 把门禁入参归一成**内部编号**（拿不到流程定义时退回原串，不猜）。 */
+  private normalizeGateFor(call: OfficeCall, gateId: string): string {
+    try {
+      const prepared = this.safeGateContext(call)
+      if (prepared.ok) return normalizeGateId(gateId, prepared.value.process)
+    } catch {
+      /* 读不出流程就用原串 */
+    }
+    return gateId
+  }
+
   signReviewRecord(call: OfficeCall, gateId: string): SignReviewRecord | undefined {
     try {
       const workspace = this.requireWorkspace(call)
       const store = this.storeFor(workspace)
-      const raw = store.readText('evidence', 'sign-reviews', `${gateId}.json`)
+      // **DEF-002**：文件名必须是**规范门禁名**（落盘时写的是 `evaluation.gate`）。
+      // 传中文全名（`需求基线门禁`）时旧实现直接拼文件名 ⇒ 找不到 ⇒ 被误判成"没有审核单"。
+      const raw = store.readText('evidence', 'sign-reviews', `${this.normalizeGateFor(call, gateId)}.json`)
       if (raw === undefined) return undefined
       const parsed = JSON.parse(raw) as SignReviewRecord
       if (typeof parsed?.hash !== 'string' || !Array.isArray(parsed.items)) return undefined
@@ -1751,6 +1764,11 @@ export class SoftwareDevOffice {
       return []
     }
     let collections = Array.isArray(record.collections) ? record.collections : []
+    // **DEF-002**：指纹里的门禁名必须与**生成时**用的那一个完全一致 —— 生成侧用的是
+    // `evaluate.gate`（规范化后的 `G2`）。旧实现拿**入参原串**重算，传中文全名（`需求基线门禁`）
+    // 时指纹恒不相等 ⇒ 明明真源没变也报"审核单已失效"，签字被无理由拒。
+    // 以记录里的 `gate` 为准（它就是生成时那个串），入参只作兜底。
+    const gate = record.gate !== '' && record.gate !== undefined ? record.gate : gateId
     try {
       const prepared = this.safeGateContext(call)
       if (prepared.ok) {
@@ -1764,7 +1782,7 @@ export class SoftwareDevOffice {
       /* 取不到声明就用记录里的那批（同批比对仍然有效） */
     }
     const payload = readReviewPayload(this.storeFor(workspace), collections)
-    const now = reviewFingerprint(gateId, payload)
+    const now = reviewFingerprint(gate, payload)
     if (now === record.hash) return []
     const lines = diffPayloadIndex(record.items ?? [], payloadIndex(payload))
     // 逐条没差异却整篇不同 ⇒ 是**受审集合声明**变了（覆盖面变了），如实说明，别报个空列表

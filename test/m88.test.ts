@@ -265,10 +265,26 @@ test('M88-05 客户端半：声明齐备 + 形状正确 + 委派 next() + 失败
   assert.ok(handlerStart > 0 && handlerEnd > handlerStart, '定位不到 waterfall 回调块')
   const handlerBlock = client.slice(handlerStart, handlerEnd)
   assert.ok(handlerBlock.includes('setPendingReview'), '回调必须把正文收下（否则兜底座位没有素材）')
-  assert.ok(
-    /openWithFull\(ctx, currentSessionId\(ctx\), review, 'event'\)/u.test(handlerBlock),
-    '回调里必须**立刻发起一次打开**（用 mounted 现取的会话 id）—— 上一版"只收下不开"真机 reading 是 opened:0',
+  // **R-1（多会话正确性，2026-10-12 真机）**：打开用的会话必须是**提问所属会话**，
+  // 由宿主给这条事件的作用域 `this` 现问 `sessions` 服务（官方问答客户端同款）——
+  // 旧实现用 `sidebarRight.mounted`（屏幕上那个会话）⇒ 审核单会开进别的会话。
+  assert.match(
+    handlerBlock,
+    /owner = ctx\.sessions\?\.scopeOf\?\.\(this\)/u,
+    '必须用作用域 this 问出**提问所属会话**（ctx.sessions.scopeOf）',
   )
+  assert.match(
+    handlerBlock,
+    /const session = typeof owner === 'string' && owner !== '' \? owner : currentSessionId\(ctx\)/u,
+    '优先用所属会话；只有取不到时才退回屏上会话（并留痕 sessionSource）',
+  )
+  assert.ok(
+    /openWithFull\(ctx, session, review, 'event'\)/u.test(handlerBlock),
+    '回调里必须**立刻发起一次打开**（用所属会话）—— 上一版"只收下不开"真机 reading 是 opened:0',
+  )
+  // 处理器必须是 **function**：箭头函数拿不到作用域 this（拿不到就永远退化成屏上会话）
+  assert.match(client, /ctx\.remote\.\$on\('user-questions\/request', function onSdoSignRequest\(request, next\)/u,
+    '处理器必须用 function 声明（箭头函数拿不到作用域 this）')
   assert.match(handlerBlock, /return settled/u, '回调最后必须把 next() 的返回值原样传下去，绝不截断问答链')
   // ⑦ **卡片摘要 / 侧边栏全文的分工**（用户裁定 2026-10-10）：全文不许再塞进提问卡，
   //    改由宿主落盘 + 客户端只读取回。这条同时钉住"固定路径"（客户端拿不到门禁名）。
@@ -287,6 +303,16 @@ test('M88-05 客户端半：声明齐备 + 形状正确 + 委派 next() + 失败
     client,
     /inject: \[[^\]]*'remote\.workspaceFiles'/u,
     "客户端半的 inject 必须含点号服务名 'remote.workspaceFiles'（否则属性访问被 cordis 守卫拒绝）",
+  )
+  // **R-1**：线程/会话作用域服务必须声明（点号服务名 + 提供方包，与 OBS-006 同一纪律）
+  assert.match(
+    client,
+    /inject: \[[^\]]*'sessions'/u,
+    "客户端半的 inject 必须含 'sessions'（否则 ctx.sessions.scopeOf 的属性访问会被 cordis 守卫拒绝）",
+  )
+  assert.ok(
+    (manifest.dsh?.client?.inject ?? []).includes('@deepseek-ai/dsh-api-session-controller'),
+    'dsh.client.inject 必须列出 @deepseek-ai/dsh-api-session-controller（客户端 sessions 服务的提供方）',
   )
   assert.ok(
     (manifest.dsh?.client?.inject ?? []).includes('@deepseek-ai/dsh-api-workspace-files'),
@@ -518,12 +544,28 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
     '只有真的拿到答复才算结算（undefined 时关页 = 用户还没答就把页收了）',
   )
   // ③ 关闭用宿主公开口径，且 tabId 来自标准 prop
-  assert.match(client, /const myTabId = tab\.tab\.id/u, '必须认住"自己这一页"的 tabId')
-  assert.match(client, /ctx\.sidebarRight\.closeIn\(sessionId, myTabId\)/u, '必须用 closeIn(sessionId, tabId) 关自己那页')
+  // **R-2（2026-10-12 真机）**：关页在**插件根**按**地址**找自己那页（pane 可能一直不可见，
+  // 它的 effect 不会跑 ⇒ 旧实现下陈旧标签页永远关不掉）。
+  assert.match(client, /function closeSettledReview\(ctx, sessionId, key\)/u, '必须有根级的结算关页函数')
+  assert.match(
+    client,
+    /String\(record\?\.navigation\?\.address \?\? ''\) !== address/u,
+    '必须按**地址**认出自己那页（不依赖 pane 可见性）',
+  )
+  assert.match(client, /ctx\.sidebarRight\.closeIn\(sessionId, record\.id\)/u, '必须用 closeIn(sessionId, tabId) 关自己那页')
   assert.match(client, /const tab = useTabInfo\(\)/u, 'tabId 必须来自标准 prop useTabInfo()（宿主自带包同款）')
-  assert.match(client, /keyOfAddress\(tab\?\.tab\?\.navigation\?\.address\)/u, '必须按**地址里的 key** 认出"是不是我这页"')
+  // 关页侧按**地址**认页（`addressFor(key)` = 打开时用的那个地址），不再依赖 pane 里的 tabInfo
+  assert.match(client, /const address = addressFor\(key\)/u, '必须按打开时用的**地址**认"是不是我这页"')
+  assert.equal(
+    /keyOfAddress\(tab\?\.tab\?\.navigation\?\.address\)/u.test(client),
+    false,
+    '旧实现"在 pane 里按 key 认页并关闭"已被 R-2 取代，不许回来',
+  )
   // ④ 只关一次 + 关不掉不影响签字
-  assert.match(client, /closedKey === key/u, '必须只关一次（重渲染会重复触发 effect）')
+  // 只关一次：按 `会话:key` 记已关集合（重复通知/重渲染不重复关）
+  assert.match(client, /const token = `\$\{sessionId\}:\$\{key\}`/u, '必须以「会话:key」为幂等键')
+  assert.match(client, /if \(closedKeys\.has\(token\)\) return/u, '必须只关一次（重复通知/重渲染会重复触发）')
+  assert.equal(/closedKey === key/u.test(client), false, '旧的单值 closedKey 已被集合取代，不许回来')
   assert.match(client, /note\('close-review', error\)/u, '关不掉必须只留痕，不许抛回渲染')
   // ⑤ 探针要能分辨"关了没有、为什么、收起了没有"
   for (const field of ['closed', 'collapsed', 'closeWhy']) {
@@ -543,7 +585,7 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
   assert.match(client, /const GUIDE_ADDRESS = 'sidebar:\/\/guide'/u, '必须定义宿主引导页地址常量')
   assert.match(
     client,
-    /record\?\.id !== myTabId && addressOf\(record\) !== GUIDE_ADDRESS/u,
+    /addressOf\(record\) !== address && addressOf\(record\) !== GUIDE_ADDRESS/u,
     '计数必须同时排除"自己这一页"与"宿主引导页"',
   )
   assert.match(client, /if \(others === 0 && expanded\)/u, '只有"没有别的页"且"当前是展开态"才允许收起')
@@ -555,10 +597,35 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
     '守卫取值（others/expanded/剩余页地址）必须写进探针，否则下次还要靠猜',
   )
   assert.match(client, /ctx\.sidebarRight\.toggleExpanded\?\.\(\)/u, '收起用宿主公开的 toggleExpanded()')
+  // **R-2**：结算必须在**插件根**监听并关页（pane 不可见时它的 effect 不会跑）
+  assert.match(
+    client,
+    /ctx\.effect\(\(\) => \{\s*\n\s*const listener = \(\) => \{\s*\n\s*closeSettledReview\(ctx, lastReviewSession, settledKey\)/u,
+    '必须在插件根注册"结算即关页"的监听（不依赖 pane 可见性）',
+  )
+
+  // **R-3**：pane 在参数里没有正文时，必须**按固定路径重读**并自证（不再只显示一句"取不到"）
+  const pane = client.slice(client.indexOf('function makeDocument(ctx)'), client.indexOf('function ReviewTitle('))
+  assert.match(pane, /readReviewFile\(ctx, sessionId\)/u, 'pane 必须在缺正文时按固定路径重读')
+  assert.match(pane, /probe\.lastMissing = \{/u, 'pane 必须把"参数就没有"这一现场写进探针（R-3 自证）')
+  assert.match(pane, /probe\.paneRead = /u, 'pane 必须把重读结果写进探针')
   // 顺序：**先数后关**（tabsIn 读的是已提交记录，关完再读可能还没提交）
-  const effectStart = client.indexOf('ctx.sidebarRight.tabsIn?.(sessionId)')
-  const closeAt = client.indexOf('ctx.sidebarRight.closeIn(sessionId, myTabId)')
-  assert.ok(effectStart > 0 && closeAt > effectStart, '必须先数（tabsIn）再关（closeIn），否则数到的是过期记录')
+  // 计数的时序问题改由**按地址排除自己**解决（不再依赖"先数后关"）：
+  // `tabsIn` 读的是已提交记录，关完再数可能把刚关掉的那页又数进来，所以判据是地址而非次序。
+  assert.match(
+    client,
+    /addressOf\(record\) !== address && addressOf\(record\) !== GUIDE_ADDRESS/u,
+    '计数必须按地址排除自己（否则关完再数会把已关的页又数进来）',
+  )
+  // 反向：pane 里**不许**再有关页逻辑（否则又回到"不可见就不跑"的老毛病）
+  const paneStart = client.indexOf('function makeDocument(ctx)')
+  const paneEnd = client.indexOf('function ReviewTitle(', paneStart)
+  assert.ok(paneStart > 0 && paneEnd > paneStart, '定位不到 makeDocument')
+  assert.equal(
+    /closeIn|toggleExpanded/u.test(client.slice(paneStart, paneEnd)),
+    false,
+    'pane 里不许再有关页/收起逻辑（R-2：必须在插件根做）',
+  )
   // 数不清时**保守**按"还有别的页"处理（宁可面板不收，也不要误收用户的栏）
   assert.match(
     client,

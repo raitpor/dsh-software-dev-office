@@ -20,8 +20,9 @@ import { afterEach, beforeEach, test } from 'node:test'
 import type { Context } from '@deepseek-ai/cordis'
 
 import { Config, resolveSettings } from '../src/config.js'
-import { t } from '../src/domain/i18n.js'
+import { gateLabel, t } from '../src/domain/i18n.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { titleFieldsOf } from '../src/domain/reviewView.js'
 import { apply } from '../src/index.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
@@ -42,12 +43,17 @@ let services: Record<string, unknown>
 // `sessionId` 在宿主类型里带品牌；夹具按字面量构造后显式转换（与其它用例同款）
 const call = { sessionId: 's1', cwd: WORKSPACE } as unknown as OfficeCall
 
-/** 真源里的叶子键（**所有**键路径的末段）—— 用来机械检查"渲染有没有漏字段"。 */
-function leafKeys(value: unknown): string[] {
+/**
+ * 真源里的叶子键 —— 用来机械检查"渲染有没有漏字段"。
+ *
+ * `skip` 命中的键**整棵子树跳过**：那些字段是**有意不写进审核单**的（时间戳/内部评分明细…），
+ * 它们的子键自然也不该被要求出现。
+ */
+function leafKeys(value: unknown, skip: (key: string) => boolean): string[] {
   if (value === null || typeof value !== 'object') return []
-  if (Array.isArray(value)) return value.flatMap((item) => leafKeys(item))
+  if (Array.isArray(value)) return value.flatMap((item) => leafKeys(item, skip))
   return Object.entries(value as Record<string, unknown>).flatMap(([key, item]) =>
-    item !== null && typeof item === 'object' ? leafKeys(item) : [key],
+    skip(key) ? [] : item !== null && typeof item === 'object' ? leafKeys(item, skip) : [key],
   )
 }
 
@@ -86,14 +92,23 @@ beforeEach(() => {
   office.capture(call, {
     title: '签字前必须能逐条看到受审载荷',
     statement: '系统须在签字卡片与右侧边栏内联受审载荷正文；缺任一条即视为盲签',
+    rationale: '签字人只有看到逐条正文才能判断模型理解得对不对',
     priority: 'must',
     sourceStakeholder: 'STK-01',
   })
   office.capture(call, {
     title: '真源变化后审核单必须失效',
     statement: '审核单生成后真源若变化，签字必须被拒绝，并点名变化的条目',
+    rationale: '背书的必须是同一个版本，否则签字没有意义',
     priority: 'must',
     sourceStakeholder: 'STK-01',
+  })
+  office.update(call, {
+    id: 'REQ-001',
+    addAcceptance: [
+      { id: 'AC-001', given: '插件已加载', when: '签字人打开签字卡片', then: '卡片显示摘要且右栏显示逐条正文' },
+      { id: 'AC-002', given: '真源在生成之后被改动', when: '用户作答签字', then: '拒签并在回执里点名变化的条目' },
+    ],
   })
   office.logRisk(call, {
     title: '审核单体积过大影响可读性',
@@ -152,18 +167,48 @@ test('M90-01 审核单内联受审载荷：条数必须与台账文件数机械�
     )
   }
 
-  // **不许漏字段**：拿一条需求的真源叶子键，逐个必须在渲染结果里出现
+  // **人读形态**（2026-10-12 用户体验反馈后）：标题行必须带名称、字段必须用**人话标签**、
+  // 内部字段不许出现。这三条正是"表达不清"的正面修复。
+  assert.match(doc, /#### REQ-001　/u, '每条必须有 `#### <代号>　<名称>` 标题行（不能只写代号）')
+  assert.ok(
+    doc.includes('签字前必须能逐条看到受审载荷'),
+    '标题行必须写出这条到底是什么（用户原话：只写 REQ-12 却不说内容是什么）',
+  )
+  assert.ok(doc.includes('**陈述**'), '长文字段必须用**人话标签**（`陈述`），不是 YAML 键名')
+  assert.ok(doc.includes('**理由**'), '理由字段同样要用标签')
+  assert.ok(doc.includes('| 编号 | 给定 | 当 | 则 |'), '验收标准必须渲染成表格（参考件的做法）')
+  assert.ok(doc.includes('歧义评分'), '歧义评分要压成一行读数')
+  // **不许把 YAML 键名当标签**（用户抱怨的主体就是这些原始键名）
+  for (const raw of ['**statement**', '**title**', '**id**', '**requirement**', '**rationale**', '**acceptance**']) {
+    assert.equal(doc.includes(raw), false, `不许把原始键名当标签：${raw}`)
+  }
+  // **与审核无关的字段不许占篇幅**（真源里仍在）
+  for (const noisy of ['**at**', 'createdAt', 'updatedAt', 'modelDimensions']) {
+    assert.equal(doc.includes(noisy), false, `与审核无关的字段不该出现：${noisy}`)
+  }
+  // 源路径要能追回去（短指纹在同一条上）
+  assert.ok(doc.includes('requirements/REQ-001.yml'), '每条必须给出源文件路径')
+
+  // **有意义字段不许漏**：忽略清单之外的叶子键，其**人话标签**必须出现
+  const ignored = new Set([
+    'at', 'createdAt', 'updatedAt', 'askedAt', 'answeredAt', 'answeredBy', 'authorizedByUser',
+    'version', 'baseline', 'revision', 'contentHash', 'basis', 'basisSource', 'basisChecked',
+    'recommendationFromModel', 'prototype', 'open', 'dimensions', 'score', 'angles', 'modelDimensions',
+    'contentId', 'id',
+  ])
   const names = store.listNames('requirements').sort()
   const first = store.readYaml<Record<string, unknown>>('requirements', names[0] ?? '')
-  const keys = [...new Set(leafKeys(first))]
-  assert.ok(keys.length >= 5, `夹具需求应当有足够多的字段：${keys.join(',')}`)
+  // 标题字段的内容写在 `#### <代号>　<名称>` 标题行里（上面已断言），不再要求出现字段标签
+  for (const key of titleFieldsOf('requirements')) ignored.add(key)
+  const keys = [...new Set(leafKeys(first, (key) => ignored.has(key)))]
+  assert.ok(keys.length >= 4, `夹具需求应当有足够多的字段：${keys.join(',')}`)
   for (const key of keys) {
-    assert.ok(doc.includes(`**${key}**`), `字段 ${key} 必须出现在审核单里（漏字段就是漏审）`)
+    const label = t(`uiSignField.${key}`, key)
+    assert.ok(
+      doc.includes(label),
+      `字段 ${key} 的标签「${label}」必须出现在审核单里（漏字段就是漏审）`,
+    )
   }
-  // id 也要点名（每条一段）
-  assert.ok(doc.includes('#### REQ-001'), '每条必须有独立小节以便逐条判断')
-  // 源路径要能追回去
-  assert.ok(doc.includes('requirements/REQ-001.yml'), '每条必须给出源文件路径')
 })
 
 // ————————————————————— ② 指纹幂等 + 内容一变换指纹 —————————————————————
@@ -265,4 +310,34 @@ test('M90-06 question 通道：用户作答期间真源变了 ⇒ 拒签（审�
     0,
     '不许把"过期审核单上的签字"落进台账',
   )
+})
+
+test('M90-07 DEF-002：门禁名传中文全名，不得被误判成「没有审核单 / 审核单已失效」', async () => {
+  // 真机场景：工具说明与用户都用中文全名（`需求基线门禁（G2）`），而落盘用的是规范名 `G2`。
+  const officeReview = office.signReview(call, 'G2')
+  const record = office.signReviewRecord(call, 'G2')
+  assert.ok(record !== undefined, '先得有记录')
+  assert.equal(record.hash, officeReview.record.hash)
+
+  // ① 中文全名要能解析到**同一份**记录（否则会被判成"没有审核单"）
+  for (const alias of [gateLabel('G2'), `${gateLabel('G2')}（G2）`]) {
+    const byAlias = office.signReviewRecord(call, alias)
+    assert.equal(byAlias?.hash, record.hash, `别名「${alias}」必须解析到同一份记录`)
+  }
+
+  // ② 真源没变时，用别名重算指纹不得产出**虚假差异**（DEF-002 的正面判据）
+  for (const alias of [gateLabel('G2'), `${gateLabel('G2')}（G2）`, 'G2']) {
+    assert.deepEqual(office.signReviewDrift(call, alias, record), [], `别名「${alias}」不得报失效`)
+  }
+
+  // ③ 工具层：用中文全名走 statement 签字，不得被"没有审核单/已失效"挡住
+  const receipt = await callTool('sdo_gate', {
+    action: 'sign',
+    gate: gateLabel('G2'),
+    channel: 'statement',
+    quote: '我确认需求基线可以冻结',
+    approvedBy: '张三',
+  })
+  assert.equal(/没有生成过/u.test(receipt), false, `中文全名不得被判"没有审核单"：${receipt.slice(0, 200)}`)
+  assert.equal(/审核单已失效/u.test(receipt), false, `中文全名不得被判"审核单已失效"：${receipt.slice(0, 200)}`)
 })

@@ -11,6 +11,8 @@
  * 文案一律走语言包（棘轮基线 0），本模块不许出现硬编码中文。
  */
 import { fmt, t } from './i18n.js'
+import { renderEntry, shortName } from './reviewView.js'
+import { HASH_PREFIX, shortHash } from './hash.js'
 import type { ReviewPayloadSection } from './reviewPayload.js'
 
 /** 一条判据在审核单里的样子（三态与 `describeGate` 同口径）。 */
@@ -68,39 +70,6 @@ export interface SignReviewDoc {
   fingerprint: string
   /** 生成时的 journal 序号（审计用：审核单对应真源的第几号事件之后）。 */
   seq: number
-}
-
-/**
- * 真源对象的**通用渲染**：把任意 YAML 结构展开成 Markdown 嵌套列表。
- *
- * 为什么用通用规则而不是逐集合做字段映射：**结构上不可能漏字段** —— 漏字段就是漏审，
- * 而签字人要判断的正是"逐条正文"。守卫会把"叶子键是否都出现在渲染结果里"机械对一遍。
- * 不截断：审核单的价值就是全文（体积由调用方按集合控制）。
- */
-function renderTruth(value: unknown, indent: string): string[] {
-  if (value === undefined || value === null) return [`${indent}${t('uiSignPayload.empty')}`]
-  if (typeof value === 'string') {
-    const text = value.replace(/\r\n/gu, '\n')
-    if (text.trim() === '') return [`${indent}${t('uiSignPayload.empty')}`]
-    const lines = text.split('\n')
-    return [indent + lines[0], ...lines.slice(1).map((line) => `${indent}  ${line}`)]
-  }
-  if (typeof value === 'number' || typeof value === 'boolean') return [`${indent}${String(value)}`]
-  if (Array.isArray(value)) {
-    if (value.length === 0) return [`${indent}${t('uiSignPayload.empty')}`]
-    return value.flatMap((item) =>
-      item !== null && typeof item === 'object'
-        ? [`${indent}-`, ...renderTruth(item, `${indent}  `)]
-        : [`${indent}- ${String(item)}`],
-    )
-  }
-  const entries = Object.entries(value as Record<string, unknown>)
-  if (entries.length === 0) return [`${indent}${t('uiSignPayload.empty')}`]
-  return entries.flatMap(([key, item]) =>
-    item !== null && typeof item === 'object'
-      ? [`${indent}- **${key}**${t('uiSignPayload.keyColon')}`, ...renderTruth(item, `${indent}  `)]
-      : [`${indent}- **${key}**${t('uiSignPayload.keyColon')}${String(item ?? '')}`],
-  )
 }
 
 /** 表格单元：竖线会破表格结构、换行会破行结构，两者都要收敛。 */
@@ -211,6 +180,12 @@ export function renderSignReviewDoc(doc: SignReviewDoc): string {
     lines.push(t('uiSignPayload.none'))
     lines.push('')
   }
+  // **代名索引**：把 `REQ-001`/`Q-0007`/`RISK-003` 这类代号解析成「代号+名称」，
+  // 解决用户提的"只写 REQ-12，但没说这个需求的内容是什么"。
+  const refs = new Map<string, string>()
+  for (const section of doc.payload) {
+    for (const item of section.items) refs.set(item.id, shortName(item.content))
+  }
   for (const section of doc.payload) {
     lines.push(
       fmt('uiSignPayload.section', {
@@ -225,11 +200,12 @@ export function renderSignReviewDoc(doc: SignReviewDoc): string {
       continue
     }
     for (const item of section.items) {
-      lines.push(`#### ${item.id}`)
-      lines.push('')
-      lines.push(fmt('uiSignPayload.source', { p1: item.path }))
-      lines.push(fmt('uiSignPayload.itemHash', { p1: item.hash }))
-      lines.push(...renderTruth(item.content, ''))
+      lines.push(
+        ...renderEntry(section.collection, item.id, item.content, refs, new Set<string>(), fmt('uiSignPayload.provenance', {
+          p1: item.path,
+          p2: `${HASH_PREFIX}${shortHash(item.hash)}`,
+        })),
+      )
       lines.push('')
     }
   }
@@ -245,5 +221,6 @@ export function renderSignReviewDoc(doc: SignReviewDoc): string {
   )
   lines.push(t('uiSignPayload.fingerprintRule'))
 
-  return `${lines.join('\n').replace(/\n+$/u, '')}\n`
+  // 折叠多余空行（逐条渲染会各自留空行，攒起来读着"散"）
+  return `${lines.join('\n').replace(/\n{3,}/gu, '\n\n').replace(/\n+$/u, '')}\n`
 }
