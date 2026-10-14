@@ -30,6 +30,7 @@ import { doneGaps, doneNaNotes, readConstructionProfile, writeConstructionProfil
 import { writeContract } from '../src/domain/contracts.js'
 import { writeRequirement } from '../src/domain/requirements.js'
 import { hashArtifact, isAdopted, recordTestCase, recordTestResult, verificationStats } from '../src/domain/records.js'
+import type { TestResult } from '../src/domain/records.js'
 import { oracleGaps, supportedOracle } from '../src/domain/evidence.js'
 import type { SdoConfig } from '../src/config.js'
 import type { Requirement, TaskCard } from '../src/types.js'
@@ -65,6 +66,12 @@ function card(id: string, role: string, requirements: string[] = []): TaskCard {
 function approvedChange(): void {
   journal.append('change/requested', { id: 'CR-001', requirement: 'REQ-001' })
   journal.append('change/decided', { id: 'CR-001', decision: 'approved', by: 'human' })
+}
+
+/** **DEF-037**：`recordTestResult` 现在对账"用例是否存在" ⇒ 取成功分支（顺带断言真的成功）。 */
+function recorded(outcome: ReturnType<typeof recordTestResult>): TestResult {
+  assert.equal(outcome.ok, true, `夹具前提：用例必须已存在（${outcome.ok ? '' : outcome.detail}）`)
+  return outcome.ok ? outcome.result : (undefined as never)
 }
 
 test('SDO-16 / SDO-17：未消化变更**不再锁死解冻路径**（流程侧角色可认领），其余角色仍被拒且回执点名出路', () => {
@@ -227,10 +234,10 @@ test('REQ-053 / REQ-054：执行者 ≠ 采纳者机械可判 —— 自执行�
     title: '开发者自跑的单元结果', kind: 'unit', requirement: 'REQ-053', steps: ['跑'], expected: '通过',
     oracle: { kind: 'expert', ref: 'REQ-053', expert: '张三' },
   })
-  const result = recordTestResult(store, journal, {
+  const result = recorded(recordTestResult(store, journal, {
     caseId: testCase.id, status: 'pass', evidence: 'node --test（3 passed）',
     executedBy: 'dev-a', adoptedBy: 'dev-a', oracle: { kind: 'expert', ref: 'REQ-053', expert: '张三' },
-  })
+  }))
 
   // ① **自执行自采纳被拒**（守卫用例：同一个人的执行与采纳不算数）
   const selfAdopted = supportedOracle(store, result, testCase)
@@ -301,9 +308,9 @@ test('REQ-054：判定基准四类逐类机械核对 —— 引用不存在即�
 
   // ⑥ 缺判定基准的用例**不计入通过覆盖**（降级口径），并在点名名单里可见
   const orphan = recordTestCase(store, journal, { title: '没有判定基准的用例', kind: 'unit', requirement: 'REQ-054', steps: ['跑'], expected: '通过' })
-  const orphanResult = recordTestResult(store, journal, {
+  const orphanResult = recorded(recordTestResult(store, journal, {
     caseId: orphan.id, status: 'pass', evidence: 'node --test（1 passed）', executedBy: 'dev-a', adoptedBy: 'reviewer-b',
-  })
+  }))
   const stats = verificationStats(store, journal)
   assert.equal(stats.results, 1, '台账里确实有一条 pass 结果')
   assert.equal(stats.passedAdopted, 0, '**缺判定基准 ⇒ 不计入通过**（"记录了 pass"不等于"通过"）')
@@ -314,18 +321,18 @@ test('REQ-054：判定基准四类逐类机械核对 —— 引用不存在即�
     title: '判定基准齐备', kind: 'unit', requirement: 'REQ-054', steps: ['跑'], expected: '通过',
     oracle: { kind: 'acceptance', ref: 'REQ-054', criterion: 'AC-213' },
   })
-  const soundResult = recordTestResult(store, journal, {
+  const soundResult = recorded(recordTestResult(store, journal, {
     caseId: sound.id, status: 'pass', evidence: 'node --test（1 passed）', executedBy: 'dev-a', adoptedBy: 'reviewer-b',
-  })
+  }))
   assert.equal(verificationStats(store, journal).passedAdopted, 1, '判定基准齐备 + 独立采纳的用例必须计入通过')
   assert.equal(verificationStats(store, journal).passed, 2, '`passed` 读数口径不变（仍是"台账里有几条 pass"）')
   const soundVerdict = isAdopted(store, soundResult, sound)
   assert.equal(soundVerdict.adopted, true, `独立采纳必须被接受：${soundVerdict.reason}`)
   assert.deepEqual(verificationStats(store, journal).unadopted, [orphanResult.id], '已独立采纳且判定基准齐备的结果不许被点名')
   // 反向②：**自执行自采纳**的结果同样不计入通过（守卫用例在统计这一侧的落点）
-  const selfResult = recordTestResult(store, journal, {
+  const selfResult = recorded(recordTestResult(store, journal, {
     caseId: sound.id, status: 'pass', evidence: 'node --test（1 passed）', executedBy: 'dev-a', adoptedBy: 'dev-a',
-  })
+  }))
   const selfVerdict = isAdopted(store, selfResult, sound)
   assert.equal(selfVerdict.adopted, false, '自己执行自己采纳不计入通过')
   assert.match(selfVerdict.reason, /自己给自己盖章/u, '理由要点明"自采纳"这条，而不是笼统说"未采纳"')

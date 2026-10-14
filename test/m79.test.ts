@@ -60,7 +60,7 @@ test('M79-01 R-17：配对锚在"最近一次红灯" —— 别人更晚的绿�
   const { store, journal } = fresh('r17-anchor')
   const tc = recordTestCase(store, journal, { title: 'tc', kind: 'unit', requirement: 'REQ-001', steps: ['s'], expected: 'e' })
   // 真机形状：本卡红灯 TR-053 + 8 秒后同 env 的绿灯 TR-054；再往后是**别人**（env 不同）的 TR-070
-  recordTestResult(store, journal, { caseId: tc.id, status: 'fail', evidence: '红', env: 'node=26; python3=3.14.7' })
+  recordTestResult(store, journal, { caseId: tc.id, status: 'fail', evidence: '红', env: 'node=26; python3=3.14.7', artifact: 'lib/x.js', artifactSha256: 'h1' })
   recordTestResult(store, journal, { caseId: tc.id, status: 'pass', evidence: '绿', env: 'node=26; python3=3.14.7', artifact: 'lib/x.js', artifactSha256: 'h2' })
   recordTestResult(store, journal, { caseId: tc.id, status: 'pass', evidence: '别人更晚的绿', env: 'node=26; python3=3.14.7; os=linux; sandbox=none', artifact: 'lib/x.js', artifactSha256: 'h9' })
   assert.deepEqual(redGreenGaps(store, journal, task()), [], '同实验的那一对在，就不该被别人更晚的绿灯搅红')

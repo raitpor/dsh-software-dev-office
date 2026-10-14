@@ -26,7 +26,8 @@ import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
 import { describeBudgetLineNoUsage } from '../src/integration/cost.js'
-import { evidenceFreshness, hashArtifact, latestResultPerCase, listRuns, readRunsChecked, recordRun, recordTestResult, verificationStats } from '../src/domain/records.js'
+import { evidenceFreshness, hashArtifact, latestResultPerCase, listRuns, readRunsChecked, recordRun, recordTestCase, recordTestResult, verificationStats } from '../src/domain/records.js'
+import type { TestResult } from '../src/domain/records.js'
 import { link } from '../src/domain/trace.js'
 import { apply } from '../src/index.js'
 import { Journal } from '../src/infra/journal.js'
@@ -142,17 +143,26 @@ const requirement = (id: string): Requirement => {
 
 // ————————————————————————— ① N-1 / P-7：过期证据 latest-wins —————————————————————————
 
+/** **DEF-037**：`recordTestResult` 现在对账"用例是否存在" ⇒ 取成功分支（顺带断言真的成功）。 */
+function recorded(outcome: ReturnType<typeof recordTestResult>): TestResult {
+  assert.equal(outcome.ok, true, `夹具前提：用例必须已存在（${outcome.ok ? '' : outcome.detail}）`)
+  return outcome.ok ? outcome.result : (undefined as never)
+}
+
 test('M85-01 N-1：过期证据只看每条用例的**最新**结果（旧记录不再被永久标过期）', () => {
   const artifact = 'src/probe.mjs'
   mkdirSync(join(WORKSPACE, 'src'), { recursive: true })
   writeFileSync(join(WORKSPACE, artifact), 'probe v2')
   // 同一用例的两条 pass：旧的绑另一个哈希（= 已被更新取代），新的绑当前哈希
-  const old = recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'old', env: 'node=26', artifact, artifactSha256: 'deadbeef' })
-  const fresh = recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'new', env: 'node=26', artifact, artifactSha256: hashArtifact(WORKSPACE, artifact) })
+  // **DEF-037 夹具前提**：结果必须指向真实用例
+  recordTestCase(store, journal, { kind: 'unit', title: '夹具一', steps: [], expected: 'ok' } as never)
+  recordTestCase(store, journal, { kind: 'unit', title: '夹具二', steps: [], expected: 'ok' } as never)
+  const old = recorded(recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'old', env: 'node=26', artifact, artifactSha256: 'deadbeef' }))
+  const fresh = recorded(recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'new', env: 'node=26', artifact, artifactSha256: hashArtifact(WORKSPACE, artifact) }))
   // 第二条用例：**最新**那条就是过期的（必须照旧判红）
   writeFileSync(join(WORKSPACE, 'src/other.mjs'), 'other v1')
   writeFileSync(join(WORKSPACE, 'src/other.mjs'), 'other v2')
-  const staleLatest = recordTestResult(store, journal, { caseId: 'TC-002', status: 'pass', evidence: 'stale', env: 'node=26', artifact: 'src/other.mjs', artifactSha256: 'cafebabe' })
+  const staleLatest = recorded(recordTestResult(store, journal, { caseId: 'TC-002', status: 'pass', evidence: 'stale', env: 'node=26', artifact: 'src/other.mjs', artifactSha256: 'cafebabe' }))
   const result = evidenceFreshness(store, WORKSPACE, undefined)
   assert.deepEqual(
     result.stale.map((item) => item.resultId),

@@ -252,6 +252,7 @@ tool:
   sdo_task: "Task cards and the collaboration protocol: claiming uses compare-and-swap (a stale revision is a conflict), only the owner may report back, **completion must carry evidence**, and blocked cards must state why. A vanished owner is **never released automatically** — only an explicit release or reassignment (both recorded)."
   sdo_test: "Test plans, results and defects. `plan` writes test cases (binding them to requirement ids is recommended), `record` records results (even passes need evidence), `defect` files or updates a defect (severity/status). Open blocker-level defects block the verification gate."
   sdo_review: "Review records: record the verdict (pass / changes requested / reject) and the findings. **A reviewer may not be the author** — independence is checked mechanically, not left to good intentions."
+  sdo_hash: "Compute the **full sha256** of one artifact (+ mtime + byte size) — a **read-only query** that writes no ledger and emits no event. Why it exists: the reviewer mask denies `bash` (so sha256sum is out of reach) and also denies `sdo_test`, the only other producer of artifact hashes ⇒ without it a reviewer can only see the **truncated** fingerprint in the done receipt and cannot prove «this is the artifact I checked»."
   sdo_deliver: "Delivery package: artifact manifest (with sha256), acceptance matrix (one row per must-have requirement), rollback point, and an explicit statement that prototype content is excluded. It stops at a deployable artifact; release and operations are explicitly out of scope."
   sdo_cost: "Cost report: tokens consumed; a monetary amount appears only when the user has supplied unit prices, and it is labelled an **estimate** everywhere. The budget is optional — with no total it reports consumption only (no remaining amount, no percentage, no threshold alerts); exceeding the budget **never stops anything**, it only asks a human to top up, waive, or narrow scope. Model read-only."
   sdo_gate: "Gate engine (the process is data, every gate is evaluated criterion by criterion, never guessed). `check` evaluates and records; `advance` moves on only when every exit gate of the current phase passed or was waived; `waive` waives explicitly with a trace. **An unimplemented checker always fails** — \"cannot check\" must never mean \"passes\"."
@@ -264,6 +265,7 @@ tool:
   sdo_lang: "Show or switch the UI language (tool and command descriptions, the status block, gate wording). `action=show` reports the current language and pack coverage; `action=set lang=en` switches immediately (**effective for this process** until restart)."
 
 param:
+  mutationExpected: "declare **how many mutation self-proofs this card plans** (DEF-027): when given, it is reconciled **item by item** against the count of records in the `readMutations` ledger (too many or too few is red and names the difference, including «declared 0 but records exist»); **omitted = no declaration**, and the criterion keeps the old wording (only `killed ≥ 1`). Example: `mutationExpected=3`. Why a numeric field and not prose in the DoD: the criterion must be language-agnostic, and digging a number out of a sentence breaks under a different phrasing."
   designBasisSource: 'action=confirm: `user` (the user confirmed in person, default) or `proxy` (stamped on the user behalf — required when the authorizer is not the executor so the event stays distinguishable)'
   signQuote: "The user own words **for this signature or waiver** (verbatim; shared by `action=sign` and `action=waive`). For `sign`: it must be findable in this session user messages and must NOT be an old quote reused after the last invalidation (R-27, refused); use `channel=question` to obtain a fresh basis. For `waive`: optional — when given it is checked (a mismatch is refused); when omitted the waiver still goes through, but the ledger records `approverChecked: none` and the receipt says the approver has no user-quote basis. The real values of `approverChecked` are `none` (no basis given) / `session` (checked against a HUMAN-sourced utterance) / `role-only` (the host messages carry no provenance, so only the `user` role could be checked — weak calibers) / `unavailable` (session history not reachable) — all four are recorded verbatim in the ledger."
   runsRequired: "action=package: runtime targets this delivery REQUIRES (comma separated, e.g. 'server,client'). A missing target downgrades every pass row to unverified"
@@ -316,7 +318,11 @@ param:
   verdict: Verdict
   findings: "record / append: findings. **Both shapes are accepted** (since DEF-065 the schema declares a `string | array` union): (1) **JSON text** (preferred, e.g. `[\"first\",\"second\"]`); (2) **an array** (a raw array is accepted too; the plugin normalises it before parsing). **Two failure kinds, keep them apart**: (a) **host schema rejection** — validation happens before the plugin is called, so the plugin never sees the call; the receipt reads `invalid arguments: findings must be a string` (before DEF-065 an array always took this path; the union declaration now admits arrays). (b) **plugin parse rejection** — a malformed text value, reported by `jsonOr`: either *wrong shape* (not valid JSON: not an array, a stray comma, a bare newline inside a string) which reports the shape and states that nothing was written, or *interrupted value* (an unescaped ASCII quote inside the value — by far the most common here, since citing identifiers, commands or paths needs quotes) which names the character position. **Recommended**: use CJK quotes (`「」` / `“”`) inside values or escape per JSON rules; never raw ASCII quotes; also avoid sending several long JSON arguments in one message — send them one at a time. **For `append` specifically**: when adding to an **existing** review, pass only the **new** findings (the sealed bodies need not be resent, and smuggling a rewrite in is not possible — the append path takes no `verdict` argument); an empty array or an all-blank one is refused and **changes no file**."
   # —— verify (verifying review findings): a review is a claim; the implementer verifies each finding ——
+  landing: "`update`: the **landing paths this card claims it will write** (JSON text or a real array), replacing the whole declaration. The `sdo_plan` criterion `landing-outside-scope` reconciles each path against the card write scope; omitting it means the card claims no landing paths (existing cards are unaffected)"
+  hashPath: "Path of the artifact to hash (**relative to the workspace**). Anything outside the workspace, missing, or not a file is rejected with a readable reason — this entry is a read-only query: no globs, no ledger writes."
   reviewId: "Review id (`REV-*`): for `rehash` the legacy review to seal; for `append` the existing review to append to; on the verification face, the review to verify"
+  originalIndex: "`append`: which entry of the **source review** this backfill starts at (1-based; the position of this call's first finding in the source). Must be given as a pair with `originalTotal`: once declared, overlap / gap / overflow are rejected with a readable message; when omitted the old wording applies (existing records are not revisited)"
+  originalTotal: "`append`: how many entries the **source review** had. Given as a pair with `originalIndex`; it is what makes «past the last entry» detectable"
   reviewIndex: Which finding (**1-based**, matching the "finding N" printed in receipts)
   reviewOutcome: 'Outcome: reproduced (the finding checks out) / refuted (it does not; give counter-evidence)'
   reviewProof: The command and result you reproduced with, or the counter-evidence (required; a bare claim is not verification)
@@ -333,6 +339,7 @@ param:
   summary: Summary
   schema: "Contract body (structure / fields / example)"
   contractKind: Contract kind
+  contractRequires: "**Which requirement this contract hangs on** (DEF-056): requirement ids (`REQ-*`), given as JSON **text** (e.g. `[\"REQ-001\"]`) or as a comma separated list. Criterion `contract-test-missing` uses it to decide whether a card has a contract object — **declaring nothing means this contract is no object for any card** (those cards go N/A). An id that does not exist is rejected on the spot (zero writes)."
   timeout: Timeout semantics
   retry: Retry semantics
   idempotency: Idempotency semantics
@@ -500,6 +507,7 @@ uiTools:
   kApplicabilityArtifactsAbsent: "JSON text whose items are kind + why: every non-view artefact declared NOT to be produced must carry a reason (same rule as viewsAbsent; a missing why makes C-2C red)."
   kApplicabilityBasis: "The basis binding the user's signature to the declaration (the user's own words or the chosen option label; mandatory for action=applicability-confirm)."
 uiRender:
+  kExemptionsHeader: "There are {p1} per-check waivers (each skips a criterion; listed so they can be ratified or revoked):"
   k1: "(not initialized)"
   k2: "passed {p1}"
   k3: "waived {p1}"
@@ -738,6 +746,9 @@ uiGates:
   kDeclaredItemProseRow: "  - {p1}: the declared {p2} `{p3}` is not path-shaped => not part of this criterion (no retro-check, no data migration: it is still dispatched, it is just not checked here)"
   kMitigatesBlank: "`mitigates` of {p1} contains a blank string: that hides a non-existent risk id (write a real id, or drop the entry)"
   kMitigatesDuplicate: "`mitigates` of {p1} declares the same risk twice: {p2} (the same thing declared twice - usually a concatenation slip)"
+  kImpactBlank: "`impact` of {p1} contains a blank string: a blank entry makes «the impact surface was named» an illusion (write the files/cases it affects, or drop the entry)"
+  kImpactDuplicate: "`impact` of {p1} names the same thing twice: {p2} (usually a concatenation slip)"
+  kMutationExpectedInvalid: "the mutation self-proof count declared for {p1} is not a non-negative integer: {p2} - it must be 0 or a positive integer (omit the argument if you do not declare it)"
   kReviewEchoHeading: "Review state of this card (echoed row by row; this is **not** an interception - interception is `review-open-findings` when findings are unverified):"
   kReviewEchoRow: "  - {p1}: {p2} ({p3} findings; adoption state: {p4})"
   k114: "Use a different reviewer (authors may not review their own output)"
@@ -942,6 +953,7 @@ uiCollab:
   kAddScopeForbidden: "Only the **process officer** (human / office / cockpit) or the **card owner** may append to {p1} (current owner: {p2}; you are: {p3})."
   kAddScopeReasonRequired: "Appending a write scope to {p1} requires a reason: this is a plan change and the reason must land in the task/updated event for later review."
   kAddScopeConflict: "The appended scope {p1} intersects in-progress {p2} (owner {p3}) — appending would create two writers, exactly what this lock prevents: wait for it to finish, or split that shared path into its own card."
+  kGateStale: "The **entry gate {p2}** of the current phase {p1} has a **stale** signature ({p3}) — claim refused: have the process officer re-sign that gate (`sdo_gate action=sign gate={p2}`) before starting; if the cause is a truth-source change, go back upstream and digest it first. Only **stale** is blocked: a gate that was never signed (missing) is not refused."
   kScopeConflict: "Write scope conflicts with in-progress {p1} (owner={p2}, status {p4}): overlapping path {p3}. Three ways out: (1) wait until it finishes; (2) make it yield (`sdo_task action=release`), then claim again; (3) if the two cards really must run in parallel, ask the process officer to split {p3} into its own card (or narrow the scopes until they no longer intersect)"
   kListSep: ", "
   unblockNotFound: "No task card found: {p1}"
@@ -953,6 +965,14 @@ uiPlan:
   kScopeSplitSuggestion: "; if two cards must edit the same file, prefer splitting that path into its own card (one card owns a shared file; the others declare order with `blockedBy`)."
   kWriteScopeEmpty: 'the card declares no write scope (writeScopes is empty) — an empty scope neither reserves anything nor is audited for out-of-scope writes (C-31 requires scopes)'
   kWriteScopeEmptyRemedy: 'give the card the path prefixes it will write (e.g. src/booking/); a card that writes no code (a pure review card) should declare what it really writes — normally [".sdo/"] (a reviewer only writes `.sdo/reviews/*.yml`) — or be reshaped with a scope, or dropped explicitly'
+  kImpactUndeclared: 'the card declares it fixes existing defects ({p1}) — that is a change to existing behaviour — yet it names neither an **impact surface** (`impact`) nor a **cannot-be-determined** declaration (`undecidable`) ⇒ the collision with existing fixtures/guards is discovered only after landing (DEF-036 / B-25 on the real machine: TASK-054 made an oracle required and four fixtures of TASK-039 went red at once)'
+  kImpactUndeclaredOverlap: 'the write scope of this card intersects a card that has already **landed** ({p1} is done/verified; intersecting paths: {p2}) — the card is editing ground that already holds landed work, yet it names neither an impact surface (`impact`) nor a cannot-be-determined declaration (`undecidable`)'
+  kImpactUndeclaredRemedy: 'two ways out, pick one and write it on the card: ① `impact` names the **files/cases that will be affected** (scan mechanically first: list the existing fixtures that your call sites can turn red); ② `undecidable` states **why the impact surface cannot be determined** (key reused verbatim from a change request impact.undecidable — defaulting to «no impact» is not allowed). Why semantics are not inferred from paths: mutual exclusion of write scopes between parallel cards is already carried by `write-scope-disjoint` (DEF-067), and that is the parallel axis; B-25 on the real machine collided at a **call site** (the two write scopes did not intersect at all) ⇒ under a language-agnostic rule there is no reliable inference signal, so the semantic impact can only be declared by the project itself — this criterion only recognises the moment when a declaration is due.'
+  kUiTextScope: 'the card declares it produces **user-visible text** (`uiText`), yet its write scope contains nothing from the **text surface declared by the project** (`.sdo/config.yml` → `plan.textPaths`: {p1}) ⇒ either the text cannot be written at all, or it ends up hardcoded in the code'
+  kUiTextScopeNoPaths: 'the card declares it produces **user-visible text** (`uiText`), but the **project has not declared a text surface yet** (`.sdo/config.yml` → `plan.textPaths` is empty) ⇒ the criterion has nothing to reconcile against. The plugin deliberately hardcodes **no** path of its own (that would bake one project directory layout into a generic rule), so «where the text lives» must be declared by the project'
+  kLandingOutsideScope: 'the card claims **landing paths** that fall **outside its own write scope**: landing {p1}; write scope {p2} — at landing time the card simply cannot write those files (it either crosses the boundary or has to fudge it elsewhere)'
+  kLandingOutsideScopeRemedy: 'two ways out: ① bring the landing paths into the write scope (`sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...`, the append channel that keeps in-progress and owner; or `release` first and replace `writeScopes` wholesale); ② if those paths are not really written by this card (mere references or context in the DoD), withdraw the declaration: `sdo_task action=update id=<card> landing=[]`. The criterion only reconciles what the card itself declares — it never parses DoD prose'
+  kUiTextScopeRemedy: 'two ways out: ① **let the project declare the text surface** — add a `plan.textPaths` list to `.sdo/config.yml`, one entry per directory that holds user-visible text (this repo: `src/data/lang/`; other projects: their own layout); ② **bring that surface into this card scope**: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (the append channel keeps in-progress and owner). If the card does not actually produce user-visible text, withdraw the declaration with `sdo_task action=update id=<card> uiText=false`.'
   kBlockedHolderNote: ' (that card is blocked: it may resume writing the same scope, so it still holds it exclusively)'
   kScopeReleaseHint: '  (DEF-049) when a **blocked** card holds it: first decide whether that card is still needed — if yes, `sdo_task action=unblock id=<holding card> reason=...` (blocking condition gone, back to ready); only if you really will not do it, use `sdo_task action=drop` (abandon) or `release` (hand it back). Do **not** use `release` as a way to "clear a block" any more. To widen a write scope while the card is in progress: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (append; keeps in-progress and owner); full replacement still requires releasing first.'
   k1: "The change has artifact evidence (path + hash)"
@@ -985,6 +1005,7 @@ uiPlan:
   t15: "{p1} and {p2} may run in parallel, but their write scopes overlap — {p3}"
 
 uiDescribe:
+  kExemptions: "Per-check waivers ({p1}):"
   kPoolBusyLoad: " (round {p1}, {p2} card(s))"
   kDispatchFreshSelf: "  🆕 Started a **new** subagent for {p1} (not reused; session {p2}): {p3} idle same-session candidate(s) were available; candidates not reused and why: {p4}"
   kFreshNoSkip: "(no reusable candidate: no idle child session started by this session)"
@@ -1400,6 +1421,8 @@ uiIndex:
   kClaimRejectedNote: "🚫 {p1} has had **{p2}** claim rejection(s) (latest reason: {p3}) ⇒ resolve the cause before dispatching it: the `task/claim-rejected` events carry the full trail."
   kOrphanLockLine: "🔓 **Orphan lock** {p1}: the child session that owned it has ended ({p2}) while the card still sits in-progress holding its write scope (owner={p3}) ⇒ release it first: `{p4}` (not auto-releasing is deliberate: never steal from a live worker)."
   kClaimMissingLine: "⚠️ **Dispatched but never claimed** {p1}: child session {p2} started {p3} minute(s) ago with no `task/claimed` ({p4}) ⇒ treat as a silent failure: inspect that child, or dispatch again (`limit=1` is steadier)."
+  kReuseDeliveryNoSignal: "⚠️ **No consumption observed after a reuse delivery** {p1}: this round the card was sent to the **existing** child session {p2} (host receipt `{p4}`, delivery event seq {p5}), and {p3} minute(s) later there is **neither a claim nor a settlement**. Scope, precisely: the receipt only proves the **host accepted the delivery** — it does not prove the child read it or acted on it, which is why this line says \"no consumption observed\". Inspect that child, or dispatch again (`limit=1` is steadier)."
+  kReuseReceiptMissing: "(this delivery has no receipt: the dispatch path at the time dropped the `sendMessage` return value)"
   kOrphanReasonUnknown: "(no reason recorded)"
   kClaimMissingRunning: "still running"
   kDispatchHeldByScopeLine: "🔒 Not dispatchable {p1}: its write scope overlaps in-progress {p2} (owner {p3}) at {p4} ⇒ it would fail to claim. Wait for it to finish, or ask the process officer to split {p4} into its own card (one card owns a shared file at a time)."
@@ -1448,6 +1471,8 @@ uiIndex:
   kReviewRehashCaliber: ' (caliber: the backfilled value is the SEMANTIC hash `reviewContentHash`, same source as `review/recorded`; byte-level edits are out of scope for this check)'
   # —— Appending findings to an existing review (TASK-108 / DEF-065 split-out) ——
   kReviewAppendNoId: '`append` must name **which** review to append to: `sdo_review action=append id=REV-044 findings=["…","…"]` (`id` is an existing review id; `append` never creates a record)'
+  kHashResult: "`{p1}`: sha256 `{p2}`  mtime `{p3}`  bytes {p4} (computed now, read-only query; no ledger write, no event)"
+  kHashRejected: "BLOCKED: cannot compute the digest ({p1}): `{p2}` — reason code `no-path`: no path given / `no-workspace`: this session has no workspace / `outside`: outside the workspace / `missing`: does not exist / `not-file`: not a file / `unreadable`: cannot be read. This entry is a **read-only query**; fix the path and retry"
   kReviewAppended: 'OK: {p1} appended for time #{p2}: {p3} finding(s) this round (from #{p4} to {p5} in total); the verdict is untouched (still `{p6}`) — appending only **adds**: the original conclusion and the existing bodies are unchanged, and the new findings go to the tail (stable indices, so earlier verifications do not go stale). Trace: `review/appended` (with `appendCount` / `appendedFindings`).'
   kReviewAppendCaliber: ' | the appended bodies are **claims** too: findings {p2}-{p3} (1-based parameter indexing) each need verification (`sdo_task action=verify-review id={p4} review={p1} index=<n> outcome=… proof=…`). If the payload was rejected by host validation (`invalid arguments`) because there were too many/too-long findings, **split it into several `append` calls** on the same review — that is exactly why this action exists (the old way forced a new record with the same verdict, shattering one review into several).'
   kReviewNotExamined: " | findings NOT examined ({p1}) — the tamper check did not pass, so unexamined findings must not be reported as verified"
@@ -1491,6 +1516,7 @@ uiIndex:
   kEvidenceUnrecorded: 'WARNING: {p1} passing result(s) have no environment fingerprint ({p2}) — staleness cannot be checked'
   kChildReportShort: 'WARNING: the child report for {p1} is only {p2} bytes (< 400): likely a **fragment** — the key steps are unrecoverable (SDO-58). Path: {p3}'
   kChildReportMissing: 'WARNING: {p1} was dispatched but its **child report is missing** (the settle record path cannot be read) — the audit chain has a gap (SDO-58)'
+  kChildReportFragments: "this card has **{p2} fragmentary settlements** among its child reports (including ones hidden behind a later normal report): {p3} — reports are part of the audit chain; verify those turns truly had no body worth archiving."
   kDefectPayloadRecorded: '  (`evidence`/`reason` were written verbatim into the `defect/updated` event — the correction payload no longer lives only in the YAML)'
   kPlanIssueLine: '  · [{p1}] {p2}: {p3} -> {p4}'
   kReuseSkipped: 'WARNING: {p1} idle subagent(s) were NOT reused: {p2} — when the tool face (mask fingerprint) differs or is unknown we force a fresh child instead of posting into a session with a stale face'
@@ -1506,7 +1532,7 @@ uiIndex:
   kSelfReviewSameSession: 'REJECTED: same session cannot self-review: {p1} was claimed by session `{p2}` and this review comes from that same session — independence is judged by **session id**, renaming `reviewer` is not a different person. Use another dispatch/sub-session.'
   kRunRecorded: 'OK: real-run recorded: {p1} | target={p2} | outcome={p3} | {p4}'
   kRunRejected: 'REJECTED: real-run record refused: {p1}'
-  kRunBound: 'bound to artifact `{p1}` (sha256 prefix {p2}) — at delivery it must equal a delivered artifact hash to count as running THIS build'
+  kRunBound: 'bound to artifact `{p1}` (full sha256 {p2}) — at delivery it must equal a delivered artifact hash to count as running THIS build'
   kRunUnbound: 'WARNING: no artifact bound — this record will NOT count at delivery (pass `artifact=<path you ran>` to prove which build you ran)'
   kRunGap: 'WARNING: real-run evidence is insufficient: {p1} -> every `pass` row was downgraded to `unverified` (offline green does not mean the artifact runs)'
   kDeviationsAccepted: "WARNING: this delivery has {p1} row(s) accepting a **known deviation**: {p2} — each is visible in `DELIVERY.md`; the delivery gate treats them as PASS and attaches this warning. Do NOT read this as a clean pass."
@@ -1546,6 +1572,8 @@ uiIndex:
   k29: "Unknown action: {p1} (available: {p2})"
   k30: "No task cards available to dispatch (all are claimed or done). Use `sdo_task action=list` for the full picture."
   kNonDispatchableIdle: "OK: **nothing was dispatched** this round — no card is dispatchable; this round's cards are all in progress or done. Use `sdo_task action=list` for the full picture."
+  kNonDispatchableGateStaleHead: "LOCKED: **nothing was dispatched** this round — the **entry gate {p1}** of the current phase has a **stale** signature ({p2}), so **no card is dispatched** ({p3} dispatchable card(s) held back). This does **not** mean the work is finished: have the process officer re-sign that gate (`sdo_gate action=sign gate={p1}`) first; if the cause is a truth-source change, go back upstream and digest it. (Only **stale** is refused: a gate that was never signed is not held back.)"
+  kNonDispatchableExclusiveHead: "LOCKED: **queued behind an exclusive window** ({p1} card(s)) — they declare the same exclusive-window group (`exclusive`), and cards of one group never run **at the same time**, so these {p1} are held back (blocked by: {p2}). This does **not** mean the work is finished: they enter the queue by themselves once the blocking card finishes or is dropped; if a card does not really need the window, withdraw the declaration (`sdo_task action=update id=<card> exclusive=`)."
   kNonDispatchableBlockedHead: "BLOCKED: **nothing was dispatched** this round: {p1} **blocked** card(s) are outside the queue — they **need a decision** (`sdo_task action=unblock` to put them back to ready, or `sdo_task action=drop` if you really will not do them): {p2}. A blocked card does **not** return to the dispatch queue by itself, so \"nothing to dispatch\" does **not** mean \"the work is finished\"."
   kNonDispatchableBlockedItem: "{p1} (blocked because: {p2})"
   kNonDispatchableDependencyHead: "WAITING: **unmet dependencies** ({p1} card(s)) — they enter the queue by themselves once the cards in `blockedBy` finish: {p2}"
@@ -1636,6 +1664,8 @@ uiIndex:
   k99: "- After the plan passes, call `sdo_design action=create` to write views and elements (the second gate is G3)."
   k100: "Plan review is not finished yet: still in plan mode. Ask the user to review it and pass it with `exit_plan_mode` before writing the design."
   k101: "Recording a contract requires `producer`, `consumer` and `schema` (the contract body)."
+  kContractRequiresDuplicate: "`requires` names the same requirement twice: {p1} (usually a concatenation slip)"
+  kContractRequiresUnknown: "`requires` names requirement(s) that are not in the ledger: {p1} (there are {p2} requirements). An id that does not exist means this contract is no «contract object» for any card, so those cards stay N/A **forever** — write real requirement ids, or record that requirement first"
   k102: "Unknown action: {p1} (available: {p2})"
   k103: "Creating an element requires `kind` (context | component | runtime | data | deployment); for the UI view use `kind=ui` plus `ui`."
   k104: "Creating an element requires `name`."
@@ -1777,6 +1807,12 @@ uiIndex:
   kNaNotesHeader: "➖ **checks judged N/A on this card (recognised by the check itself, not an exemption)**:"
   # **DEF-050 point 3 (the echo on `sdo_task action=done`)**: show every declared fix with its current status.
   kFixCards: "- Defects this card declared as fixed (current status read from `.sdo/defects/*.yml`):"
+  kArtifactEchoHeader: "artifact evidence echo (DEF-013): this call reports {p1} artifact item(s), the ledger holds {p2} — full sha256 and mtime below (echo only, never a red flag)"
+  kArtifactEchoRow: "- `{p1}`: computed sha256 `{p2}`  mtime `{p3}`"
+  kArtifactEchoDeclared: "  (hash written in the evidence: `{p1}`)"
+  kArtifactEchoUnreadableRow: "- `{p1}`: cannot be read, so no fingerprint can be computed (reason code {p2}) — this affects the echo only, not whether the card is complete"
+  kArtifactEchoCounts: "count reconciliation (mechanical; the prose inside note is **not** parsed): self-reported {p1} item(s) (artifact {p2} / command {p3} / other {p4}); ledger total {p5} (artifact {p6})"
+  kArtifactEchoLedgerExtra: "WARN the ledger holds {p1} more item(s) than this call reported (the difference comes from earlier reports) — not a red flag, just the two numbers side by side"
   kDispatchNotStarted: "(not started for real: {p1} - {p2})"
   kProfileDecided: "Construction method packages decided: **{p1}**; scope: {p2}; basis: {p3} ({p4} checked, {p5} unchecked); reason: {p6}. Written to `.sdo/construction/profile.yml` (re-deciding appends history)."
   kProfileRejected: "Cannot decide construction method packages (**nothing written**): {p1}"
@@ -1981,6 +2017,12 @@ uiReview:
   appendBadShape: "Wrong shape for `findings`: expected an **array** or **JSON text of an array** (e.g. `[\"first\",\"second\"]`), and every appended finding must be a string; got: {p1}"
   appendBadShapeItem: "item {p1} is not a string (it is {p2})"
   appendEmpty: "The appended `findings` are empty ({p1}) — `append` needs at least one **non-blank** finding; if there is genuinely nothing to add, just do not call it (the existing body was not touched)"
+  appendOriginalPair: "The index declaration is **incomplete** ({p1}): `originalIndex` (which entry of the source review this backfill starts at) and `originalTotal` (how many entries the source had) must be given **as a pair** — one without the other is half a declaration, and overlap / gap / overflow cannot be judged from it"
+  appendOriginalInvalid: "The index declaration is not a **positive integer** ({p1}): `originalIndex`={p2}, `originalTotal`={p3} — both must be integers starting at 1 (which entry / how many entries)"
+  appendOriginalOverflow: "Index **overflow** ({p1}): this backfill starts at source entry {p2} and adds {p3} entries, so the last one is entry {p4}, but the source is declared to hold only {p5}. Check both: ① how many entries the source really has; ② which entries this call is meant to backfill"
+  appendOriginalOverlapBody: "Index **overlap** ({p1}): the declared range falls inside source entries {p2}, which the **body already occupies** — the body itself is the first entries of the source, so recording them again would make the same source entry appear twice (a reader would see two contradictory bodies). Backfill entries **after** the body"
+  appendOriginalOverlap: "Index **overlap** ({p1}): the declared range intersects source entry {p2}, which was already **backfilled** — the same source entry would be recorded twice and a reader would see two contradictory bodies (this is exactly the shape of REV-047/REV-053 on the real machine). Either declare the entries you actually need, or withdraw the earlier backfill"
+  appendOriginalGap: "Index **gap** ({p1}): backfill has reached source entry {p2}, but this call starts at entry {p3} — the entries in between are skipped (the gap reads as «the source only had these»). Backfill the missing entries first, or start this call at entry {p2}"
 
 uiSignature:
   journalOnly: 'WARNING: however the journal holds {p1} gate/signed event(s) — the signature file was deleted or rewritten (this is NOT never-signed, it is an inconsistency, D8)'
@@ -2884,6 +2926,17 @@ uiConstruction:
   c35: "TDD red->green left the **artifact unchanged**: case {p1} binds the same sha256 ({p2}) in both runs — code did not move yet the case turned green; check whether the assertions were edited or the artifact swapped."
   c36: "N/A (not judged: {p3}): the write scope of {p1} is \"{p2}\" — it does **not touch product code** (it stays inside the ledger `.sdo/**`, the docs `docs/**` or markdown files), so there is no product implementation to run: neither a red->green sequence nor a mutant to kill exists. This is not an exemption (nobody approved one); the check itself recognises, from the write-scope paths, that this card has no corresponding object."
   c37: "N/A (not judged: contract-test-missing): the write scope of {p1} is \"{p2}\" — it does **not touch the contract face** (no `src/interface/**` and no `.sdo/contracts/**`), and no contract declares `requires` matching this card's requirements (`contractsOfCard()` is empty; ledger {p3}), so this card has no contract object to test. This is not an exemption (nobody approved one); the check itself recognises, from the write-scope paths plus the contract ledger, that this card has no corresponding object."
+  c38: "TDD red→green **are not bound to the same artifact**: case {p1} — {p2}. The criterion wants «same experiment, product changed, so the verdict changed»; without artifact binding the two records are unrelated. Fix: `sdo_test action=record caseId={p1} artifact=<artifact>` (the tool computes `artifactSha256`), or declare a per-check `exempt` explaining why this card needs none (e.g. verification/re-computation cards)."
+  c38Both: "**neither side is bound to an artifact**"
+  c38Red: "**the red side has no artifact binding** (the green side does)"
+  c38Green: "**the green side has no artifact binding** (the red side does)"
+  c39: "mutation self-proof **count does not match the declaration**: card {p1} declares {p2}, ledger has {p3} (records: {p4}) — a gap between what was claimed and what was logged must be visible to a gate. Fix: log each missing mutation with `sdo_test action=record mutation=…`, or change the declaration to the real count (changing the declaration is not changing the criterion: the declaration is the card own promise)."
+  c39None: "(none at all)"
+  c40: "exemption is missing the **approver**: {p1} / {p2} — waiving a check must name who approved it (`approvedBy`; same word as `sdo_gate action=waive` and defect waivers). Legacy entries are unaffected (the status surface marks them «unattributed»)."
+  c41: "exemption is missing the **impact**: {p1} / {p2} — state what this waiver gives up (`impact`), otherwise readers cannot see the cost."
+  c42: "unattributed (awaiting ratification)"
+  c43: "impact not recorded"
+  c44: "{p1} · {p2} | approver: {p3} | impact: {p4} | why: {p5}"
   naScopeSep: ", "
   naScopeEmpty: "(empty)"
   naCheckRedGreen: "tdd-red-green-missing"
@@ -2902,3 +2955,10 @@ uiDispatch:
 uiPool:
   kReuseRoundsExceeded: "this child session has already taken {p1} round(s) (project-declared cap {p2}) — not enough headroom left, so it will not be reused"
   kReuseCardsExceeded: "this child session has already taken {p1} card(s) (project-declared cap {p2}) — not enough headroom left, so it will not be reused"
+  kReuseHoldsCard: "this child session **still holds in-flight card {p1}** (the card is still in-progress) — dispatching a new card into the same session would make the two cards step on each other, so a fresh child is started"
+
+uiTest:
+  kResultCaseIdRequired: "a test result must say **which case** it belongs to: `caseId` is empty, so this result has no owner (create the case with `sdo_test action=plan`, then record against its id)"
+  kResultCaseNotFound: "the case {p1} this result points at **does not exist in the case ledger** (ledger has: {p2}) — a result is a result **of a case**: create it with `sdo_test action=plan`, or use a real case id. **Nothing is written**, so an unowned green cannot appear"
+  kListSep: ", "
+  kResultNoCases: "(none at all)"

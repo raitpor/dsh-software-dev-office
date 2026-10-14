@@ -122,7 +122,7 @@ test('M66-02 §2 第 3 条：认领关（claim 关）语义不变 —— 认领�
 test('M66-03 §2 第 3 条：历史卡走**豁免**这条路仍然有效（收紧不等于把老项目卡死）', () => {
   writeCard('TASK-001', ['REQ-001'], 'developer', 'done')
   writeContract('CT-001', ['REQ-001'])
-  profile([{ task: 'TASK-001', check: 'contract-not-frozen', why: '历史卡：契约在本卡完成后才修订并重签' }])
+  profile([{ task: 'TASK-001', check: 'contract-not-frozen', why: '历史卡：契约在本卡完成后才修订并重签', approvedBy: '用户', impact: '夹具' }])
   journal.append('design/confirmed', { target: 'CT-001', basis: '评审通过', by: 'cockpit' })
   journal.append('task/claimed', { id: 'TASK-001', owner: 'sub-dev', sessionId: 'child-1', expectedRevision: 1 })
   journal.append('contract/updated', { id: 'CT-001', revision: 2 })

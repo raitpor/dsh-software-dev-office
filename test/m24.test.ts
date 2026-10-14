@@ -83,8 +83,9 @@ function expectedActionCell(tool: ToolDefinition): string | undefined {
   return `\`${tool.name}\`（${list.join(' / ')}）`
 }
 
-test('README 与实现一致：20 个工具及其动作清单都写在 README 里（同源、同顺序）', () => {
-  assert.equal(tools.length, 20, `应注册 20 个工具，实际 ${tools.length}`)
+test('README 与实现一致：21 个工具及其动作清单都写在 README 里（同源、同顺序）', () => {
+  // 21 = 原 20 + `sdo_hash`（DEF-017 / §3E 族 3：给评审者的**只读**窄哈希入口）
+  assert.equal(tools.length, 21, `应注册 21 个工具，实际 ${tools.length}`)
   for (const tool of tools) {
     assert.ok(README.includes(`\`${tool.name}\``), `README 必须列出工具 ${tool.name}`)
     const cell = expectedActionCell(tool)

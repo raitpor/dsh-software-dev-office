@@ -357,6 +357,127 @@ function sha256Of(path: string): string {
 }
 
 /**
+ * **`done` 回执的产物证据回显行**（DEF-013 / §3E 族 3，minor）。
+ *
+ * 缺陷本体（三份 re-verify 的现盘读数）：真实工具面 done（note 自述「6 处核实 + 3 条变异」）的回执
+ * 只有「卡面 + 证据 2 条 + 未对账告警」，**既没有完整 64 位 sha256、也没有任何条数比对句**；
+ * 唯一会绑指纹的动作（{@link auditDoneEvidence} 的现算对账）**只活在拒绝路径上** —— 一旦通过就什么都不印，
+ * 于是"读者/评审者能不能自己核对这份产物"只能靠重新跑一遍工具。
+ *
+ * 口径（**只加回显、不动判据**）：
+ *   · 这里**只算与印**：现算每条 `artifact` 证据的**完整** sha256（路径解析走 `parseArtifactDetail`
+ *     这唯一出口）与**文件 mtime**；读不到就**如实标原因**，绝不因此拦下 done（fail-open，与 A2 补记同款）。
+ *   · 「调用方自己写错哈希」依旧由 `evidence-artifact-hash` 拒收（批前 `fb81ff9` 已有）—— 那不是本条的成果，
+ *     也不因为这里多印一行而放宽。
+ */
+export interface ArtifactEchoRow {
+  /** 证据原文（原样回显，便于人对照） */
+  detail: string
+  /** 解析出的产物路径（解析不出来 = 空串） */
+  path: string
+  /** **现算**的完整 64 位 sha256（读不到则缺省） */
+  sha256?: string | undefined
+  /** 文件 mtime（ISO；读不到则缺省） */
+  mtime?: string | undefined
+  /** 调用方在证据里写的哈希（写了才有；成功路径上它与 `sha256` 必然相等 —— 那是 `evidence-artifact-hash` 保的） */
+  declared?: string | undefined
+  /** 没算出指纹的原因（缺省 = 算出来了）：`no-path` / `outside` / `missing` / `unreadable` */
+  unreadable?: string | undefined
+}
+
+/**
+ * **只读窄入口：现算一个工作区内的产物的指纹**（DEF-017 / §3E 族 3）。
+ *
+ * 缺陷本体：评审者的掩码 `deny` 里有 `bash`（跑不了 `sha256sum`），而**唯一**产出产物 sha256 的
+ * `sdo_test` 也在 deny 里 ⇒ 评审者只能看 done 回执里的**截断**指纹（`e1cb2250387e…4053`），
+ * "我核的是不是这份产物"无法自证。修法**不是开 `bash`**（那是把只读评审员变成能执行任意命令的角色），
+ * 而是一个**只读、纯查询**的窄出口：只现算，不写台账、不落事件、不接受通配。
+ *
+ * 边界与既有口径一致：越出工作区 / 不存在 / 不是文件 / 读不到 ⇒ 各自一个**原因码**（文案由界面层渲染）。
+ * 现算复用 {@link sha256Of}，路径代数复用与 `auditDoneEvidence` 同一套（`isAbsolute`/`resolve`/`relative`）。
+ */
+export type ArtifactDigest =
+  | { ok: true; path: string; sha256: string; mtime: string; bytes: number }
+  | { ok: false; code: 'no-path' | 'no-workspace' | 'outside' | 'missing' | 'not-file' | 'unreadable' }
+
+export function digestArtifact(workspace: string, rawPath: string): ArtifactDigest {
+  if (workspace.trim() === '') return { ok: false, code: 'no-workspace' }
+  const path = rawPath.trim()
+  if (path === '') return { ok: false, code: 'no-path' }
+  const absolute = isAbsolute(path) ? path : resolve(workspace, path)
+  if (relative(workspace, absolute).startsWith('..')) return { ok: false, code: 'outside' }
+  if (!existsSync(absolute)) return { ok: false, code: 'missing' }
+  if (!statSync(absolute).isFile()) return { ok: false, code: 'not-file' }
+  try {
+    const stat = statSync(absolute)
+    return { ok: true, path, sha256: sha256Of(absolute), mtime: stat.mtime.toISOString(), bytes: stat.size }
+  } catch {
+    return { ok: false, code: 'unreadable' }
+  }
+}
+
+export function artifactEchoRows(workspace: string, incoming: EvidenceItem[]): ArtifactEchoRow[] {
+  const rows: ArtifactEchoRow[] = []
+  for (const item of incoming) {
+    if (item.kind !== 'artifact') continue
+    const { path, sha256 } = parseArtifactDetail(item.detail)
+    const row: ArtifactEchoRow = { detail: item.detail, path, ...(sha256 === undefined ? {} : { declared: sha256 }) }
+    if (path === '') {
+      rows.push({ ...row, unreadable: 'no-path' })
+      continue
+    }
+    const absolute = isAbsolute(path) ? path : resolve(workspace, path)
+    // 工作区之外的路径也不去读（判据 `evidence-artifact-outside` 会拒收它 —— 回显不越权）
+    if (relative(workspace, absolute).startsWith('..')) {
+      rows.push({ ...row, unreadable: 'outside' })
+      continue
+    }
+    if (!existsSync(absolute) || !statSync(absolute).isFile()) {
+      rows.push({ ...row, unreadable: 'missing' })
+      continue
+    }
+    try {
+      rows.push({ ...row, sha256: sha256Of(absolute), mtime: statSync(absolute).mtime.toISOString() })
+    } catch {
+      rows.push({ ...row, unreadable: 'unreadable' })
+    }
+  }
+  return rows
+}
+
+/**
+ * **「自述 vs 台账」的机械条数**（DEF-013 落点二）。
+ *
+ * 为什么只能给数字、不能替人判：自述往往写在 `note` 的**自然语言**里（真机那句是「6 处核实 + 3 条变异」）
+ * ⇒ 解析散文等于把判据绑在某种写法上（判据必须语言无关、格式无关 — 长期约束）。所以这里**只数结构化条目**，
+ * 把「本次自述几条」与「台账累计几条」**并列**印出来，让差额当场可辨；**判红留给别的判据**。
+ */
+export interface EvidenceTally {
+  /** 本次 done **自述**交上来的条数 */
+  selfTotal: number
+  selfArtifact: number
+  selfCommand: number
+  selfOther: number
+  /** 落盘后卡上**台账**累计条数（含更早那些回报 —— `collab.report` 是 `[...task.evidence, ...evidence]`） */
+  ledgerTotal: number
+  ledgerArtifact: number
+}
+
+export function evidenceTally(incoming: EvidenceItem[], ledger: EvidenceItem[]): EvidenceTally {
+  const count = (items: EvidenceItem[], kind: EvidenceItem['kind']): number => items.filter((item) => item.kind === kind).length
+  const selfArtifact = count(incoming, 'artifact')
+  const selfCommand = count(incoming, 'command')
+  return {
+    selfTotal: incoming.length,
+    selfArtifact,
+    selfCommand,
+    selfOther: incoming.length - selfArtifact - selfCommand,
+    ledgerTotal: ledger.length,
+    ledgerArtifact: count(ledger, 'artifact'),
+  }
+}
+
+/**
  * 对账一份 `done` 证据。
  *
  * @param task 任务卡（读 `evidenceRequired` 与已挂证据）

@@ -39,6 +39,21 @@ export interface ConstructionExemption {
   /** 被豁免的检查码（`ConstructionCheck` 的字符串形式）。 */
   check: string
   why: string
+  /**
+   * **谁批准的**（DEF-030，§3E 族 1）。
+   *
+   * 缺陷本体：`exempt` 只有 `{task, check, why}` ⇒ 豁免是**跳过一条判据**的动作，却**无批准人、无影响面**，
+   * 状态面（看板/描述/覆盖读数）也**一个字段都不印** ⇒ "豁免可以静默发生"。
+   * 词与另外两处对照面**对齐、不另造**：`sdo_gate action=waive` 与缺陷豁免（`trace.ts`）都用 `approvedBy`。
+   * 旧条目（历史 profile 里没有这个键）读出来是空串 ⇒ **不回写历史**，但在状态面**显式标"未署名"**请用户追认或撤销。
+   */
+  approvedBy: string
+  /**
+   * **影响面**（DEF-030）：这次豁免**放掉的是什么**（被豁免的对象/范围 + 后果），与
+   * `mitigatesWaiver.waiveReason` 同族 —— 豁免不是静默开关，读的人要能看见代价。
+   * 旧条目读出来是空串，同样在状态面标"未记影响面"。
+   */
+  impact: string
 }
 
 export interface ConstructionHistoryItem {
@@ -102,7 +117,15 @@ export function readConstructionProfile(store: SdoStore): ProfileRead {
         problems.push(t('uiConstruction.c05'))
         continue
       }
-      exempt.push({ task: entry.task, check: entry.check, why: entry.why })
+      // **DEF-030**：两个新键**宽容读取**（旧 profile 里没有 ⇒ 空串）——读端不因此丢条目、
+      // 也不在这里判红："该不该追认"由状态面列出来给人裁，写侧才强制"新的豁免必须带齐"。
+      exempt.push({
+        task: entry.task,
+        check: entry.check,
+        why: entry.why,
+        approvedBy: typeof entry.approvedBy === 'string' ? entry.approvedBy : '',
+        impact: typeof entry.impact === 'string' ? entry.impact : '',
+      })
     }
   }
   const history: ConstructionHistoryItem[] = []
@@ -225,6 +248,22 @@ export function deadExemptions(store: SdoStore): { task: string; check: string; 
     else if (found.status === 'dropped') dead.push({ ...item, reason: 'dropped' })
   }
   return dead
+}
+
+/**
+ * **豁免清单的唯一出口**（DEF-030）：回执、看板、状态描述都从这里取，避免三处各印一份而分叉。
+ *
+ * 为什么必须有这条：缺陷本体是"豁免可以静默发生"——获批的豁免只活在 `profile.yml` 里，
+ * 状态面一个字都不印。这里把每条豁免（卡 / 检查码 / 理由 / **批准人** / **影响面**）摊平，
+ * 并把**没有署名或没有影响面的历史条目**如实标出来，供用户**一次列全、追认或撤销**。
+ */
+export function exemptionLines(profile: ConstructionProfile | undefined): string[] {
+  if (profile === undefined) return []
+  return profile.exempt.map((item) => {
+    const approver = item.approvedBy.trim() === '' ? t('uiConstruction.c42') : item.approvedBy.trim()
+    const impact = item.impact.trim() === '' ? t('uiConstruction.c43') : item.impact.trim()
+    return fmt('uiConstruction.c44', { p1: item.task, p2: item.check, p3: approver, p4: impact, p5: item.why.trim() })
+  })
 }
 
 /**
@@ -462,6 +501,33 @@ export function redGreenGaps(
         }
         // **只有先确立了"同一次实验"（有可比指纹）**，才谈得上"产物没变却转绿" ——
         // 否则红的可能是另一次实验，判"产物没变"就是误判（真机 46 张卡的红里有一半是这么来的）。
+        // **DEF-024（§3E 族 1 · 对账判据）**：红绿两侧**都没绑产物**时，下面那条（与上面两条）全部落在
+        // 条件之外 ⇒ "同一次实验确实发生了、但红绿都没绑在同一个产物上"这件事**没有人判**。
+        // 补一条**对账**：既然已确认是同一次实验（env 或 harness 可比），缺哪一侧的 `artifactSha256`
+        // 就点名哪一侧 —— 与既有口径一致：**没有同实验指纹就不判**（不许凭空判红老台账），
+        // 且可用 `exempt('tdd-artifact-unbound')` 逐条豁免（`tq_9b054399` 记的就是这条逃生口）。
+        {
+          const redBound = (red.artifactSha256 ?? '') !== ''
+          const greenBound = (green.artifactSha256 ?? '') !== ''
+          // 只在**同一次实验**里判"绑没绑"：跨实验的两条本来就不该用"产物绑定"来比对
+          // （那种情形由 `tdd-env-changed` / `tdd-harness-changed` 负责，别在这里重复报）。
+          // **必须能证成"同一次实验"**：两侧指纹**可比且相等**才判 —— 不可比（老台账没这些字段）时
+          // `sameExperiment` 默认为真，若不额外要求"可比"，就会对历史结果凭空判红（这正是既有纪律禁止的）。
+          if ((envComparable(red, green) || harnessComparable(red, green))
+            && sameExperiment(red, green)
+            && !(redBound && greenBound)) {
+            if (!skip('tdd-artifact-unbound')) gaps.push({
+              check: 'tdd-artifact-unbound',
+              ok: false,
+              detail: fmt('uiConstruction.c38', {
+                p1: verified.id,
+                p2: redBound === greenBound
+                  ? t('uiConstruction.c38Both')
+                  : redBound ? t('uiConstruction.c38Green') : t('uiConstruction.c38Red'),
+              }),
+            })
+          }
+        }
         if ((envComparable(red, green) || harnessComparable(red, green))
           && (red.artifactSha256 ?? '') !== '' && red.artifactSha256 === green.artifactSha256) {
           if (!skip('tdd-artifact-unchanged')) gaps.push({
@@ -580,9 +646,26 @@ export function doneGaps(
     if (!exempt('tdd-red-green-missing')) gaps.push(...redGreenGaps(store, journal, card, { exempt }))
     if (!exempt('tdd-mutation-missing') && options.scale === 'critical') {
       // N3（评审）：规格要求 `killed ≥ 1` **且 `tool` 非空** —— 空 tool 的记录证不了"用什么杀的"
-      const killed = readMutations(store)
-        .filter((item) => item.task === card.id && item.tool.trim() !== '')
-        .reduce((total, item) => total + item.killed, 0)
+      // **DEF-027**：`killed ≥ 1` 只核"有没有"，**不核条数与声明** —— 同一张卡把声明从 0 条改成 5 条，
+      // 判据读数是同一个（实测），于是"报告说 3 条、台账只有 2 条"这类差额任何门禁都看不见。
+      // 这里补一条**对账**：卡上**结构化声明**了 `mutationExpected: N` 就与台账**实到条数**逐条比，
+      // 多了少了都判红并点名（含"声明 0 条而台账有记录"）。
+      // 缺省不声明 ⇒ 维持旧口径（不许凭空要求一个数字：绝大多数历史卡没有这条声明）。
+      const records = readMutations(store).filter((item) => item.task === card.id)
+      const counted = records.filter((item) => item.tool.trim() !== '')
+      const killed = counted.reduce((total, item) => total + item.killed, 0)
+      if (card.mutationExpected !== undefined && counted.length !== card.mutationExpected) {
+        gaps.push({
+          check: 'tdd-mutation-count-mismatch',
+          ok: false,
+          detail: fmt('uiConstruction.c39', {
+            p1: card.id,
+            p2: String(card.mutationExpected),
+            p3: String(counted.length),
+            p4: records.map((item) => `${item.target}(${item.tool})`).join(' ') || t('uiConstruction.c39None'),
+          }),
+        })
+      }
       if (killed === 0) {
         gaps.push({
           check: 'tdd-mutation-missing',

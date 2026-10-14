@@ -47,6 +47,11 @@ export interface BoardModel {
   /** 当前迭代 */
   iteration?: { number: number; goal: string; status: string } | undefined
   /**
+   * **已获批的逐条豁免**（DEF-030）：豁免是"跳过一条判据"的动作 ⇒ 看板必须能**一次列全**
+   * （卡 / 检查码 / 理由 / 批准人 / 影响面），供用户追认或撤销。文案由 `exemptionLines()` 统一产出。
+   */
+  exemptions?: string[] | undefined
+  /**
    * **缺陷追溯读数**（TASK-038 / REQ-058）：孤儿缺陷 / 悬空边 / 豁免清单 / 覆盖率。
    *
    * 形状与内容都来自 `trace.ts` 的**唯一现算出口**（经 `readDefectLinksOf` 从追溯报告取），
@@ -187,6 +192,12 @@ export function renderBoard(model: BoardModel, options: BoardOptions = {}): stri
   const { project } = model
   if (model.truthError !== undefined && model.truthError !== '') {
     lines.push(fmt('uiRender.truthError', { p1: model.truthError }))
+  }
+  // **DEF-030**：豁免不是静默开关 —— 只要有不豁免的条目就在首屏摊开（含"未署名/未记影响面"的历史条目）。
+  if ((model.exemptions ?? []).length > 0) {
+    lines.push(fmt('uiRender.kExemptionsHeader', { p1: String((model.exemptions ?? []).length) }))
+    for (const line of model.exemptions ?? []) lines.push(`  ${line}`)
+    lines.push('')
   }
 
   if (project === undefined) {

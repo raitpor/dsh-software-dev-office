@@ -89,7 +89,7 @@ import { listRisks, riskStats } from './risks.js'
 import { channelLabel, signoffInput, signatureInvalidatingEventLine, signatureState } from './signature.js'
 import { checkWantsShapeNotes, collectShapeNotes, shapeNoteLines, shapeNotesForCheck } from './shapeNotes.js'
 import { assessDefectLinks, defectLinksExemptionLines, defectLinksRemedy, describeDefectLinks, report } from './trace.js'
-import { iterationTasks, listTasks, planStats, readIteration, validatePlan } from './plan.js'
+import { iterationTasks, listTasks, planStats, readIteration, textPathsOf, validatePlan } from './plan.js'
 import { declaredItemVerdict, fixesRemedy, fixStatusRows, mitigatesRemedy, mitigatesRows } from './collab.js'
 import { independenceViolations } from '../integration/orchestrator.js'
 import {
@@ -1433,7 +1433,9 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     if (tasks.length === 0) {
       return fail('plan.tasks', t('uiGates.k84'), t('uiGates.k85'))
     }
-    const issues = validatePlan(tasks)
+    // **DEF-055**：判据要看到**项目声明的文案面**（`plan.textPaths`），否则把"声明了但写范围不含"
+    // 与"项目还没声明"报成同一句话（两种红的处置动作不同）。
+    const issues = validatePlan(tasks, { textPaths: textPathsOf(ctx.store) })
     if (issues.length === 0) return ok('plan.tasks', fmt('uiGates.k86', { p1: tasks.length }))
     return fail(
       'plan.tasks',

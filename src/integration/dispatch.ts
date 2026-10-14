@@ -78,10 +78,44 @@ export type DispatchOutcome =
       mode: 'continuable' | 'one-shot'
       /** 想复用但没成的原因（如实回报，不静默降级成"新起一个"） */
       reuseFailed?: string | undefined
+      /**
+       * **复用投递的宿主回执**（DEF-014 / §3E 族 8）。
+       *
+       * 旧实现 `await runtime.sendMessage(...)` 把返回值**丢掉** ⇒「指令投出去没有、宿主受理没有」
+       * 在真源里**无从查证**（`dispatch/started` 只记 `reused: true`）。
+       *
+       * 语义边界（必须写在字段旁边，否则下一轮会把它读成"消费证明"）：
+       *   · 它只证 **宿主受理了这次投递**（`sendMessage` 解决了）；
+       *   · 它**不证**子会话读了、更不证它照做了 —— 那要看卡的去向（认领 / 结算 / 一直没动静），
+       *     由 `dispatchHealth.ts` 的 `reuseDeliveries` 现算，**不在这里猜**。
+       */
+      messageReceipt?: string | undefined
       /** 想用可续聊入口但宿主没给（如 `CONTINUATION_UNAVAILABLE`）——池因此退化为并发上限 */
       continuableFailed?: string | undefined
     }
   | { started: false; reason: 'no-service' | 'no-provider' | 'no-parent' | 'failed'; detail: string }
+
+/**
+ * 把宿主 `sendMessage` 的返回值**归一成一行收据**（DEF-014）。
+ *
+ * 只做**投影**，不猜语义：认几个已知的标识字段，认不出就回 `accepted`
+ *（= 宿主受理了这次投递，但没给可用标识）—— **绝不**把它当成"子会话读了/照做了"的证据。
+ * 纯对象也**不整份 stringify**（宿主可能回一个大对象；真源里只要可查的锚点）。
+ */
+function receiptOf(value: unknown): string {
+  if (value === undefined || value === null) return 'accepted'
+  if (typeof value === 'string') return value.trim() === '' ? 'accepted' : value.trim()
+  if (typeof value === 'number' || typeof value === 'boolean') return String(value)
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>
+    for (const key of ['id', 'messageId', 'turnId', 'seq']) {
+      const raw = record[key]
+      if (typeof raw === 'string' && raw.trim() !== '') return `${key}=${raw.trim()}`
+      if (typeof raw === 'number') return `${key}=${String(raw)}`
+    }
+  }
+  return 'accepted'
+}
 
 /** 派发用的取消信号：SDO 目前没有"派发生命周期"的所有者，先各自持有，便于将来统一取消。 */
 const controllers = new Set<AbortController>()
@@ -136,7 +170,9 @@ export async function startDispatch(input: {
   // ① 真复用：把这张卡投给一个**已有且空闲**的子代理（宿主注释：空闲则起一轮）
   if (input.reuseChildId !== undefined && input.reuseChildId !== '' && typeof runtime.sendMessage === 'function') {
     try {
-      await runtime.sendMessage(input.agent, input.reuseChildId, blocks, { signal: dispatchSignal() })
+      // **DEF-014**：返回值**不再丢弃** —— 归一成一行收据带回去（`dispatch/started.messageReceipt`）。
+      // 只做投影、不猜语义：认几个已知标识字段，认不出就记 `accepted`（= 宿主受理了，无标识）。
+      const returned = await runtime.sendMessage(input.agent, input.reuseChildId, blocks, { signal: dispatchSignal() })
       return {
         started: true,
         provider: input.provider,
@@ -145,6 +181,7 @@ export async function startDispatch(input: {
         reuseSupported,
         reused: true,
         mode: 'continuable',
+        messageReceipt: receiptOf(returned),
       }
     } catch (error) {
       // 复用失败**不静默**：如实带回去，然后按"新起一个"继续（拒绝复用不该让这张卡派不出去）

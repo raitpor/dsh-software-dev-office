@@ -287,3 +287,11 @@ export function droppedFlag(value: unknown): { dropped: boolean; issue: ShapeIss
   const read = boolField(value)
   return { dropped: read.value === true, issue: read.issue }
 }
+
+/**
+ * **声明用的条数读取器**（DEF-027）：只认有限、非负的**整数**；字符串 / 小数 / 负数 / `undefined`
+ * 一律读成"未声明" —— 读端**不做任何自然语言解析**（判据必须语言无关、格式无关）。
+ */
+export function countOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 ? value : undefined
+}

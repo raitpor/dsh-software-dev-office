@@ -809,6 +809,19 @@ export interface TaskCard {
   /** 追溯：来源需求 */
   requirements: string[]
   /**
+   * **本卡声明的变异自证条数**（DEF-027，§3E 族 1「对账判据」）。
+   *
+   * 缺陷本体：`tdd-mutation-missing` 只核 `killed ≥ 1`，**对声明完全不敏感** —— 同一张卡把
+   * 声明从 0 条改成 5 条，判据读数是同一个（实测）。于是"报告说 3 条、台账只有 2 条"这类差额
+   * 任何门禁都看不见（**自述大于台账**）。
+   *
+   * 为什么是**结构化字段**而不是去读 DoD 的散文：判据必须**语言无关、格式无关**（长期约束）——
+   * 从「本卡做 5 条变异自证」里抠数字换一种语言/写法就失效，那是给某个具体项目写特例。
+   * 口径：**缺省 = 不声明 ⇒ 维持旧口径**（只要求 `killed ≥ 1`，不假装知道该做几条）；
+   * **声明 N ⇒ 与台账 `readMutations` 的条数逐条对账**（N 与实到不符，或声明 0 而台账有记录 ⇒ 判红并点名）。
+   */
+  mutationExpected?: number | undefined
+  /**
    * **本卡声称修好的缺陷**（`.sdo/defects/*.yml` 的 `DEF-*` id 列表；DEF-050 / TASK-072）。
    *
    * 与 `requirements` 同族：都是"这张卡挂在哪些台账实体上"的**声明通道**。
@@ -848,6 +861,74 @@ export interface TaskCard {
    * 去空白后**两字段都非空**才算一条成立的豁免（与 `C-63` 逐字同口径）。
    */
   mitigatesWaiver?: MitigatesWaiver[] | undefined
+  /**
+   * **本卡点名的影响面**（DEF-036 / §3E 族 1「对账判据」；纪律原文 B-25）。
+   *
+   * 缺陷本体：**引入新语义的卡，拆卡时没有任何地方要求先扫"既有夹具/守卫会不会被它撞红"**。
+   * 真机（2026-10-13，TASK-054）：它的落点让 `record` 必填 oracle（卡面要求的新语义），于是
+   * TASK-039 的夹具 `test/m94.test.ts` 里 4 条用例**在写卡时没被预料到**，落地后全红 ——
+   * 只能在"改夹具口径"与"回滚自己的改动"之间选。既有断言是**活的约束**，改语义就是在动它们的输入。
+   *
+   * 为什么复用**同名口径**而不是新造 `introducesSemantics` / `impactSurface`：仓库已有影响面词汇
+   * （{@link TestingRegressionSource.impact} + `undecidable`，"影响面推不出来时的**显式声明**，
+   * 不许默认无影响"）。同一种东西在卡上与在测试源上必须长得一模一样，否则读者要学两套。
+   *
+   * 键名**逐字复用**，取值语义也一致：`impact` 点名**将被影响的文件/用例**（机械扫一遍的结论）。
+   * 与 `undecidable` 二者有其一即视为已声明（见 {@link undecidable}）。
+   */
+  impact?: string[] | undefined
+  /**
+   * **影响面推不出来时的显式声明**（DEF-036；键名与 {@link TestingRegressionSource.undecidable} 逐字同款）。
+   *
+   * 口径：**不许默认「无影响」** —— 既给不出 `impact` 又说不清为什么推不出来的卡，判据
+   * `impact-undeclared` 会在拆卡期判红并点名。为什么需要这条出口：语义级影响在**语言无关**口径下
+   * 没有可靠的推断信号（B-25 真机撞的是**调用点**，两张卡的写范围根本不相交 ⇒ 路径面推不出来），
+   * 所以"推不出来"必须是一个**说得出来的状态**，而不是沉默。
+   */
+  undecidable?: string | undefined
+  /**
+   * **本卡声称要落地的路径**（DEF-018 / §3E 族 9）。
+   *
+   * 缺陷本体：`validatePlan` 的九条机械校验里**没有一条**核"落点与写范围对不对得上" —— 真机上
+   * 卡可以在 DoD 里点名 `src/domain/records.ts`，而写范围只有 `src/interface/`，判据全绿；
+   * 落地时才发现根本写不了那个文件（与 DEF-052「派生写范围荒谬」同族的静态版本）。
+   *
+   * 为什么是**结构化声明**而不是去解析 DoD 散文：判据必须**语言无关、格式无关**（长期约束）——
+   * 从句子里认路径，换一种写法（反引号、括号、顿号、"落点：")就失效，那等于给具体项目写特例。
+   * 口径：声明了 `landing` ⇒ 每条都必须落在自己的 `writeScopes` 内（路径代数走 `scopeOverlaps`
+   * **唯一出口**），否则判红并**逐条点名**；**缺省 = 不声明 = 不判**（存量卡不受影响）。
+   */
+  landing?: string[] | undefined
+  /**
+   * **本卡要独占的窗口组名**（DEF-007 / §3E 族 2）。
+   *
+   * 缺陷本体（现盘可复算）：两张都要跑**全量构建**的卡，写范围**不相交**（`scopeHeldTasks` 判没事）、
+   * 依赖也满足 ⇒ `validatePlan` 全绿、`readyTasks` **同时返回两张**，两份构建各自读到对方写了一半的源。
+   * 旧口径只能靠人工给某张卡写 `blockedBy: ['*']`（"等所有其它卡"），既不是这条语义、也没人保证写得对。
+   *
+   * 现在：卡自行声明一个**组名**（自由文本，插件**不内置任何组名** —— 长期约束：语言无关、不针对具体项目）。
+   * 同组**同时只能有一张卡在跑**：`readyTasks` 按组串行、`classifyNonDispatchable` 的 `exclusive` 类点名挡路者。
+   * **静态面不判**：同组允许多张卡存在（排队顺序执行才是它的用途）。
+   */
+  exclusive?: string | undefined
+  /**
+   * **本卡是否产出/改动「用户可见文案」**（DEF-055 / §3E 族 4）。
+   *
+   * 缺陷本体：默认写范围模板是 `[src/<slug>/, test/<slug>/]`（项目未声明 `scopeTemplate` 时），
+   * **不含任何文案面** ⇒ 卡在"必须新增一条用户可见文案"时只剩两条烂路：**改夹具口径**或
+   * **在代码里硬编码**（真机物证：`testingStore.ts` 的 `TESTING_ZH`/`TESTING_EN` 两张内联表，
+   * 以及 `gates.ts` / `index.ts` 里逐字写着「本卡写范围不含 `src/data/lang/`」的注释）；
+   * 真台账 127 卡里有写范围的 119 张，**只有 29 张**含 `data/lang`。
+   *
+   * 为什么是**结构化布尔**而不是去读元素职责散文（"写到回执文案"这类字样）：判据必须
+   * **语言无关、格式无关**（长期约束）—— 从句子里抠「文案」二字，换种写法就失效。
+   *
+   * 口径：声明 `true` ⇒ `validatePlan` 的 `ui-text-scope` 核对**写范围里有没有项目声明的文案面**
+   * （`.sdo/config.yml` 的 `plan.textPaths`）；**缺省 = 不声明 = 本卡不碰用户可见文案**（存量卡不受影响）。
+   * 插件**不内置**任何具体路径（`src/data/lang/` 之类）：那等于把某个项目的目录结构写进通用判据，
+   * 与 §4 红线 4 冲突 —— "文案面在哪"必须由**项目自己声明**。
+   */
+  uiText?: boolean | undefined
   /** 迭代号（敏捷/螺旋） */
   iteration?: number | undefined
   evidence: EvidenceItem[]
@@ -1017,6 +1098,8 @@ export const CONSTRUCTION_CHECKS = [
   'tdd-red-green-missing',
   'tdd-result-untraceable',
   'tdd-mutation-missing',
+  // **DEF-027**：声明的变异条数与台账实到条数不符（多了少了都判，含"声明 0 条却有记录"）
+  'tdd-mutation-count-mismatch',
   'contract-test-missing',
 ] as const
 export type ConstructionCheck = (typeof CONSTRUCTION_CHECKS)[number]

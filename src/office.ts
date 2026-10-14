@@ -70,14 +70,15 @@ import { linkMany, renderTraceReport, report, unlink } from './domain/trace.js'
 import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
-import {addErrata, claim, reassign, release, report as reportTask, staleClaims, unblock, updateTask} from './domain/collab.js'
+import { addErrata, claim, reassign, release, report as reportTask, staleClaims, unblock, updateTask } from './domain/collab.js'
+import { staleEntryGateOf } from './domain/entryGate.js'
 import type { UnblockResult } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
-import { orphanLocks, claimMissing } from './domain/dispatchHealth.js'
-import type { ClaimMissing, OrphanLock } from './domain/dispatchHealth.js'
+import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
+import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, validatePlan } from './domain/plan.js'
-import type { DecomposeInput, NonDispatchablePlan, PlanIssue } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, textPathsOf, validatePlan } from './domain/plan.js'
+import type { DecomposeInput, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
   listDefects,
   listReviews,
@@ -3277,16 +3278,35 @@ export class SoftwareDevOffice {
   }
 
   planIssues(call: OfficeCall): PlanIssue[] {
-    return validatePlan(this.tasks(call))
+    // **DEF-055**：把**项目声明的文案面**（`.sdo/config.yml` 的 `plan.textPaths`）交给判据 ——
+    // 否则 `ui-text-scope` 只能看到"项目没声明"，把"声明了但本卡写范围不含"这种真红报成同一句话。
+    return validatePlan(this.tasks(call), { textPaths: textPathsOf(this.storeFor(this.requireWorkspace(call))) })
   }
 
   /**
    * **"为什么这一轮派不出去"的分类**（DEF-049 落点二）：blocked 卡 / 写范围冲突 / 依赖未满足
    * 三类**分列**。以前只有一句笼统的"没有可派发的任务卡"，于是有 blocked 卡的情形被读成"活干完了"。
    * 结构化结果（无文案）由 `index.ts` 渲染成语言包文案 —— `plan.ts` 的 i18n 棘轮基线是 0。
+   *
+   * **DEF-040**：第四类 `gate-stale`（当前阶段入口门禁签字失效）也在这里带出去 —— 失效期间
+   * `readyForDispatch` 返回空，若回执不点名门禁，读者看到的就是"本轮没有可派发的卡"（读成"活干完了"）。
    */
   nonDispatchable(call: OfficeCall): NonDispatchablePlan {
-    return classifyNonDispatchable(this.tasks(call))
+    return classifyNonDispatchable(this.tasks(call), this.staleEntryGate(call))
+  }
+
+  /**
+   * **复用投递的消费观测**（DEF-014）：现算每一笔**复用投递**（`dispatch/started reused=true`）
+   * 之后有没有可观测的消费信号（认领 / 结算）；窗口内没动静的不报，窗口外报「未见消费」。
+   * 判据在 `domain/dispatchHealth.ts`（纯函数，`test/m158` 直接测它）。
+   */
+  reuseDeliveries(call: OfficeCall, windowMs?: number | undefined): ReuseDelivery[] {
+    const { journal } = this.contextFor(call)
+    return reuseDeliveriesOf(
+      this.tasks(call),
+      journal.read().events,
+      windowMs === undefined ? {} : { windowMs },
+    )
   }
 
   /**
@@ -3326,8 +3346,31 @@ export class SoftwareDevOffice {
     return unblock(store, journal, { ...input, authorized: ownSession || this.canAdministerTasks(call) })
   }
 
+  /**
+   * **当前阶段入口门禁的失效状态**（DEF-040 / §3E 族 6）。
+   *
+   * 为什么在 `office.ts` 这一层做：`signatureState` 需要 store + journal，而 `plan.ts` 是纯函数层
+   * （保持可穷举测试）⇒ 这里把"结论"（`StaleGate`）算好再传进去，而不是把 journal 灌进域层。
+   * 门禁 id 取自**流程数据**的 `phases[].entry`（`entryGates`，**不硬编码 `G3`**）。
+   *
+   * ⚠️ **只认 `status === 'stale'`**（签过字但按口径失效 —— B-28 真机剧本要拦的正是它）。
+   * `missing`（从来没签过）**返回 `undefined` 即放行**：把它也当"不许派"，会让所有还没走到该门禁
+   * 签字的正常流程一律停摆（本仓 `construction` 阶段就是 `entry: [G3]`，历史卡在多种签字状态下派出）。
+   */
+  /**
+   * **当前阶段入口门禁的签字状态**（DEF-040）—— 派发面的入口。
+   *
+   * 判据本身**不在这里**：`staleEntryGateOf`（`domain/entryGate.ts`）是唯一出口，
+   * 认领面（`collab.ts` 的 `claim`）调的是同一个函数 —— 两处各写一遍必然漂移。
+   */
+  private staleEntryGate(call: OfficeCall): StaleGate | undefined {
+    const { store, journal, project } = this.contextFor(call)
+    return staleEntryGateOf(store, journal, project)
+  }
+
   readyForDispatch(call: OfficeCall, limit = 4): TaskCard[] {
-    return readyTasks(this.tasks(call), limit)
+    // **DEF-040**：当前阶段入口门禁失效（`stale`）⇒ 这里就返回空（缺省时行为与以前逐字节相同）
+    return readyTasks(this.tasks(call), limit, this.staleEntryGate(call))
   }
 
   /** 认领（CAS）。 */
@@ -3474,7 +3517,7 @@ export class SoftwareDevOffice {
     const held = scopeHeldTasks(tasks)
     const heldIds = new Set(held.map((row) => row.task.id))
     const plan = capacityPlan(
-      readyTasks(tasks, 64).filter((task) => !heldIds.has(task.id)),
+      readyTasks(tasks, 64, this.staleEntryGate(call)).filter((task) => !heldIds.has(task.id)),
       inProgress,
       maxParallel,
     )
@@ -3523,6 +3566,11 @@ export class SoftwareDevOffice {
     reused?: boolean | undefined
     /** 这一轮子代理的**掩码指纹**（SDO-52）：复用前要比对，不符即强制新起 */
     maskHash?: string | undefined
+    /**
+     * **复用投递的宿主回执**（DEF-014）：`sendMessage` 的返回值归一成的一行文本。
+     * 不记它，「指令投出去没有」就无从查证（旧实现直接丢弃返回值）。
+     */
+    messageReceipt?: string | undefined
   }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/started', {
@@ -3538,6 +3586,8 @@ export class SoftwareDevOffice {
       ...(input.mode === undefined ? {} : { mode: input.mode }),
       ...(input.maskHash === undefined ? {} : { maskHash: input.maskHash }),
       ...(input.reused === undefined ? {} : { reused: input.reused }),
+      // **DEF-014**：复用投递的宿主回执进真源（旧实现把它丢了 ⇒「投出去没有」无从查证）
+      ...(input.messageReceipt === undefined ? {} : { messageReceipt: input.messageReceipt }),
     })
     // **§2 第 1 条**：派发（尤其**复用**同一子会话换角色）会改变这个会话的血缘角色 ⇒ 让角色缓存立刻失效，
     // 否则新掩码最多滞后一个 TTL（旧实现只认领/回报时 +1）。
@@ -3558,7 +3608,8 @@ export class SoftwareDevOffice {
     const children = [
       ...foldPoolChildren(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values(),
     ]
-    const ready = readyTasks(this.tasks(call), 64)
+    // **DEF-040**：门禁失效时池快照的 ready 也必须是空（否则回执会怂恿驾驶舱派卡）
+    const ready = readyTasks(this.tasks(call), 64, this.staleEntryGate(call))
     return {
       children,
       ready,
@@ -3593,6 +3644,15 @@ export class SoftwareDevOffice {
    * 现在的口径：**复用要求正面证据** —— `child-tools.jsonl` 里观测到这个子会话**公告面非空**。
    * 观测到零工具、或根本没有观测记录，一律**强制新起**（新起永远是对的；复用只是省一次会话创建的优化），
    * 原因写进 `reuseSkipped` 由回执点名，并且这类会话**不再占池位**（否则 `cap=1` 的角色会永久排队）。
+   *
+   * **DEF-021（族 2，2026-10-14）**：再加一条**与工具面无关**的判据 —— 这个空闲会话**手上是不是还有在飞卡**。
+   * 数据源是**卡的在飞状态**（`claimsBySession`），不是 `dispatch/*` 事件：两者会分叉 —— 子代理结算了一轮
+   * （`dispatch/finished` ⇒ 池里显示空闲可复用），却**没回报卡**（卡仍 `in-progress`）。此时把新卡投进去
+   * = 同一个会话里两张卡互相踩（真机：池把 TASK-018 复用给持在飞卡的 `20af1d60`）。
+   * ⇒ 这类会话**不许复用**，回执点名它手上那张卡。
+   *
+   * 这一条**必须只在这里写一次**：`rolePools`（池视图）与 `admitDispatch`（准入）拿的是**同一个**闭包
+   * ⇒ 读数与行为不可能分叉（R-6 的教训；DEF-040 同款"唯一出口"口径）。
    */
   private reuseBlockedOf(call: OfficeCall): (child: PoolChild) => string | undefined {
     let faces: ChildFaceEntry[] | undefined
@@ -3602,7 +3662,13 @@ export class SoftwareDevOffice {
       faces = undefined // 读不到观测 ⇒ 一律"没有证据"（下面按没有观测处理）
     }
     const byId = new Map((faces ?? []).map((face) => [face.childSessionId, face]))
+    // **DEF-021**：会话 ↔ 在飞卡 的唯一出口（同一份真源 `task/claimed` × 卡状态现算）
+    const { store, journal } = this.contextFor(call)
+    const heldBySession = new Map(claimsBySession(store, journal).map((claim) => [claim.sessionId, claim.cardId]))
     return (child: PoolChild): string | undefined => {
+      // 先判"手上有卡"：它比工具面观测更上游 —— 一个连工具面都没观测到的会话，也不该在持卡时被复用
+      const held = heldBySession.get(child.childSessionId)
+      if (held !== undefined) return fmt('uiPool.kReuseHoldsCard', { p1: held })
       const face = byId.get(child.childSessionId)
       if (face === undefined) return '没有该子会话的工具面观测（无法确认它手里有工具）→ 强制新起'
       if (face.tools.length === 0) return '该会话创建时拿到 0 个工具（历史零工具派发）→ 强制新起'
@@ -3786,6 +3852,12 @@ export class SoftwareDevOffice {
     for (const item of input.exempt) {
       if (item.why.trim() === '') problems.push(fmt('uiConstruction.c20', { p1: item.task, p2: item.check }))
       if (!(CONSTRUCTION_CHECKS as readonly string[]).includes(item.check)) problems.push(fmt('uiConstruction.c21', { p1: item.check }))
+      // **DEF-030**：豁免是"跳过一条判据"的动作 ⇒ 新的豁免必须当场说清**谁批准**、**放掉的是什么**。
+      // 旧条目不受影响（读端宽容 + 状态面标"未署名"）；但**新写进来**的缺一即整次拒绝（不写盘）。
+      // `?? ''`：类型上是必填，但**运行时可缺键**（JSON/YAML 里没写）——直接 `.trim()` 会抛，
+      // 而"缺键"正是本缺陷要拦的形态，必须走**可读拒绝**而不是崩溃。
+      if ((item.approvedBy ?? '').trim() === '') problems.push(fmt('uiConstruction.c40', { p1: item.task, p2: item.check }))
+      if ((item.impact ?? '').trim() === '') problems.push(fmt('uiConstruction.c41', { p1: item.task, p2: item.check }))
     }
     const derivation = validateDerivation(store, input.derivedFrom)
     problems.push(...derivation.problems)
@@ -3907,19 +3979,42 @@ export class SoftwareDevOffice {
    * 结算之后**量一下**，异常短/缺失就**显式告警**（而不是让人事后去翻文件大小）。
    * 口径：`dispatch/finished.report` 是权威落点（不自己拼文件名）；没结算过 ⇒ `none`（卡可能是内联做的，不告警）。
    */
-  childReportHealth(call: OfficeCall, taskId: string): { state: 'ok' | 'short' | 'missing' | 'none'; report?: string | undefined; bytes?: number | undefined } {
+  childReportHealth(call: OfficeCall, taskId: string): {
+    state: 'ok' | 'short' | 'missing' | 'none'
+    report?: string | undefined
+    bytes?: number | undefined
+    /** **DEF-045**：逐笔结算里所有残缺的（可能被后续正常报告"遮住"），按发生顺序。 */
+    fragments?: { reason: string; report: string; bytes: number; seq: number }[] | undefined
+  } {
     const { store, journal } = this.contextFor(call)
+    // **DEF-045（§3E 族 5）**：旧实现 `.pop()` **只看最后一次**结算 ⇒ 某轮留下 78B 残片、后续轮次正常
+    // （2599B）时，残片**永远不会告警** —— `CHILD_REPORT_MIN_BYTES` 对它是**死判据**（真实台账实测：
+    // TASK-104 有两笔结算，error@01:14 落 78B、completed@04:12 落 2599B）。这里**逐笔**看。
     const finished = journal
       .read()
       .events.filter((event) => event.type === 'dispatch/finished' && String(event.data.task ?? '') === taskId)
-      .pop()
-    if (finished === undefined) return { state: 'none' }
-    const report = String(finished.data.report ?? '')
-    if (report === '') return { state: 'missing' }
-    const text = readChildReportAt(store, report)
-    if (text === undefined) return { state: 'missing', report }
-    const bytes = Buffer.byteLength(text, 'utf8')
-    return bytes < CHILD_REPORT_MIN_BYTES ? { state: 'short', report, bytes } : { state: 'ok', report, bytes }
+    if (finished.length === 0) return { state: 'none' }
+    const seen = finished.map((event) => {
+      const report = String(event.data.report ?? '')
+      const text = report === '' ? undefined : readChildReportAt(store, report)
+      const bytes = text === undefined ? 0 : Buffer.byteLength(text, 'utf8')
+      const state: 'ok' | 'short' | 'missing' = report === '' || text === undefined
+        ? 'missing'
+        : bytes < CHILD_REPORT_MIN_BYTES ? 'short' : 'ok'
+      return { state, report, bytes, reason: String(event.data.reason ?? ''), seq: event.seq }
+    })
+    const bad = seen.filter((item) => item.state !== 'ok')
+    // 有残缺 ⇒ 报**最早那笔残缺**（"被遮住"的那一笔才是有信息量的），并把全部残缺列出来；
+    // 全都正常 ⇒ 照旧报最后一笔（口径不变，老回执读数不动）。
+    const worst = bad[0] ?? (seen[seen.length - 1] as (typeof seen)[number])
+    return {
+      state: worst.state,
+      report: worst.report,
+      bytes: worst.bytes,
+      ...(bad.length === 0
+        ? {}
+        : { fragments: bad.map((item) => ({ reason: item.reason, report: item.report, bytes: item.bytes, seq: item.seq })) }),
+    }
   }
 
   /** 已结算的派发（取汇报 ①/③：状态块与回执用）。 */
@@ -4237,7 +4332,7 @@ export class SoftwareDevOffice {
    * 而回执照旧说"已记录"（真机上 `τ_ff348198` 那类静默丢弃就是这么发生的）。
    * 归一化口径**不在这里**再抄一份：采纳时刻由 `records.ts` 的 `recordTestResult` 盖（一处实现）。
    */
-  addTestResult(call: OfficeCall, input: Omit<TestResult, 'id' | 'at'>): TestResult {
+  addTestResult(call: OfficeCall, input: Omit<TestResult, 'id' | 'at'>): ReturnType<typeof recordTestResult> {
     const { store, journal } = this.contextFor(call)
     const workspace = this.requireWorkspace(call)
     // **SDO-57**：没声明环境就**按最近登记的环境归属**（并如实标注 `inherited`，不假装是声明的）；

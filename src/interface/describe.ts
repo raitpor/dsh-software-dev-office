@@ -1321,3 +1321,13 @@ export function describeRollbackTargets(targets: string[]): string {
     ? t('uiDescribe.kRollbackNoEdge')
     : fmt('uiDescribe.kRollbackTargets', { p1: targets.map((target) => phaseText(target)).join(' ') })
 }
+
+/**
+ * **豁免清单的读出口**（DEF-030）：没有豁免就**不占一行**；有就整块列出（含"未署名/未记影响面"的历史条目）。
+ * 为什么在这里：豁免是"跳过一条判据"的动作，状态面必须能**一次列全**供用户追认或撤销。
+ */
+export function describeExemptions(lines: string[]): string {
+  if (lines.length === 0) return ''
+  const header = fmt('uiDescribe.kExemptions', { p1: String(lines.length) })
+  return `\n${header}\n` + lines.map((line) => `  ${line}`).join('\n')
+}

@@ -201,7 +201,8 @@ test('命令回显消息形状（缺 id/source 会让命令报"处理失败"、�
 test('工具描述必须是中文（用户可见，不许残留英文说明）', async () => {
   const stub = new Proxy({}, { get: () => async () => 'ok' }) as never
   const tools = createOfficeTools(stub)
-  assert.equal(tools.length, 20, '工具数量 = 设计 §9.1 的 19 个 + 语言切换 sdo_lang')
+  // 21 = 设计 §9.1 的 19 个 + 语言切换 sdo_lang + `sdo_hash`（DEF-017：评审者的只读窄哈希入口）
+  assert.equal(tools.length, 21, '工具数量 = 设计 §9.1 的 19 个 + 语言切换 sdo_lang + DEF-017 的 sdo_hash')
   const baseLocale = i18nLocalePeek()
   for (const tool of tools) {
     const text = String((tool as { description?: unknown }).description ?? '')

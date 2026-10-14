@@ -144,7 +144,7 @@ function profileOf(overrides: Partial<ConstructionProfile> = {}): ConstructionPr
 test('M33-01 落盘与读回：字段保真；坏结构判 invalid 且给出原因（不静默当成"没选包"）', () => {
   assert.equal(readConstructionProfile(store).status, 'missing', '没写过就是 missing')
 
-  writeConstructionProfile(store, profileOf({ packages: ['tdd', 'contract-first'], scope: ['TASK-001'], exempt: [{ task: 'TASK-001', check: 'tdd-red-green-missing', why: '纯文档卡' }] }))
+  writeConstructionProfile(store, profileOf({ packages: ['tdd', 'contract-first'], scope: ['TASK-001'], exempt: [{ task: 'TASK-001', check: 'tdd-red-green-missing', why: '纯文档卡', approvedBy: '用户', impact: '夹具' }] }))
   const read = readConstructionProfile(store)
   assert.equal(read.status, 'ok')
   assert.deepEqual(read.profile?.packages, ['tdd', 'contract-first'])
@@ -213,7 +213,7 @@ test('M33-03 office 决定：非法输入整次拒绝（不写盘）；成功写
     scope: 'all',
     derivedFrom: ['reqKind=functional(REQ-001)'],
     reason: '',
-    exempt: [{ task: 'TASK-001', check: 'nope-check', why: 'x' }],
+    exempt: [{ task: 'TASK-001', check: 'nope-check', why: 'x', approvedBy: '用户', impact: '夹具' }],
     by: 'office',
   })
   assert.equal(unknownExempt.ok, false, '未知检查码要拒')
@@ -274,7 +274,7 @@ test('M33-04 claim 关：契约必须先冻结（冻结序号 < 认领序号）�
   assert.equal(claimGaps(store, journal, card2, claimSeq, withPackage).length, 1, '契约在认领之后才冻结 ⇒ 拒')
 
   // ④ 豁免 ⇒ 跳过；⑤ 没选 contract-first ⇒ 不检查
-  const exempt = profileOf({ packages: ['contract-first'], exempt: [{ task: 'TASK-002', check: 'contract-not-frozen', why: '契约在别处冻结' }] })
+  const exempt = profileOf({ packages: ['contract-first'], exempt: [{ task: 'TASK-002', check: 'contract-not-frozen', why: '契约在别处冻结', approvedBy: '用户', impact: '夹具' }] })
   assert.deepEqual(claimGaps(store, journal, card2, claimSeq, exempt), [])
   assert.deepEqual(claimGaps(store, journal, card2, claimSeq, profileOf({ packages: ['tdd'] })), [], '没选这个包就不检查')
   assert.deepEqual(claimGaps(store, journal, card2, claimSeq, undefined), [])
@@ -339,7 +339,7 @@ test('M33-06 done 关：critical 要变异自证、contract-first 要契约测�
 
   // 豁免 ⇒ 跳过
   const other = writeCard('TASK-002', [])
-  const exempt = profileOf({ packages: ['tdd'], exempt: [{ task: 'TASK-002', check: 'tdd-mutation-missing', why: '纯文档卡' }] })
+  const exempt = profileOf({ packages: ['tdd'], exempt: [{ task: 'TASK-002', check: 'tdd-mutation-missing', why: '纯文档卡', approvedBy: '用户', impact: '夹具' }] })
   assert.deepEqual(doneGaps(store, journal, other, exempt, { scale: 'critical' }), [], '豁免按卡+检查码生效')
   const third = writeCard('TASK-003', [])
   assert.equal(doneGaps(store, journal, third, exempt, { scale: 'critical' }).length, 1, '豁免只对写明的卡生效（TASK-003 没有豁免、也没有变异记录）')

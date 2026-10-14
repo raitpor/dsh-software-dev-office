@@ -240,6 +240,19 @@ export interface RecordContractInput {
   producer: string
   consumer: string
   schema: string
+  /**
+   * **本契约挂在哪条需求上**（DEF-056 / §3E 族 4「写侧三道全缺」）。
+   *
+   * 为什么必须有这条写侧通路：`contractsOfCard()` 判"这张卡有没有契约对象"时**只认 `requires` 与
+   * 卡上 `requirements` 的交集**（`construction.ts` 的 `cardHasNoContractObject` 第二条）。而
+   * `requires` 此前**只有读侧**（读端白名单会给缺省空数组）⇒ 任何契约都**不可能**声明它 ⇒
+   * 第二条恒真 ⇒ 判据 `contract-test-missing` 的「没有对象就 N/A」成了**不可反驳的合法逃逸**：
+   * 31 份契约里 0 份非空（现盘读数）。
+   *
+   * 语言无关口径：这里只存**需求 id 列表**（`REQ-*`），与卡上 `requirements` 逐字比对；
+   * 不解析任何散文。形状（JSON 文本）与"id 存不存在"由工具面在写入前可读拒绝（零写盘）。
+   */
+  requires?: string[] | undefined
   failureSemantics?: Partial<Contract['failureSemantics']> | undefined
 }
 
@@ -264,6 +277,8 @@ export function recordContract(store: SdoStore, journal: Journal, input: RecordC
     producer: input.producer,
     consumer: input.consumer,
     schema: input.schema,
+    // **DEF-056**：写侧落地（此前 `requires` 只有读侧 ⇒ 谁都写不进来，见 `RecordContractInput.requires`）
+    requires: input.requires ?? [],
     failureSemantics: {
       timeout: input.failureSemantics?.timeout ?? '',
       retry: input.failureSemantics?.retry ?? '',

@@ -203,9 +203,11 @@ test('M96-03 产品代码卡仍按原判据判红（防“顺手全判 N/A”）
   })
   recordTestResult(store(), journal(), {
     caseId: testCase.id, status: 'fail', evidence: 'red', env: 'node=26; suite=m96', harness: 'node --test',
+    artifact: 'lib/x.js', artifactSha256: 'hRed',
   })
   recordTestResult(store(), journal(), {
     caseId: testCase.id, status: 'pass', evidence: 'green', env: 'node=26; suite=m96', harness: 'node --test',
+    artifact: 'lib/x.js', artifactSha256: 'hGreen',
   })
   assert.deepEqual(doneGaps(store(), journal(), card, profile, { scale }), [], `同一档位下补齐红绿对后判据转绿（scale=${scale}）`)
 

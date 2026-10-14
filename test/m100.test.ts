@@ -392,7 +392,7 @@ test('M100-06b 重复 id 与空白串同样**可读拒绝**（三种非法形态
 
 // ——————————— 落点三：done 回执逐条回显（域层出口，工具层拼装） ———————————
 
-test('M100-07 done 回执的逐条回显：open / fixed / wontfix 三态各给现状态（域层出口与判据同源）', async () => {
+test('M100-07 done 回执的逐条回显：open / fixed / wontfix 三态各给现状态（域层出口与判据同源）', async (t) => {
   const { report } = await import('../src/domain/collab.js')
   defect('DEF-912', 'open')
   defect('DEF-913', 'fixed')
@@ -405,9 +405,20 @@ test('M100-07 done 回执的逐条回显：open / fixed / wontfix 三态各给�
     status: 'done',
     evidence: [{ kind: 'workspace-changes', detail: 'm100', at: '2026-10-13T00:00:00.000Z' }],
   })
-  // done 可能被别的门（写范围对账 / 测试先行…）拦下 —— 那不是本用例的断言面，据实跳过而非假绿
+  // **DEF-060（§3E 族 7）**：这里的 `return` 过去是**静默跳过** —— `no-evidence` 曾在这份白名单里，
+  // 于是"夹具给足了证据、产品却报缺证据"这种**真信号**会被当成"不是本用例的断言面"整段跳过，
+  // 用例照样报绿，而下面 8 条断言**一条都没跑**（实测：同款入参去掉 `evidence` ⇒ `code='no-evidence'`）。
+  // 现在两处收口：① `no-evidence` **不再可跳过**（夹具给了证据，报它就是行为变更 ⇒ 必须红）；
+  //            ② 其余确实不属本断言面的拒绝走**显式 skip**（`t.skip`）—— 测试汇总的 `skipped` 计数里看得见，
+  //               不再有"报绿但断言空转"的形态。
   if (!result.ok) {
-    assert.ok(['tdd-result-untraceable', 'test-result-missing', 'test-case-missing', 'no-evidence', 'review-open-findings'].includes(result.code), `意外拒绝，需要看：${result.code} ${result.detail}`)
+    assert.notEqual(
+      result.code,
+      'no-evidence',
+      `夹具已给 workspace-changes 证据却被判缺证据（这是行为变更，不许静默跳过）：${result.detail}`,
+    )
+    assert.ok(['tdd-result-untraceable', 'test-result-missing', 'test-case-missing', 'review-open-findings'].includes(result.code), `意外拒绝，需要看：${result.code} ${result.detail}`)
+    t.skip(`非本用例断言面：${result.code}`)
     return
   }
   const echo = result.fixEcho ?? []

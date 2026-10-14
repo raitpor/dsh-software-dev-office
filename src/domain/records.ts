@@ -8,6 +8,7 @@
  *   · 交付清单里的每个产物都要有 **sha256**，并显式声明原型内容已排除、回滚点在哪。
  */
 import { createHash } from 'node:crypto'
+import { fmt, t } from './i18n.js'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -243,7 +244,33 @@ export function listTestResults(store: SdoStore): TestResult[] {
     .filter((item): item is TestResult => item !== undefined)
 }
 
-export function recordTestResult(store: SdoStore, journal: Journal, input: Omit<TestResult, 'id' | 'at'>): TestResult {
+/**
+ * **结果是「用例的」结果**（DEF-037）：写入前必须能对上一个**真实存在**的用例。
+ *
+ * 病根是"只核有没有、不核与对象对不对得上"：旧实现逐字段透传后直接落盘 ⇒ 台账**不可区分**
+ * "指向不存在的用例"与"指向真实用例"（`cases=0 results=1 passed=1` 就是这么来的）。
+ * 两条可读拒绝，都点名可执行修法；**不**猜、**不**自动造用例。
+ */
+export function recordTestResult(
+  store: SdoStore,
+  journal: Journal,
+  input: Omit<TestResult, 'id' | 'at'>,
+): { ok: true; result: TestResult } | { ok: false; code: 'case-id-required' | 'case-not-found'; detail: string } {
+  const caseId = textOf(input.caseId).trim()
+  if (caseId === '') {
+    return { ok: false, code: 'case-id-required', detail: fmt('uiTest.kResultCaseIdRequired') }
+  }
+  const known = listTestCases(store)
+  if (!known.some((item) => item.id === caseId)) {
+    return {
+      ok: false,
+      code: 'case-not-found',
+      detail: fmt('uiTest.kResultCaseNotFound', {
+        p1: caseId,
+        p2: known.length === 0 ? t('uiTest.kResultNoCases') : known.map((item) => item.id).join(t('uiTest.kListSep')),
+      }),
+    }
+  }
   const adoptedBy = textOf(input.adoptedBy).trim()
   const result: TestResult = {
     ...input,
@@ -271,7 +298,7 @@ export function recordTestResult(store: SdoStore, journal: Journal, input: Omit<
     ...(result.adoptedAt === undefined ? {} : { adoptedAt: result.adoptedAt }),
     ...(result.oracle === undefined ? {} : { oracleKind: textOf(result.oracle.kind) }),
   })
-  return result
+  return { ok: true, result }
 }
 
 export function listDefects(store: SdoStore): Defect[] {
@@ -736,6 +763,18 @@ export interface Review {
    * 于是 `reviewContentHash` 对它们逐字节等价于旧实现。语义见 `reviewContentHash` 的注释。
    */
   sealedFindings?: number | undefined
+  /**
+   * **这次补录的原文（来源评审）共几条**（DEF-072 / §3E 族 5「条号自洽」）。
+   *
+   * 缺陷本体：追加/补录路径**没有任何可校验的条号字段** —— `appendReviewFindings` 的 `fromIndex`
+   * 是"当前已有几条"**自算**出来的，调用方"这是在补原文第几条"的**声明**根本没地方写，
+   * 于是"标题写原第 4 条、正文写原第 2 条"这种矛盾在写盘时**没有任何东西能拦**（真机 REV-047 / REV-053
+   * 两条逐字还在）。本字段与 `sdo_review action=append` 的 `originalIndex`/`originalTotal` 一起，
+   * 让"原第 k 条 / 原共 m 条"成为**可校验的声明**：重号 / 跳号 / 超界在写入前**可读拒绝**。
+   *
+   * **存量不追溯**：旧评审没有这个键 ⇒ 读回来是 `undefined`，既有追加记录不受影响（历史不重写）。
+   */
+  originalTotal?: number | undefined
   at: string
   /**
    * **记录这条评审的会话**（2026-10-08 评审核实口径）。

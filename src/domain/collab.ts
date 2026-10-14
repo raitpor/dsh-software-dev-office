@@ -29,6 +29,7 @@ import { describeTestFirstGaps, testFirstGaps } from './testFirst.js'
 import { blockingReview, reviewAdoption, reviewAdoptionLabel, reviewsOfCard } from './reviewVerification.js'
 import { describeUndigestedChanges, undigestedChanges } from './change.js'
 import { loadProcess } from './process.js'
+import { staleEntryGateOf } from './entryGate.js'
 import { fmt, t } from './i18n.js'
 import {
   CONSTRUCTION_PHASES,
@@ -356,13 +357,26 @@ export type ClaimResult =
   | { ok: true; task: TaskCard }
   | {
       ok: false
-      code: 'not-found' | 'revision-mismatch' | 'not-claimable' | 'change-not-digested' | 'write-scope-conflict' | 'test-case-missing' | 'construction-profile-missing' | 'contract-not-frozen'
+      code:
+        | 'not-found'
+        | 'revision-mismatch'
+        | 'not-claimable'
+        | 'change-not-digested'
+        // **DEF-040**：当前阶段的**入口门禁签字失效**（`stale`）—— 与上面那条"未消化变更"
+        // 同族（都属"这条流程的入口承诺已经变了"），但判据不同源：这条读签字台账。
+        | 'gate-stale'
+        | 'write-scope-conflict'
+        | 'test-case-missing'
+        | 'construction-profile-missing'
+        | 'contract-not-frozen'
       detail: string
       current?: TaskCard | undefined
     }
 
 /** 认领一张任务卡（CAS + 写范围互斥兜底）。 */
 export function claim(store: SdoStore, journal: Journal, input: ClaimInput): ClaimResult {
+  // 让下面那行 `journal.loadProject()` 的读位置一眼可见：本函数**只读一次项目真源**，
+  // gate-stale 与 phase 两条判据共用同一份读数（避免"两次读之间真源变了"的自我打架）。
   /**
    * **统一的拒绝出口**（DEF-059）：认领被拒**本身必须留痕**，否则「这张卡被争用了多少次」在真源里数不出
    * （真机：TASK-106 的会话被 `write-scope-conflict` 拒两次，全库零痕迹）。事件带**拒绝码** ⇒ 可按种类计数；
@@ -395,7 +409,8 @@ export function claim(store: SdoStore, journal: Journal, input: ClaimInput): Cla
   // （阶段纪律只管 `write`/`edit` 打到 `src/`、`test/`）—— 真机上 `CR-001` 批准 23 秒后
   // `task/claimed` 照常发生，正是从这个口子漏过去的。
   // 消化的定义（现算，不新增真源）：批准之后**重新基线**覆盖了该需求，且此后**重过设计门**。
-  const process = loadProcess(journal.loadProject().project?.process ?? 'waterfall')
+  const project = journal.loadProject().project
+  const process = loadProcess(project?.process ?? 'waterfall')
   const pendingChanges = undigestedChanges(store, journal, process)
   // **SDO-16 / SDO-17（2026-10-05 真机，blocker）**：**解冻路径不能被自己要解的冻锁住**。
   // 消化路径是「更新需求 → 重签 G2 → 重走设计过 G3」，而这条路上的卡（需求/架构角色）本身
@@ -405,6 +420,30 @@ export function claim(store: SdoStore, journal: Journal, input: ClaimInput): Cla
   const digestingRole = task.role === 'analyst' || task.role === 'architect' || task.role === 'office'
   if (pendingChanges.length > 0 && !digestingRole) {
     return reject('change-not-digested', describeUndigestedChanges(pendingChanges, process) + '\n' + t('uiChange.notDigestedDigestPath'), task)
+  }
+  // **DEF-040 第三刀（认领面）**：当前阶段的**入口门禁签字失效**（`stale`）⇒ 拒绝认领。
+  //
+  // 为什么认领面也要拦：`claim` 是**唯一"不需要动文件就能开工"的入口**（不受阶段纪律约束，
+  // 阶段纪律只管 `write`/`edit` 打到 `src/`、`test/`）—— 派发面拦住了，这里漏一个口子等于没拦
+  // （与上面 `change-not-digested` 的成因逐字同源）。
+  //
+  // 判别位与派发面**同源**：一律走 `staleEntryGateOf`（唯一出口），只拦 `stale`，
+  // **`missing` 放行** —— 从没签过 ≠ 失效，否则所有还没走到该门禁的正常流程会停摆。
+  //
+  // **解冻路径同样不能被自己要解的冻锁住**（SDO-16 / SDO-17 的同一课，见上一条注释）：
+  // 门禁失效的补救动作是「按流程回到上游改真源 → 重签」，而那条路上的卡（analyst / architect /
+  // office）本身也要先认领 ⇒ 与 `change-not-digested` 共用同一个 `digestingRole` 豁免。
+  const staleGate = staleEntryGateOf(store, journal, project)
+  if (staleGate !== undefined && !digestingRole) {
+    return reject(
+      'gate-stale',
+      fmt('uiCollab.kGateStale', {
+        p1: String(project?.phase ?? ''),
+        p2: staleGate.gate,
+        p3: staleGate.reason,
+      }),
+      task,
+    )
   }
   // 写范围互斥的运行时兜底：同一时刻只有一张卡能写同一范围
   // **ADR-009 / DEF-057**：相交判定收敛到**唯一出口**（归一 + 目录边界前缀）。
@@ -446,7 +485,7 @@ export function claim(store: SdoStore, journal: Journal, input: ClaimInput): Cla
     return reject('test-case-missing', describeTestFirstGaps(task.id, 'claim', claimGaps), task)
   }
   // 增量 3：**实现阶段方法包**的开工关（只在构造阶段生效；没到构造/没这套机制的项目行为不变）
-  const phase = input.phase ?? journal.loadProject().project?.phase
+  const phase = input.phase ?? project?.phase
   if (phase !== undefined && CONSTRUCTION_PHASES.has(String(phase))) {
     const read = readConstructionProfile(store)
     if (read.status !== 'ok') {
@@ -762,11 +801,60 @@ export interface AppendReviewFindingsInput {
   by?: string | undefined
   /** 追加者的会话 id（与 `review/recorded` 同口径留痕：谁动过这条评审要查得到） */
   sessionId?: string | undefined
+  /**
+   * **本次补录的是原文的第几条**（DEF-072 / §3E 族 5）：1 起，指本次**第一条**发现项在原评审里的条号。
+   *
+   * 为什么必须由调用方**声明**而不是插件自算：`fromIndex = findings.length` 只是"这条记录现在有几条"，
+   * 它推不出"这是补原文第几条"——真机正是因此让"标题写原第 4 条 / 正文写原第 2 条"写进了台账
+   * （REV-047 / REV-053）。声明之后，**重号 / 跳号 / 超界**都能在写盘前被可读拒绝。
+   * 与 {@link originalTotal} **必须成对**给（只给一个 ⇒ `original-meta-incomplete`）；两个都不给 = 不声明
+   * （存量口径：旧调用方与旧记录照常工作）。
+   */
+  originalIndex?: number | undefined
+  /** **原文（来源评审）共几条**（DEF-072）：与 `originalIndex` 成对；用来判超界。 */
+  originalTotal?: number | undefined
+}
+
+/** 从 append-only 真源读回**已声明的**原条号区间（未声明的历史追加不参与，存量不追溯）。 */
+function declaredOriginalRanges(journal: Journal, reviewId: string): { from: number; to: number }[] {
+  const ranges: { from: number; to: number }[] = []
+  for (const event of journal.read().events) {
+    if (event.type !== 'review/appended' || textOf(event.data.id) !== reviewId) continue
+    const from = Number(event.data.originalIndex)
+    const count = Number(event.data.appended)
+    if (!Number.isInteger(from) || from < 1 || !Number.isInteger(count) || count < 1) continue
+    ranges.push({ from, to: from + count - 1 })
+  }
+  return ranges
 }
 
 export type AppendReviewFindingsResult =
-  | { ok: true; review: Review; appendCount: number; appended: string[]; fromIndex: number; total: number }
-  | { ok: false; code: 'no-review' | 'tampered' | 'empty-findings' | 'bad-findings'; detail: string }
+  | {
+      ok: true
+      review: Review
+      appendCount: number
+      appended: string[]
+      fromIndex: number
+      total: number
+      /** 本次声明的原条号（没声明就没有）—— 回执据此回显"补的是原文第几条" */
+      originalIndex?: number | undefined
+      originalTotal?: number | undefined
+    }
+  | {
+      ok: false
+      code:
+        | 'no-review'
+        | 'tampered'
+        | 'empty-findings'
+        | 'bad-findings'
+        // **DEF-072**：条号自洽的五条可读拒绝（写入前判，零写盘）
+        | 'original-meta-incomplete'
+        | 'original-index-invalid'
+        | 'original-overflow'
+        | 'original-overlap'
+        | 'original-gap'
+      detail: string
+    }
 
 /**
  * **向既有评审追加发现项**（`sdo_review action=append`）—— 只追加、不改写。
@@ -811,6 +899,67 @@ export function appendReviewFindings(
   if (appended.length === 0) {
     return { ok: false, code: 'empty-findings', detail: fmt('uiReview.appendEmpty', { p1: review.id }) }
   }
+  // ——— **DEF-072 / §3E 族 5**：补录的**条号自洽**（原第 k 条 / 原共 m 条）———
+  // 为什么必须在这里拒：`fromIndex = findings.length` 是"这条记录现在有几条"**自算**的，推不出
+  // "补的是原文第几条" —— 真机正是因此让「标题写原第 4 条 / 正文写原第 2 条」写进了台账
+  // （REV-047 / REV-053 两条逐字仍在）。声明之后，重号 / 跳号 / 超界都在**写盘前**被可读拒绝。
+  const { originalIndex, originalTotal } = input
+  if ((originalIndex === undefined) !== (originalTotal === undefined)) {
+    return { ok: false, code: 'original-meta-incomplete', detail: fmt('uiReview.appendOriginalPair', { p1: review.id }) }
+  }
+  const priorRanges = declaredOriginalRanges(journal, review.id)
+  // **评审自身的正文就是原文的前 N 条**（补录语义：正文 = 原第 1..N 条）⇒ 基线必须含它，
+  // 否则"从原第 3 条开始补"会被自己的正文误判成跳号（本卡第一版正是这么写错的，被 M151-01 当场逮住）。
+  const bodyEnd = (review.findings ?? []).length
+  const coverage = bodyEnd === 0 ? priorRanges : [{ from: 1, to: bodyEnd }, ...priorRanges]
+  if (originalIndex !== undefined && originalTotal !== undefined) {
+    if (!Number.isInteger(originalIndex) || originalIndex < 1 || !Number.isInteger(originalTotal) || originalTotal < 1) {
+      return {
+        ok: false,
+        code: 'original-index-invalid',
+        detail: fmt('uiReview.appendOriginalInvalid', { p1: review.id, p2: String(originalIndex), p3: String(originalTotal) }),
+      }
+    }
+    const last = originalIndex + appended.length - 1
+    if (last > originalTotal) {
+      return {
+        ok: false,
+        code: 'original-overflow',
+        detail: fmt('uiReview.appendOriginalOverflow', {
+          p1: review.id,
+          p2: String(originalIndex),
+          p3: String(appended.length),
+          p4: String(last),
+          p5: String(originalTotal),
+        }),
+      }
+    }
+    // **点名要精确**（M151-03 的教训）：与「已声明的追加区间」撞 ⇒ 点名那段区间；只与**正文**已占的
+    // 原第 1..N 条撞 ⇒ 明说"正文里已经有了"，不把两件事混成一句含糊的"重叠"。
+    const overlapAppend = priorRanges.find((range) => originalIndex <= range.to && last >= range.from)
+    if (overlapAppend !== undefined) {
+      return {
+        ok: false,
+        code: 'original-overlap',
+        detail: fmt('uiReview.appendOriginalOverlap', { p1: review.id, p2: `${overlapAppend.from}-${overlapAppend.to}` }),
+      }
+    }
+    if (bodyEnd > 0 && originalIndex <= bodyEnd) {
+      return {
+        ok: false,
+        code: 'original-overlap',
+        detail: fmt('uiReview.appendOriginalOverlapBody', { p1: review.id, p2: `1-${bodyEnd}` }),
+      }
+    }
+    const previousEnd = coverage.reduce((max, range) => Math.max(max, range.to), 0)
+    if (originalIndex > previousEnd + 1) {
+      return {
+        ok: false,
+        code: 'original-gap',
+        detail: fmt('uiReview.appendOriginalGap', { p1: review.id, p2: String(previousEnd + 1), p3: String(originalIndex) }),
+      }
+    }
+  }
 
   const findings = (review.findings ?? []).map((item) => textOf(item))
   const fromIndex = findings.length
@@ -819,6 +968,8 @@ export function appendReviewFindings(
     findings: [...findings, ...appended],
     // **封印前缀**：只记"记录当时有几条"，正文一字不改 ⇒ 内容指纹仍覆盖原正文，旧封印不因追加失效。
     sealedFindings: review.sealedFindings ?? findings.length,
+    // **DEF-072**：把"原文共几条"这个**声明**落进记录（缺省不落键，存量口径不变）
+    ...(originalTotal === undefined ? {} : { originalTotal }),
   }
   store.writeYaml(['reviews', `${review.id}.yml`], { review: next })
   const appendCount = reviewAppendCount(journal, review.id) + 1
@@ -831,6 +982,8 @@ export function appendReviewFindings(
     fromIndex,
     appended: appended.length,
     appendedFindings: appended,
+    // **DEF-072**：本次声明的原条号（没声明就没有）—— 条号自洽的判定与事后复核都读这几个字段
+    ...(originalIndex === undefined ? {} : { originalIndex, originalTotal }),
     // 逐条指纹：追加的正文被换掉时，离线也能查出换的是哪一条（核实记录绑的是同一套指纹）
     appendHashes: appended.map((item) => findingHashOf(item)),
     total: next.findings.length,
@@ -839,7 +992,15 @@ export function appendReviewFindings(
     by: textOf(input.by).trim() === '' ? 'human' : textOf(input.by).trim(),
     ...(input.sessionId === undefined ? {} : { sessionId: input.sessionId }),
   })
-  return { ok: true, review: next, appendCount, appended, fromIndex, total: next.findings.length }
+  return {
+    ok: true,
+    review: next,
+    appendCount,
+    appended,
+    fromIndex,
+    total: next.findings.length,
+    ...(originalIndex === undefined ? {} : { originalIndex, originalTotal: originalTotal as number }),
+  }
 }
 
 /**
@@ -933,6 +1094,30 @@ export function updateTask(
     /** 仍要开着的风险及其署名理由（整份替换；键名逐字复用豁免两字段）。 */
     mitigatesWaiver?: MitigatesWaiver[] | undefined
     /**
+     * **本卡点名的影响面**（DEF-036）：列出本卡的改动会影响到哪些文件/用例。整份替换
+     * （与 `fixes` / `mitigates` 同款：这是**声明**，不是补丁），空数组表示撤回声明。
+     *
+     * 为什么要在**改卡**面也接收它：拆卡期判据 `impact-undeclared` 判红后，出路必须是**当场可执行**的
+     * —— 如果声明只能建卡时给（而卡已经建好），那"判红"就成了一条没有出口的判词。三条可读拒绝
+     * （空白串 / 重复 / 形状）都当场点名，**不静默丢弃**（对照知识库 `tq_ff348198` 的教训）。
+     */
+    impact?: string[] | undefined
+    /**
+     * **影响面推不出来的显式声明**（DEF-036）：与 `impact` 二者有其一即视为已声明。
+     * 传空串 = **撤回**这条声明（键随之从卡面消失，不留空值）；其它值按 `textOf` 去空白后落盘。
+     */
+    undecidable?: string | undefined
+    /**
+     * **本卡声明的变异自证条数**（DEF-027 的补口）。
+     *
+     * 为什么在这里出现：`sdo_task action=update` 的 schema 与 `execute` 映射**早就**收这个参数
+     * （`tools.ts`），但这张入参面（`updateTask`）没有 `mutationExpected` ⇒ index 层传进来的值
+     * 被**静默丢弃**，真机上"卡建好后补声明条数"这条路其实走不通（工具面说收、域层不认）。
+     * 这正是本批 `tq_ff348198`「多处同改，缺一处就静默丢弃」的形态，随本卡一并接通。
+     * 拒绝口径：非整数或负数 ⇒ 可读拒绝（`mutation-expected-invalid`），不静默丢弃。
+     */
+    mutationExpected?: number | undefined
+    /**
      * **追加**写范围（DEF-012 / 2026-10-14 机制缺陷批）。与 `writeScopes`（整份替换）**互斥**。
      *
      * 为什么必须有它：卡在飞（`owner` 非空）时整份替换会被 `scope-locked` 挡住，而流程官改范围
@@ -948,6 +1133,22 @@ export function updateTask(
     addWriteScopes?: string[] | undefined
     /** 计划变更的理由（`addWriteScopes` 必填；进 `task/updated` 事件，事后可复核） */
     reason?: string | undefined
+    /**
+     * **本卡是否产出用户可见文案**（DEF-055）：`true` ⇒ 判据 `ui-text-scope` 要求写范围含
+     * **项目声明的文案面**（`.sdo/config.yml` 的 `plan.textPaths`）；`false` = **撤回**声明
+     * （键随之从卡面消失，不留 `false` 这种"写着但没声明"的形态）。
+     */
+    uiText?: boolean | undefined
+    /**
+     * **本卡声称要落地的路径**（DEF-018）：`validatePlan` 的 `landing-outside-scope` 逐条核对它是否
+     * 落在本卡写范围内。整份替换（与 `writeScopes` 同款：这是**声明**，不是补丁）。
+     */
+    landing?: string[] | undefined
+    /**
+     * **本卡要独占的窗口组名**（DEF-007）：同组同时只能有一张卡在跑。
+     * 空串 = **撤回声明**（删键，口径同 `undecidable` / `uiText`）。自由文本，插件不校验、不内置组名。
+     */
+    exclusive?: string | undefined
     size?: string | undefined
   },
 ):
@@ -961,6 +1162,9 @@ export function updateTask(
         | 'scope-locked'
         | 'fixes-invalid'
         | 'mitigates-invalid'
+        // **DEF-036**：影响面声明与（补口的）变异条数声明的可读拒绝
+        | 'impact-invalid'
+        | 'mutation-expected-invalid'
         // **DEF-012**：追加写范围这条通道的四条可读拒绝
         | 'add-scope-ambiguous'
         | 'add-scope-empty'
@@ -1090,6 +1294,29 @@ export function updateTask(
       }
     }
   }
+  // **DEF-036**：影响面声明的形状校验（空白串 / 重复 ⇒ 可读拒绝，不静默丢弃；口径与 `mitigates` 同款）
+  if (input.impact !== undefined) {
+    const trimmed = input.impact.map((item) => textOf(item).trim())
+    if (trimmed.some((item) => item === '')) {
+      return { ok: false, code: 'impact-invalid', detail: fmt('uiGates.kImpactBlank', { p1: task.id }) }
+    }
+    const seen = new Set<string>()
+    const duplicates: string[] = []
+    for (const item of trimmed) {
+      if (seen.has(item)) duplicates.push(item)
+      seen.add(item)
+    }
+    if (duplicates.length > 0) {
+      return { ok: false, code: 'impact-invalid', detail: fmt('uiGates.kImpactDuplicate', { p1: task.id, p2: duplicates.join('、') }) }
+    }
+  }
+  if (input.mutationExpected !== undefined && (!Number.isInteger(input.mutationExpected) || input.mutationExpected < 0)) {
+    return {
+      ok: false,
+      code: 'mutation-expected-invalid',
+      detail: fmt('uiGates.kMutationExpectedInvalid', { p1: task.id, p2: String(input.mutationExpected) }),
+    }
+  }
   const changed: string[] = []
   const next: TaskCard = { ...task, revision: task.revision + 1, updatedAt: now() }
   const record = next as unknown as Record<string, unknown>
@@ -1107,6 +1334,31 @@ export function updateTask(
   apply('fixes', input.fixes)
   apply('mitigates', input.mitigates)
   apply('mitigatesWaiver', input.mitigatesWaiver)
+  apply('impact', input.impact === undefined ? undefined : input.impact.map((item) => textOf(item).trim()))
+  // **DEF-036**：`undecidable` 传空串 = **撤回**这条声明（键从卡面消失，不留空值 —— 否则读端
+  // 的"空白视为未声明"与卡面的"写着但空"会并存成两种形态）
+  if (input.undecidable !== undefined) {
+    const declared = textOf(input.undecidable).trim()
+    changed.push('undecidable')
+    if (declared === '') delete record.undecidable
+    else record.undecidable = declared
+  }
+  apply('landing', input.landing === undefined ? undefined : input.landing.map((item) => textOf(item).trim()))
+  // **DEF-007**：`exclusive` 传空串 = **撤回**独占声明（键从卡面消失，不留空值 —— 口径同上）
+  if (input.exclusive !== undefined) {
+    const declared = textOf(input.exclusive).trim()
+    changed.push('exclusive')
+    if (declared === '') delete record.exclusive
+    else record.exclusive = declared
+  }
+  apply('mutationExpected', input.mutationExpected)
+  // **DEF-055**：`uiText=false` 是**撤回**声明（键从卡面消失，不留 `false`）—— 与 `undecidable` 空串同款口径：
+  // "写着但为假"和"没声明"必须是同一种形态，否则读端与判据要各学一套。
+  if (input.uiText !== undefined) {
+    changed.push('uiText')
+    if (input.uiText) record.uiText = true
+    else delete record.uiText
+  }
   apply('size', input.size)
   if (changed.length === 0) return { ok: false, code: 'not-updatable', detail: '没有给出要改的字段' }
   const saved = save(store, next)

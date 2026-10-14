@@ -10,7 +10,7 @@
  *   ⑤ 可能并行的卡之间写范围互斥 ⑥ 每卡至少一项证据要求
  */
 import { nextId } from '../infra/ids.js'
-import { pushShapeNote, recordListOf, textListOf, textOf } from '../infra/scalar.js'
+import { countOf, pushShapeNote, recordListOf, textListOf, textOf } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
 import { fmt, t } from './i18n.js'
 import type { Journal } from '../infra/journal.js'
@@ -138,11 +138,35 @@ export function readTaskChecked(
     // **DEF-050 / TASK-072**：`fixes` 必须进这份**显式白名单重建**——这份重建就是"读端真源形状"，
     // 名单里没有的字段在 `list()` 归一化 / 形状提示里被绕过（YAML 里写了也读不回来 = 静默丢弃）。
     fixes: list('fixes'),
+    // **DEF-027**：`mutationExpected` 同理必须进这份读端白名单 —— 名单里没有的字段在 YAML 里写了
+    // 也读不回来（静默丢弃），"声明了 N 条"就会被判据看不见（本缺陷要消灭的正是这个形态）。
+    // **缺省即不出现**：读端白名单重建出来的对象会被**回写**（`writeTask` → `stringifyYaml`），
+    // 而 YAML 子集拒收 `undefined` ⇒ 显式 `mutationExpected: undefined` 会让**任何**卡的回写炸掉
+    // （本批实测：92 条用例因此转红）。这与 `fixes: list(...)` 返回 `[]` 的形状不同，必须用展开省略。
+    ...(countOf(record.mutationExpected) === undefined ? {} : { mutationExpected: countOf(record.mutationExpected) }),
     // **DEF-051 / TASK-080**：`mitigates` / `mitigatesWaiver` 同理必须进这份读端白名单 ——
     // 名单里没有的字段在 YAML 里写了也读不回来（静默丢弃），判据 `C-64` 就永远只看到空集，
     // 于是"卡做完了、风险还开着"这件事继续没有人说话（本缺陷要消灭的正是这个形态）。
     mitigates: list('mitigates'),
     mitigatesWaiver: mitigatesWaiverOf(record.mitigatesWaiver),
+    // **DEF-036**：影响面同理进这份读端白名单 —— 但**变异自证（MUT-04）纠正了这条注释的旧说法**：
+    // 把这一行删掉，`impact` 照样读得回来（上面第 125 行的 `...record` 原始展开已经带着它）⇒
+    // 白名单对**本字段**的真实职责是**归一化与形状提示**，不是可见性：
+    //   · `impact` 走 `list()` ⇒ YAML 里写成标量（`impact: 无影响`）会被归一成单元素并给形状提示
+    //     （口径与 `changes` 真源的 `impact` 一致：标量→单元素 + 提示，绝不静默丢弃语义）；
+    //   · `undecidable` 是**可缺省标量**，必须用展开省略（回写 `undefined` 会让任何卡的回写炸掉，
+    //     见上面 `mutationExpected` 的注释与 DEF-027 实测的 92 条假红）。
+    impact: list('impact'),
+    ...(textOf(record.undecidable).trim() === '' ? {} : { undecidable: textOf(record.undecidable) }),
+    // **DEF-055**：`uiText` 是**可缺省布尔** —— 只在**真为 `true`** 时落键（口径同 `.sdo/contracts` 的
+    // `dropped`：非布尔值按"未声明"处理，绝不把字符串原样留在对象里当真的用）。回写 `undefined` 会炸，
+    // 所以仍然用展开省略（见上面 `mutationExpected` 的注释与 DEF-027 实测的 92 条假红）。
+    ...(record.uiText === true ? { uiText: true } : {}),
+    // **DEF-018**：落点声明进读端白名单（`list()` 同 `writeScopes`：缺省 = 空数组，标量会被归一 + 给形状提示）
+    landing: list('landing'),
+    // **DEF-007**：独占组名是**可缺省标量** ⇒ 只在非空时落键（口径同 `undecidable`：回写 `undefined` 会炸，
+    // 见 DEF-027 实测的 92 条假红）
+    ...(textOf(record.exclusive).trim() === '' ? {} : { exclusive: textOf(record.exclusive).trim() }),
     evidence: evidence.value.map((item) => ({
       kind: textOf(item.kind) as EvidenceItem['kind'],
       detail: textOf(item.detail),
@@ -193,10 +217,25 @@ export interface TaskDraft {
   requirements?: string[] | undefined
   /** 本卡声称修好的缺陷 id（`DEF-*`；DEF-050 / TASK-072） */
   fixes?: string[] | undefined
+  /** **本卡声明的变异自证条数**（DEF-027）：缺省 = 不声明（判据按旧口径只要求 `killed ≥ 1`）。 */
+  mutationExpected?: number | undefined
   /** 本卡声称消除的风险 id（`RISK-*`；DEF-051 / TASK-080） */
   mitigates?: string[] | undefined
   /** 仍要开着的风险及其署名理由（DEF-051 / TASK-080） */
   mitigatesWaiver?: MitigatesWaiver[] | undefined
+  /** **本卡点名的影响面**（DEF-036）：列出将被本卡改动影响的文件/用例。 */
+  impact?: string[] | undefined
+  /** **影响面推不出来的显式声明**（DEF-036）：与 `impact` 二者有其一即视为已声明。 */
+  undecidable?: string | undefined
+  /** **本卡产出/改动用户可见文案**（DEF-055）：声明后由 `ui-text-scope` 核对写范围含项目声明的文案面。 */
+  uiText?: boolean | undefined
+  /** **本卡声称要落地的路径**（DEF-018）：声明后由 `landing-outside-scope` 逐条核对它是否在写范围内。 */
+  landing?: string[] | undefined
+  /**
+   * **本卡要独占的窗口组名**（DEF-007 / §3E 族 2）：自由文本，**插件不内置任何组名**（红线 4）。
+   * 同组**同时只能有一张卡在跑**；空/缺省 = 不声明（行为与加它之前逐字节相同）。
+   */
+  exclusive?: string | undefined
   iteration?: number | undefined
 }
 
@@ -218,8 +257,15 @@ export function createTask(store: SdoStore, journal: Journal, draft: TaskDraft):
     status: 'planned',
     requirements: draft.requirements ?? [],
     fixes: draft.fixes ?? [],
+    ...(draft.mutationExpected === undefined ? {} : { mutationExpected: draft.mutationExpected }),
     mitigates: draft.mitigates ?? [],
     mitigatesWaiver: draft.mitigatesWaiver ?? [],
+    impact: draft.impact ?? [],
+    ...(draft.undecidable === undefined || draft.undecidable.trim() === '' ? {} : { undecidable: draft.undecidable }),
+    ...(draft.uiText === true ? { uiText: true } : {}),
+    landing: draft.landing ?? [],
+    // **DEF-007**：独占组名（可缺省标量 ⇒ 条件展开，别回写 `undefined`）
+    ...(draft.exclusive === undefined || draft.exclusive.trim() === '' ? {} : { exclusive: draft.exclusive.trim() }),
     evidence: [],
     createdAt: now,
     updatedAt: now,
@@ -240,7 +286,20 @@ export interface DecomposeInput {
 }
 
 export interface PlanIssue {
-  code: 'single-role' | 'dod-nonempty' | 'acyclic' | 'size-cap' | 'write-scope-disjoint' | 'write-scope-empty' | 'evidence-required'
+  code:
+    | 'single-role'
+    | 'dod-nonempty'
+    | 'acyclic'
+    | 'size-cap'
+    | 'write-scope-disjoint'
+    | 'write-scope-empty'
+    | 'evidence-required'
+    // **DEF-036 / §3E 族 1（纪律原文 B-25）**：改既有行为的卡既不点名影响面、也不声明推不出来
+    | 'impact-undeclared'
+    // **DEF-055 / §3E 族 4**：声明产出用户可见文案的卡，写范围里没有项目声明的文案面
+    | 'ui-text-scope'
+    // **DEF-018 / §3E 族 9**：卡自己声明的落点落在自己的写范围之外
+    | 'landing-outside-scope'
   taskId: string
   detail: string
   remedy: string
@@ -283,9 +342,28 @@ export function parseWriteScopes(responsibility: string): string[] {
  */
 export const SCOPE_MODULE_LIMIT = 3
 
-/** `.sdo/config.yml` 的 `plan` 段（结构通道读的三项：写范围模板 + 显式「无需卡」元素 + 依据口径）。 */
+/** `.sdo/config.yml` 的 `plan` 段（结构通道读的四项：写范围模板 + 显式「无需卡」元素 + 依据口径 + 项目声明的文案面）。 */
 interface PlanConfig {
-  plan?: { scopeTemplate?: unknown; noCardElements?: unknown; requireCoverageBasis?: unknown } | undefined
+  plan?:
+    | { scopeTemplate?: unknown; noCardElements?: unknown; requireCoverageBasis?: unknown; textPaths?: unknown }
+    | undefined
+}
+
+/**
+ * **项目声明的「用户可见文案面」**（DEF-055 / §3E 族 4）：`.sdo/config.yml` 的 `plan.textPaths`。
+ *
+ * 为什么是**项目声明**而不是插件内置：真机缺陷是"默认写范围模板不含语言包 ⇒ 卡被诱向硬编码"
+ * （物证：`testingStore.ts` 的两张内联双语表 + 三处「本卡写范围不含 `src/data/lang/`」的注释）。
+ * 最省事的"修法"是把 `src/data/lang/` 写进插件默认值 —— 但那是把**某个项目**的目录结构写进
+ * **通用判据**（§4 红线 4：插件功能必须语言无关、不针对具体项目做特殊方案）。所以：
+ *   · 插件只认"项目声明了哪些路径是文案面"这件事本身；
+ *   · 声明为空 ⇒ 判据**不猜**，直接点名"还没有声明文案面"并把该写哪一条配置告诉人（见 lang `uiPlan.kUiTextScopeNoPaths`）。
+ * 形状不合法（写成标量/映射）时按空处理，并由既有的字段形状提示通道如实报出（不静默）。
+ */
+export function textPathsOf(store: SdoStore): string[] {
+  const config = store.readYaml<PlanConfig>('config.yml')
+  const read = textListOf(config?.plan?.textPaths)
+  return read.value.map((item) => item.trim()).filter((item) => item !== '')
 }
 
 /**
@@ -625,10 +703,13 @@ export function structuralPlanOf(store: SdoStore, requirements: Requirement[]): 
   return { created, skipped, basisPolicy: requireBasis ? 'required' : 'advisory', ...(gaps.length === 0 ? {} : { needsDisposition: gaps }) }
 }
 
-/** 六条机械校验。 */
-export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
+/** 八条机械校验。 */
+export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly string[] } = {}): PlanIssue[] {
   const issues: PlanIssue[] = []
   const byId = new Map(tasks.map((task) => [task.id, task]))
+  // **DEF-036 / §3E 族 1（纪律原文 B-25）**：已落地的卡 —— 它们的写范围在派发面上**已经释放**，
+  // 但"那块地"上已经有落地物（既有夹具/守卫就是它们的输入）。下面用它判"改既有行为"。
+  const landed = tasks.filter((task) => task.status === 'done' || task.status === 'verified')
 
   for (const task of tasks) {
     // **D3-3**：已 drop 的卡不参与校验（它们只是留痕，不是待办）
@@ -675,6 +756,96 @@ export function validatePlan(tasks: TaskCard[]): PlanIssue[] {
         detail: t('uiPlan.k9'),
         remedy: t('uiPlan.k10'),
       })
+    }
+    // **DEF-036 / §3E 族 1「对账判据」（纪律原文 B-25，2026-10-13 TASK-054 真机）**：
+    // 「引入新语义的卡，拆卡时没有要求先扫既有夹具/守卫会不会被它撞红」。旧实现的三处承载
+    // （卡模板 / 校验集 / 角色卡）**一处都没接上** ⇒ 这条纪律只活在人的记忆里。
+    //
+    // 判据形状 = **对账**（不是"有没有"）：卡**声明了在改既有行为**时，必须在卡面**点名影响面**
+    // （`impact`）或**声明推不出来**（`undecidable`）—— 二者皆空即判红并说明是哪种情形。
+    //
+    // 「声明了在改既有行为」只认**结构信号**，不读散文（判据必须语言无关、格式无关 — 长期约束）：
+    //   · 分支 A：`fixes` 非空 —— 卡自己声明要修既有缺陷，那就是在动既有行为；
+    //   · 分支 B：写范围与**已落地**（done/verified）卡的写范围相交 —— 正在改一块已有落地物的地。
+    // 为什么**不**从路径推断语义（写进判据 desc，DoD ④ 允许的论证）：并行卡的写范围互斥已由
+    // `write-scope-disjoint`（DEF-067）承担，那是**并行**这一轴；而 B-25 真机撞的是**调用点**——
+    // TASK-054 写 `src/domain/records.ts`、撞红的是 `test/m94.test.ts`，两张卡的写范围**根本不相交**。
+    // 语义级影响在语言无关口径下**没有可靠的推断信号**，所以它只能由项目自己声明（分支 A/B 只负责
+    // 认出"该声明"的时刻，不假装能算出语义影响本身）。
+    // 时机：只在**还没落地**的卡上判 —— 拆卡期判红才有意义（落地后是历史，不重写历史）；
+    // 存量卡（本字段生效前建的）因此**不追溯**，与 `fixes` / `mitigates` 的存量口径一致。
+    if (task.status !== 'done' && task.status !== 'verified') {
+      const declaredImpact = (task.impact ?? []).length > 0 || textOf(task.undecidable).trim() !== ''
+      if (!declaredImpact) {
+        const fixes = task.fixes ?? []
+        const clash = landed.filter((other) => other.id !== task.id && scopeOverlaps(task.writeScopes, other.writeScopes).length > 0)
+        if (fixes.length > 0) {
+          issues.push({
+            code: 'impact-undeclared',
+            taskId: task.id,
+            detail: fmt('uiPlan.kImpactUndeclared', { p1: fixes.join('、') }),
+            remedy: t('uiPlan.kImpactUndeclaredRemedy'),
+          })
+        } else if (clash.length > 0) {
+          const paths = new Set<string>()
+          for (const other of clash) for (const path of scopeOverlaps(task.writeScopes, other.writeScopes)) paths.add(path)
+          issues.push({
+            code: 'impact-undeclared',
+            taskId: task.id,
+            detail: fmt('uiPlan.kImpactUndeclaredOverlap', {
+              p1: clash.map((other) => other.id).join('、'),
+              p2: [...paths].join('、'),
+            }),
+            remedy: t('uiPlan.kImpactUndeclaredRemedy'),
+          })
+        }
+      }
+    }
+    // **DEF-055 / §3E 族 4「默认写范围模板不含语言包 ⇒ 卡被诱向硬编码」**：
+    // 真机物证 —— 默认模板 `[src/<slug>/, test/<slug>/]` 不含文案面，于是 `testingStore.ts` 把双语标签
+    // **内联成两张表**（`TESTING_ZH`/`TESTING_EN`），`gates.ts` 与 `index.ts` 里各自逐字写着
+    // 「本卡写范围不含 `src/data/lang/`」；127 卡里有写范围的 119 张，**只有 29 张**含 `data/lang`。
+    //
+    // 判据 = **对账**（不是"有没有"）：卡**声明**了产出用户可见文案（结构化布尔 `uiText`，语言无关）
+    // ⇒ 它的写范围必须含**项目声明的文案面**（`.sdo/config.yml` 的 `plan.textPaths`）。
+    //   · 项目**没声明**文案面 ⇒ 判红并点名"还没有声明"，remedy 直接给出那行配置 —— **不猜**路径；
+    //   · 声明了但本卡写范围不含 ⇒ 判红并逐条点名项目声明的那些路径。
+    // 为什么插件**不内置** `src/data/lang/`：那等于把某个项目的目录结构写进通用判据（§4 红线 4）；
+    // "文案面在哪"是**项目事实**，只能由项目声明。时机同 DEF-036：只在**未落地**的卡上判（存量不追溯）。
+    if (task.status !== 'done' && task.status !== 'verified' && task.uiText === true) {
+      const declaredText = (options.textPaths ?? []).map((path) => textOf(path).trim()).filter((path) => path !== '')
+      if (declaredText.length === 0) {
+        issues.push({
+          code: 'ui-text-scope',
+          taskId: task.id,
+          detail: t('uiPlan.kUiTextScopeNoPaths'),
+          remedy: t('uiPlan.kUiTextScopeRemedy'),
+        })
+      } else if (scopeOverlaps(task.writeScopes, declaredText).length === 0) {
+        issues.push({
+          code: 'ui-text-scope',
+          taskId: task.id,
+          detail: fmt('uiPlan.kUiTextScope', { p1: declaredText.join('、') }),
+          remedy: t('uiPlan.kUiTextScopeRemedy'),
+        })
+      }
+    }
+    // **DEF-018 / §3E 族 9「落点与写范围对不上」**：卡自己声明的**落点**必须落在自己的**写范围**内。
+    // 为什么只认"卡自己声明的"两样东西：判据要语言无关、格式无关（长期约束）—— 去 DoD 散文里认路径
+    // 换一种写法（反引号/括号/顿号/「落点：」）就失效，那是给具体项目写特例。所以落点也必须**声明**。
+    // 路径代数走 `scopeOverlaps` **唯一出口**（ADR-009：归一 + 目录边界前缀），与既有各条同一把尺子。
+    // 时机同 DEF-036 / DEF-055：只在**未落地**卡上判；**缺省不声明 ⇒ 不判**（存量 127 卡零噪声）。
+    if (task.status !== 'done' && task.status !== 'verified') {
+      const landings = (task.landing ?? []).map((path) => textOf(path).trim()).filter((path) => path !== '')
+      const outside = landings.filter((path) => scopeOverlaps(task.writeScopes, [path]).length === 0)
+      if (outside.length > 0) {
+        issues.push({
+          code: 'landing-outside-scope',
+          taskId: task.id,
+          detail: fmt('uiPlan.kLandingOutsideScope', { p1: outside.join('、'), p2: task.writeScopes.join('、') }),
+          remedy: t('uiPlan.kLandingOutsideScopeRemedy'),
+        })
+      }
     }
     for (const dependency of task.blockedBy) {
       // **SDO-30b（2026-10-05 真机）**：`'*'` 是**通配依赖**（"排在所有其它卡之后"），不是"不存在的卡"。
@@ -821,7 +992,7 @@ export function decompose(
   }
   return {
     tasks,
-    issues: validatePlan(tasks),
+    issues: validatePlan(tasks, { textPaths: textPathsOf(store) }),
     notes: derived,
     structuralCount,
     structural: structuralResult,
@@ -894,8 +1065,47 @@ const SIZE_RANK: Record<string, number> = { trivial: 0, small: 1, medium: 2, lar
  */
 const UNKNOWN_SIZE_RANK = 4
 
+/**
+ * 排序键：**规模秩（显式）→ 未知档排最后**。
+ *
+ * 提到模块级的原因（DEF-007）：`readyTasks`（谁**真被派出**）与 `classifyNonDispatchable`
+ *（回执说**谁挡着谁**）必须用**同一口径**排序 —— 两处各排一次，回执就会点名一张"并不是它挡的"卡。
+ */
+function sizeRankOf(task: TaskCard): number {
+  return SIZE_RANK[task.size] ?? UNKNOWN_SIZE_RANK
+}
+
 /** 依赖已满足、可以派发的卡（按规模小→大 = `trivial` < `small` < `medium` < `large`；同档按 id 升序；未知档排最后）。 */
-export function readyTasks(tasks: TaskCard[], limit = 4): TaskCard[] {
+/**
+ * **当前阶段入口门禁已失效**（DEF-040 / §3E 族 6）。
+ *
+ * 真机剧本（`docs/plan/2026-10-13-流程缺陷候选.md` B-28）：G3 签字 03:41 生效 → 之后出现失效事件 →
+ * **06:40–07:04 驾驶舱仍连派 4 张卡并在失效窗口内完成** ✗。根因是 `signatureState` 的消费点只在
+ * `gates.ts`（判据自身）/ `office.ts`（显示）/ `index.ts`（展示与预检）—— **派发与认领没读**。
+ *
+ * ⚠️ **只在 `signatureState(...).status === 'stale'` 时传入，绝不要在 `missing` 时传**：
+ *   · `stale` = 签过字但签字按口径**失效**了（真源变更）—— 这才是要拦的；
+ *   · `missing` = 从来没签过 —— 把它也当"不许派"会让**所有还没走到该门禁签字的正常流程**一律停摆。
+ *
+ * `gate` 取自**流程数据** `src/data/processes/*.yml` 的 `phases[].entry`（**不硬编码 `G3`**）；
+ * 各流程各阶段的入口本就不同：`waterfall` 的 `design-plan` 是 `G3`、`construction` 是 `G4`，
+ * `prototype` 的 `requirements` 是 `GP`（`G3` 在那里根本不是入口）。
+ * `reason` 直接透传 `SignatureState.reason`（已可人读，不重算）。
+ *
+ * ⚠️ **本类型是纯函数的入参形状**：装配它的唯一出口是 `domain/entryGate.ts` 的
+ * `staleEntryGateOf`（派发面 `office.ts` 与认领面 `collab.ts` 共用）—— 别在别处再判一次。
+ * 不传时行为与以前**逐字节相同**（`gateStale` 键不出现），这是给既有调用点留的兼容面。
+ */
+export interface StaleGate {
+  /** 门禁 id（如 `G3`；由调用方从流程数据取） */
+  gate: string
+  /** 人读原因（`SignatureState.reason`） */
+  reason: string
+}
+
+export function readyTasks(tasks: TaskCard[], limit = 4, staleGate?: StaleGate | undefined): TaskCard[] {
+  // **DEF-040**：当前阶段入口门禁的签字已失效 ⇒ **一张都不派**（点名与补救交给调用方的回执）。
+  if (staleGate !== undefined) return []
   const done = new Set(tasks.filter((task) => task.status === 'done' || task.status === 'verified').map((task) => task.id))
   // **SDO-30b（2026-10-05 真机）**：`blockedBy: ['*']` = **排在所有其它卡之后**（"我需要独占写窗口"的
   // 表达方式）。真机场景：最终全量构建卡（TASK-132）与写卡同时就绪时被并发派出，跑出的 jar 必然过期
@@ -906,11 +1116,31 @@ export function readyTasks(tasks: TaskCard[], limit = 4): TaskCard[] {
     return pending.every((other) => other.id === task.id || done.has(other.id))
   }
   // 排序键：**规模秩（显式）→ id 升序**。规模秩的取值与兜底理由见上方 `SIZE_RANK` / `UNKNOWN_SIZE_RANK`。
-  const rank = (task: TaskCard): number => SIZE_RANK[task.size] ?? UNKNOWN_SIZE_RANK
-  return tasks
+  //
+  // **DEF-007（§3E 族 2）：独占窗口串行化**。声明了**同一组名**的卡同时只能有一张在跑 ——
+  // 真机剧本：两张都要跑**全量构建**的卡，写范围**不相交**（`scopeHeldTasks` 说没事）、依赖也满足，
+  // 于是被并发派出，两份构建各自读到对方写了一半的源（`blockedBy: ['*']` 只能靠人工逐卡声明，
+  // 且它表达的是"等所有卡"而不是"独占这个窗口"）。这里把它变成**一等声明**：卡声明组名，派发面按组串行。
+  const takenGroups = new Set<string>(
+    tasks
+      .filter((task) => task.status === 'in-progress')
+      .map((task) => (task.exclusive ?? '').trim())
+      .filter((group) => group !== ''),
+  )
+  const picked: TaskCard[] = []
+  for (const task of tasks
     .filter((task) => (task.status === 'planned' || task.status === 'ready') && task.blockedBy.every((id) => satisfied(task, id)))
-    .sort((a, b) => rank(a) - rank(b) || a.id.localeCompare(b.id))
-    .slice(0, limit)
+    .sort((a, b) => sizeRankOf(a) - sizeRankOf(b) || a.id.localeCompare(b.id))) {
+    const group = (task.exclusive ?? '').trim()
+    if (group !== '') {
+      // 同组已有一张在飞（或本轮已先选中一张）⇒ 这一张**这一轮不派**（先到先得，按同一排序）
+      if (takenGroups.has(group)) continue
+      takenGroups.add(group)
+    }
+    picked.push(task)
+    if (picked.length >= limit) break
+  }
+  return picked
 }
 
 /** 依赖未满足的卡（给人看"为什么还不能派"）。 */
@@ -983,6 +1213,23 @@ export function scopeHeldTasks(tasks: readonly TaskCard[]): ScopeHold[] {
 }
 
 export interface NonDispatchablePlan {
+  /**
+   * **当前阶段入口门禁失效**因此不派的卡（DEF-040）：与 `blocked` / `scope` / `dependencies` **并列**的第四类。
+   *
+   * **可选**：调用方没传失效门禁时这个键**根本不出现**（返回对象形状与以前逐字节相同）。
+   *
+   * 为什么把 `gate` / `reason` 一起带出来、而不是只给卡：回执要说清"**为什么**一张都不派"。
+   * 只给卡的话，渲染侧回落成"本轮没有可派发的任务卡" —— 与"活干完了"长得**一模一样**，
+   * 而这正是这条缺陷的成因（把"拦住了"伪装成"没活干"）。
+   */
+  gateStale?: { gate: string; reason: string; tasks: TaskCard[] } | undefined
+  /**
+   * **同一独占窗口组的卡被挡下**（DEF-007）：与其余各类**并列**（`other` = 挡路的那张卡 —— 在飞的或本轮先选中的）。
+   *
+   * **只在真有挡路时出现这个键**：一张卡都没声明 `exclusive` 时键根本不出现
+   * ⇒ 既有调用点返回对象的形状与以前**逐字节相同**（与 `gateStale` 同一套零破坏口径）。
+   */
+  exclusive?: { task: TaskCard; other: string }[] | undefined
   /** ① 需要 unblock / drop 的 blocked 卡 */
   blocked: TaskCard[]
   /** ② 写范围与别的未结束卡重叠（1:1 独占的卡才有意义） */
@@ -991,7 +1238,7 @@ export interface NonDispatchablePlan {
   dependencies: { task: TaskCard; waitingOn: string[] }[]
 }
 
-export function classifyNonDispatchable(tasks: TaskCard[]): NonDispatchablePlan {
+export function classifyNonDispatchable(tasks: TaskCard[], staleGate?: StaleGate | undefined): NonDispatchablePlan {
   const ended = (task: TaskCard): boolean =>
     task.status === 'done' || task.status === 'verified' || task.status === 'dropped'
   const blocked = tasks.filter((task) => task.status === 'blocked')
@@ -1021,7 +1268,41 @@ export function classifyNonDispatchable(tasks: TaskCard[]): NonDispatchablePlan 
 
   // 一次算好，避免对同一批卡重复走两遍依赖判定
   const waiting = blockedTasks(tasks)
+  // **DEF-040**：第四类 `gate-stale` —— 与 `blocked` / `scope` / `dependencies` **并列**（不混进任一维）。
+  // **只在调用方传了失效门禁时才出现这个键**：不传时返回对象的形状与以前**逐字节相同**（零调用点破坏）。
+  const gateStale = staleGate === undefined
+    ? {}
+    : {
+        gateStale: {
+          gate: staleGate.gate,
+          reason: staleGate.reason,
+          tasks: tasks.filter((task) => task.status === 'planned' || task.status === 'ready'),
+        },
+      }
+  const exclusiveRows: NonDispatchablePlan['exclusive'] = []
+  // 与 `readyTasks` **同一排序**（同一 `sizeRankOf`）：先到先得的那一张必须与"真被派出去的那张"是同一张，
+  // 否则回执会点名一张"并不是它挡的"卡（本仓"读数与行为同源"的一贯口径）。
+  const claimedGroups = new Map<string, string>()
+  for (const task of [...tasks].sort((a, b) => sizeRankOf(a) - sizeRankOf(b) || a.id.localeCompare(b.id))) {
+    const group = (task.exclusive ?? '').trim()
+    if (group === '') continue
+    if (task.status === 'in-progress') {
+      claimedGroups.set(group, task.id)
+      continue
+    }
+    if (task.status !== 'planned' && task.status !== 'ready') continue
+    const holder = claimedGroups.get(group)
+    if (holder === undefined) {
+      // 组里第一张（按同一排序）不会被挡 —— 它就是 `readyTasks` 会选中的那一张
+      claimedGroups.set(group, task.id)
+      continue
+    }
+    exclusiveRows.push({ task, other: holder })
+  }
+  const exclusive = exclusiveRows.length === 0 ? {} : { exclusive: exclusiveRows }
   return {
+    ...gateStale,
+    ...exclusive,
     blocked,
     scope,
     // ③ 依赖未满足：blocked 卡已归 ①，别在两类里各报一次（否则读者会以为有两张卡）

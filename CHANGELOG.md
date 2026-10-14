@@ -5,7 +5,191 @@
 格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，版本号遵循[语义化版本](https://semver.org/lang/zh-CN/)。
 **0.x 阶段提示**：次版本号可能包含破坏性变更，升级前建议通读本文件。
 
+
 ## [Unreleased]
+
+**第三批（§3E 漏卡缺陷批，2026-10-14）：§3 逐族点名的 17 条**全部交付**（标题口径 19 条的 2 条差额见任务书 §9 的记账说明，需驾驶舱裁决）—— DEF-037 / DEF-024 / DEF-027 / DEF-030 / DEF-060 / DEF-045 / DEF-036 / DEF-013 / DEF-056 / DEF-055 / DEF-072 / DEF-017 / DEF-018 / DEF-040（三刀）/ DEF-021 / DEF-014 / DEF-007。**
+
+### 修复（§3E 漏卡缺陷批）
+- **DEF-037（幽灵用例）**：`recordTestResult` 写入前对账用例存在性 —— `caseId` 为空或不在用例台账里一律
+  **可读拒绝**（`case-id-required` / `case-not-found`，各带可执行修法）且**零写入**，杜绝"指向不存在用例的绿"。
+  守 `test/m141`（5 例，含不变量「结果 ⊆ 用例」与反例）。
+- **DEF-024（TDD 对账）**：新增判据 `tdd-artifact-unbound` —— 在**能证成同一次实验**（env/harness 指纹可比且
+  相等）而红绿**未两侧都绑**被检产物时判红，并点名缺的是红灯侧／绿灯侧／两侧。老台账（无可比指纹）不判，
+  跨实验由既有的 `tdd-env-changed` / `tdd-harness-changed` 负责；可逐条 `exempt`。守 `test/m142`（5 例）。
+  影响面：卡级 `doneGaps` 下 66 张 done/verified 里 5 张转红（TASK-020/038/054/072/077），另 3 张按写范围判 N/A。
+- **DEF-027（变异条数对账）**：新增判据 `tdd-mutation-count-mismatch` + 卡的结构化声明 `mutationExpected: N`
+  （`sdo_task action=update` / 结构通道均可写；读端白名单同步打通）。缺省 = 不声明 ⇒ 维持旧口径
+  （只要求 `killed ≥ 1`），历史卡不受影响；声明 N ⇒ 与台账 `readMutations` **实到条数逐条对账**，
+  多了少了都判红并点名差额与记录清单（含「声明 0 条却有记录」）。**设计裁决**：不去解析 DoD 散文里的
+  「做 N 条」——判据必须语言无关（长期约束），从句子里抠数字换种写法就失效。守 `test/m143`（5 例）。
+
+- **DEF-030（豁免署名）**：`exempt` 增加 `approvedBy`（与 `sdo_gate action=waive` 同款词）与 `impact`（影响面）；新写入**缺一即整次拒绝**（可读拒因点名卡与检查码、零写盘），旧条目**宽容读取**并在状态面显式标「未署名（待追认）/未记影响面」。豁免清单唯一出口 `exemptionLines()` 同时进**决策回执**、**看板首屏**与 **`sdo_status` 描述面**。守 `test/m144`（4 例）。
+
+- **DEF-060（断言空转）**：`test/m100` 的 M100-07 过去在 `!result.ok` 时**静默 `return`**，而 `no-evidence` 曾在其白名单里 ⇒ 夹具给足证据却报缺证据这类**真信号**被跳过、用例报绿而 8 条断言一条不跑。现在：`no-evidence` **显式判红**（不再可跳过），其余确实不属断言面的拒绝走 `t.skip(...)`（汇总 skipped 可观测）。守 `test/m145`（2 例：源码形态 + 行为前提）。
+
+- **DEF-045（残片报告被遮住）**：`childReportHealth` 过去 `.pop()` **只看最后一次** `dispatch/finished` ⇒ 某轮留下 78B 残片、后续轮次正常时，`CHILD_REPORT_MIN_BYTES` 对它是**死判据**（真机 TASK-104 两笔结算：error 落 78B / completed 落 2599B）。现在**逐笔结算**看，报最早那笔残缺并列出全部残缺（回执新增`kChildReportFragments` 点名条数与各笔结果/字节）。真机读数由 `ok(2599B)` 变为 `short(78B) + fragments:[error:78B]`。守 `test/m146`（3 例）。
+
+- **DEF-036（影响面声明）**：`validatePlan` 新增第八条机械校验 `impact-undeclared` —— 卡**声明了在改既有行为**
+  （结构信号，不读散文：① `fixes` 非空；② 写范围与**已落地** done/verified 卡相交）却既不点名 `impact`
+  （影响面：将被影响的文件/用例）也不声明 `undecidable`（为何推不出来）⇒ **拆卡期**判红点名，remedy 给两条出路。
+  键名逐字复用既有影响面词汇（`TestingRegressionSource.impact` / `undecidable`）。**为什么不从路径推断语义**：
+  并行卡的写范围互斥已由 `write-scope-disjoint`（DEF-067）承担 —— 那是**并行**这一轴；而真机 B-25/TASK-054 撞的是
+  **调用点**（`src/domain/records.ts` × `test/m94.test.ts`，两张卡写范围根本不相交）⇒ 语言无关口径下没有可靠的推断
+  信号，语义级影响只能由项目自己声明。时机：只在**未落地**卡上判（存量卡不追溯，与 `fixes`/`mitigates` 同口径）。
+  顺手补口：`mutationExpected` 在 `sdo_task action=update` 面曾被**静默丢弃**（schema 与 execute 收了、`updateTask`
+  不认），现一并接通并配可读拒绝。守 `test/m147`（11 例，含两条反例与标量归一）。
+  **真台账读数**：127 张卡（66 done / 42 dropped / 19 planned）里 **17 张在册 planned 卡被点名**
+  （9 张 `fixes` 非空 + 8 张与已落地卡写范围相交），每条都可按 remedy 当场收口。
+
+- **DEF-013（产物证据回显）**：done 回执过去只有「卡面 + 证据条数 + 未对账告警」—— 唯一会绑指纹的动作
+  （`auditDoneEvidence` 的现算对账）**只活在拒绝路径上**，一旦通过就什么都不印 ⇒ 完整 64 位 sha256 与 mtime
+  在回执里不可见，读者无法自己核对「跑的就是这份」。现在 done 收到 `artifact` 类证据时**逐条回显现算的完整
+  sha256 + 文件 mtime**（读不到就如实标 `no-path`/`outside`/`missing`/`unreadable`，**绝不因此拦下 done**），
+  并把「本次自述条数」与「台账累计条数」**并列**印出、差额就点名 —— 但**不判红**：自述常写在 `note` 的自然语言里，
+  解析散文等于把判据绑在某种写法上（判据必须语言无关 — 长期约束）。`deliver action=run` 的绑定回显属同族，
+  一并由「前 12 位」改为**完整 sha256**。⚠️ **判据一字未动**：调用方自己写错哈希仍由既有的 `evidence-artifact-hash`
+  （批前 `fb81ff9`）拒收，且不因为多印一行而放宽。无 `artifact` 证据的卡**不长出**回显块（防所有回执拖尾巴）。
+  守 `test/m148`（6 例，含该反例与两个诚实降级/防噪声反例）。
+
+- **DEF-056（契约 `requires` 写侧）**：契约的 `requires`（本契约挂在哪条需求上）此前**只有读侧** ——
+  `RecordContractInput`、`recordContract`、`sdo_design action=contract` 的 schema 与 execute 映射**写侧全缺**
+  ⇒ 修前实测：传了也**静默丢弃**（`recordContract` 返回值 `requires = undefined`、落盘读回 `[]`），31 份契约里
+  非空 **0** 份。后果不是"少个字段"：判据 `cardHasNoContractObject()` 的第二条正是「**没有契约声明 `requires`
+  命中本卡需求**」⇒ 第二条**恒真** ⇒ `contract-test-missing` 的「没有对象就 N/A」成了**不可反驳的合法逃逸**。
+  现在写侧四处一起打通（类型 / 落盘映射 / schema / execute + index 透传），并加**语义校验**：未知需求 id
+  或重复 id ⇒ **可读拒绝、零写盘**（写错一个号 = 那张卡永久 N/A，正是本批要消灭的形态）。守 `test/m149`
+  （5 例：写侧往返 / 判据按它匹配且补上契约测试后转绿 / 未知与重复被拒且零写盘 / 存量缺省不追溯 /
+  契约面那条腿不许被放宽）。
+
+- **DEF-055（默认写范围模板不含文案面 ⇒ 卡被诱向硬编码）**：默认模板 `[src/<slug>/, test/<slug>/]` **不含任何文案面**
+  ⇒ "必须新增一条用户可见文案"的卡只剩两条烂路：改夹具口径，或**在代码里硬编码**（现盘物证：`testingStore.ts` 的
+  `TESTING_ZH`/`TESTING_EN` 两张内联表，`gates.ts` / `index.ts` 两处逐字「本卡写范围不含 `src/data/lang/`」的注释；
+  真台账 127 卡 / 119 有写范围 / **仅 29** 含 `data/lang`）。现在给出**声明式**做法：卡上结构化布尔 `uiText`
+  （语言无关 —— 不读职责散文里的"文案"字样）+ **项目**在 `.sdo/config.yml` 的 `plan.textPaths` 里声明
+  「用户可见文案所在的目录」；`validatePlan` 第 9 条判据 `ui-text-scope` 对账：声明了 `uiText` 的卡，
+  写范围必须含项目声明的文案面；项目**还没声明**时同样判红并点名该写哪一行配置，remedy 给三条出路
+  （声明配置 / `addWriteScopes` 并入范围 / 撤回声明）。**插件不内置任何具体路径**（`src/data/lang/` 是项目事实，
+  写进通用判据就是 §4 红线 4）：M150-06 换成另一个项目的目录名 `messages/` 照样判，M150-02 证否"项目没声明时
+  即使路径看着对也不放行"。守 `test/m150`（6 例）。
+
+- **DEF-072（追加/补录的条号自洽）**：追加路径此前**没有任何可校验的条号字段** —— `appendReviewFindings` 的
+  `fromIndex` 是"这条记录现在有几条"**自算**的，调用方"补的是原文第几条"的**声明**没地方写
+  （`originalIndex`/`originalTotal`/`findingsComplete` 在全 `src/` 里 0 命中），于是「标题写原第 4 条、
+  正文写原第 2 条」这种矛盾在写盘时**没有任何东西能拦**（真机 REV-047 / REV-053 两条逐字还在）。现在把
+  「原第 k 条 / 原共 m 条」变成**可校验的声明**：`Review.originalTotal` 落记录、`review/appended` 事件补记
+  两字段、写入前五条**可读拒绝**（全部零写盘）：声明不成对 / 非正整数 / **超界** / **重号** / **跳号**；
+  `sdo_review action=append` 暴露 `originalIndex`/`originalTotal`（schema + 类型 + execute + 透传四处）。
+  重号点名区分「与已补录区间撞」与「落在正文已占的原第 1..N 条里」两种情形。口径：**不声明 = 维持旧口径**
+  （存量记录不追溯）；覆盖基线从 **append-only 事件**读回 ⇒ 跨多次调用也成立。⚠️ 不动 TASK-108 的封印前缀：
+  `reviewContentHash` 的覆盖范围一字未改（既有 54 条评审的指纹不受影响，M151-06 钉住）。守 `test/m151`（6 例）。
+
+- **DEF-017（评审者拿不到产物哈希）**：评审者的掩码 `deny` 逐字含 `bash`（跑不了 sha256sum），而**唯一**产出产物
+  sha256 的 `sdo_test` 也在 deny 里 ⇒ 评审者只能看 done 回执里的**截断**指纹（`e1cb2250387e…4053`），
+  「我核的是不是这份产物」无法自证。修法**不是开 `bash`**：新增只读窄入口 `sdo_hash` —— 入参**只有** `path`，
+  出参 = 现算**完整 64 位 sha256** + mtime + 字节数；**只读纯查询**（不写台账、不落事件）；越过工作区 / 不存在 /
+  不是文件 / 读不到 ⇒ 各自**原因码**可读拒绝；现算复用 `evidence.ts` 的 `sha256Of`（与 `artifactEchoRows` 同一出口）。
+  掩码面只把 `sdo_hash` 加进 **reviewer** 的 `allow`，**`deny` 一个字不动**（`bash` 与 `sdo_test` 仍被挡）。
+  守 `test/m152`（6 例，含 DoD ③「allow/deny 面仍然最小」的守卫：allow 必须**恰好**是原 7 项 + `sdo_hash`）。
+
+- **DEF-018（落点与写范围对不上）**：`validatePlan` 的九条机械校验里有写范围**相交**（并行卡之间）与写范围**非空**
+  两条，却**没有一条**核"卡自己声明的落点与自己的写范围对不对得上" —— 真机上卡可以在 DoD 里点名
+  `src/domain/records.ts` 而写范围只有 `src/interface/`，判据全绿，落地时才发现根本写不了那个文件。
+  现在卡上新增结构化 `landing`（本卡声称要落地的路径），第 **10** 条判据 `landing-outside-scope` 逐条核对：
+  每条落点必须落在自己的 `writeScopes` 内（路径代数走 `scopeOverlaps` **唯一出口**，ADR-009），在外者
+  **逐条点名**并把本卡写范围并列印出；缺省不声明 = 不判（存量 127 卡零噪声）；只在**未落地**卡上判。
+  ⚠️ 判据**不解析 DoD 散文**里的路径（语言无关是长期约束），M153-03 专门钉住这条底线。
+  写作面：`sdo_task action=update landing=…`（JSON 文本或真数组）+ 模型通道行映射，读端白名单与回写用条件展开。
+  守 `test/m153`（5 例）。
+
+- **DEF-040（派发/认领不吃门禁签字）—— 第一刀：判据逻辑**：`readyTasks` /
+  `classifyNonDispatchable` 的签名里此前没有 store/journal（结构上读不到签字台账），`signatureState` 的消费点
+  只在 `gates.ts`/`office.ts`/`index.ts`。现在两个纯函数接收**显式的**门禁失效状态（`StaleGate`）：
+  失效 ⇒ `readyTasks` **一张都不派**；`classifyNonDispatchable` 增**第四类 `gateStale`**（与 `blocked`/`scope`/
+  `dependencies` 并列，**只在传了门禁时才出现该键** ⇒ 现有调用点形状与行为逐字节不变）。
+  ⚠️ **只拦 `stale`，不拦 `missing`**（`missing` = 从来没签过，拦它会让所有还没走到该门禁签字的正常流程停摆）。
+  守 `test/m154`（纯函数面：零破坏 + 四类并列 + 语义分辨；第三刀补了"这一类必须带上门禁与原因"的断言）。
+
+- **DEF-040 第二刀：接线**：`office.ts` 新增私有助手 `staleEntryGate(call)` —— 从**流程数据**
+  `phases[].entry`（`entryGates`，**不硬编码 `G3`**）取当前阶段入口门禁，用 `signatureState(...).status === 'stale'`
+  组装 `StaleGate`；**三处派发调用点**（`readyForDispatch` / `dispatchPlan` / `poolSnapshot`）全部传入 ⇒
+  **门禁签字失效期间不再派新卡**（B-28 真机剧本的那条路被堵住）。口径：只拦 `stale`，`missing` **放行**
+  （`test/m155` M155-01 钉住这条底线，防"还没走到该门禁签字"的正常流程停摆）。守 `test/m155`（含结构断言：
+  四处消费点都接线 / 判据收敛到唯一出口 / 代码里不出现写死的门禁 id）。
+
+- **DEF-040 第三刀（本条闭合 DEF-040）：认领面 + 行为两态 + 回执回显**：
+  · **判据收敛到唯一出口**：新增 `src/domain/entryGate.ts` 的 `staleEntryGateOf(store, journal, project)`
+    —— 派发面（`office.staleEntryGate` 改为委托）与**认领面**（`collab.ts` 的 `claim`）调**同一个函数**。
+    两处各写一遍必然漂移（一边按 `stale` 判、一边按 `!== valid` 判，就会出现"派发说不许开工、卡却照领"）。
+  · **`claim` 增拒绝码 `gate-stale`**：`claim` 是唯一"不动文件就能开工"的入口（不受阶段纪律约束）⇒
+    派发面拦住了、这里漏一个口子等于没拦。detail 点名**当前阶段 + 门禁 id + 失效原因 + 补救**（重签该门禁）。
+    **解冻路径同样不被自己的冻锁住**（SDO-16/SDO-17 的同一课）：与 `change-not-digested` 共用同一个
+    `digestingRole` 豁免（`analyst` / `architect` / `office` 仍可认领去消化变更）。
+  · **回执回显**（`office.nonDispatchable` → `describeNonDispatchable`）：第四类不再只给卡，带出
+    `{ gate, reason, tasks }`，并**排除在"本轮没有可派发的任务卡"之外** —— 否则"被门禁拦住"会被读成
+    "活干完了"（本缺陷的成因）。文案 `uiIndex.kNonDispatchableGateStaleHead` / `uiCollab.kGateStale`（zh+en 同步）。
+  · 守 `test/m156`（6 例：认领面两态 + 重签反例 / **门禁随阶段变**（`waterfall` 的 `design-plan` 是 `G3`、
+    `construction` 是 `G4`；`prototype` 的 `requirements` 是 `GP`——**换一份流程数据也成立**，写死 `G3` 当场红）/
+    解冻路径豁免 / 回执回显）。`test/m155`、`test/m154`、`test/m129`（拒绝路径计数 8→9，注释写明出处）同步刷新。
+  · **变异自证（6/6 全杀，`cp` 回滚，无 `git checkout`）**：判别位放宽成 `!== 'valid'` ⇒ 红 5 例；
+    让拦截恒假 ⇒ M156-01/04 红；去掉解冻豁免 ⇒ M156-03 红；门禁 id 写死 `G3` ⇒ M156-02/04 + M155-02 红；
+    非派发清单不带 `gateStale` ⇒ M154-04 + M156-06 红；回执丢掉"不得回落成 idle"的守卫 ⇒ M156-06 红。
+    （两次变异变体因类型收窄**编译不过**，如实记为无效变体、不计入自证。）
+  · **顺带更正一处事实错误**：旧注释写「本仓现状就是 `construction` 阶段 `entry: [G3]`」——
+    与流程数据不符（`waterfall` 的 `construction` 入口是 **`G4`**，`G3` 是 `design-plan` 的），
+    已在 `plan.ts` / `test/m154` / `test/m155` 全部改正并加了反向断言（不许写回来）。
+
+- **DEF-021（派发不问目标子会话手上是否已有在飞卡）—— 复用判据加一条"会话持卡"**：现场（现盘可复算）：
+  子代理结算了一轮（`dispatch/finished` ⇒ 池视图显示**空闲可复用**）却**没回报卡**（卡仍 `in-progress`），
+  于是池把**新卡投进同一个会话** —— 两张卡在同一会话里互相踩（真机：池把 TASK-018 复用给持在飞卡的 `20af1d60`）。
+  病根是**输入面**：池状态只从 `dispatch/*` 事件折叠，而"谁手上持卡"是**卡的状态**，两者会分叉。
+  修法：把**卡的在飞状态**接进复用的唯一判据 —— `office.reuseBlockedOf(call)`（`rolePools` 池视图与
+  `admitDispatch` 准入拿的是**同一个**闭包 ⇒ 读数与行为不可能分叉，R-6 的教训），数据源是
+  `claimsBySession`（"会话 ↔ 在飞卡"的唯一出口）；持卡会话**不占池位**（否则 `cap=1` 的角色会永久排队），
+  原因进池视图的 `unusable` / 准入的 `reuseSkipped` 并**点名它手上那张卡**。
+  ⚠️ **与 DEF-067 不是同一轴**：那条看写范围相交（写者互斥），本条看**会话持卡** —— 写范围**不相交**的卡
+  同样不许复用同一个持卡会话（用例夹具正是两张不相交的卡）。
+  守 `test/m157`（4 例：持卡不许复用 + 点名卡号 + 池视图同源 / 反例——不持卡照常复用 / 两态——卡收工后恢复 /
+  结构——唯一出口 `claimsBySession` + 两处消费点同一个闭包）。
+  **变异自证（3/3 全杀，`cp` 回滚）**：拿掉"持卡不许复用" ⇒ M157-01/03 红；原因不点名那张卡 ⇒ M157-01 红；
+  准入那一侧丢掉同一个闭包 ⇒ M157-04 红。
+
+- **DEF-014（追加/复用投递的指令，是否被消费不可观测）—— 收据留下 + 消费观测现算**：现场（现盘可复算）：
+  `src/integration/dispatch.ts` 的复用分支 `await runtime.sendMessage(...)` 把**返回值丢掉**，
+  `dispatch/started` 只记 `reused: true` ⇒「指令到底投出去没有」在真源里**无从查证**；而「有没有**被消费**」
+  更是零观测面 —— `claimMissing`（DEF-053）**只对 planned/ready 的卡成立**（源码逐字如此），
+  复用到**在飞**卡这条路它盖不到。
+  两件**诚实**的事（**不**把"受理了投递"说成"消费了"，也**不**把"未见消费"说成"没消费"）：
+  · **收据留下**：宿主返回值归一成一行（认 `id`/`messageId`/`turnId`/`seq`，认不出记 `accepted`，
+  失败仍走既有 `reuseFailed` 且**不留假收据**），进 `dispatch/started.messageReceipt`；
+  · **消费观测现算**：`dispatchHealth.ts` 的 `reuseDeliveries`（纯函数）给出四态 ——
+  `held`（投递**前**该会话就已持卡 ⇒ 追加指令，不该再要求一次认领）/ `claimed`（投递后被认领 = 正面证据）/
+  `ended`（投递后结算了这一轮）/ `no-signal`（窗口内两者都没有 —— **未见消费**，窗口内不报以免误报"刚投出去"）；
+  回执里只把 `no-signal` 那一类报警，并回显**宿主回执**与**事件序号**（可复算锚点）。
+  ⚠️ **口径边界写进字段旁边**：`sendMessage` 解决只证宿主**受理**，不证子会话读了/照做了。
+  守 `test/m158`（4 例：收据不丢（含"认不出标识"与"投递失败不留假收据"两种） / 四态 + 窗口不虚报 / 回执面现算 /
+  真源留痕）。**变异自证（4/4 全杀，`cp` 回滚）**：归一恒回 `accepted` ⇒ M158-01 红；一切都判 `held` ⇒ M158-02 红；
+  取掉"窗口内不报" ⇒ M158-02 红；收据不落真源 ⇒ M158-02/04 红。（两个变异变体因未用变量编译不过，如实记为无效变体。）
+
+- **DEF-007（独占构建窗口）—— 把"独占窗口"变成一等声明**：现场（复算）：两张都要跑**全量构建**的卡，
+  写范围**不相交**（`scopeHeldTasks` 判没事）、依赖也满足 ⇒ `validatePlan` 全绿、`readyTasks(…, 4)`
+  **同时返回两张**，两份构建各自读到对方写了一半的源。旧口径只能靠人工给某张卡写 `blockedBy: ['*']`
+  （那是"等所有其它卡"的语义，也没人保证写得对）。
+  修法：卡可声明一个**独占窗口组名**（`exclusive`，自由文本，**插件不内置任何组名** —— 红线 4：语言无关、
+  不针对具体项目）；同组**同时只能有一张卡在跑**：`readyTasks` 按组串行（在飞持有者 + 本轮已选中者都算占位，
+  先到先得），`classifyNonDispatchable` 增并列的**第五类** `exclusive` 并点名挡路者，回执单独一行且
+  **排除在「本轮没有可派发的任务卡」之外**（与 DEF-040 同款陷阱：被拦住 ≠ 没活干）。
+  **静态面不动**：同组允许多张卡存在（排队顺序执行才是它的用途）⇒ `validatePlan` **不加**判据。
+  字段面五处同步（`types.ts` 卡字段 → `plan.ts` 读白名单/`TaskDraft`/`createTask` → `collab.updateTask`
+  （空串 = 撤回声明）→ `tools.ts` 的 Args/schema/execute → `index.ts` 的建卡行映射与 update 分支）+ 两包文案。
+  守 `test/m159`（4 例：行为两态 + 异组不误伤 + 回执点名 / 反例——持有者收工自动放行、撤回声明不再互斥 /
+  字段面五处 + 零破坏形状 / 回执不得回落成 idle）。
+  **变异自证（5/5 全杀，`cp` 回滚）**：拿掉同组串行 ⇒ M159-01/02 红；把"同组任何状态"都当挡路 ⇒ M159-01/02 红；
+  让 `exclusive` 类恒出现 ⇒ M159-02/03 红；回执丢掉"不得回落成 idle"的守卫 ⇒ M159-04 红；
+  删掉 `tools.ts` 的 `execute` 映射 ⇒ M159-03 红。
+  ⚠️ **一条变异先存活后被杀（如实记，并已修正断言）**：删 `execute` 映射时 M159-03 **没红** ——
+  原断言只数 `exclusive` 出现次数（`>= 3`），而删掉的那一处正是 `tq_ff348198` 说的"不见的那一处"。
+  ⇒ 断言改为**逐点钉住**（Args / schema / execute 三处各一条），重跑同一变异即转红。
 
 **第二批（机制缺陷批，2026-10-14）：§3A–§3D 共 17 条机制缺陷修复（独立会话交付，未提交）。**
 

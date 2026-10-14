@@ -14,7 +14,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Journal } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
 import { recordSignature, signatureState } from '../src/domain/signature.js'
-import { recordTestResult, verificationStats } from '../src/domain/records.js'
+import { recordTestCase, recordTestResult, verificationStats } from '../src/domain/records.js'
 import type { TestResult } from '../src/domain/records.js'
 
 const BASE = join(fileURLToPath(new URL('../../', import.meta.url)), 'node_modules', '.sdo-test', 'm52')
@@ -55,6 +55,8 @@ test('D8：签字台账与真源事件交叉核对（删文件 / 手写都要被
 })
 
 test('D4：没有 `test/recorded` 事件的结果要被点名（手写文件不能当证据）', () => {
+  // **DEF-037 夹具前提**：结果必须指向真实存在的用例（手写的那条 TR-002 仍走 `writeYaml`，那是本用例要测的路径）
+  recordTestCase(store, journal, { kind: 'unit', title: '夹具', steps: [], expected: 'ok' } as never)
   recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'node --test 全绿' })
   assert.deepEqual(verificationStats(store, journal).unjournaled, [], '工具记的结果必须有事件佐证')
 

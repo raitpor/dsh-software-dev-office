@@ -11,6 +11,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Journal } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
 import { recordDefect, recordReview, recordRun, recordTestCase, recordTestResult } from '../src/domain/records.js'
+import type { TestResult } from '../src/domain/records.js'
 
 const BASE = join(fileURLToPath(new URL('../../', import.meta.url)), 'node_modules', '.sdo-test', 'm53')
 let store: SdoStore
@@ -27,12 +28,20 @@ afterEach(() => {
   rmSync(BASE, { recursive: true, force: true })
 })
 
+/** **DEF-037**：`recordTestResult` 现在对账"用例是否存在" ⇒ 取成功分支（顺带断言真的成功）。 */
+function recorded(outcome: ReturnType<typeof recordTestResult>): TestResult {
+  assert.equal(outcome.ok, true, `夹具前提：用例必须已存在（${outcome.ok ? '' : outcome.detail}）`)
+  return outcome.ok ? outcome.result : (undefined as never)
+}
+
 test('D3：删掉第二条记录文件后，新记录**不得**复用它的号（TR / TC / DEF / REV / RUN 同判据）', () => {
   // TR：记两条 → 删第二条文件 → 再记 ⇒ 必须是 TR-003（旧实现给 TR-002）
+  // **DEF-037 夹具前提**：结果必须指向真实存在的用例（旧实现可以指向幽灵用例，那正是本缺陷）
+  recordTestCase(store, journal, { kind: 'unit', title: '夹具用例', steps: [], expected: 'ok' } as never)
   recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'x' })
   recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'y' })
   rmSync(join(BASE, '.sdo', 'tests', 'results', 'TR-002.yml'), { force: true })
-  const third = recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'z' })
+  const third = recorded(recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'z' }))
   assert.equal(third.id, 'TR-003', 'D3：删文件不得让号回落')
 
   // TC / DEF / REV：同型

@@ -92,7 +92,8 @@ export function withListArgs(args: Record<string, unknown>): Record<string, unkn
 
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
-import { t } from '../domain/i18n.js'
+import { fmt, t } from '../domain/i18n.js'
+import { digestArtifact } from '../domain/evidence.js'
 // 判定基准的**词表只有一份**（`evidence.ts` 的 `ORACLE_KINDS`）：schema 的 `enum` 直接由它派生 ——
 // 在这里再抄一遍四类取值，词表一改就会出现"工具面认、域层不认"的两份真值。
 import { ORACLE_KINDS } from '../domain/evidence.js'
@@ -276,6 +277,11 @@ export interface DesignArgs {
   consumer?: string | undefined
   schema?: string | undefined
   contractKind?: string | undefined
+  /**
+   * **action=contract：本契约挂在哪条需求上**（DEF-056）：JSON **文本**或逗号分隔的需求 id。
+   * 判据 `contract-test-missing` 用它判"这张卡有没有契约对象"—— 不写就等于该契约对所有卡都不算对象。
+   */
+  requires?: string | undefined
   timeout?: string | undefined
   retry?: string | undefined
   idempotency?: string | undefined
@@ -427,6 +433,8 @@ export interface TaskArgs {
    * 校验（重复 / 空串 / 台账里不存在）在 `collab.updateTask` 里**可读拒绝**，不静默丢弃。
    */
   fixes?: string | undefined
+  /** **本卡声明的变异自证条数**（DEF-027）：缺省 = 不声明。 */
+  mutationExpected?: number | undefined
   /**
    * **本卡声称消除的风险 id**（`DEF-051` / TASK-080）：JSON 数组文本，整份替换。
    * 形状校验（重复 / 空串）在 `collab.updateTask` 里**可读拒绝**，不静默丢弃；
@@ -435,6 +443,29 @@ export interface TaskArgs {
   mitigates?: string | undefined
   /** **仍要开着的风险及其署名理由**（`DEF-051` / TASK-080）：JSON 数组文本，整份替换。 */
   mitigatesWaiver?: string | undefined
+  /**
+   * **本卡点名的影响面**（DEF-036 / §3E 族 1）：字符串或 JSON 数组文本，整份替换。
+   * 形状校验（重复 / 空串）在 `collab.updateTask` 里**可读拒绝**，不静默丢弃；
+   * "该声明却没声明"由拆卡期判据 `impact-undeclared` 判红点名（见 `updateTask` 的注释）。
+   */
+  impact?: string | unknown[] | undefined
+  /** **影响面推不出来的显式声明**（DEF-036）：与 `impact` 二者有其一即视为已声明；空串 = 撤回。 */
+  undecidable?: string | undefined
+  /**
+   * **update：本卡是否产出/改动「用户可见文案」**（DEF-055）：`true` ⇒ 判据 `ui-text-scope` 要求
+   * 写范围含**项目声明的文案面**（`.sdo/config.yml` 的 `plan.textPaths`）；`false` = 撤回声明。
+   */
+  uiText?: boolean | undefined
+  /**
+   * **update：本卡声称要落地的路径**（DEF-018）：JSON **text** 或真数组；整份替换。
+   * 由 `sdo_plan` 的判据 `landing-outside-scope` 逐条核对是否落在本卡写范围内。
+   */
+  landing?: string | unknown[] | undefined
+  /**
+   * **update：本卡要独占的窗口组名**（DEF-007）：同组同时只能有一张卡在跑。
+   * 自由文本（插件不内置任何组名）；空串 = 撤回声明。
+   */
+  exclusive?: string | undefined
   size?: string | undefined
   /** verify-review：要核实的评审 id（`REV-*`） */
   review?: string | undefined
@@ -522,6 +553,13 @@ export interface ReviewArgs {
   id?: string | undefined
   /** rehash / append：补记人 / 追加者（缺省 human） */
   actor?: string | undefined
+  /**
+   * **append：本次补录的是原文的第几条**（DEF-072，1 起）：与 `originalTotal` **必须成对**。
+   * 声明之后，"重号 / 跳号 / 超界"在写盘前被**可读拒绝**；不声明 = 维持旧口径（存量不追溯）。
+   */
+  originalIndex?: number | undefined
+  /** **append：原文（来源评审）共几条**（DEF-072）：与 `originalIndex` 成对，用来判超界。 */
+  originalTotal?: number | undefined
 }
 
 export interface DeliverArgs {
@@ -1007,6 +1045,32 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         reportedFiles: { type: 'string', description: 'done: JSON **text** (or a real array) of the files this session actually wrote — the host does not announce workspace/changes for child sessions (upstream limit, DEF-016), so the write-scope reconciliation uses this **self-report**; the receipt always says it is a self-report and never claims host observation.' },
         requirements: { type: 'string', description: 'update: JSON **text** (a string) of requirement ids, e.g. \'["REQ-001"]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
         fixes: { type: 'string', description: 'update: JSON **text** (a string) of the defect ids this card claims to fix, e.g. \'["DEF-050"]\' — not an array. Replaces the whole declaration (an empty array withdraws it). Each entry must be an existing `DEF-xxx` id; a duplicate, a blank string or an unknown id is **rejected with a readable message** (never silently dropped). Criterion C-63 then requires every such defect to be `fixed`/`closed`, or `wontfix` with both `waiveReason` and `waiveApprovedBy` filled in (the DEF-038 basis) once this card reaches done/verified.' },
+        mutationExpected: { type: 'number', description: t('param.mutationExpected') },
+        impact: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'json' } }],
+          description:
+            'update: the **impact surface** this card names (DEF-036) — the files/cases its change will affect. Accepts a JSON text like \'["test/m94.test.ts"]\' or a real array. Replaces the whole declaration; a blank or duplicate entry is **rejected with a readable message** (never silently dropped). The plan criterion `impact-undeclared` is red while a card that changes existing behaviour (it declares `fixes`, or its write scope intersects an already landed card) names neither `impact` nor `undecidable` — so scan the call sites of what you are changing first and list the fixtures/guards that can turn red.',
+        },
+        undecidable: {
+          type: 'string',
+          description:
+            'update: an explicit **cannot-be-determined** declaration for the impact surface (DEF-036), reused verbatim from the change-request vocabulary: state **why** the affected files/cases cannot be worked out. Either `impact` or this one satisfies the criterion; defaulting to «no impact» is not allowed. An empty string **withdraws** the declaration.',
+        },
+        landing: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'json' } }],
+          description:
+            'update: the **landing paths this card claims it will write** (DEF-018), given as JSON **text** (e.g. \'["src/domain/plan.ts"]\') or as a real array. Replaces the whole declaration. Plan criterion `landing-outside-scope` reconciles every declared path against the card write scope and is red when a path falls outside it, naming that path. Declaring nothing means the card claims no landing paths (existing cards are unaffected).',
+        },
+        uiText: {
+          type: 'boolean',
+          description:
+            'update: declare that **this card produces or changes user-visible text** (DEF-055). The plan criterion `ui-text-scope` then reconciles the card write scope against the **text surface declared by the project** (`.sdo/config.yml` → `plan.textPaths`) and is red when nothing matches; its remedy names that config line, because the plugin deliberately hardcodes no path of its own. Omit = the card does not touch user-visible text; `false` **withdraws** the declaration.',
+        },
+        exclusive: {
+          type: 'string',
+          description:
+            'update: the **exclusive-window group name** this card claims (DEF-007), free text — the plugin hardcodes no group name. Cards sharing a group name never run **at the same time**: dispatch serialises them (`sdo_plan` then names the card in the way) and the receipt lists the blocked ones. Static plan validation is unchanged — several cards of one group may exist, since queueing them in order is the point. An empty string **withdraws** the declaration.',
+        },
         size: { type: 'string', description: 'update: small | medium | large.' },
         mitigates: { type: 'string', description: 'update: JSON **text** (a string) of the risk ids this card claims to eliminate, e.g. \'["RISK-001"]\' — not an array. Replaces the whole declaration (an empty array withdraws it). A duplicate id or a blank string is **rejected with a readable message** (never silently dropped); an id missing from `.sdo/risks/` is NOT rejected here (a sibling card in the same batch may log that risk afterwards) but criterion C-64 names it. C-64 requires every declared risk to be `mitigated`/`closed`, or to be covered by a `mitigatesWaiver` entry, once this card reaches done/verified.' },
         mitigatesWaiver: { type: 'string', description: 'update: JSON **text** (a string) of the waivers for risks that must stay open, e.g. \'[{"id":"RISK-001","waiveReason":"why it stays open","waiveApprovedBy":"who approved"}]\' — not an array of arguments. Replaces the whole declaration. The two keys are reused verbatim from the defect-waiver basis (DEF-038): both must be non-blank after trimming, otherwise criterion C-64 is red and names the missing field. Use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes.' },
@@ -1040,6 +1104,16 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           fixes: typeof args.fixes === 'string' ? args.fixes : undefined,
           mitigates: typeof args.mitigates === 'string' ? args.mitigates : undefined,
           mitigatesWaiver: typeof args.mitigatesWaiver === 'string' ? args.mitigatesWaiver : undefined,
+          mutationExpected: typeof args.mutationExpected === 'number' ? args.mutationExpected : undefined,
+          // **DEF-036**：影响面声明同理必须过 execute 映射（第三处；缺它参数会被静默丢掉 — tq_ff348198）
+          impact: compositeArg(args.impact),
+          undecidable: typeof args.undecidable === 'string' ? args.undecidable : undefined,
+          // **DEF-055**：布尔参数照样必须过 execute 映射（第四处；缺它参数被静默丢掉 — tq_ff348198）
+          uiText: typeof args.uiText === 'boolean' ? args.uiText : undefined,
+          // **DEF-018**：落点声明照样必须过 execute 映射（第四处；缺它参数被静默丢掉 — tq_ff348198）
+          landing: compositeArg(args.landing),
+          // **DEF-007**：独占组名照样必须过 execute 映射（缺它参数会被静默丢掉 — tq_ff348198）
+          exclusive: typeof args.exclusive === 'string' ? args.exclusive : undefined,
           size: typeof args.size === 'string' ? args.size : undefined,
           id: typeof args.id === 'string' ? args.id : undefined,
           owner: typeof args.owner === 'string' ? args.owner : undefined,
@@ -1220,6 +1294,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         },
         id: { type: 'string', description: t('param.reviewId') },
         actor: { type: 'string', description: t('param.actor') },
+        originalIndex: { type: 'number', description: t('param.originalIndex') },
+        originalTotal: { type: 'number', description: t('param.originalTotal') },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -1231,6 +1307,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           findings: compositeArg(args.findings),
           id: typeof args.id === 'string' ? args.id : undefined,
           actor: typeof args.actor === 'string' ? args.actor : undefined,
+          // **DEF-072**：条号声明必须过 execute 映射（第四处；缺它参数被静默丢掉 — tq_ff348198）
+          originalIndex: typeof args.originalIndex === 'number' ? args.originalIndex : undefined,
+          originalTotal: typeof args.originalTotal === 'number' ? args.originalTotal : undefined,
         })
       },
     }),
@@ -1406,6 +1485,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         consumer: { type: 'string', description: t('param.consumer') },
         schema: { type: 'string', description: t('param.schema') },
         contractKind: { type: 'string', description: "'http' | 'event' | 'rpc' | 'schema' (contract)." },
+        requires: { type: 'string', description: t('param.contractRequires') },
         timeout: { type: 'string', description: t('param.timeout') },
         retry: { type: 'string', description: t('param.retry') },
         idempotency: { type: 'string', description: t('param.idempotency') },
@@ -1446,6 +1526,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           consumer: typeof args.consumer === 'string' ? args.consumer : undefined,
           schema: typeof args.schema === 'string' ? args.schema : undefined,
           contractKind: typeof args.contractKind === 'string' ? args.contractKind : undefined,
+          // **DEF-056**：写侧第三道（execute 映射）—— 缺它参数会被静默丢掉（知识库 tq_ff348198 的形态）
+          requires: typeof args.requires === 'string' ? args.requires : undefined,
           timeout: typeof args.timeout === 'string' ? args.timeout : undefined,
           retry: typeof args.retry === 'string' ? args.retry : undefined,
           idempotency: typeof args.idempotency === 'string' ? args.idempotency : undefined,
@@ -1552,6 +1634,29 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           to: typeof args.to === 'string' ? args.to : undefined,
           kind: typeof args.kind === 'string' ? args.kind : undefined,
           links: typeof args.links === 'string' ? args.links : undefined,
+        })
+      },
+    }),
+
+    defineTool({
+      // **DEF-017 / §3E 族 3**：给评审者（掩码 deny 里有 `bash`、且唯一的哈希入口 `sdo_test` 也被 deny）
+      // 一条**只读窄入口** —— 只现算，不写台账、不落事件；不是把 `bash` 放开。
+      name: 'sdo_hash',
+      description: t('tool.sdo_hash'),
+      parameters: {
+        path: { type: 'string', required: true, description: t('param.hashPath') },
+      },
+      output: OUTPUT,
+      async execute(args, exec) {
+        const outcome = digestArtifact(callOf(exec).cwd ?? '', typeof args.path === 'string' ? args.path : '')
+        if (!outcome.ok) {
+          return fmt('uiIndex.kHashRejected', { p1: outcome.code, p2: typeof args.path === 'string' ? args.path : '' })
+        }
+        return fmt('uiIndex.kHashResult', {
+          p1: outcome.path,
+          p2: outcome.sha256,
+          p3: outcome.mtime,
+          p4: String(outcome.bytes),
         })
       },
     }),

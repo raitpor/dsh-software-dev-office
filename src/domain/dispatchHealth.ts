@@ -148,3 +148,74 @@ export function claimMissing(
   }
   return out.sort((a, b) => a.startedSeq - b.startedSeq)
 }
+
+/**
+ * **复用投递的消费观测**（DEF-014 / §3E 族 8）—— 「追加/复用投递的指令，子会话到底消费了没有？」
+ *
+ * 为什么需要它：旧实现把 `sendMessage` 的返回值**丢掉**，`dispatch/started` 只记 `reused: true`
+ * ⇒「指令投出去没有」在真源里**无从查证**，而「有没有被消费」更是**完全没有观测面**
+ * （`claimMissing` 只对 **planned/ready** 的卡成立 —— 源码逐字如此 —— 复用到**在飞**卡这条路它盖不到）。
+ *
+ * 口径（**只报观测，不报结论**）：`sendMessage` 解决只能证明**宿主受理了投递**，不能证明子会话读了、
+ * 更不能证明它照做了。所以这里**现算**一个可观测的三态，宁说「未见消费」，不说「没消费」：
+ *   · `held`       该子会话在投递**之前**就持有这张卡（追加指令给在飞会话）⇒ 不该再要求一次认领；
+ *   · `claimed`    投递之后该子会话**认领了**这张卡（消费的正面证据）；
+ *   · `ended`      投递之后该子会话**结算了这一轮**（至少跑过一轮）；
+ *   · `no-signal`  窗口内两者都没有 —— **未见消费**（`windowMs` 内不报，避免"刚投出去"就报警）。
+ */
+export interface ReuseDelivery {
+  taskId: string
+  childSessionId: string
+  /** 那一笔**复用投递** `dispatch/started` 的序号（可复算锚点） */
+  startedSeq: number
+  /** 宿主对那次投递的回执（旧事件没有这个字段 ⇒ 空串，如实说"当年的投递没有收据"） */
+  messageReceipt: string
+  /** 距投递已经过去多少分钟 */
+  minutes: number
+  state: 'held' | 'claimed' | 'ended' | 'no-signal'
+}
+
+export function reuseDeliveries(
+  tasks: readonly TaskCard[],
+  events: readonly JournalEvent[],
+  options: { nowMs?: number | undefined; windowMs?: number | undefined } = {},
+): ReuseDelivery[] {
+  const nowMs = options.nowMs ?? Date.now()
+  const windowMs = options.windowMs ?? 5 * 60_000
+  const byId = new Map(tasks.map((task) => [task.id, task]))
+  const out: ReuseDelivery[] = []
+  for (const [card, timeline] of timelines(events)) {
+    if (!byId.has(card)) continue
+    const lastStart = [...timeline].reverse().find((event) => event.type === 'dispatch/started')
+    if (lastStart === undefined) continue
+    // 只看**复用投递**：新起一个子代理没有"投给谁"的问题（投递本身即创建）
+    if (lastStart.data['reused'] !== true) continue
+    const child = textOf(lastStart.data['childSessionId'])
+    const claimedBy = (event: JournalEvent): boolean =>
+      event.type === 'task/claimed' && (child === '' || textOf(event.data['sessionId']) === child)
+    const after = timeline.filter((event) => event.seq > lastStart.seq)
+    const heldBefore = timeline.some((event) => event.seq < lastStart.seq && claimedBy(event))
+    const claimedAfter = after.some(claimedBy)
+    const endedAfter = after.some((event) => TERMINAL_DISPATCH_EVENTS.includes(event.type))
+    const state: ReuseDelivery['state'] = heldBefore
+      ? 'held'
+      : claimedAfter
+        ? 'claimed'
+        : endedAfter
+          ? 'ended'
+          : 'no-signal'
+    const startedMs = Date.parse(lastStart.at ?? '')
+    const minutes = Number.isFinite(startedMs) ? Math.floor((nowMs - startedMs) / 60_000) : 0
+    // 窗口内没动静属正常（刚投出去）⇒ 不报；窗口外才是"未见消费"
+    if (state === 'no-signal' && Number.isFinite(startedMs) && nowMs - startedMs < windowMs) continue
+    out.push({
+      taskId: card,
+      childSessionId: child,
+      startedSeq: lastStart.seq,
+      messageReceipt: textOf(lastStart.data['messageReceipt']),
+      minutes,
+      state,
+    })
+  }
+  return out.sort((a, b) => a.startedSeq - b.startedSeq)
+}

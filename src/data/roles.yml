@@ -58,7 +58,7 @@ roles:
     rationale: 独立性靠**写范围纪律**（只能写本卡 writeScopes + 公共面），不靠「没有 edit」—— 测试脚本写错了要能改（旧口径把改一处逼成整篇重写，SDO-23 同类风险）；不改被测实现 = 写不了 `src/`
   - code: reviewer
     name: 评审员
-    allow: [skill, read, grep, glob, sdo_review, sdo_task, sdo_trace]
+    allow: [skill, read, grep, glob, sdo_review, sdo_task, sdo_trace, sdo_hash]
     deny: [write, edit, bash, ask_user_question, sdo_test]
     rationale: 只读评审；不得评审自己的产物
   - code: delivery

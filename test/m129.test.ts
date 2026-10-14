@@ -185,18 +185,20 @@ test('M129-04 可数读数 + 回执提示：就绪卡被拒过几次要看得见
   assert.match(receipt, /write-scope-conflict/u, '要点名最近一次的拒绝码')
 })
 
-test('M129-05 防回退：claim 的拒绝出口必须唯一（8 条路径全走它）', () => {
+test('M129-05 防回退：claim 的拒绝出口必须唯一（9 条路径全走它）', () => {
   const text = readFileSync(join(ROOT, 'src', 'domain', 'collab.ts'), 'utf8')
   const start = text.indexOf('export function claim(store: SdoStore, journal: Journal, input: ClaimInput): ClaimResult {')
   const end = text.indexOf("  return { ok: true, task: save(store, next) }", start)
   const body = text.slice(start, end)
   const outlets = (body.match(/reject\(/gu) ?? []).length
-  assert.equal(outlets, 8, `8 条拒绝路径都要走统一出口（实际 ${outlets}）`)
+  // 原 8 条 + **DEF-040**（族 6）的 `gate-stale` 一条 = 9（新增路径同样必须走统一出口留痕）
+  assert.equal(outlets, 9, `9 条拒绝路径都要走统一出口（实际 ${outlets}）`)
   for (const code of [
     'not-found',
     'revision-mismatch',
     'not-claimable',
     'change-not-digested',
+    'gate-stale',
     'write-scope-conflict',
     'test-case-missing',
     'construction-profile-missing',

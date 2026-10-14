@@ -18,7 +18,8 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Config, resolveSettings } from '../src/config.js'
 import { SdoStore } from '../src/infra/store.js'
 import { SoftwareDevOffice } from '../src/office.js'
-import { evidenceFreshness } from '../src/domain/records.js'
+import { evidenceFreshness, recordTestCase } from '../src/domain/records.js'
+import { Journal } from '../src/infra/journal.js'
 import type { SdoConfig } from '../src/config.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -33,6 +34,14 @@ beforeEach(() => {
   mkdirSync(join(BASE, '.sdo'), { recursive: true })
   office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
   office.noteSession('s-dev', BASE)
+  // **DEF-037 夹具前提**：结果是"用例的"结果 ⇒ 下面用到的三条用例必须先真实存在
+  {
+    const journal = new Journal(new SdoStore(join(BASE, '.sdo')))
+    const store0 = new SdoStore(join(BASE, '.sdo'))
+    for (const title of ['夹具一', '夹具二', '夹具三']) {
+      recordTestCase(store0, journal, { kind: 'unit', title, steps: [], expected: 'ok' } as never)
+    }
+  }
   store = new SdoStore(join(BASE, '.sdo'))
 })
 
