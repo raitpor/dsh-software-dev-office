@@ -8,9 +8,94 @@
  * 复杂结构（八维评分、验收标准）用 **JSON 字符串**传参，避免工具 schema 嵌套带来的歧义。
  */
 import { defineTool } from '@deepseek-ai/dsh-tools'
+
+/**
+ * **列表型参数的标准 schema**（DEF-073）：字符串 JSON 文本**或**真数组都收。
+ *
+ * 为什么必须这样：模型天然按自然形态传数组，而参数若声明成纯 `string`，**宿主在 schema 校验阶段
+ * 就拒签** —— 插件根本收不到这次调用（这是本项目复发次数最高的一类故障；描述里写
+ * 「Do NOT pass an array」是**规避**，不是修复）。归一仍复用既有的 `compositeArg`。
+ */
+export const LIST_PARAM_NAMES: readonly string[] = [
+  'sourceRaw',
+  'dimensions',
+  'acceptance',
+  'packages',
+  'scope',
+  'derivedFrom',
+  'exempt',
+  'dod',
+  'writeScopes',
+  'addWriteScopes',
+  'blockedBy',
+  'evidenceRequired',
+  'reportedFiles',
+  'requirements',
+  'fixes',
+  'mitigates',
+  'mitigatesWaiver',
+  'runsRequired',
+  'artifacts',
+  'alternatives',
+  'links',
+  'findings',
+  'suggestions',
+]
+
+/** 单个参数的联合形态（`string` | `array`）。 */
+function listSchema(param: Record<string, unknown>): Record<string, unknown> {
+  const description = typeof param['description'] === 'string' ? (param['description'] as string) : ''
+  return {
+    // ⚠️ `items` 必须是**合法 JSON Schema**：宿主 DSL 的 `type: 'json'` 只在 `defineTool` **内部**被编译成
+    // 「仅注解的空 schema」，而本归一发生在 `defineTool` **之后** ⇒ 若照抄 `{type:'json'}`，供应商侧会直接
+    // 400（真机报错：Invalid schema for function 'sdo_adr': "json" is not valid under ... anyOf）。
+    // 空 schema `{}` 就是编译产物本身（= 任意 JSON），语义与作者侧 `json` 完全一致。
+    oneOf: [{ type: 'string' }, { type: 'array', items: {} }],
+    description: description
+      .replace(/\s*Do NOT pass an array\.?/gu, '')
+      .replace(/\s*not an array\.?/gu, '')
+      .trim(),
+  }
+}
+
+/**
+ * **一处归一（schema 面）**：把列表型参数统一升成 `oneOf:[string,array]`。
+ *
+ * 为什么不逐个手改 24 处声明：同一口径写 24 遍必然分叉（历史上 `findings`/`suggestions` 改过、
+ * 其余 24 处没改，就是分叉的产物）。这里按**名单**在注册前统一升级，名单本身有守卫用例守着。
+ */
+export function withListParams(parameters: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {}
+  for (const [name, raw] of Object.entries(parameters)) {
+    const param = (raw ?? {}) as Record<string, unknown>
+    const isPlainString = param['type'] === 'string' && param['oneOf'] === undefined
+    out[name] = isPlainString && LIST_PARAM_NAMES.includes(name) ? listSchema(param) : raw
+  }
+  return out
+}
+
+/**
+ * **一处归一（调用面）**：把真数组转成 JSON 文本再交给既有解析器。
+ *
+ * 只动"传了数组"这种情况 —— 今天这种形态在纯 `string` 声明下**根本到不了这里**，
+ * 所以对既有行为零影响（字符串原样透传）。
+ */
+export function withListArgs(args: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...args }
+  for (const name of LIST_PARAM_NAMES) {
+    const value = out[name]
+    if (Array.isArray(value)) out[name] = JSON.stringify(value)
+  }
+  return out
+}
+
+
 import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 import { t } from '../domain/i18n.js'
+// 判定基准的**词表只有一份**（`evidence.ts` 的 `ORACLE_KINDS`）：schema 的 `enum` 直接由它派生 ——
+// 在这里再抄一遍四类取值，词表一改就会出现"工具面认、域层不认"的两份真值。
+import { ORACLE_KINDS } from '../domain/evidence.js'
 import type { OfficeCall } from '../office.js'
 import {
   ADR_ACTIONS,
@@ -278,8 +363,8 @@ export interface PlanArgs {
   action: string
   /** decompose：只拆这些需求（JSON 数组） */
   requirements?: string | undefined
-  /** decompose：模型通道的卡片建议（JSON 数组） */
-  suggestions?: string | undefined
+  /** decompose：模型通道的卡片建议（**JSON 文本或数组**，见 schema 的 `oneOf` —— DEF-065） */
+  suggestions?: unknown
   /** iteration：迭代目标 */
   goal?: string | undefined
   /** next：派发几条 */
@@ -312,15 +397,44 @@ export interface TaskArgs {
   /** done 的证据（JSON 数组：[{"kind":"artifact","detail":"…"}]） */
   evidence?: string | undefined
   note?: string | undefined
+  /**
+   * `release` / `reassign` / `block` 的说明，**以及 `unblock` 的必填恢复理由**（DEF-049 / TASK-078）。
+   *
+   * `unblock` 明确**不复用 `note`**：`note` 在 `block` 上是"阻塞原因"，两个语义落同一字段会让
+   * 台账读不出因果（谁因何而停、又因何而复）。恢复理由必须进回执与 `task/unblocked` 事件。
+   */
   reason?: string | undefined
   actor?: string | undefined
   /** action=update：要改的字段（都给 JSON 数组/字符串；SDO-14(3)/SDO-15(3)） */
   title?: string | undefined
   dod?: string | undefined
   writeScopes?: string | undefined
+  /**
+   * **执行者自报的实际写入文件**（**DEF-016** 降级路径）：JSON 数组文本或真数组都收。
+   * 子会话收不到宿主的 `workspace/changes`（上游能力边界）⇒ 用它把写范围对账从「人工比对」拉回机械核对。
+   */
+  reportedFiles?: string | unknown[] | undefined
+  /**
+   * **追加**写范围（DEF-012）：JSON 数组文本**或真数组**（宿主宽松路径）—— 与 `writeScopes` 互斥。
+   * 语义（谁能追加 / 必须带 reason / 不得与在飞卡相交）在 `collab.updateTask` 里可读拒绝。
+   */
+  addWriteScopes?: string | unknown[] | undefined
   blockedBy?: string | undefined
   evidenceRequired?: string | undefined
   requirements?: string | undefined
+  /**
+   * **本卡声称修好的缺陷 id**（`DEF-050` / TASK-072）：JSON 数组文本，整份替换。
+   * 校验（重复 / 空串 / 台账里不存在）在 `collab.updateTask` 里**可读拒绝**，不静默丢弃。
+   */
+  fixes?: string | undefined
+  /**
+   * **本卡声称消除的风险 id**（`DEF-051` / TASK-080）：JSON 数组文本，整份替换。
+   * 形状校验（重复 / 空串）在 `collab.updateTask` 里**可读拒绝**，不静默丢弃；
+   * "台账里没有这条风险"不在这里拒绝（风险可能由同批另一张卡先登记），由判据 `C-64` 判红点名。
+   */
+  mitigates?: string | undefined
+  /** **仍要开着的风险及其署名理由**（`DEF-051` / TASK-080）：JSON 数组文本，整份替换。 */
+  mitigatesWaiver?: string | undefined
   size?: string | undefined
   /** verify-review：要核实的评审 id（`REV-*`） */
   review?: string | undefined
@@ -349,12 +463,48 @@ export interface TestArgs {
   defectId?: string | undefined
   /** defect：更正原因 —— **原样写进 `defect/updated` 事件**（2026-10-07 追加实测：载荷曾被静默丢弃） */
   reason?: string | undefined
+  // —————— §REQ-055（TASK-039）：缺陷**根因面**三字段 ——————
+  // 这三个字段只在**新建**缺陷时可用（`DefectUpdate` 里没有它们 —— 域模型的边界不在本卡里动），
+  // 因此 `action=defect` 且带 `defectId` 时给了它们会**可读拒绝**，而不是静默丢弃。
+  /** defect：**根因**（REQ-055）—— 与缺陷一起落进 append-only 的 `defect/recorded` 事件；不给就不落键 */
+  rootCause?: string | undefined
+  /** defect：**发现级别**（词表 `DEFECT_DISCOVERY_LEVELS`：评审/单元/集成/系统/验收/生产）—— 取值非法判红并**点名合法集合** */
+  discoveryLevel?: string | undefined
+  /** defect：**是否逃逸**（本该被更早的验证面逮住却漏到后面）；只认真正的布尔值，认不出的不落键（**不假装 false**） */
+  escaped?: boolean | undefined
+  // —————— §DEF-038（TASK-063）：**免责依据**两字段 ——————
+  // 与根因面三字段**同族同纪律**（可选、空串不落键、逐字段搬进域层），但**更新路径上受理**
+  // （`DefectUpdate` 也有它们）：根因是"怎么进来的"（历史事实，事后改＝篡改），免责依据是
+  // "现在要不要放过它、谁拍的板"（一个**决定**，本就会被补、被改、被撤销）。契约见
+  // `src/domain/records.ts` 的 `DefectUpdate` 注释。
+  /** defect：**免责理由**（"为什么不修"，DEF-038）—— 与 `waiveApprovedBy` 齐备才算阻塞级 wontfix 的免责成立；`status≠wontfix` 时**读了也白读**（判据不读这两字段） */
+  waiveReason?: string | undefined
+  /** defect：**免责批准人**（谁批准不修，DEF-038）—— 与 `waiveReason` 缺一不可；空白串会被**可读拒绝**（空串不等于填了） */
+  waiveApprovedBy?: string | undefined
+  // —————— §REQ-053（TASK-039）：结果的**执行者 / 采纳者** ——————
+  /** record：**执行者**（REQ-053）—— 独立性判据的一端，进 append-only 的 `test/recorded` 事件 */
+  executedBy?: string | undefined
+  /** record：**采纳者**（REQ-053）—— 与执行者不同才算独立采纳；给了就由记录端盖上采纳时刻 */
+  adoptedBy?: string | undefined
   /** env/record：**环境指纹**（SDO-57），如 `jdk=21.0.2; probe=run_checks.py@v3` */
   env?: string | undefined
   /** record：**被检产物**（相对路径）——记录时绑定 sha256，交付时重算比对 */
   artifact?: string | undefined
   /** record：**断言面指纹**（R-3）—— 红与绿必须同指纹，否则"改断言转绿"与"改实现转绿"无法区分 */
   harness?: string | undefined
+  /**
+   * plan / record：**判定基准来源（oracle）**（REQ-054）。
+   *
+   * JSON 字符串（复合参数一律字符串化 —— 工具 schema 上不嵌套对象）：
+   *   · `{"kind":"acceptance","ref":"REQ-054","criterion":"AC-212"}`（AC 编号须属于该需求）
+   *   · `{"kind":"contract","ref":"CT-001"}`（契约须存在且有失败语义）
+   *   · `{"kind":"baseline","ref":"dist/old.js","baselineSha256":"<64 位十六进制>"}`（**现算比对**）
+   *   · `{"kind":"expert","expert":"张三"}`（须写明判断人）
+   *
+   * `record` 时它是**结果级**判定基准（同一条用例换环境要改判时用它）；没给就回落到用例上
+   * 登记的那份 —— 回落顺序 `result.oracle ?? testCase.oracle` 只有 `isAdopted()` 一处实现。
+   */
+  oracle?: string | undefined
   /** record：进度 3 的**变异自证**交付物（JSON 对象：{task, tool, target?, killed, survived?}） */
   mutation?: string | undefined
   /** record：增量 3 的**契约测试**交付物（JSON 对象：{task, contract, tool, cmd}） */
@@ -366,10 +516,11 @@ export interface ReviewArgs {
   taskId?: string | undefined
   reviewer?: string | undefined
   verdict?: 'pass' | 'changes-requested' | 'reject' | undefined
-  findings?: string | undefined
-  /** rehash：要给哪条**老格式**评审补记内容指纹（`REV-*`） */
+  /** record / append：发现项（**JSON 文本或数组**，见 schema 的 `oneOf` —— DEF-065）；`append` 只收**新增**的那些 */
+  findings?: unknown
+  /** rehash：要给哪条**老格式**评审补记内容指纹（`REV-*`）；append：追加到哪条**既有**评审（`REV-*`） */
   id?: string | undefined
-  /** rehash：补记人（缺省 human） */
+  /** rehash / append：补记人 / 追加者（缺省 human） */
   actor?: string | undefined
 }
 
@@ -545,11 +696,35 @@ const OUTPUT = {
 }
 
 /** 创建 SDO 的工具定义数组。 */
+/**
+ * **注册出口的列表参数归一**（DEF-073）：schema 升成 `oneOf:[string,array]`，入参把真数组转成 JSON 文本。
+ *
+ * 为什么不逐个手改 24 处声明、也不在 `defineTool` 处包一层：前者必然分叉（历史上只改了
+ * `findings`/`suggestions`），后者会把 `defineTool` 的**字面量 schema 推断**打塌（实测塌成 `never`）。
+ * 这里是工具定义**建好之后、注册之前**的唯一出口，类型面最小。
+ */
+function withListParamTools(tools: ToolDefinition[]): ToolDefinition[] {
+  return tools.map((tool) => {
+    const original = tool.execute as unknown as (args: Record<string, unknown>, ctx: ToolRunContext) => unknown
+    return {
+      ...tool,
+      parameters: (() => {
+        // `defineTool` 已经把参数表包成 `{ type, properties, required }` ⇒ 归一必须落在 `properties` 层。
+        const schema = tool.parameters as unknown as { properties?: Record<string, unknown> } & Record<string, unknown>
+        if (schema === null || typeof schema !== 'object' || schema.properties === undefined) return tool.parameters
+        return { ...schema, properties: withListParams(schema.properties) }
+      })(),
+      execute: ((args: Record<string, unknown>, ctx: ToolRunContext) =>
+        original(withListArgs(args), ctx)) as ToolDefinition['execute'],
+    }
+  })
+}
+
 export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
   const asArray = (value: unknown): string[] | undefined =>
     Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : undefined
 
-  return [
+  const tools: ToolDefinition[] = [
     defineTool({
       name: 'sdo_init',
       description: t('tool.sdo_init'),
@@ -650,8 +825,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         priority: { type: 'string', description: "MoSCoW: 'must' | 'should' | 'could' | 'wont'. Required for DoR." },
         sourceStakeholder: { type: 'string', description: t('param.sourceStakeholder', 'Stakeholder id such as STK-01 (traceability source).') },
         sourceRaw: { type: 'string', description: t('param.sourceRaw', 'The raw ask, in the requester\'s own words.') },
-        dimensions: { type: 'string', description: 'JSON object of the eight semantic dimension scores, e.g. {"goal":2,"user":1,...}. The deterministic rule channel caps these; stricter wins.' },
-        acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"given":"…","when":"…","then":"…"}]\' — not an array. Consumed by action=capture, action=update and action=change (a change request may carry acceptance criteria; they are applied only when decision=approved).' },
+        dimensions: { type: 'string', description: 'JSON object of the eight semantic dimension scores, e.g. {"goal":2,"user":1,...}. The deterministic rule channel caps these; stricter wins. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
+        acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"given":"…","when":"…","then":"…"}]\' — not an array. Consumed by action=capture, action=update and action=change (a change request may carry acceptance criteria; they are applied only when decision=approved). **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
         acceptanceMode: { type: 'string', enum: ['append', 'replace'], description: 'How `acceptance` is applied: append (default) or replace (use replace to renumber/remove existing criteria, e.g. when C9 reports duplicate AC ids). Honoured by action=update and action=change.' },
         limit: { type: 'number', description: t('param.limit') },
         quick: { type: 'boolean', description: t('param.quick') },
@@ -743,7 +918,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_render',
       description: t('tool.sdo_render'),
       parameters: {
-        target: { type: 'string', description: "What to render: 'srs' (default) — more targets land in later milestones." },
+        target: {
+          type: 'string',
+          description:
+            "What to render: 'srs' (default, requirements spec), 'decisions' (ADR log → docs/DECISIONS.md), 'quality' (quality scenarios + ATAM → docs/QUALITY.md).",
+        },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -757,7 +936,21 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       parameters: {
         action: { type: 'string', required: true, description: actionList(PLAN_ACTIONS) },
         requirements: { type: 'string', description: t('param.requirements') },
-        suggestions: { type: 'string', description: t('param.suggestions') },
+        // **DEF-065 落点一**：`suggestions` / `findings` 原先声明成 `type: 'string'`，于是**数组形态在
+        // 宿主 schema 校验阶段就被拒**（`ToolArgsError: invalid arguments: "suggestions" must be a string`），
+        // 插件**收不到那次调用** —— 调用方看到的是"写不进去"，台账里连痕迹都没有。
+        // 宿主 schema 子集**支持 `oneOf`**（`dsh-tools` 的 `assertSupportedJsonSchema`：`type`/`oneOf`/
+        // `properties`/`required`/`additionalProperties`/`items`/`enum`/`const` + 注解；
+        // 且 `compilePropertyMap` 允许属性节点带 `required` + `oneOf`）⇒ 这里**声明联合**：
+        // 分支一是 JSON 文本（本仓的既有口径），分支二是数组（宿主宽松路径的真实形态）。
+        // 两分支互斥，恰好命中一个（字符串不会同时是数组），下游仍由 `compositeArg` 归一。
+        suggestions: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'json' } },
+          ],
+          description: t('param.suggestions'),
+        },
         goal: { type: 'string', description: t('param.goal') },
         limit: { type: 'number', description: t('param.limit') },
         orphanTtlMinutes: { type: 'number', description: 'next: override the orphan dispatch TTL (minutes) for this call — a card held by an unsettled dispatch becomes dispatchable without editing the preset (R-9).' },
@@ -778,7 +971,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           freshChild: args.freshChild === true,
           why: args.why === true,
           requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
-          suggestions: typeof args.suggestions === 'string' ? args.suggestions : undefined,
+          // **DEF-065 同族第二处**：旧写法 `typeof args.suggestions === 'string' ? args.suggestions : undefined`
+          // 会在**数组原样到达**时把它**静默丢成 undefined**（宿主宽松路径的真实形态，回执看不出）。
+          // 统一走本文件既有的 `compositeArg`（字符串原样 / 数组转 JSON 文本）—— 与 `findings` 同源，不另造第二份归一。
+          suggestions: compositeArg(args.suggestions),
           goal: typeof args.goal === 'string' ? args.goal : undefined,
           limit: typeof args.limit === 'number' ? args.limit : undefined,
           orphanTtlMinutes: typeof args.orphanTtlMinutes === 'number' ? args.orphanTtlMinutes : undefined,
@@ -801,10 +997,19 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         title: { type: 'string', description: 'update: new title.' },
         dod: { type: 'string', description: 'update: JSON **text** of DoD items — a string, e.g. \'["a","b"]\'. Do NOT pass an array (the schema is string).' },
         writeScopes: { type: 'string', description: 'update: JSON **text** of write scopes, e.g. \'["lib/"]\' (refused while another owner is working the card). Do NOT pass an array.' },
+        addWriteScopes: {
+          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'json' } }],
+          description:
+            "update: **append** write scopes instead of replacing them (DEF-012). Accepts a JSON text like '[\"src/domain/\"]' or a real array. Allowed while the card is in progress, for the process officer (human/office/cockpit) or the card owner, and **requires `reason`**. The appended paths must not intersect any in-progress card's scopes (that would create two writers) — rejected with the overlapping path named. Full replacement via `writeScopes` still requires releasing first.",
+        },
         blockedBy: { type: 'string', description: 'update: JSON **text** of blocking task ids, e.g. \'["TASK-001"]\' (supports ["*"] = after every other card). Do NOT pass an array.' },
         evidenceRequired: { type: 'string', description: 'update: JSON **text** of required evidence kinds, e.g. \'["command"]\'. Do NOT pass an array.' },
-        requirements: { type: 'string', description: 'update: JSON **text** (a string) of requirement ids, e.g. \'["REQ-001"]\' — not an array.' },
+        reportedFiles: { type: 'string', description: 'done: JSON **text** (or a real array) of the files this session actually wrote — the host does not announce workspace/changes for child sessions (upstream limit, DEF-016), so the write-scope reconciliation uses this **self-report**; the receipt always says it is a self-report and never claims host observation.' },
+        requirements: { type: 'string', description: 'update: JSON **text** (a string) of requirement ids, e.g. \'["REQ-001"]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
+        fixes: { type: 'string', description: 'update: JSON **text** (a string) of the defect ids this card claims to fix, e.g. \'["DEF-050"]\' — not an array. Replaces the whole declaration (an empty array withdraws it). Each entry must be an existing `DEF-xxx` id; a duplicate, a blank string or an unknown id is **rejected with a readable message** (never silently dropped). Criterion C-63 then requires every such defect to be `fixed`/`closed`, or `wontfix` with both `waiveReason` and `waiveApprovedBy` filled in (the DEF-038 basis) once this card reaches done/verified.' },
         size: { type: 'string', description: 'update: small | medium | large.' },
+        mitigates: { type: 'string', description: 'update: JSON **text** (a string) of the risk ids this card claims to eliminate, e.g. \'["RISK-001"]\' — not an array. Replaces the whole declaration (an empty array withdraws it). A duplicate id or a blank string is **rejected with a readable message** (never silently dropped); an id missing from `.sdo/risks/` is NOT rejected here (a sibling card in the same batch may log that risk afterwards) but criterion C-64 names it. C-64 requires every declared risk to be `mitigated`/`closed`, or to be covered by a `mitigatesWaiver` entry, once this card reaches done/verified.' },
+        mitigatesWaiver: { type: 'string', description: 'update: JSON **text** (a string) of the waivers for risks that must stay open, e.g. \'[{"id":"RISK-001","waiveReason":"why it stays open","waiveApprovedBy":"who approved"}]\' — not an array of arguments. Replaces the whole declaration. The two keys are reused verbatim from the defect-waiver basis (DEF-038): both must be non-blank after trimming, otherwise criterion C-64 is red and names the missing field. Use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes.' },
         id: { type: 'string', description: t('param.id') },
         owner: { type: 'string', description: t('param.owner') },
         expectedRevision: { type: 'number', description: t('param.expectedRevision') },
@@ -825,9 +1030,16 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           title: typeof args.title === 'string' ? args.title : undefined,
           dod: compositeArg(args.dod),
           writeScopes: compositeArg(args.writeScopes),
+          // **DEF-012**：追加通道也要过这里（execute 映射是与 schema/类型并列的第三处，缺它参数会被静默丢掉 —— tq_ff348198）
+          addWriteScopes: compositeArg(args.addWriteScopes),
+          // **DEF-016**：自报清单（execute 映射是与 schema/类型并列的第三处，缺它参数会被静默丢掉）
+          reportedFiles: compositeArg(args.reportedFiles),
           blockedBy: compositeArg(args.blockedBy),
           evidenceRequired: compositeArg(args.evidenceRequired),
           requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
+          fixes: typeof args.fixes === 'string' ? args.fixes : undefined,
+          mitigates: typeof args.mitigates === 'string' ? args.mitigates : undefined,
+          mitigatesWaiver: typeof args.mitigatesWaiver === 'string' ? args.mitigatesWaiver : undefined,
           size: typeof args.size === 'string' ? args.size : undefined,
           id: typeof args.id === 'string' ? args.id : undefined,
           owner: typeof args.owner === 'string' ? args.owner : undefined,
@@ -861,10 +1073,76 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         severity: { type: 'string', description: "defect: 'blocker' | 'major' | 'minor'." },
         defectId: { type: 'string', description: t('param.defectId') },
         reason: { type: 'string', description: 'defect: correction reason — recorded verbatim in the defect/updated event (evidence is recorded the same way).' },
+        // **REQ-055（TASK-039）**：缺陷根因面三字段 —— 与 `defect/recorded` 事件一起落盘。
+        // 参数名必须写在这里：工具边界上没有的字段会被**静默丢掉**（模型照卡写也写不进去）。
+        rootCause: {
+          type: 'string',
+          description:
+            'defect (create only): **root cause** (REQ-055) — stored with the defect and written into the append-only `defect/recorded` event. '
+            + 'Omitting it writes no key at all (an empty string is not the same as "no value").',
+        },
+        discoveryLevel: {
+          type: 'string',
+          description:
+            'defect (create only): **discovery level** — one of the ledger word list (review / unit / integration / system / acceptance / production), '
+            + 'stored verbatim in the ledger language. Any other value is REJECTED and the receipt names the whole legal set (a free-text level cannot be machine-checked).',
+        },
+        escaped: {
+          type: 'boolean',
+          description:
+            'defect (create only): did this defect **escape** an earlier verification face that should have caught it? '
+            + 'Only a real boolean is recorded; anything else is left unwritten (never silently coerced to false — that would flip the escape verdict).',
+        },
+        // **DEF-038（TASK-063）**：免责依据两字段 —— 与上面三个"根因面"字段同族。
+        // 参数名必须写在这里：工具边界上没有的字段会被**静默丢掉**（裁决 A 的一手证据：
+        // `waiveReason` 曾不在 schema 里，C-51 判红后给出的修法在工具面上**没有出口** = 假修法）。
+        waiveReason: {
+          type: 'string',
+          description:
+            'defect (create and update): **why this defect will not be fixed** (DEF-038) — semantically distinct from `rootCause` '
+            + '(how it got in). Only meaningful with `status=wontfix`; on a blocker a wontfix is released ONLY when this AND '
+            + '`waiveApprovedBy` are both non-empty, otherwise C-51 fails and names the defect. A blank string is REJECTED '
+            + '(empty is not the same as filled in); omitting it writes no key at all.',
+        },
+        waiveApprovedBy: {
+          type: 'string',
+          description:
+            'defect (create and update): **who approved not fixing it** (DEF-038) — the other half of the waiver basis; '
+            + 'non-blocker wontfix defects are unaffected and never read these two fields. '
+            + 'A blank string is REJECTED; omitting it writes no key at all.',
+        },
+        executedBy: {
+          type: 'string',
+          description:
+            'record: who **executed** this run (REQ-053) — one end of the independence check, written into the append-only `test/recorded` event. '
+            + 'Without it (and without adoptedBy) the result can never count as independently adopted (C-50 will name it).',
+        },
+        adoptedBy: {
+          type: 'string',
+          description:
+            'record: who **adopted** the result (REQ-053) — must differ from executedBy; the adoption timestamp is stamped by the recorder (you do not have to remember it).',
+        },
         env: { type: 'string', description: 'env/record: environment fingerprint, e.g. "jdk=21.0.2; probe=run_checks.py@v3". Recorded with the result so staleness is machine-checkable (SDO-57).' },
         artifact: { type: 'string', description: 'record: the artifact this result was produced against (relative path) — its sha256 is bound now and re-checked at delivery.' },
         // **R-3**：断言面指纹 —— 红与绿必须同指纹，否则"改断言转绿"与"改实现转绿"在台账上等价
         harness: { type: 'string', description: 'record: assertion-surface fingerprint (e.g. sha256 of the test harness, or a stable id like "node --test test/x.test.js"). The tdd red->green check requires the failing and the passing run of a case to carry the SAME fingerprint.' },
+        // **REQ-054（TASK-054）**：判定基准的**参数面** —— 少了这一行，`oracle` 就在工具边界上被静默丢掉
+        // （回执说"已记录"，而 `isAdopted()` 永远报"判定基准不成立" ⇒ C-50 的补救动作没有出口）。
+        // 注意：**不写 `enum`** —— 这个参数是"JSON 文本"，合法取值不是四个字面量而是四类**形状**；
+        // 写成 `enum: ['expert', …]` 反而误导（模型会传裸字面量 `"expert"`，解析必然失败）。
+        // 词表本身仍只有一处（`ORACLE_KINDS`），这里把它渲染进说明里，两边不会各说一套。
+        oracle: {
+          type: 'string',
+          description:
+            `plan / record: **judgement basis (oracle)** (REQ-054) — a JSON **text** (a string), not an object. `
+            + `\`kind\` must be one of ${ORACLE_KINDS.join(' / ')}: `
+            + '{"kind":"acceptance","ref":"REQ-054","criterion":"AC-212"} (the AC id must belong to that requirement) / '
+            + '{"kind":"contract","ref":"CT-001"} (the contract must exist AND carry failure semantics) / '
+            + '{"kind":"baseline","ref":"dist/old.js","baselineSha256":"<64 hex>"} (re-hashed on the spot) / '
+            + '{"kind":"expert","expert":"<who judged>"}. '
+            + 'On `record` it is the RESULT-level basis (it overrides the case-level one: `result.oracle ?? testCase.oracle`). '
+            + 'An illegal kind, missing field or broken reference is REJECTED with the legal set named — a case without a working basis does NOT count as passed (G6 / C-50 will name it).',
+        },
         // 增量 3 的**交付物通道**：与"用例结果"在同一动作里分流（caseId/status 对它们非必填）。
         // 参数名与形状必须写在这里 —— 工具边界上没有的字段会被**静默丢掉**（模型照 README 写也写不进去）。
         mutation: {
@@ -897,10 +1175,25 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
           severity: parseEnum(args.severity, ['blocker', 'major', 'minor'] as const),
           defectId: typeof args.defectId === 'string' ? args.defectId : undefined,
+          // **REQ-055（TASK-039）**：根因面三字段与执行者/采纳者 —— 逐字段搬进 `deps.test`，漏一行
+          // 就等于工具层**静默丢弃**（域层收不到、回执还说成功；τ_ff348198 那次就是这么死的）。
+          rootCause: typeof args.rootCause === 'string' ? args.rootCause : undefined,
+          discoveryLevel: typeof args.discoveryLevel === 'string' ? args.discoveryLevel : undefined,
+          // `escaped` 只认真布尔：字符串 `'true'` / `'yes'` 一律当"没给"（宁可不写，也不要把逃逸判反）
+          escaped: typeof args.escaped === 'boolean' ? args.escaped : undefined,
+          // **DEF-038（TASK-063）**：免责依据两字段 —— 同样必须逐字段搬（漏这一行 = 工具层静默丢弃：
+          // 域层收不到、C-51 永远说"依据不齐备"，而调用方照回执去补也补不进去）。新建与更新两条路径共用。
+          waiveReason: typeof args.waiveReason === 'string' ? args.waiveReason : undefined,
+          waiveApprovedBy: typeof args.waiveApprovedBy === 'string' ? args.waiveApprovedBy : undefined,
+          executedBy: typeof args.executedBy === 'string' ? args.executedBy : undefined,
+          adoptedBy: typeof args.adoptedBy === 'string' ? args.adoptedBy : undefined,
           env: typeof args.env === 'string' ? args.env : undefined,
           artifact: typeof args.artifact === 'string' ? args.artifact : undefined,
           // **R-3**：断言面指纹（红绿必须同指纹）—— 必须进映射，否则工具边界上被静默丢掉
           harness: typeof args.harness === 'string' ? args.harness : undefined,
+          // **REQ-054（TASK-054）**：判定基准 —— 同样必须逐字段搬（漏一行 = 静默丢弃，
+          // 真机后果是 REQ-053 的独立性判据永远差最后一条、`passedAdopted` 恒为 0）
+          oracle: typeof args.oracle === 'string' ? args.oracle : undefined,
           // 交付物通道：**必须逐字段搬进来**（漏一行 = 工具层静默丢弃，B1 那次就是这么死的）
           mutation: typeof args.mutation === 'string' ? args.mutation : undefined,
           contractTest: typeof args.contractTest === 'string' ? args.contractTest : undefined,
@@ -916,7 +1209,15 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         taskId: { type: 'string', description: t('param.taskId') },
         reviewer: { type: 'string', description: t('param.reviewer') },
         verdict: { type: 'string', description: "'pass' | 'changes-requested' | 'reject'." },
-        findings: { type: 'string', description: t('param.findings') },
+        // **DEF-065 落点一**：与 `sdo_plan.suggestions` 同源同修 —— 原先是 `type: 'string'`，
+        // 数组在这条工具上被宿主校验拒（`"findings" must be a string`）。联合声明见上。
+        findings: {
+          oneOf: [
+            { type: 'string' },
+            { type: 'array', items: { type: 'json' } },
+          ],
+          description: t('param.findings'),
+        },
         id: { type: 'string', description: t('param.reviewId') },
         actor: { type: 'string', description: t('param.actor') },
       },
@@ -946,8 +1247,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         artifact: { type: 'string', description: 'run: the artifact you actually ran (relative path); its sha256 is bound at record time.' },
         exitCode: { type: 'string', description: 'run: exit code, if any.' },
         runsRequired: { type: 'string', description: t('param.runsRequired') },
-        artifacts: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"path":"src/x.ts","kind":"source|docs|config|schema|test"}]\' — not an array.' },
-        acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}]\' — not an array. Verdicts: pass | pass-with-deviation | fail | unverified | blocked | waived. **pass-with-deviation** (accept with a known deviation) REQUIRES a non-empty `deviation` field (what the deviation is, why it is accepted, who approved it) — it is rendered into DELIVERY.md and reported as a warning by the delivery gate.' },
+        artifacts: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"path":"src/x.ts","kind":"source|docs|config|schema|test"}]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
+        acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}]\' — not an array. Verdicts: pass | pass-with-deviation | fail | unverified | blocked | waived. **pass-with-deviation** (accept with a known deviation) REQUIRES a non-empty `deviation` field (what the deviation is, why it is accepted, who approved it) — it is rendered into DELIVERY.md and reported as a warning by the delivery gate. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
         rollbackPoint: { type: 'string', description: t('param.rollbackPoint') },
         by: { type: 'string', description: 'Who packages it (default "human").' },
         notes: { type: 'string', description: t('param.notes') },
@@ -1180,7 +1481,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         title: { type: 'string', description: t('param.title') },
         context: { type: 'string', description: t('param.context', 'The forces at play: what makes this a decision at all.') },
         decision: { type: 'string', description: t('param.decision') },
-        alternatives: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"option":"…","pros":"…","cons":"…"}]\' — not an array.' },
+        alternatives: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"option":"…","pros":"…","cons":"…"}]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
         consequences: { type: 'string', description: t('param.consequences') },
         supersedes: { type: 'string', description: t('param.supersedes') },
       },
@@ -1241,7 +1542,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         from: { type: 'string', description: t('param.from') },
         to: { type: 'string', description: t('param.to') },
         kind: { type: 'string', description: "'req-des' | 'req-task' | 'req-tc' | 'des-task' | 'des-ct'." },
-        links: { type: 'string', description: 'JSON **text** (a string) for batch linking, e.g. \'[{"from":"REQ-001","to":"DES-001","kind":"req-des"}]\' — not an array.' },
+        links: { type: 'string', description: 'JSON **text** (a string) for batch linking, e.g. \'[{"from":"REQ-001","to":"DES-001","kind":"req-des"}]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -1255,4 +1556,6 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       },
     }),
   ]
+
+  return withListParamTools(tools)
 }

@@ -70,6 +70,13 @@ export interface SdoConfig {
    */
   dispatchOrphanTtlMinutes: number
   /**
+   * **复用余量阈值**（DEF-069，默认 0 = **未声明** ⇒ 不判，行为与加它之前一致）。
+   *
+   * 项目自己声明"一个子会话最多接几轮/几张卡" —— 插件不写死数字（语言/项目无关）。
+   * 超限即**不再复用**（池视图与准入共用同一判据），并在回执说明原因。
+   */
+  reuseMaxRounds: number
+  /**
    * **按角色的子代理池上限**（子代理复用）：`{ developer: 2, tester: 1 }`。
    * 没写的角色用 `maxParallelDispatch`（⇒ 默认行为不变：不额外收紧）。
    * 池满的卡**排队**（不丢），等池里有子代理结算后由下一次派发放行。
@@ -144,6 +151,7 @@ export const Config: z<SdoConfig> = z.object({
   maxParallelDispatch: z.natural().min(1).max(8).default(4),
   poolCaps: z.dict(z.natural().min(1).max(8)).default({}),
   dispatchOrphanTtlMinutes: z.natural().min(1).max(1440).default(60),
+  reuseMaxRounds: z.natural().min(0).max(200).default(0),
   captureWorkspaceChanges: z.boolean().default(true),
   enforceRoleMask: z.boolean().default(true),
   // **客户端半的投递锚点**（默认 false）：只有 bundle patch 里那条 profile 顶层锚点行会置 true。

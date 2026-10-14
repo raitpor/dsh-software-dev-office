@@ -1,3 +1,54 @@
+uiDerivedDoc:
+  decTitle: "架构决策记录（ADR）"
+  quaTitle: "质量属性与场景（含 ATAM）"
+  derivedNote: "> 本文件是**派生视图**：真源在 `.sdo/`，由命令现渲染；手改会在下次渲染时被覆盖（覆盖前留副本）。"
+  project: "项目"
+  process: "流程"
+  count: "条数"
+  renderSeq: "渲染序号"
+  noProject: "（未读到项目真源）"
+  none: "（无）"
+  yes: "是"
+  no: "否"
+  colId: "编号"
+  colTitle: "标题"
+  colStatus: "状态"
+  colAlt: "备选方案数"
+  colAttribute: "质量属性"
+  colScenarioCount: "场景数"
+  colMeasurable: "可度量"
+  colPriority: "优先级"
+  decS1: "决策清单"
+  decS2: "决策详情"
+  decS3: "未决与后继"
+  adrContext: "背景"
+  adrDecision: "决策"
+  adrAlternatives: "备选方案"
+  adrPros: "优点"
+  adrCons: "缺点"
+  adrMitigation: "缓解"
+  adrConsequences: "后果"
+  adrSupersededBy: "被取代于"
+  decAllAccepted: "所有决策均为已接受，无需后继动作。"
+  decPending: "尚未接受（状态："
+  quaS1: "质量属性概览"
+  quaS2: "质量场景"
+  quaS3: "ATAM 分析"
+  quaS4: "缺口"
+  quaStimulus: "刺激"
+  quaResponse: "响应"
+  quaMeasure: "度量"
+  quaTargets: "涉及元素"
+  quaNoTargets: "未挂任何设计元素（无法追溯到设计）"
+  quaAssessor: "分析主持人"
+  quaRisks: "风险点"
+  quaSensitivities: "敏感点"
+  quaTradeoffs: "权衡点"
+  quaNoAssessment: "尚未做 ATAM 分析（质量属性权衡未评估）"
+  quaNoGap: "无缺口：场景均可度量、均挂到设计元素，且已完成 ATAM。"
+  quaGapUnmeasurable: "场景 {p1} 不可度量（缺可核对的度量口径）"
+  quaGapOrphan: "场景 {p1} 未挂任何设计元素"
+  quaGapNoAssessment: "未做 ATAM 分析：风险/敏感点/权衡点均未评估"
 # SDO 界面文案（i18n 语言包，zh-CN）
 #
 # 原则：**对外呈现一律用中文**；内部标识（门禁 id、阶段 id、状态码、角色码）保持不变，
@@ -23,6 +74,7 @@ gate:
   tasksMissingEvidenceRemedy: "补证据（`sdo_task action=done` 必须带 evidence）"
   tasksIncomplete: "未完成：{list}"
   tasksAllDoneRemedy: "补救：把剩余卡做完（`sdo_task action=done` 且带 evidence），或**显式放弃**（`sdo_task action=drop reason=…`）——已放弃的卡不再计入完成率。"
+  tasksBlockedAdvice: "⚠️ 其中 {p1} 张是 **blocked**：它们**不会**自己回到派发队列，本判据会一直红到有人处置 —— 驾驶舱请逐张决定：`sdo_task action=unblock id=<卡> reason=<阻塞条件怎么解除的>`（恢复为 ready、接着做）、`sdo_task action=reassign`（改派别人）、或 `sdo_task action=drop reason=…`（确实不做）。**只报数字不点动作是不够的**：这些卡正是本次要你处置的对象。"
 dimension:
   goal: 目标
   user: 用户
@@ -33,6 +85,7 @@ dimension:
   acceptance: 验收
   boundary: 边界
 criterion:
+  C-59: "测试总结报告已由用户签字：报告必须由当前真源渲染（渲染稿 + journal 渲染登记），且签字台账里有本门的、绑定**当前报告内容指纹**的签字；四态 —— ① 报告不在盘 / 不是当前真源的渲染 ⇒ 判红（先 `sdo_render target=report`）；② 报告在但本门没有签字 ⇒ 判红并给可执行修法（`sdo_gate action=sign gate=\"<门禁>\"`，默认 channel=question）；③ 有签字但报告或真源在签字之后被改（指纹变了 / 渲染稿被手改）⇒ 判红并点名「签字已失效，需重签」；④ 报告在 + 存在当前指纹的签字 ⇒ 绿，回执给出报告路径 / 内容指纹 / 签字时刻"
   C-28: "设计方法已选择（未回答/空/非法即失败；显式 none 也通过，产物判据转 N/A）"
   C-29: "选中方法包的最小必产项齐备"
   C-2A: "方法产物之间一致"
@@ -203,7 +256,7 @@ param:
   decision: 决策
   decidedBy: 决策人
   requirements: 需求 id（JSON 文本）
-  suggestions: "卡片建议（JSON 文本）。每项的字段名必须与任务卡一致：`title` / `dod`（字符串数组）/ `writeScopes`（字符串数组，**不是** `scope`）/ `evidenceRequired` / `blockedBy`（**支持 `[「*」]` 这种写法 = 排在所有其它卡之后**，用于最终构建/全量验证这类需要独占窗口的卡） / `role` / `size` / `requirements`。**写错键名不报错**，会静默落成空值（真机教训：写成 `scope` ⇒ `writeScopes: []`）。未给 `writeScopes` 时按「设计元素职责里的『写范围：…』→ config.yml 的 plan.scopeTemplate → `src/<slug>/` 占位」依次推导。"
+  suggestions: "卡片建议。**两种形态都收**（DEF-065 起 schema 声明的是 `string | array` 联合）：①**JSON 文本**（推荐，形如 `[{\"title\":\"卡名\"}]`）；②**数组**（数组原样到达也会被接受并由插件归一）。每项的字段名必须与任务卡一致：`title` / `dod`（字符串数组）/ `writeScopes`（字符串数组，**不是** `scope`）/ `evidenceRequired` / `blockedBy`（**支持 `[「*」]` 这种写法 = 排在所有其它卡之后**，用于最终构建/全量验证这类需要独占窗口的卡） / `role` / `size` / `requirements`。**写错键名不报错**，会静默落成空值（真机教训：写成 `scope` ⇒ `writeScopes: []`）。未给 `writeScopes` 时按「设计元素职责里的『写范围：…』→ config.yml 的 plan.scopeTemplate → `src/<slug>/` 占位」依次推导。**两类失败要分清**：①**宿主校验拒**（工具 schema 校验阶段，插件收不到这次调用）⇒ 文案形如 `invalid arguments: \"suggestions\" must be a string`；DEF-065 前数组恒走这条，现在联合声明已放行数组。②**插件解析拒**（文本形态写坏）⇒ 文案是「形状不对」或「值被打断」，并明说本次未写入。**不要把①误报成②**（英文 `param.suggestions` 同义）。"
   goal: 目标
   backend: 派发后端偏好
   expectedRevision: 你读到的版本号（比较交换，用于认领）
@@ -215,9 +268,9 @@ param:
   rollbackPoint: 回滚点
   reviewer: 评审者
   verdict: 结论
-  findings: "record：发现项 —— **JSON 文本**（形如 `[\"第一条\",\"第二条\"]`），**不是数组**；schema 声明的是 string。"
+  findings: "record / append：发现项 —— **两种形态都收**（DEF-065 起 schema 声明的是 `string | array` 联合）：①**JSON 文本**（推荐，形如 `[\"第一条\",\"第二条\"]`）；②**数组**（数组原样到达也收，插件归一后再解析）。**两类失败要分清**：①**宿主校验拒**（工具 schema 校验阶段，插件收不到这次调用）⇒ 文案形如 `invalid arguments: \"findings\" must be a string` —— DEF-065 前这就是数组恒被拒的那条路，现在联合声明已放行数组；②**插件解析拒**（文本写坏，由 `jsonOr` 报）——**形状不对**（不是合法 JSON：值不是数组、多了逗号、字符串里有裸换行）⇒ 报「形状」并说明本次未写入；**值被打断**（值里出现**未转义的 ASCII 引号**，本字段最常见 —— 引用标识符/命令/路径几乎必然用到引号）⇒ 报错会**点名第 N 个字符**。**推荐写法**：值里一律用**中文引号**（`「」`/`“”`）或按 JSON 规则转义，**不要**用 ASCII 引号；一条消息里**并发多个长 JSON 参数**也容易触发中断，建议逐个发。**`append` 专用**：追加到**既有**评审时，值只放**新增**的发现项（已封印的原正文不必重发，也不许夹带改写 —— 追加路径没有 `verdict` 入参，原结论改不了）；空数组 / 全空白会被拒且**不改动任何文件**。"
   # —— verify（核实评审发现）：评审结果是主张，要由实现方逐条核实才能采纳 ——
-  reviewId: 要核实的评审 id（`REV-*`）
+  reviewId: 评审 id（`REV-*`）：`rehash` = 要给哪条老格式评审补记内容指纹；`append` = 追加到哪条既有评审；verification 面 = 要核实哪条评审
   reviewIndex: 第几条发现（**从 1 起**，与回执里印的「第 N 条」一致）
   reviewOutcome: '核实结论：reproduced（照发现能复现）/ refuted（复现不了，给反证）'
   reviewProof: 复现的命令与结果、或反驳的反证（必填，空口核实不算）
@@ -282,7 +335,7 @@ param:
   context: "补充上下文（自由文本，会写入留痕）。"
   producer: "被依赖方：填它的 dependsOn 原串（通常是被依赖设计元素的 id 或 name）。consumer 依赖 producer。"
   consumer: "依赖方：填**依赖别人的那个设计元素的 name**（组件视图里发起依赖的一方）。"
-  reason: "理由（留痕用；drop 卡时必须说明为什么作废）。"
+  reason: "理由（留痕用；drop 卡时必须说明为什么作废）。；`block`/`done` 也接受它（等价于 `note`，DEF-068：旧实现只读 note，理由会被记成「未说明」）"
   lang: "语言包名（如 `zh-CN` / `en`）"
   langAction: "show＝查看当前语言与翻译覆盖；set＝切换（配 lang=<zh-CN|en>）。"
 
@@ -377,7 +430,9 @@ command:
   sdo-design-issues: "列出设计问题与**必须确认但尚未确认**的关键条目；`--state=all` 连已答复/已关闭的一起列出"
   sdo-design-render: "渲染设计文档到 docs/DESIGN.md（只读台账、只写文档），并回报路径与字节数"
 
-  elementKind: "元素类型自由取值：'system' | 'service' | 'store' | 'queue' | 'external' …"
+  elementKind: "'system' | 'service' | 'store' | 'queue' | 'external' …"
+  adrMitigation: "缓解"
+
 uiTools:
   k1: "JSON object of domain terms, e.g. {\"差异\":\"同一笔业务在两侧系统的不一致记录\"} (merged into the existing glossary)."
   k2: "The requirement statement — what must be true (\"系统须…\")."
@@ -448,6 +503,13 @@ uiRender:
   k45: "启用"
 
 uiDescribe:
+  kPoolBusyLoad: "（第 {p1} 轮/{p2} 张）"
+  kDispatchFreshSelf: "　🆕 新起一个子代理派 {p1}（**未复用**，子会话 {p2}）：池内同角色空闲**本会话可复用** {p3} 个；未复用的候选与原因：{p4}"
+  kFreshNoSkip: "（没有可复用候选：池里没有本会话派出的空闲子会话）"
+  kFreshChildDissuade: "　⚠️ 你传了 `freshChild=true`（**强制新起**），而池里有 {p1} 个**本会话可复用**的空闲子代理 —— 不是错误，但请确认理由（子代理上下文坏了？工具面改过？）；若只是习惯性传，去掉它才能回到池化口径。"
+  kPoolIdleScope: "　　{p1}：空闲可复用 {p2} 个属于**本会话**（真能投：{p5}）｜ 跨父会话 {p3} 个（宿主会拒 `belongs to another parent session`，不算可复用）｜ 父会话未知 {p4} 个（老事件，保守不算）"
+  kPoolBusyMap: "　　在飞定位：{p1}{p2}（`卡→子会话前 8 位`：owner 槽位名会被多个会话用过，唯一定位靠 uuid）"
+  kPoolIdleNone: "（无）"
   contractMissingExact: "- 该填：consumer={p1}；producer={p2}"
   contractFieldNoteHeader: "## ⚠️ 契约字段的 YAML 类型提示（只提示写法，不改变判据口径）"
   contractFieldNoteTyped: "{p1} 的 {p2} 是 {p4} 类型（值 {p5}）：覆盖判定已按字符串 {p5} 使用，**不判红**；建议改成 {p3}: '{p5}' 以免 YAML 类型歧义。"
@@ -541,6 +603,9 @@ uiDescribe:
   k84: "- 孤儿设计元素：{p1}"
   k85: "- 无需求来源的任务：{p1}"
   k86: "- 无需求来源的测试用例：{p1}"
+  # TASK-038：旧形状（手工拼的 TraceReport，没有缺陷追溯读数那一位）的兜底行 —— 只列孤儿缺陷 id，
+  # **不**编造覆盖率。新形状走 `uiTrace.defectTrace*`（同一读数、同一措辞）。
+  k86b: "- 无需求来源的缺陷：{p1}"
   k87: "- must 需求缺测试用例：{p1}"
   k88: "- {p1}：设计 {p2} ｜ 任务 {p3} ｜ 测试 {p4}"
   k89: "    · 写范围：{p1}{p2}"
@@ -803,7 +868,7 @@ uiDescribe:
   kPoolLine: '　{p1}：在飞 {p2}/{p3}｜空闲可复用 {p4}｜已退役(one-shot) {p5}｜未结算超时 {p6}'
   kPoolQueued: '　排队 {p1} 张：{p2}（上限挡住时**不丢卡**，下次 `sdo_plan action=next` 会再派）'
   kPoolNoReuse: '　宿主没暴露可续聊入口 ⇒ 池退化为**并发上限**（每次派发都是新会话，无法复用子代理）'
-  kReusedChild: '　♻️ 复用：{p1} 交给**已有**子代理 {p2}（角色 {p3}，该子代理第 {p4} 轮）'
+  kReusedChild: '　♻️ 复用：{p1} 交给**已有**子代理 {p2}（角色 {p3}，该子代理第 {p4} 轮、已承接 {p5} 张卡）'
   kReuseFailed: '　⚠️ 复用失败：{p1}（已改为新起一个子代理，本卡照常派出）'
   kContinuableFailed: '　⚠️ 可续聊入口不可用：{p1}（本次按 one-shot 派出 ⇒ **结算后无法复用**）'
   kPoolOrphanNote: '　其中 {p1} 笔未结算已超过孤儿 TTL（{p2} 分钟）——**不占池位**、也不当"空闲可复用"（不确定它还在不在）。若它们其实还在跑，调大 `dispatchOrphanTtlMinutes`'
@@ -838,6 +903,26 @@ shapeEntity:
   signature: "门禁签字台账"
   budget: "成本预算"
 uiIndex:
+  kErrataAdded: "📝 已给 {p1} 追加勘误（累计 {p2} 条，卡推进到 r{p3}）—— **只能追加**：历史正文（dod/落点/状态）一个字都没改，下一位读卡人能看到这条说明"
+  kDispatchSummary: "🗂 **本次派发 {p1} 张**：{p2}{p3}（详情见下；首屏先给全量卡号，避免「只派了一张」的误读）"
+  kDispatchSummaryHeld: "；另有 {p1} 张因容量/上限留到下一轮"
+  kWorkScopeSelfReported: "　🧾 写范围对账：本次按**执行者自报**的 {p1} 个文件核对（子会话收不到宿主 workspace/changes，上游限制 DEF-016）—— 这是声明，不是独立证据；请人工复核一次。"
+  kBuildInfo: "🧩 **本会话加载的构建**：{p1}（指纹 {p2}，版本 {p3}）"
+  kBuildUnavailable: "🧩 **本会话加载的构建**：读不到入口文件（包根 {p1}）—— 如实降级，不编造指纹"
+  kBuildNoPath: "（连包根都没读到）"
+  kBuildNoVersion: "未知"
+  kBuildNoFingerprint: "读不到"
+  kBuildSameAsWorktree: "　✅ 与工作树 {p1} **同一份构建**（指纹一致）"
+  kBuildMismatch: "　⚠️ **与工作树不是同一份构建**：工作树 {p1} 的指纹是 {p2}，而本会话加载的是上面那一份 —— 端到端验证会验到**旧构建**。同步 `{p3}` 的安装副本并重启会话后再验。"
+  kBuildNotComparable: "　（当前目录 {p1} 看起来也是本插件，但有一侧指纹读不到 ⇒ **不可比**，不下结论）"
+  kDenyListDrift: "🧾 **名单体检**（DEF-015）：我方维护的执行者禁用面里有 {p2} 个名字**宿主这个版本没注册**：{p1} —— 行为上是安全的（派发时会被交集剔除），但**名单与宿主面已漂移**，可据此核对（该清理的清理、宿主新增工具时也要重新分类）。"
+  kClaimRejectedNote: "🚫 {p1} 的认领已被拒 **{p2}** 次（最近原因：{p3}）⇒ 先解决原因再派它：拿拒绝码去查 `task/claim-rejected` 事件（逐条可复算）。"
+  kOrphanLockLine: "🔓 **孤儿锁** {p1}：拥有它的子会话已结束（{p2}），而卡仍停在 in-progress 攥着写范围（owner={p3}）⇒ 先释放：`{p4}`（不自动释放是有意的：防误抢在跑的人）。"
+  kClaimMissingLine: "⚠️ **派发未认领** {p1}：子会话 {p2} 派出 {p3} 分钟，至今没有 `task/claimed`（{p4}）⇒ 视为静默失败：查那个子会话，或重新派发（`limit=1` 更稳）。"
+  kOrphanReasonUnknown: "（未记原因）"
+  kClaimMissingRunning: "仍未结束"
+  kDispatchHeldByScopeLine: "🔒 暂不可派 {p1}：它的写范围与**在飞卡** {p2}（owner {p3}）重叠 {p4} ⇒ 派了也会认领失败。等它收工，或让流程官把 {p4} 拆成一张独立卡（共享文件由一张卡独占）。"
+  kWriteScopeOutside: "⛔ 越界写：角色 {p1} 这次要写 {p2} —— 这个路径在**工作区之外**（卡写范围是工作区内的声明形态，判不了归属）。把产物写到工作区内（相对路径或工作区内的绝对路径），或先确认你是不是写错了位置。"
   kSignNoReview: "门禁 {p1} 还没有生成过**签字审核单**：请先 `sdo_gate action=sign gate={p1} channel=question`（由工具当场摆出受审载荷并取回你的选项），不要凭旧话盲签。"
   kSignReviewStale: "门禁 {p1} 的**审核单已失效**（真源在生成之后又变了），签字被拒。差异：{p2}。请重新生成审核单再看一遍。"
   kAdrSupersedeMissing: '❌ 找不到要取代的 ADR：`{p1}` —— 没有记录被取代，**也不会**记一条新的（先确认 id，或用 `action=record` 新记一条）'
@@ -866,7 +951,7 @@ uiIndex:
   kReviewVerifyNoId: "❌ verify-review 要说清核实哪条评审：`sdo_task action=verify-review id=TASK-001 review=REV-001 index=1 …`"
   kReviewVerifyNoIndex: "❌ verify 要说清第几条发现（index 从 1 起）：`sdo_task action=verify-review id=TASK-001 review=REV-001 index=1 …`"
   kReviewVerifyNoOutcome: "❌ verify 要给出结论：outcome=reproduced（照发现能复现）/ refuted（复现不了，给反证）"
-  kReviewVerified: "✅ {p1} 第 {p2} 条：{p3} ｜ 该评审已核实 {p4}/{p5} ⇒ {p6}"
+  kReviewVerified: "✅ {p1} 第 {p2} 条（台账 index {p7}）：{p3} ｜ 该评审已核实 {p4}/{p5} ⇒ {p6}\n🔗 挂靠：第 {p2} 条发现 =「{p8}」"
   kReviewVerifierLine: "👤 核实者：{p1}（依据：{p2}，角色关系：{p3}）"
   kReviewProxyVerified: "⚠️ 这是**代核**（不是实现者本人：{p1}）—— 代核者是角色 `{p2}`（{p3}）。代核只负责**复现/反证**，**不替作者做处置决定**（改不改、怎么改归实现者）；**成立的发现要回流**给 {p4} 的实现者或另开一张修复卡 —— 核实不是终点。"
   kReviewAdopted: "整条评审已可采纳"
@@ -882,9 +967,40 @@ uiIndex:
   kReviewRehashCaliber: '（口径：补记的是**语义哈希** `reviewContentHash`，与 `review/recorded` 同源；字节级改动不在本检查的范围内）'
   kReviewNotExamined: "　｜ **逐条核实未进行**（{p1}）—— 防篡改校验没过，没看的发现不许算作已核实"
   kReviewAwaitingVerification: "ℹ️ 发现 {p1} 条：**评审结果不会自动被采纳** —— 要由该卡的实现会话逐条核实（复现或给出反证）后才算数：`sdo_task action=verify-review id=<卡> review={p2} index=1 outcome=… proof=…`"
+  # —— 向既有评审追加发现项（TASK-108 / DEF-065 拆出项）——
+  kReviewAppendNoId: "❌ `append` 要说清追加到**哪一条**评审：`sdo_review action=append id=REV-044 findings=[\"…\",\"…\"]`（`id` 是既有评审号；`append` **不新建**记录）"
+  kReviewAppended: "✅ {p1} 已追加第 {p2} 次：本次 {p3} 条（第 {p4} 条起 → 共 {p5} 条）；verdict 未动（仍是 `{p6}`）—— 追加**只增不改**：原评审的结论与已有正文一字未变，新发现项接在尾部（下标稳定 ⇒ 旧核实不失效）。留痕：`review/appended`（含 `appendCount` / `appendedFindings`）。"
+  kReviewAppendCaliber: "ℹ️ 新加的正文同样是**主张**：第 {p2}–{p3} 条（参数基准，1 起）要逐条核实才算数（`sdo_task action=verify-review id={p4} review={p1} index=<序号> outcome=… proof=…`）。若这次是**发现项太多/太长**被宿主校验拒（`invalid arguments`），就**分成几次 `append`** 追加到同一条评审上 —— 这正是本动作存在的理由（旧办法只能另起一条同 verdict 的记录，一条评审会碎成好几条）。"
   kRecordBadStatus: '❌ 用例结果的状态取值非法：`{p1}`（只接受 pass / fail / skip）—— **不会**默认成 pass（真机 `status=passed` 曾被静默写成 pass）'
   kRunBadOutcome: '❌ 真机运行的结论取值非法/缺失：`{p1}`（必须显式给 pass 或 fail）—— 「忘记声明结论」不得被记成通过'
   kDefectBadStatus: '❌ 缺陷状态取值非法：`{p1}`（只接受 open / fixed / closed / wontfix）—— **不会**悄悄当成 open。另：省略 `status` 表示**保持不变**（SDO-59）'
+  kDefectBadDiscoveryLevel: '❌ 缺陷的**发现级别**取值非法：`{p1}` —— 它必须来自词表（自由文本的发现级别机械核不动，"是不是逃逸"就悬空了）。合法集合：{p2}'
+  kDefectRootFieldsRecorded: '　已入账的根因面：{p1}（逐字段写进 `defect/recorded` 事件，可从真源回读）'
+  kDefectRootFieldsMissing: '　（未给 `rootCause` / `discoveryLevel` / `escaped`：这三个键**没有落盘**，也没有假装成空串或 false —— REQ-055 要求每条缺陷能回答"根因是什么、在哪一道验证面被发现、是否逃逸"）'
+  kDefectRootFieldsNotUpdatable: '❌ `{p1}` 只在**新建**缺陷时可用（`action=defect` 不带 `defectId`）：更正既有缺陷时它们**不会**被写入，所以这里可读拒绝而不是静默丢弃。请新建一条缺陷，或改用 `title`/`severity`/`caseId`/`evidence`/`reason` 更正。'
+  kDefectWaiveRequired: '　⛔ {p1} 是**阻塞级 + wontfix**，但免责依据不齐备（缺 {p2}）—— 缺陷照常入账，但它**仍然拦住验证门禁**（C-51）。放行条件：`waiveReason`（为什么不修）与 `waiveApprovedBy`（谁批准的）**缺一不可**且不得为空白。补法：`sdo_test action=defect defectId={p1} waiveReason=… waiveApprovedBy=…`。'
+  kDefectWaiveBlank: '❌ `{p1}` 给的是**空白串** —— 空串不等于填了（判据按"去空白后非空"算齐备，放行空白等于给自己发了一张空头免责单）。请写下真实内容，或干脆别给这个参数（不给 = 不落键，与"给了空白"是两回事）。'
+  kRecordAdoptionMissing: '⚠️ 这条结果**没有登记 {p1}**：REQ-053 要求"执行者 ≠ 采纳者"且判定基准成立 —— 缺了这一半它**进不了 `passedAdopted`**（G6 的 C-50 会点名它）。补法：`sdo_test action=record caseId=… status=pass evidence=… executedBy=<谁执行的> adoptedBy=<谁采纳的>`（采纳时刻由记录端盖，不用自己写）。'
+  kRecordSelfAdopted: '❌ 执行者与采纳者是同一个人 `{p1}` —— **自己执行、自己采纳不算独立采纳**（REQ-053）：这条不予计入 `passedAdopted`，G6 的 C-50 会点名它。请让另一个人或另一个会话复核后重记一条（`adoptedBy` 换独立采纳者）。'
+  kRecordAdoptionRecorded: '　（执行者 `{p1}` / 采纳者 `{p2}` 已写进 `test/recorded` 事件 —— REQ-053 独立性判据的两个端点都能从真源回读）'
+  kRecordStillUnadopted: '⚠️ 结果 {p1} 记下了执行者与采纳者，但**仍未计入 `passedAdopted`**：REQ-053 还要求**判定基准（oracle）成立**（REQ-054）—— 判定基准不行，这条只是走过场，G6 的 C-50 会点名它。'
+  kOracleMissing: '❌ 结果没有**判定基准（oracle）**，本次**没有写入任何东西**：用例 {p1} 自己也没登记过（`plan` 时用 `oracle=` 登记，或本次 `record` 直接给）—— REQ-054 要求每条用例说清"凭什么判定它对错"，缺判定基准的用例不计入通过覆盖，G6 的 C-50 会点名它。修法：`sdo_test action=record caseId={p1} status=… evidence=… executedBy=<谁执行的> adoptedBy=<谁采纳的> oracle='\''{"kind":"expert","expert":"张三"}'\''`。四类取值：{p2}（`acceptance` 要 `ref`=需求 id + `criterion`=该需求自己的 AC 编号；`contract` 要 `ref`=契约 id；`baseline` 要 `ref`=基线产物路径 + `baselineSha256`=64 位十六进制；`expert` 要 `expert`=判断人）。'
+  kOracleParseFailed: '❌ `oracle` 不是合法 JSON（{p1}）—— 它是**字符串化的 JSON**（复合参数一律字符串化，别直接传对象；单引号也不是 JSON）。本次没有写入任何东西。例：`oracle='\''{"kind":"expert","expert":"张三"}'\''`。'
+  kOracleNotObject: '❌ `oracle` 解析出来是 `{p1}`，不是一条判定基准（要 JSON **对象**）。本次没有写入任何东西。四类取值：{p2}。'
+  kOracleRejected: '❌ **判定基准不成立**（REQ-054），{p1}。四类取值逐类都要能机械核对：`acceptance`（AC 编号须属于所指需求）/ `contract`（契约须存在且有失败语义）/ `baseline`（须绑 64 位 sha256 且**现算比对**）/ `expert`（须写明判断人）。'
+  kOraclePlanned: '\n　（判定基准已登记：{p1} —— 记录结果时不必再给；要换判定基准就在 `record` 上用 `oracle=` 覆盖，口径是 `result.oracle ?? testCase.oracle`）'
+  kOracleRecorded: '　（判定基准 `{p1}` 已写进 `tests/results/*.yml` 与 `test/recorded` 的 `oracleKind` —— 「这条凭什么判定」可从真源回读；来源＝{p2}）'
+  kOracleSourceResult: '本次 `record` 给的（结果级判定基准，覆盖用例上登记的那份）'
+  kOracleSourceCase: '用例上登记的（`plan` 时的判定基准；口径 `result.oracle ?? testCase.oracle`）'
+  kOracleKindAcceptance: '需求验收标准'
+  kOracleKindContract: '契约（成功/失败语义）'
+  kOracleKindBaseline: '冻结的旧实现基线'
+  kOracleKindExpert: '专家判断'
+  kOracleKindText: '{p1}（{p2}）'
+  kOracleKindsList: 'acceptance（{p1}） / contract（{p2}） / baseline（{p3}） / expert（{p4}）'
+  kOracleScope: '{p1}：{p2}'
+  kOracleSha12: 'sha256={p1}…'
+  kOracleNothingWritten: '（本次调用没有写入任何东西；修好后重发同一条 `record`）'
   kFaceMismatch: '⚠️ 子代理 {p1}（卡 {p2}／角色 {p3}）的工具面与**声明**不一致：缺 {p4}；多 {p5} —— SDO-53：公告清单 ≠ 实际可调，差集必须显式说出来（掩码外的调用仍靠钩子兜底拦）'
   kEnvRecorded: '✅ 环境指纹已登记：{p1}（{p2}）—— 此后记录的证据按它归属，「是否在当前环境下得出的」可判'
   kEnvMissing: '❌ `action=env` 必须给出 `env=`（如 `jdk=21.0.2; probe=run_checks.py@v3`）—— 空指纹等于没登记'
@@ -906,7 +1022,6 @@ uiIndex:
   kTaskUpdateRejected: '❌ 改卡被拒（{p1}）：{p2}'
   kDispatchHeldByScope: '⛔ **本次没有派发**：{p1} 张就绪卡被**写范围冲突**挡住（{p2}）。冲突详情：{p3} ⇒ 要腾范围：`sdo_task action=release`（或 `drop`）挡住你的那张卡，或让流程官改本卡写范围后重新认领。'
   kDispatchBlockedByPlan: '⛔ **本次没有派发**：计划有 {p1} 处问题（见下）。'
-  kScopeReleaseHint: '　腾范围：`sdo_task action=release taskId=<挡住的卡>`（或 drop）；改写范围要由流程官改卡后重新认领。'
   kSelfReviewSameSession: '❌ 同一会话不得自评：{p1} 由会话 `{p2}` 认领，而本次评审也来自该会话 —— 评审独立性按**会话 id**判，改 `reviewer` 名字不算换人。请换一次派发/另一个子会话。'
   kRunRecorded: '✅ 真机运行已记录：{p1}｜目标={p2}｜结论={p3}｜{p4}'
   kRunRejected: '❌ 真机运行记录被拒：{p1}'
@@ -949,6 +1064,15 @@ uiIndex:
   k28: "已开启迭代 {p1}：{p2}（status={p3}）\n- 下一步：`sdo_plan action=decompose` 拆出本迭代的卡，然后 `sdo_plan action=next` 派发。"
   k29: "未知 action：{p1}（可用：{p2}）"
   k30: "没有可派发的任务卡（都已认领/完成）。用 `sdo_task action=list` 看全貌。"
+  kNonDispatchableIdle: "🟢 **本次没有派发**：没有可派发的任务卡 —— 本轮的卡都在进行中/已完成。用 `sdo_task action=list` 看全貌。"
+  kNonDispatchableBlockedHead: "⛔ **本次没有派发**：{p1} 张 **blocked** 卡在队列外 —— 它们**需要处置**（`sdo_task action=unblock` 恢复为 ready，或 `sdo_task action=drop` 确实不做）：{p2}。blocked 卡**不会**自己回到派发队列，所以「没有可派发的卡」**不等于**「活干完了」。"
+  kNonDispatchableBlockedItem: "{p1}（阻塞原因：{p2}）"
+  kNonDispatchableDependencyHead: "⏳ **依赖未满足**（{p1} 张）：等 `blockedBy` 上的卡完成即可自动进入队列：{p2}"
+  kNonDispatchableDependencyItem: "{p1}（等：{p2}）"
+  kNonDispatchableScopeHead: "⏳ **写范围冲突**（{p1} 张，1:1 独占范围与别的未结束卡重叠）：{p2}"
+  kWhyNoDispatch: "🔎 **诊断（why=true，本次不派发）**：本轮本可派 {p1} 张、在容量队列里 {p2} 张 —— 下面是「为什么有些卡进不了队列」的**分列**原因；要看真实派发就**去掉 `why`** 再调一次。"
+  kWhyQueued: "⏳ **容量排队**（{p1} 张，池满被挡）：{p2}"
+  kWhyHeldByLimit: "⏳ **被 `limit` 截住**（{p1} 张，下一轮还会挑）：{p2}"
   kDispatchFrozen: "⏸ 有 {p1} 张 **ready** 卡派不出去：它们被**未结算的派发**冻着（{p2}）—— 上限之外的另一种「没有可派发的卡」。三条例：① 等那笔派发结算；② 卡已被你 `release` 过 ⇒ 不该再冻（那说明 release 早于派发，或卡状态被手改）；③ 直接覆盖 TTL 续派：`sdo_plan action=next orphanTtlMinutes=5`（当前孤儿 TTL {p3} 分钟）。"
   kDispatchFrozenItem: "{p1}（子会话 {p2}，已 {p3} 分钟）"
   k31: "容量已满：{p1} 张卡在排队（`maxParallelDispatch` = {p2}）。"
@@ -1067,6 +1191,10 @@ uiIndex:
   k133: "已释放"
   k134: "已改派"
   k135: "{p1}：{p2}"
+  kTaskUnblockNeedsReason: "❌ unblock 必须带 `reason`：写明\"阻塞条件怎么解除的\"—— 恢复不是静默动作（回执与 `task/unblocked` 事件都要留它）。例：`sdo_task action=unblock id=TASK-078 reason=\"上游契约已冻结\"`"
+  kTaskUnblockNoReason: "（未说明）"
+  kTaskUnblockRejected: "❌ 恢复被拒（{p1}）：{p2}"
+  kTaskUnblocked: '✅ 已从 blocked 恢复为 ready；原阻塞原因：{p1}；本次恢复理由：{p2}（原 owner：{p3}，已清空）—— 这张卡**接下来可被 `sdo_plan action=next` 派发**。与 `release` 的区别：`release` 是"我不做了、把卡让回去"，`unblock` 是"阻塞条件解除了、接着做"。留痕：`task/unblocked`（追加式，原阻塞原因一并入账）。'
   k136: "　（覆盖 {p1}）"
   k137: "- {p1}　[{p2}]　{p3}{p4}"
   k138: "看板写盘被禁用（board.text=false），未写入 docs/BOARD.md。"
@@ -1086,12 +1214,51 @@ uiIndex:
   dropNoReason: "（未说明理由）"
   scopeDerivedNote: "- 提示：以下元素的写范围是按元素自动派生的。建议二选一：① 在元素职责里写明「写范围：<glob> 独占」；② 在 `.sdo/config.yml` 写 `plan: { scopeTemplate: \"src/main/java/{{slug}}/,src/test/java/{{slug}}/\" }` 让派生规则贴合本项目的真实布局。：{p1}"
   kStructuralGranularity: "⚠️ 本批有 {p1} 张卡来自**结构通道**（按「每设计元素一张」生成、写范围由模板推导）：粒度与范围**可能与项目布局不符** —— actor / 外部系统 / 实体这类不可独立实现的元素请人工收窄、合并或作废（D-12：插件不替你判断哪些元素可独立实现）。"
+  kStructuralHeader: "**结构通道：本次生成 {p1} 张卡、{p2} 个元素未建卡**（逐条列名 —— 旧回执只给数量，驾驶舱不翻看板就发现不了写范围荒谬的卡）"
+  kStructuralCreatedLine: "- 结构卡「{p1}」（设计 id {p2}）｜写范围：{p3}"
+  kStructuralCreatedBasis: "　· 建卡依据（覆盖判定）：{p1}"
+  kStructuralNone: "- （本次没有生成任何结构卡）"
+  kStructuralSkippedLine: "- 未建卡 {p1}（{p2}）：{p3}{p4}"
+  kStructuralHint: "- 提示：写范围超限的结构卡是**拒绝生成**（不是「生成了但很宽」）：出路是在元素职责里写明更窄的「写范围：<glob> 独占」，或改 `.sdo/config.yml` 的 `plan: { scopeTemplate: … }`。"
+  # 覆盖判定依据（三选一 OR）与未建卡原因：回执要能读出"凭什么说这个元素已经有卡了"
+  kStructuralHowDesTask: "追溯图里有指向该元素的 `des-task` 边（主口径；与 C-21 覆盖率按边算同源）"
+  kStructuralHowTitleMarker: "卡标题含该设计 id 标记「（DES-xxx）」（历史兜底：存量已放弃的卡没有追溯边，靠这条不被重造）"
+  kStructuralHowNoCardElement: "该元素被 `.sdo/config.yml` 的 `plan.noCardElements` 显式标记「无需卡」"
+  kStructuralHowNone: "未命中任何覆盖判定（既无 `des-task` 边、标题也无标记、也不在 `noCardElements` 里）"
+  kStructuralReasonAlreadyCovered: "已有卡（覆盖判定命中）"
+  kStructuralReasonNoCardNeeded: "显式「无需卡」"
+  kStructuralReasonScopeTooBroad: "❌ 拒绝生成：写范围超限（模块数超过 3，或含 `{}` 展开语法 = 一张卡写一批模块）"
+  kStructuralScopeTooBroadDetail: "；被拒的写范围：{p1}"
+  # **TASK-104（DEF-063）**：三态可辨 + 依据为空不得静默建卡 + 一次性收口动作。
+  # 判据的三态必须彼此可辨：① 覆盖证据存在（已有卡）② 人已裁决「无需卡」③ **判重依据为空**。
+  # 第③态只证明「找不到覆盖证据」，**不证明「没人做」** —— 存量补录项目里追溯边天然缺失。
+  kStructuralBasisEvidence: "覆盖证据存在：{p1}"
+  kStructuralBasisEmpty: "判重依据为空、**找不到覆盖证据** —— 未命中任何覆盖判定（既无 `des-task` 边、标题无 marker、又未列入 `plan.noCardElements`）—— 这只证明**找不到覆盖证据**，不证明「这个元素没人做」"
+  # 本项目走的口径：required = 依据为空一律拒绝生成；advisory = 历史行为建卡，但如实标注
+  kStructuralPolicyRequired: "- 依据口径：**必须**有判重依据（`plan.requireCoverageBasis: true`，或 `plan.noCardElements` 已非空）⇒ 依据为空的元素**拒绝生成**，一张卡都不落盘。"
+  kStructuralPolicyAdvisory: "- 依据口径：本项目**尚未采纳**「依据即门槛」（`plan.requireCoverageBasis` 未写、`plan.noCardElements` 为空）⇒ 依据为空的元素仍按历史行为建卡（上面的依据行如实标出「判重依据为空」）。要改成拒绝生成：在 `.sdo/config.yml` 写 `plan: { requireCoverageBasis: true }`。"
+  # 待裁决小节：逐条列名 + 缺哪条依据 + 三条出路 + 一次性收口动作
+  kStructuralDispositionHeader: "- **待裁决 {p1} 个元素**（判重依据为空：没落盘、**没有**混进正常派发队列）："
+  kStructuralDispositionLine: "　· {p1}（{p2}）：缺 {p3}"
+  kStructuralDispositionRefused: "　处置：以上元素**本轮全部拒绝生成**（不落盘、不进派发队列）。"
+  kStructuralDispositionAdvisory: "　处置：以上元素本轮**仍建了卡**（本项目尚未采纳依据门槛），但「判重依据为空」已如实标注 —— 建议按下面三条出路之一收口，否则每轮都会重复建。"
+  kStructuralDispositionRemedies: "　三条出路（任选其一）：① 补 `des-task` 追溯边（正解：`sdo_trace action=link from=DES-xxx to=TASK-xxx kind=des-task`）；② 判定「无需卡」⇒ 写进 `.sdo/config.yml` 的 `plan.noCardElements`；③ 明确要建卡 ⇒ 走 `sdo_plan action=decompose` 的 `suggestions` 通道显式提卡，或先建卡再补 `des-task` 边。"
+  kStructuralDispositionCollect: "　**一次性收口动作（把上面这批 id 一次写进去，不要逐条抄）** —— `.sdo/config.yml`：\n    plan:\n      noCardElements:\n        - {p1}"
+  kStructuralReasonNoBasis: "❌ 拒绝生成：判重依据为空（既无 `des-task` 边、标题无 marker、也不在 `noCardElements` 里）—— 结构通道只证明「找不到覆盖证据」，不等于「没人做」"
+  kStructuralMissingDesTask: "指向该元素的 `des-task` 追溯边"
+  kStructuralMissingTitleMarker: "卡标题里的设计 id marker「（DES-xxx）」"
+  kStructuralMissingNoCardElement: "`plan.noCardElements` 里的显式「无需卡」条目"
+  # 未建卡行里"命中口径"的后缀（拼在 `kStructuralSkippedLine` 的 {p4} 上）—— 文案不许硬编码在代码里
+  kStructuralHitBasis: "；命中口径：{p1}"
+  # TASK-074 / DEF-052：结构通道的逐条回执（卡标题 + 写范围 + 判定依据，以及没建卡的原因）
+  # 回执逐条列名：卡标题（含设计 id）+ 写范围 + 判定依据（命中/未命中哪条覆盖判定）
   defaultRole: "developer"
   dropContractDone: "契约 {p1}（{p2}）已作废（留痕：不参与覆盖判定，记录保留在真源里）"
   dropContractMissing: "作废契约需要 id（例如 `sdo_design action=drop-contract id=CT-010 reason=…`）"
   dropContractNotFound: "没有找到契约 {p1}（可用 `sdo_design action=view` 查看清单）"
   k1: "预算已更新：{p1}"
-  kJsonParseFailed: "❌ 参数 {p1} 不是合法 JSON：{p2}。**本次调用没有写入任何东西**（改写后重试）。"
+  kJsonParseFailed: "❌ 参数 {p1} **形状不对**（不是合法 JSON）：{p2}。这类报错看的是**形状** —— 常见是：值不是数组/对象、多了一个逗号、字符串里有**裸换行**（JSON 里换行必须写成 `\\n`）。**本次调用没有写入任何东西**（改写后重试）。"
+  kJsonParseFailedQuote: "❌ 参数 {p1} **值被打断**：该值**第 {p2} 个字符**处有一个未转义的 ASCII 引号 `{p3}`（解析器报：{p4}）。这是本仓实测最常见的一类（`findings` / `oracle` 这类字段引用标识符、命令、路径时几乎必然用到引号）。**改法**：把值里的 ASCII 引号改用**中文引号**（`「」` 或 `“”`），或按 JSON 规则写成 `\\{p3}` 转义；**不要**直接用 `{p3}`。**本次调用没有写入任何东西**（改写后重试）。⚠️ 另注：一条消息里**并发多个长 JSON 参数**也容易触发同类中断，建议逐个发。"
   kMethodShapeRejected: "❌ 方法产物 {p1} **未写入**：这些字段的形状会让**内容丢失**（读回来是空）—— {p2}。请按该字段声明的形状改写后重试（与 `sdo_plan action=profile` 同一口径：校验不过整次拒绝、不写盘；否则 C-29 会读这份形状判红，而签字已经白作废了一次）。"
   k3: "拿不到本会话的 session 对象：用量只能统计驾驶舱会话"
   k4: "⚠️ 这些问题是**问用户的**：请用宿主提问工具（`ask_user_question`）逐题问，一次最多 4 题；"
@@ -1128,6 +1295,9 @@ uiIndex:
   kUnlinkNone: "没有找到 {p1} → {p2} 的追溯边（未改动）"
   kUnlinkDone: "已撤销 {p1} 条追溯边（{p2} → {p3}）"
   kWorkScopeNotAudited: '⚠️ **写范围未对账（显式告警，不是脚注）**：本会话没有采集到 `workspace/changes`（两种已知原因：宿主只为**顶层轮次**公告它、子代理会话 0 条；或工作区**不是 git 仓库**，宿主结构性采不到），卡上声明的写范围**没有被核对过** —— 这既不等于「没有越界」，也不能据此判越界（SDO-15）。退路：① 在能采到 `workspace/changes` 的会话里重跑；② 完成时用 `evidence` 的 `artifact` **逐条列出本轮实际写入的文件**（派发协议第 5 条就是这么要求的），再按卡的写范围人工比对。**不自动退回 mtime 扫描**：真机上正是 mtime 把上一次中断会话留下的旧文件当成了本轮改动（F-7 事故），比「未对账」更危险。'
+  kNaNotesHeader: "➖ **本卡判 N/A 的判据（判据自己认出来的，不是豁免）**："
+  # **DEF-050 落点三（`sdo_task action=done` 的回显）**：卡上 `fixes` 逐条现状态当场亮相。
+  kFixCards: "- 卡上声明修复的缺陷（现状态取自 `.sdo/defects/*.yml`）："
   kDispatchNotStarted: "（未真正派发：{p1} —— {p2}）"
   kProfileDecided: "已决定实现阶段方法包：**{p1}**；范围：{p2}；依据：{p3}（已核对 {p4} 条、未核对 {p5} 条）；理由：{p6}。已写入 `.sdo/construction/profile.yml`（复议会追加历史）。"
   kProfileRejected: "不能这样决定实现阶段方法包（**未写盘**）：{p1}"
@@ -1147,6 +1317,24 @@ uiClamp:
   truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"
 
 uiGates:
+  kQualityDocNaEmpty: "没有质量场景与 ATAM 真源（质量需求未纳管）；要纳管请先用 sdo_quality action=scenario / action=evaluate 落真源，再 sdo_render target=quality"
+  kQualityDoc: "质量文档已生成且由当前真源渲染（渲染序号 {p1}，场景 {p2} 条）"
+  kQualityDocMissing: "还没有 docs/QUALITY.md（质量场景与 ATAM 没有面向人读的载体）"
+  kQualityDocRemedy: "先用 sdo_quality action=scenario 落质量场景、sdo_quality action=evaluate 落 ATAM 分析，再渲染人读文档：sdo_render target=quality（会写 docs/QUALITY.md 并绑定渲染序号）"
+  kQualityDocUnreadable: "读不到 {p1}（不是「没有要求」，是「查不动」）"
+  kQualityDocIncomplete: "docs/QUALITY.md 缺固定章节：{p1}"
+  kQualityDocUnproven: "docs/QUALITY.md 头里没有渲染序号，无法证明它由当前真源渲染"
+  kQualityDocSeqOutOfRange: "渲染序号 {p1} 超出 journal 范围（上界 {p2}）——序号必须有上界，否则伪造一个未来序号就能永久判绿"
+  kQualityDocNoRenderEvent: "渲染序号 {p1} 上没有任何一次写 docs/QUALITY.md 的渲染留痕（头里的数字不算证据）"
+  kQualityDocStale: "docs/QUALITY.md 陈旧：渲染于序号 {p1}，其后序号 {p2} 的 {p3} 改动了质量真源 —— 重新渲染后再签"
+  kQualityDocBodyMismatch: "docs/QUALITY.md 正文与「当前真源按头里元信息重渲染」的结果不一致（被手工改过或头在撒谎）"
+  kQualityDocUndeclared: "既没有质量场景/ATAM 真源，也没有在设计适用性声明里显式声明「不做」"
+  kQualityDocTruthCleared: "声明过的质量属性「{p1}」现在没有任何质量场景（真源曾记 {p2}，但场景文件已不在）—— 缺的是**场景**（刺激/响应/可测度量三要素），不是缺文档 {p3}"
+  kQualityDocTruthClearedRemedy: "二选一：① 补回场景（sdo_quality action=scenario，每条须带可核对的度量）后 sdo_render target=quality；② 若确实不做质量场景，就在设计适用性声明里显式声明不做并给出理由（sdo_requirement action=applicability，artifactsAbsent 里写 quality + why），那时本判据才判 N/A —— 不允许静默删掉场景让门禁读成「没要求」"
+  kQualityDocNaDeclared: "已显式声明不做质量场景/ATAM（带理由），本判据不适用"
+  kQualityDocUnmeasurable: "这些质量场景不可度量（缺可核对的度量口径）：{p1}"
+  kQualityDocUnmeasurableRemedy: "给每条场景补齐可核对的度量（数值/阈值/口径），质量需求必须能验收"
+  kQualityDocLangUnknown: "docs/QUALITY.md 头里声明的语言 {p1} 不在随包语言里（{p2}）"
   kTestsTamperedItem: '{p1}（事件记 {p2}，文件写 {p3}）'
   kTestsTampered: '测试结果文件与真源事件**不一致**：{p1} —— 结果文件被改写（事件是追加式的，不认改写）'
   kTestsTamperedRemedy: '用 `sdo_test action=record` 重新记录真实结论；要改判就**新增**一条结果（历史与改判都在真源里，不得覆盖旧结论）—— 把红改成绿这条捷径到此关闭（R1）'
@@ -1154,6 +1342,8 @@ uiGates:
   kTestsUnjournaledRemedy: '用 `sdo_test action=record` 重新记账（会写事件并绑定时点/环境），或重跑该用例；手写/事后改写的 YAML 一律不算证据（D4）'
   kTestsUnknown: '有 {p1} 条测试结果无法核验真源事件 —— journal 被坏行**截断**（坏行之后的事件读不出来）'
   kTestsUnknownRemedy: '先修好 `.sdo/journal.jsonl` 的坏行（或从备份恢复），再重跑 `sdo_gate action=check`；截断期不得判绿（无法判定 ≠ 通过，D4）'
+  kTestsUnadopted: '有 {p1} 条 `pass` 结果**没有被独立采纳**（{p2}）—— REQ-053：执行者与采纳者必须不同、且判定基准成立；自己跑一遍自己盖章的结果**不予计入**通过'
+  kTestsUnadoptedRemedy: '用 `sdo_test action=record` 补记 `executedBy`（执行者）与 `adoptedBy`（采纳者，须与执行者不同），并按 REQ-054 让该用例的判定基准可核对后重记一条 —— 门禁只认能追溯到真源的独立采纳'
   k1: "范围（in）{p1} 条"
   k2: "范围（in）为空"
   k3: "用 `sdo_project action=update scopeIn=…` 写明做什么"
@@ -1267,6 +1457,51 @@ uiGates:
   k111: "阻塞级缺陷未关闭：{p1}"
   k112: "修掉并关闭（`sdo_test action=defect id=… status=closed`）"
   k113: "无未关闭的阻塞级缺陷（未关闭总计 {p1}）"
+  kDefectWaiveIncomplete: "{p1}（阻塞级 + wontfix，但免责依据不齐备：缺 {p2} 或 {p3}）"
+  kDefectWaiveFieldReason: "`waiveReason`=为什么不修"
+  kDefectWaiveFieldApprover: "`waiveApprovedBy`=谁批准的"
+  kDefectWaivedHeading: "⚠️ 以 wontfix 放行的阻塞级缺陷（**放弃必须有人署名** —— 下列每条都已登记理由与批准人，放行不等于看不见）："
+  kDefectWaivedLine: "　· {p1}：不修的理由＝{p2}；批准人＝{p3}"
+  # **DEF-050 / TASK-072（判据 C-63）**：卡上 `fixes` 声明的缺陷必须闭合或**署名放弃**。
+  # 判红文案 / 可执行修法 / done 回显三处**共用同一批键**（口径只有一份）。
+  kFixUnclosed: "已声明修复的缺陷未闭合或未署名放弃：{p1}"
+  kFixRowOpen: "{p1}（现状态 {p2}：{p3}）"
+  kFixStatusOpen: "台账仍是 {p1} —— 卡说修完了，台账说还开着"
+  kFixWaiveIncomplete: "wontfix 但免责依据不齐备（缺 {p1}）"
+  kFixMissingDetail: "台账里找不到这条缺陷：先登记它，或把 `fixes` 里的号改对（写错号＝声明落在空气上）"
+  kFixNa: "不适用：没有任何**已完成**的卡声明过 `fixes`（`fixes` 是本轮新增字段，新字段生效前建的卡读回来是空集 —— 本判据不追溯存量卡）"
+  kFixOk: "已声明修复的缺陷全部闭合或署名放弃（核对 {p1} 条；未闭合 0 条）"
+  kFixRemedy: "逐条处置：① 修好了 ⇒ `sdo_test action=defect defectId=DEF-xxx status=fixed evidence=…`（修完再置 `closed`）；② 决定不修 ⇒ 补齐**免责两字段**（`waiveReason`＝为什么不修、`waiveApprovedBy`＝谁批准的，缺一不可且不得为空白），见 DEF-038 同款口径；③ 写错的号 ⇒ `sdo_task action=update id=… fixes='[\"DEF-真号\"]'` 改对。判据不看文档怎么说，只看 `.sdo/defects/*.yml` 的现状态"
+  kFixEchoHeading: "卡上声明的修复（逐条对照 `.sdo/defects/*.yml` 现状态）："
+  kFixEchoClosed: "　· {p1}：{p2}（已修并闭合，无需动作）"
+  kFixEchoWaived: "　· {p1}：wontfix（**署名放弃**：不修的理由＝{p2}；批准人＝{p3}）"
+  kFixEchoOpen: "　· {p1}：{p2} ⚠️ {p3} ⇒ 先闭合它（或补免责两字段）"
+  # **DEF-051 / TASK-080（判据 C-64）**：声明消除的风险必须真的消除，或**署名接受它仍开着**；
+  # 外加卡级 `inputs`/`outputs` 的声明必须在该卡自己的 `artifact` 证据里出现。
+  # 判红文案 / 可执行修法 / open 风险清单 / done 回显**共用同一批键**（口径只有一份）。
+  kMitigatesUnclosed: "已声明消除的风险未闭合、或声明的输入输出没有证据：{p1}"
+  # 三个槽位各司其职：{p1}=卡 id、{p2}=风险 id、{p3}=缺什么（含现状态）——
+  # 卡与风险都必须点名，否则"该去改哪张卡 / 哪条风险"无从下手。
+  kMitigatesRowOpen: "{p1} → {p2}：{p3}"
+  kMitigatesRowMissing: "台账里找不到这条风险：先登记它，或把 `mitigates` 里的号改对（写错号＝声明落在空气上）"
+  kMitigatesStatusOpen: "台账仍是 {p1} —— 卡说把风险处理掉了，台账说还开着"
+  kMitigatesWaiveIncomplete: "风险仍开着但豁免不成立（缺 {p1}）"
+  kMitigatesWaiveFieldReason: "`waiveReason`=为什么仍要开着"
+  kMitigatesWaiveFieldApprover: "`waiveApprovedBy`=谁批准的"
+  kMitigatesOpenRisks: "⚠️ 台账里仍 open 的风险：{p1}（可见即约束：其中每一条都该有对应处置，或一条明确说明为什么仍要开着）"
+  kMitigatesNa: "不适用：没有任何**已完成**的卡声明过 `mitigates`，也没有卡声明过卡级 `inputs`/`outputs`（两个风险字段是本轮新增；存量卡里若有这两格，见判据的**形态判别**：非路径形态的声明不参与判据、只逐条回显 —— 本判据不追溯存量卡，也不做数据迁移）"
+  kMitigatesOk: "已声明的风险与输入输出声明全部有据（核对 {p1} 条；不成立 0 条）"
+  kMitigatesRemedy: "逐条处置：① 风险已消除 ⇒ `sdo_risk action=update id=RISK-xxx status=mitigated`（或 `closed`）；② 决定接受它仍开着 ⇒ 在**卡上**补一条署名豁免 `sdo_task action=update id=… mitigatesWaiver='[{\"id\":\"RISK-xxx\",\"waiveReason\":\"为什么仍开着\",\"waiveApprovedBy\":\"谁批准的\"}]'`（两字段去空白后都非空，缺一不可，口径同 DEF-038）；③ 风险 id 写错 ⇒ `sdo_task action=update id=… mitigates='[\"RISK-真号\"]'` 改对；④ 声明的输入/输出没有证据 ⇒ 把该产物落盘并在 `done` 的 `artifact` 证据里给出它的路径（`artifact` 是唯一能点出「做出了哪个文件」的证据种类），或改正卡上的声明。注意本判据只核对**路径形态**的声明（含 `/`，或形如 `name.ext`）：散文职责、能力名、编号清单不参与判据（只逐条回显），想被核对就把它改写成路径形态"
+  kDeclaredItemMissing: "{p1}：卡上声明的 {p2}「{p3}」在本卡证据里找不到 —— 声明了却没有任何东西证明它发生过"
+  kDeclaredItemProseHeading: "以下声明**未参与**本判据（形态判别：它们不是路径形态 —— 散文职责、能力名或编号清单；判据只核对路径形态的声明）。逐条回显，以免静默放过："
+  kDeclaredItemProseRow: "　· {p1}：声明的 {p2}「{p3}」不是路径形态 ⇒ 未参与本判据（不追溯存量、也不做数据迁移：它仍会被下发，但不由本判据核对）"
+  kMitigatesBlank: "{p1} 的 `mitigates` 里有空串：写了个不存在的风险号却看不出来（要么填真号，要么整条去掉）"
+  kMitigatesDuplicate: "{p1} 的 `mitigates` 里重复声明了：{p2}（同一件事声明两遍，多半是拼接错误）"
+  kReviewEchoHeading: "本卡的评审状态（逐条回显；**这不是拦截** —— 拦截是评审未核实发现时的 `review-open-findings`）："
+  kReviewEchoRow: "　· {p1}：{p2}（{p3} 条发现；采纳状态：{p4}）"
+  kFixDuplicate: "{p1} 的 `fixes` 里有重复的缺陷 id：{p2}（同一件事声明两遍——多半是拼接错误，请去掉重复项）"
+  kFixBlank: "{p1} 的 `fixes` 里有**空白串**：空白不等于缺陷号（判据会把它当「找不到这条缺陷」；请写真实的 `DEF-xxx`，或干脆别给这个条目）"
+  kFixUnknown: "{p1} 的 `fixes` 里有台账中不存在的缺陷 id：{p2}（台账里共 {p3} 条）—— 写错号等于声明落在空气上，卡照常 done 而判据看空集；请登记该缺陷，或改成正确的 id"
   k114: "换一个评审者（作者不得评审自己的产出）"
   k115: "已完成但无通过评审：{p1}"
   k116: "用 `sdo_review action=record`（评审者 ≠ 作者）"
@@ -1353,6 +1588,22 @@ uiGates:
   kArtifactsRemedy: "用 sdo_design action=artifact kind=… 补齐：不变量每条要带 verify；映射两侧非空；差分策略要给出基线来源"
   kSigned: "G3 已由用户签字：{p1}（依据原文：{p2}；来源：{p3}）"
   kSignedRemedy: "等待用户签字确认：让用户在会话中明确表述签字（sdo_gate action=sign gate=G3 quote=用户原话），或走人机关口问答（channel=question）；无引用文本的签字视为无效"
+  kReportSignedMissing: "还没有 {p1}（测试总结报告）—— 没有报告就无从「签署报告」"
+  kReportSignedDocMissing: "{p1} 不在盘上（报告真源在，但还没有渲染出人读稿）"
+  kReportSignedDocMissingReason: "报告真源在盘上，但还没有渲染出人读稿"
+  kReportSignedUnregistered: "{p1} 在盘上，但 journal 里**没有它的渲染登记** —— 来路不明，不算「当前真源的渲染」"
+  kReportSignedSourceChanged: "渲染登记的指纹是 {p1}，当前真源指纹是 {p2} —— 真源在渲染之后又变了"
+  kReportSignedNotRendered: "{p1} **不是当前真源的渲染**：{p2}。签字要绑的是一份由真源渲染出来的报告，来路不明的稿子不许签"
+  kReportSignedMissingRemedy: "先由真源渲染测试报告：`sdo_render target=report`（真源是 `.sdo/testing/report.yml`，渲染会写 {p1} 并登记 journal 的 `doc/rendered`）；报告里要写清准出准则逐条结论与覆盖读数，之后再来签"
+  kReportSignedStaleRemedy: "先重新渲染测试报告再签：`sdo_render target=report`（当前问题：{p2}）—— 渲染后 {p1} 会带上新的真源指纹与渲染登记"
+  kReportSignedUnsigned: "测试总结报告还没有 {p1} 签字（报告：{p2}，内容指纹 {p3}）"
+  kReportSignedRemedy: "请用户签署测试报告：`sdo_gate action=sign gate=\"{p1}\"` —— 默认走人机关口问答通道（channel=question），审核单会内联整份报告正文，用户看过再点选才落签字；或在会话里拿到用户原话后用 `channel=statement quote=用户原话`。签完怎么核：`sdo_gate action=check gate=\"{p1}\"`，判据 {p2} 应转绿"
+  kReportSignedFingerprint: "签字绑定的报告真源指纹是 {p1}，当前是 {p2}"
+  kReportSignedFingerprintEdited: "签字绑定的报告真源指纹是 {p1}，当前是 {p2}；且盘上那份 {p3} 的正文被**手工改过**（不是渲染器写下的字节）"
+  kReportSignedInvalidated: "签字已失效，需重签：{p1}"
+  kReportSignedUnclassified: "签字之后真源发生了变更（非「报告真源改了」这一类，故只报事件；报告内容指纹与签字时一致）：{p1}"
+  kReportSignedOk: "测试总结报告已由用户签字（报告：{p1}，内容指纹 {p2}，签字时刻 {p3}，签字人 {p4}，依据原文：{p5}）"
+  kReportSignedOkDegraded: "（⚠ 降级判定：这条签字没有记录报告指纹（历史签字，或不是经本通道写入），因此只核对了「当前真源自洽」—— 签字时刻那份报告的内容无法回证；要拿强口径请按修法重签一次）"
   kRollbackNone: "还没有发生过阶段回退"
   kRollbackNoReasonAt: "回退事件没有写 reason：{p1} → {p2}"
   kRollbackRemedy: "回退必须写清发现了什么需求缺口，且只能沿流程声明的合法回退边退"
@@ -1405,11 +1656,68 @@ uiGates:
   kConstructionProfileNa: "方法包未决定或已显式不选：本判据 N/A（由「方法包已决定」判据负责报红）"
   kConstructionPackagesOk: "范围内的 {p1} 张已完成卡都满足所选方法包"
   kConstructionPackagesRemedy: "补齐对应交付物（`.sdo/construction/*.yml`）、先冻结契约再认领，或写**豁免**（`exempt: [{task, check, why}]`，理由必填）"
+  # TASK-017 / REQ-050：G6 `exit.criteria` —— 准出准则**逐条现算**（禁止加权）；文案一律落在这里
+  kExitOk: "准出准则逐条现算：{p1} 条准则——{p2}"
+  kExitFail: "准出准则逐条现算**不通过**（不是加权总分、也不做合并折算）：{p1} 条准则——{p2}"
+  kExitCriterionItem: "{p1}［{p2}］实测「{p3}」（来源 {p4}）"
+  kExitVerdictPass: "达标"
+  kExitVerdictFail: "不达标"
+  kExitVerdictUnmeasured: "找不到实测（判不动）"
+  kExitSourceNone: "（无实测来源）"
+  kExitReasonThresholdMissing: "准则声明的阈值是空的：没有阈值就没有「达标」可言（先补上阈值）"
+  kExitReasonBelowThreshold: "实测低于声明的阈值"
+  kExitReasonOk: "实测达到声明的阈值"
+  kExitReasonMeasureUnparsable: "实测值读不出数值（写成 82% / 0.82 / 82/100 这类）"
+  kExitReasonReadingStale: "覆盖读数**已过期**（被测产物变了）：先重跑测量并重记读数，旧数字一律不采信"
+  kExitReasonReadingInvalid: "覆盖读数**不成立**（未达它自己的阈值 / 缺报告或哈希）：按 coverage 的结论先修好这条读数"
+  kExitReasonReadingUnknown: "覆盖读数**判不动**（缺被测产物哈希等）：补全后重判，判不动不许当达标"
+  kExitReasonReportFail: "测试报告给出的结论是 fail"
+  kExitReasonReportConflicts: "两来源**矛盾**：报告的结论与实测/阈值对不上（不许挑一个好看的来源）"
+  kExitReasonReportNoVerdict: "报告没给结论，按实测现算"
+  kExitReasonReportMeasureUnparsable: "报告里的实测读不出数值，无法与阈值比对"
+  kExitReasonNoMeasurement: "准则没有实测来源：覆盖读数里没有同名准则、测试报告里也查不到 —— 判不动一律判红（fail-closed）"
+  kExitWeightIgnored: "注意：你写的权重 / 得分**未被采用**（本判据逐条判定、禁止加权合并）——原样报出、不进判定：{p1}"
+  kExitRemedy: "按项目声明的准出准则逐条补齐**实测**并重跑：在 `.sdo/testing/coverage.yml` 的 `readings[]` 里给每条准则记一条读数（criterion / threshold / measured / command / report / reportHash / artifact / artifactHash 八项齐备），或在 `.sdo/testing/report.yml` 的 `exitCriteria[]` 里逐条给出 measured + verdict。任一条不达标或**找不到实测**都会让整条判据判红，判据会**逐条点名**是哪一条、实测多少、来源何处；不许把多条准则折算成一个加权总分（那正是本判据要禁止的合并形式）"
+# 缺陷追溯读数（TASK-038 / REQ-058）：孤儿缺陷、悬空边、显式豁免与覆盖率。
+# 门禁回执、docs/TRACE.md、docs/BOARD.md 三处**同一份措辞**都取自这里（不得各处再写一套）。
+uiTrace:
+  defectTraceUnreadable: "❌ 缺陷台账**读不动**（判不动不许判绿）：{p1}"
+  defectTraceEmpty: "缺陷台账为空：0 条缺陷要挂需求 ⇒ 缺陷追溯覆盖率 100%"
+  defectTraceOk: "缺陷 {p1} 条全部可追溯（有效边或合规豁免）；缺陷追溯覆盖率 {p2}%"
+  defectTraceOrphans: "孤儿缺陷（既未挂需求也未豁免）：{p1}"
+  defectTraceDangling: "指向失效需求的边：{p1}"
+  defectTraceCoverage: "缺陷追溯覆盖率 {p2}%（台账 {p1} 条）"
+  defectTraceExemptedList: "豁免清单（不计孤儿，逐条留痕）：{p1}"
+  defectTraceInvalidExemption: "豁免**不成立**（缺理由或缺批准人 ⇒ 按未豁免处理）：{p1}"
+  defectTargetMissing: "（目标需求不存在）"
+  defectTargetWithdrawn: "（目标需求未基线或已作废）"
+  defectTraceNoReading: "这一次渲染没有拿到读数（追溯报告里缺这一位）"
+  defectTraceRemedy: "给每条孤儿缺陷补一条 `req-defect` 边（`sdo_trace action=link from=REQ-001 to=DEF-001 kind=req-defect`，目标需求必须**已基线**且未作废），或者在 `.sdo/defects/DEF-*.yml` 里写显式豁免 `exemption: { reason: <为什么可以不管>, approvedBy: <谁批准的> }`（理由与批准人缺一不可，缺了按未豁免处理）；边指向失效需求时先改掉那条边或改挂到有效需求上"
+uiCollab:
+  kErrataNotFound: "找不到任务卡 {p1}（勘误只能追加到已存在的卡）"
+  kErrataNoteRequired: "{p1} 的勘误不能不写内容：勘误是**说明**，空说明等于没写"
+  kScopeViolationSelfReported: "{p1} 越界写：{p2}（写范围：{p3}）—— 注意：这次对账用的是**执行者自报**的写入清单（子会话收不到宿主的 workspace/changes，上游限制 DEF-016）⇒ 结论按**声明**判，不是宿主观测；把改动挪回写范围，或让流程官改卡后重新认领"
+  kScopeUnbounded: "（未限定）"
+  kScopeConflictOrphan: "{p1} 的写锁是**孤儿锁**：拥有它的子会话已结束（{p4}，序 {p6}），卡却还停在 in-progress —— 先释放它（这是唯一安全的解除方式）：`{p5}`，再认领本卡。重叠的路径是 {p3}。"
+  kOrphanReasonUnknown: "（未记原因）"
+  kAddScopeAmbiguous: "{p1} 的写范围同时给了 `writeScopes`（整份替换）与 `addWriteScopes`（追加）—— 二者互斥，只给一个（卡在飞时请用追加）。"
+  kAddScopeEmpty: "{p1} 没有可追加的新写范围（为空，或与既有范围重复）—— 追加只并进**新**路径。"
+  kAddScopeForbidden: "{p1} 的写范围只能由**流程官**（human / office / cockpit）或**本卡 owner**追加（当前 owner：{p2}；你是：{p3}）。"
+  kAddScopeReasonRequired: "{p1} 追加写范围必须带 reason：这是一次计划变更，理由要进 task/updated 事件（事后可复核）。"
+  kAddScopeConflict: "追加的范围 {p1} 与在飞卡 {p2}（owner {p3}）相交 —— 追加会造出两个写者，正是这把锁要防的事：等它收工，或把这条共享路径拆成一张独立卡。"
+  kScopeConflict: "写范围与正在进行的 {p1}（owner={p2}，状态 {p4}）冲突：重叠的路径是 {p3}。三条出路：① 等它收工；② 让它让路（`sdo_task action=release` 后由你重新认领）；③ 若这两张卡确实要并行，让流程官把 {p3} 拆成独立卡（或把范围收窄到不相交的路径）"
+  kListSep: "、"
+  unblockNotFound: "找不到任务卡 {p1}"
+  unblockNoOwner: "（无）"
+  unblockNotAuthorized: "{p1} 的恢复（unblock）只允许**驾驶舱**或**该卡原 owner**（当前 owner：{p2}）—— 恢复会把它放回派发队列，属计划产物，不能让任意会话改（与 drop / reassign 同一条职责分离口径）"
+  unblockReasonMissing: "{p1} 的恢复必须带 reason：写明\"阻塞条件怎么解除的\"—— 静默恢复等于把一次计划变更藏起来（回执与 task/unblocked 事件都要留它）"
+  unblockNotBlocked: "{p1} 现在的状态是 {p2}，**不是 blocked** —— 无需恢复（unblock 只处理 blocked 卡；ready / planned 卡要改范围请走 `sdo_task action=update`，确实不做请走 `sdo_task action=drop`）"
 uiPlan:
+  kScopeSplitSuggestion: "；若两张卡都要改同一份文件，首选把**该路径拆成一张独立卡**（共享文件由一张卡独占，其余卡用 `blockedBy` 声明先后）。"
   kWriteScopeEmpty: '任务卡没有写范围（writeScopes 为空）—— 空写范围既不占位、也不受越界审计（C-31 要求写范围齐备）'
   kWriteScopeEmptyRemedy: '给这张卡填上它要写的路径前缀（例：src/booking/）；**不写代码的卡**（如纯评审卡）按实填它真正会写的台账目录 —— 纯评审卡通常填 [".sdo/"]（评审员只写 `.sdo/reviews/*.yml`），或把卡改成有写范围的卡、显式放弃'
   kBlockedHolderNote: '（该卡处于 blocked：它随时可能继续写同一范围，故仍排他）'
-  kScopeReleaseHint: '　（SDO-46）被 blocked 卡挡住时：先 `sdo_task action=release` 或 `drop` 它把范围腾出来。'
+  kScopeReleaseHint: '　（DEF-049）被 **blocked** 卡挡住时：先判断它还做不做 —— 还要做就 `sdo_task action=unblock id=<挡住的卡> reason=…`（阻塞解除、回到 ready），确实不做才 `sdo_task action=drop`（放弃）或 `release`（让回池子）；**不要**再拿 `release` 当"解除阻塞"用。在飞卡要扩写范围：`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…`（**追加**，不丢 in-progress 与 owner）；整份替换仍要求先释放。'
   k1: "改动有产物证据（路径 + 哈希）"
   k2: "调用方实现"
   k3: "失败语义（超时/重试/幂等）的测试"
@@ -1612,7 +1920,7 @@ uiApplicability:
 uiReview:
   # —— 评审发现核实（2026-10-08 口径：评审结果是主张，要由实现方逐条核实才能采纳）——
   noReview: "找不到评审 {p1}"
-  badIndex: "{p1} 只有 {p2} 条发现，找不到第 {p3} 条"
+  badIndex: "{p1} 只有 {p2} 条发现：找不到第 {p3} 条（台账 index {p4}）。合法范围：第 {p5} 条（1 起）；**台账按 0 起记**，所以参数第 N 条 = 台账 index N-1。"
   badOutcome: "核实结论只能是 reproduced（复现）/ refuted（反驳），收到 {p1}"
   emptyEvidence: "核实必须给出依据：复现的命令与结果、或反驳的反证；空口核实不算核实"
   selfVerify: "{p1} 是会话 {p2} 记录的评审 —— 同会话不能自己核实自己"
@@ -1628,6 +1936,12 @@ uiReview:
   stateTampered: "评审文件与真源不符（被改过）"
   stateUnrecorded: "评审无真源事件（手写）"
   rehashTampered: "{p1} 已记录的指纹与当前内容**不一致**（可能被改过）—— 补记会把这条证据抹掉，所以拒绝；先查清改动来源（该登记的走缺陷流程），确认无误再补记"
+  # —— 向既有评审**追加**发现项（TASK-108 / DEF-065 拆出项）：四条拒绝路径各自可读、互不混淆 ——
+  appendNoReview: "❌ 找不到评审 {p1} —— `append` 只能追加到**已存在**的评审（不新建记录）；要记一条新评审用 `sdo_review action=record`，要看看有哪些评审用 `sdo_review action=list`"
+  appendTampered: "⛔ {p1} 的文件内容与该评审**已记录的内容指纹不一致**（verdict 或已有发现正文被手改过）—— **拒绝追加**：追加会让这次改动混进新内容里，等于把篡改洗白。先查清改动来源（该登记的走缺陷流程），确认无误再决定要不要补录"
+  appendBadShape: "❌ `findings` 形状不对：要**数组**或**JSON 文本数组**（例如 `[\"发现一\",\"发现二\"]`），追加的发现项必须是字符串；收到的是：{p1}"
+  appendBadShapeItem: "第 {p1} 项不是字符串（是 {p2}）"
+  appendEmpty: "❌ 追加的 `findings` 为空（{p1}）—— `append` 至少要给一条**非空白**的发现项；确实没有要补的就不必调用（已有正文一字未动）"
 
 uiSignature:
   journalOnly: '⚠️ 但真源 journal 里有 {p1} 条 gate/signed 事件 —— 签字台账文件被删或被改写（这不是「从来没签过」，是不一致，D8）'
@@ -1678,17 +1992,128 @@ uiSignReview:
   failedActual: "    - 实测：{p1}"
   failedRemedy: "    - 修法：{p1}"
   warningItem: "- **{p1}** 告警：{p2}"
-  artifactHeading: "## 本门相关产物"
-  noArtifacts: "本门在流程数据里没有声明建议产物。"
+  artifactHeading: "## 本门相关产物（**建议 / 必需两栏**）"
+  requiredHeading: "### 必需产物（判据**强制**：缺了本门判据就判红）"
+  suggestedHeading: "### 建议产物（流程数据的建议：不入门禁，缺失不等于不通过）"
+  noRequiredArtifacts: "本门没有判据强制的产物（判据只读台账、不要求人读文档）。"
+  noSuggestedArtifacts: "本门在流程数据里没有声明建议产物。"
+  noArtifacts: "本门既没有判据强制的产物，流程数据里也没有声明建议产物。"
   colArtifact: "产物"
+  colRequired: "必需产物（规范名）"
   colState: "状态"
   colBytes: "字节"
   artifactExists: "存在"
   artifactMissing: "缺失"
+  requiredTag: "必需"
+  suggestedTag: "建议"
+  artifactAlignment: "（对齐到规范名 `{p1}`：实际渲染名 `{p2}`）"
+  alignmentHeading: "### 名字对齐（建议名 ↔ 实际渲染名）"
+  alignmentItem: "- 建议名 `{p1}`（找的是 `{p2}`）↔ 规范渲染名 `{p3}`（`{p4}`，当前**{p5}**）：同一份内容只允许一个规范名，名字不一致会造成补不上的「假缺失」"
+  remedyHeading: "### 缺失项与修法"
+  remedyItem: "- `{p1}`：修法 —— {p2}"
+  artifactRemedyMissing: "补文件：按本门判据/渲染器的落点生成 `{p1}`（该产物由真源渲染时用对应的 sdo_render 目标重渲染）"
+  artifactRemedyAlign: "把名字对齐到规范名：盘上没有 `{p1}`，而同一份内容在 `{p2}`；要么按规范名补出 `{p3}`，要么把流程数据里的建议名改成规范名 `{p1}`"
   unjudged: "真源读不出来，判据**没有逐条判定** —— 请先按回执里的报错修好真源再签字。"
 
 
+uiSignValue:
+  class: "类"
+  interface: "接口"
+  enum: "枚举"
+  type: "类型"
+  component: "组件"
+  service: "服务"
+  module: "模块"
+  util: "工具"
+  infra: "基础设施层"
+  domain: "领域层"
+  integration: "宿主适配层"
+  client: "客户端半"
+  host: "宿主提供"
+  actor: "使用者"
+  low: "低"
+  medium: "中"
+  high: "高"
+  must: "必须"
+  should: "应当"
+  could: "可选"
+  chosen: "已选定"
+  open: "未关闭"
+  closed: "已关闭"
+  rpc: "远程调用"
+  file: "文件"
+  event: "事件"
+  data: "数据"
+  pending: "待处理"
+  done: "已完成"
+  performance: "性能"
+  reliability: "可靠性"
+  security: "安全性"
+  usability: "易用性"
+  maintainability: "可维护性"
+  schema: "数据结构"
+  accepted: "已接受"
+  confirmed: "已确认"
+  baselined: "已基线"
+  draft: "草稿"
+  rejected: "已拒绝"
+  P0: "P0（阻断）"
+  P1: "P1（高）"
+  P2: "P2（中）"
+  P3: "P3（低）"
+  goal: "目标维度"
+  user: "用户维度"
+  scenario: "场景维度"
+  acceptance: "验收维度"
+  boundary: "边界维度"
+  constraint: "约束维度"
+  quality: "质量维度"
+  mapping: "旧新映射表"
+  diffVerify: "差分验证策略"
+  classes: "类与接口清单"
+  layers: "分层依赖规则"
+  sequences: "关键用例时序"
+  debt: "技术债台账"
+  invariants: "不变量清单"
+  reversibility: "可逆性分级"
+  increments: "迭代设计增量"
+
 uiSignField:
+  confirmed: "用户确认"
+  focus: "设计重点"
+  viewsPresent: "要做的视图"
+  viewsAbsent: "明确不做的视图"
+  artifacts: "要做的工件"
+  artifactsAbsent: "不做的工件（须逐条给理由）"
+  layer: "层"
+  collaborators: "协作方"
+  leaf: "叶子类型"
+  screens: "页面"
+  columns: "栏目"
+  layout: "布局"
+  style: "风格"
+  tokens: "设计令牌"
+  breakdown: "断点"
+  breakpoints: "断点"
+  accessibility: "无障碍"
+  contrast: "对比度"
+  keyboard: "键盘可达"
+  screenReader: "读屏"
+  width: "宽度"
+  grid: "栅格"
+  question: "设计方法选择题"
+  methods: "选定方法"
+  draftedAt: "起草时间"
+  verify: "验证"
+  decisions: "决策"
+  pages: "页面"
+  screensPresent: "要做的界面"
+  basis: "依据"
+  by: "确认人"
+  basisSource: "依据来源"
+  pagesAbsent: "不做的界面"
+  methodsAbsent: "不选的方法"
+  confirmations: "确认戳"
   needsReview: "需复核"
   id: "编号"
   title: "标题"
@@ -1786,8 +2211,60 @@ uiSignField:
   invariants: "不变量"
   diffVerify: "差异核对"
   authorizedByUser: "用户授权"
+  absentReason: "理由"
+  sensitivities: "敏感点"
+  risks: "已识别风险"
+  tradeoffs: "权衡点"
+  nonRisks: "非风险"
+  messages: "消息序列"
+  from: "发起方"
+  to: "接收方"
+  trigger: "触发条件"
+  steps: "步骤"
+  guards: "守卫"
+  outcome: "结果"
+  reasons: "理由"
+  qualityScenario: "质量场景"
+  qas: "质量属性场景"
+
+uiSignView:
+  context: "上下文视图"
+  component: "组件视图"
+  runtime: "运行时视图"
+  data: "数据视图"
+  deployment: "部署视图"
+  method: "方法视图"
+  oo: "面向对象"
+  evolutionary: "敏捷-演进式"
+
+uiSignMethod:
+  classes: "类与接口清单"
+  layers: "分层依赖规则"
+  sequences: "关键用例时序"
+  debt: "技术债台账"
+  invariants: "不变量清单"
+  reversibility: "可逆性分级"
+  increments: "迭代设计增量"
+  mapping: "旧新映射表"
+  diffVerify: "差分验证策略"
+
+uiSignQuality:
+  performance: "性能"
+  reliability: "可靠性"
+  security: "安全性"
+  usability: "易用性"
+  maintainability: "可维护性"
 
 uiSignPayload:
+  atamHeading: "ATAM 分析（质量属性权衡）"
+  applicabilityHeading: "设计适用性声明"
+  viewHeading: "视图：{p1}"
+  uiHeading: "界面方案"
+  methodChoiceHeading: "设计方法选择"
+  artifactHeading: "方法产物：{p1}"
+  confirmationsHeading: "用户确认戳"
+  qualityHeading: "质量场景：{p1}"
+  itemIndex: "第 {p1} 项"
   entryTitleSep: "　"
   metaSep: " ｜ "
   provenance: "- 源：`{p1}`　指纹：`{p2}`"
@@ -2366,6 +2843,12 @@ uiConstruction:
   c33: "TDD 红→绿不是同一次实验：用例 {p1} 的红灯环境是「{p2}」、绿灯环境是「{p3}」—— 两次必须同环境（换环境 = 换了实验条件，先证结论仍成立再收工）。"
   c34: "TDD 红→绿**换了断言面**：用例 {p1} 红灯的断言面指纹是「{p2}」、绿灯是「{p3}」—— 这无法区分「实现由红转绿」与「把断言改到能过」。同一次实验必须同指纹（`sdo_test action=record harness=…`）。"
   c35: "TDD 红→绿之间**产物没变**：用例 {p1} 红绿两次绑定的产物（{p2}）是同一个 sha256 —— 代码没动却转绿，可疑；请核实是「断言被改」还是「换了被检产物」并更正证据。"
+  c36: "N/A（{p3} 不判）：{p1} 的写范围是「{p2}」——**不触及产品代码**（只落在台账 `.sdo/**`、文档 `docs/**` 或 markdown 文件里），没有可跑的产品实现 ⇒ 既没有红→绿时序、也没有可杀的变异体。这不是豁免（没有人批过），是判据自己按写范围路径认出来的「本卡没有对应对象」。"
+  c37: "N/A（contract-test-missing 不判）：{p1} 的写范围是「{p2}」——**不触及契约面**（不含 `src/interface/**` 或 `.sdo/contracts/**`），且没有任何契约声明 `requires` 命中本卡需求（`contractsOfCard()` 为空，台账 {p3}）⇒ 本卡没有契约对象可测。这不是豁免（没有人批过），是判据自己按写范围路径 + 契约台账认出来的「本卡没有对应对象」。"
+  naScopeSep: "、"
+  naScopeEmpty: "（空）"
+  naCheckRedGreen: "tdd-red-green-missing"
+  naCheckMutation: "tdd-mutation-missing"
 
 uiTestFirst:
   kUntraceable: "这些结果文件在台账里**没有对应事件**（手写/伪造，判据不认）：{p1}"
@@ -2376,3 +2859,7 @@ uiDispatch:
   kReportedHeader: "**子代理报告（已自动送达）**"
   kReportedLine: "- {p1}：**子运行**结束（原因：{p2}；这只是「跑完了一轮」，卡是否完成看 `status`）｜ 报告：`.sdo/{p3}`"
   kReportedMore: "（还有 {p1} 份未送达的报告，下次会继续带上）"
+
+uiPool:
+  kReuseRoundsExceeded: "该子会话已承接 {p1} 轮（项目声明上限 {p2}）—— 余量不足，不再复用"
+  kReuseCardsExceeded: "该子会话已承接 {p1} 张卡（项目声明上限 {p2}）—— 余量不足，不再复用"

@@ -121,13 +121,14 @@ SDO：G2 需求基线门禁 ✅（需求冻结为 v0.2）
 | 确有正当理由要跳过 | `sdo_gate action=waive gate=G3 reason=… approver=…`（显式豁免并留痕） |
 | 推进到下一阶段 | `sdo_gate action=advance`（当前阶段出口门禁全绿 / 已豁免后才推进） |
 | 记录用户签字 | `sdo_gate action=sign gate=G2 quote="用户原话"`（无人机对话通道时用 `channel=question`；无引用一律拒绝） |
-| 签字前必须看到什么 | 审核单**内联受审载荷正文**（需求陈述/理由/AC 表、红队与澄清问答、风险影响与缓解、决策…；集合按流程数据 `reviewPayload` 逐阶段声明）。**排版以人读为准**：标题行带名称（`#### REQ-001　<标题>`）、字段用人话标签（`陈述`/`理由`/`等级`…）、正文里的代号解析成 `代号「名称」`；时间戳/内部版本/模型评分明细等**与审核无关的字段不写**（真源里仍在），空字段不占行。审核单带**整篇指纹**：**真源一变即失效** —— `channel=statement` 在无审核单或真源已变时**拒签并逐条点名差异**；`channel=question` 在用户作答后再核一次（覆盖"读卡片期间真源被改"）|
+| 签字前必须看到什么 | 审核单**内联受审载荷正文**（需求陈述/理由/AC 表、红队与澄清问答、风险影响与缓解、决策…；集合按流程数据 `reviewPayload` 逐阶段声明）。**排版以人读为准**（含**工件级**呈现：同一目录下的适用性声明 / 视图 / 界面方案 / 方法产物 / 确认戳 / ATAM 各有自己的标题与标签）：标题行带名称（`#### REQ-001　<标题>`）、字段用人话标签（`陈述`/`理由`/`等级`…）、正文里的代号解析成 `代号「名称」`；时间戳/内部版本/模型评分明细等**与审核无关的字段不写**（真源里仍在），空字段不占行。审核单带**整篇指纹**：**真源一变即失效** —— `channel=statement` 在无审核单或真源已变时**拒签并逐条点名差异**；`channel=question` 在用户作答后再核一次（覆盖"读卡片期间真源被改"）|
 | —— `channel=question` 时用户看到什么 | **提问卡只放摘要**（门禁 / 阶段 / 判定 / 判据计数 / 生成时间），**全文**（逐条判据三态 + 未通过项与修法 + 本门建议产物清单）走**右侧边栏**「门禁审核单」；全文同时落盘 `.sdo/evidence/sign-reviews/<门禁>.md`（固定名副本 `latest.md` 供客户端按路径取），是"**用户签字时看到过什么**"的审计件；**审核单开在提问所属会话**（不是当时屏幕上的会话）；**作答后该标签页自动关闭**（在插件根监听结算，**即使那一页从未显示**也会关），且**只有这一栏没有别的页时才收起面板**（宿主自己的引导页不算「别的页」）（结算信号取自家这条问答链的委派完成，只有真拿到答复才关；右侧还开着别的页就只关自己那页、不碰用户的栏） |
 | 退回某个阶段 | `sdo_gate action=rollback to=详细设计 reason=…`（回执会说明哪些豁免仍然保留） |
 | 需求变了 | `sdo_requirement action=change id=REQ-002 …`（影响分析 + 决策），或 `action=update`（改内容会退回 `changed` 并涨版本号） |
 | 改验收标准编号 / 删除 | `sdo_requirement action=update … acceptance=[…] acceptanceMode=replace`（整份替换；不传则只追加） |
 | 卡建错了 | `sdo_task action=drop id=…`（留痕，不再计入完成率） |
 | 卡写错了 | `sdo_task action=update id=… writeScopes='["src/x/"]'`（CAS 可选；写完要重新认领） |
+| 卡如实上报了"做不下去" | `sdo_task action=unblock id=… reason=…`（从 blocked 恢复为 `ready`、**接着做**；限驾驶舱或该卡原 owner，必带理由，落追加式 `task/unblocked` 事件）—— 与 `release`（我不做了、把卡让回池子）语义不同，别再用 `release` 当"解除阻塞" |
 | 契约写错了 | `sdo_design action=contract id=CT-00x …`（原地更新）或 `action=drop-contract`（作废留痕） |
 | 写人读文档 | `sdo_design action=render` → `docs/DESIGN.md`；`sdo_render` → `docs/SRS.md`；`/sdo-board --write` → `docs/BOARD.md` |
 | 切界面语言 | 聊天里说"切换成英文"（`sdo_lang`）或 `/sdo-lang en`；持久化用 config 的 `lang` 或环境变量 `SDO_LANG` |
@@ -203,8 +204,8 @@ README 以前写成"已受约束"是**不准确**的（D12）。要用它们做�
 | 需求 | `sdo_requirement`（capture / grill / answer / update / change / list / baseline / design-questions / applicability / applicability-confirm）、`sdo_redteam`（attack / propose / file / dispose / on / off / status） |
 | 可行性 / 风险 | `sdo_feasibility`（assess）、`sdo_risk`（log / update / list / conclude） |
 | 架构与设计 | `sdo_design`（view / create / contract / drop-contract / grill / answer / confirm / issues / render / method / artifact / review / waive-plan）、`sdo_adr`（record / list / supersede）、`sdo_quality`（scenario / evaluate / list） |
-| 计划与协同 | `sdo_plan`（decompose / iteration / next / profile）、`sdo_task`（list / claim / done / block / drop / release / reassign / update / verify-review）（`update` 改卡字段含写范围；已完成卡不改、有人在做时不得改写范围） |
-| 验证与评审 | `sdo_test`（plan / record / defect / list / env）、`sdo_review`（record / rehash / list）—— `rehash` = 给**老格式评审**补记内容指纹（补记之后改 verdict/正文可检出）—— 评审核实在 `sdo_task`（list / … / **verify-review**）：实现方逐条核实评审发现（复现 / 反证），核实过的评审才会被门禁采纳 |
+| 计划与协同 | `sdo_plan`（decompose / iteration / next / profile）、`sdo_task`（list / claim / done / block / drop / release / reassign / update / unblock / verify-review / errata）（`update` 改卡字段含写范围；已完成卡不改、有人在做时不得改写范围；`unblock` 把 blocked 卡恢复为 ready、接着做；`errata` 给卡**追加**勘误 —— **只能追加**、历史正文一个字不改，拆卡之后「本卡不做」的说明靠它留痕） |
+| 验证与评审 | `sdo_test`（plan / record / defect / list / env）、`sdo_review`（record / append / rehash / list）—— `rehash` = 给**老格式评审**补记内容指纹（补记之后改 verdict/正文可检出）；`append` = 向**既有**评审**追加**发现项（只增不改：verdict 是原评审的结论，追加路径改不了它；每次追加写一条 `review/appended` 留痕，条目多/分次补录不再另起一条同 verdict 的记录）—— 评审核实在 `sdo_task`（list / … / **verify-review**）：实现方逐条核实评审发现（复现 / 反证），核实过的评审才会被门禁采纳 |
 | 追溯与文档 | `sdo_trace`（link / unlink / query / report）、`sdo_render` |
 | 门禁与成本 | `sdo_gate`（check / advance / sign / waive / unwaive / rollback）、`sdo_cost`（report） |
 | 交付 | `sdo_deliver`（run / package / show） |
@@ -297,6 +298,7 @@ SDO 把每个**派发运行**的角色纪律写成卡片，随包放在 `skills/
 | `orchestrator` | `subagent` | 派发后端：`subagent` / `native-team`（实验）/ `inline` |
 | `maxParallelDispatch` | `4` | 并行派发上限（1–8） |
 | `dispatchOrphanTtlMinutes` | `60` | 未结算派发的**孤儿 TTL**：`dispatch/started` 之后超过这么久仍无 `dispatch/finished`（子会话被强杀 / 派发丢了）就不再占池位；TTL 内的未结算派发照旧占位（不误伤长任务） |
+| `reuseMaxRounds` | `0` | **子会话复用余量**（DEF-069）：一个子代理最多承接几**轮**派发，达到即不再复用（`0` = **未声明**，不判）。判定与池视图共用一处口径；超限会在派发回执里说明原因 |
 | `poolCaps` | `{}` | **按角色的子代理池上限**，如 `{ developer: 2, tester: 1 }`；没写的角色用 `maxParallelDispatch`。池满的卡**排队**（不丢卡），等池里有子代理结算后由下一次 `sdo_plan action=next` 放行 |
 | `captureWorkspaceChanges` | `true` | 采集 `workspace/changes` 证据 |
 | `enforceRoleMask` | `true` | 对**认得出的派发角色**硬拦掩码之外的调用（B6）；关掉只是不拦，掩码声明照旧 |
@@ -547,6 +549,8 @@ npm run build          # tsc → lib/
 npm run typecheck      # 只做类型检查
 npm test               # build + node --test（测试入口 scripts/run-tests.mjs）
 npm run pack:offline   # 产出离线安装包 → dist/offline/
+sdo_render target=quality     # 质量场景 + ATAM → docs/QUALITY.md（G3 判据 C-2G 要求它新鲜）
+sdo_render target=decisions   # ADR 汇总 → docs/DECISIONS.md
 node scripts/host-compat.mjs --instance ~/.local/share/hdsl/instances/<版本>   # 换宿主版本时先跑这个
 ```
 

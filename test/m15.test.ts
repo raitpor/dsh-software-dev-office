@@ -26,14 +26,15 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 import { Config, resolveSettings } from '../src/config.js'
 import { writeMethodDoc } from './support/method-doc-fixture.js'
 import { SdoStore } from '../src/infra/store.js'
+import { Journal } from '../src/infra/journal.js'
 import type { SdoConfig } from '../src/config.js'
-import { parseUiViewInput, decidedByAdr } from '../src/domain/design.js'
+import { parseUiViewInput, decidedByAdr, readUiView, writeUiView } from '../src/domain/design.js'
 import { fmt, t } from '../src/domain/i18n.js'
 import { apply } from '../src/index.js'
 import { describeDesignQuestions } from '../src/interface/describe.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { prepareG2 } from './support/g2-fixture.js'
-import type { GateCriterionResult, GateEvaluation, ViewKind } from '../src/types.js'
+import type { GateCriterionResult, GateEvaluation, UiView, ViewKind } from '../src/types.js'
 import { seedSignReview } from './support/sign-review-fixture.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -746,4 +747,37 @@ test('F-9 解析器：缺字段补空、缺 id 顺序分配，类型错误显式
     if (!('error' in bad)) continue
     assert.ok(bad.error.includes(marker), `错误信息应指向「${marker}」：${bad.error}`)
   }
+})
+
+/**
+ * **DEF-003 端到端守卫**：`writeUiView` 的令牌键里若有**以减号开头**的键（CSS 变量形态，如 `--sdo-accent`），
+ * 写端 `quoteIfNeeded` 会给它加单引号，读端必须能整份读回且 `tokens` **逐字相等**。
+ *
+ * 为什么必须端到端：既有夹具（m8/m12/m15/m17）里的减号键都是**手写真源**（`--fg: "#111"`，写端从没跑过），
+ * 而本文件原有断言只查"文件存在 + 片段包含" ⇒ **绕过了写→读往返**，缺陷因此长期存活
+ * （知识库 `tq_097f952d`：修复者自测只走它修好的那条路径不算数）。
+ */
+test('DEF-003 端到端：writeUiView 的减号开头令牌键必须逐字读回', () => {
+  const tokens = { '--sdo-accent': '#111', '--sdo-fg': '#222', plain: 'ok' }
+  const view: UiView = {
+    id: 'UI-001',
+    style: { source: 'minimal' as const, tokens, rationale: '极简' },
+    screens: [{
+      id: 'SCR-001',
+      name: '差异清单',
+      columns: [{ name: '编号', kind: 'text' }],
+      layout: { grid: '1fr 80px', regions: ['header', 'table'] },
+      interactions: [],
+      states: {},
+      requires: [],
+    }],
+    breakpoints: [],
+    accessibility: { contrast: '4.5:1', keyboard: true, screenReader: '读屏' },
+    updatedAt: '2026-01-01T00:00:00.000Z',
+  }
+  const store = office.storeFor(workspace)
+  writeUiView(store, new Journal(store), view)
+  const back = readUiView(store)
+  assert.ok(back !== undefined, '界面视图必须能读回（带引号键的真源整份读不回正是本缺陷的现象）')
+  assert.deepEqual(back.style.tokens, tokens, '令牌键与值必须逐字读回，减号开头的键也不例外')
 })

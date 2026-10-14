@@ -401,6 +401,16 @@ test('棘轮守卫：面向用户模块的硬编码中文不得增加（应逐�
     'src/domain/reviewVerification.ts': 0,
     // 2026-10-09 交互优化：门禁签字审核单（判据三态 + 本门产物原文）渲染器，文案一律走语言包
     'src/domain/reviewDoc.ts': 0,
+    // **TASK-035 落点四（2026-10-13）**：收录覆盖读数与未覆盖项处置模块。
+    // 它的中文文案是**集中**的两类：判红/判不动的逐条**问题文案**（`COVERAGE_ISSUE_CODES` 的那一族）
+    // 与准则/处置的**人话标签兜底表**（`CRITERION_FALLBACK_LABEL`）。两者都不在语言包键的形态里
+    // （前者带字段路径与现算值，后者是 `coverage.ts` 自己的兜底表，紧随 `testingRender`/`regression`
+    // 的既有处置），故按**实测**基线收录，不再"逐步迁入"以外的口径。
+    //
+    // 计数口径：**只数含中文的字符串字面量、注释不计** —— 由本用例下方的同一个扫描器
+    // `countCjkLiterals`（`src/domain/langScan.ts`）现算；用 grep/`grep -c` 会把注释里的中文算进去
+    // （本模块的中文注释占比很高），那是**另一种口径**，不在这里用。
+    'src/domain/coverage.ts': 49,
   }
 
   const root = fileURLToPath(new URL('../../', import.meta.url))

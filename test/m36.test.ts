@@ -10,7 +10,8 @@
  * 绝不被复用、one-shot 结算后不算"空闲可复用"、宿主没有可续聊入口时如实说降级。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -20,6 +21,12 @@ import { Journal } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
 import { apply } from '../src/index.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { assessCoverageFromStore } from '../src/domain/coverage.js'
+import { assessExitCriteria, renderExitCriteria } from '../src/domain/gates.js'
+import { countCjkLiterals } from '../src/domain/langScan.js'
+import { readTestingClass } from '../src/domain/testingStore.js'
+import { t } from '../src/domain/i18n.js'
+import { loadPackagedYaml } from '../src/infra/data.js'
 import { admitDispatch, capOf, foldPoolChildren, isStaleDispatch, rolePools, unresolvedBlock } from '../src/domain/pool.js'
 
 /** SDO-52：夹具统一用的掩码指纹（与 `admitDispatch` 的 `maskHashOf` 对应） */
@@ -108,10 +115,10 @@ test('M36-02 池视图：上限取配置（没配的角色用全局上限）、o
   // **R-6**：`rolePools` 也判掩码指纹（与准入同一判据）⇒ 夹具必须给指纹，否则一律算"不可复用"
   const pools = rolePools({
     children: [
-      { childSessionId: 'c1', role: 'developer', task: 'T1', mode: 'continuable', state: 'busy', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
-      { childSessionId: 'c2', role: 'developer', task: 'T2', mode: 'continuable', state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
-      { childSessionId: 'c3', role: 'developer', task: 'T3', mode: 'one-shot', state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
-      { childSessionId: 'c4', role: 'tester', task: 'T4', mode: 'one-shot', state: 'busy', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c1', role: 'developer', task: 'T1', mode: 'continuable', parentSessionId: '', state: 'busy', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c2', role: 'developer', task: 'T2', mode: 'continuable', parentSessionId: '', state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c3', parentSessionId: '', role: 'developer', task: 'T3', mode: 'one-shot', state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
+      { childSessionId: 'c4', parentSessionId: '', role: 'tester', task: 'T4', mode: 'one-shot', state: 'busy', rounds: 1, startedAt: '', finishedAt: '', maskHash: 'H' },
     ],
     roles: ['developer', 'tester', 'architect'],
     caps: { developer: 3 },
@@ -482,3 +489,305 @@ test('M36-08 R-5C：被 `limit` 截掉的卡**必须露面**（既没派发、�
   assert.match(receipt, /TASK-102/u, '要说出是哪张卡（旧实现里它既不"已派发"也不"排队"，凭空消失）')
   assert.equal(journal.read().events.filter((event) => event.type === 'dispatch/started').length, 1, '只派 1 张')
 })
+
+// ————————————————————————————————————————————————————————————————————————————
+// TASK-017：G6 `exit.criteria`（准出准则逐条现算 / 禁止加权）+ 语言包棘轮与两包同步
+//
+// 这组用例盯的是**三条可观察的口径**：
+//   ① 逐条现算：每条准则**各自**拿实测与阈值比，任一条不达标 ⇒ 整体判红并**点名**那一条；
+//   ② 声明里写了权重/得分 ⇒ **原样报出**（进了 `ignored`）但**不进判定**；
+//      可观察形式：同一声明 ± 权重，两版**逐条 verdict 逐字相同**、`detail` 也逐字相同；
+//   ③ 找不到实测 ⇒ 判红（fail-closed），且**不重复实现** coverage.ts 的读数判定（直接调它）。
+// ————————————————————————————————————————————————————————————————————————————
+
+const EXIT_BASE = join(ROOT, 'node_modules', '.sdo-test', 'm36-exit')
+
+function sha256(text: string): string {
+  return createHash('sha256').update(text).digest('hex')
+}
+
+/**
+ * 建一个「真源 + 读数所引用的报告/产物都在盘上」的临时工作区，返回 store 与 workspace。
+ *
+ * 为什么报告与产物要**真写文件**：覆盖读数的时效判定靠**现算内容哈希**（`pathFingerprint`），
+ * 盘上没有那份文件时读数一律算「找不到」—— 那样测的就不是本卡的判定，而是"夹具没写好"。
+ */
+function exitWorkspace(): { store: SdoStore; workspace: string } {
+  rmSync(EXIT_BASE, { recursive: true, force: true })
+  mkdirSync(join(EXIT_BASE, '.sdo', 'testing'), { recursive: true })
+  const workspace = join(EXIT_BASE, 'evidence')
+  mkdirSync(workspace, { recursive: true })
+  return { store: new SdoStore(join(EXIT_BASE, '.sdo')), workspace }
+}
+
+/** 写一份准出准则声明（`.sdo/testing/plan.yml`）。`extra` 用来注入权重/得分这类"不进判定"的键。 */
+function writePlanCriteria(
+  target: SdoStore,
+  criteria: (Record<string, unknown> & { id: string; criterion: string; threshold: string })[],
+): void {
+  target.writeYaml(['testing', 'plan.yml'], { plan: { levels: [], exitCriteria: criteria } })
+}
+
+/** 写一份覆盖真源；`report`/`artifact` 是**相对工作区**的路径，哈希按盘上内容现算。 */
+function writeCoverage(target: SdoStore, workspace: string, readings: Record<string, unknown>[]): void {
+  const filled = readings.map((reading, index) => {
+    const report = `${reading.id ?? index}-report.txt`
+    const artifact = `${reading.id ?? index}-artifact.txt`
+    writeFileSync(join(workspace, report), `${String(reading.id ?? index)} report body\n`)
+    writeFileSync(join(workspace, artifact), `${String(reading.id ?? index)} artifact body\n`)
+    return { report, reportHash: sha256(readFileSync(join(workspace, report), 'utf8')), artifact, artifactHash: sha256(readFileSync(join(workspace, artifact), 'utf8')), ...reading }
+  })
+  target.writeYaml(['testing', 'coverage.yml'], { coverage: { readings: filled, uncovered: [] } })
+}
+
+/** 走**真实接线**（readTestingClass + coverage.ts 判定）读一次判定输入。 */
+function exitInput(store: SdoStore, workspace: string): Parameters<typeof assessExitCriteria>[0] {
+  const plan = readTestingClass(store, 'plan')[0]
+  const report = readTestingClass(store, 'report')[0]
+  const coverage = assessCoverageFromStore(store, workspace)
+  const criteria = plan?.value.exitCriteria
+  const reportCriteria = report?.value.exitCriteria
+  return {
+    ...(Array.isArray(criteria) ? { criteria } : {}),
+    ...(Array.isArray(reportCriteria) ? { reportCriteria } : {}),
+    coverage,
+  }
+}
+
+test('M36-09 G6 准出准则：逐条现算、任一条不达标即判红并点名，且**不重复实现** coverage 判定', () => {
+  const { store: target, workspace } = exitWorkspace()
+  // 两条准则：MET-001 达标（91% ≥ 80%）、MET-002 不达标（70% < 90%）
+  writePlanCriteria(target, [
+    { id: 'C-1', criterion: 'statement', metric: 'statement', threshold: '80%', scope: 'src' },
+    { id: 'C-2', criterion: 'decision', metric: 'decision', threshold: '90%', scope: 'src' },
+  ])
+  writeCoverage(target, workspace, [
+    { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test' },
+    { id: 'COV-002', criterion: 'decision', measured: '70%', threshold: '90%', command: 'node --test' },
+  ])
+
+  const assessment = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(assessment.criteria.length, 2, '声明了几条就判几条（不许合并成一条总分）')
+  assert.equal(assessment.passed, false, '任一条不达标 ⇒ 整体不成立')
+  assert.deepEqual(assessment.offenders, ['C-2'], '必须**点名**不达标的那一条（不是只说"覆盖不达标"）')
+
+  const first = assessment.criteria.find((item) => item.id === 'C-1')
+  const second = assessment.criteria.find((item) => item.id === 'C-2')
+  assert.equal(first?.verdict, 'pass', 'MET-001 实测达阈 ⇒ 该条通过')
+  assert.equal(first?.measured, '91%', '实测值要现算出来（读数里的值原样带出）')
+  assert.equal(second?.verdict, 'fail', 'MET-002 实测未达阈值 ⇒ 该条不通过')
+  assert.equal(second?.source, 'COV-002', '要指出实测来自哪条读数（可核对）')
+
+  // 不重复实现：读数侧"过期 / 不成立 / 判不动"一律由 `coverage.ts` 判，本卡只按它的结论 fail-closed
+  assert.equal(assessment.coverageOutcome, 'invalid', 'coverage.ts 的结论要原样带出来')
+
+  // 判据面：整条判红，`remedy` 指向"逐条补实测"，且 detail 里要有那条不达标的编号
+  const rendered = renderExitCriteria(assessment)
+  assert.equal(rendered.ok, false)
+  assert.match(rendered.detail, /C-2/u, `点名到具体准则：${rendered.detail}`)
+  assert.ok((rendered.remedy ?? '').length > 0, '判红必须给可执行的补救（不能只说"不通过"）')
+
+  // 反向：把不达标的那条改达标（其余一字不动）⇒ 整体转绿，说明判红的原因确实是"那一条"
+  writeCoverage(target, workspace, [
+    { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test' },
+    { id: 'COV-002', criterion: 'decision', measured: '95%', threshold: '90%', command: 'node --test' },
+  ])
+  const green = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(green.passed, true, '两条都达阈 ⇒ 整体成立')
+  assert.deepEqual(green.offenders, [])
+  assert.equal(renderExitCriteria(green).ok, true)
+})
+
+test('M36-10 G6 准出准则 fail-closed：声明了准则却找不到实测 ⇒ 判红（判不动不许判绿）', () => {
+  const { store: target, workspace } = exitWorkspace()
+  writePlanCriteria(target, [{ id: 'C-9', criterion: 'path', metric: 'path', threshold: '100%' }])
+  // 覆盖真源在盘上但**没有** path 的读数；也没有测试报告 ⇒ 这条准则没有实测来源
+  writeCoverage(target, workspace, [
+    { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test' },
+  ])
+
+  const assessment = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(assessment.criteria.length, 1)
+  assert.equal(assessment.criteria[0]?.verdict, 'unmeasured', '找不到实测 ⇒ 这一条是"判不动"，不是"通过"')
+  assert.equal(assessment.passed, false, 'fail-closed：判不动一律不许判绿')
+  assert.deepEqual(assessment.offenders, ['C-9'], '判不动的那条同样要点名')
+  const rendered = renderExitCriteria(assessment)
+  assert.equal(rendered.ok, false)
+  assert.match(rendered.detail, /C-9/u)
+
+  // 声明都没有（真源缺 / 空）⇒ 也判红，不能"没声明就当通过"
+  writePlanCriteria(target, [])
+  const empty = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(empty.passed, false, '一条准则都没声明 ⇒ 判红')
+  assert.equal(renderExitCriteria(empty).ok, false)
+})
+
+test('M36-11 G6 准出准则：读数过期时**不采信**该读数（哪怕数字看上去达阈）', () => {
+  const { store: target, workspace } = exitWorkspace()
+  writePlanCriteria(target, [{ id: 'C-1', criterion: 'statement', metric: 'statement', threshold: '80%' }])
+  writeCoverage(target, workspace, [
+    { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test' },
+  ])
+  // 产物改动 ⇒ 该读数过期（判定由 coverage.ts 做，本卡只按结论处理）
+  writeFileSync(join(workspace, 'COV-001-artifact.txt'), 'tampered after the reading\n')
+
+  const assessment = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(assessment.coverageOutcome, 'stale', '产物改了 ⇒ coverage.ts 判过期')
+  assert.equal(assessment.criteria[0]?.verdict, 'fail', '过期读数不许再充当实测（91% 也不认）')
+  assert.equal(assessment.passed, false)
+})
+
+test('M36-12 G6 准出准则：实测优先取覆盖读数，缺失时由**测试报告结论**兜底（两来源矛盾按判红处理）', () => {
+  const { store: target, workspace } = exitWorkspace()
+  writePlanCriteria(target, [
+    { id: 'C-1', criterion: 'mc-dc', metric: 'mc-dc', threshold: '100%' },
+    { id: 'C-2', criterion: 'def-use', metric: 'def-use', threshold: '100%' },
+  ])
+  writeCoverage(target, workspace, [
+    { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test' },
+  ])
+  // 报告里给了这两条的实测与结论：C-1 结论 pass 且实测达阈、C-2 结论 fail
+  target.writeYaml(['testing', 'report.yml'], {
+    report: {
+      exitCriteria: [
+        { id: 'C-1', criterion: 'mc-dc', threshold: '100%', measured: '100%', verdict: 'pass' },
+        { id: 'C-2', criterion: 'def-use', threshold: '100%', measured: '82%', verdict: 'fail' },
+      ],
+    },
+  })
+
+  const assessment = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(assessment.criteria.find((item) => item.id === 'C-1')?.verdict, 'pass', '报告结论 pass 兜底')
+  assert.equal(assessment.criteria.find((item) => item.id === 'C-1')?.source, 'report')
+  assert.equal(assessment.criteria.find((item) => item.id === 'C-2')?.verdict, 'fail', '报告结论 fail 兜底')
+  assert.equal(assessment.passed, false)
+  assert.deepEqual(assessment.offenders, ['C-2'])
+
+  // 两来源（声明阈值 vs 报告结论）矛盾 ⇒ 一样判红：不许"挑一个好看的来源"
+  target.writeYaml(['testing', 'report.yml'], {
+    report: { exitCriteria: [{ id: 'C-2', criterion: 'def-use', threshold: '100%', measured: '82%', verdict: 'pass' }] },
+  })
+  const conflict = assessExitCriteria(exitInput(target, workspace))
+  assert.equal(conflict.criteria.find((item) => item.id === 'C-2')?.verdict, 'fail', '结论 pass 但实测 82% < 100% ⇒ 矛盾即判红')
+})
+
+test('M36-13 守卫：同一声明 ± 权重 ⇒ 逐条 verdict **逐字相同**，权重只被"原样报出"不进判定', () => {
+  const { store: target, workspace } = exitWorkspace()
+  const declared = [
+    { id: 'C-1', criterion: 'statement', metric: 'statement', threshold: '80%' },
+    { id: 'C-2', criterion: 'decision', metric: 'decision', threshold: '90%' },
+  ]
+  writeCoverage(target, workspace, [
+    { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test' },
+    { id: 'COV-002', criterion: 'decision', measured: '70%', threshold: '90%', command: 'node --test' },
+  ])
+
+  // ① 不带权重的那一版
+  writePlanCriteria(target, declared)
+  const plain = assessExitCriteria(exitInput(target, workspace))
+  const plainRendered = renderExitCriteria(plain)
+
+  // ② 同一份声明 + 权重 / 得分（含中文键名与英文键名两种写法）
+  writePlanCriteria(target, [
+    { ...declared[0]!, weight: 0.9, score: 90 },
+    { ...declared[1]!, 权重: '10%', 得分: 10 },
+  ])
+  const weighted = assessExitCriteria(exitInput(target, workspace))
+  const weightedRendered = renderExitCriteria(weighted)
+
+  // 逐条 verdict **逐字相同**（这条断言就是 DoD 第三条的可观察形式）
+  assert.deepEqual(
+    weighted.criteria.map((item) => item.verdict),
+    plain.criteria.map((item) => item.verdict),
+    '权重不进判定：± 权重两版的逐条 verdict 必须逐字相同',
+  )
+  assert.deepEqual(weighted.criteria, plain.criteria, '逐条结论（含实测/来源/阈值）也必须逐字相同 —— 权重不许碰任何一条')
+  assert.equal(weighted.passed, plain.passed, '整体结论同样不受权重影响')
+  assert.equal(weightedRendered.ok, plainRendered.ok)
+  assert.equal(weightedRendered.detail, plainRendered.detail, '判据 detail 逐字相同（权重只走**独立**的报出行）')
+
+  // 权重**原样报出**：键名与取值都不许被改写（写的是 0.9 / 10% 就报 0.9 / 10%）
+  assert.equal(weighted.ignored.length, 4, '4 处权重声明都要报出来（两条准则 × 两个键）')
+  assert.ok(
+    weighted.ignored.some((item) => item.key === 'weight' && item.value === '0.9')
+    && weighted.ignored.some((item) => item.key === 'score' && item.value === '90')
+    && weighted.ignored.some((item) => item.key === '权重' && item.value === '10%')
+    && weighted.ignored.some((item) => item.key === '得分' && item.value === '10'),
+    `权重键名与取值必须原样带出：${JSON.stringify(weighted.ignored)}`,
+  )
+  assert.deepEqual(plain.ignored, [], '没写权重的版本没有任何"被忽略"的东西')
+
+  // 回执要明说「你写的权重未被采用」，而且要出现在**最终门禁文案**里（不是只躺在结构体里）
+  const notice = t('uiGates.kExitWeightIgnored')
+  assert.notEqual(notice, 'kExitWeightIgnored', '两包都必须有这条文案（棘轮：文案一律走语言包）')
+  const withNotice = renderExitCriteria(weighted, weighted.ignored)
+  // 文案是 `…未被采用…：{p1}`（占位符在末尾）⇒ 填上 p1 后，回执里必须真的出现这句完整的话
+  const filled = notice.replace('{p1}', weighted.ignored.map((item) => `${item.source}:${item.key}（${item.value}）`).join('、'))
+  assert.ok(withNotice.detail.includes(filled), `回执要明说权重未被采用：${withNotice.detail}`)
+  assert.ok(withNotice.detail.includes('0.9') && withNotice.detail.includes('10%'), '原文照登：权重与得分逐字带出')
+})
+
+test('M36-14 i18n 棘轮与两包同步：uiGates 键一律两层、两包都有且非空，gates.ts 硬编码中文仍为 0', () => {
+  const zh = loadLangPack('zh-CN')
+  const en = loadLangPack('en')
+
+  // ① 代码引用到的每个 `uiGates.*` 键，两包都要有且非空（t() 只解析两层：section.key）
+  const referenced = new Set<string>()
+  for (const file of readdirSync(join(ROOT, 'src'), { recursive: true }).map((entry) => String(entry)).filter((entry) => entry.endsWith('.ts'))) {
+    const text = readFileSync(join(ROOT, 'src', file), 'utf8')
+    for (const match of text.matchAll(/\b(?:t|fmt)\('(uiGates\.[A-Za-z0-9_.-]+)'/gu)) referenced.add(match[1] as string)
+  }
+  assert.ok(referenced.size > 0, '至少要引用到一个 uiGates 键（否则这条守卫是空转的）')
+  for (const key of referenced) {
+    const id = key.split('.').slice(1).join('.')
+    assert.ok(!id.includes('.'), `三层键取不到文案（t() 只解析两层）：${key}`)
+    for (const [name, pack] of [['zh-CN', zh], ['en', en]] as const) {
+      const value = pack.uiGates?.[id]
+      assert.ok(typeof value === 'string' && value.trim() !== '', `${name} 语言包缺 uiGates.${id} 或为空`)
+    }
+  }
+
+  // ② 本卡新增的准出准则文案：两包**同步补齐**（键集一致，不是"中文有英文没有"）
+  const keys = Object.keys(zh.uiGates ?? {}).filter((key) => key.startsWith('kExit'))
+  assert.ok(keys.length >= 8, `准出准则相关键要成套补齐，现在只有：${keys.join(' ')}`)
+  for (const key of keys) {
+    assert.ok(typeof en.uiGates?.[key] === 'string' && (en.uiGates[key] ?? '').trim() !== '', `en 语言包缺 uiGates.${key}`)
+    assert.equal(en.uiGates[key], en.uiGates[key]?.trim(), `en uiGates.${key} 首尾不许有空白（跨语言取文要能做逐字比较）`)
+  }
+  // 反向：`zh` 与 `en` 的 `kExit*` 键集必须**完全一致**（多一个 / 少一个都算没同步）
+  const enKeys = Object.keys(en.uiGates ?? {}).filter((key) => key.startsWith('kExit'))
+  assert.deepEqual(enKeys.sort(), keys.sort(), '两种语言包的准出准则键集必须逐一对应')
+
+  // ③ 棘轮基线：`src/domain/gates.ts` 的硬编码中文必须保持 0（本轮不许放宽，也不许把它从基线里摘掉）
+  const gatesText = readFileSync(join(ROOT, 'src/domain/gates.ts'), 'utf8')
+  assert.equal(countCjkLiterals(gatesText), 0, 'gates.ts 出现了硬编码中文：用户可见文案一律走语言包')
+  // …而"什么算权重"仍然认得**数据里写的中文键名**（键名表是 `\uXXXX` 转义 ⇒ 计数为 0 但语义在）
+  const cjkWeighted = assessExitCriteria({
+    criteria: [
+      { id: 'C-1', criterion: 'statement', threshold: '80%', '\u6743\u91cd': '0.9', '\u5f97\u5206': 90 },
+    ],
+    coverage: undefined,
+  })
+  assert.deepEqual(
+    cjkWeighted.ignored.map((item) => `${item.key}=${item.value}`),
+    ['\u6743\u91cd=0.9', '\u5f97\u5206=90'],
+    '数据里的中文权重键名同样要被识别并原样报出',
+  )
+  const baseline = readFileSync(join(ROOT, 'test/m7.test.ts'), 'utf8')
+  assert.match(baseline, /'src\/domain\/gates\.ts': 0/u, '棘轮基线里 gates.ts 必须仍在、且为 0（不许摘掉、不许放宽）')
+
+  // ④ 判据**真的接在门禁上**：G6 的判据集里必须有 C-53，且 check 指向 exit.criteria。
+  //    为什么非有这条断言：只测判定函数的话，"判据根本没人调用"也能全绿 —— 判据落点（流程数据）
+  //    与实现是两处文件，脱节必须当场判红，而不是等真机上门禁少判一条。
+  const waterfall = readFileSync(join(ROOT, 'src/data/processes/waterfall.yml'), 'utf8')
+  const g6 = waterfall.slice(waterfall.indexOf('- id: G6'), waterfall.indexOf('- id: G7'))
+  assert.match(g6, /id: C-53,\s*check: "exit\.criteria"/u, 'G6 的判据集里必须有 C-53 且 check 指向 exit.criteria（判据要真的接在门禁上）')
+  assert.match(g6, /逐条现算/u, 'C-53 的 desc 要写明"逐条现算"')
+  assert.match(g6, /禁止加权/u, 'C-53 的 desc 要写明"禁止加权"')
+  assert.match(g6, /任一不达标即整体不成立并逐条点名/u, 'C-53 的 desc 要写明不达标时的处置')
+})
+
+/** 读一个随包语言包（与 `t()` 同一套解析器：`loadPackagedYaml`）。 */
+function loadLangPack(locale: string): { uiGates?: Record<string, string> } {
+  return loadPackagedYaml<{ uiGates?: Record<string, string> }>(`src/data/lang/${locale}.yml`)
+}

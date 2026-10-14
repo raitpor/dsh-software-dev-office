@@ -8,12 +8,27 @@
  *   ③ 接线：`sdo_plan action=next` 真的调用它，并把子会话 id 记进台账。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import { reuseCapability, startDispatch } from '../src/integration/dispatch.js'
+import { Journal } from '../src/infra/journal.js'
+import { SdoStore } from '../src/infra/store.js'
+import { loadAllProcesses } from '../src/domain/process.js'
+import { CHECKERS } from '../src/domain/gates.js'
+import type { GateContext } from '../src/domain/gates.js'
+import {
+  assessOutline,
+  describeOutlineVerdict,
+  ensureOutline,
+  generateOutline,
+  outlineRemedy,
+} from '../src/domain/acceptance.js'
+import { validateTestingSet } from '../src/domain/testingShapes.js'
+import type { TestingShapeKnown } from '../src/domain/testingShapes.js'
+import type { Requirement } from '../src/types.js'
 import { describeDispatchStarted } from '../src/interface/describe.js'
 import { toolNamesOfHeader } from '../src/domain/dispatchFace.js'
 import type { DispatchRequest } from '../src/integration/orchestrator.js'
@@ -252,4 +267,323 @@ test('M32-08 复用探测（方案 1 的插件侧半个）：宿主没有 contin
     provider: 'spawn', agent: { id: 'a' }, request, deny: [], maxDepth: 1,
   })
   assert.equal(withActivate.started && withActivate.reuseSupported, true)
+})
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// TASK-013（REQ-046）：**验收大纲左移到需求基线**
+//
+// DoD 三条：
+//   ① 按每条 must 需求的每条 AC 生成 acceptance.yml（验收项 + 判定基准）；
+//   ② 需求变更后**整份大纲失效**并在回执里点名；
+//   ③ 守卫用例：改需求 ⇒ 大纲判过期。
+//
+// 这组用例同时盯**接线**（判据真的挂在 G2 上、check 键真的在 CHECKERS 里）——
+// 只测域层会让"判据没挂上"或"键名拼错"一路绿到交付（TASK-012 的同类教训：入口守卫要先判种类）。
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const ACC_BASE = join(ROOT, 'node_modules', '.sdo-test', 'm32-acceptance')
+const ACC_SDO = join(ACC_BASE, '.sdo')
+
+let accStore: SdoStore
+let accJournal: Journal
+
+function freshAcc(): void {
+  rmSync(ACC_BASE, { recursive: true, force: true })
+  mkdirSync(ACC_SDO, { recursive: true })
+  accStore = new SdoStore(ACC_SDO)
+  accJournal = new Journal(accStore)
+}
+
+/** 一条 must 需求（带 N 条 AC）。 */
+function requirement(id: string, acs: { id: string; given: string; when: string; then: string }[], priority = 'must'): Requirement {
+  return {
+    id,
+    title: `${id} 的标题`,
+    kind: 'functional',
+    statement: 's',
+    rationale: 'r',
+    status: 'baselined',
+    priority,
+    source: 'user',
+    acceptance: acs,
+    revision: 1,
+    version: 2,
+    createdAt: '',
+    updatedAt: '',
+  } as unknown as Requirement
+}
+
+function twoMusts(): Requirement[] {
+  return [
+    requirement('REQ-046', [
+      { id: 'AC-188', given: '需求基线冻结', when: '读取验收大纲', then: '每条 must 需求的每条 AC 都有对应验收项与判定基准' },
+      { id: 'AC-189', given: '基线冻结后批准了一条需求变更', when: '跑需求基线门禁', then: '验收大纲与基线签字一并失效并要求重新生成' },
+    ]),
+    requirement('REQ-047', [
+      { id: 'AC-191', given: '一个已完成开发的顺序流程项目', when: '尝试开始验证阶段的执行记账', then: '在测试计划通过计划评审之前被阻塞' },
+    ]),
+    // 非 must：**不进大纲**（大纲只覆盖 must）
+    requirement('REQ-999', [{ id: 'AC-999', given: 'g', when: 'w', then: 't' }], 'should'),
+  ]
+}
+
+const GEN = { generatedAt: '2026-10-13T09:00:00.000Z', generatedBy: 'human' }
+
+test('M32-09 TASK-013 生成：每条 must 需求的每条 AC 一行（验收项 + 判定基准），非 must 不进大纲', () => {
+  freshAcc()
+  const generated = generateOutline({ requirements: twoMusts(), ...GEN })
+  assert.equal(generated.outline.length, 3, '2 条 must 需求共 3 条 AC ⇒ 3 行（should 需求不进）')
+  assert.deepEqual(
+    generated.outline.map((entry) => `${entry.requirement}:${entry.ac}`),
+    ['REQ-046:AC-188', 'REQ-046:AC-189', 'REQ-047:AC-191'],
+    '按需求 id + AC id 排序 ⇒ 顺序稳定',
+  )
+  assert.deepEqual(generated.outline.map((entry) => entry.id), ['TA-001', 'TA-002', 'TA-003'], '大纲条目编号连续')
+  for (const entry of generated.outline) {
+    assert.notEqual(entry.item.trim(), '', '验收项不许为空')
+    assert.notEqual(entry.baseline.trim(), '', '判定基准不许为空（"写清用什么判定它对不对"是 REQ-046 的硬要求）')
+    assert.ok(entry.baseline.includes('Then'), `判定基准要指到判定依据：${entry.baseline}`)
+  }
+  assert.match(generated.requirementFingerprint, /^sha256:[0-9a-f]{64}$/u, '生成时绑定需求真源指纹')
+})
+
+test('M32-10 TASK-013 幂等：同一需求真源两次生成逐字节一致；ensureOutline 在已最新时不写盘', () => {
+  freshAcc()
+  const one = generateOutline({ requirements: twoMusts(), ...GEN })
+  const two = generateOutline({ requirements: twoMusts(), ...GEN })
+  assert.deepEqual(two, one, '同需求 + 同时刻 ⇒ 同大纲（重新生成是幂等的）')
+  // 需求顺序颠倒不影响结果（指纹与行序都不依赖盘上顺序）
+  const shuffled = generateOutline({ requirements: [...twoMusts()].reverse(), ...GEN })
+  assert.deepEqual(shuffled, one, '需求顺序不该影响大纲（否则每次读盘顺序变了都判过期）')
+
+  const first = ensureOutline({ store: accStore, requirements: twoMusts(), ...GEN })
+  assert.equal(first.generated, true, '首次：没有大纲 ⇒ 生成')
+  const path = join(ACC_SDO, 'testing', 'acceptance.yml')
+  const bytes = readFileSync(path, 'utf8')
+  const second = ensureOutline({ store: accStore, requirements: twoMusts(), ...GEN })
+  assert.equal(second.generated, false, '已是最新 ⇒ **不写盘**（幂等，避免无意义的事件噪声）')
+  assert.equal(readFileSync(path, 'utf8'), bytes, '盘上字节不变')
+})
+
+test('M32-11 TASK-013 守卫（DoD③）：改需求 ⇒ 整份大纲判过期，并在结论里点名变了的 AC', () => {
+  freshAcc()
+  ensureOutline({ store: accStore, requirements: twoMusts(), ...GEN })
+  assert.equal(assessOutline(accStore, twoMusts()).verdict, 'ok', '前提：生成后是一致的')
+
+  // 需求变更：给 REQ-046 增一条 AC（并改一条既有 AC 的 Then）
+  const changed = twoMusts()
+  changed[0] = requirement('REQ-046', [
+    ...changed[0]!.acceptance,
+    { id: 'AC-190', given: 'g', when: 'w', then: 't' },
+  ])
+  const stale = assessOutline(accStore, changed)
+  assert.equal(stale.verdict, 'stale', '需求真源一变 ⇒ 整份大纲失效（REQ-046 的降级口径）')
+  assert.notEqual(stale.recordedFingerprint, stale.currentFingerprint, '指纹能指出"生成时 vs 现在"不同')
+  assert.deepEqual(stale.missing, ['REQ-046:AC-190'], '点名新缺的那条 AC')
+  assert.match(describeOutlineVerdict(stale), /验收大纲与当前需求基线不一致/u, '回执要说清是"与基线不一致"')
+  assert.match(outlineRemedy(), /重新生成/u, '补救办法要可执行')
+
+  // 再生成 ⇒ 回到 ok（且这次真的写了盘）
+  const again = ensureOutline({ store: accStore, requirements: changed, ...GEN })
+  assert.equal(again.generated, true, '过期 ⇒ 重新生成')
+  assert.equal(assessOutline(accStore, changed).verdict, 'ok')
+
+  // 反向：需求**删**一条 AC ⇒ 大纲里那行变成"多余"，同样判过期并点名
+  const shrunk = twoMusts().slice(1)
+  const staleB = assessOutline(accStore, shrunk)
+  assert.equal(staleB.verdict, 'stale', '删需求也算变更')
+  assert.ok(staleB.extra.includes('REQ-046:AC-188'), `要点名残留的旧行：${staleB.extra.join(' ')}`)
+})
+
+test('M32-12 TASK-013 缺项与空判定基准：指纹一致也要判红（incomplete），且逐条点名', () => {
+  freshAcc()
+  ensureOutline({ store: accStore, requirements: twoMusts(), ...GEN })
+  const path = join(ACC_SDO, 'testing', 'acceptance.yml')
+  const raw = accStore.readYaml<{ acceptance: Record<string, unknown> }>('testing', 'acceptance.yml')
+  assert.ok(raw !== undefined, '前提：大纲已在盘上')
+  const body = raw.acceptance as { outline: { requirement: string; ac: string; baseline: string }[]; requirementFingerprint: string }
+  const recorded = body.requirementFingerprint
+
+  // ① 手工删掉一行（模拟"有人手改真源"）——指纹保持原样，所以判的必须是"缺项"而不是"过期"
+  body.outline = body.outline.filter((entry) => entry.ac !== 'AC-189')
+  accStore.writeYaml(['testing', 'acceptance.yml'], { acceptance: { ...body, requirementFingerprint: recorded } })
+  const missing = assessOutline(accStore, twoMusts())
+  assert.equal(missing.verdict, 'incomplete', '指纹一致但缺条目 ⇒ incomplete（不是 stale）')
+  assert.deepEqual(missing.missing, ['REQ-046:AC-189'], '点名缺的那条')
+
+  // ② 判定基准被清空 ⇒ 也算没写清"怎么判定"
+  body.outline = generateOutline({ requirements: twoMusts(), ...GEN }).outline
+  body.outline[0] = { ...body.outline[0]!, baseline: '   ' }
+  accStore.writeYaml(['testing', 'acceptance.yml'], { acceptance: { ...body, requirementFingerprint: recorded } })
+  const empty = assessOutline(accStore, twoMusts())
+  assert.equal(empty.verdict, 'incomplete')
+  assert.deepEqual(empty.withoutBaseline, ['REQ-046:AC-188'], '点名没写判定基准的那条')
+
+  // ③ 完全没有大纲 ⇒ missing（并给出应有多少条）
+  rmSync(path)
+  const none = assessOutline(accStore, twoMusts())
+  assert.equal(none.verdict, 'missing')
+  assert.equal(none.expectedCount, 3)
+  assert.match(describeOutlineVerdict(none), /不存在/u)
+})
+
+test('M32-13 TASK-013 生成物必须过测试域自己的形状校验（字段名不许两套）', () => {
+  freshAcc()
+  const { outline } = ensureOutline({ store: accStore, requirements: twoMusts(), ...GEN })
+  // 用 TASK-012 的形状校验器复核：acceptance.yml 必须被判 ok（cross-ref 用同一份需求表）
+  const known: TestingShapeKnown = {
+    requirements: new Map([['REQ-046', ['AC-188', 'AC-189']], ['REQ-047', ['AC-191']]]),
+  }
+  const report = validateTestingSet([{ class: 'acceptance', file: 'acceptance', value: outline }], known)
+  assert.equal(report.outcome, 'ok', `生成的大纲要能过形状校验：${report.issues.map((issue) => `${issue.field}[${issue.code}]`).join(' ')}`)
+
+  // 反向：把判定基准改空 ⇒ 形状校验必须判红（证明上面那条 ok 不是因为校验器空转）
+  const broken = { ...outline, outline: outline.outline.map((entry, index) => (index === 0 ? { ...entry, baseline: '' } : entry)) }
+  assert.equal(validateTestingSet([{ class: 'acceptance', file: 'acceptance', value: broken }], known).outcome, 'invalid')
+})
+
+test('M32-14 TASK-013 接线：G2 声明了这条判据，且 check 键在 CHECKERS 里真的有实现（fail-closed）', () => {
+  // ① 流程数据里 G2 声明了 `dor.acceptance_outline`（否则判据等于没挂）
+  const processes = loadAllProcesses()
+  const waterfall = processes.find((entry) => entry.id === 'waterfall')
+  assert.ok(waterfall !== undefined, '瀑布流程必须能装载')
+  const g2 = waterfall.gates.find((gate) => gate.id === 'G2')
+  assert.ok(g2 !== undefined, 'G2 必须在流程数据里')
+  const criterion = g2.criteria.find((item) => item.check === 'dor.acceptance_outline')
+  assert.ok(criterion !== undefined, 'G2 必须声明验收大纲判据')
+  assert.match(String(criterion.desc), /验收大纲/u, '判据的中文说明要能给人看')
+
+  // ② check 键必须在 CHECKERS 里有实现 —— 没实现的话 evaluateGate 会按"未实现即失败"处理，
+  //    但那属于"实现了但坏了"；这里直接盯"有没有挂上"，让漏接线在单测就暴露
+  assert.equal(typeof CHECKERS['dor.acceptance_outline'], 'function', 'check 键必须在 CHECKERS 里注册')
+
+  // ③ 判据三态：没有大纲 ⇒ 判红且点名；生成后 ⇒ 判过
+  freshAcc()
+  const ctx = {
+    workspace: ACC_BASE,
+    store: accStore,
+    journal: accJournal,
+    process: waterfall,
+    project: undefined,
+    requirements: twoMusts(),
+    questions: [],
+    risks: [],
+    issues: [],
+    feasibility: undefined,
+    redTeamExecuted: false,
+    redTeamDisabled: false,
+    waivedGates: [],
+    prototypeDir: 'prototype',
+    prototypeThrowaway: false,
+    riskConclusion: undefined,
+  } as unknown as GateContext
+  const before = CHECKERS['dor.acceptance_outline']!(ctx)
+  assert.equal(before.ok, false, '没有大纲 ⇒ 判红')
+  assert.match(before.detail, /不存在/u)
+  assert.ok((before.remedy ?? '').includes('重新生成'), '判红必须给可执行的补救')
+
+  ensureOutline({ store: accStore, requirements: twoMusts(), ...GEN })
+  const after = CHECKERS['dor.acceptance_outline']!(ctx)
+  assert.equal(after.ok, true, `生成后判过：${after.detail}`)
+  assert.match(after.detail, /齐备/u)
+
+  // ④ 需求变更后再判 ⇒ 又红（判据与需求真源现算，不缓存）
+  ctx.requirements = [...twoMusts(), requirement('REQ-048', [{ id: 'AC-194', given: 'g', when: 'w', then: 't' }])]
+  const stale = CHECKERS['dor.acceptance_outline']!(ctx)
+  assert.equal(stale.ok, false, '需求一变 ⇒ 判据立刻红（现算，不看缓存）')
+  assert.match(stale.detail, /与当前需求基线不一致/u)
+})
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// TASK-031：两条判据的**四流程同挂**（遍历，不硬编码条数）
+//
+// 背景（两次脱节的实例）：
+//   ① `dor.acceptance_outline`（REQ-046）当初只挂上了 waterfall 的 G2 —— 别的流程走 G2 时
+//      "验收大纲"这条判据等于不存在，而 TASK-013 的守卫只盯 waterfall，全绿；
+//   ② `exit.criteria`（REQ-050）同样只挂上了 waterfall 的 G6（C-53）。
+//
+// 所以这里**不写死"某三条判据"**：遍历 `loadAllProcesses()` 的每一个流程，逐流程 × 逐 check 断言。
+// 将来新增流程（`src/data/processes/*.yml`）自动进圈 —— 漏挂当场红，而不是等真机上门禁少判一条。
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+/** 某流程某门禁里 check 等于给定键的判据（0 条 = 漏挂，≥2 条 = 重复挂）。 */
+function criteriaFor(processId: string, gateId: string, check: string): { id: string; desc?: string | undefined }[] {
+  const process = loadAllProcesses().find((entry) => entry.id === processId)
+  assert.ok(process !== undefined, `流程 ${processId} 必须能装载`)
+  const gate = process.gates.find((item) => item.id === gateId)
+  assert.ok(gate !== undefined, `${processId} 必须有 ${gateId}`)
+  return gate.criteria.filter((item) => item.check === check)
+}
+
+/** 每个流程（当前四套：waterfall / agile / prototype / spiral）都必须挂上的两条判据。 */
+const REQUIRED_CRITERIA = [
+  { gate: 'G2', check: 'dor.acceptance_outline' },
+  { gate: 'G6', check: 'exit.criteria' },
+] as const
+
+test('M32-15 TASK-031 四流程同挂：每个流程的 G2 挂 dor.acceptance_outline、G6 挂 exit.criteria（遍历，逐条点名）', () => {
+  const processes = loadAllProcesses()
+  // 反自证：遍历面必须真的盖住四套流程（写成 1-2 个流程就会在这里先红）
+  assert.deepEqual(
+    processes.map((entry) => entry.id).sort(),
+    ['agile', 'prototype', 'spiral', 'waterfall'],
+    '遍历面必须盖住四套随包流程（少一套 ⇒ 未来新增流程会静默漏挂）',
+  )
+
+  const trace: string[] = []
+  for (const process of processes) {
+    for (const required of REQUIRED_CRITERIA) {
+      const found = criteriaFor(process.id, required.gate, required.check)
+      assert.equal(
+        found.length,
+        1,
+        found.length === 0
+          ? `流程 ${process.id} 的 ${required.gate} 缺判据 ${required.check}（判据没挂上 = 该流程这条约束不存在）`
+          : `流程 ${process.id} 的 ${required.gate} 重复挂了 ${required.check}：${found.map((item) => item.id).join(' ')}`,
+      )
+      const criterion = found[0]!
+      assert.notEqual(String(criterion.desc).trim(), '', `${process.id}/${required.gate}/${criterion.id} 的 desc 不许为空`)
+      // check 键必须在 CHECKERS 里注册（判据存在但没实现 = 门禁按"未实现"判，等于没约束）
+      assert.equal(typeof CHECKERS[required.check], 'function', `check 键 ${required.check} 必须在 CHECKERS 里注册`)
+      trace.push(`${process.id}/${required.gate}/${criterion.id}`)
+    }
+  }
+  assert.equal(trace.length, processes.length * REQUIRED_CRITERIA.length, `逐流程逐 check 都要有落点：${trace.join(' ')}`)
+
+  // 判据 id 逐流程唯一（跨门禁、含本卡新增的两条）：重号会让"逐条点名"指错判据
+  for (const process of processes) {
+    const ids = process.gates.flatMap((gate) => gate.criteria.map((item) => item.id))
+    const duplicated = ids.filter((id, index) => ids.indexOf(id) !== index)
+    assert.deepEqual(duplicated, [], `流程 ${process.id} 的判据 id 重号：${duplicated.join(' ')}`)
+  }
+})
+
+test('M32-16 TASK-031 desc 与 waterfall 同口径：两条判据的 desc 在四个流程里逐字节一致（防口径漂移）', () => {
+  const reference = (gate: string, check: string): string => {
+    const found = criteriaFor('waterfall', gate, check)
+    assert.equal(found.length, 1, `基准：waterfall 的 ${gate} 必须有且只有一条 ${check}`)
+    return String(found[0]!.desc)
+  }
+
+  // 基准文案要含该判据的实质口径 —— 四个流程共用同一句，改口径就得四处一起改
+  const acceptanceDesc = reference('G2', 'dor.acceptance_outline')
+  for (const phrase of ['验收大纲', 'must 需求', '需求变更后整份失效', '重新生成', '随 G2 重签']) {
+    assert.ok(acceptanceDesc.includes(phrase), `dor.acceptance_outline 的 desc 必须写明「${phrase}」：${acceptanceDesc}`)
+  }
+  const exitDesc = reference('G6', 'exit.criteria')
+  for (const phrase of ['逐条现算', '禁止加权', '任一不达标即整体不成立并逐条点名', '找不到实测判红']) {
+    assert.ok(exitDesc.includes(phrase), `exit.criteria 的 desc 必须写明「${phrase}」：${exitDesc}`)
+  }
+
+  for (const process of loadAllProcesses()) {
+    for (const required of REQUIRED_CRITERIA) {
+      const found = criteriaFor(process.id, required.gate, required.check)
+      assert.equal(found.length, 1, `流程 ${process.id} 的 ${required.gate} 缺 ${required.check}`)
+      assert.equal(
+        String(found[0]!.desc),
+        reference(required.gate, required.check),
+        `流程 ${process.id} 的 ${required.gate}/${required.check} 的 desc 与 waterfall 不同口径（同一判据不许两套说明）`,
+      )
+    }
+  }
 })

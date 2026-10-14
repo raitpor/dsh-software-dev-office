@@ -93,6 +93,14 @@ window.__ModuleLoader__.load({
       sessionSource: '',
       paneRead: '',
       lastMissing: undefined,
+      /** 这次提问的地址从哪来：`gate`（门禁级稳定标识）/ `callId`（退化旧行为）。 */
+      addressSource: '',
+      /** 退化原因（取不到门禁名时非空）—— **退化不许静默**。 */
+      addressFallback: '',
+      /** 本插件在该会话里**已开地址**的条数（登记表读数，落点二）。 */
+      registry: 0,
+      /** 待关集合的条数（落点三：结算早于开页时的补关队列）。 */
+      pendingClose: 0,
       closed: 0,
       collapsed: 0,
       closeWhy: '',
@@ -238,14 +246,73 @@ window.__ModuleLoader__.load({
       return SCHEME + encodeURIComponent(key)
     }
 
+    /**
+     * **门禁编号的形状**：`G0`…`G9` 与 `GP`/`GI`/`GR`（`src/data/lang/*.yml` 的 `gate` 段）。
+     * 只认这几种形状 —— 放开成 `G\\w+` 会把 `GUIDE`/`GATE` 这类普通单词当成门禁。
+     */
+    const GATE_TOKEN = /\bG(?:[0-9]|P|I|R)\b/u
+
+    /**
+     * 从提问对象里取**门禁名**（返回 `''` = 取不到，调用方必须退化旧行为并留痕）。
+     *
+     * 这里只做"能不能取到"的判断，**不猜**：三种来源按可信度排序 ——
+     *   ① **结构化字段**：宿主将来给出显式门禁字段（`gate` / `meta.gate`）时不用改这里；
+     *   ② **结构化提问文本**（`是否批准 架构门禁 通过？`）：认得出编号就用编号（比本地化名字稳）；
+     *   ③ **`detail` 首行**：审核单标题是 `# 门禁签字审核 · 架构门禁`（`uiSignReview.title` 的
+     *      `{p1}` = `gateText`）⇒ 取最后一个「·」之后那段；首行自带编号（`# … G3`）时优先用编号。
+     * 三条都不成立（例如旧宿主只发那句固定说明 `uiSign.detail`，所有门禁共用一句）⇒ 返回 `''`：
+     * 那种文本**不是门禁身份**，拿它当 key 会把所有门禁塌成同一页。
+     */
+    function gateKeyOf(question) {
+      for (const field of [question?.gate, question?.meta?.gate]) {
+        if (typeof field === 'string' && field.trim() !== '') return `gate:${field.trim()}`
+      }
+      for (const text of [question?.question, question?.header]) {
+        if (typeof text !== 'string') continue
+        const hit = GATE_TOKEN.exec(text)
+        if (hit !== null) return `gate:${hit[0]}`
+      }
+      const line = firstLine(typeof question?.detail === 'string' ? question.detail : '')
+      if (line !== '') {
+        const hit = GATE_TOKEN.exec(line)
+        if (hit !== null) return `gate:${hit[0]}`
+        if (line.includes('·')) {
+          const name = (line.split('·').pop() ?? '').replace(/^#+\s*/u, '').trim()
+          if (name !== '') return `gate:${name}`
+        }
+      }
+      return ''
+    }
+
+    /**
+     * 这次提问要开的**地址**（DEF-020 落点一）：门禁级稳定标识优先，取不到才退回旧的
+     * "每问一页"（`addressFor(callId)`）。退化原因落在 `probe.addressFallback`。
+     */
+    function addressOfReview(review) {
+      if (typeof review?.address === 'string' && review.address !== '') return review.address
+      return addressFor(review?.key === undefined ? '' : String(review.key))
+    }
+
     function reviewOf(request) {
       const questions = Array.isArray(request?.questions) ? request.questions : []
       const question = questions.find((item) => item?.id === SIGN_QUESTION_ID)
       if (question === undefined || typeof question.detail !== 'string' || question.detail.trim() === '') return undefined
+      const key = request?.wait?.callId === undefined ? `q${(sequence += 1)}` : String(request.wait.callId)
+      let gate = ''
+      try {
+        gate = gateKeyOf(question)
+      } catch (error) {
+        note('gate-key', error)
+      }
+      // **地址语义**（DEF-020 落点一）：地址里只放**门禁级稳定标识**，正文照旧走 `params`。
+      // 同一门禁的第二次提问 ⇒ **同一个地址** ⇒ 宿主聚焦/刷新既有页，而不是新建页。
+      probe.addressSource = gate === '' ? 'callId' : 'gate'
+      probe.addressFallback = gate === '' ? 'no-gate-in-question' : ''
       return {
         markdown: question.detail,
         title: firstLine(question.detail) || 'SDO',
-        key: request?.wait?.callId === undefined ? `q${(sequence += 1)}` : String(request.wait.callId),
+        key,
+        address: addressFor(gate === '' ? key : gate),
       }
     }
 
@@ -356,7 +423,7 @@ window.__ModuleLoader__.load({
      */
     function openReviewIn(ctx, sessionId, review) {
       const params = { sdoReview: { markdown: review.markdown, title: review.title } }
-      const address = addressFor(review.key)
+      const address = addressOfReview(review)
       const attempt = (stage, run) => {
         try {
           run()
@@ -402,7 +469,11 @@ window.__ModuleLoader__.load({
       if (openReviewIn(ctx, sessionId, { ...review, markdown: body, title })) {
         openedKey = review.key
         lastReviewSession = sessionId
+        rememberOpened(sessionId, addressOfReview(review))
         probe.stage = `opened-from-${origin}`
+        // **落点三的补关**：结算可能比这次开页**先**到（那一刻 `tabsIn` 里还没有这页）——
+        // 那次结算把它记进了待关集合，这里开页成功后补关一次。
+        flushPendingClose(ctx, sessionId, review.key)
         return true
       }
       return false
@@ -437,46 +508,130 @@ window.__ModuleLoader__.load({
       }
     }
 
-    /** 最近一次**成功打开**用的会话（结算时按它去关自己那页）。 */
+    /**
+     * 最近一次**收到签字提问 / 成功打开**用的会话（结算时按它去关本插件的页）。
+     *
+     * **收下提问时就要记**（DEF-020 落点三）：只靠"开页成功"才记的话，
+     * 「结算早于开页」那一序里会话还是空的 ⇒ 关页直接早退，目标页永远留着。
+     */
     let lastReviewSession
-    /** 已经关过的 `会话:key`（重复通知/重渲染不重复关）。 */
+    /**
+     * **「会话 → 本插件已开地址」登记表**（DEF-020 落点二）。
+     *
+     * 为什么需要它：关页必须只关**自己开过的**页 —— 旧实现按"当前 key 算出来的那一个地址"关，
+     * 于是同一门禁（或前几次提问）留下的**别的页**永远不会被关（真机症状：右栏攒着两个打不开正文的页）。
+     * 登记表就是"本插件开过什么"的机械面：宿主 GUIDE 页（`sidebar://guide`）从不进表，
+     * 用户的别的页也不进表 ⇒ 关/数都不会误伤。
+     */
+    const openAddresses = new Map()
+    /** 已经关过的 `会话:key`（同一提问的重复通知/重渲染不重复关）。 */
     const closedKeys = new Set()
+    /**
+     * **待关集合**（DEF-020 落点三）：结算时目标页还没提交（`tabsIn` 里找不到）时，
+     * 把该 `key` 记在这里，**等这个 key 的页开成功后再补关一次**。
+     *
+     * 为什么必须这样：`next()` 的完成（结算信号）**可能早于**开页 —— 打开要等一次只读取全文的往返。
+     * 旧实现在**动手之前**就把 `会话:key` 记进 `closedKeys`，那一刻页还没提交 ⇒ 关不掉、又再也不会重试
+     * ⇒ 陈旧标签页永久留在右栏（这就是"一次判死"）。现在只有**真的关掉了**才记 `closedKeys`。
+     */
+    const pendingClose = new Map()
+
+    function rememberOpened(sessionId, address) {
+      if (sessionId === undefined || typeof address !== 'string' || address === '') return
+      let set = openAddresses.get(sessionId)
+      if (set === undefined) {
+        set = new Set()
+        openAddresses.set(sessionId, set)
+      }
+      set.add(address)
+      probe.registry = set.size
+    }
+
+    function forgetOpened(sessionId, addresses) {
+      const set = openAddresses.get(sessionId)
+      if (set === undefined) return
+      for (const address of addresses) set.delete(address)
+      if (set.size === 0) openAddresses.delete(sessionId)
+      probe.registry = set.size
+    }
+
+    function markPendingClose(sessionId, key) {
+      let set = pendingClose.get(sessionId)
+      if (set === undefined) {
+        set = new Set()
+        pendingClose.set(sessionId, set)
+      }
+      set.add(key)
+      probe.pendingClose = set.size
+    }
+
+    /**
+     * **落点三的补关**：开页成功后调一次 —— 若这次提问的 `key` 正躺在待关集合里
+     * （结算比开页先到），现在就补关一次（这一次 `tabsIn` 里应该已经有它了）。
+     */
+    function flushPendingClose(ctx, sessionId, key) {
+      const set = pendingClose.get(sessionId)
+      if (set === undefined || !set.has(key)) return
+      set.delete(key)
+      if (set.size === 0) pendingClose.delete(sessionId)
+      probe.pendingClose = set.size
+      probe.closeWhy = 'pending-flush'
+      closeSettledReview(ctx, sessionId, key)
+    }
 
     /**
      * **结算即关页**（R-2，2026-10-12 真机）：把"关页 + 条件收起面板"提到**插件根**做。
      *
      * 为什么不能留在 pane 里：pane 只在**可见**时才渲染，用户没切到那一页时它的 effect 根本不跑
      * ⇒ 陈旧的审核单标签页**永远不会被关**（真机症状：右栏攒着两个打不开正文的页）。
-     * 在根上做就**不依赖可见性**：按**地址**在会话的已提交页里找到自己那页，直接 `closeIn`。
+     * 在根上做就**不依赖可见性**：按**登记表里的地址**在会话的已提交页里找到自己那些页，直接 `closeIn`。
      *
-     * 收起面板的判据不变（用户口径 2026-10-10）：**除了宿主引导页没有别的页**、且当前是展开态。
-     * 计数时**按地址排除自己**（而不是"先关再数"）—— `tabsIn` 读的是已提交记录，
+     * **关的是"本插件开的所有页"，不只当前 key 那页**（DEF-020 落点二）：同一门禁的旧页、
+     * 前几次提问留下的页、退化地址留下的页，一次结算全清。
+     *
+     * 收起面板的判据不变（用户口径 2026-10-10）：**除了宿主引导页与本插件的页没有别的页**、且当前是展开态。
+     * 计数时**按地址排除自己和宿主引导页**（而不是"先关再数"）—— `tabsIn` 读的是已提交记录，
      * 关完再数可能把刚关掉的那页又数进来。
      */
     function closeSettledReview(ctx, sessionId, key) {
       if (sessionId === undefined || key === '') return
       const token = `${sessionId}:${key}`
       if (closedKeys.has(token)) return
-      closedKeys.add(token)
-      const address = addressFor(key)
       const addressOf = (record) => String(record?.navigation?.address ?? record?.contentId ?? '')
       try {
+        const addresses = openAddresses.get(sessionId) ?? new Set()
+        const closedAddresses = new Set()
+        let closed = 0
         for (const record of ctx.sidebarRight.tabsIn?.(sessionId) ?? []) {
-          if (String(record?.navigation?.address ?? '') !== address) continue
+          const address = addressOf(record)
+          // **只关本插件开过的页**：登记表就是这条机械界；宿主 GUIDE 页从不进登记表，
+          // 这里的显式排除是第二道闸（OBS-014：不排除它，"关完就收起"永远不成立）。
+          if (address === GUIDE_ADDRESS || !addresses.has(address)) continue
           try {
             ctx.sidebarRight.closeIn(sessionId, record.id)
+            closed += 1
+            closedAddresses.add(address)
             probe.closed += 1
             probe.closeWhy = 'settled'
           } catch (error) {
             note('close-review', error)
           }
         }
+        // **一页都没关成 ⇒ 目标页还没提交**（结算早于开页）。记进待关集合，
+        // **不**把 token 写进 `closedKeys`：开页成功后会补关一次（`flushPendingClose`）。
+        // 注意这不是"什么都没发生"：`probe.closeWhy` 与 `pendingClose` 都会留痕。
+        if (closed === 0) {
+          markPendingClose(sessionId, key)
+          probe.closeWhy = 'pending'
+          return
+        }
+        closedKeys.add(token)
         let others = 1
         let expanded = false
         let rest = ''
         try {
           const remaining = (ctx.sidebarRight.tabsIn?.(sessionId) ?? []).filter(
-            (record) => addressOf(record) !== address && addressOf(record) !== GUIDE_ADDRESS,
+            (record) => addressOf(record) !== GUIDE_ADDRESS && !addresses.has(addressOf(record)),
           )
           others = remaining.length
           rest = remaining.map(addressOf).join(' ').slice(0, 120)
@@ -490,6 +645,8 @@ window.__ModuleLoader__.load({
           probe.collapsed += 1
           probe.closeWhy = 'settled-collapsed'
         }
+        // 关掉的地址**退登记**（没关成的留着，等下次结算/补关再认）
+        forgetOpened(sessionId, closedAddresses)
       } catch (error) {
         note('close-review', error)
       }
@@ -617,6 +774,9 @@ window.__ModuleLoader__.load({
           if (review !== undefined) {
             probe.captured += 1
             probe.stage = 'captured'
+            // **结算关页要按会话找页**（落点三）：会话必须在**收下提问**时就记住 ——
+            // 只靠"开页成功"才记的话，「结算早于开页」那一序里会话还是空的，关页直接早退。
+            if (session !== undefined) lastReviewSession = session
             setPendingReview(review)
             void openWithFull(ctx, session, review, 'event')
           }
@@ -626,12 +786,13 @@ window.__ModuleLoader__.load({
         // 委派给真正的答复者（**只调用一次** `next()`，返回值原样传下去）。
         const settled = next()
         if (review !== undefined) {
-          // **结算信号**：这次 `next()` 完成即"提问已结算"。但只有**真的拿到答复**
-          //（`answer !== undefined`）才算 —— 没人认领时它是 undefined，
-          // 那种情况**不能**关标签页（否则用户还没作答，页就没了）。
-          void Promise.resolve(settled).then((answer) => {
-            if (answer !== undefined) markSettled(review.key)
-          }, () => {})
+          // **结算信号**：这次 `next()` 完成即"提问已结算"—— 两种都算：
+          //   · 拿到答复对象（用户作答）；
+          //   · **`undefined`**（DEF-020：被取代 / 没有答复者）—— 这一路以前**不走关闭**，
+          //     于是被新的签字提问取代之后，旧页永远留在右栏。地址已经是门禁级
+          //     （落点一），被取代的正是**同一门禁**的那一页，必须一起收拾。
+          //   拒绝（reject）不算结算：那是"这条问答链本身坏了"，页留着更好取现场。
+          void Promise.resolve(settled).then(() => markSettled(review.key), () => {})
         }
         return settled
       })

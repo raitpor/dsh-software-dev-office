@@ -721,7 +721,17 @@ export interface TraceReport {
   /** 非空行总数（回执里与 `total` 一起给出，让"少了几条"看得见） */
   totalLines: number
   /** 每条需求的覆盖情况 */
-  perRequirement: { id: string; design: string[]; tasks: string[]; tests: string[]; covered: boolean }[]
+  perRequirement: {
+    id: string
+    design: string[]
+    tasks: string[]
+    tests: string[]
+    /**
+     * 这条需求出过哪些缺陷（`req-defect` 边现算；TASK-022 已在算，TASK-035 落点五 补上类型位）。
+     */
+    defects: string[]
+    covered: boolean
+  }[]
   orphans: {
     /** 没有任何 REQ 来源的 DES */
     design: string[]
@@ -729,6 +739,8 @@ export interface TraceReport {
     tasks: string[]
     /** 没有任何 REQ 来源的 TC */
     tests: string[]
+    /** 没有任何需求来源的 DEF（全集取缺陷台账，不是图 —— 从未被链接过的缺陷正是典型孤儿） */
+    defects: string[]
   }
   /** must 需求里还没有测试用例的 */
   uncoveredMust: string[]
@@ -752,6 +764,21 @@ export interface EvidenceItem {
    * 不给也不判红 —— 没有可机械判定的输出格式约定，硬编只会逼人编造。
    */
   exitCode?: number | undefined
+}
+
+/**
+ * 一条"这个风险**仍要开着**，理由与批准人如下"的署名豁免（DEF-051 / TASK-080）。
+ *
+ * 两个键名逐字取自缺陷台账既有的豁免形状（`defects/*.yml` 的 `waiveReason` / `waiveApprovedBy`）——
+ * 复用而不是新造：同一件事（有人署名地接受一个仍开放的风险/缺陷）在两本台账里必须是同一种形状。
+ */
+export interface MitigatesWaiver {
+  /** 被豁免的风险 id（`RISK-*`）；`mitigates` 里有它，判据才去看这条豁免。 */
+  id: string
+  /** 仍要开着的理由（去空白后非空才算数）。 */
+  waiveReason: string
+  /** 批准人（去空白后非空才算数；空 = 没人署名 = 不算豁免）。 */
+  waiveApprovedBy: string
 }
 
 /** 任务卡（`.sdo/tasks/TASK-*.yml`，设计 §8.6）。 */
@@ -781,12 +808,126 @@ export interface TaskCard {
   owner?: string | undefined
   /** 追溯：来源需求 */
   requirements: string[]
+  /**
+   * **本卡声称修好的缺陷**（`.sdo/defects/*.yml` 的 `DEF-*` id 列表；DEF-050 / TASK-072）。
+   *
+   * 与 `requirements` 同族：都是"这张卡挂在哪些台账实体上"的**声明通道**。
+   * 为什么必须有这条边：卡完成 ⇄ 评审有 C-42/C-52、缺陷 ⇄ 需求有 C-58，
+   * 唯独"卡做完了 ⇒ 它要修的那条缺陷该闭合了"此前**没有任何地方连起来** ——
+   * 于是修复已落地的缺陷长期停在 `open`（DEF-004/005/006/009/022），
+   * 反向更危险：文档写"已修"而代码一字未动（DEF-008）也没有判据逮得住。
+   * 判据 `C-63` 消费本字段：卡 `done`/`verified` 时，每条 `fixes` 缺陷必须
+   * `fixed`/`closed`，或 `wontfix` + 免责两字段齐备（口径同 DEF-038），否则判红并点名。
+   *
+   * **可选**（与 `iteration` 同款）：缺席 = 这张卡没声明修任何缺陷 = 空集。
+   * 存量卡（本字段生效前建的）**不追溯**：它们读回来是空数组，判据对它们无事可做。
+   */
+  fixes?: string[] | undefined
+  /**
+   * **本卡声称消除的风险**（`.sdo/risks/*.yml` 的 `RISK-*` id 列表；DEF-051 / TASK-080）。
+   *
+   * 与 `fixes` / `requirements` 同族：都是"这张卡挂在哪些台账实体上"的**声明通道**。
+   * 为什么必须有这条边：缺陷台账那条边已由 `fixes` + 判据 `C-63` 补上，而**风险台账仍是只进不退** ——
+   * 卡完成之后没有任何判据回头看风险状态，于是"一张就是为消除某风险的卡做完了、风险还是 open"
+   * 这件事没有任何地方会说话（实测：全库 7 条风险清一色 `open`，而 `risks.*` 系列判据只在
+   * 螺旋流程出现，waterfall 只在 G1 由 `feasibility.risks` 引用过一次）。
+   * 判据 `C-64` 消费本字段：卡 `done`/`verified` 时，每条 `mitigates` 风险必须
+   * `mitigated`/`closed`，**或**在 {@link TaskCard.mitigatesWaiver} 里带一条署名理由，否则判红并逐条点名。
+   *
+   * **可选**：缺席 = 这张卡没声明消除任何风险 = 空集。
+   * 存量卡（本字段生效前建的）**不追溯**：它们读回来是空数组，判据对它们无事可做。
+   */
+  mitigates?: string[] | undefined
+  /**
+   * `mitigates` 里哪些风险**仍要开着**，以及为什么、谁批的（DEF-051 / TASK-080）。
+   *
+   * 键名**逐字复用**缺陷台账既有豁免的两字段（`waiveReason` / `waiveApprovedBy`，
+   * 见 `isBlockerWaived` 与 DEF-038 的处置口径）—— 不新造概念：同一种"署名放弃"在两本台账里
+   * 必须长得一模一样，否则读者要学两套，判据也要写两份。
+   *
+   * 去空白后**两字段都非空**才算一条成立的豁免（与 `C-63` 逐字同口径）。
+   */
+  mitigatesWaiver?: MitigatesWaiver[] | undefined
   /** 迭代号（敏捷/螺旋） */
   iteration?: number | undefined
   evidence: EvidenceItem[]
   blockedReason?: string | undefined
+  /**
+   * **勘误（只能追加）**（DEF-071 / 2026-10-14 机制缺陷批 §3D）。
+   *
+   * 为什么需要它：done 卡**不可改**（对，历史不重写），但也没有**勘误**通道 ⇒ 拆卡之后
+   * 「说明说本卡不做」与「落点原文要求做」永久并存，下一位读卡人会判「没做完」。
+   * 这里只**追加**（`{at, by, note}`），**绝不改写**任何历史正文。
+   */
+  errata?: { at: string; by: string; note: string }[] | undefined
   createdAt: string
   updatedAt: string
+}
+
+/**
+ * 覆盖判定的**命中口径**（TASK-074 / 缺陷 DEF-052）：这个设计元素"已经有卡了"是怎么判出来的。
+ *
+ * 为什么要有这个枚举：旧实现只有一种口径（卡标题里含 `（DES-xxx）`），两个方向都会错 ——
+ * 手工功能卡不带这个标记（**漏判** ⇒ 为已实现元素重复建卡），而标题里恰好含该串的卡都算覆盖
+ * （**误判**）。现在三种任一即算覆盖，且**必须说清是哪一种**命中 —— 否则读者无法判断
+ * 判定是"按第一类关系（追溯边）"还是"靠历史兜底"。
+ */
+export type StructuralCoverageHow =
+  /** ① 主口径：追溯图里有指向该元素的 `des-task` 边（与 C-21 覆盖率同源） */
+  | 'des-task'
+  /** ② 历史兜底：卡标题含 `（DES-xxx）` marker（存量 dropped 卡没有追溯边，去掉这条会让它们被重造） */
+  | 'title-marker'
+  /** ③ 显式「无需卡」：`.sdo/config.yml` 的 `plan.noCardElements` 点名了该元素 */
+  | 'no-card-element'
+  /** 未命中任何口径（`created` 里的条目用它：**没有依据可以跳过**，所以才建卡） */
+  | 'none'
+
+/**
+ * **结构卡的计划条目**（TASK-074 落点三）：回执要**逐条列出**本次生成的结构卡
+ * 「卡标题（含设计 id）+ 写范围 + 判定依据」，而不是只给一个 `structuralCount` 数字。
+ *
+ * 真机症状（DEF-052）：回执只有「本批有 N 张卡来自结构通道」+「粒度与模板范围可能不符」，
+ * 驾驶舱不翻看板就发现不了那批卡写范围荒谬（10 个模块 / 不存在的模板目录）。
+ */
+export interface StructuralCardPlan {
+  /** 这张卡对应哪个设计元素 */
+  designId: string
+  /** 卡标题（含设计 id） */
+  title: string
+  /** 落盘的写范围（回执要印出来） */
+  writeScopes: string[]
+  /** 该元素为什么**没有**被跳过（`none` = 未命中任何覆盖判定） */
+  how: StructuralCoverageHow
+}
+
+/**
+ * **没生成卡的原因**（TASK-074 落点一/落点二）。
+ *
+ * 三种原因必须分开，读者要能一眼看出"这是判重生效"还是"护栏拒了它"：
+ *   · `already-covered` —— 覆盖判定命中（`how` 说明是哪条口径）；
+ *   · `no-card-needed` —— 元素被显式标记「无需卡」；
+ *   · `scope-too-broad` —— 派生写范围超限（`scopes` 是**解析出来的那个写范围本身**，
+ *     否则读者不知道是什么被拒了）。
+ */
+export type StructuralSkipReason = 'already-covered' | 'no-card-needed' | 'scope-too-broad'
+
+export interface StructuralSkip {
+  designId: string
+  /** 元素名（回执里点名用） */
+  name: string
+  reason: StructuralSkipReason
+  /** `already-covered` / `no-card-needed` 时的命中口径 */
+  how?: StructuralCoverageHow | undefined
+  /** `scope-too-broad` 时**解析出来的写范围**（原样回报，便于人核） */
+  scopes?: string[] | undefined
+}
+
+/** 结构通道一次拆分的**结构化结果**（域层只给数据，文案由界面层按语言包渲染）。 */
+export interface StructuralPlan {
+  /** 本次**新增**的结构卡（逐条：标题 + 写范围 + 判定依据） */
+  created: StructuralCardPlan[]
+  /** 本次**没有生成**卡的元素及原因 */
+  skipped: StructuralSkip[]
 }
 
 /** 派发记录（`.sdo/dispatch/*.yml` 的投影形态；真源在 journal）。 */
@@ -880,9 +1021,339 @@ export const CONSTRUCTION_CHECKS = [
 ] as const
 export type ConstructionCheck = (typeof CONSTRUCTION_CHECKS)[number]
 
-export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'release', 'reassign', 'update', 'verify-review'] as const
+/**
+ * **测试域**（0.1.6 / DES-031）：词表与真源形状集中在这里，校验与渲染只引用这些常量。
+ *
+ * 与实现阶段方法包（`CONSTRUCTION_*`）**同规**：词表是**随包数据的一部分**，
+ * 落盘与判据不许各写一份字面量 —— 否则"选中了哪个包"在判据与渲染之间会悄悄分叉。
+ */
+export const TESTING_SOURCE_CLASSES = [
+  'profile',
+  'plan',
+  'design',
+  'acceptance',
+  'coverage',
+  'regression',
+  'report',
+] as const
+export type TestingSourceClass = (typeof TESTING_SOURCE_CLASSES)[number]
+
+/** 七类真源里的**单个文件**：`design` 一类含黑盒与白盒两个文件（同一份设计规格文档的两个面）。 */
+export const TESTING_SOURCE_FILE_KINDS = [
+  'profile',
+  'plan',
+  'design',
+  'design-whitebox',
+  'acceptance',
+  'coverage',
+  'regression',
+  'report',
+] as const
+export type TestingSourceFileKind = (typeof TESTING_SOURCE_FILE_KINDS)[number]
+
+/** 验证阶段的方法包（REQ-045 的四包 + 探索式）。`exploratory` 只登记，不作通过证据。 */
+export const TESTING_METHOD_PACKAGES = [
+  'v-model',
+  'risk-based',
+  'mutation-driven',
+  'static-analysis',
+  'exploratory',
+] as const
+export type TestingMethodPackage = (typeof TESTING_METHOD_PACKAGES)[number]
+
+/** 黑盒设计技术的**最小必产项键**（REQ-048）。 */
+export const TESTING_BLACKBOX_TECHNIQUES = [
+  'equivalence',
+  'boundary',
+  'decision-table',
+  'state-transition',
+  'scenario',
+  'combination',
+] as const
+export type TestingBlackboxTechnique = (typeof TESTING_BLACKBOX_TECHNIQUES)[number]
+
+/** 白盒设计技术的**最小必产项键**（REQ-056）。 */
+export const TESTING_WHITEBOX_TECHNIQUES = [
+  'control-flow',
+  'cyclomatic',
+  'basis-paths',
+  'condition-combination',
+  'def-use',
+] as const
+export type TestingWhiteboxTechnique = (typeof TESTING_WHITEBOX_TECHNIQUES)[number]
+
+/** 覆盖读数可用的**准则**（REQ-049）：语句 / 判定 / 条件 / 判定-条件 / 修正条件判定 / 路径 / 定义-使用。 */
+export const TESTING_COVERAGE_CRITERIA = [
+  'statement',
+  'decision',
+  'condition',
+  'decision-condition',
+  'mc-dc',
+  'path',
+  'def-use',
+] as const
+export type TestingCoverageCriterion = (typeof TESTING_COVERAGE_CRITERIA)[number]
+
+/**
+ * **未覆盖项**的处置（REQ-057）：补用例 / 不可达 / 等价 —— 三种都要能被机械点名。
+ *
+ * ⚠️ 「显式豁免」不在这个枚举里：豁免是**人的决定**（要理由与批准人），落在准出准则那条线上，
+ * 不许用它把"没处置"洗成"已处置"。
+ */
+export const TESTING_DISPOSITIONS = ['补用例', '不可达', '等价'] as const
+export type TestingDisposition = (typeof TESTING_DISPOSITIONS)[number]
+
+/** 准出准则与用例结果的**判定结论**（REQ-050：逐条现算，禁止加权合并）。 */
+export const TESTING_VERDICTS = ['pass', 'fail', 'not-run'] as const
+export type TestingVerdict = (typeof TESTING_VERDICTS)[number]
+
+/** 计划评审状态（REQ-047）：走 plan mode 批准 / 手动记录通过 / 显式豁免 —— 三种都要留痕。 */
+export const TESTING_REVIEW_STATUSES = ['approved', 'waived', 'pending'] as const
+export type TestingReviewStatus = (typeof TESTING_REVIEW_STATUSES)[number]
+
+/** 覆盖读数的三位一体状态（REQ-049）：达标 / 未达标 / **过期**。产物一变，"达标"立刻不许再算数。 */
+export const TESTING_READING_OUTCOMES = ['ok', 'stale', 'invalid', 'unknown'] as const
+export type TestingReadingOutcome = (typeof TESTING_READING_OUTCOMES)[number]
+
+/** 真源**形状校验**的问题码（回执与守卫按它分类；文案由调用方给）。 */
+export const TESTING_SHAPE_ISSUE_CODES = [
+  'missing',
+  'type',
+  'empty',
+  'enum',
+  'format',
+  'ref',
+  'dup',
+  'unknown',
+] as const
+export type TestingShapeIssueCode = (typeof TESTING_SHAPE_ISSUE_CODES)[number]
+
+/** 校验粒度：单条 / 一类 / 整组（`set` 是落盘前的那一道：任一文件非法 ⇒ 整次拒绝）。 */
+export const TESTING_VALIDATION_SCOPES = ['file', 'class', 'set'] as const
+export type TestingValidationScope = (typeof TESTING_VALIDATION_SCOPES)[number]
+
+/**
+ * **测试域真源形状**（DES-031 的数据契约）。
+ *
+ * 为什么要有这些类型（而不是继续用 `Record<string, unknown>`）：`.sdo/testing/*.yml` 是
+ * **给人手改的真源**，字段名一旦在渲染 / 判据 / 工具回执之间各写一份，就会悄悄分叉。
+ * 这里把"七类真源长什么样"钉成类型，`testingShapes.ts` 的校验器按同一份定义逐字段报问题。
+ *
+ * 注意：**字段可选 ≠ 可以乱写**。可选字段缺失是合法形状；给出来就必须是声明的类型
+ * （校验口径见 `testingShapes.ts`：非法形状**整次拒绝**，不落半成品）。
+ */
+export interface TestingProfileSource {
+  packages: {
+    id: TestingMethodPackage | string
+    selected: boolean
+    /** 未选中也必须给理由（REQ-045：未选中的包一律 N/A 并给理由）。 */
+    reason?: string | undefined
+    /** 可核对的依据：必须能指到一条已落盘事实（档位 / 风险条数 / 契约失败面…）。 */
+    basis?: string | undefined
+  }[]
+  scope?: string | undefined
+  decidedAt?: string | undefined
+  decidedBy?: string | undefined
+}
+
+export interface TestingPlanLevel {
+  id: string
+  /** 测试层级（单元 / 集成 / 系统 / 验收…）。 */
+  level: string
+  entry?: string | undefined
+  exit?: string | undefined
+  /** 追溯边类型（v-model 包要求：层级 ↔ 需求/用例/结果/缺陷） */
+  traceability?: string | undefined
+}
+
+export interface TestingPlanExitCriterion {
+  id: string
+  criterion: string
+  /** 指标（覆盖率 / 变异 kill 率 / 用例强度…）。 */
+  metric?: string | undefined
+  /** 阈值：**必填**（REQ-050：准则缺阈值即判红）。 */
+  threshold: string
+  /** 范围（哪一部分产物适用）。 */
+  scope?: string | undefined
+}
+
+export interface TestingPlanReview {
+  status?: TestingReviewStatus | string | undefined
+  by?: string | undefined
+  at?: string | undefined
+  /** 手动出口的留痕（记录评审通过 / 显式豁免的理由）。 */
+  note?: string | undefined
+}
+
+export interface TestingPlanSource {
+  levels: TestingPlanLevel[]
+  exitCriteria: TestingPlanExitCriterion[]
+  environment?: string | undefined
+  data?: string | undefined
+  regressionScope?: string[] | undefined
+  review?: TestingPlanReview | undefined
+}
+
+export interface TestingBlackboxArtifact {
+  id: string
+  technique: TestingBlackboxTechnique | string
+  artifact: string
+  /** 需求出处（域不许凭空发明：REQ-048 要求能指到真源）。 */
+  requirementRef?: string[] | undefined
+  /** 域出处：验收标准 / 契约字段 / 代码里的枚举。 */
+  domainSource?: string | undefined
+  /** 反向引用：至少一条用例（REQ-048 防凑数）。 */
+  useCases?: string[] | undefined
+  /** 不适用时的显式声明与理由（如边界值无有序域）。 */
+  na?: string | undefined
+}
+
+export interface TestingDesignSource {
+  artifacts: TestingBlackboxArtifact[]
+}
+
+export interface TestingWhiteboxArtifact {
+  id: string
+  technique: TestingWhiteboxTechnique | string
+  artifact: string
+  /** 结构元素出处：被测单元 / 函数。 */
+  function?: string | undefined
+  /** 分支 / 条件 / 变量 / 复杂度读数（按技术取用）。 */
+  branch?: string | undefined
+  condition?: string | undefined
+  variable?: string | undefined
+  complexity?: string | undefined
+  useCases?: string[] | undefined
+  na?: string | undefined
+}
+
+export interface TestingDesignWhiteboxSource {
+  artifacts: TestingWhiteboxArtifact[]
+}
+
+export interface TestingAcceptanceItem {
+  id: string
+  requirement: string
+  ac: string
+  /** 验收项：对这条 AC 要验什么。 */
+  item: string
+  /** 判定基准：**写清用什么判定它对不对**（REQ-046）。 */
+  baseline: string
+}
+
+export interface TestingAcceptanceSource {
+  outline: TestingAcceptanceItem[]
+  baselineAt?: string | undefined
+  baselineBy?: string | undefined
+}
+
+export interface TestingCoverageReading {
+  id: string
+  criterion: TestingCoverageCriterion | string
+  /** 实测值：要有"数"（REQ-049：不接受只有数字没有报告的读数）。 */
+  measured: string
+  threshold?: string | undefined
+  /** 可复跑的命令。 */
+  command?: string | undefined
+  /** 报告路径。 */
+  report?: string | undefined
+  /**
+   * 报告内容哈希（TASK-035 落点一补的形状位）：读数说"我按这份报告读数"，
+   * 没有它就没法核对报告有没有被改过（`coverage.ts` 的 `report-hash-mismatch`）。
+   */
+  reportHash?: string | undefined
+  /**
+   * 被测产物**路径**（相对工作区根）。
+   *
+   * ⚠️ **口径（TASK-035 落点一，与判定侧 `coverage.ts` 统一）**：本字段写**路径**、不写哈希 ——
+   * 哈希归 `artifactHash`。历史写法（把哈希直接写进 `artifact`、不写 `artifactHash`）仍被**收下**，
+   * 但判定侧会如实归"判不动"（`artifact-hash-missing`：哈希在手、不知道产物在哪）。
+   */
+  artifact?: string | undefined
+  /** 本次被测产物的**哈希**（产物改动 ⇒ 读数过期；与 `artifact` 里的路径配对才判得动）。 */
+  artifactHash?: string | undefined
+}
+
+export interface TestingUncoveredItem {
+  id: string
+  /** 未覆盖的语句 / 判定分支 / 路径 / 定义-使用对。 */
+  item: string
+  /** 处置：补用例 / 不可达 / 等价。 */
+  disposition: TestingDisposition | string
+  useCase?: string | undefined
+  /** 处置理由（不可达与等价**必须**给理由）。 */
+  reason?: string | undefined
+}
+
+export interface TestingCoverageSource {
+  readings: TestingCoverageReading[]
+  uncovered: TestingUncoveredItem[]
+}
+
+export interface TestingRegressionCase {
+  case: string
+  /** 结果：pass / fail（未跑不许写 pass）。 */
+  result: string
+  /**
+   * 绑定的被测产物**哈希**（REQ-052：结果绑产物哈希）。
+   *
+   * ⚠️ **口径（TASK-035 落点六，与判定侧 `regression.ts` / TASK-019 的
+   * `RegressionRunInput.artifact` 统一）**：本字段写**哈希**、路径归 `artifactPath` ——
+   * 与 `TestingCoverageReading` 同一条原则（路径归路径位、哈希归哈希位），只是两个模块
+   * 各自判定侧既有的路径位名字不同。
+   */
+  artifact?: string | undefined
+  /** 被测产物**路径**（与 `artifact` 里的哈希配对，才能核对"它有没有被改动"⇒ AC-208 判过期）。 */
+  artifactPath?: string | undefined
+  command?: string | undefined
+}
+
+export interface TestingRegressionSource {
+  /** 影响面（由追溯图机械推导）。 */
+  impact?: string[] | undefined
+  cases: TestingRegressionCase[]
+  /** 影响面推不出来时的显式声明（不许默认"无影响"）。 */
+  undecidable?: string | undefined
+  narrow?: string | undefined
+}
+
+export interface TestingMutationRecord {
+  killRate?: string | undefined
+  threshold?: string | undefined
+  record?: string | undefined
+  survived?: { id: string; disposition?: string | undefined; useCase?: string | undefined; reason?: string | undefined }[] | undefined
+}
+
+export interface TestingReportSource {
+  exitCriteria: { id: string; criterion: string; threshold?: string | undefined; measured: string; verdict: TestingVerdict | string }[]
+  coverage: TestingCoverageReading[]
+  uncovered: TestingUncoveredItem[]
+  mutation?: TestingMutationRecord | undefined
+  residualRisks?: string[] | undefined
+  escapes?: { id: string; title?: string | undefined; reason?: string | undefined }[] | undefined
+  signature?: { status?: string | undefined; by?: string | undefined; at?: string | undefined; waiver?: string | undefined } | undefined
+}
+
+/**
+ * `sdo_task` 的动作面。
+ *
+ * **`unblock`（DEF-049 / TASK-078）**：把卡从 `blocked` 恢复为 `ready`。为什么它必须在**这里**登记
+ * （而不是只加一个 `index.ts` 分支）：动作清单是 `sdo_task` 声明的**唯一**来源
+ * （`tools.ts` 的 `action` 描述由 `actionList(TASK_ACTIONS)` 生成），不登记的动作对调用方
+ * **不可发现** —— 那等于没做（知识库 `tq_ff348198`：新增参数/动作要类型、schema、execute 同改）。
+ */
+export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'release', 'reassign', 'update', 'unblock', 'verify-review', 'errata'] as const
 export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list', 'env'] as const
-export const REVIEW_ACTIONS = ['record', 'rehash', 'list'] as const
+/**
+ * `sdo_review` 的动作面（**唯一**一处词表：`tools.ts` 的 `action` 描述由 `actionList(REVIEW_ACTIONS)` 生成）。
+ *
+ * **`append`（TASK-108 / DEF-065 拆出项）**：向**既有**评审 id **追加** findings，而不是另起一条同 verdict
+ * 的记录。真机病因：一条评审的发现项写入被宿主 schema 拒绝后，只能靠 9 条 `REV-047…REV-054` 分片补录，
+ * 同一条评审在台账里碎成 9 条记录（可读性与可追溯性双损）。`append` **只追加、不改写**：
+ * `verdict` 是原评审的结论，追加路径不接收也不改它；每次追加在 `review/appended` 事件里留痕
+ * （`appendCount` / `appendedFindings` 能看出第几次、追加了哪些）。
+ */
+export const REVIEW_ACTIONS = ['record', 'append', 'rehash', 'list'] as const
 export const DELIVER_ACTIONS = ['run', 'package', 'show'] as const
 export const GATE_ACTIONS = ['check', 'advance', 'sign', 'waive', 'unwaive', 'rollback'] as const
 export const FEASIBILITY_ACTIONS = ['assess'] as const
@@ -1341,6 +1812,22 @@ export interface GateSignature {
   basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined
   /** 签字时的 journal 序号（用于「签字后声明/需求变更 → 签字失效」） */
   atSeq: number
+  /**
+   * **测试总结报告的内容指纹**（`docSourceFingerprint(store,'report')`，即 `.sdo/testing/report.yml`
+   * 规范化内容哈希 —— 与报告渲染头里印的是**同一个口径**，TASK-062 / REQ-059）。
+   *
+   * 为什么必须有它：`basis`（用户原话）与 `atSeq`（journal 序号）都只能证明"**谁**在**什么时候**签了"，
+   * 证明不了"他签的是**哪一版**报告"。只有把签字那一刻的**内容指纹**一起落账，才能在事后回答
+   * 「签字之后报告（或它的真源）被改过没有」—— 这正是判据 `C-59`（`testing.report-signed`）的态③。
+   *
+   * **谁写它**：只有**测试报告签字通道**（`office.signGate` 见到本门禁声明了 `testing.report-signed`
+   * 判据时）才写。G2/G3 那两个门禁不带本字段 ⇒ `design.signed`（C-2D）的判定路径与结果完全不变。
+   *
+   * **缺了它怎么判**（不许假红）：历史签字 / 非本通道写入的签字没有这个字段 ⇒ 那里退回到
+   * 「报告 ⇄ **当前**真源是否自洽」这条既有口径（`renderStale` 的 `sourceChanged`），
+   * 并在回执里**如实标注这是降级判定**（签字时刻那一版无法回证）。
+   */
+  reportFingerprint?: string | undefined
 }
 
 /**
@@ -1399,6 +1886,7 @@ export const G2_SIGNATURE_INVALIDATING_EVENTS = [
 export const SIGNATURE_NEUTRAL_EVENTS = [
   // 派生视图 / 渲染（不反向写台账）
   'design/rendered',
+  'doc/rendered',
   // 门禁与签字自身的产物
   'gate/result',
   'gate/signed',
@@ -1418,6 +1906,10 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // 派发的收尾与回报（2026-10-05 真机）：子代理干完活 / 交回报告都不改 `DESIGN.md`
   // （实测：设计文档里没有派发台账，只有 ADR 正文出现过"派发"这个词），属纯记账。
   'dispatch/finished',
+  // **DEF-053**：派发未认领的静默失败留痕（不改设计真源 —— 与 dispatch/* 同族）
+  'dispatch/claim-missing',
+  // **DEF-059**：认领被拒的留痕（拒签不改任何真源，只是把「谁被拒过、因为什么」记下来）
+  'task/claim-rejected',
   'dispatch/reported',
   // 采集失败留痕（真机曾整段静默吞异常）：同样是台账记账，与 `DESIGN.md` 无关。
   'dispatch/observe-failed',
@@ -1429,8 +1921,13 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'task/updated',
   'task/claimed',
   'task/released',
+  // **DEF-071**：勘误是**追加**记录（不改真源、不改写历史正文）
+  'task/errata',
   'task/done',
   'task/blocked',
+  // **DEF-049 / TASK-078**：从 blocked 恢复为 ready 的**追加式**留痕。与 `task/released` 同类 ——
+  // 它只改卡的**调度状态**（谁能接着做），不改设计真源 ⇒ 属"计划与执行记账"，签字不因此失效。
+  'task/unblocked',
   // **SDO-21**：认领被门禁拒后卡没有 owner，`block` 也要能留痕（与 task/blocked 同类的记账）
   'task/claim-blocked',
   'task/dropped',
@@ -1440,6 +1937,10 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'review/verified',
   // **补记评审指纹**（G-2）：纯记账，同样不改设计真源
   'review/hashed',
+  // **TASK-108 / DEF-065 拆出项**：向**既有**评审追加发现项（`sdo_review action=append`）。
+  // 与 `review/recorded` 同类：它只让评审台账多承载几条主张，**不改 verdict**、不改设计真源
+  // （真机病因见 `domain/collab.ts` 的 `appendReviewFindings`：一条评审碎成 9 条同 verdict 记录）。
+  'review/appended',
   'test/recorded',
   // 施工期的**交付物**记录（变异证据、契约测试）：与 `test/recorded` 同类 ——
   // `DESIGN.md` 的 11 个固定章节里没有它们（真机实测 grep：变异 / 契约测试命中 0）。
@@ -1534,6 +2035,38 @@ export function isDesignDocTruthPath(path: string): boolean {
   return (DESIGN_DOC_TRUTH_PREFIXES as readonly string[]).some((prefix) => normalized.startsWith(prefix))
 }
 
+/**
+ * `docs/DECISIONS.md` 的来源事件（判据据此判定"渲染之后真源又变了"）。
+ *
+ * 与 `DESIGN_DOC_SOURCE_EVENTS` 同一口径：**有意不列 `phase/*`** —— 阶段是易变元数据，
+ * 把它算作内容变更会让判据在每次推进/回退后翻红（报警疲劳）。
+ */
+export const DECISIONS_DOC_SOURCE_EVENTS = [
+  'project/created',
+  'project/updated',
+  'adr/recorded',
+] as const
+
+/** `docs/QUALITY.md` 的来源事件（质量场景与 ATAM 的写入都走 `quality/recorded`）。 */
+export const QUALITY_DOC_SOURCE_EVENTS = [
+  'project/created',
+  'project/updated',
+  'quality/recorded',
+  // 场景要挂到设计元素上，设计真源变了文档也应重渲染
+  'design/updated',
+] as const
+
+/** 派生文档的**真源前缀**（`docs/DECISIONS.md` / `docs/QUALITY.md` 各自只跟自己的真源）。 */
+export const DECISIONS_DOC_TRUTH_PREFIXES = ['.sdo/decisions/'] as const
+export const QUALITY_DOC_TRUTH_PREFIXES = ['.sdo/quality/'] as const
+
+/** 该 `.sdo/` 真源路径是否属于某份派生文档的来源。 */
+export function isDerivedDocTruthPath(kind: 'decisions' | 'quality', path: string): boolean {
+  const normalized = String(path).replace(/^\.\//u, '')
+  const prefixes = kind === 'decisions' ? DECISIONS_DOC_TRUTH_PREFIXES : QUALITY_DOC_TRUTH_PREFIXES
+  return (prefixes as readonly string[]).some((prefix) => normalized.startsWith(prefix))
+}
+
 /** 该事件类型是否**明确**属于"不改真源"的中性表（P-13：用于给失效理由标注"未分类"）。 */
 export function isNeutralEvent(type: string): boolean {
   return (SIGNATURE_NEUTRAL_EVENTS as readonly string[]).includes(type)
@@ -1616,6 +2149,8 @@ export type SdoEventType =
   | 'design/question-answered'
   | 'design/confirmed'
   | 'design/rendered'
+  // **DEF-004 / DEF-005**：派生人读文档（`docs/DECISIONS.md` / `docs/QUALITY.md`）的渲染留痕。
+  | 'doc/rendered'
   | 'design/method-selected'
   | 'design/artifact-updated'
   | 'truth/file-written'
@@ -1647,10 +2182,19 @@ export type SdoEventType =
   | 'task/updated'
   | 'task/claimed'
   | 'task/released'
+  // **DEF-071**：done 卡的**追加式**勘误（不改写历史正文）
+  | 'task/errata'
   | 'task/done'
   | 'task/blocked'
+  // **DEF-049**：从 blocked 恢复为 ready 的**追加式**留痕（与 task/released 同类：只改调度状态，
+  // 不改设计真源 ⇒ 属"计划与执行记账"，设计签字不因此失效）。
+  | 'task/unblocked'
   | 'task/claim-blocked'
   | 'dispatch/decided'
+  // **DEF-053**：派发后窗口内没有认领 ⇒ 静默失败（纯记账，不改真源）
+  | 'dispatch/claim-missing'
+  // **DEF-059**：认领被拒（拒签零事件 ⇒ 争用次数在真源里数不出）
+  | 'task/claim-rejected'
   | 'dispatch/started'
   | 'iteration/updated'
   | 'review/recorded'
@@ -1658,6 +2202,9 @@ export type SdoEventType =
   | 'review/verified'
   // **G-2**：给老格式评审**补记**内容指纹（补记之后才能检出「改 verdict」这类篡改）
   | 'review/hashed'
+  // **TASK-108 / DEF-065 拆出项**：向**既有**评审追加发现项（`sdo_review action=append`）。
+  // 只追加、不改写：`verdict` 是原评审的结论，追加路径没有也不收这个入参。
+  | 'review/appended'
   | 'test/recorded'
   | 'defect/recorded'
   | 'defect/updated'
@@ -1678,6 +2225,9 @@ export type SdoEventType =
   | 'task/released'
   | 'task/done'
   | 'task/blocked'
+  // **DEF-049**：从 blocked 恢复为 ready 的**追加式**留痕（与 task/released 同类：只改调度状态，
+  // 不改设计真源 ⇒ 属"计划与执行记账"，设计签字不因此失效）。
+  | 'task/unblocked'
   | 'task/claim-blocked'
   | 'dispatch/decided'
   | 'dispatch/started'

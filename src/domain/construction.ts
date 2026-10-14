@@ -15,7 +15,6 @@ import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import { readProjectConfig } from '../config.js'
 import { fmt, t } from './i18n.js'
-import { toolAllowList } from './roles.js'
 import { CONSTRUCTION_PACKAGES, SCALES } from '../types.js'
 import type { ConstructionPackage, TaskCard } from '../types.js'
 import { listContracts } from './contracts.js'
@@ -226,6 +225,45 @@ export function deadExemptions(store: SdoStore): { task: string; check: string; 
     else if (found.status === 'dropped') dead.push({ ...item, reason: 'dropped' })
   }
   return dead
+}
+
+/**
+ * **判据自适性（TASK-056 / DEF-009 / DEF-019 / DEF-023 / DEF-026）**：判据该不该判，由
+ * **卡的写范围路径**决定，**不按角色、不按自述**。
+ *
+ * 为什么必须做成"自动 N/A"而不是逐卡豁免：`exempt` 的 schema 只有 `{task, check, why}`，
+ * 表达不了**类别** —— 真机上同一类卡（只读评审卡 / 纯文档卡）反复撞同一堵墙，累计 15 条豁免、
+ * 每条都要人走一遍「block → 裁决 → 补豁免 → 重新认领」（用户 2026-10-13 已追认这批豁免并立卡修判据）。
+ * 按**路径**判则是一次写死的机械规则：同类新卡自动 N/A，不再需要任何人工往返。
+ *
+ * 口径（保守优先：**认不出来就当产品代码**，宁可多判一次也不许"顺手全判 N/A"）：
+ *   - 非产品面 = 台账 `.sdo/**`、文档 `docs/**` 与 markdown 文件（`*.md` / `*.markdown`）；
+ *   - 其余一律算产品面 —— **`test/**` 也算**（它照样要能跑、要有红绿，只是不产出产品行为）。
+ */
+function normalizeScope(scope: string): string {
+  return scope.trim().replace(/^\.\//u, '').replace(/\\/gu, '/').replace(/\/+$/u, '')
+}
+
+function isNonProductScope(scope: string): boolean {
+  const path = normalizeScope(scope)
+  if (path === '') return true
+  if (path === '.sdo' || path.startsWith('.sdo/')) return true
+  if (path === 'docs' || path.startsWith('docs/')) return true
+  return /\.(md|markdown)$/iu.test(path)
+}
+
+/** 卡的写范围**是否触及产品代码**（空写范围 ⇒ 不触及：没有东西可写，就没有可跑的实现）。 */
+export function cardTouchesProductCode(card: TaskCard): boolean {
+  return card.writeScopes.some((scope) => !isNonProductScope(scope))
+}
+
+/** 卡的写范围**是否指定了契约面路径**（接口面 / 契约真源）。 */
+export function cardWritesContractSurface(card: TaskCard): boolean {
+  return card.writeScopes.some((scope) => {
+    const path = normalizeScope(scope)
+    return path === 'src/interface' || path.startsWith('src/interface/')
+      || path === '.sdo/contracts' || path.startsWith('.sdo/contracts/')
+  })
 }
 
 /** 卡涉及哪些契约：契约声明了 `requires`，与卡覆盖的需求有交集即算涉及（不新增真源）。 */
@@ -517,6 +555,10 @@ export function recordContractTest(store: SdoStore, entry: ContractTestRecord): 
  * - `tdd`：红→绿时序；**关键档位**（`scale=critical`）额外要变异自证（`killed ≥ 1`）；
  * - `contract-first`：本卡必须有契约测试记录。
  * 返回**未通过**的检查；`exempt` 命中的项跳过（豁免必须带理由，读写两侧都校验）。
+ *
+ * **判据自适性（TASK-056）**：卡**没有对应对象**时（写范围不触及产品代码 / 不触及契约面）
+ * 该条**不判**，理由由 `doneNaNotes()` 给出并进回执 —— 判据不许对着不存在的对象判死，
+ * 也不许把"漏判"伪装成 N/A：所以每一条跳过都带一句**机械可核**的为什么。
  */
 export function doneGaps(
   store: SdoStore,
@@ -530,7 +572,9 @@ export function doneGaps(
   const wants = (name: ConstructionPackage): boolean => profile.packages.includes(name)
   const exempt = (check: string): boolean => findExemption(profile, card.id, check) !== undefined
 
-  if (wants('tdd')) {
+  // **TASK-056 落点一①**：写范围不触及产品代码 ⇒ 红绿时序与变异自证**没有对象可判**。
+  // 判据本身不放松：产品代码卡（含 `src/**`、`test/**`）照旧逐条判红。
+  if (wants('tdd') && cardTouchesProductCode(card)) {
     // **R-8 ②**：红绿的三条"同实验"判据各自可豁免（`tdd-env-changed` / `tdd-harness-changed` /
     // `tdd-artifact-unchanged`）—— 验证类卡片的产物必须不变，是结构性豁免而不是放水
     if (!exempt('tdd-red-green-missing')) gaps.push(...redGreenGaps(store, journal, card, { exempt }))
@@ -550,9 +594,12 @@ export function doneGaps(
   }
   // **SDO-20（2026-10-05 真机，复发 7 次）**：`exempt` 的 schema 只有 `{task, check, why}`，
   // **表达不了类别**（评审 / 架构裁决 / 需求侧修正这类"零产品文件改动、工具面里没有 `sdo_test`"的卡）。
-  // 逐卡插豁免已经复发 7 次，所以这里按**角色工具面**判：没有 `sdo_test` 的角色 ⇒ 该项 N/A。
-  const canRecordContractTest = toolAllowList(card.role as never).length === 0 || toolAllowList(card.role as never).includes('sdo_test')
-  if (wants('contract-first') && !exempt('contract-test-missing') && canRecordContractTest) {
+  // **TASK-056 落点一② + 落点〇**：旧实现按**角色工具面**判（没有 `sdo_test` 的角色 ⇒ N/A），
+  // 但那是"按角色"而不是"按对象"—— 判据自适性要求的依据是**卡有没有契约对象**：
+  //   ① 写范围不含契约面路径（`src/interface/**` / `.sdo/contracts/**`），**且**
+  //   ② `contractsOfCard()` 为空（没有契约声明 `requires` 命中本卡需求）。
+  // 两条都成立才 N/A；**只要卡挂在契约上，不论什么角色都照旧判红**（防"顺手全判 N/A"）。
+  if (wants('contract-first') && !exempt('contract-test-missing') && !cardHasNoContractObject(store, card)) {
     const hasTest = readContractTests(store).some((item) => item.task === card.id)
     if (!hasTest) {
       gaps.push({
@@ -563,4 +610,54 @@ export function doneGaps(
     }
   }
   return gaps
+}
+
+/** 卡**没有契约对象**：写范围不含契约面路径，且没有任何契约声明 `requires` 命中本卡需求。 */
+function cardHasNoContractObject(store: SdoStore, card: TaskCard): boolean {
+  return !cardWritesContractSurface(card) && contractsOfCard(store, card).length === 0
+}
+
+/**
+ * **`done` 时该判 N/A 的条目及理由**（TASK-056 落点一 + 落点三）。
+ *
+ * 与 `doneGaps()` 读**同一组**门槛函数，所以"判不判"与"为什么判 N/A"不会各说一套。
+ * 理由必须是**机械可核**的（引用卡的写范围与台账事实），否则就是把漏判伪装成 N/A。
+ * 已写了 `exempt` 的条目不再报 N/A（豁免与 N/A 是两回事：前者是人批的、后者是判据自己认出来的）。
+ */
+export function doneNaNotes(
+  store: SdoStore,
+  card: TaskCard,
+  profile: ConstructionProfile | undefined,
+  options: { scale?: string | undefined } = {},
+): string[] {
+  if (profile === undefined || !scopeCovers(profile, card.id)) return []
+  const notes: string[] = []
+  const wants = (name: ConstructionPackage): boolean => profile.packages.includes(name)
+  const hasExemption = (check: string): boolean => findExemption(profile, card.id, check) !== undefined
+  const scope = card.writeScopes.join(t('uiConstruction.naScopeSep')) || t('uiConstruction.naScopeEmpty')
+
+  if (wants('tdd') && !cardTouchesProductCode(card)) {
+    if (!hasExemption('tdd-red-green-missing')) {
+      notes.push(fmt('uiConstruction.c36', {
+        p1: card.id,
+        p2: scope,
+        p3: t('uiConstruction.naCheckRedGreen'),
+      }))
+    }
+    if (!hasExemption('tdd-mutation-missing') && options.scale === 'critical') {
+      notes.push(fmt('uiConstruction.c36', {
+        p1: card.id,
+        p2: scope,
+        p3: t('uiConstruction.naCheckMutation'),
+      }))
+    }
+  }
+  if (wants('contract-first') && !hasExemption('contract-test-missing') && cardHasNoContractObject(store, card)) {
+    notes.push(fmt('uiConstruction.c37', {
+      p1: card.id,
+      p2: scope,
+      p3: `.sdo/${CONSTRUCTION_DIR}/${CONSTRUCTION_CONTRACT_FILE}`,
+    }))
+  }
+  return notes
 }

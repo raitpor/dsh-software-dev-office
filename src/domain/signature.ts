@@ -58,6 +58,10 @@ export function readSignaturesChecked(
         ? {}
         : { basisFirstSeq: Number(textOf(item.basisFirstSeq)) || 0 }),
     ...(item.turn === undefined ? {} : { turn: textOf(item.turn) }),
+    // **C-59（TASK-062）**：签字当时绑定的**报告内容指纹**（只有测试报告签字通道会写它）。
+    // 缺字段时**不补默认值**：`undefined` 与「记了个空串」是两件事 —— 前者是历史签字（走降级口径），
+    // 后者是台账被写坏（应当能被判据看出来）。
+    ...(textOf(item.reportFingerprint) === '' ? {} : { reportFingerprint: textOf(item.reportFingerprint) }),
   }))
   return { signatures, notes }
 }
@@ -235,6 +239,14 @@ export interface RecordSignatureInput {
    * —— 而那恰是 R-27 报告推荐的出路，等于把最安全的通道堵死。
    */
   basisFresh?: boolean | undefined
+  /**
+   * **C-59（TASK-062 / REQ-059）**：这次签字绑定的**测试总结报告内容指纹**。
+   *
+   * 只有**测试报告签字通道**（`office.signGate` 见到本门禁声明了 `testing.report-signed` 判据时）
+   * 才传它 —— G2/G3 不带本字段，于是 `design.signed`（C-2D）的判定路径与结果一字不变。
+   * 值就是报告渲染头里那一个口径（`docSourceFingerprint(store,'report')`），不另造哈希。
+   */
+  reportFingerprint?: string | undefined
 }
 
 /**
@@ -285,6 +297,8 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     ...(input.turn === undefined ? {} : { turn: input.turn }),
     // R-7：核对口径也要进事件（审计要能看出"这一次到底核没过"）
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),
+    // **C-59（TASK-062）**：签字绑定的报告内容指纹进真源 —— 「签的是哪一版报告」从此可事后核对
+    ...(input.reportFingerprint === undefined ? {} : { reportFingerprint: input.reportFingerprint }),
   })
   const signature: GateSignature = {
     gate: input.gate,
@@ -299,6 +313,7 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     ...(input.basisFresh === true ? { basisFresh: true } : {}),
     ...(input.turn === undefined ? {} : { turn: input.turn }),
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),
+    ...(input.reportFingerprint === undefined ? {} : { reportFingerprint: input.reportFingerprint }),
     atSeq: event.seq,
   }
   const existing = listSignatures(store)

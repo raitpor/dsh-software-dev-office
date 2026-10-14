@@ -36,7 +36,7 @@ phases:
     role: architect
     entry: [G2]
     exit: [G3]
-    suggestedArtifacts: [SDD.md, DECISIONS.md, QUALITY.md]
+    suggestedArtifacts: [DESIGN.md, DECISIONS.md, QUALITY.md]
   - id: design-plan
     reviewPayload: [tasks, contracts, design]
     name: 详细设计
@@ -99,6 +99,9 @@ gates:
       - { id: C7-signoff, check: "human.signoff", desc: "人类基线签字：以签字台账（gates/signatures.yml）里的 G2 签字为准，`approvedBy` 字符串只是附加信息；必须带用户原话/所选选项原文，无引用视为无效；签字后需求/项目/裁剪/问题/风险/红队真源变更即失效" }
       - { id: C8-red-team-closed, check: "redteam.closed", desc: "红队议题已闭环（问题答完或转为风险）" }
       - { id: C9-ac-ids-unique, check: "dor.ac_ids_unique", desc: "验收标准编号全局唯一（AC 编号是交付验收矩阵的追溯键，重号即错配）" }
+      # **REQ-046**：验收准备左移到需求基线。冻结这一刻就要写清"每条 must 需求的每条 AC 怎么验"，
+      # 否则交付期的验收矩阵只能倒推（也就无法反证"这条 AC 没验"）。需求变更 ⇒ 整份大纲失效。
+      - { id: C10-acceptance-outline, check: "dor.acceptance_outline", desc: "验收大纲已按每条 must 需求的每条 AC 生成（验收项 + 判定基准），且与当前需求基线一致；需求变更后整份失效，须重新生成并随 G2 重签" }
   - id: G3
     name: 架构门禁
     criteria:
@@ -115,6 +118,7 @@ gates:
       - { id: C-2A, check: "design.method-consistency", desc: "方法产物之间一致（数据字典覆盖 DFD 流名、无悬空引用、依赖方向合规）" }
       - { id: C-2B, check: "design.applicability", desc: "设计适用性声明存在且结构完整（focus + 每个视图显式二选一 + absent 带理由）；存量项目缺声明即红" }
       - { id: C-2C, check: "design.artifacts", desc: "声明里要做的非视图工件齐备（不变量每条带 verify / 映射两侧非空 / 差分策略有基线来源）；声明为不做的工件（artifactsAbsent）必须逐条写出理由，缺理由即失败（与 absent 视图同一口径）；两处都没列则 N/A" }
+      - { id: C-2G, check: "quality.doc", desc: "质量需求落人读文档并受约束：docs/QUALITY.md 存在且由当前真源渲染、每条质量场景可度量（刺激/响应/度量可核对）；真源为空时必须在设计适用性声明里显式声明不做质量场景/ATAM 并给理由（否则判红）" }
       - { id: C-2D, check: "design.signed", desc: "G3 门禁级用户签字（必须带用户原话或所选选项原文；无引用视为无效；签字后声明 / 需求 / 契约变更即失效）" }
       - { id: C-2E, check: "phase.rollback-recorded", desc: "阶段回退留痕合规（回退必须有 reason，且只能沿流程声明的合法回退边）" }
   - id: G4
@@ -131,12 +135,42 @@ gates:
       - { id: C-41, check: "trace.coverage", desc: "追溯覆盖率达标" }
       - { id: C-42, check: "review.required", desc: "中大卡（size ≥ medium）在完成前已通过评审" }
       - { id: C-43, check: "construction.packages-satisfied", desc: "范围内已完成卡满足所选方法包（红→绿 / 变异 / 契约测试 / 契约先冻结）" }
+      - { id: C-58, check: "trace.defect-links", desc: "缺陷追溯：每条缺陷要么有指向**已基线且未作废**需求的 `req-defect` 边，要么在 `.sdo/defects/*.yml` 里带显式豁免（理由 + 批准人）；否则判红并逐条点名，回执给出可执行修法（补哪条边 / 走哪条豁免）与缺陷追溯覆盖率读数，豁免清单单列；台账读不动判红（fail-closed）" }
+      # **DEF-050 / C-63（TASK-072）**：卡上 `fixes` 声明的缺陷必须闭合或**署名放弃**。
+      # 挂 G5 的理由：
+      #   · G5 是**施工收口**门（"全部任务卡完成且带证据"就是它的 C-40）—— 本判据问的正是
+      #     "那张卡说它修好的缺陷，台账认不认"，同一个时刻、同一批对象，不新造挂点；
+      #   · 与 C-58（缺陷追溯）同为缺陷台账的判据，但**两个维度**：C-58 管"缺陷有没有回到需求"，
+      #     本条管"声明修好了的缺陷闭合了没有"（追溯覆盖率 100% 与闭合状态无关，正是缺陷 DEF-050 的坑）；
+      #   · 不放 G6：修复闭合不是"能不能发布"的问题（C-51 已管阻塞级）——
+      #     已修未闭合的 major/minor 应当**当场**在施工收口时被逮住，而不是拖到发布前。
+      - { id: C-63, check: "details.fixes-closed", desc: "已声明修复的缺陷必须闭合或署名放弃：对每张 status ∈ {done, verified} 的卡，遍历其 `fixes`，每条缺陷必须 ① status ∈ {fixed, closed}，或 ② status === wontfix 且 `waiveReason` 与 `waiveApprovedBy` 去空白后**都非空**（口径同 DEF-038，不新造）；否则判红并**逐条点名**（卡 id + 缺陷 id + 现状态 + 缺什么）并给可执行修法（`sdo_test action=defect defectId=… status=fixed evidence=…`，或补齐免责两字段）。未 done / 未声明 `fixes` 的卡不参与（不误伤）；没有任何完成卡声明 `fixes` ⇒ 判 N/A。**存量不追溯**：`fixes` 是本轮新增字段，新字段生效前建的卡读回来是空集" }
+      # **DEF-051 / C-64（TASK-080）**：与 C-63 同族，只是换了一本台账（风险），并顺手把卡级
+      # `inputs`/`outputs` 这两格"读了、也下发了、却没人核对"的声明纳进同一条判据。
+      # 挂 G5 的理由与 C-63 逐字相同：施工收口时逮住，不拖到发布前。
+      - { id: C-64, check: "details.mitigates-closed", desc: "已声明消除的风险必须闭合或署名接受其仍开放，且卡级 inputs/outputs 的声明必须有证据：对每张 status ∈ {done, verified} 的卡，① `mitigates` 每条风险须 `mitigated`/`closed`，或卡上有一条 `waiveReason` 与 `waiveApprovedBy` 去空白后**都非空**的豁免（口径同 DEF-038，不新造）；② 声明的每条 `inputs`/`outputs` 必须出现在该卡自己的 `artifact` 证据里（去 `./` 与前后空白后匹配）；否则判红并**逐条点名**（卡 id + 风险 id / 声明的条目 + 现状态 + 缺什么）并给可执行修法（`sdo_risk action=update id=RISK-xxx status=mitigated`，或补免责两字段，或把产物落盘进 `artifact` 证据）。两种通过路径下回执都**单列台账里仍 open 的风险清单**（可见即约束）。未 done / 三格都没声明的卡不参与（不误伤）；一条声明都没有 ⇒ 判 N/A。**形态判别，不是「恰好为空」**（DEF-064 / REV-043）：②③ 只核对**路径形态**的 `inputs`/`outputs` 声明（去 `./` 与前后空白后匹配该卡自己的 `artifact` 证据）；**散文/描述形态**的声明**不参与判据**，但会**逐条回显未参与的理由**（不静默放过）。**存量不追溯**：两个风险豁免字段是本轮新增" }
   - id: G6
     name: 验证门禁
     criteria:
       - { id: C-50, check: "tests.passed", desc: "全部 must REQ 有通过的测试用例" }
       - { id: C-51, check: "defects.closed", desc: "无未关闭的阻塞级缺陷" }
       - { id: C-52, check: "review.independent", desc: "评审独立性（作者 ≠ 评审者）" }
+      # **REQ-050**：准出准则由**项目自己声明**（`.sdo/testing/plan.yml` 的 exitCriteria：准则 / 指标 / 阈值 / 范围），
+      # 门禁在这里**逐条现算** —— 任一条不达标即整体不成立并**逐条点名**。
+      # **禁止加权合并**：声明里写了 weight / 权重 / score / 得分的一律**原样报出但不进判定**
+      # （回执会明说"你写的权重未被采用"）。实测优先取覆盖读数（八项齐备 / 哈希 / 过期由 coverage 判，
+      # 不重复实现），缺失时由测试报告结论兜底；两处都找不到实测 ⇒ 判红（fail-closed）。
+      - { id: C-53, check: "exit.criteria", desc: "准出准则逐条现算、禁止加权：任一不达标即整体不成立并逐条点名；声明里的权重/得分原样报出但不进判定；找不到实测判红（fail-closed）" }
+      # **REQ-052**：回归**一等纪律**（变更集 → 影响集 → 回归集）。判定与逐条点名都在 `regression.ts`
+      # （TASK-019），本判据只读它的结论：影响集里该重跑的用例没进回归集、结果没绑被测产物哈希、
+      # 或产物改动后结果过期 ⇒ 判红；`ok` 只有一个来源（判定层逐条核过）。
+      - { id: C-57, check: "regression.discipline", desc: "回归一等纪律：影响集里的用例都必须有结果、结果必须绑被测产物哈希；漏跑 / 产物改动后过期 / 影响面推不出来 ⇒ 判红并逐条点名（判定口径由 regression.ts 一份承担）" }
+      # **REQ-059 / C-59（TASK-062）**：用户裁定「**测试报告必须签字确认才能过 G6**」。
+      # 挂 G6（验证门禁）的理由：① 报告是**验证阶段**的产物（本流程 `verification` 阶段的建议产物就是
+      # TESTREPORT.md），门禁是它所在阶段的出口；② 报告里写的是"准出准则逐条结论 + 覆盖读数"，
+      # 正是 C-53 的输入 —— 让**用户为这份输入背书**，才谈得上"据它放行"；
+      # ③ 与 C-57（回归纪律）同挂 G6：三者都在回答"这次到底验过没有、验的结论是什么、谁认了"。
+      - { id: C-59, check: "testing.report-signed", desc: "测试总结报告已由用户签字确认（四态）：① 报告不在盘 / 不是当前真源的渲染 ⇒ 判红，先 `sdo_render target=report`；② 报告在、但签字台账（.sdo/gates/signatures.yml）里没有本门签字 ⇒ 判红并给可执行修法（`sdo_gate action=sign gate=\"验证门禁（G6）\"`，channel=question 走宿主问答通道弹审核单，或 channel=statement + 用户原话）；③ 有签字但报告内容指纹在签字之后变了（真源被改 / 渲染稿被手改）⇒ 判红并点名「签字已失效，需重签」；④ 报告在 + 存在当前指纹的签字 ⇒ 绿，回执给出报告路径 / 内容指纹 / 签字时刻" }
   - id: G7
     name: 交付门禁
     criteria:

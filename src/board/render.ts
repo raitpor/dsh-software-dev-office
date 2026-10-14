@@ -12,6 +12,12 @@ import { processOfProject } from '../office.js'
 import type { OfficeCall, SoftwareDevOffice, StatusSnapshot } from '../office.js'
 import type { GateEvaluation, Phase, Priority, ProcessDef, SdoProject, TaskCard } from '../types.js'
 import { fmt, gateWithId, label, phaseText, t } from '../domain/i18n.js'
+import {
+  defectLinksExemptionLines,
+  describeDefectLinks,
+  readDefectLinksOf,
+} from '../domain/trace.js'
+import type { DefectLinkAssessment } from '../domain/trace.js'
 
 /** 看板上一条需求。 */
 export interface BoardRequirement {
@@ -40,6 +46,14 @@ export interface BoardModel {
   tasks?: TaskCard[] | undefined
   /** 当前迭代 */
   iteration?: { number: number; goal: string; status: string } | undefined
+  /**
+   * **缺陷追溯读数**（TASK-038 / REQ-058）：孤儿缺陷 / 悬空边 / 豁免清单 / 覆盖率。
+   *
+   * 形状与内容都来自 `trace.ts` 的**唯一现算出口**（经 `readDefectLinksOf` 从追溯报告取），
+   * 看板只负责显示 —— 与门禁回执、`docs/TRACE.md` 同一读数、同一措辞（`uiTrace.*`）。
+   * `undefined` = 报告里没有这一位（老夹具手工拼的报告），正文会显式说明"没有读数"。
+   */
+  defectLinks?: DefectLinkAssessment | undefined
   requirements: BoardRequirement[]
   dataDirName: string
   truncated: boolean
@@ -115,7 +129,7 @@ function gateSummary(project: SdoProject | undefined, gates: GateEvaluation[], a
 export function boardModelFor(
   office: Pick<
     SoftwareDevOffice,
-    'gatesFor' | 'currentExitGates' | 'boardRequirements' | 'process' | 'tasks' | 'iteration'
+    'gatesFor' | 'currentExitGates' | 'boardRequirements' | 'process' | 'tasks' | 'iteration' | 'traceReport'
   >,
   status: StatusSnapshot,
   call: OfficeCall,
@@ -138,6 +152,14 @@ export function boardModelFor(
   const gates = guarded('gatesFor', () => boardGates(office.gatesFor(call), office.currentExitGates(call)), [])
   const tasks = guarded('tasks', () => office.tasks(call), undefined)
   const iteration = guarded('iteration', () => office.iteration(call), undefined)
+  /**
+   * **TASK-038 落点四**：缺陷追溯读数**从追溯报告里取**（`readDefectLinksOf`），不在这里重算一份。
+   *
+   * 卡上写明门禁回执 / `TRACE.md` / `BOARD.md` 三处“同一现算口径，不得各写一份” ——
+   * 报告本来就是这三处共同的上游，看板只是把**已经算好的那一位**显示出来。
+   * 读不动（报告拼不出来）时降级为 `undefined` 并在正文里说明，不编一个好看的数出来。
+   */
+  const defectLinks = guarded('traceReport', () => readDefectLinksOf(office.traceReport(call)), undefined)
   const readError = problems.length === 0 ? undefined : problems.join('；')
   const truthError = [status.truthError, readError].filter((item): item is string => item !== undefined && item !== '').join('；')
   const model: BoardModel = {
@@ -150,6 +172,7 @@ export function boardModelFor(
     pendingGate: status.pendingGate,
     ...(tasks === undefined ? {} : { tasks }),
     ...(iteration === undefined ? {} : { iteration }),
+    ...(defectLinks === undefined ? {} : { defectLinks }),
     dataDirName,
     truncated: status.truncated,
     ...(status.badLine === undefined ? {} : { badLine: status.badLine }),
@@ -187,6 +210,14 @@ export function renderBoard(model: BoardModel, options: BoardOptions = {}): stri
   lines.push(`- ${phaseLine(project, model.gates, model.process)}`)
   if (model.iteration !== undefined) {
     lines.push(fmt('uiRender.k15', { p1: model.iteration.number, p2: label('iterationStatus', model.iteration.status), p3: model.iteration.goal }))
+  }
+  // **TASK-038 落点四**：看板也要看得见缺陷追溯读数 —— 与门禁回执、`docs/TRACE.md` **同一读数、同一措辞**
+  // （文案走 `uiTrace.*`，数据走追溯报告里的那一位）。没有读数时**明说**，不印一个看起来像 100% 的假数。
+  if (model.defectLinks === undefined) {
+    lines.push(fmt('uiTrace.defectTraceUnreadable', { p1: t('uiTrace.defectTraceNoReading') }))
+  } else {
+    lines.push(`- ${describeDefectLinks(model.defectLinks)}`)
+    for (const line of defectLinksExemptionLines(model.defectLinks)) lines.push(`- ${line}`)
   }
   lines.push('')
 

@@ -148,3 +148,31 @@ export function diffPayloadIndex(
   }
   return lines
 }
+
+/**
+ * **派生文档类受审段**（TASK-007）：真源是 YAML，但**受审正文是渲染出来的文档**。
+ *
+ * 为什么单列一个构造器，而不是把 `testing/report.yml` 塞进 `readReviewCollection`：
+ * `readReviewCollection` 读的是"**按目录**逐文件原样解析"的 YAML 内容，而签字人要通读的是
+ * `docs/TESTREPORT.md` 那份**渲染稿**（带渲染头、逐条结论、指纹）。若走 YAML 原样内联，
+ * 用户看到的是字段树而不是报告正文 —— 那正是 REQ-051「整份报告进入审核单」没被满足的形态。
+ *
+ * 三条与既有口径**对齐**（不另造读取路径）：
+ *   · 指纹用 `contentHash`（与 `readReviewCollection` 同口径：绑内容、不绑 mtime）；
+ *   · `id` 用工作区相对路径（与既有条目的 `path` 一致，差异点名时可读）；
+ *   · `content` 放**Markdown 文本**（`reviewDoc` 按"渲染稿"分支原样内联，不做字段映射）。
+ */
+export function renderedDocReviewItem(input: {
+  collection: string
+  id: string
+  path: string
+  text: string
+}): ReviewPayloadItem {
+  return {
+    collection: input.collection,
+    id: input.id,
+    path: input.path,
+    hash: contentHash(input.text),
+    content: input.text,
+  }
+}

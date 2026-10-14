@@ -270,6 +270,20 @@ export interface KnownToolsFilter {
  * 返回值把「探针说什么」（`kept`/`dropped`）与「实际发什么」（`applied`）分开，
  * 并单独标出 `blind` —— 三者都不是同一件事，回执里也必须分开说。
  */
+/**
+ * **名单与宿主实际注册面的偏移**（DEF-015）：`EXECUTOR_DENIED_TOOLS` 里宿主**没有注册**的名字。
+ *
+ * 为什么要单列这件事：这张表是 2026-10-08 对着宿主 `Tool.listTools` 逐个分类的**历史产物**，
+ * 宿主每加/删一个工具它就漂一点。派发时它会被 `filterKnownTools` 交集掉（行为是安全的），
+ * 但**漂移本身**必须看得见 —— 否则"名单里有个早就不存在的工具"永远没人清理，
+ * 而下一次"名单里少了一个该挡的工具"也会同样无声（那一次是**安全**问题）。
+ *
+ * 与派发路径**同一个探针**（`isKnown`）⇒ 读数与行为同源；探针盲态时调用方不得据此回报。
+ */
+export function curatedDenyPhantoms(isKnown: (name: string) => boolean): string[] {
+  return [...EXECUTOR_DENIED_TOOLS].filter((name) => !isKnown(name))
+}
+
 export function filterKnownTools(names: readonly string[], isKnown: (name: string) => boolean): KnownToolsFilter {
   const kept: string[] = []
   const dropped: string[] = []

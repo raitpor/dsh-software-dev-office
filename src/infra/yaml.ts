@@ -40,20 +40,112 @@ interface LineInfo {
 const PLAIN_INT = /^-?(?:0|[1-9]\d*)$/
 const PLAIN_FLOAT = /^-?(?:0|[1-9]\d*)\.\d+(?:[eE][-+]?\d+)?$/
 
-/** 判断一段文本是否像一个键值对的开头（键为 plain 标量，冒号后跟空格或行尾）。 */
+/**
+ * **键的引号解包**（DEF-003 修法，读端一侧）。
+ *
+ * 为什么必须有：写端 `quoteIfNeeded` 对**必须加引号**的键（`NEEDS_QUOTE` 首项就是减号，
+ * 如 CSS 令牌 `--sdo-accent`）会加单引号；而读端过去见引号即放弃、把整行当标量读走
+ * ⇒ 带引号键的真源**整份读不回**（DEF-003）。修法只补读端对引号键的识别，
+ * 让两端成为同一口径的两端 —— **不改写端**（把减号开头的键写成不带引号会让 YAML 本身歧义，
+ * 那是掩盖不是修复）。
+ *
+ * 引号与转义规则**复用 `parsePlainOrQuoted`**（单引号 `''` ⇒ `'`；双引号走 JSON 转义），
+ * 不在这里另写第二套 —— 两处口径必须同源。
+ *
+ * 返回 `undefined` = 不是「引号包裹的键」（含未闭合、闭引号后既非引号也非「冒号+空格/行尾」）。
+ */
+function unwrapQuotedKey(text: string): string | undefined {
+  const first = text[0]
+  if (first !== "'" && first !== '"') {
+    // **plain 键**：原口径逐字保留（方括号/引号/注释符等仍视为值）
+    return /[[\]{}'",#&*!|>%@`]/.test(text) ? undefined : text
+  }
+  // 单引号自转义（`''`），双引号用 `\` ⇒ 找闭引号时都要跳过转义位
+  for (let i = 1; i < text.length; i++) {
+    const ch = text[i]
+    if (first === "'" && ch === "'" && text[i + 1] === "'") {
+      i++
+      continue
+    }
+    if (first === '"' && ch === '\\') {
+      i++
+      continue
+    }
+    if (ch !== first) continue
+    const after = text.slice(i + 1)
+    if (after !== '' && !after.startsWith(': ')) return undefined
+    return parsePlainOrQuoted(text.slice(0, i + 1), 0) as string
+  }
+  return undefined
+}
+
+/**
+ * **起始引号在 `start` 处时，对应闭引号的下标**（找不到 ⇒ `undefined`）。
+ *
+ * 转义口径与 `unwrapQuotedKey` **同源**（这是它存在的唯一理由）：
+ *   · 单引号：`''` 是转义的自转义，要整对跳过；
+ *   · 双引号：`\` 转义下一个字符（`\"` 不是闭引号、`\\` 也不是）。
+ * 抽成一处是为了让"哪里是闭引号"只有一个答案 —— `splitKey`（找键的边界）与
+ * `unwrapQuotedKey`（解键的值）若各写一份，DEF-003/DEF-061 这类"两端不同口径"的病会再犯一次。
+ */
+function closingQuoteIndex(text: string, start: number): number | undefined {
+  const quote = text[start]
+  if (quote !== "'" && quote !== '"') return undefined
+  for (let i = start + 1; i < text.length; i++) {
+    const ch = text[i]
+    if (quote === "'" && ch === "'" && text[i + 1] === "'") {
+      i++
+      continue
+    }
+    if (quote === '"' && ch === '\\') {
+      i++
+      continue
+    }
+    if (ch === quote) return i
+  }
+  return undefined
+}
+
+/**
+ * 判断一段文本是否像一个键值对的开头（键为 plain 标量或**引号包裹的键**，冒号后跟空格或行尾）。
+ *
+ * **DEF-003 → REV-041 / DEF-061 的因果**（为什么必须加"跳过引号段"这一个扫描态）：
+ *   · DEF-003 只堵住了**一个触发字符** —— 键以减号开头（CSS 令牌 `--sdo-accent`）：写端
+ *     `quoteIfNeeded` 会给它加单引号后，读端在 `unwrapQuotedKey` 里认了引号键，于是那一类通了；
+ *   · 但**本函数**（`splitKey`）的扫描循环仍不知道"引号段"这回事：它在**引号内**照样把
+ *     `:` / `#` 当分隔与注释判定，并且**不加区分**地把任何含 `\` 的行判成"不是键值对"。
+ *     于是写端会加引号的其它触发支（键内含「冒号+空格」/「空格+井号」/ 含反斜杠或转义引号）
+ *     就**没有逐支对齐**：`'a\b': 1`、`"a\"b": 1` 这类**合法 YAML** 会被判成"不是键值对"⇒ 整行当标量，
+ *     再往下就报「引号字符串没有闭合」（真源读不回）。
+ *   · 教训（`tq_097f952f`/`tq_097f952d`）：**只堵报告里那一个复现手法不算修** —— 两端必须逐支对齐。
+ *
+ * 修法只加**一个扫描态**：读到起始引号即跳到对应闭引号（单引号按 `''` 自转义、双引号按 `\` 转义），
+ * 引号段内的 `:` / `#` / `\` **不参与**分隔与注释判定。**不动**值解析、缩进、列表、流式集合 ——
+ * 那几处各有自己的引号处理（`parsePlainOrQuoted` / `stripInlineComment`），本函数只管"键在哪里结束"。
+ */
 function splitKey(text: string): { key: string; rest: string | undefined } | undefined {
-  // 键里不允许出现引号/方括号等；遇到引号直接放弃（视为标量）
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
-    if (ch === '\\') return undefined
+    // **引号段跳过**（本卡新增的唯一扫描态）：起始引号 ⇒ 一路跳到它的闭引号。
+    // 不闭合、或找不到闭引号 ⇒ 交给 `unwrapQuotedKey` 的既有口径去判（这里只跳过，不越权下结论）。
+    if (ch === "'" || ch === '"') {
+      const closing = closingQuoteIndex(text, i)
+      if (closing === undefined) return undefined
+      i = closing
+      continue
+    }
+    // **行内注释**（` # 注释`）只可能出现在引号之外 —— 引号段已经整段跳过了。
+    if (ch === '#' && isCommentHash(text, i)) return undefined
     if (ch === ':' && (i + 1 === text.length || text[i + 1] === ' ')) {
-      const key = text.slice(0, i).trim()
-      if (key === '' || /[[\]{}'",#&*!|>%@`]/.test(key)) return undefined
+      const key = unwrapQuotedKey(text.slice(0, i).trim())
+      if (key === undefined || key === '') return undefined
       const rest = i + 1 === text.length ? '' : text.slice(i + 2).trim()
       return { key, rest }
     }
-    // **D-23**：` #1132`（井号后**不是**空白）不是注释 —— 见 `isCommentHash` 的口径。
-    if (ch === '#' && isCommentHash(text, i)) return undefined
+    // **plain 键里出现 `\` ⇒ 不是键值对**（原口径保留）：裸键不允许反斜杠。
+    // 引号段已经在上面 `continue` 掉了，所以"引号内的反斜杠"不会再被这一条误杀 ——
+    // 这正是 REV-041 主发现（`'a\b': 1` 被拒）与发现 7（`"a\"b": 1` 被拒）的共同根因。
+    if (ch === '\\') return undefined
   }
   return undefined
 }

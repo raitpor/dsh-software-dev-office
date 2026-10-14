@@ -17,11 +17,20 @@
  *   ③ **只有 continuable 能复用**：one-shot 子代理结算后就没了（宿主写死的默认模式），
  *      把它们算进"空闲可复用"就是把"池"说成不存在的能力 —— 这里单列 `retired` 如实记账。
  */
+import { fmt } from './i18n.js'
 import type { TaskCard } from '../types.js'
 
 /** 一轮派发（`dispatch/started` + 其结算）。 */
 export interface PoolChild {
   childSessionId: string
+  /**
+   * **派发它的父会话**（DEF-066）：宿主只允许父会话复用**自己**的子会话（跨父会话会报
+   * `belongs to another parent session`）。老事件没有这个字段 ⇒ 空串（**未知**，如实标注，
+   * 绝不当成"本会话可复用"）。
+   */
+  parentSessionId?: string | undefined
+  /** 折叠过程中的**内部**字段：该子会话接过哪些卡（对外用 `cards` 数） */
+  cardIds?: string[] | undefined
   role: string
   /** 当前/最后一次承接的卡 */
   task: string
@@ -30,6 +39,12 @@ export interface PoolChild {
   state: 'busy' | 'idle'
   /** 同一个子代理承接过的轮数（复用后 > 1；回执用它说明"这是第几轮"） */
   rounds: number
+  /**
+   * 同一个子代理承接过的**不同卡数**（DEF-069）：真机实测同一会话接了 20 张卡、34 轮，
+   * 末两次派发一次零改动、一次只落 1/5 落点 —— 余量判定必须看得到这个数。
+   * 老事件折叠不出来 ⇒ `undefined`（**未知**，不据此拒绝复用）。
+   */
+  cards?: number | undefined
   startedAt: string
   finishedAt: string
   /**
@@ -49,6 +64,17 @@ export interface RolePool {
   busy: PoolChild[]
   /** 空闲且**可复用**（continuable + 已结算） */
   idle: PoolChild[]
+  /**
+   * `idle` 里**属于本会话**（父会话 = 观察者）的那部分 —— 只有这些是派发器**真的能**投卡的（DEF-066）。
+   *
+   * 真机矛盾：`sdo_status` 报「空闲可复用 31」而派发器永远新起（`provider=spawn`）——
+   * 因为那 31 个是**上一任驾驶舱**派的（另一个父会话），宿主一律拒。
+   */
+  idleSameParent: PoolChild[]
+  /** `idle` 里**跨父会话**的那部分（宿主会拒）—— **如实标注**，不再计入"看起来能复用"的数 */
+  idleForeign: PoolChild[]
+  /** `idle` 里**父会话未知**的（老事件）—— 同样不当作本会话可复用 */
+  idleUnknownParent: number
   /**
    * **超时未结算**（`started` 之后一直没有 `finished`，且已超过孤儿 TTL）。
    *
@@ -104,17 +130,23 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
     if (id === '') continue
     if (event.type === 'dispatch/started') {
       const previous = children.get(id)
+      const mergedCardIds = [...new Set([...(previous?.cardIds ?? []), text(event.data['task'])])].filter((item) => item !== '')
       children.set(id, {
         childSessionId: id,
         role: text(event.data['role']),
         task: text(event.data['task']),
         // 老事件没有 `mode` ⇒ one-shot（不可复用）。反过来猜"可复用"会在真机上把卡投进一个已经不存在的子代理。
+        parentSessionId: text(event.data['parentSessionId']),
         mode: text(event.data['mode']) === 'continuable' ? 'continuable' : 'one-shot',
         state: 'busy',
         rounds: (previous?.rounds ?? 0) + 1,
+        // **DEF-069**：`cards` = 该子会话承接过的**不同卡数**（必须**累积**，不能只存当轮 —— 真机
+        // 同一会话接了 20 张卡，只看轮数会以为"还有余量"）。
+        cards: mergedCardIds.length,
         startedAt: event.at ?? text(event.data['startedAt']),
         finishedAt: '',
         maskHash: text(event.data['maskHash']),
+        cardIds: mergedCardIds,
       })
       continue
     }
@@ -151,9 +183,22 @@ export function reuseBlockedReason(
   child: PoolChild,
   wantedMaskHash: string,
   extra?: ((child: PoolChild) => string | undefined) | undefined,
+  /**
+   * **复用余量**（DEF-069）：`maxRounds` 由**项目声明**（插件不写死数字）。
+   * 0 / 未给 = 未声明 ⇒ 不判（行为与加它之前一致）。
+   */
+  budget?: { maxRounds?: number | undefined; maxCards?: number | undefined } | undefined,
 ): string | undefined {
   const observed = extra?.(child)
   if (observed !== undefined) return observed
+  const maxRounds = budget?.maxRounds ?? 0
+  if (maxRounds > 0 && child.rounds >= maxRounds) {
+    return fmt('uiPool.kReuseRoundsExceeded', { p1: String(child.rounds), p2: String(maxRounds) })
+  }
+  const maxCards = budget?.maxCards ?? 0
+  if (maxCards > 0 && child.cards !== undefined && child.cards >= maxCards) {
+    return fmt('uiPool.kReuseCardsExceeded', { p1: String(child.cards), p2: String(maxCards) })
+  }
   const actual = child.maskHash ?? ''
   if (wantedMaskHash === '' || actual !== wantedMaskHash) {
     return actual === ''
@@ -189,6 +234,13 @@ export function rolePools(input: {
    * 缺省/返回空串 ⇒ 保守视为"指纹取不到" ⇒ 不可复用（方向与准入路径一致）。
    */
   maskHashOf?: ((role: string) => string) | undefined
+  /**
+   * **观察者会话**（DEF-066）：用它把"空闲可复用"分成**本会话**（真能投）与**跨父会话**（宿主会拒）。
+   * 不传 ⇒ 分栏为空、`idleSameParent` 视为全部（行为与加这个字段之前一致）。
+   */
+  viewerSessionId?: string | undefined
+  /** **项目声明的复用余量**（DEF-069）：池视图必须用与准入**同一个**判据，否则读数与行为又会分叉 */
+  reuseBudget?: { maxRounds?: number | undefined; maxCards?: number | undefined } | undefined
 }): RolePool[] {
   const ttl = input.orphanTtlMs ?? 0
   const now = input.nowMs ?? Date.now()
@@ -212,12 +264,37 @@ export function rolePools(input: {
     // 否则"池视图说空闲可复用、准入却拒绝"会让 `freeSlots` 被不能用的人占掉（真机并发 4→2）。
     const wanted = input.maskHashOf?.(role) ?? ''
     const unusable = continuable
-      .map((child) => ({ childSessionId: child.childSessionId, reason: reuseBlockedReason(child, wanted, input.reuseBlockedOf) ?? '' }))
+      .map((child) => ({
+        childSessionId: child.childSessionId,
+        reason: reuseBlockedReason(child, wanted, input.reuseBlockedOf, input.reuseBudget) ?? '',
+      }))
       .filter((item) => item.reason !== '')
     const unusableIds = new Set(unusable.map((item) => item.childSessionId))
     const idle = continuable.filter((child) => !unusableIds.has(child.childSessionId))
     const retired = children.filter((child) => child.state === 'idle' && child.mode !== 'continuable').length
-    return { role, cap, busy, idle, stale, retired, unusable, freeSlots: Math.max(0, cap - busy.length - idle.length) }
+    // **DEF-066**：按"宿主会不会拒"如实分栏。不传观察者 ⇒ 全部算本会话（与既有行为一致）。
+    const viewer = input.viewerSessionId ?? ''
+    const idleSameParent = viewer === '' ? idle : idle.filter((child) => child.parentSessionId === viewer)
+    const idleForeign = viewer === ''
+      ? []
+      : idle.filter((child) => {
+          const parent = child.parentSessionId ?? ''
+          return parent !== '' && parent !== viewer
+        })
+    const idleUnknownParent = viewer === '' ? 0 : idle.filter((child) => (child.parentSessionId ?? '') === '').length
+    return {
+      role,
+      cap,
+      busy,
+      idle,
+      idleSameParent,
+      idleForeign,
+      idleUnknownParent,
+      stale,
+      retired,
+      unusable,
+      freeSlots: Math.max(0, cap - busy.length - idle.length),
+    }
   })
 }
 
@@ -270,6 +347,12 @@ export interface PoolAdmission {
    */
   heldByDispatch?: { taskId: string; childSessionId: string; minutes: number }[] | undefined
   /**
+   * **DEF-067**：这些计划卡的写范围与**在飞卡**相交 ⇒ 本轮**不派**（派了也认领失败）。
+   * 回执必须**单列一行**点名（卡 id、挡路的卡与其 owner、**重叠的那个路径**），
+   * 否则会复现 DEF-058 的误判：首屏看不到就以为"没派"。
+   */
+  heldByScope?: { taskId: string; holderId: string; holderOwner: string; overlap: string[] }[] | undefined
+  /**
    * **R-14**：这些卡的**要求**与该角色的**掩码能力**矛盾（`evidenceRequired` 要命令却没有 `bash`、
    * 有写范围却没有 `write/edit`）—— 派发前就要说出来，别等子会话动手失败（真机赔了一整轮）。
    */
@@ -310,6 +393,11 @@ export function admitDispatch(input: {
    * office 层接的是"工具面观测"——**观测到零工具 / 没观测到**都不给复用（新起一个永远是对的）。
    */
   reuseBlockedOf?: ((child: PoolChild) => string | undefined) | undefined
+  /**
+   * **项目声明的复用余量**（DEF-069）：与 `rolePools` 走**同一个** `reuseBlockedReason`
+   *（真机教训：读数与准入各自实现一次判定必然分叉）。0/未给 = 未声明 ⇒ 不判。
+   */
+  reuseBudget?: { maxRounds?: number | undefined; maxCards?: number | undefined } | undefined
 }): PoolAdmission {
   const pools = input.pools.map((pool) => ({ ...pool, busy: [...pool.busy], idle: [...pool.idle] }))
   const byRole = new Map(pools.map((pool) => [pool.role, pool]))
@@ -333,7 +421,19 @@ export function admitDispatch(input: {
     const pool = byRole.get(task.role)
     if (pool === undefined) {
       // 该角色今天还没有池 —— 建一个空池再判（不能因为"没出现过"就当成不限量）
-      const created: RolePool = { role: task.role, cap: 0, busy: [], idle: [], stale: [], retired: 0, unusable: [], freeSlots: 0 }
+      const created: RolePool = {
+        role: task.role,
+        cap: 0,
+        busy: [],
+        idle: [],
+        idleSameParent: [],
+        idleForeign: [],
+        idleUnknownParent: 0,
+        stale: [],
+        retired: 0,
+        unusable: [],
+        freeSlots: 0,
+      }
       byRole.set(task.role, created)
       queued.push(task)
       blocked.push({ task, reason: 'pool-full', detail: `角色 ${task.role} 的池没有可用位子` })
@@ -348,7 +448,8 @@ export function admitDispatch(input: {
     // 所以再加一条**证据型**判据：该子会话被**观测到**手里有工具才允许复用（观测不到 ⇒ 也不复用）。
     const wanted = input.maskHashOf?.(task.role) ?? ''
     // **R-6**：与 `rolePools` 共用同一个判据函数（口径只有一处，回执不可能自相矛盾）
-    const blockedReasonOf = (child: PoolChild): string | undefined => reuseBlockedReason(child, wanted, input.reuseBlockedOf)
+    const blockedReasonOf = (child: PoolChild): string | undefined =>
+      reuseBlockedReason(child, wanted, input.reuseBlockedOf, input.reuseBudget)
     if (input.reuseIdle && input.forceNew !== true && pool.idle.length > 0) {
       const index = pool.idle.findIndex((child) => blockedReasonOf(child) === undefined)
       if (index >= 0) {

@@ -10,6 +10,7 @@
  */
 import { sdoAllowList, toolAllowList, toolDenyList } from '../domain/roles.js'
 import type { TaskCard } from '../types.js'
+import { scopePathWithin } from '../domain/scopePaths.js'
 
 /**
  * 取某角色的**声明工具面**：优先随包掩码表，读不到就退回内置兜底（绝不静默给全量工具）。
@@ -227,7 +228,10 @@ export function buildDispatch(input: {
 /** 越界写复核（T-M4-03）：声明范围之外的改动必须被点出来。 */
 export function auditWriteScopes(changedFiles: string[], writeScopes: string[]): { ok: boolean; violations: string[] } {
   if (writeScopes.length === 0) return { ok: true, violations: [] }
-  const violations = changedFiles.filter((file) => !writeScopes.some((scope) => file === scope || file.startsWith(scope)))
+  // **ADR-009 / DEF-057**：命中判定收敛到**唯一出口** `scopePathWithin`（同一路径，或**目录边界前缀**）。
+  // 旧实现是单向 `file.startsWith(scope)`：改动 `src/a.tsx` 对卡范围 `src/a.ts` 会判「在范围内」
+  // —— 文件名前缀**假放行**（比误拒危险：真越界被静默放过）。
+  const violations = changedFiles.filter((file) => !writeScopes.some((scope) => scopePathWithin(file, scope)))
   return { ok: violations.length === 0, violations }
 }
 

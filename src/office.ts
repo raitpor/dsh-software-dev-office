@@ -59,6 +59,9 @@ import type { RecordAdrInput } from './domain/adr.js'
 import { contractDirectionAnomalies, contractFieldNotes, dropContract, listContracts, recordContract } from './domain/contracts.js'
 import type { ContractDirectionAnomaly, ContractFieldNote, RecordContractInput } from './domain/contracts.js'
 import { collectShapeNotes } from './domain/shapeNotes.js'
+// **DEF-004**：`DECISIONS.md` / `QUALITY.md` 的渲染器与路径（与判据同一份映射）
+import { derivedDocRelativePath, renderDecisionsDoc, renderQualityDoc } from './domain/derivedDocs.js'
+import type { DerivedDocKind } from './domain/derivedDocs.js'
 import { readBudgetChecked } from './integration/cost.js'
 import type { FieldShapeNote } from './infra/scalar.js'
 import { readAssessment, listScenarios, recordScenario, writeAssessment } from './domain/quality.js'
@@ -67,10 +70,14 @@ import { linkMany, renderTraceReport, report, unlink } from './domain/trace.js'
 import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
-import {claim, reassign, release, report as reportTask, staleClaims, updateTask} from './domain/collab.js'
+import {addErrata, claim, reassign, release, report as reportTask, staleClaims, unblock, updateTask} from './domain/collab.js'
+import type { UnblockResult } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
-import { closeIteration, decompose, dropTask, listTasks, readIteration, readyTasks, startIteration, validatePlan } from './domain/plan.js'
-import type { DecomposeInput, PlanIssue } from './domain/plan.js'
+import { orphanLocks, claimMissing } from './domain/dispatchHealth.js'
+import type { ClaimMissing, OrphanLock } from './domain/dispatchHealth.js'
+import type { ScopeHold } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, validatePlan } from './domain/plan.js'
+import type { DecomposeInput, NonDispatchablePlan, PlanIssue } from './domain/plan.js'
 import {
   listDefects,
   listReviews,
@@ -106,19 +113,24 @@ import { evaluateDor, isEffectivelyOpen } from './domain/dor.js'
 import type { DorResult } from './domain/dor.js'
 import { assess, readFeasibility } from './domain/feasibility.js'
 import type { AssessInput } from './domain/feasibility.js'
-import { evaluateGate, satisfiedGates } from './domain/gates.js'
+import { evaluateGate, requiredArtifactNames, satisfiedGates } from './domain/gates.js'
 import type { GateContext } from './domain/gates.js'
+import { ensureOutline, refreshOutlineIfPresent } from './domain/acceptance.js'
 import { disposeIssue, listIssues, openIssue, openIssues } from './domain/issues.js'
-import { exitGates, exitGatesFrom, legalRollbackTargets, listProcessIds, loadProcess, nextPhase, pendingGate, phaseDef, phaseLabel } from './domain/process.js'
-import { renderSignReviewDoc, renderSignReviewSummary } from './domain/reviewDoc.js'
+import { exitGates, exitGatesFrom, gateDef, legalRollbackTargets, listProcessIds, loadProcess, nextPhase, pendingGate, phaseDef, phaseLabel } from './domain/process.js'
+import { renderSignReviewDoc, renderSignReviewSummary, renderTestReportSignable } from './domain/reviewDoc.js'
+// **C-59（TASK-062）**：签字时绑定报告内容指纹 ⇒ 读报告真源的两个既有入口（口径与判据同一份）
+import { TESTING_SOURCE_FILES, docSourceFingerprint } from './domain/testingStore.js'
 import {
   diffPayloadIndex,
   payloadIndex,
   readReviewPayload,
+  renderedDocReviewItem,
   reviewFingerprint,
 } from './domain/reviewPayload.js'
 import type { ReviewPayloadSection as SignReviewPayloadSection } from './domain/reviewPayload.js'
 import type { SignReviewRecord } from './domain/reviewPayload.js'
+import { canonicalArtifactOf } from './domain/reviewDoc.js'
 import type { SignReviewArtifact, SignReviewCriterion, SignReviewDoc } from './domain/reviewDoc.js'
 import {
   applicabilityLines,
@@ -179,6 +191,7 @@ import type {
   Scale,
   SdoEventType,
   SdoProject,
+  StructuralPlan,
   UiView,
 } from './types.js'
 import { SURFACES } from './types.js'
@@ -1180,13 +1193,18 @@ export class SoftwareDevOffice {
   /** 捕获一条需求。 */
   capture(call: OfficeCall, input: CaptureInput): { requirement: Requirement; flags: string[] } {
     const { store, journal, project } = this.contextFor(call)
-    return captureRequirement(store, journal, project, input)
+    const result = captureRequirement(store, journal, project, input)
+    // 需求真源变了 ⇒ 让**派生**的验收大纲跟上（已生成过才刷新；没冻结过就不凭空生成）。
+    this.refreshAcceptanceOutline(store, 'human')
+    return result
   }
 
   /** 更新一条需求（含追加验收标准）。 */
   update(call: OfficeCall, input: UpdateInput): { requirement: Requirement; flags: string[] } | undefined {
     const { store, journal, project } = this.contextFor(call)
-    return updateRequirement(store, journal, project, input)
+    const result = updateRequirement(store, journal, project, input)
+    this.refreshAcceptanceOutline(store, 'human')
+    return result
   }
 
   /** 列出需求。 */
@@ -1393,6 +1411,13 @@ export class SoftwareDevOffice {
       signoff,
       ...(options.approvedBy === undefined ? {} : { approvedBy: options.approvedBy }),
     })
+    // **REQ-046 / C10（TASK-013）**：验收大纲**在判定之前生成**（"G2 冻结时生成"的落点）。
+    //
+    // 为什么必须在 `evaluateGate` **之前**：C10 判据是**只读**的（checker 不写台账），
+    // 它只会报"缺 / 过期 / 不齐备"；若不在判定前生成，用户就会撞上一个**没有生成路径**的红。
+    // `ensureOutline` 幂等（已最新不写盘），因此反复 `baseline` 不产生噪声、不覆盖任何东西。
+    // 生成逻辑与 `checkGate('G2')` 共用同一个入口 `ensureAcceptanceOutline`（避免两条判定路径行为分叉）。
+    this.ensureAcceptanceOutline('G2', context, options.approvedBy ?? signoff.signer)
     // **B1（本报告）**：基线判定改为**走 `evaluateGate` 现算**，不再自己拼一个
     // `status:'passed'` 落盘。旧实现有两处后果：
     //   ① 流程数据里 G2 声明的第 8 条判据（C8 红队议题闭环）**从不被判定**；
@@ -1465,9 +1490,38 @@ export class SoftwareDevOffice {
   }
 
   /** 渲染文档（M1：srs；其余在后续里程碑补齐）。 */
-  render(call: OfficeCall, which: 'srs' = 'srs'): string {
+  /**
+   * 渲染人读文档：`srs` / `decisions` / `quality`（**DEF-004**）。
+   *
+   * 为什么是一个入口：架构阶段声明的建议产物（`DECISIONS.md` / `QUALITY.md`）此前**没有渲染器** ——
+   * 声明落不了地、判据只能判红。三份文档共用"路径映射"这一处口径（`derivedDocRelativePath`），
+   * 与判据同源，避免"渲染写一处、判据读另一处"。
+   */
+  render(call: OfficeCall, which: 'srs' | 'decisions' | 'quality' = 'srs'): string {
     const { store, journal, project, workspace } = this.contextFor(call)
     const seq = journal.read().events.length
+    if (which !== 'srs') {
+      const kind: DerivedDocKind = which
+      const derived = kind === 'decisions'
+        ? renderDecisionsDoc({ project, adrs: listAdrs(store), seq })
+        : renderQualityDoc({
+            project,
+            scenarios: listScenarios(store),
+            assessment: readAssessment(store),
+            seq,
+          })
+      const relative = derivedDocRelativePath(kind)
+      const target = new SdoStore(workspace).writeText(relative.split('/'), derived)
+      // **DEF-005 / DEF-006（TASK-023）**：登记进 journal 的 `doc/rendered`（与 `derivedDocs` 的读侧同一口径）：
+      // 判据据此证明"盘上这份是按**当前真源**写的"，并靠 `sha256` 判"渲染之后被手改过没有"。
+      // 只写 `evidence/recorded` 是不够的 —— `quality.doc` 明确要求"该序号上真的发生过一次写这份文档"。
+      journal.append('doc/rendered', {
+        doc: relative,
+        seq,
+        sha256: createHash('sha256').update(derived).digest('hex'),
+      })
+      return this.relativize(workspace, target)
+    }
     const text = renderSrs({
       project,
       requirements: listRequirements(store),
@@ -1544,6 +1598,50 @@ export class SoftwareDevOffice {
       }
       return { ok: false, error, phase }
     }
+  }
+
+  /**
+   * **需求真源变更后的派生刷新**：让已存在的验收大纲跟上当前真源（没生成过则不动）。
+   *
+   * 与 `ensureAcceptanceOutline` 的分工：
+   *   · 这里管"**需求改了**"（`capture` / `update` / `change`）—— 派生件必须跟着源走；
+   *   · 那里管"**要判 G2 了**"—— 判定前必须有一份当前的大纲，否则判红却没有修复路径。
+   * 两条都走同一个域函数（`refreshOutlineIfPresent` / `ensureOutline`），口径不分叉。
+   */
+  private refreshAcceptanceOutline(store: SdoStore, generatedBy: string): void {
+    refreshOutlineIfPresent({
+      store,
+      requirements: listRequirements(store),
+      generatedAt: new Date().toISOString(),
+      generatedBy,
+    })
+  }
+
+  /**
+   * **G2 的验收大纲准备**（REQ-046 / C10，TASK-013）。
+   *
+   * 为什么要有这么一个**统一入口**：判定 G2 的路径不止一条 —— `baseline()`（冻结）与
+   * `checkGate('G2')`（回退后重判、体检、交付前复算）都会现算 G2。验收大纲必须在**判定之前**
+   * 处于当前状态，否则：
+   *   · 只读判据只会报"缺 / 过期 / 不齐备"，而**没有任何生成路径** —— 用户撞上一个不知道怎么补的红
+   *     （本项目明令禁止"判红却给不出可执行修法"）；
+   *   · 回退后重判会莫名其妙地红（实测：M13-09 正是这条路径）。
+   * 所以：凡是"要判 G2"的地方，都先走这里生成（幂等：已最新则不写盘）。
+   *
+   * 只在 `gateId === 'G2'` 时动手（其它门禁与验收大纲无关，不该顺手写台账）。
+   */
+  private ensureAcceptanceOutline(
+    gateId: string,
+    context: GateContext,
+    generatedBy: string | undefined,
+  ): void {
+    if (gateId !== 'G2') return
+    ensureOutline({
+      store: context.store,
+      requirements: context.requirements,
+      generatedAt: new Date().toISOString(),
+      generatedBy: generatedBy ?? 'human',
+    })
   }
 
   /** 读真源失败时的可读判红（R-7 / R-14）：判据 id 用 `gate.unreadable`，并标 `unjudged`。 */
@@ -1633,6 +1731,22 @@ export class SoftwareDevOffice {
       try {
         const store = this.storeFor(workspace)
         payload = readReviewPayload(store, collections)
+        // **TASK-007 / REQ-051**：验证门（G6）的签字人要通读的是**测试总结报告正文**，
+        // 而它的真源是 YAML、受审正文是渲染稿 ⇒ 走 `renderTestReportSignable` 投影成受审段
+        // （指纹取同一个 `docSourceFingerprint` 口径，故签字仍绑定报告真源，真源一改即拒签）。
+        // 只在**验证阶段**追加：报告是那个阶段的产物，别的阶段签的多半还没有报告，追加空段只会增加噪声。
+        if (evaluation.phase === 'verification' || evaluation.phase === 'delivery') {
+          const signable = renderTestReportSignable({ store })
+          payload = [...payload, {
+            collection: signable.payload.collection,
+            items: signable.payload.items.map((item) => renderedDocReviewItem({
+              collection: item.collection,
+              id: item.id,
+              path: item.path,
+              text: String(item.content),
+            })),
+          }]
+        }
         fingerprint = reviewFingerprint(evaluation.gate, payload)
         seq = this.journalFor(workspace).read().events.at(-1)?.seq ?? 0
       } catch {
@@ -1640,26 +1754,49 @@ export class SoftwareDevOffice {
       }
     }
 
-    const names = phase?.suggestedArtifacts ?? []
+    // **产物面（REQ-044 / AC-228、AC-229）**：两张来源**分开**摆，不能混成一张单栏表 ——
+    //   ① **必需** = 本门判据**强制**的人读文档（`requiredArtifactNames`，名字以判据为真源）：
+    //      缺了判据就红，所以这一栏是"必须有的"；
+    //   ② **建议** = 流程数据的 `suggestedArtifacts`（只作建议、不入门禁）。
+    // 两栏各自给出**规范渲染路径**，并对"建议名 ≠ 规范名"的行显式给出**对齐关系**与**可执行修法**：
+    // 历史事故（DEF-004）正是建议名与判据/渲染名不一致 ⇒ 审核单长期显示补不上的"假缺失"。
+    const gate = process === undefined ? undefined : gateDef(process, evaluation.gate)
+    const requiredNames = requiredArtifactNames(gate)
+    const suggestedNames = phase?.suggestedArtifacts ?? []
     const artifacts: SignReviewArtifact[] = []
-    for (const name of names) {
-      // 交付类文档的实际落点是 `docs/<名字>`；也容忍直接放在工作区根（旧工作区的手写产物）。
-      const candidates = [`docs/${name}`, name]
-      const hit = candidates
-        .map((rel) => ({ rel, abs: join(workspace, ...rel.split('/')) }))
-        .find((item) => workspace !== '' && existsSync(item.abs))
+    for (const [name, required] of [
+      ...requiredNames.map((item) => [item, true] as const),
+      ...suggestedNames.map((item) => [item, false] as const),
+    ]) {
+      // 规范名（与判据/渲染器的名字对齐）——没有规范名时退回声明名（纯建议文件，如 `VISION.md`）。
+      const canonical = canonicalArtifactOf(name)
+      const canonicalPath = canonical?.path ?? ''
+      // 找文件：先是**规范落点**（`docs/<规范名>`），再是声明名自己的落点（交付类文档在 `docs/<名字>`，
+      // 也容忍工作区根下的手写产物）。顺序很关键：规范名要**先**找，否则"建议名对不上、文件其实在规范名上"
+      // 会被读成"缺失"（假缺失）。声明名 = 规范名时，第二条只是同一个路径，无副作用。
+      const roots = [...new Set([canonicalPath, `docs/${name}`, name].filter((item) => item !== ''))]
+      const candidates = roots.map((rel) => ({ rel, abs: join(workspace, ...rel.split('/')) }))
+      const hit = candidates.find((item) => workspace !== '' && existsSync(item.abs))
       if (hit === undefined) {
-        artifacts.push({ name, path: candidates[0] ?? name, exists: false, bytes: 0 })
+        const path = candidates[0]?.rel ?? name
+        // **AC-229**：缺失项的修法必须**可执行**，且分得清"补文件"与"把名字对齐到规范名"。
+        const remedy = canonicalPath === '' || canonicalPath === path
+          ? fmt('uiSignReview.artifactRemedyMissing', { p1: path })
+          : fmt('uiSignReview.artifactRemedyAlign', { p1: name, p2: canonicalPath, p3: path })
+        artifacts.push({ name, path, exists: false, bytes: 0, required, canonical: canonical?.name ?? canonicalPath, canonicalPath, remedy })
         continue
       }
       let bytes = 0
       try {
         bytes = statSync(hit.abs).size
       } catch {
-        artifacts.push({ name, path: hit.rel, exists: false, bytes: 0 })
+        const remedy = canonicalPath === '' || canonicalPath === hit.rel
+          ? fmt('uiSignReview.artifactRemedyMissing', { p1: hit.rel })
+          : fmt('uiSignReview.artifactRemedyAlign', { p1: name, p2: canonicalPath, p3: hit.rel })
+        artifacts.push({ name, path: hit.rel, exists: false, bytes: 0, required, canonical: canonical?.name ?? canonicalPath, canonicalPath, remedy })
         continue
       }
-      artifacts.push({ name, path: hit.rel, exists: true, bytes })
+      artifacts.push({ name, path: hit.rel, exists: true, bytes, required, canonical: canonical?.name ?? canonicalPath, canonicalPath, remedy: '' })
     }
 
     const record: SignReviewRecord = {
@@ -1839,6 +1976,9 @@ export class SoftwareDevOffice {
     // 旧实现把**原始入参**当文件名（`架构门禁（G3）.json`），而回执声称写的是 `G3.json`：
     // 回执与事实不符，且别名文件会积累成"最后一次判定"的多个副本（并集语义下可能掩盖后续失败）。
     const id = normalizeGateId(gateId, process)
+    // **REQ-046 / C10**：判 G2 前先把验收大纲对齐到当前需求真源（与 `baseline` 同一入口）。
+    // 「回退后重判 G2」正是这条路径 —— 不在这里生成，回退后就会红得没有道理（实测 M13-09）。
+    this.ensureAcceptanceOutline(id, context, approvedBy ?? context.approvedBy)
     const evaluation = evaluateGate(process, id, context)
     const persisted: GateEvaluation = { ...evaluation, persisted: true }
     store.writeJson(['gates', `${id}.json`], persisted)
@@ -1893,6 +2033,11 @@ export class SoftwareDevOffice {
       ? []
       : [fmt('uiIndex.kAdvanceBaselinePending', { p1: pendingBaseline.join('、') })]
     const exits = exitGates(process, project.phase)
+    // **REQ-046 / C10**：本阶段出口含 G2 时，先让验收大纲对齐当前真源再判定。
+    // 为什么这里也要做：`advance` 是**走到 G2 的另一条真实路径**（实测 D2 用例正是如此 ——
+    // 它从不用 `baseline`，直接靠 `advance` 判需求阶段出口）。不在这里生成，用户会撞上
+    // "改了需求也补了 AC，却仍被 G2 拦住"且没有修复入口的红。
+    for (const gate of exits) this.ensureAcceptanceOutline(gate, context, context.approvedBy)
     const evaluations = exits.map((gate) => evaluateGate(process, gate, context))
     const blocked = evaluations.find((evaluation) => evaluation.status !== 'passed' && evaluation.status !== 'waived')
     if (blocked !== undefined) {
@@ -1953,6 +2098,11 @@ export class SoftwareDevOffice {
    * 记录一次门禁签字。
    *
    * **无引用文本即拒绝**（`recordSignature` 抛错）：这是防止模型"替用户签"的唯一机械闸门。
+   *
+   * **C-59（TASK-062）**：若本门禁声明了 `testing.report-signed` 判据（测试报告签字通道），
+   * 落签字时**一并绑定报告当前的内容指纹** —— 没有它，事后无法回答"签字之后报告被改过没有"。
+   * 指纹口径**复用**报告渲染头里那一个（`docSourceFingerprint(store,'report')`），不另造哈希；
+   * 报告真源还没落盘时**不记该字段**（历史签字 / G2・G3 通道的行为因此完全不变）。
    */
   signGate(call: OfficeCall, input: {
     gate: string
@@ -1976,7 +2126,38 @@ export class SoftwareDevOffice {
     // （真机留下 `gate: 架构门禁（G3）`），而判定侧按 `'G3'` 精确过滤 ⇒ 签字永远不被看见。
     // 复用 `check` 侧同一个解析函数（两侧口径一致），回执里印的是**落盘后的**那个 id。
     const gate = normalizeGateId(input.gate, processOfProject(project))
-    return recordSignature(store, journal, { ...input, gate })
+    return recordSignature(store, journal, { ...input, gate, ...this.reportFingerprintFor(store, gate, project) })
+  }
+
+  /**
+   * **本门禁要不要绑报告内容指纹**（C-59 / TASK-062）——要就给出**当前**指纹，不要就什么都不给。
+   *
+   * "本门禁声明了报告签字判据"以**流程数据**为唯一真源（`gateDef(process, gate).criteria`），
+   * 不在这里硬编码门禁名：waterfall/prototype/spiral 是 G6、agile 是 GI —— 硬编码一处就会漏掉另一处。
+   * 报告真源还没落盘 ⇒ 返回空对象（**不记字段**）：那种情况下"签字绑了哪一版报告"本就无从谈起，
+   * 由判据按降级口径处理，而不是在这里编一个假指纹。
+   */
+  private reportFingerprintFor(
+    store: SdoStore,
+    gate: string,
+    project: SdoProject | undefined,
+  ): { reportFingerprint?: string } {
+    try {
+      const process = processOfProject(project)
+      const declared = process === undefined
+        ? false
+        : gateDef(process, gate)?.criteria?.some((criterion) => criterion.check === 'testing.report-signed') === true
+      if (!declared) return {}
+      // ⚠️ 报告真源是**相对 `.sdo/` 根**的路径（`TESTING_SOURCE_FILES` 的 `testing/report.yml`），
+      // 而 `TESTING_DOC_META.report.source` 只是给人读的展示串 —— 判定/写盘一律以映射表为准。
+      const sourcePath = TESTING_SOURCE_FILES.report.find((ref) => ref.file === 'report')?.path
+      if (sourcePath === undefined) return {}
+      if (!existsSync(store.path(...sourcePath.split('/')))) return {}
+      return { reportFingerprint: docSourceFingerprint(store, 'report') }
+    } catch {
+      // 读不动真源时**不阻断签字**（签字本身有它自己的机械闸门）：如实不记指纹，判据按降级口径判
+      return {}
+    }
   }
 
   /**
@@ -3065,7 +3246,7 @@ export class SoftwareDevOffice {
   // —————————————————————— M4：拆分、协同与验证 ——————————————————————
 
   /** 拆分任务（结构通道 + 模型建议）。 */
-  planDecompose(call: OfficeCall, input: DecomposeInput = {}): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined; structuralCount?: number | undefined } {
+  planDecompose(call: OfficeCall, input: DecomposeInput = {}): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined; structuralCount?: number | undefined; structural?: StructuralPlan | undefined } {
     const { store, journal } = this.contextFor(call)
     const current = readIteration(store)
     // 已经有进行中的迭代时，拆出来的卡自动归入该迭代（否则迭代门禁无从判定）
@@ -3073,6 +3254,18 @@ export class SoftwareDevOffice {
       ...input,
       ...(input.iteration === undefined && current !== undefined ? { iteration: current.number } : {}),
     })
+  }
+
+  /**
+   * **结构通道的判定/护栏读数**（TASK-074 落点三）：`sdo_plan action=next` 的回执要逐条列出
+   * 这批结构卡（标题 + 写范围 + 判定依据），而 `next` 自己不拆卡 ⇒ 它从同一份判定现算。
+   *
+   * 注意它是**计划**不是"本次新建"：`next` 这一轮一张卡都没建，回执说的是"当前这批结构卡的
+   * 判定结果"（该建的建了没有、哪些元素没建、为什么）。
+   */
+  structuralPlan(call: OfficeCall): StructuralPlan {
+    const { store } = this.contextFor(call)
+    return structuralPlanOf(store, listRequirements(store))
   }
 
   tasks(call: OfficeCall): TaskCard[] {
@@ -3085,6 +3278,52 @@ export class SoftwareDevOffice {
 
   planIssues(call: OfficeCall): PlanIssue[] {
     return validatePlan(this.tasks(call))
+  }
+
+  /**
+   * **"为什么这一轮派不出去"的分类**（DEF-049 落点二）：blocked 卡 / 写范围冲突 / 依赖未满足
+   * 三类**分列**。以前只有一句笼统的"没有可派发的任务卡"，于是有 blocked 卡的情形被读成"活干完了"。
+   * 结构化结果（无文案）由 `index.ts` 渲染成语言包文案 —— `plan.ts` 的 i18n 棘轮基线是 0。
+   */
+  nonDispatchable(call: OfficeCall): NonDispatchablePlan {
+    return classifyNonDispatchable(this.tasks(call))
+  }
+
+  /**
+   * **某个会话是不是"有资格处置卡的生命周期"的驾驶舱**。
+   *
+   * 为什么不能只写 `roleOf(call) === 'cockpit'`：`roleOf` → `attributeRole` 的口径里
+   * **根会话永远是驾驶舱**（R-1），而 `roleOf` 这条路径**不传** `delegationDepth`/`parentSessionId`
+   * ⇒ 认不出的会话一律**回落到 `cockpit`**（fail-open）。于是"只看角色"等于**任何会话都能 unblock
+   * 任何卡**，落点一形同虚设。
+   *
+   * 本仓里唯一**正面**可证的信号是：这个会话是不是被**派发出去**的子代理
+   * （`dispatch/started.childSessionId`，插件自己记的追加式真源）。据此这条判定的完整口径是：
+   *   · 是某个派发的**子代理** ⇒ **不是**驾驶舱（它只有自己那张卡的处置权，凭"原 owner"走另一条路）；
+   *   · **认得出是根会话**（`roleOf` 返回 `cockpit`，即无父会话且深度 0）且不是子代理 ⇒ 驾驶舱。
+   *
+   * **诚实边界**：本仓没有"驾驶舱令牌"这类正面凭证，所以一个**既没认领过卡、也没被派发过**的
+   * 根会话（例如同一进程里另开的一个普通会话）在现有身份口径下**与技术上的驾驶舱不可区分** ——
+   * 它会被这条规则放行。要收紧它得动 `attributeRole` 的全局身份口径（不在本卡写范围内），
+   * 因此这里如实写明，而不是假装已经挡住（也不单方面改全局策略）。
+   */
+  canAdministerTasks(call: OfficeCall): boolean {
+    if (this.isDispatchedChild(call)) return false
+    return this.roleOf(call) === 'cockpit'
+  }
+
+  /**
+   * **从 blocked 恢复为 ready**（DEF-049 落点一）。
+   *
+   * 授权判定**在工具层算好**（"当前调用是哪个会话"只有那里拿得到），这里只执行裁决。
+   * 允许两种身份：该卡**原 owner**（本会话就是它最后一次 `task/claimed` 的会话，
+   * 凭 `claimBaseline` 的 `sessionId` 证，与 `release`/`update` 同一口径），或**驾驶舱**
+   * （口径与边界见 `canAdministerTasks`）。
+   */
+  unblockTask(call: OfficeCall, input: { taskId: string; reason: string; by: string }): UnblockResult {
+    const { store, journal } = this.contextFor(call)
+    const ownSession = call.sessionId !== undefined && call.sessionId !== '' && claimBaseline(journal, input.taskId)?.sessionId === call.sessionId
+    return unblock(store, journal, { ...input, authorized: ownSession || this.canAdministerTasks(call) })
   }
 
   readyForDispatch(call: OfficeCall, limit = 4): TaskCard[] {
@@ -3138,6 +3377,12 @@ export class SoftwareDevOffice {
     return result
   }
 
+  /** **追加式勘误**（DEF-071）：done 卡也能补说明，但**只能追加**、不改写历史正文。 */
+  addErrata(call: OfficeCall, input: { taskId: string; by: string; note: string }): ReturnType<typeof addErrata> {
+    const { store, journal } = this.contextFor(call)
+    return addErrata(store, journal, input)
+  }
+
   releaseTask(call: OfficeCall, input: { taskId: string; actor: string; reason: string }): TaskCard | undefined {
     const { store, journal } = this.contextFor(call)
     return release(store, journal, input)
@@ -3153,11 +3398,87 @@ export class SoftwareDevOffice {
     return staleClaims(this.tasks(call), ttlMs)
   }
 
+  /**
+   * **派发健康度**（DEF-053）：孤儿写锁 + 派发未认领。
+   *
+   * 只**报告**（真源纪律：失联 owner 不自动释放，防误抢），产出 `release` 命令与可审计事件。
+   */
+  dispatchHealth(call: OfficeCall, options: { nowMs?: number | undefined; claimWindowMs?: number | undefined } = {}): {
+    orphans: OrphanLock[]
+    claimMissing: ClaimMissing[]
+  } {
+    const { journal } = this.contextFor(call)
+    const events = journal.read().events
+    const tasks = this.tasks(call)
+    return {
+      orphans: orphanLocks(tasks, events),
+      claimMissing: claimMissing(tasks, events, {
+        ...(options.nowMs === undefined ? {} : { nowMs: options.nowMs }),
+        ...(options.claimWindowMs === undefined ? {} : { windowMs: options.claimWindowMs }),
+      }),
+    }
+  }
+
+  /**
+   * **认领争用的可数读数**（DEF-059）：真源是 `task/claim-rejected` 事件，按 `拒绝码 × 卡` 聚合。
+   */
+  claimRejections(call: OfficeCall): { total: number; rows: { code: string; taskId: string; by: string; count: number }[] } {
+    const { journal } = this.contextFor(call)
+    const counts = new Map<string, { code: string; taskId: string; by: string; count: number }>()
+    let total = 0
+    for (const event of journal.read().events) {
+      if (event.type !== 'task/claim-rejected') continue
+      total += 1
+      const code = textOf(event.data['code'])
+      const taskId = textOf(event.data['id'])
+      const by = textOf(event.data['by'])
+      const key = `${taskId}|${code}|${by}`
+      const row = counts.get(key) ?? { code, taskId, by, count: 0 }
+      row.count += 1
+      counts.set(key, row)
+    }
+    const rows = [...counts.values()].sort((a, b) => b.count - a.count || a.taskId.localeCompare(b.taskId))
+    return { total, rows }
+  }
+
+  /** 给"派发未认领"落一条**可审计**事件（同一笔派发只落一次：按 `startedSeq` 去重）。 */
+  noteClaimMissing(call: OfficeCall, rows: readonly ClaimMissing[]): number {
+    const { journal } = this.contextFor(call)
+    const events = journal.read().events
+    const noted = new Set(
+      events
+        .filter((event) => event.type === 'dispatch/claim-missing')
+        .map((event) => Number(event.data['startedSeq'])),
+    )
+    let appended = 0
+    for (const row of rows) {
+      if (noted.has(row.startedSeq)) continue
+      journal.append('dispatch/claim-missing', {
+        task: row.taskId,
+        childSessionId: row.childSessionId,
+        startedSeq: row.startedSeq,
+        minutes: row.minutes,
+        ended: row.ended,
+        reason: row.reason,
+      })
+      appended += 1
+    }
+    return appended
+  }
+
   /** 容量预算内的派发计划。 */
-  dispatchPlan(call: OfficeCall, maxParallel = this.settings.maxParallelDispatch): { dispatch: TaskCard[]; queued: TaskCard[] } {
+  dispatchPlan(call: OfficeCall, maxParallel = this.settings.maxParallelDispatch): { dispatch: TaskCard[]; queued: TaskCard[]; held: ScopeHold[] } {
     const tasks = this.tasks(call)
     const inProgress = tasks.filter((task) => task.status === 'in-progress').length
-    return capacityPlan(readyTasks(tasks, 64), inProgress, maxParallel)
+    // **DEF-067 落点一**：写范围与在飞卡相交的卡**不派**（派了也认领失败）—— 判定走 `scopeHeldTasks`。
+    const held = scopeHeldTasks(tasks)
+    const heldIds = new Set(held.map((row) => row.task.id))
+    const plan = capacityPlan(
+      readyTasks(tasks, 64).filter((task) => !heldIds.has(task.id)),
+      inProgress,
+      maxParallel,
+    )
+    return { ...plan, held }
   }
 
   /** 记录派发决策（含后端、降级原因与"显式指定覆盖了迭代锁"的留痕）。 */
@@ -3181,6 +3502,12 @@ export class SoftwareDevOffice {
     taskId: string
     provider: string
     childSessionId: string
+    /**
+     * **派发它的父会话**（DEF-066）：宿主只允许父会话复用**自己**的子会话
+     *（跨父会话报 `belongs to another parent session`）。不记它，池读数就分不清
+     * "本会话真能投"与"跨父会话会被拒" —— 真机读数与行为直接矛盾（空闲 31 vs 永远 spawn）。
+     */
+    parentSessionId?: string | undefined
     /** **SDO 流程面白名单**条数（受角色职责分离控制的那一部分） */
     tools: number
     /** **实际下发的 deny 面**条数（通用面硬禁止 ∪ SDO 补集） */
@@ -3202,6 +3529,7 @@ export class SoftwareDevOffice {
       task: input.taskId,
       provider: input.provider,
       childSessionId: input.childSessionId,
+      ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
       tools: input.tools,
       ...(input.denyTools === undefined ? {} : { denyTools: input.denyTools }),
       ...(input.deny === undefined ? {} : { deny: input.deny }),
@@ -3236,6 +3564,9 @@ export class SoftwareDevOffice {
       ready,
       pools: rolePools({
         children,
+        // **DEF-066**：把"空闲可复用"按**宿主会不会拒**分栏（本会话 / 跨父会话 / 父会话未知）
+        viewerSessionId: call.sessionId ?? '',
+        reuseBudget: { maxRounds: this.settings.reuseMaxRounds },
         roles: ready.map((task) => task.role),
         caps: this.settings.poolCaps,
         defaultCap: this.settings.maxParallelDispatch,
@@ -3357,13 +3688,25 @@ export class SoftwareDevOffice {
     const fairReady = [...snapshot.ready].sort((a, b) =>
       (lastDispatched.get(a.id) ?? '').localeCompare(lastDispatched.get(b.id) ?? '') || a.id.localeCompare(b.id),
     )
+    const heldByScope = scopeHeldTasks(tasks).map((row) => ({
+      taskId: row.task.id,
+      holderId: row.holder.id,
+      holderOwner: row.holder.owner ?? '',
+      overlap: row.overlap,
+    }))
+    const heldByScopeIds = new Set(heldByScope.map((row) => row.taskId))
     const admission = admitDispatch({
-      ready: fairReady.filter((task) => !inFlight.has(task.id)),
+      // **DEF-067 落点一（ADR-009 的不变量「派发可认领」）**：写范围与**任一在飞卡**相交的卡**不派**
+      // —— 旧实现这里只排"已在飞"与 `blockedBy`，于是派出注定认领失败的卡
+      //（真机：三张核实卡写同一个 `.sdo/reviews/`，两张白烧一轮会话）。判定走唯一出口。
+      ready: fairReady.filter((task) => !inFlight.has(task.id) && !heldByScopeIds.has(task.id)),
       pools: snapshot.pools,
       globalRoom: Math.max(0, this.settings.maxParallelDispatch - inProgress),
       // **R-5 症状 D**：全局预算拒收回执要报**真实**的"进行中"张数（旧实现硬编码 0）
       inProgress,
       reuseIdle: options.reuseIdle === true,
+      // **DEF-069**：余量阈值**由项目声明**（`reuseMaxRounds`，默认 0=未声明 ⇒ 不判）；与池视图同一判据
+      reuseBudget: { maxRounds: this.settings.reuseMaxRounds },
       // **R-13**：强制新起时，"可复用空闲"不参与容量计算（否则 freshChild 在池满时等于自锁）
       ...(options.freshChild === true ? { forceNew: true } : {}),
       // 与 `poolSnapshot` **同一个**纯函数（`rolePools` 的 `unusable` 也用它）⇒ 池视图与准入永不分叉
@@ -3378,7 +3721,7 @@ export class SoftwareDevOffice {
       .map((row) => ({ taskId: row.task.id, role: row.task.role, gaps: [...row.gaps] }))
       // 同一张卡可能出现两次（fairReady 是 snapshot.ready 的重排）⇒ 去重
       .filter((row, index, all) => all.findIndex((item) => item.taskId === row.taskId) === index)
-    return { ...admission, heldByDispatch, infeasible }
+    return { ...admission, heldByDispatch, infeasible, ...(heldByScope.length === 0 ? {} : { heldByScope }) }
   }
 
   /**
@@ -3886,6 +4229,14 @@ export class SoftwareDevOffice {
     return evidenceFreshness(store, workspace, this.currentEnvironment(call))
   }
 
+  /**
+   * 记录一条用例结果。
+   *
+   * **REQ-053（TASK-039）**：`executedBy` / `adoptedBy` 在这里**逐字段透传**（下面显式列出，而不是只靠
+   * `...input` 展开）—— 这一层是"域层收不收得到"的最后一跳：少写一个字段，工具面就拿不到，
+   * 而回执照旧说"已记录"（真机上 `τ_ff348198` 那类静默丢弃就是这么发生的）。
+   * 归一化口径**不在这里**再抄一份：采纳时刻由 `records.ts` 的 `recordTestResult` 盖（一处实现）。
+   */
   addTestResult(call: OfficeCall, input: Omit<TestResult, 'id' | 'at'>): TestResult {
     const { store, journal } = this.contextFor(call)
     const workspace = this.requireWorkspace(call)
@@ -3897,6 +4248,8 @@ export class SoftwareDevOffice {
     const artifact = (input.artifact ?? '').trim()
     return recordTestResult(store, journal, {
       ...input,
+      ...(input.executedBy === undefined ? {} : { executedBy: input.executedBy }),
+      ...(input.adoptedBy === undefined ? {} : { adoptedBy: input.adoptedBy }),
       ...(env === undefined || env === '' ? {} : { env, envSource: declared !== '' ? 'declared' as const : 'inherited' as const }),
       ...(artifact === '' ? {} : { artifact, artifactSha256: hashArtifact(workspace, artifact) }),
     })
@@ -3906,9 +4259,28 @@ export class SoftwareDevOffice {
     return listDefects(this.storeFor(this.requireWorkspace(call)))
   }
 
+  /**
+   * 登记一条缺陷。
+   *
+   * **REQ-055（TASK-039）**：根因面三字段（`rootCause` / `discoveryLevel` / `escaped`）在这里**逐字段
+   * 透传**到域层的 `defect/recorded` append-only 事件（下面显式列出）—— 归一化口径只有一处实现
+   * （`records.ts` 的 `recordDefect`：空串不落键、`escaped` 只认真正的布尔值），这里**不再抄一份**，
+   * 否则"什么算填了"会有两个会打架的真值口径。
+   *
+   * **DEF-038（TASK-063）**：免责依据两字段（`waiveReason` / `waiveApprovedBy`）与根因面一族**同款**：
+   * 也在下面**逐字段显式列出**（`...input` 本来就能带过去，但显式列出是这一处的既有纪律 ——
+   * 漏掉一处就等于工具面静默丢弃，而那种丢法不报错、回执还说成功）。
+   */
   addDefect(call: OfficeCall, input: Omit<Defect, 'id' | 'at'>): Defect {
     const { store, journal } = this.contextFor(call)
-    return recordDefect(store, journal, input)
+    return recordDefect(store, journal, {
+      ...input,
+      ...(input.rootCause === undefined ? {} : { rootCause: input.rootCause }),
+      ...(input.discoveryLevel === undefined ? {} : { discoveryLevel: input.discoveryLevel }),
+      ...(input.escaped === undefined ? {} : { escaped: input.escaped }),
+      ...(input.waiveReason === undefined ? {} : { waiveReason: input.waiveReason }),
+      ...(input.waiveApprovedBy === undefined ? {} : { waiveApprovedBy: input.waiveApprovedBy }),
+    })
   }
 
   updateDefect(call: OfficeCall, id: string, patch: DefectUpdate, by = 'human'): ReturnType<typeof updateDefect> {

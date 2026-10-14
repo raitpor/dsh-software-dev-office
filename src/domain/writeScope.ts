@@ -18,9 +18,17 @@
  *      台账由 SDO 工具自己落（SDO-34）、派生文档与测试是跨卡共用的面。
  *
  * 纪律：**只对认得出的角色生效**（驾驶舱/未知 ⇒ 放行，认不出人不该让人干不了活）；读不出路径 ⇒ 不判；
- * `bash` 没有路径参数 ⇒ 本模块判不了（如实标 `checked: false`，靠 `done` 的 A2 写范围对账兜底）。
+ * 命令类调用由调用方先做**静态形态扫描**（`detectCommandWrites`）再把写目标并进 `paths` 一起判 ——
+ * 该扫描**非穷举**，如实披露剩余风险，由 `done` 的 A2 写范围对账兜底。
+ *
+ * **DEF-047 落点一（两个基准，2026-10-13）**：`workspace`（会话 cwd）与 `workspaceRoot`（工作区根）
+ * 是**两个不同的基准** —— 前者管"相对路径往哪解析"，后者管"写范围/公共面的前缀拿谁比"。
+ * 会话工作目录是子目录时二者不相等，旧实现挤在一个字段上 ⇒ 在范围内的路径被误拒。
  */
+import { resolve } from 'node:path'
+
 import { auditWriteScopes } from '../integration/orchestrator.js'
+import { classifyTarget, isDeviceNode, scopePathWithin } from './scopePaths.js'
 
 export interface WriteScopeInput {
   /** 调用方角色（`cockpit` / 空 / 认不出 ⇒ 不拦） */
@@ -28,8 +36,19 @@ export interface WriteScopeInput {
   tool: string
   /** 目标路径（宿主的 `file_path` / `path` / `file` / `paths`，可能是绝对路径） */
   paths: readonly string[]
-  /** 本次调用的工作区（拿不到 ⇒ 无法把绝对路径归一到相对 ⇒ 不判） */
+  /** **会话工作目录**（`call.cwd`）—— 相对路径按它解析（拿不到 ⇒ 无法归一 ⇒ 不判） */
   workspace?: string | undefined
+  /**
+   * **工作区根**（`findProjectRoot` 的既有发现口径）—— 写范围与公共面是**声明形态**（相对工作区根），
+   * 前缀比对必须按它。
+   *
+   * **DEF-047 落点一**：`workspace` 与 `workspaceRoot` 是**两个不同的基准**，会话工作目录是子目录时
+   * 二者不相等 —— 旧实现只有一个 `workspace` 字段同时承担两者：相对路径确实按会话 cwd 解析（对 ✓），
+   * 但拿会话 cwd 归一出 `domain/writeScope.ts` 去比卡上的 `src/domain/writeScope.ts` 恒不命中 ⇒
+   * **在范围内的路径被误拒**（真机现象：绝对路径被拒、相对路径通过）。
+   * 缺省退回 `workspace` ⇒ 单基准调用方**行为与修前逐字一致**（不改变任何既有判定语义）。
+   */
+  workspaceRoot?: string | undefined
   /** 受本纪律管辖的工具（`settings.disciplineTools`） */
   guardedTools: readonly string[]
   /** 公共放行面（`settings.disciplineAllowPaths`） */
@@ -42,7 +61,12 @@ export interface WriteScopeInput {
   cardScopes?: readonly string[] | undefined
 }
 
-export type WriteScopeDenyCode = 'write-scope-violation' | 'write-scope-no-claim' | 'write-scope-empty-scope'
+export type WriteScopeDenyCode =
+  | 'write-scope-violation'
+  | 'write-scope-no-claim'
+  | 'write-scope-empty-scope'
+  // **DEF-074**：工作区外的绝对路径（卡写范围是工作区内的声明形态 ⇒ 判不了归属 ⇒ 拒绝并**点名原始路径**）
+  | 'write-scope-outside-workspace'
 
 export type WriteScopeDecision =
   | { kind: 'allow'; checked: boolean; violations: string[] }
@@ -80,9 +104,43 @@ export function normalizeWorkspacePath(raw: string, workspace?: string | undefin
   return `${parts.join('/')}${directory ? '/' : ''}`
 }
 
+/**
+ * **设备节点不是工作区文件**（TASK-090 假阳性修复①，方向是**误拒**）。
+ *
+ * 现场（实现会话一手）：`cat .sdo/tasks/TASK-090.yml 2>/dev/null` 被判成"要写 `dev/null`"而整条命令被拒；
+ * `echo x > /dev/null`、`echo x > /dev/fd/3` 同理。根因是**前缀剥离**：`/dev/null` 不以工作区根开头，
+ * 于是原样落进"相对路径"的坐标系，变成 `dev/null` —— 一个工作区里**并不存在**的相对路径，
+ * 与卡的写范围当然比不上。
+ *
+ * `/dev` 下的一切都是设备节点（`/dev/null`、`/dev/fd/N`、`/dev/stdout`、`/dev/stderr`…），
+ * 既不是卡的写范围、也不是公共面 ⇒ **一律不参与判定**（判不了就不判：与"认不出人"同一方向）。
+ */
+export function isDevicePath(raw: string): boolean {
+  // 设备节点的判定只有一处实现（`scopePaths.isDeviceNode`），这里只是对外保留的名字
+  return isDeviceNode(raw)
+}
+
 /** 该路径是否落在某个放行面/写范围里（**与 `done` 对账同一套语义**，只有一处实现）。 */
 export function pathWithinScopes(path: string, scopes: readonly string[]): boolean {
   return auditWriteScopes([path], [...scopes]).ok
+}
+
+/**
+ * **绝对化后再相对化**：把目标路径解析成绝对路径，再表达为"相对 `base` 的路径"。
+ *
+ * 为什么必须**先绝对化**（DEF-047 落点一的真缺陷，实测踩过）：
+ * `normalizeWorkspacePath(raw, root)` 只做**前缀剥离**（`raw.startsWith(root + '/')` 才剥）。于是
+ * 目标路径**已经是相对的**（真机上 `edit` 的 `file_path` 常是 `src/x.ts`）时，它**原样返回** ——
+ * `normalizeWorkspacePath('domain/x.ts', <工作区根>)` 得到的仍是 `domain/x.ts`，**根本没拿根去解析**。
+ * 基准不同（会话 cwd 是子目录）时，"相对解析"与"前缀比对"要的是同一文件的**两种相对写法**，
+ * 只有在"先绝对化"这一步之后才谈得上分别相对化；否则第二份基准是**空转**的。
+ *
+ * `base` 拿不到 ⇒ 不做（fail-open 的同一方向：判不了就不判，绝不猜）。
+ */
+function resolveAgainst(raw: string, base: string | undefined): string {
+  const text = String(raw ?? '').trim()
+  if (text === '' || base === undefined || String(base).trim() === '') return ''
+  return normalizeWorkspacePath(resolve(base, text), resolve(base))
 }
 
 export function evaluateWriteScope(input: WriteScopeInput): WriteScopeDecision {
@@ -94,17 +152,52 @@ export function evaluateWriteScope(input: WriteScopeInput): WriteScopeDecision {
   if (!(input.guardedTools as readonly string[]).includes(input.tool)) return allow()
   // 该工具没有路径参数（bash）⇒ 本模块判不了；如实 `checked: false`，由 `done` 的 A2 对账兜底
   if ((input.paths ?? []).length === 0) return allow(false)
+  // **TASK-090 假阳性修复①**：设备节点（`/dev/…`）先摘掉再判 —— 它们不是工作区文件，
+  // 归一后长成 `dev/null` 这种"不存在的相对路径"，只会把命令误判成越界写。
+  // 全被摘掉 = 本次没有可判写的目标（与"该工具没有路径参数"同一个出口，如实 `checked: false`）。
+  // **DEF-074**：归属分类是**一等判定**（设备节点 / 工作区外 / 工作区内 / 判不了），
+  // 不再靠"按家族过滤 + 前缀剥离"两套旁路 —— 旧实现把 `/tmp/x` 剥成 `tmp/x`（工作区里并不存在
+  // 的**幽灵相对路径**），拒绝时点名的是幽灵而不是真实目标。
+  const workspaceRaw = input.workspace === undefined ? '' : String(input.workspace).trim()
+  const rootForClassify = input.workspaceRoot === undefined ? input.workspace : input.workspaceRoot
+  const classified = (input.paths ?? []).map((path) => classifyTarget(path, input.workspace, rootForClassify))
+  const outsiders = classified.filter((item) => item.kind === 'outside')
+  if (outsiders.length > 0 && workspaceRaw !== '') {
+    // 工作区外的写入：判不了归属（卡写范围是**工作区内**的声明形态），因此**拒绝并点名原始绝对路径**。
+    const absolute = outsiders.map((item) => (item.kind === 'outside' ? item.absolute : ''))
+    return {
+      kind: 'deny',
+      code: 'write-scope-outside-workspace',
+      detail: absolute.join('、'),
+      violations: absolute,
+      scope: [],
+    }
+  }
+  const candidates = (input.paths ?? []).filter((path) => !isDevicePath(path))
+  if (candidates.length === 0) return allow()
   // 工作区拿不到 ⇒ 绝对路径无法归一 ⇒ 不判（fail-open，与"认不出人"同一方向）
-  if (input.workspace === undefined || String(input.workspace).trim() === '') return allow()
+  if (workspaceRaw === '') return allow()
 
+  // **DEF-047 落点一**：两个基准分工 —— `workspace`（会话 cwd）负责"相对路径往哪解析"，
+  // `workspaceRoot`（工作区根）负责"写范围与公共面的前缀拿谁比"。缺省回退 ⇒ 单基准调用方行为不变。
+  const rootRaw = input.workspaceRoot === undefined ? '' : String(input.workspaceRoot).trim()
+  const root = rootRaw === '' ? input.workspace : input.workspaceRoot
   const shared = input.sharedPaths.map((item) => normalizeWorkspacePath(item, undefined)).filter((item) => item !== '')
-  const relative = input.paths
-    .map((path) => normalizeWorkspacePath(path, input.workspace))
+  const relative = candidates
+    .map((path) => resolveAgainst(path, input.workspace))
     .filter((path) => path !== '')
   if (relative.length === 0) return allow()
 
+  // 声明形态（**相对工作区根**，即卡的 `writeScopes` 与 `disciplineAllowPaths` 的写法）：前缀比对拿它比。
+  // 两个基准各解析一次同一批 `input.paths`；缺省（`workspaceRoot` 未给）时 `root === workspace`，
+  // 两个数组逐字相同 ⇒ **与修前行为完全一致**（这是"不改既有判定语义"的机械保证）。
+  const declared = candidates
+    .map((path) => resolveAgainst(path, root))
+    .filter((path) => path !== '')
+
   // **3a 公共面**：台账（`.sdo/`）、派生文档（`docs/`）、测试（`test/`）不受卡写范围约束
-  const outsideShared = relative.filter((path) => !shared.some((prefix) => path === prefix || path.startsWith(prefix)))
+  // **ADR-009**：公共面命中同样走唯一出口（目录边界前缀），与写范围判定同一套语义
+  const outsideShared = declared.filter((path) => !shared.some((prefix) => scopePathWithin(path, prefix)))
   if (outsideShared.length === 0) return allow(true)
 
   // **3b 卡级**：没有活卡 ⇒ 只能写公共面（先把卡认领了，写范围以卡为准）

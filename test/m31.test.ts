@@ -10,7 +10,8 @@
  *   · **不该拦的没被拦**（掩码内、以及每个角色**协议必需**的工具）—— 否则角色连自己的活都干不了。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -28,6 +29,24 @@ import type { EvidenceItem, TaskStatus } from '../src/types.js'
 import { attributeRole, claimsBySession, listRoleCards, maskAllows, roleMaskDecision, toolAllowList } from '../src/domain/roles.js'
 import { callOf } from '../src/interface/tools.js'
 import { readChildFaces } from '../src/domain/dispatchFace.js'
+import {
+  inspectTestingSourceOnDisk,
+  knownFromStore,
+  validateTestingClass,
+  validateTestingSet,
+  validateTestingSource,
+  writeValidatedTestingSet,
+  writeValidatedTestingSource,
+} from '../src/domain/testingShapes.js'
+import type { TestingShapeIssueCode, TestingShapeKnown, TestingShapeReport, TestingSourceFileKind } from '../src/domain/testingShapes.js'
+import type { TestingSourceEntry } from '../src/domain/testingShapes.js'
+import { sourceFingerprintOf } from '../src/domain/testingStore.js'
+// **TASK-035 落点二/六**：形状层与**判定层**用同一份夹具 —— 判定侧的出口就是这两个模块，
+// 这里只 import 出口函数，不 import 判定逻辑（口径仍只有一处）。
+import { assessCoverageFromStore, describeCoverage } from '../src/domain/coverage.js'
+import { assessRegression, describeRegression } from '../src/domain/regression.js'
+import type { ChangeSet, RegressionRunInput } from '../src/domain/regression.js'
+import type { TraceEdge } from '../src/domain/trace.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm31')
@@ -370,4 +389,707 @@ test('M31-10 观测端到端：派发出去的子会话开新请求时，它的�
   const all = readChildFaces(store).faces
   assert.equal(all.length, 2)
   assert.deepEqual(all.find((face) => face.childSessionId === 'child-10')?.violations, [], '全在掩码内 → 零越界')
+})
+
+// ════════════════════════════════════════════════════════════════════════════════════════
+// TASK-012：测试域真源（`.sdo/testing/**` 七类）的**形状校验**与"不落半成品"
+//
+// DoD 原文：
+//   ① 七类真源形状校验落地（profile / plan / design / design-whitebox /
+//      acceptance / coverage / regression / report）；
+//   ② 非法形状**整次拒绝并点名字段**（不落半成品，不写盘）；
+//   ③ 守卫用例覆盖**合法与非法两态**。
+//
+// 这一组的取向：**每个"拒"都要断言到点名的那条字段与问题码** —— 只断言 `ok === false`
+// 的守卫会随着实现一起腐化（判据变严/变松都看不出来）。
+// ════════════════════════════════════════════════════════════════════════════════════════
+
+const SHAPES_BASE = join(ROOT, 'node_modules', '.sdo-test', 'm31-shapes')
+const SHAPES_SDO = join(SHAPES_BASE, '.sdo')
+let shapesStore: SdoStore
+let shapesJournal: Journal
+
+function freshShapes(): void {
+  rmSync(SHAPES_BASE, { recursive: true, force: true })
+  mkdirSync(SHAPES_SDO, { recursive: true })
+  shapesStore = new SdoStore(SHAPES_SDO)
+  shapesJournal = new Journal(shapesStore)
+}
+
+/** 交叉引用登记表：四条需求（含 AC）+ 三条用例。 */
+function knownFixtures(): TestingShapeKnown {
+  return {
+    requirements: new Map<string, string[]>([
+      ['REQ-045', ['AC-185', 'AC-186', 'AC-187', 'AC-224', 'AC-225']],
+      ['REQ-047', ['AC-191', 'AC-192', 'AC-193']],
+      ['REQ-048', ['AC-194', 'AC-195', 'AC-196']],
+      ['REQ-057', ['AC-221', 'AC-222', 'AC-223']],
+    ]),
+    testCaseIds: ['TC-052', 'TC-053', 'TC-101'],
+  }
+}
+
+function planFixture(): Record<string, unknown> {
+  return {
+    levels: [
+      { id: 'TL-001', level: '单元', entry: '构建通过', exit: '用例全绿且独立评审采纳', traceability: 'req-tc' },
+      { id: 'TL-002', level: '集成', entry: '单元出口达成', exit: '契约测试全绿', traceability: 'des-ct' },
+    ],
+    environment: 'node 20 / 无网络',
+    data: '真实台账副本 + 手工夹具',
+    regressionScope: ['REQ-045', 'REQ-052'],
+    exitCriteria: [
+      { id: 'XC-001', criterion: '语句覆盖', metric: 'statement', threshold: '80%', scope: 'src/domain/testing*' },
+      { id: 'XC-002', criterion: '变异 kill 率', metric: 'mutation-kill', threshold: '100%', scope: 'critical 卡' },
+    ],
+    review: { status: 'approved', by: 'user', at: '2026-10-13T00:00:00.000Z' },
+  }
+}
+
+function profileFixture(): Record<string, unknown> {
+  return {
+    packages: [
+      { id: 'v-model', selected: true, reason: '顺序流程：层级与多级追溯是主线', basis: 'process=waterfall' },
+      { id: 'mutation-driven', selected: true, reason: 'critical 档位要求变异自证', basis: 'scale=critical' },
+      { id: 'exploratory', selected: false, reason: '本会话未选：只登记、不作通过证据' },
+    ],
+    scope: 'all',
+  }
+}
+
+function designFixture(): Record<string, unknown> {
+  return {
+    artifacts: [
+      {
+        id: 'BB-001',
+        technique: 'equivalence',
+        artifact: '有效类 / 无效类各一',
+        requirementRef: ['REQ-045'],
+        domainSource: 'src/domain/testingShapes.ts:TESTING_METHOD_PACKAGES',
+        useCases: ['TC-052'],
+      },
+      { id: 'BB-002', technique: 'boundary', artifact: '边界点表', na: '本需求无可排序的数值域' },
+    ],
+  }
+}
+
+function whiteboxFixture(): Record<string, unknown> {
+  return {
+    artifacts: [
+      {
+        id: 'WB-001',
+        technique: 'basis-paths',
+        // **TASK-035 落点七**：口径位两层同源后，形状层也核 `criterion`（复用内容层的
+        // `canonicalCriterion`）⇒ 合法夹具必须把它写全，否则形状层与内容层会各说各话。
+        criterion: 'path',
+        artifact: '独立路径集',
+        function: 'validateTestingSource',
+        branch: 'outcome===ok/invalid/unknown',
+        useCases: ['TC-052', 'TC-053'],
+      },
+      { id: 'WB-002', technique: 'def-use', criterion: 'def-use', artifact: '定义-使用对清单', function: 'knownFromStore', variable: 'requirements', useCases: ['TC-101'] },
+    ],
+  }
+}
+
+function acceptanceFixture(): Record<string, unknown> {
+  return {
+    outline: [
+      { id: 'TA-001', requirement: 'REQ-045', ac: 'AC-185', item: '方法包选择落盘且依据可核对', baseline: 'profile.yml 逐包可核对' },
+      { id: 'TA-002', requirement: 'REQ-048', ac: 'AC-194', item: '等价类与边界值齐备', baseline: '逐域核对有效类与无效类' },
+    ],
+  }
+}
+
+/** 一条覆盖读数 / 一条回归跑记录的产物哈希（`sha256:<hex>`，与形状层 `hashOf` 认的写法一致）。 */
+function sha256Of(relativePath: string): string {
+  return `sha256:${createHash('sha256').update(readFileSync(join(BASE, relativePath))).digest('hex')}`
+}
+
+/**
+ * **覆盖读数夹具的唯一一份真源**（TASK-035 落点二）：形状层与判定层**共用它** ——
+ * 两侧的期望都从这一份推出来，不许各写一份（各写一份正是"口径分叉"的温床）。
+ *
+ * · `path`   —— **新口径**：`artifact` 写**产物路径**、`artifactHash` 写**产物哈希**；
+ * · `legacy` —— **旧口径**（历史写法）：`artifact` 里直接写哈希、`artifactHash` 缺省。
+ */
+function coverageReadingsFixture(form: 'path' | 'legacy'): Record<string, unknown>[] {
+  const artifact = sha256Of('artifacts/m31-widget.txt')
+  return [
+    {
+      id: 'COV-001',
+      criterion: 'statement',
+      threshold: '80%',
+      measured: '91%',
+      command: 'node --test lib/test/m31.test.js',
+      report: 'reports/m31-coverage.txt',
+      reportHash: sha256Of('reports/m31-coverage.txt'),
+      ...(form === 'path'
+        ? { artifact: 'artifacts/m31-widget.txt', artifactHash: artifact }
+        : { artifact, artifactHash: '' }),
+    },
+  ]
+}
+
+/** 覆盖读数夹具要配的未覆盖项（两个形态共用：这一项与"两个位"无关）。 */
+function coverageUncoveredFixture(): Record<string, unknown>[] {
+  return [{ id: 'UN-001', item: 'sourceFingerprintOf 的排序分支', disposition: '补用例', useCase: 'TC-052' }]
+}
+
+function coverageFixture(): Record<string, unknown> {
+  return {
+    readings: [
+      {
+        id: 'COV-001',
+        criterion: 'statement',
+        measured: '91%',
+        threshold: '80%',
+        command: 'node --test',
+        report: 'node_modules/.sdo-test/cov.json',
+        reportHash: `sha256:${'d'.repeat(64)}`,
+        // **TASK-035 落点一**：新口径 = `artifact` 写**路径**、`artifactHash` 写**哈希**。
+        artifact: 'node_modules/.sdo-test/cov.json',
+        artifactHash: `sha256:${'a'.repeat(64)}`,
+      },
+    ],
+    uncovered: [
+      { id: 'UN-001', item: 'renderStale 的 missing 分支', disposition: '补用例', useCase: 'TC-101' },
+      { id: 'UN-002', item: 'sourceFingerprintOf 的排序分支', disposition: '不可达', reason: '排序键是路径字面量，取值域只有一种顺序' },
+    ],
+  }
+}
+
+/**
+ * 一条回归跑记录的**唯一一份真源**（TASK-035 落点六）：形状层与判定层共用。
+ *
+ * 新口径与 `regression.ts` / TASK-019 的 `RegressionRunInput` 对齐：`artifact` 写**产物哈希**、
+ * 新补的 `artifactPath` 写**产物路径**（与落点一的 coverage 口径同一原则：路径归路径位、哈希归哈希位）。
+ */
+function regressionCasesFixture(form: 'both' | 'no-path' | 'no-hash'): Record<string, unknown>[] {
+  const artifact = sha256Of('artifacts/m31-reg.txt')
+  return [
+    {
+      case: 'TC-052',
+      result: 'pass',
+      command: 'node --test lib/test/m31.test.js',
+      ...(form === 'no-hash' ? {} : { artifact }),
+      ...(form === 'no-path' ? {} : { artifactPath: 'artifacts/m31-reg.txt' }),
+    },
+  ]
+}
+
+/** 回归判定侧的输入：一条 `REQ-049 → TC-052` 的边 + 以这条需求为种子的变更集（影响集可推导）。 */
+const REGRESSION_EDGES: TraceEdge[] = [{ from: 'REQ-049', to: 'TC-052', kind: 'req-tc' }]
+const REGRESSION_CHANGE_SET: ChangeSet = {
+  items: [{ id: 'REQ-049', file: '', from: 'session-TASK-035' }],
+  sources: { changes: 0, defects: 0, workspaceFiles: 0 },
+  rawFileCount: 0,
+}
+
+function regressionFixture(): Record<string, unknown> {
+  return {
+    impact: ['DES-031', 'TC-052'],
+    cases: [{ case: 'TC-052', result: 'pass', artifact: `sha256:${'b'.repeat(64)}`, artifactPath: 'lib/test/m31.test.js', command: 'node --test lib/test/m31.test.js' }],
+  }
+}
+
+function reportFixture(): Record<string, unknown> {
+  return {
+    exitCriteria: [
+      { id: 'XC-001', criterion: '语句覆盖', threshold: '80%', measured: '91%', verdict: 'pass' },
+      { id: 'XC-002', criterion: '变异 kill 率', threshold: '100%', measured: '80%', verdict: 'fail' },
+    ],
+    coverage: [
+      { id: 'COV-001', criterion: 'statement', measured: '91%', threshold: '80%', command: 'node --test', report: 'cov.json', reportHash: `sha256:${'d'.repeat(64)}`, artifact: 'cov.json', artifactHash: `sha256:${'a'.repeat(64)}` },
+    ],
+    uncovered: [{ id: 'UN-001', item: '缺 lack 分支', disposition: '补用例', useCase: 'TC-101' }],
+    mutation: {
+      killRate: '80%',
+      threshold: '100%',
+      record: '.sdo/construction/tdd.yml',
+      survived: [
+        { id: 'MU-003', disposition: '补用例', useCase: 'TC-101' },
+        { id: 'MU-004', disposition: '等价', reason: '与已覆盖的边界分支语义等价' },
+      ],
+    },
+    residualRisks: ['未覆盖分支 UN-001 尚未重算'],
+    escapes: [{ id: 'DEF-007', title: '逃逸：真源改了但旧渲染仍被当证据' }],
+    signature: { status: 'pending', by: '', at: '', waiver: '' },
+  }
+}
+
+/** 七类 / 八文件的一份**合法**真源（逐个真源类都能单独拿出来校验）。 */
+function validSet(): TestingSourceEntry[] {
+  return [
+    { class: 'profile', file: 'profile', value: profileFixture() },
+    { class: 'plan', file: 'plan', value: planFixture() },
+    { class: 'design', file: 'design', value: designFixture() },
+    { class: 'design', file: 'design-whitebox', value: whiteboxFixture() },
+    { class: 'acceptance', file: 'acceptance', value: acceptanceFixture() },
+    { class: 'coverage', file: 'coverage', value: coverageFixture() },
+    { class: 'regression', file: 'regression', value: regressionFixture() },
+    { class: 'report', file: 'report', value: reportFixture() },
+  ]
+}
+
+/** 断言"拒了，而且点名了这条字段 + 这个问题码"。 */
+function expectIssue(report: TestingShapeReport, field: string, code: TestingShapeIssueCode): void {
+  const hit = report.issues.find((issue) => issue.field === field && issue.code === code)
+  assert.ok(
+    hit !== undefined,
+    `要点名「${field}」的「${code}」；实际问题：${report.issues.map((issue) => `${issue.field}[${issue.code}]`).join(' ') || '（无）'}`,
+  )
+  assert.ok(hit.path.startsWith('.sdo/testing/'), `问题要指出是哪份真源：${hit.path}`)
+  assert.ok(hit.message.length > 8, `问题说明要可执行：${hit.message}`)
+}
+
+test('M31-11 TASK-012 合法态：七类 / 八个文件全部通过形状校验，且校验面覆盖到每个文件', () => {
+  const report = validateTestingSet(validSet(), knownFixtures())
+  assert.equal(report.outcome, 'ok', `合法真源不该被拒：${report.issues.map((issue) => `${issue.field}[${issue.code}]`).join(' ')}`)
+  assert.deepEqual(report.issues, [])
+  assert.equal(report.scope, 'set')
+
+  // 七个类各自也要能过（design 一类的"类校验"要把两个文件都算进来）
+  assert.equal(validateTestingClass('design', { design: designFixture(), 'design-whitebox': whiteboxFixture() }, knownFixtures()).outcome, 'ok')
+  for (const entry of validSet()) {
+    assert.equal(validateTestingSource(entry.file, entry.value, knownFixtures()).outcome, 'ok', `${entry.file} 应判合法`)
+  }
+  assert.deepEqual(
+    report.checked,
+    ['.sdo/testing/profile.yml', '.sdo/testing/plan.yml', '.sdo/testing/design.yml', '.sdo/testing/design-whitebox.yml', '.sdo/testing/acceptance.yml', '.sdo/testing/coverage.yml', '.sdo/testing/regression.yml', '.sdo/testing/report.yml'],
+    '校验面必须覆盖到八个文件（少一个就是"没校验却当过了"）',
+  )
+})
+
+test('M31-12 TASK-012 非法态（计划）：顶点字段逐个点名 —— 条目缺项 / 编号重复 / 阈值缺失 / 枚举超界 / 时间格式', () => {
+  const bad = {
+    levels: [
+      { id: 'TL-001', level: '单元', traceability: 'req-xx' },
+      { id: 'TL-001', level: '集成', entry: 'e', exit: 'x', traceability: 'no-such-edge' },
+    ],
+    exitCriteria: [
+      { id: 'XC-001', criterion: '语句覆盖', metric: 'statement' },
+      { id: 'not-an-id', criterion: '', threshold: '' },
+    ],
+    review: { status: '批准了', by: 'user', at: '昨天' },
+  }
+  const report = validateTestingSet([{ class: 'plan', file: 'plan', value: bad }], knownFixtures())
+  assert.equal(report.outcome, 'invalid')
+
+  expectIssue(report, 'levels[0].entry', 'missing')
+  expectIssue(report, 'levels[0].exit', 'missing')
+  expectIssue(report, 'levels[0].traceability', 'enum')
+  expectIssue(report, 'levels[1].id', 'dup')
+  expectIssue(report, 'levels[1].traceability', 'enum')
+  expectIssue(report, 'exitCriteria[0].threshold', 'missing')
+  expectIssue(report, 'exitCriteria[1].id', 'format')
+  // 空串与"键没写"是两个码：`empty`（写了但是空）/ `missing`（根本没这个键）——
+  // 回执要能区分"没写"与"写了空"，否则用户不知道该补键还是补值
+  expectIssue(report, 'exitCriteria[1].criterion', 'empty')
+  expectIssue(report, 'exitCriteria[1].threshold', 'empty')
+  expectIssue(report, 'review.status', 'enum')
+  expectIssue(report, 'review.at', 'format')
+  // 一次报全：不是"修一个再跑一次"
+  assert.ok(report.issues.length >= 10, `问题要一次报全：实际 ${report.issues.length} 条`)
+})
+
+test('M31-13 TASK-012 非法态（方法包）：selected 不猜 yes/no，未选中的包也必须有理由', () => {
+  const report = validateTestingSet(
+    [
+      {
+        class: 'profile',
+        file: 'profile',
+        value: {
+          packages: [
+            { id: 'v-model', selected: 'yes', reason: '想选' },
+            { id: 'risk-based', selected: false },
+            { id: 'not-a-package', selected: true, reason: 'r', basis: 'b' },
+          ],
+        },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(report.outcome, 'invalid')
+  expectIssue(report, 'packages[0].selected', 'type')
+  expectIssue(report, 'packages[1].reason', 'missing')
+  expectIssue(report, 'packages[2].id', 'enum')
+
+  // 反例方向：全不选 = 没有测试方法论（不许"空表≈通过"）
+  const noneSelected = validateTestingSet([
+    { class: 'profile', file: 'profile', value: { packages: [{ id: 'v-model', selected: false, reason: '不选' }] } },
+  ])
+  assert.equal(noneSelected.outcome, 'invalid')
+  expectIssue(noneSelected, 'packages', 'empty')
+
+  // 合法态：未选中但有理由 + 至少一个选中 → 通过
+  assert.equal(
+    validateTestingSet([
+      {
+        class: 'profile',
+        file: 'profile',
+        value: { packages: [{ id: 'v-model', selected: true, reason: 'r', basis: 'b' }, { id: 'exploratory', selected: false, reason: '只登记' }] },
+      },
+    ]).outcome,
+    'ok',
+  )
+})
+
+test('M31-14 TASK-012 非法态（黑盒 / 白盒）：必产项缺件、用例反向引用为空、结构元素出处缺失', () => {
+  const blackbox = validateTestingSet(
+    [
+      {
+        class: 'design',
+        file: 'design',
+        value: {
+          artifacts: [
+            { id: 'BB-001', technique: 'equivalence', artifact: '有效类/无效类', useCases: [] },
+            { id: 'BB-002', technique: 'not-a-technique', artifact: 'x', useCases: ['TC-052'] },
+          ],
+        },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(blackbox.outcome, 'invalid')
+  expectIssue(blackbox, 'artifacts[0].useCases', 'empty')
+  expectIssue(blackbox, 'artifacts[1].technique', 'enum')
+
+  const whitebox = validateTestingSet(
+    [
+      {
+        class: 'design',
+        file: 'design-whitebox',
+        value: {
+          artifacts: [
+            { id: 'WB-001', technique: 'basis-paths', artifact: '独立路径集', useCases: ['TC-052'] },
+            { id: 'WB-002', technique: 'def-use', artifact: '定义-使用对', function: 'f', variable: 'v' },
+          ],
+        },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(whitebox.outcome, 'invalid')
+  // 结构元素出处缺失 → 点名 function（不许计入覆盖）
+  expectIssue(whitebox, 'artifacts[0].function', 'missing')
+  expectIssue(whitebox, 'artifacts[1].useCases', 'empty')
+})
+
+test('M31-15 TASK-012 非法态（验收大纲 / 覆盖 / 回归 / 报告）：一条 AC 只许一个验收项、读数要有数、结果要绑产物哈希', () => {
+  // 验收大纲：AC 重复 + AC 不属于该需求（交叉核对）
+  const acceptance = validateTestingSet(
+    [
+      {
+        class: 'acceptance',
+        file: 'acceptance',
+        value: {
+          outline: [
+            { id: 'TA-001', requirement: 'REQ-045', ac: 'AC-185', item: 'i', baseline: 'b' },
+            { id: 'TA-002', requirement: 'REQ-047', ac: 'AC-185', item: 'i', baseline: 'b' },
+            { id: 'TA-003', requirement: 'REQ-047', ac: 'AC-999', item: 'i', baseline: 'b' },
+          ],
+        },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(acceptance.outcome, 'invalid')
+  expectIssue(acceptance, 'outline[1].ac', 'dup')
+  expectIssue(acceptance, 'outline[2].ac', 'ref')
+
+  // 覆盖：只有数字没有报告不算证据；处置必须三选一且不可达要给理由
+  const coverage = validateTestingSet(
+    [
+      {
+        class: 'coverage',
+        file: 'coverage',
+        value: {
+          readings: [{ id: 'COV-001', criterion: 'nonsense', measured: '还不错' }],
+          uncovered: [
+            { id: 'UN-001', item: 'x', disposition: '懒得管' },
+            { id: 'UN-002', item: 'y', disposition: '不可达' },
+          ],
+        },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(coverage.outcome, 'invalid')
+  expectIssue(coverage, 'readings[0].criterion', 'enum')
+  expectIssue(coverage, 'readings[0].measured', 'format')
+  expectIssue(coverage, 'uncovered[0].disposition', 'enum')
+  expectIssue(coverage, 'uncovered[1].reason', 'missing')
+
+  // 回归：结果枚举 + 必须绑产物哈希；影响面为空又不声明"不可推导"要判红
+  const regression = validateTestingSet(
+    [
+      {
+        class: 'regression',
+        file: 'regression',
+        value: { cases: [{ case: 'TC-052', result: '大概过了' }] },
+      },
+      {
+        class: 'regression',
+        file: 'regression',
+        value: { impact: [], cases: [] },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(regression.outcome, 'invalid')
+  expectIssue(regression, 'cases[0].result', 'enum')
+  // **TASK-035 落点六**：两个位**缺任一个**都要判红并点名 —— `artifact`（哈希）与 `artifactPath`（路径）。
+  expectIssue(regression, 'cases[0].artifact', 'missing')
+  expectIssue(regression, 'cases[0].artifactPath', 'missing')
+  expectIssue(regression, 'impact', 'missing')
+
+  // 报告：准则要"实测 + 结论"成对；存活变异体必须逐条处置
+  const report = validateTestingSet(
+    [
+      {
+        class: 'report',
+        file: 'report',
+        value: {
+          exitCriteria: [{ id: 'XC-001', criterion: '语句覆盖', measured: '91%', verdict: '差不多达标' }],
+          mutation: { killRate: '八成', survived: [{ id: 'MU-001' }, { id: 'MU-002', disposition: '等价' }] },
+          residualRisks: [''],
+        },
+      },
+    ],
+    knownFixtures(),
+  )
+  assert.equal(report.outcome, 'invalid')
+  expectIssue(report, 'exitCriteria[0].verdict', 'enum')
+  expectIssue(report, 'mutation.killRate', 'format')
+  expectIssue(report, 'mutation.survived[0].disposition', 'missing')
+  expectIssue(report, 'mutation.survived[1].reason', 'missing')
+  expectIssue(report, 'residualRisks[0]', 'empty')
+})
+
+test('M31-16 TASK-012 非法态（形状本身）：少写一对 []、根是标量、空对象 —— 都不许静默通过', () => {
+  const scalarList = validateTestingSet([{ class: 'plan', file: 'plan', value: { levels: '单元', exitCriteria: [] } }])
+  assert.equal(scalarList.outcome, 'invalid')
+  expectIssue(scalarList, 'levels', 'type')
+  expectIssue(scalarList, 'exitCriteria', 'empty')
+
+  const scalarRoot = validateTestingSet([{ class: 'plan', file: 'plan', value: 'plan: 单元' }])
+  assert.equal(scalarRoot.outcome, 'invalid')
+  expectIssue(scalarRoot, '', 'type')
+
+  // 键缺失 ⇒ missing；键在但为空数组 ⇒ empty（两态都要能观察到）
+  const emptyRoot = validateTestingSet([{ class: 'design', file: 'design', value: {} }])
+  assert.equal(emptyRoot.outcome, 'invalid')
+  expectIssue(emptyRoot, 'artifacts', 'missing')
+  const emptyArtifacts = validateTestingSet([{ class: 'design', file: 'design', value: { artifacts: [] } }])
+  assert.equal(emptyArtifacts.outcome, 'invalid')
+  expectIssue(emptyArtifacts, 'artifacts', 'empty')
+
+  // 该文件没有实现校验器时 **fail-closed**（`unknown` 也不是 ok）
+  const unknown = validateTestingSource('not-a-file' as TestingSourceFileKind, {})
+  assert.equal(unknown.outcome, 'unknown')
+  expectIssue(unknown, '', 'unknown')
+})
+
+test('M31-17 TASK-012 "不落半成品"：整组里任一文件非法 ⇒ 一个字节都不写、也不留事件', () => {
+  freshShapes()
+  // 先写一份**合法**的真源作为底：随后被拒的整组不许碰到它
+  const before = writeValidatedTestingSet(shapesStore, [{ class: 'plan', file: 'plan', value: planFixture() }], {
+    journal: shapesJournal,
+    known: knownFixtures(),
+  })
+  assert.equal(before.ok, true)
+  const planPath = join(SHAPES_SDO, 'testing', 'plan.yml')
+  const bytesBefore = readFileSync(planPath, 'utf8')
+  const eventsBefore = shapesJournal.read().events.length
+
+  // 整组里 profile 合法、plan 非法（缺 exit）⇒ 整次拒绝
+  const broken = planFixture() as Record<string, unknown>
+  broken.levels = [{ id: 'TL-001', level: '单元' }]
+  const bad = writeValidatedTestingSet(
+    shapesStore,
+    [
+      { class: 'profile', file: 'profile', value: profileFixture() },
+      { class: 'plan', file: 'plan', value: broken },
+    ],
+    { journal: shapesJournal, known: knownFixtures() },
+  )
+  assert.equal(bad.ok, false)
+  assert.equal(bad.written, undefined)
+  assert.equal(bad.report.outcome, 'invalid')
+  // ① 合法的那份 profile **不许**被写下去（半成品）
+  assert.equal(existsSync(join(SHAPES_SDO, 'testing', 'profile.yml')), false, '整组被拒时不许落任何文件')
+  // ② 盘上原有的 plan.yml 一个字节都没动
+  assert.equal(readFileSync(planPath, 'utf8'), bytesBefore, '被拒的写入不许改到盘上已有的真源')
+  // ③ 也不许留"写过了"的事件
+  assert.equal(shapesJournal.read().events.length, eventsBefore, '被拒的写入不许留事件')
+
+  // 反例方向：同一组把 plan 修好 ⇒ 两份都写下去（证明上面拒的是形状，不是"永远拒"）
+  const fixed = writeValidatedTestingSet(
+    shapesStore,
+    [
+      { class: 'profile', file: 'profile', value: profileFixture() },
+      { class: 'plan', file: 'plan', value: planFixture() },
+    ],
+    { journal: shapesJournal, known: knownFixtures() },
+  )
+  assert.equal(fixed.ok, true)
+  assert.equal(existsSync(join(SHAPES_SDO, 'testing', 'profile.yml')), true)
+  assert.deepEqual(fixed.written?.paths, ['testing/profile.yml', 'testing/plan.yml'])
+  assert.equal(shapesJournal.read().events.length, eventsBefore + 1, '一组建一条事件（不是每文件一条）')
+  const event = shapesJournal.read().events.at(-1)
+  assert.equal(event?.type, 'truth/file-written')
+  assert.deepEqual(event?.data.files, ['profile', 'plan'])
+})
+
+test('M31-18 TASK-012 单文件闸门 + 交叉引用登记表：结构与盘上真源对得上（含 knownFromStore）', () => {
+  freshShapes()
+  // 单文件闸门：合法就写；非法就不写
+  const okWrite = writeValidatedTestingSource(shapesStore, { class: 'coverage', file: 'coverage', value: coverageFixture() }, {
+    journal: shapesJournal,
+    known: knownFixtures(),
+  })
+  assert.equal(okWrite.ok, true)
+  assert.equal(okWrite.written?.paths.length, 1)
+  assert.deepEqual(okWrite.written?.fingerprints?.coverage, sourceFingerprintOf(shapesStore, 'coverage'))
+
+  // 非法：结论写成人话（枚举超界）⇒ 拒且不写盘。
+  // 注意"形状层面可选"不等于"乱写也行"：threshold/coverage/uncovered 可以缺，但给了就必须是声明的形状。
+  const refused = writeValidatedTestingSource(
+    shapesStore,
+    { class: 'report', file: 'report', value: { exitCriteria: [{ id: 'XC-001', criterion: '语句覆盖', measured: '91%', verdict: '差不多达标' }] } },
+    { journal: shapesJournal, known: knownFixtures() },
+  )
+  assert.equal(refused.ok, false)
+  expectIssue(refused.report, 'exitCriteria[0].verdict', 'enum')
+  assert.equal(existsSync(join(SHAPES_SDO, 'testing', 'report.yml')), false, '被拒的单文件也不许落盘')
+
+  // 盘上体检：与写入的值一致 ⇒ ok；再落一份坏值直接进盘（模拟手改）⇒ 体检判红
+  assert.equal(inspectTestingSourceOnDisk(shapesStore, 'coverage', knownFixtures()).outcome, 'ok')
+  const coveragePath = join(SHAPES_SDO, 'testing', 'coverage.yml')
+  const text = readFileSync(coveragePath, 'utf8')
+  writeFileSync(coveragePath, text.replace('measured: 91%', 'measured: 说不清'))
+  const inspected = inspectTestingSourceOnDisk(shapesStore, 'coverage', knownFixtures())
+  assert.equal(inspected.outcome, 'invalid')
+  expectIssue(inspected, 'readings[0].measured', 'format')
+  // 体检**不写盘**（只读）：坏值还在盘上，等流程官决定怎么处置
+  assert.match(readFileSync(coveragePath, 'utf8'), /说不清/u)
+
+  // 交叉引用登记表：从真源需求文件建表，AC 挂错需求要点名
+  shapesStore.writeYaml(['requirements', 'REQ-045.yml'], {
+    requirement: { id: 'REQ-045', acceptance: [{ id: 'AC-185' }, { id: 'AC-186' }] },
+  })
+  shapesStore.writeYaml(['tests', 'TC-052.yml'], { testCase: { id: 'TC-052', title: 't', kind: 'unit', requirement: 'REQ-045', steps: [], expected: 'e', at: '' } })
+  const known = knownFromStore(shapesStore)
+  assert.deepEqual(known.requirements?.get('REQ-045'), ['AC-185', 'AC-186'])
+  assert.deepEqual(known.testCaseIds, ['TC-052'])
+  const dangling = validateTestingSet(
+    [{ class: 'acceptance', file: 'acceptance', value: { outline: [{ id: 'TA-009', requirement: 'REQ-045', ac: 'AC-186', item: 'i', baseline: 'b' }] } }],
+    known,
+  )
+  assert.equal(dangling.outcome, 'ok', 'AC-186 确实挂在 REQ-045 上 ⇒ 不许判红')
+  const wrongAc = validateTestingSet(
+    [{ class: 'acceptance', file: 'acceptance', value: { outline: [{ id: 'TA-009', requirement: 'REQ-045', ac: 'AC-999', item: 'i', baseline: 'b' }] } }],
+    known,
+  )
+  assert.equal(wrongAc.outcome, 'invalid')
+  expectIssue(wrongAc, 'outline[0].ac', 'ref')
+})
+
+/**
+ * **TASK-035 落点一 / 落点二**：读数的两个位（`artifact` 写路径、`artifactHash` 写哈希）。
+ *
+ * 两件事各自要能证伪，而且**不许各写一份期望**（卡上原文：同一组夹具既过形状层又过判定层）：
+ *   · 新口径 —— 形状闸门收下，判定侧（`coverage.ts`）判**可用**；
+ *   · 旧口径 —— 形状闸门收下"写法"（不许因为写法把人拦死），但判定侧**不许算可用**并点名到
+ *     `readings[0].artifactHash`（TASK-016 的口径就是这样：哈希在手但不知道产物在哪 ⇒ 判不动，
+ *     既不假装过期、也不判绿；M35-17 ④ 已把这条口径钉住）。
+ *
+ * 夹具只有一份（`coverageReadingsFixture` / `coverageUncoveredFixture`），两侧都从它推结论。
+ */
+test('M31-19 覆盖读数两态：新口径（artifact=路径 + artifactHash=哈希）两侧都收；旧口径判不动并点名字段', () => {
+  mkdirSync(join(BASE, 'reports'), { recursive: true })
+  mkdirSync(join(BASE, 'artifacts'), { recursive: true })
+  writeFileSync(join(BASE, 'reports', 'm31-coverage.txt'), 'statement coverage: 91% (91/100)\n', 'utf8')
+  writeFileSync(join(BASE, 'artifacts', 'm31-widget.txt'), 'widget v1\n', 'utf8')
+
+  // ① 新口径：**同一份夹具**既过形状层、又过判定层
+  const fresh = { readings: coverageReadingsFixture('path'), uncovered: coverageUncoveredFixture() }
+  const shapeOk = validateTestingSource('coverage', fresh, knownFixtures())
+  assert.equal(shapeOk.outcome, 'ok', `新口径必须过形状闸门：${shapeOk.issues.map((issue) => `${issue.field}[${issue.code}]`).join(' ')}`)
+  store.writeYaml(['testing', 'coverage.yml'], { coverage: fresh })
+  const judged = assessCoverageFromStore(store, BASE, ['TC-052'])
+  assert.equal(judged.readings.length, 1, '空集合不许算通过（判据的前提是"有读数"）')
+  assert.equal(judged.outcome, 'ok', `过了形状闸门的同一份夹具必须可用：${describeCoverage(judged)}`)
+
+  // ② 旧口径（`artifact` 写哈希、没有 `artifactHash`）：形状层收下写法，判定层**判不动**并点名
+  const legacy = { readings: coverageReadingsFixture('legacy'), uncovered: coverageUncoveredFixture() }
+  assert.equal(
+    validateTestingSource('coverage', legacy, knownFixtures()).outcome,
+    'ok',
+    '历史写法是**合法写法**：形状层只核"哪个位写什么"，不替判定层拒绝一条意思正确的读数',
+  )
+  store.writeYaml(['testing', 'coverage.yml'], { coverage: legacy })
+  const legacyJudged = assessCoverageFromStore(store, BASE, ['TC-052'])
+  assert.notEqual(legacyJudged.outcome, 'ok', `旧口径不许算可用：${describeCoverage(legacyJudged)}`)
+  assert.equal(legacyJudged.readings[0]?.outcome, 'unknown', '旧口径是"判不动"（哈希在手、产物路径不明），不是"过期"')
+  assert.deepEqual(
+    (legacyJudged.readings[0]?.issues ?? []).map((issue) => `${issue.field}[${issue.code}]`),
+    ['readings[0].artifactHash[artifact-hash-missing]'],
+    '判不动必须**点名到那一个字段**（否则人不知道该补什么）',
+  )
+
+  // ③ 两个**新形状位**真的被核：写法非法 ⇒ 形状层判红并点到那一位（不是"不报"也不是"报在别的字段"）
+  const badArtifactHash = { readings: [{ ...coverageReadingsFixture('path')[0], artifactHash: 'not-a-hash' }], uncovered: [] }
+  expectIssue(validateTestingSource('coverage', badArtifactHash, knownFixtures()), 'readings[0].artifactHash', 'format')
+  const badReportHash = { readings: [{ ...coverageReadingsFixture('path')[0], reportHash: 'not-a-hash' }], uncovered: [] }
+  expectIssue(validateTestingSource('coverage', badReportHash, knownFixtures()), 'readings[0].reportHash', 'format')
+})
+
+/**
+ * **TASK-035 落点六**：回归跑记录的两个位（`artifact` 写哈希、`artifactPath` 写路径）。
+ *
+ * 与落点一同一条原则（路径归路径位、哈希归哈希位），落地到**各自判定侧已有的口径**：
+ * `regression.ts` / TASK-019 的 `RegressionRunInput` 把路径位叫 `artifactPath`。
+ * 两态：两位齐备 ⇒ 形状层可用 + 判定层可用；**缺任一位** ⇒ 两侧都判红、且点在**同一个字段名**上。
+ */
+test('M31-20 回归集两态：artifact=哈希 + artifactPath=路径 才可用；缺任一位两侧都点名同一位', () => {
+  mkdirSync(join(BASE, 'artifacts'), { recursive: true })
+  writeFileSync(join(BASE, 'artifacts', 'm31-reg.txt'), 'reg v1\n', 'utf8')
+
+  const shapeOf = (cases: Record<string, unknown>[]): TestingShapeReport =>
+    validateTestingSource('regression', { impact: ['REQ-049', 'TC-052'], cases }, knownFixtures())
+  const judgedOf = (cases: Record<string, unknown>[]) =>
+    assessRegression({
+      workspace: BASE,
+      changeSet: REGRESSION_CHANGE_SET,
+      // 夹具是**形状层那一份**（`Record<string, unknown>`）：判定侧的入参只多一个类型标注，
+      // 不另写一份期望（`RegressionRunInput` 的字段就是 `case / result / artifact / artifactPath / command`）。
+      source: { impact: ['REQ-049', 'TC-052'], cases: cases as unknown as RegressionRunInput[] },
+      edges: REGRESSION_EDGES,
+      knownCaseIds: ['TC-052'],
+    })
+
+  // ① 两位齐备 ⇒ 形状层可用、判定层可用（同一份 cases）
+  const both = regressionCasesFixture('both')
+  assert.equal(shapeOf(both).outcome, 'ok', `两位齐备必须过形状闸门：${shapeOf(both).issues.map((issue) => `${issue.field}[${issue.code}]`).join(' ')}`)
+  const judgedBoth = judgedOf(both)
+  assert.equal(judgedBoth.outcome, 'ok', `两位齐备必须可用（哈希对得上盘上那版产物）：${describeRegression(judgedBoth)}`)
+  assert.equal(judgedBoth.cases[0]?.artifactPath, 'artifacts/m31-reg.txt', '判定结论里要带上产物路径（点名过期产物靠它）')
+
+  // ② 缺 `artifactPath`（只记了哈希）⇒ 两侧都判红，且**都点到 `cases[0].artifactPath`**
+  const noPath = regressionCasesFixture('no-path')
+  expectIssue(shapeOf(noPath), 'cases[0].artifactPath', 'missing')
+  const judgedNoPath = judgedOf(noPath)
+  assert.equal(judgedNoPath.outcome, 'incomplete', `只记哈希不记路径 ⇒ 判不动，不许声称完成：${describeRegression(judgedNoPath)}`)
+  assert.equal(judgedNoPath.cases[0]?.outcome, 'unbound')
+  assert.deepEqual(judgedNoPath.cases[0]?.issues.map((issue) => issue.field), ['cases[0].artifactPath'], '判定侧点名的字段要与形状层同一位')
+
+  // ③ 缺 `artifact`（只记了路径）⇒ 两侧都判红，且**都点到 `cases[0].artifact`**
+  const noHash = regressionCasesFixture('no-hash')
+  expectIssue(shapeOf(noHash), 'cases[0].artifact', 'missing')
+  const judgedNoHash = judgedOf(noHash)
+  assert.equal(judgedNoHash.outcome, 'incomplete', `没绑产物哈希 ⇒ 判不动：${describeRegression(judgedNoHash)}`)
+  assert.equal(judgedNoHash.cases[0]?.outcome, 'unbound')
+  assert.deepEqual(judgedNoHash.cases[0]?.issues.map((issue) => issue.field), ['cases[0].artifact'], '判定侧点名的字段要与形状层同一位')
 })

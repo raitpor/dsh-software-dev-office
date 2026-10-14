@@ -23,8 +23,21 @@ export interface CollectionView {
   metaFields: string[]
   /** 正文块（`**标签**` + 段落）的顺序。 */
   bodyFields: string[]
-  /** 表格化字段：列顺序（数组 of 对象）。 */
-  tables: Record<string, string[]>
+  /** 表格化字段：列顺序（数组 of 对象）；'auto' 表示按首项标量键自动定列。 */
+  tables: Record<string, string[] | 'auto'>
+  /**
+   * **列表化字段**：数组 of 对象 ⇒ 每条渲染成带标签的子条目。
+   *
+   * 为什么不用表格：方法产物/视图元素的 `responsibility`/`statement` 是整段中文，
+   * 塞进表格列会把表格撑成一堵墙（用户在 G3 反馈过"表述不清"）。
+   */
+  lists?: string[]
+  /** 纯量数组字段：压成一行 `标签：a、b、c`（元素经标签映射）。 */
+  inlineLists?: string[]
+  /** 表格列名的**覆盖**：`{字段: {列: 语言包键}}`（同一字段名在不同工件里语义可能不同）。 */
+  tableLabels?: Record<string, Record<string, string>>
+  /** 标题行的**现成写法**（工件类型用；给了就不走 titleFields）。 */
+  heading?: (record: Record<string, unknown>, refs: RefIndex) => string
   /** 关联代号的字段（值会解析成 `CODE「名称」`）。 */
   refFields: string[]
   /** 额外补的元信息行（例如需求的歧义评分、问答的目标需求）。 */
@@ -49,6 +62,50 @@ const IGNORED_FIELDS: readonly string[] = [
   // 模型侧打分明细、机读字段：签字人不需要它来判断"理解得对不对"（真源里仍在）
   'modelDimensions', 'needsReviewRaw', 'contentId',
 ]
+
+/**
+ * **工件类型**：同一个集合里可能混着好几种工件 —— `design/` 下就同时有
+ * 适用性声明（`applicability.yml`）、视图（`component.yml`…）、界面方案（`ui.yml`）、
+ * 方法产物（`method-*.yml`）、设计方法选择（`method.yml`）与用户确认戳（`confirmed.yml`）。
+ *
+ * 为什么必须分开：G3 真机上它们**全被当成"设计元素"**渲染 ⇒ 标题行只剩文件名或英文 kind
+ * （`#### applicability`、`#### component`、`#### MA-001　classes`），正文整段掉进「其他字段」。
+ * 分派后每类都有自己的标题与人话标签。
+ */
+export type ArtifactKind =
+  | 'applicability'
+  | 'view'
+  | 'ui'
+  | 'methodChoice'
+  | 'artifact'
+  | 'confirmations'
+  | 'atam'
+  | 'entry'
+
+/** 视图类工件的文件名（`design/<stem>.yml`）。`method.yml` **不在**其中：它是设计方法选择。 */
+const VIEW_KIND_FILES = new Set(['component', 'context', 'runtime', 'data', 'deployment', 'module', 'class', 'usecase', 'state'])
+
+/** 按（集合 + 文件 + 形状）判定工件类型。 */
+export function artifactOf(collection: string, path: string, record: Record<string, unknown>): ArtifactKind {
+  const file = path.split('/').pop() ?? ''
+  if (collection === 'design') {
+    if (file === 'applicability.yml') return 'applicability'
+    if (file === 'ui.yml') return 'ui'
+    if (file === 'method.yml') return 'methodChoice'
+    if (file.startsWith('method-')) return 'artifact'
+    if (file === 'confirmed.yml') return 'confirmations'
+  }
+  // ATAM 是**质量属性权衡工件**（`by` / `risks` / `sensitivities`），不是质量场景 ——
+  // 旧实现把它按场景渲染 ⇒ 标题行成了 `质量场景：`（属性名为空）。
+  if (collection === 'quality' && file === 'atam.yml') return 'atam'
+  if (collection === 'quality' && file.startsWith('atam')) return 'atam'
+  // 视图按**文件名**定性（`component.yml` / `context.yml` …）：不能只靠"记录里恰好有 `elements`"，
+  // 否则一旦视图还没填元素，标题行就退回文件名。
+  const stem = file.replace(/\.ya?ml$/u, '')
+  if (VIEW_KIND_FILES.has(stem)) return 'view'
+  if (record['elements'] !== undefined && record['kind'] !== undefined) return 'view'
+  return 'entry'
+}
 
 /** 该字段是否与审核无关（逐集合同样可覆盖）。 */
 export function isIgnoredField(key: string): boolean {
@@ -107,21 +164,22 @@ export const COLLECTION_VIEWS: Record<string, CollectionView> = {
   },
   design: {
     titleFields: ['name', 'kind', 'summary'],
-    metaFields: ['id', 'kind', 'status'],
+    metaFields: ['kind', 'status'],
     bodyFields: ['responsibility', 'summary'],
     tables: {},
     refFields: ['dependsOn', 'requires', 'elements'],
   },
   contracts: {
     titleFields: ['name', 'id'],
-    metaFields: ['id', 'kind', 'status'],
+    metaFields: ['kind', 'status'],
     bodyFields: ['schema', 'failureSemantics', 'droppedReason'],
     tables: {},
     refFields: ['producer', 'consumer', 'requires'],
   },
   quality: {
     titleFields: ['attribute', 'id'],
-    metaFields: ['id', 'priority'],
+    heading: (record) => fmt('uiSignPayload.qualityHeading', { p1: qualityLabel(String(record['attribute'] ?? '')) }),
+    metaFields: ['priority'],
     bodyFields: ['stimulus', 'response', 'measure'],
     tables: {},
     refFields: ['targets'],
@@ -135,28 +193,28 @@ export const COLLECTION_VIEWS: Record<string, CollectionView> = {
   },
   tests: {
     titleFields: ['title', 'name'],
-    metaFields: ['id', 'status', 'priority'],
+    metaFields: ['status', 'priority'],
     bodyFields: [],
     tables: {},
     refFields: ['requirement', 'targets', 'covers'],
   },
   defects: {
     titleFields: ['title'],
-    metaFields: ['id', 'severity', 'status'],
+    metaFields: ['severity', 'status'],
     bodyFields: ['symptom', 'rootCause', 'remedy', 'reason'],
     tables: {},
     refFields: ['requirement', 'targets', 'origin'],
   },
   changes: {
     titleFields: ['requirement', 'reason'],
-    metaFields: ['id', 'status', 'decidedBy'],
+    metaFields: ['status', 'decidedBy'],
     bodyFields: ['reason', 'changes', 'impact', 'decision'],
     tables: {},
     refFields: ['requirement'],
   },
   issues: {
     titleFields: ['questionIds', 'id'],
-    metaFields: ['id', 'status', 'disposition'],
+    metaFields: ['status', 'disposition'],
     bodyFields: ['note'],
     tables: {},
     refFields: ['target', 'questionIds', 'angles'],
@@ -176,6 +234,100 @@ function isEmptyValue(value: unknown): boolean {
   if (typeof value === 'object') return Object.keys(value as Record<string, unknown>).length === 0
   return false
 }
+
+/** 视图 kind → 人话（`uiSignView.*`，缺失回落原词）。 */
+function viewKindLabel(kind: string): string {
+  return t(`uiSignView.${kind}`, kind)
+}
+
+/** 方法产物 / 工件 kind → 人话（`uiSignMethod.*`）。 */
+function methodKindLabel(kind: string): string {
+  return t(`uiSignMethod.${kind}`, kind)
+}
+
+/** 质量属性 → 人话（`uiSignQuality.*`）。 */
+function qualityLabel(attribute: string): string {
+  return t(`uiSignQuality.${attribute}`, attribute)
+}
+
+/**
+ * **工件级呈现规则**（2026-10-12 用户 G3 反馈后新增）。
+ *
+ * 与 `COLLECTION_VIEWS` 的分工：集合级规则管"这一目录整体怎么读"，
+ * 工件级规则管"同一目录里这一种工件怎么读" —— `design/` 下有六种。
+ */
+const ARTIFACT_VIEWS: Record<Exclude<ArtifactKind, 'entry'>, CollectionView> = {
+  applicability: {
+    titleFields: [],
+    metaFields: [],
+    heading: () => t('uiSignPayload.applicabilityHeading'),
+    bodyFields: ['focus', 'confirmed'],
+    tables: { artifactsAbsent: ['kind', 'why'] },
+    // 同一个 `why` 在问答题里是「为什么问」，在工件缺项里是「理由」—— 列名必须按工件覆盖
+    tableLabels: { artifactsAbsent: { why: 'uiSignField.absentReason' } },
+    refFields: [],
+    inlineLists: ['viewsPresent', 'viewsAbsent', 'artifacts'],
+  },
+  view: {
+    titleFields: [],
+    metaFields: [],
+    heading: (record) => fmt('uiSignPayload.viewHeading', { p1: viewKindLabel(String(record['kind'] ?? '')) }),
+    bodyFields: ['summary'],
+    tables: {},
+    refFields: [],
+    lists: ['elements'],
+  },
+  ui: {
+    titleFields: [],
+    metaFields: [],
+    heading: () => t('uiSignPayload.uiHeading'),
+    bodyFields: [],
+    tables: {},
+    refFields: [],
+    lists: ['screens', 'breakpoints'],
+    inlineLists: [],
+  },
+  methodChoice: {
+    titleFields: [],
+    metaFields: [],
+    heading: () => t('uiSignPayload.methodChoiceHeading'),
+    bodyFields: ['question', 'answer'],
+    tables: {},
+    refFields: [],
+    inlineLists: ['methods'],
+  },
+  artifact: {
+    titleFields: [],
+    metaFields: [],
+    heading: (record) => fmt('uiSignPayload.artifactHeading', { p1: methodKindLabel(String(record['kind'] ?? '')) }),
+    bodyFields: ['summary'],
+    tables: {},
+    refFields: [],
+    lists: ['types', 'debts', 'increments', 'invariants', 'sequences', 'decisions', 'rules'],
+  },
+  atam: {
+    titleFields: [],
+    metaFields: ['by'],
+    heading: () => t('uiSignPayload.atamHeading'),
+    bodyFields: [],
+    tables: {},
+    refFields: [],
+    lists: ['risks', 'sensitivities'],
+  },
+  confirmations: {
+    titleFields: [],
+    metaFields: [],
+    heading: () => t('uiSignPayload.confirmationsHeading'),
+    bodyFields: [],
+    tables: {},
+    refFields: [],
+    lists: ['confirmations'],
+  },
+}
+
+/** 列表条目的"主名"与"副名"字段顺序（子条目渲染用）。 */
+const ITEM_PRIMARY = ['name', 'id', 'title', 'target', 'label', 'kind']
+const ITEM_SECONDARY = ['id', 'kind', 'layer', 'role', 'size', 'status', 'priority', 'severity']
 
 /**
  * 该集合用作**条目标题**的字段（按序）。
@@ -203,10 +355,19 @@ export function unwrapEntry(content: unknown): Record<string, unknown> {
   if (content === null || typeof content !== 'object' || Array.isArray(content)) return {}
   const record = content as Record<string, unknown>
   if (typeof record['id'] === 'string') return record
-  for (const value of Object.values(record)) {
+  const values = Object.values(record)
+  for (const value of values) {
     if (value !== null && typeof value === 'object' && !Array.isArray(value)) {
       const inner = value as Record<string, unknown>
       if (typeof inner['id'] === 'string' || typeof inner['title'] === 'string' || typeof inner['text'] === 'string') return inner
+    }
+  }
+  // **没有 id 的单键包装**（`applicability:` / `view:` / `ui:` / `scenario:` …）也要剥：
+  // 不剥的话正文会整段掉进「其他字段」，标题行只剩文件名（G3 真机的病根）。
+  if (values.length === 1) {
+    const only = values[0]
+    if (only !== null && typeof only === 'object' && !Array.isArray(only) && record['id'] === undefined) {
+      return unwrapEntry(only)
     }
   }
   return record
@@ -247,7 +408,37 @@ function scalarText(value: unknown, refs: RefIndex, quote: boolean): string {
     return quote ? `**${text}**` : text
   }
   if (typeof value === 'number' || typeof value === 'boolean') return quote ? `**${String(value)}**` : String(value)
-  return ''
+  // 结构化值：压成一行（表格单元、内联行都用它，**不留空**）
+  return compactText(value, refs)
+}
+
+/**
+ * **压成一行**：数组用 `、` 连，对象用 `标签 值`／`标签：值` 连。
+ *
+ * 表格单元与内联行都走它 —— 旧实现遇到对象直接返回空串，于是 `screens.columns`、
+ * `artifactsAbsent.why` 这类嵌套值在文档里**整个消失**（漏字段就是漏审）。
+ */
+function compactText(value: unknown, refs: RefIndex): string {
+  if (value === undefined || value === null) return ''
+  if (Array.isArray(value)) {
+    const parts = value.map((item) => compactText(item, refs)).filter((text) => text !== '')
+    return parts.length === 0 ? t('uiSignPayload.empty') : parts.join('、')
+  }
+  if (typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>).filter(([key]) => !isIgnoredField(key))
+    const scalars = entries.filter(([, item]) => item === null || typeof item !== 'object')
+    if (entries.length > 0 && scalars.length === entries.length) {
+      // 递归走 `compactText`（**不是** `String(item)`）：标量分支里要做代号解析，
+      // 直接 `String()` 会让 `source.raw` 里的 `REQ-001` 丢掉名称（真机 diff 抓到的回归）
+      return entries
+        .map(([key, item]) => `${fieldLabel(key)} ${compactText(item, refs)}`)
+        .join(t('uiSignPayload.metaSep'))
+    }
+    return entries
+      .map(([key, item]) => `${fieldLabel(key)}${t('uiSignPayload.keyColon')}${compactText(item, refs)}`)
+      .join('；')
+  }
+  return resolveRefs(String(value), refs)
 }
 
 /** 长文块：`**标签**` + 段落（保留换行与列表）。 */
@@ -260,38 +451,122 @@ function bodyBlock(label: string, value: unknown, refs: RefIndex): string[] {
   if (Array.isArray(value)) {
     lines.push(`**${label}**：`)
     for (const item of value) {
-      lines.push(`- ${resolveRefs(typeof item === 'string' ? item : JSON.stringify(item), refs)}`)
+      lines.push(`- ${compactText(item, refs)}`)
     }
     return lines
   }
   if (value !== null && typeof value === 'object') {
     const record = value as Record<string, unknown>
-    // 只有一两个键的小对象（如 source/ambiguity）压成一行，可读性优先
-    const entries = Object.entries(record).filter(([, item]) => item !== undefined)
-    if (entries.length > 0 && entries.every(([, item]) => typeof item !== 'object')) {
-      const text = entries
-        .map(([key, item]) => `${fieldLabel(key)} ${scalarText(item, refs, false)}`)
-        .join(t('uiSignPayload.metaSep'))
-      lines.push(`**${label}**：${text}`)
+    const entries = Object.entries(record).filter(([key, item]) => item !== undefined && !isIgnoredField(key))
+    if (entries.length > 0) {
+      lines.push(`**${label}**：${compactText(record, refs)}`)
       return lines
     }
   }
   return []
 }
 
-function tableBlock(label: string, rows: readonly unknown[], columns: readonly string[], refs: RefIndex): string[] {
-  const lines = [`**${label}**：`, '', `| ${columns.map((column) => fieldLabel(column)).join(' | ')} |`, `| ${columns.map(() => '---').join(' | ')} |`]
+/**
+ * **子条目**：数组 of 对象 ⇒ 每条一行主名 + 缩进的标签行。
+ *
+ * 为什么不表格化：`responsibility` / `statement` 是整段中文，塞进表格列会把表撑成一堵墙。
+ */
+function itemBlock(label: string, rows: readonly unknown[], refs: RefIndex): string[] {
+  const lines = [`**${label}**：`]
   for (const row of rows) {
-    const record = row !== null && typeof row === 'object' ? (row as Record<string, unknown>) : {}
-    lines.push(`| ${columns.map((column) => scalarText(record[column], refs, false)).join(' | ')} |`)
+    if (row === null || typeof row !== 'object' || Array.isArray(row)) {
+      lines.push(`- ${compactText(row, refs)}`)
+      continue
+    }
+    const record = Object.fromEntries(
+      Object.entries(row as Record<string, unknown>).filter(([key, item]) => !isIgnoredField(key) && !isEmptyValue(item)),
+    )
+    const primaryKey = ITEM_PRIMARY.find((key) => typeof record[key] === 'string' && String(record[key]).trim() !== '')
+    const primary = primaryKey === undefined ? '' : resolveRefs(String(record[primaryKey]), refs)
+    const secondary = ITEM_SECONDARY.filter((key) => key !== primaryKey && record[key] !== undefined)
+      .map((key) => `${fieldLabel(key)} ${valueText(key, scalarText(record[key], refs, false))}`)
+    if (primaryKey !== undefined) delete record[primaryKey]
+    for (const key of ITEM_SECONDARY) delete record[key]
+    const head = secondary.length === 0 ? `- **${primary}**` : `- **${primary}**（${secondary.join(t('uiSignPayload.metaSep'))}）`
+    lines.push(primary === '' ? '- ' : head)
+    for (const [key, item] of Object.entries(record)) {
+      if (item === null || typeof item !== 'object') {
+        lines.push(`  - ${fieldLabel(key)}${t('uiSignPayload.keyColon')}${valueText(key, scalarText(item, refs, false))}`)
+      } else if (Array.isArray(item) && item.every((one) => one === null || typeof one !== 'object')) {
+        lines.push(`  - ${fieldLabel(key)}${t('uiSignPayload.keyColon')}${compactText(item, refs)}`)
+      } else {
+        lines.push(`  - ${fieldLabel(key)}${t('uiSignPayload.keyColon')}`)
+        lines.push(...renderGeneric(item, '    ', refs))
+      }
+    }
   }
   return lines
+}
+
+function tableBlock(
+  label: string,
+  rows: readonly unknown[],
+  columns: readonly string[],
+  refs: RefIndex,
+  labels?: Record<string, string>,
+): string[] {
+  const head = columns.map((column) => (labels?.[column] === undefined ? fieldLabel(column) : t(labels[column]!)))
+  const lines = [`**${label}**：`, '', `| ${head.join(' | ')} |`, `| ${columns.map(() => '---').join(' | ')} |`]
+  for (const row of rows) {
+    const record = row !== null && typeof row === 'object' ? (row as Record<string, unknown>) : {}
+    lines.push(`| ${columns.map((column) => compactText(record[column], refs) || scalarText(record[column], refs, false)).join(' | ')} |`)
+  }
+  return lines
+}
+
+/** 表格列：给了就用给的，`'auto'` 则按首项的标量键（有 id 就放最前）。 */
+function columnsFor(rows: readonly unknown[], spec: readonly string[] | 'auto'): string[] {
+  if (spec !== 'auto') return [...spec]
+  const first = rows.find((row) => row !== null && typeof row === 'object')
+  if (first === undefined) return []
+  const keys = Object.keys(first as Record<string, unknown>).filter((key) => !isIgnoredField(key))
+  const ordered = [...ITEM_PRIMARY.filter((key) => keys.includes(key)), ...keys.filter((key) => !ITEM_PRIMARY.includes(key))]
+  return ordered
+}
+
+/** 纯量清单字段的值映射（视图名、方法工件名要说人话）。 */
+const INLINE_LABELER: Record<string, (value: string) => string> = {
+  viewsPresent: viewKindLabel,
+  viewsAbsent: viewKindLabel,
+  artifacts: methodKindLabel,
+}
+
+/** 列表字段的行映射（`kind` 这类代号先说成人话）。 */
+const LIST_ROW_TRANSFORM: Record<string, (rows: Record<string, unknown>[]) => Record<string, unknown>[]> = {
+  artifactsAbsent: (rows) => rows.map((row) => ({ ...row, kind: methodKindLabel(String(row['kind'] ?? '')) })),
+}
+
+/**
+ * **取值**也要说人话：这些字段的取值是受控词表（`kind: class`、`layer: infra`、`status: open`…）。
+ * 查不到就回落原词（**绝不编造**）。
+ */
+const VALUE_LABEL_KEYS = [
+  'kind', 'layer', 'role', 'status', 'priority', 'severity', 'confidence', 'attribute',
+  // G2 真机扫出来的漏网取值字段（风险等级/概率、问答维度、状态机）
+  'level', 'probability', 'dimension', 'state',
+]
+
+function valueText(key: string, text: string): string {
+  if (!VALUE_LABEL_KEYS.includes(key) || text === '') return text
+  return t(`uiSignValue.${text}`, text)
+}
+
+/** 关联值（可能是数组）→ 一行人话。 */
+function refsText(value: unknown, refs: RefIndex): string {
+  if (Array.isArray(value)) return value.map((item) => resolveRefs(String(item), refs)).join('、')
+  return resolveRefs(String(value ?? ''), refs)
 }
 
 /**
  * 渲染一条台账条目（人读形态）。
  *
- * 已覆盖字段按 `view` 的规则展开；**未覆盖字段照样展开**（进"其他字段"），漏字段即漏审。
+ * 已覆盖字段按 `view` 的规则展开；**未覆盖字段照样展开**（进「其他字段」），漏字段即漏审。
+ * 工件类型（`design/` 下有六种）走 `ARTIFACT_VIEWS`，集合类型走 `COLLECTION_VIEWS`。
  */
 export function renderEntry(
   collection: string,
@@ -300,21 +575,25 @@ export function renderEntry(
   refs: RefIndex,
   used: Set<string>,
   provenance?: string,
+  path = '',
 ): string[] {
-  const view = COLLECTION_VIEWS[collection] ?? VIEW_DEFAULT
   const record = { ...unwrapEntry(content) }
+  const kind = artifactOf(collection, path, record)
+  const view = kind === 'entry' ? (COLLECTION_VIEWS[collection] ?? VIEW_DEFAULT) : ARTIFACT_VIEWS[kind]
   const lines: string[] = []
   // 代号已经写在标题行里，不再作为字段重复出现
   used.add('id')
 
-  // ① 标题行：`### <代号>　<人类可读名称>`
-  let title = ''
-  for (const key of view.titleFields) {
-    const text = scalarText(record[key], refs, false)
-    if (text !== '' && text !== t('uiSignPayload.empty')) {
-      title = text
-      used.add(key)
-      break
+  // ① 标题行：`#### <代号>　<人类可读名称>`（工件类型用现成写法）
+  let title = view.heading?.(record, refs) ?? ''
+  for (const key of view.titleFields) used.add(key)
+  if (title === '') {
+    for (const key of view.titleFields) {
+      const text = scalarText(record[key], refs, false)
+      if (text !== '' && text !== t('uiSignPayload.empty') && String(record[key] ?? '') !== id) {
+        title = text
+        break
+      }
     }
   }
   lines.push(`#### ${id}${title === '' ? '' : `${t('uiSignPayload.entryTitleSep')}${title}`}`)
@@ -324,23 +603,22 @@ export function renderEntry(
     lines.push('')
   }
 
-  // ② 元信息一行：`- 优先级 **must** ｜ 类型 functional`（关联字段解析成代号带名称）
+  // ② 一行元信息：`- 优先级 **must** ｜ 类型 functional`
   const meta: string[] = []
   for (const key of view.metaFields) {
     if (isEmptyValue(record[key])) {
       used.add(key)
       continue
     }
-    const value = view.refFields.includes(key)
-      ? resolveRefs(String(record[key]), refs)
-      : scalarText(record[key], refs, true)
-    if (value === '') continue
-    meta.push(`${fieldLabel(key)} ${value}`)
+    // 先取**原值**查人话映射，再决定加不加粗（`**high**` 是查不到 `uiSignValue.high` 的）
+    const raw = view.refFields.includes(key) ? refsText(record[key], refs) : scalarText(record[key], refs, false)
+    if (raw === '') continue
+    const mapped = valueText(key, raw)
+    meta.push(`${fieldLabel(key)} ${scalarText(mapped, refs, true)}`)
     used.add(key)
   }
   for (const key of view.derivedConsumes ?? []) used.add(key)
   for (const extra of view.derived?.(record, refs) ?? []) {
-    // derived 行的字段已被消费（如 ambiguity/targets），不必再进「其他字段」
     if (extra.trim() !== '') meta.push(extra)
   }
   if (meta.length > 0) {
@@ -350,38 +628,59 @@ export function renderEntry(
 
   // ③ 正文块
   for (const key of view.bodyFields) {
-    // 字段无论有没有内容都算"已消费"，否则空字段会掉进「其他字段」重复一遍
     used.add(key)
     if (isEmptyValue(record[key])) continue
-    const block = bodyBlock(fieldLabel(key), view.refFields.includes(key) ? resolveRefs(JSON.stringify(record[key]), refs) : record[key], refs)
+    const block = bodyBlock(fieldLabel(key), record[key], refs)
     if (block.length === 0) continue
     lines.push(...block)
     lines.push('')
-    used.add(key)
   }
 
-  // ④ 表格（验收标准 / 选项这类，结构化后比嵌套列表清楚得多）
-  for (const [key, columns] of Object.entries(view.tables)) {
+  // ④ 纯量清单：`- 要做的视图：上下文视图、组件视图…`
+  for (const key of view.inlineLists ?? []) {
+    used.add(key)
+    if (isEmptyValue(record[key])) continue
+    const values = (Array.isArray(record[key]) ? record[key] : [record[key]]).map((item) => String(item))
+    const labeler = INLINE_LABELER[key]
+    const text = values.map((item) => resolveRefs(labeler === undefined ? item : labeler(item), refs)).join('、')
+    lines.push(`- ${fieldLabel(key)}${t('uiSignPayload.keyColon')}${text}`)
+    lines.push('')
+  }
+
+  // ⑤ 列表：数组 of 对象 ⇒ 带标签的子条目（长中文不进表格）
+  for (const key of view.lists ?? []) {
+    used.add(key)
+    const value = record[key]
+    if (!Array.isArray(value) || value.length === 0) continue
+    const transform = LIST_ROW_TRANSFORM[key]
+    const rows = transform === undefined ? value : transform(value as Record<string, unknown>[])
+    lines.push(...itemBlock(fieldLabel(key), rows, refs))
+    lines.push('')
+  }
+
+  // ⑥ 表格：短单元的结构化清单（验收标准 / 选项 / 缺项理由）
+  for (const [key, spec] of Object.entries(view.tables)) {
     const value = record[key]
     used.add(key)
     if (!Array.isArray(value) || value.length === 0) continue
-    lines.push(...tableBlock(fieldLabel(key), value, columns, refs))
+    const transform = LIST_ROW_TRANSFORM[key]
+    const rows = transform === undefined ? value : transform(value as Record<string, unknown>[])
+    const columns = columnsFor(rows, spec)
+    if (columns.length === 0) continue
+    lines.push(...tableBlock(fieldLabel(key), rows, columns, refs, view.tableLabels?.[key]))
     lines.push('')
-    used.add(key)
   }
 
-  // ⑤ 关联字段单独一行（`- 涉及需求：REQ-001「标题」`）
+  // ⑦ 关联字段单独一行（`- 涉及需求：REQ-001「标题」`）
   const refsOnly = view.refFields.filter((key) => !used.has(key) && !isEmptyValue(record[key]))
   if (refsOnly.length > 0) {
-    const parts = refsOnly.map((key) => `${fieldLabel(key)} ${resolveRefs(String(record[key]), refs)}`)
+    const parts = refsOnly.map((key) => `${fieldLabel(key)} ${refsText(record[key], refs)}`)
     lines.push(`- ${parts.join(t('uiSignPayload.metaSep'))}`)
     lines.push('')
     for (const key of refsOnly) used.add(key)
   }
 
-  // ⑥ 剩余字段（**不许丢**）：字典没覆盖的照原样展开在"其他字段"下
-  // **剩余字段里剔除「与审核无关」的那些**（时间戳/内部版本/归一评分…）：真源里仍可查，
-  // 但不占审核单篇幅。这张忽略清单是唯一的增删点。
+  // ⑧ 剩余字段（**不许丢**）：字典没覆盖的照原样展开在「其他字段」下
   const leftovers = Object.entries(record).filter(
     ([key, item]) => !used.has(key) && !isIgnoredField(key) && !isEmptyValue(item),
   )
@@ -389,10 +688,10 @@ export function renderEntry(
     lines.push(`**${t('uiSignPayload.otherFields')}**：`)
     for (const [key, item] of leftovers) {
       if (item !== null && typeof item === 'object') {
-        lines.push(`- ${fieldLabel(key)}：`)
+        lines.push(`- ${fieldLabel(key)}${t('uiSignPayload.keyColon')}`)
         lines.push(...renderGeneric(item, '  ', refs))
       } else {
-        lines.push(`- ${fieldLabel(key)}：${scalarText(item, refs, false)}`)
+        lines.push(`- ${fieldLabel(key)}${t('uiSignPayload.keyColon')}${scalarText(item, refs, false)}`)
       }
     }
     lines.push('')
@@ -400,7 +699,6 @@ export function renderEntry(
   return lines
 }
 
-/** 通用展开（"其他字段"里用；也可能被别处复用）。 */
 export function renderGeneric(value: unknown, indent: string, refs: RefIndex): string[] {
   if (value === undefined || value === null) return [`${indent}${t('uiSignPayload.empty')}`]
   if (typeof value === 'string') {
@@ -410,8 +708,13 @@ export function renderGeneric(value: unknown, indent: string, refs: RefIndex): s
   if (typeof value === 'number' || typeof value === 'boolean') return [`${indent}${String(value)}`]
   if (Array.isArray(value)) {
     if (value.length === 0) return [`${indent}${t('uiSignPayload.empty')}`]
-    return value.flatMap((item) =>
-      item !== null && typeof item === 'object' ? [`${indent}-`, ...renderGeneric(item, `${indent}  `, refs)] : [`${indent}- ${scalarText(item, refs, false)}`],
+    return value.flatMap((item, index) =>
+      item !== null && typeof item === 'object'
+        ? [
+            `${indent}- ${fmt('uiSignPayload.itemIndex', { p1: String(index + 1) })}${t('uiSignPayload.keyColon')}`,
+            ...renderGeneric(item, `${indent}  `, refs),
+          ]
+        : [`${indent}- ${scalarText(item, refs, false)}`],
     )
   }
   const entries = Object.entries(value as Record<string, unknown>)

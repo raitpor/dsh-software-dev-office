@@ -166,9 +166,48 @@ export type VerifyFailure =
   /** **同一 (评审, 发现) 已有核实**（R-19 A）：默认拒绝，要覆盖得显式传 `revise: true`。 */
   | 'already-verified'
 
+/**
+ * **证词挂靠到哪条发现**（DEF-043 落点二）。
+ *
+ * 为什么必须有：核实台账是审计链的核心，而旧实现成功后**只记 0 起的 index**，
+ * 回执里也不出现该条发现的任何字样 ⇒ 「证词挂到哪条发现」事后无从核对，
+ * 挂错条等于让审计链说谎（本批实测至少两个会话为此试错）。
+ */
+export interface VerifiedFindingRef {
+  /** **参数基准**的序号（1 起）—— 与使用者输入、与回执里印的「第 N 条」同口径。 */
+  findingIndex: number
+  /** 该条发现的**首句**（截断后的），让人一眼看出挂的是哪条。 */
+  findingExcerpt: string
+}
+
 export type VerifyResult =
-  | { ok: true; disposition: ReviewFindingDisposition; coverage: { verified: number; total: number }; adopted: boolean }
+  | {
+      ok: true
+      disposition: ReviewFindingDisposition
+      coverage: { verified: number; total: number }
+      adopted: boolean
+      /** **双写**：参数第 N 条 ⇒ 台账第 N-1 条 ⇒ 该条发现的首句。 */
+      findingIndex: number
+      findingExcerpt: string
+    }
   | { ok: false; code: VerifyFailure; detail: string }
+
+/** 一条发现的**首句摘录**上限（够认出是哪条即可，不把正文塞进回执与事件）。 */
+const FINDING_EXCERPT_MAX = 80
+
+/**
+ * 取一条发现的**首句**（到第一个句号/分号/换行，或上限截断）。
+ *
+ * 之所以取"首句"而不是全文：回执与 journal 事件都要带上它，全文会让两者都变重；
+ * 而本仓评审发现的写法是「【标签·结论】要点…」，**首句就足以认出是哪一条**。
+ */
+export function findingExcerpt(text: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim()
+  const stop = flat.search(/[。；;]/)
+  const head = stop === -1 ? flat : flat.slice(0, stop)
+  return head.length <= FINDING_EXCERPT_MAX ? head : `${head.slice(0, FINDING_EXCERPT_MAX)}…`
+}
+
 
 export interface VerifyInput {
   reviewId: string
@@ -435,7 +474,21 @@ export function verifyReviewFinding(
   if (review === undefined) return { ok: false, code: 'no-review', detail: fmt('uiReview.noReview', { p1: input.reviewId }) }
   const findings = (review.findings ?? []).map((item) => textOf(item))
   if (!Number.isInteger(input.index) || input.index < 0 || input.index >= findings.length) {
-    return { ok: false, code: 'bad-index', detail: fmt('uiReview.badIndex', { p1: input.reviewId, p2: String(findings.length), p3: String(input.index + 1) }) }
+    // **DEF-043 落点一（统一基准 + 双写）**：越界回执与成功回执用**同一形式** ——
+    // 既点名**参数基准**的序号（1 起，`input.index + 1`），又点名**台账基准**的 index（0 起），
+    // 并给出**合法范围**。旧实现只印 `input.index + 1`（参数 0 ⇒ "找不到第 0 条"，读起来与成功回执不同基准）
+    // ⇒ 使用者只能靠试错摸清两套基准的关系。
+    return {
+      ok: false,
+      code: 'bad-index',
+      detail: fmt('uiReview.badIndex', {
+        p1: input.reviewId,
+        p2: String(findings.length),
+        p3: String(input.index + 1),
+        p4: String(input.index),
+        p5: findings.length === 0 ? '0' : `1-${findings.length}`,
+      }),
+    }
   }
   if (input.outcome !== 'reproduced' && input.outcome !== 'refuted') {
     return { ok: false, code: 'bad-outcome', detail: fmt('uiReview.badOutcome', { p1: String(input.outcome) }) }
@@ -528,10 +581,15 @@ export function verifyReviewFinding(
     (item) => !(item.reviewId === disposition.reviewId && item.index === disposition.index),
   )
   store.writeYaml(['reviews', REVIEW_VERIFICATIONS_FILE], { verifications: [...existing, disposition] })
+  const excerpt = findingExcerpt(findings[input.index] ?? '')
   journal.append('review/verified', {
     id: disposition.reviewId,
     index: disposition.index,
     findingHash: disposition.findingHash,
+    // **DEF-043 落点二（回写挂靠）**：事件里带上"挂到哪条发现"，两个基准当场可见。
+    // 旧实现只记 0 起 index ⇒ 事后看不出这条证词是给哪条发现的。
+    findingIndex: disposition.index + 1,
+    findingExcerpt: excerpt,
     outcome: disposition.outcome,
     by: disposition.by,
     ...(disposition.sessionId === undefined ? {} : { sessionId: disposition.sessionId }),
@@ -539,5 +597,12 @@ export function verifyReviewFinding(
   })
   const after = reviewAdoption(store, journal, review)
   const verified = findings.length - after.pending.length - after.stale.length - after.forged.length
-  return { ok: true, disposition, coverage: { verified: Math.max(0, verified), total: findings.length }, adopted: after.state === 'adopted' }
+  return {
+    ok: true,
+    disposition,
+    coverage: { verified: Math.max(0, verified), total: findings.length },
+    adopted: after.state === 'adopted',
+    findingIndex: disposition.index + 1,
+    findingExcerpt: excerpt,
+  }
 }

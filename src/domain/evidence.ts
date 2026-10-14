@@ -18,7 +18,212 @@ import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { isAbsolute, relative, resolve } from 'node:path'
 
+import type { SdoStore } from '../infra/store.js'
+import { textOf } from '../infra/scalar.js'
+import { readContract } from './contracts.js'
+// **TASK-056 落点二**：证据面改读方法产物台账 —— 台账读法只此一处（`construction.ts`），
+// 这里直接复用，不另造第二份读法（`evidence.ts` 不反向被 `construction.ts` 依赖，无环）。
+import {
+  CONSTRUCTION_CONTRACT_FILE,
+  CONSTRUCTION_DIR,
+  CONSTRUCTION_TDD_FILE,
+  readContractTests,
+  readMutations,
+} from './construction.js'
+import { hashArtifact } from './records.js'
+import { readRequirement } from './requirements.js'
 import type { EvidenceItem } from '../types.js'
+
+/**
+ * **判定基准来源（oracle）**（REQ-054 / TASK-020）。
+ *
+ * 四类取值，逐类**都能机械核对**（这就是选这四类的原因：专家判断只要写得出人名，也能追责）：
+ *   · `acceptance`：指到某需求的验收标准 ⇒ 核对 `ref` 需求存在、且 `criterion` 是**它自己**的 AC 编号；
+ *   · `contract`：指到契约的成功/失败语义 ⇒ 核对契约存在、未作废、且**写了失败语义**；
+ *   · `baseline`：冻结的旧实现基线 ⇒ 核对绑了 64 位 sha256，且给了工作区时**现算比对**；
+ *   · `expert`：专家判断 ⇒ 核对写了**判断人**。
+ */
+export interface OracleRef {
+  kind: string
+  /** 需求 id / 契约 id / 基线产物相对路径（按 `kind` 解释） */
+  ref?: string | undefined
+  /** `acceptance` 类的验收标准编号 */
+  criterion?: string | undefined
+  /** `baseline` 类的基线产物哈希 */
+  baselineSha256?: string | undefined
+  /** `expert` 类的**判断人**（必须有名字，可追责） */
+  expert?: string | undefined
+}
+
+/** 判定基准核对需要的上下文（给了工作区才能**现算**基线哈希）。 */
+export interface OracleContext {
+  workspace?: string | undefined
+  /** 缺判定基准时要**点名**的用例 id（"说了等于没说"的缺口文案不算点名） */
+  caseId?: string | undefined
+  /** 该用例覆盖的需求 id（点名用） */
+  requirement?: string | undefined
+}
+
+export const ORACLE_KINDS = ['acceptance', 'contract', 'baseline', 'expert'] as const
+
+/** 判定基准的**人读名字**（回执与理由里用同一份词表，不许各写一套）。 */
+const ORACLE_KIND_LABELS: Record<string, string> = {
+  acceptance: '需求验收标准',
+  contract: '契约（成功/失败语义）',
+  baseline: '冻结的旧实现基线',
+  expert: '专家判断',
+}
+
+function oracleKindLabel(kind: string): string {
+  return ORACLE_KIND_LABELS[kind] ?? kind
+}
+
+const SHA256_RE = /^[0-9a-f]{64}$/u
+
+/**
+ * **判定基准逐类机械核对**（REQ-054 / TASK-020）——**唯一**实现。
+ *
+ * 返回的是**缺口清单**（空数组 = 判定基准成立）：把人读的理由攒起来一次报全，而不是遇到第一条就返回
+ * ——「缺判定基准」这种话说了等于没说，必须点名**缺哪一类、指到了什么、为什么不成立**。
+ *
+ * 降级口径与 REQ-054 一致：引用的验收标准 / 契约 / 基线**不存在**时判红并点名；
+ * 而 `store` 缺省（或在无工作区上下文里核对 `baseline` 类）时**只做形状核对、不假报"不存在"**
+ * —— 与 `evidenceFreshness` 对"算不出来"的处理同一纪律（不因为拿不到环境就把人判红）。
+ */
+export function oracleGaps(store: unknown, oracle: OracleRef | undefined, context?: OracleContext | undefined): string[] {
+  // **点名**是判据的一部分：缺口文案必须能指到"哪条用例缺哪一种判定基准"，
+  // 否则门禁只说了一句"有东西不对"，读的人还得自己去翻台账（本项目反复警惕的那种"说了等于没说"）。
+  const who = [
+    textOf(context?.caseId).trim() === '' ? '' : `用例 ${textOf(context?.caseId).trim()}`,
+    textOf(context?.requirement).trim() === '' ? '' : `（覆盖 ${textOf(context?.requirement).trim()}）`,
+  ].join('')
+  const at = who === '' ? '' : `${who}：`
+  const ref = oracle as OracleRef | undefined
+  if (ref === null || typeof ref !== 'object') {
+    return [`${at}没有登记判定基准（oracle）：四类取值 —— 需求验收标准 / 契约 / 冻结基线 / 专家判断，缺判定基准的用例不计入通过覆盖`]
+  }
+  const kind = textOf(ref.kind).trim()
+  if (!(ORACLE_KINDS as readonly string[]).includes(kind)) {
+    return [
+      kind === ''
+        ? `${at}判定基准没有给类别（kind）：四类取值 —— ${ORACLE_KINDS.map((item) => oracleKindLabel(item)).join(' / ')}`
+        : `${at}判定基准的类别取值域外：「${kind}」—— 只认 ${ORACLE_KINDS.join(' / ')}`,
+    ]
+  }
+  const gaps: string[] = []
+  const target = textOf(ref.ref).trim()
+  const workspace = textOf(context?.workspace).trim()
+  // 只有真的拿到了一个 store 才去查台账；否则老调用点（没有 store）会被**假报**成"引用的东西不存在"
+  const db = store === null || store === undefined ? undefined : (store as SdoStore)
+  if (kind === 'acceptance') {
+    if (target === '') {
+      gaps.push('判定基准（需求验收标准）没有给出需求 id（`ref`）')
+    } else if (db === undefined) {
+      gaps.push(`判定基准（需求验收标准）指到 ${target}，但没有可读的需求台账可供核对`)
+    } else {
+      const requirement = readRequirement(db, target)
+      if (requirement === undefined) {
+        gaps.push(`判定基准引用的需求不存在：${target}（验收标准类必须指到真实存在的需求）`)
+      } else {
+        const criterion = textOf(ref.criterion).trim()
+        if (criterion === '') {
+          gaps.push(`判定基准（需求验收标准）没有给出验收标准编号（\`criterion\`）：${target} 上有 ${requirement.acceptance.length} 条可用`)
+        } else if (!requirement.acceptance.some((item) => item.id === criterion)) {
+          gaps.push(`判定基准引用的验收标准不属于 ${target}：${criterion}（它自己的 AC 是 ${requirement.acceptance.map((item) => item.id).join(' / ') || '（无）'}）`)
+        }
+      }
+    }
+  }
+  if (kind === 'contract') {
+    if (target === '') {
+      gaps.push('判定基准（契约）没有给出契约 id（`ref`）')
+    } else if (db === undefined) {
+      gaps.push(`判定基准（契约）指到 ${target}，但没有可读的契约台账可供核对`)
+    } else {
+      const contract = readContract(db, target)
+      if (contract === undefined) {
+        gaps.push(`判定基准引用的契约不存在：${target}`)
+      } else if (contract.dropped === true) {
+        gaps.push(`判定基准引用的契约已作废：${target}（作废契约不参与判定）`)
+      } else {
+        // 「契约的成功与失败语义」是 REQ-054 的原文要求：没有失败语义的契约接不出失败路径的判定基准
+        const semantics = contract.failureSemantics
+        const empty = (['timeout', 'retry', 'idempotency'] as const).filter((field) => textOf(semantics?.[field]).trim() === '')
+        if (semantics === undefined || empty.length > 0) {
+          gaps.push(`判定基准引用的契约没有（完整的）失败语义：${target}（缺 ${empty.join(' / ') || 'failureSemantics'}）`)
+        }
+      }
+    }
+  }
+  if (kind === 'baseline') {
+    const hash = textOf(ref.baselineSha256).trim().toLowerCase()
+    if (target === '') gaps.push('判定基准（冻结基线）没有给出基线产物路径（`ref`）')
+    if (hash === '') {
+      gaps.push(`判定基准（冻结基线）没有绑定基线产物哈希（\`baselineSha256\`）：${target || '（未给路径）'}`)
+    } else if (!SHA256_RE.test(hash)) {
+      gaps.push(`判定基准（冻结基线）的哈希不是 64 位十六进制：${ref.baselineSha256 ?? ''}（基线类必须能复算比对）`)
+    } else if (workspace !== '') {
+      const actual = hashArtifact(workspace, target)
+      if (actual !== hash) {
+        gaps.push(`判定基准（冻结基线）的哈希与现算不符：${target} 记录时 ${hash.slice(0, 12)}…，现在 ${actual.slice(0, 12)}…（基线产物已变 ⇒ 判定基准过期）`)
+      }
+    }
+  }
+  if (kind === 'expert') {
+    if (textOf(ref.expert).trim() === '') {
+      gaps.push('判定基准（专家判断）没有写明判断人（`expert`）—— 专家判断必须能追责')
+    }
+  }
+  return gaps
+}
+
+/** 结果里被“独立采纳”这条判据读到的字段（REQ-053 / TASK-020）。 */
+export interface AdoptableResult {
+  executedBy?: string | undefined
+  adoptedBy?: string | undefined
+  adoptedAt?: string | undefined
+  oracle?: OracleRef | undefined
+}
+
+/**
+ * **一条结果是否已被独立采纳**（REQ-053 / TASK-020 的**唯一**判定入口 —— 门禁、统计、回执都读它）。
+ *
+ * 逐条机械核对，任何一条不过都返回 `ok:false` **并给出理由**：
+ *   ① 没有**执行者** ⇒ 无从判断独立性（宁可不计入，也不把"没登记"读成"独立"）；
+ *   ② 没有**采纳者 / 采纳时刻** ⇒ 还没有采纳动作（缺依据不予计入）；
+ *   ③ **执行者 = 采纳者** ⇒ 自己给自己盖章（守卫用例钉的就是这条）；
+ *   ④ **判定基准缺或不成立** ⇒ 走过场的用例不算通过（REQ-054）。
+ *
+ * 「采纳是终点」也落在本函数：它只看**这一条结果**的执行者/采纳者/判定基准，
+ * 不认识"谁采纳了采纳者"这种第二层 —— 采纳不产生新的待采纳物，不形成递归。
+ */
+export function supportedOracle(
+  store: SdoStore | undefined,
+  result: AdoptableResult,
+  testCase?: { oracle?: OracleRef | undefined } | undefined,
+): { ok: true } | { ok: false; code: 'executor-missing' | 'not-adopted' | 'self-adoption' | 'oracle-unsupported'; detail: string } {
+  const executedBy = textOf(result.executedBy).trim()
+  const adoptedBy = textOf(result.adoptedBy).trim()
+  if (executedBy === '') {
+    return { ok: false, code: 'executor-missing', detail: '这条结果没有登记执行者（`executedBy`）—— 无从判断独立性，不予计入' }
+  }
+  if (adoptedBy === '' || textOf(result.adoptedAt).trim() === '') {
+    return { ok: false, code: 'not-adopted', detail: `这条结果还没有被独立采纳（缺采纳者/采纳时刻）—— 执行者 ${executedBy} 的自跑结果不算通过` }
+  }
+  // ④ **执行者与采纳者必须不同**：机械可查的一条比较（守卫用例的两态都钉在这里）
+  if (executedBy === adoptedBy) {
+    return {
+      ok: false,
+      code: 'self-adoption',
+      detail: `执行者与采纳者是同一个（${executedBy}）—— 自己执行、自己采纳不算独立采纳，不予计入`,
+    }
+  }
+  const gaps = oracleGaps(store, result.oracle ?? testCase?.oracle)
+  if (gaps.length > 0) {
+    return { ok: false, code: 'oracle-unsupported', detail: `判定基准不成立：${gaps.join('；')}` }
+  }
+  return { ok: true }
+}
 
 export type EvidenceAuditCode =
   | 'evidence-kind-missing'
@@ -28,8 +233,71 @@ export type EvidenceAuditCode =
   /** detail 写法不合法（路径后面跟了说明文字）—— 产物可能确实存在，别报成「不存在」 */
   | 'evidence-artifact-detail'
   | 'evidence-command-failed'
+  /** 方法产物台账（tdd.yml / contract-first.yml）里**本卡名下没有条目**（TASK-056 落点二：改读台账后仍判红，且点名） */
+  | 'evidence-method-artifact-missing'
 
 export type EvidenceAudit = { ok: true } | { ok: false; code: EvidenceAuditCode; detail: string }
+
+/**
+ * **卡上声明的"方法产物证据"**（TASK-056 落点二 / DEF-023）。
+ *
+ * DEF-023 的根因是**文档与实现矛盾**：工具文档把 `mutation` / `contractTest` 列为证据种类，
+ * 而 `EvidenceItem.kind` 只有 `command | artifact | workspace-changes`（`src/index.ts` 还会把
+ * 未知 kind 归一成 `artifact`）⇒ 卡上一写就必然被 `evidence-kind-missing` 拒收，每张 critical 卡
+ * 都要白付一轮「block → 改卡 → 重新认领」。修法取 DEF-023 的**推荐项①**：这两类**不再要求
+ * incoming evidence 里有该 kind**，改读**方法产物台账**（`.sdo/construction/tdd.yml` /
+ * `contract-first.yml`）里**本卡名下**的条目 —— 单一真源，且台账本来就是 `sdo_test` 的正规通道。
+ *
+ * 为什么**不**同时给 `EvidenceItem.kind` 加这两类（方案②，报告里已说明取舍）：
+ *   ① 台账才是真源，证据条目只是"回执里挂一条"；再开一类 kind 等于把同一事实记两处，
+ *      两处一旦不一致（记了台账没挂证据 / 挂了证据台账没记）就要发明新的优先级规则；
+ *   ② `src/index.ts` 的证据归一化分支是既有行为（未知 kind ⇒ `artifact`），动它要连带评估
+ *      历史卡里所有写错的 kind，超出「只改该不该判的门槛与证据来源」的边界。
+ */
+function methodArtifactKinds(task: { evidenceRequired: EvidenceItem['kind'][] }): string[] {
+  return (task.evidenceRequired as readonly string[]).filter((kind) => kind === 'mutation' || kind === 'contractTest')
+}
+
+/**
+ * 逐类核对"方法产物证据"：命中的即为**已由台账满足**的种类。
+ *
+ * `store` 缺省时**报缺口**（fail-closed）并在理由里说清"拿不到台账句柄" —— 与「不因为拿不到
+ * 环境就把人判红」的老纪律不冲突：这里判红的是**接线缺失**（本插件自己的调用点没传句柄），
+ * 不是执行者没干活，文案里也不点执行者的名。
+ */
+function methodArtifactGaps(
+  store: SdoStore | undefined,
+  task: { id: string; evidenceRequired: EvidenceItem['kind'][] },
+): string[] {
+  const wanted = methodArtifactKinds(task)
+  if (wanted.length === 0) return []
+  const tddPath = `.sdo/${CONSTRUCTION_DIR}/${CONSTRUCTION_TDD_FILE}`
+  const ctPath = `.sdo/${CONSTRUCTION_DIR}/${CONSTRUCTION_CONTRACT_FILE}`
+  const missing: string[] = []
+  for (const kind of wanted) {
+    if (kind === 'mutation') {
+      // 与 `doneGaps` 的 `tdd-mutation-missing` **同一个口径**：`killed ≥ 1` **且 `tool` 非空**
+      // （空 tool 的记录证不了"用什么杀的" —— N3 评审结论）
+      const killed = store === undefined
+        ? 0
+        : readMutations(store).filter((item) => item.task === task.id && item.tool.trim() !== '')
+          .reduce((total, item) => total + item.killed, 0)
+      if (killed === 0) {
+        missing.push(store === undefined
+          ? `mutation：没有可读的方法产物台账（${tddPath}）可供核对`
+          : `mutation：${tddPath} 里没有 ${task.id} 名下 killed ≥ 1（且 tool 非空）的变异记录`)
+      }
+      continue
+    }
+    const hasTest = store === undefined ? false : readContractTests(store).some((item) => item.task === task.id)
+    if (!hasTest) {
+      missing.push(store === undefined
+        ? `contractTest：没有可读的方法产物台账（${ctPath}）可供核对`
+        : `contractTest：${ctPath} 里没有 ${task.id} 名下的契约测试记录`)
+    }
+  }
+  return missing
+}
 
 /**
  * 证据条目里取出路径与可选哈希：`path`、`path sha256=<hex>`、`path sha256:<hex>`、`path #<hex>` 都认。
@@ -94,18 +362,30 @@ function sha256Of(path: string): string {
  * @param task 任务卡（读 `evidenceRequired` 与已挂证据）
  * @param incoming 本次交上来的证据
  * @param workspace 工作区根（`artifact` 路径相对它解析；越出工作区的路径判红）
+ * @param store 台账句柄（**TASK-056 落点二**：`mutation` / `contractTest` 这两类证据要求改读
+ *   `.sdo/construction/` 的方法产物台账；不给 ⇒ 这两类判红并说明"没有可读台账"，不静默放过）
  */
-export function auditDoneEvidence(task: { id: string; evidenceRequired: EvidenceItem['kind'][]; evidence: EvidenceItem[] }, incoming: EvidenceItem[], workspace: string): EvidenceAudit {
+export function auditDoneEvidence(
+  task: { id: string; evidenceRequired: EvidenceItem['kind'][]; evidence: EvidenceItem[] },
+  incoming: EvidenceItem[],
+  workspace: string,
+  store?: SdoStore | undefined,
+): EvidenceAudit {
   const all = [...task.evidence, ...incoming]
+  // **TASK-056 落点二**：`mutation` / `contractTest` 不是 `EvidenceItem` 能表达的种类，
+  // 因此**不参与**下面的"种类覆盖"（否则每张按文档写卡的卡都必然被拒 —— DEF-023）；
+  // 它们改由 ④ 查方法产物台账判定。
+  const viaLedger = new Set(methodArtifactKinds(task))
+  const requiredViaEvidence = task.evidenceRequired.filter((kind) => !viaLedger.has(kind))
 
-  // ① 种类覆盖
+  // ① 种类覆盖（只覆盖 `EvidenceItem` 真能交出来的种类）
   const provided = new Set(all.map((item) => item.kind))
-  const missing = task.evidenceRequired.filter((kind) => !provided.has(kind))
+  const missing = requiredViaEvidence.filter((kind) => !provided.has(kind))
   if (missing.length > 0) {
     return {
       ok: false,
       code: 'evidence-kind-missing',
-      detail: `${task.id} 要求证据种类 ${task.evidenceRequired.join(' / ')}，缺 ${missing.join(' / ')}（现有：${[...provided].join(' / ') || '（空）'}）`,
+      detail: `${task.id} 要求证据种类 ${requiredViaEvidence.join(' / ')}，缺 ${missing.join(' / ')}（现有：${[...provided].join(' / ') || '（空）'}）`,
     }
   }
 
@@ -171,6 +451,19 @@ export function auditDoneEvidence(task: { id: string; evidenceRequired: Evidence
     if (item.kind !== 'command') continue
     if (item.exitCode !== undefined && item.exitCode !== 0) {
       return { ok: false, code: 'evidence-command-failed', detail: `command 证据的退出码是 ${item.exitCode}（非 0 的命令不能作为完成证据；修好重跑，或改用 block 说明卡在哪）` }
+    }
+  }
+
+  // ④ **方法产物台账**（TASK-056 落点二 / DEF-023）：`mutation` / `contractTest` 只认台账，
+  // 不认 evidence 条目。缺条目**照样判红**（fail-closed），并且**点名**到底缺哪一类、查的是哪个文件。
+  const ledgerMissing = methodArtifactGaps(store, task)
+  if (ledgerMissing.length > 0) {
+    return {
+      ok: false,
+      code: 'evidence-method-artifact-missing',
+      detail: `${task.id} 要求的方法产物证据在台账里查不到 —— ${ledgerMissing.join('；')}。`
+        + '这两类由 `sdo_test action=record mutation=…` / `contract=…` 落盘（单一真源），'
+        + '改用 evidence 条目交不出来（`EvidenceItem.kind` 没有这两类）',
     }
   }
 

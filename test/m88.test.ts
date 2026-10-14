@@ -31,7 +31,7 @@
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
-import { fileURLToPath } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import { test } from 'node:test'
 
 import { renderSignReviewDoc, renderSignReviewSummary } from '../src/domain/reviewDoc.js'
@@ -534,28 +534,59 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
   assert.match(client, /return settled/u, '必须把 `next()` 的返回值原样传给下游（不许截断问答链）')
   assert.match(
     client,
-    /Promise\.resolve\(settled\)\.then\(\(answer\) => \{[\s\S]{0,80}markSettled\(review\.key\)/u,
+    /void Promise\.resolve\(settled\)\.then\(\(\) => markSettled\(review\.key\), \(\) => \{\}\)/u,
     '必须用 `next()` 的完成当结算信号',
   )
-  // ② **不许早关**：没人认领时 `next()` 会以 undefined 完成，那时用户还没作答
-  assert.match(
-    client,
-    /if \(answer !== undefined\) markSettled\(review\.key\)/u,
-    '只有真的拿到答复才算结算（undefined 时关页 = 用户还没答就把页收了）',
+  // ② **两种完成都算结算**（DEF-020 修正口径）：拿到答复对象 = 用户作答；`undefined` = **被取代**
+  //    （同一门禁又推了一次签字提问）。地址已经是**门禁级**（见 M88-11）⇒ 被取代的那一页正是
+  //    同一门禁的页；旧口径"只有 answer !== undefined 才关"会让被取代的页**永久留在右栏**。
+  //    （"没人认领 ⇒ 用户还没答"这个担心在宿主侧不成立：没有答复者时 `next()` 是 **reject**
+  //     ——`@deepseek-ai/dsh-user-questions` 的 `noAnswerer` 抛 `NO_PROVIDER`，不是 resolve undefined。）
+  assert.equal(
+    /if \(answer !== undefined\) markSettled\(review\.key\)/u.test(client),
+    false,
+    '旧口径"只有拿到答复才算结算"已被 DEF-020 取代：undefined（被取代）也要关',
   )
   // ③ 关闭用宿主公开口径，且 tabId 来自标准 prop
   // **R-2（2026-10-12 真机）**：关页在**插件根**按**地址**找自己那页（pane 可能一直不可见，
   // 它的 effect 不会跑 ⇒ 旧实现下陈旧标签页永远关不掉）。
   assert.match(client, /function closeSettledReview\(ctx, sessionId, key\)/u, '必须有根级的结算关页函数')
-  assert.match(
-    client,
-    /String\(record\?\.navigation\?\.address \?\? ''\) !== address/u,
-    '必须按**地址**认出自己那页（不依赖 pane 可见性）',
-  )
   assert.match(client, /ctx\.sidebarRight\.closeIn\(sessionId, record\.id\)/u, '必须用 closeIn(sessionId, tabId) 关自己那页')
   assert.match(client, /const tab = useTabInfo\(\)/u, 'tabId 必须来自标准 prop useTabInfo()（宿主自带包同款）')
-  // 关页侧按**地址**认页（`addressFor(key)` = 打开时用的那个地址），不再依赖 pane 里的 tabInfo
-  assert.match(client, /const address = addressFor\(key\)/u, '必须按打开时用的**地址**认"是不是我这页"')
+  // 关页侧按**登记表里的地址**认页（DEF-020 落点二：「会话 → 本插件已开地址」）：
+  // 只关本插件开过的页 —— 宿主 GUIDE 页与用户自己开的别的页**不进登记表**，不会被误关。
+  assert.match(
+    client,
+    /const addresses = openAddresses\.get\(sessionId\) \?\? new Set\(\)/u,
+    '必须按「会话 → 本插件已开地址」登记表认"哪些页是我开的"',
+  )
+  assert.match(
+    client,
+    /if \(address === GUIDE_ADDRESS \|\| !addresses\.has\(address\)\) continue/u,
+    '必须按**地址**认出自己那页（不依赖 pane 可见性），并排除宿主 GUIDE 页',
+  )
+  // **落点三**（DEF-020 消竞态）：结算时目标页还没提交 ⇒ 记进待关集合，
+  // **不许**在动手之前就把 `会话:key` 写进 `closedKeys`（那样这一页再也不会被重试关闭）。
+  assert.match(client, /const pendingClose = new Map\(\)/u, '必须有待关集合（key 级）')
+  assert.match(
+    client,
+    /if \(closed === 0\) \{[\s\S]{0,160}markPendingClose\(sessionId, key\)/u,
+    '一页都没关成（目标页尚未提交）必须记进待关集合，而不是判死',
+  )
+  assert.match(
+    client,
+    /function flushPendingClose\(ctx, sessionId, key\)/u,
+    '必须有"开页成功后补关一次"的补关入口',
+  )
+  assert.match(
+    client,
+    /flushPendingClose\(ctx, sessionId, review\.key\)/u,
+    '补关必须在**开页成功之后**真的被调用（只留函数定义不算）',
+  )
+  assert.ok(
+    client.indexOf('closedKeys.add(token)') > client.indexOf('if (closed === 0)'),
+    '`closedKeys` 只许在**真的关掉了**之后记（记在关闭之前的写法就是"一次判死"）',
+  )
   assert.equal(
     /keyOfAddress\(tab\?\.tab\?\.navigation\?\.address\)/u.test(client),
     false,
@@ -585,8 +616,8 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
   assert.match(client, /const GUIDE_ADDRESS = 'sidebar:\/\/guide'/u, '必须定义宿主引导页地址常量')
   assert.match(
     client,
-    /addressOf\(record\) !== address && addressOf\(record\) !== GUIDE_ADDRESS/u,
-    '计数必须同时排除"自己这一页"与"宿主引导页"',
+    /addressOf\(record\) !== GUIDE_ADDRESS && !addresses\.has\(addressOf\(record\)\)/u,
+    '计数必须同时排除"本插件开过的页"与"宿主引导页"（DEF-020 起关的是**全部**本插件页）',
   )
   assert.match(client, /if \(others === 0 && expanded\)/u, '只有"没有别的页"且"当前是展开态"才允许收起')
   assert.match(client, /expanded = ctx\.sidebarRight\.isExpanded\?\.\(\) === true/u, '展开态必须真去读 isExpanded()')
@@ -610,12 +641,12 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
   assert.match(pane, /probe\.lastMissing = \{/u, 'pane 必须把"参数就没有"这一现场写进探针（R-3 自证）')
   assert.match(pane, /probe\.paneRead = /u, 'pane 必须把重读结果写进探针')
   // 顺序：**先数后关**（tabsIn 读的是已提交记录，关完再读可能还没提交）
-  // 计数的时序问题改由**按地址排除自己**解决（不再依赖"先数后关"）：
+  // 计数的时序问题改由**按地址排除自己开过的页**解决（不再依赖"先数后关"）：
   // `tabsIn` 读的是已提交记录，关完再数可能把刚关掉的那页又数进来，所以判据是地址而非次序。
   assert.match(
     client,
-    /addressOf\(record\) !== address && addressOf\(record\) !== GUIDE_ADDRESS/u,
-    '计数必须按地址排除自己（否则关完再数会把已关的页又数进来）',
+    /addressOf\(record\) !== GUIDE_ADDRESS && !addresses\.has\(addressOf\(record\)\)/u,
+    '计数必须按地址排除本插件的页（否则关完再数会把已关的页又数回来）',
   )
   // 反向：pane 里**不许**再有关页逻辑（否则又回到"不可见就不跑"的老毛病）
   const paneStart = client.indexOf('function makeDocument(ctx)')
@@ -631,5 +662,308 @@ test('M88-10 作答后自动关闭：结算信号取自身 waterfall 的 `next()
     client,
     /let others = 1[\s\S]{0,900}note\('count-tabs', error\)/u,
     '数不清时必须保守（默认当成还有别的页），不许在异常路径上收面板',
+  )
+})
+
+// ——————————————————————————————————————————————————————————————————————————————
+// **DEF-020 的守卫（M88-11 … M88-14）**：签字审核单侧边栏的**去重**与**结算关闭**。
+//
+// 驾驶舱 2026-10-13 留的复现探针 `tmp/verify-dup-tab.mjs`（stub `window.__ModuleLoader__` + 假 ctx）
+// 稳定复现三条症状：① 同一门禁两次提问弹出**两个**标签页；② 结算后**不**自动关闭；③ 收起次数 0。
+// 下面四个用例保留那套 stub 手法（把它变成正式用例），把三条症状逐条钉成机械断言：
+//   · M88-11 同一门禁两次提问 ⇒ **至多一页**（地址必须是门禁级稳定标识，两次提问落在同一地址）；
+//   · M88-12 结算后**本插件页全关**（不只当前 key 那页）：探针 `closed` 与剩余页数同时断言；
+//   · M88-13 「结算早于开页」这一序也要能关掉（待关集合 + 开页成功后补关一次）；
+//   · M88-14 被取代（`next()` 拿 `undefined`）的提问也要被关。
+//
+// **假 ctx 的语义边界**（照搬**宿主契约**，不照搬实现）：
+//   · `openResourceIn(sessionId, address, { params })`：**同一地址 = 同一个面板**
+//     （技术库 `tq_e352506b`：地址是资源的身份，同址再开只是刷新参数）—— 所以这里按地址复用/刷新页，
+//     而不是"每次调用 push 一页"；否则用例会把"宿主怎么建页"当成被测行为来断言。
+//   · `tabsIn` 读**已提交**记录；`isExpanded`/`toggleExpanded` 是双向开关；
+//   · 宿主 GUIDE 页（`sidebar://guide`）常驻这一栏，必须被排除在计数外（真机 OBS-014）。
+// ——————————————————————————————————————————————————————————————————————————————
+
+/** 宿主**引导页**的地址（`sidebar://guide`）：这一栏常驻的"门"，不是用户开的页。 */
+const HOST_GUIDE_ADDRESS = 'sidebar://guide'
+/** 本插件自己开的页的地址前缀（与 `client.js` 的 `SCHEME` 同源）。 */
+const REVIEW_ADDRESS_PREFIX = 'dsh-resource://sdo-review/'
+
+interface ClientHalfDefinition {
+  factory: (require: (id: string) => unknown) => { inject: string[]; apply: (ctx: unknown) => void }
+}
+
+let clientHalfDefinition: ClientHalfDefinition | undefined
+
+/**
+ * 加载**真**客户端半（`client.js`）：stub `window.__ModuleLoader__` 收下模块定义。
+ *
+ * 保留探针 `tmp/verify-dup-tab.mjs` 的手法；每个用例再 `factory()` 一次就是**全新闭包**
+ * （模块级登记表/计数器/探针都是新的），彼此不污染。
+ */
+async function loadClientHalf(): Promise<ClientHalfDefinition> {
+  const cached = clientHalfDefinition
+  if (cached !== undefined) return cached
+  ;(globalThis as unknown as { window?: unknown }).window = {
+    __ModuleLoader__: {
+      load(definition: ClientHalfDefinition) {
+        clientHalfDefinition = definition
+      },
+    },
+  }
+  await import(pathToFileURL(join(ROOT, 'client.js')).href)
+  const definition = clientHalfDefinition
+  assert.ok(definition !== undefined, '客户端半必须经 window.__ModuleLoader__.load 交付模块定义')
+  return definition
+}
+
+interface FakePage {
+  id: string
+  navigation: { address: string; params: unknown }
+}
+
+interface SdoReviewProbe {
+  captured?: number
+  opened?: number
+  closed?: number
+  collapsed?: number
+  closeWhy?: string
+  closeGuard?: { others?: number; expanded?: boolean; rest?: string }
+  addressSource?: string
+  addressFallback?: string
+  pendingClose?: number
+}
+
+interface DuplicateHarness {
+  /** 本插件开的页（不含宿主 GUIDE 页）。 */
+  pluginPages: () => FakePage[]
+  /** 宿主 GUIDE 页（常驻；必须被排除在"还剩几页"的计数外）。 */
+  guidePage: () => FakePage | undefined
+  /** 每一次 `openResourceIn` 的地址（按调用顺序）—— 用来断言"两次提问落在**同一个地址**上"。 */
+  opened: string[]
+  collapsed: () => number
+  probe: SdoReviewProbe
+  /** 喂一次签字提问；返回值 = **结算**这一次提问（传 `undefined` 表示被取代 / 没有答复者）。 */
+  ask: (callId: string, detail: string) => (answer: unknown) => Promise<void>
+  /** 卡住下一次"取全文"，制造「结算早于开页」的序。 */
+  blockReads: () => void
+  releaseReads: () => void
+  tick: () => Promise<void>
+}
+
+/** 取全文的假回包（宿主落盘的固定路径那一份）。 */
+const REVIEW_BODY = '# 门禁签字审核 · 架构门禁\n（正文）'
+
+async function makeDuplicateHarness(): Promise<DuplicateHarness> {
+  const definition = await loadClientHalf()
+  const pages: FakePage[] = [{ id: 'p-guide', navigation: { address: HOST_GUIDE_ADDRESS, params: undefined } }]
+  const opened: string[] = []
+  let idSeq = 0
+  let expanded = true
+  let collapsedCount = 0
+  let readBlocked = false
+  let releaseRead: (() => void) | undefined
+  let handler: ((this: unknown, request: unknown, next: () => Promise<unknown>) => unknown) | undefined
+
+  const tick = (): Promise<void> => new Promise((resolve) => { setTimeout(resolve, 20) })
+
+  const ctx = {
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+    locale: { register: () => {}, bind: () => (key: string) => key },
+    sidebarRightTabs: { register: () => {} },
+    slots: { inject: (_name: string, fn: () => unknown) => fn(), register: () => {} },
+    sessions: { scopeOf: () => 'sess-1' },
+    sidebarRight: {
+      mounted: { getSnapshot: () => 'sess-1' },
+      isExpanded: () => expanded,
+      toggleExpanded: () => { expanded = !expanded; collapsedCount += 1 },
+      tabsIn: () => pages.slice(),
+      // **宿主语义**：地址是资源的身份 ⇒ 同一地址再开只是**刷新参数**，不新建页。
+      openResourceIn: (_sid: string, address: string, options?: { params?: unknown }) => {
+        opened.push(address)
+        const existing = pages.find((page) => page.navigation.address === address)
+        if (existing !== undefined) {
+          existing.navigation.params = options?.params
+          expanded = true
+          return
+        }
+        idSeq += 1
+        pages.push({ id: `p${idSeq}`, navigation: { address, params: options?.params } })
+        expanded = true
+      },
+      closeIn: (_sid: string, id: string) => {
+        const index = pages.findIndex((page) => page.id === id)
+        if (index >= 0) pages.splice(index, 1)
+      },
+    },
+    remote: {
+      $on: (_event: string, fn: typeof handler) => { handler = fn },
+      workspaceFiles: {
+        read: async () => {
+          if (readBlocked) await new Promise<void>((resolve) => { releaseRead = resolve })
+          return { ok: true, value: { text: REVIEW_BODY, lines: 2, eof: true } }
+        },
+      },
+    },
+  }
+
+  const react = {
+    createElement: (...args: unknown[]) => ({ args }),
+    useState: (value: unknown) => [value, () => {}],
+    useEffect: () => {},
+  }
+  const primitives = {
+    extractMarkdownPlainText: (text: unknown) => String(text).split('\n')[0]?.replace(/^#+\s*/u, '') ?? '',
+  }
+  definition.factory((id) => (id === 'react' ? react : primitives)).apply(ctx)
+
+  return {
+    pluginPages: () => pages.filter((page) => page.navigation.address.startsWith(REVIEW_ADDRESS_PREFIX)),
+    guidePage: () => pages.find((page) => page.navigation.address === HOST_GUIDE_ADDRESS),
+    opened,
+    collapsed: () => collapsedCount,
+    probe: (globalThis as unknown as { __SDO_REVIEW__?: SdoReviewProbe }).__SDO_REVIEW__ ?? {},
+    ask: (callId: string, detail: string) => {
+      const subscribed = handler
+      assert.ok(subscribed !== undefined, '客户端半必须订阅 user-questions/request')
+      let settle: (value: unknown) => void = () => {}
+      const pending = new Promise<unknown>((resolve) => { settle = resolve })
+      subscribed.call({}, { questions: [{ id: 'sdo-gate-sign', detail }], wait: { callId } }, () => pending)
+      return async (answer: unknown) => {
+        settle(answer)
+        await tick()
+        await tick()
+      }
+    },
+    blockReads: () => { readBlocked = true },
+    releaseReads: () => {
+      readBlocked = false
+      const release = releaseRead
+      releaseRead = undefined
+      release?.()
+    },
+    tick,
+  }
+}
+
+/** 审核单正文（**真渲染器**产出，不是手搓字符串）：客户端要从它的首行取门禁名。 */
+const SIGN_DETAIL_G3 = renderSignReviewDoc(docOf())
+const SIGN_DETAIL_G7 = renderSignReviewDoc(docOf({ gate: 'G7', gateText: '交付门禁', phaseText: '交付' }))
+
+const addressesOf = (harness: DuplicateHarness): string =>
+  harness.pluginPages().map((page) => page.navigation.address).join(' | ')
+
+test('M88-11 同一门禁的两次提问 ⇒ 至多一页（地址是门禁级稳定标识，两次提问同址）', async () => {
+  const harness = await makeDuplicateHarness()
+  harness.ask('call-A', SIGN_DETAIL_G3)
+  await harness.tick()
+  assert.equal(harness.pluginPages().length, 1, '第一次提问必须开出一页')
+  harness.ask('call-B', SIGN_DETAIL_G3)
+  await harness.tick()
+  // 地址语义：门禁级稳定标识 —— 取不到要在探针里**写清退化原因**（不许改口说成功）
+  assert.equal(harness.probe.addressSource, 'gate', '必须从 detail 首行/结构化字段取到门禁级标识')
+  assert.equal(harness.probe.addressFallback, '', '取到门禁名时不许写退化原因')
+  assert.equal(
+    new Set(harness.opened).size,
+    1,
+    `两次提问必须落在**同一个地址**上（宿主据此聚焦/刷新既有页），实测 ${harness.opened.join(' | ')}`,
+  )
+  assert.equal(harness.pluginPages().length, 1, `同一门禁只许有一页，实测 ${harness.pluginPages().length} 页`)
+})
+
+test('M88-12 结算后本插件页**全关**（不只当前 key 那页）：探针 closed + 剩余页数同时断言', async () => {
+  const harness = await makeDuplicateHarness()
+  harness.ask('call-G3', SIGN_DETAIL_G3)
+  const settleG7 = harness.ask('call-G7', SIGN_DETAIL_G7)
+  await harness.tick()
+  assert.equal(harness.pluginPages().length, 2, `前提：两个门禁各一页，实测 ${addressesOf(harness)}`)
+  await settleG7({ answer: '签字确认，批准通过' })
+  assert.equal(
+    harness.pluginPages().length,
+    0,
+    `结算后本插件页必须**全关**（不只当前 key 那页），实测还剩 ${addressesOf(harness)}`,
+  )
+  assert.ok((harness.probe.closed ?? 0) >= 2, `探针 closed 必须逐页计数，实测 ${harness.probe.closed}`)
+  assert.ok(harness.collapsed() >= 1, '关完只剩宿主 GUIDE 页时必须收起面板')
+  assert.ok(harness.guidePage() !== undefined, '宿主 GUIDE 页不是本插件的页，不许被关')
+})
+
+test('M88-13 「结算早于开页」这一序也要能关掉：待关集合 + 开页成功后补关一次', async () => {
+  const harness = await makeDuplicateHarness()
+  harness.blockReads()
+  const settle = harness.ask('call-race', SIGN_DETAIL_G3)
+  await harness.tick()
+  assert.equal(harness.pluginPages().length, 0, '前提：这一序里开页还没发生（tabsIn 里找不到目标页）')
+  await settle(undefined)
+  assert.ok((harness.probe.pendingClose ?? 0) >= 1, `结算时找不到目标页 ⇒ 必须记进待关集合，实测 ${harness.probe.pendingClose}`)
+  assert.equal(harness.probe.closeWhy, 'pending', '结算时找不到目标页不许判死（要留给开页成功后补关）')
+  harness.releaseReads()
+  await harness.tick()
+  assert.equal(
+    harness.pluginPages().length,
+    0,
+    `待关补关必须生效（开页成功后补关一次），实测还剩 ${addressesOf(harness)}`,
+  )
+  assert.ok((harness.probe.closed ?? 0) >= 1, `补关必须真的关掉一页，实测 closed=${harness.probe.closed}`)
+})
+
+test('M88-14 被取代（next() 拿 undefined）的提问也要被关', async () => {
+  const harness = await makeDuplicateHarness()
+  const settle = harness.ask('call-superseded', SIGN_DETAIL_G3)
+  await harness.tick()
+  assert.equal(harness.pluginPages().length, 1, '前提：被取代之前这一页已经开出来')
+  await settle(undefined)
+  assert.equal(
+    harness.pluginPages().length,
+    0,
+    `next() 拿 undefined（被取代）也必须走关闭路径，实测还剩 ${addressesOf(harness)}`,
+  )
+  assert.ok((harness.probe.closed ?? 0) >= 1, `探针 closed 必须 ≥1，实测 ${harness.probe.closed}`)
+})
+
+/**
+ * **真宿主下发的 `detail`**：`src/index.ts` 走的是
+ * `gateSignQuestion(call, args.gate, review.summary)` —— 卡片正文就是那 5 行**摘要**
+ * （首行 `- 门禁：G3（架构门禁）`，门禁**编号**在里面）。
+ * 上面 M88-11…M88-14 用的是**审核单标题**形态（`# 门禁签字审核 · 架构门禁`，只有本地化门禁名），
+ * 这里补上真宿主那一份，两种形态都必须落到**同一个门禁级地址**上。
+ */
+const SIGN_SUMMARY_G3 = renderSignReviewSummary(docOf())
+/** 旧宿主 / 没有审核单时的那句**所有门禁共用**的固定说明（`uiSign.detail`）。 */
+const LEGACY_DETAIL = (
+  parseYaml(readFileSync(join(ROOT, 'src', 'data', 'lang', 'zh-CN.yml'), 'utf8')) as {
+    uiSign?: { detail?: string }
+  }
+).uiSign?.detail ?? ''
+
+test('M88-15 门禁身份：真宿主的摘要载荷要认出来；取不到时必须**诚实退化**（不许改口说成功）', async () => {
+  // ① 真宿主载荷（摘要，首行带门禁编号）⇒ 门禁级标识（用**编号**，不是本地化名）
+  const summary = await makeDuplicateHarness()
+  summary.ask('call-sum-A', SIGN_SUMMARY_G3)
+  await summary.tick()
+  assert.equal(summary.probe.addressSource, 'gate', '真宿主摘要的首行含门禁编号 ⇒ 必须取到门禁级标识')
+  assert.ok(
+    decodeURIComponent(summary.opened[0] ?? '').includes('G3'),
+    `地址里要用门禁编号（比本地化名稳），实测 ${summary.opened[0]}`,
+  )
+  summary.ask('call-sum-B', SIGN_SUMMARY_G3)
+  await summary.tick()
+  assert.equal(new Set(summary.opened).size, 1, '同一门禁的摘要载荷也必须落在**同一个地址**上')
+  assert.equal(summary.pluginPages().length, 1, `同一门禁至多一页，实测 ${addressesOf(summary)}`)
+
+  // ② 取不到（旧宿主只发那句**所有门禁共用**的固定说明）：必须退化成旧的"每问一页"，
+  //    并**把退化原因写进探针**。共用文案**不是**门禁身份 —— 拿它当 key 会把所有门禁塌成一页。
+  assert.ok(LEGACY_DETAIL !== '', '前提：语言包里必须有那句固定说明（uiSign.detail）')
+  const legacy = await makeDuplicateHarness()
+  legacy.ask('call-legacy-A', LEGACY_DETAIL)
+  await legacy.tick()
+  assert.equal(legacy.probe.addressSource, 'callId', '取不到门禁名必须如实退化成 callId 地址')
+  assert.ok((legacy.probe.addressFallback ?? '') !== '', '退化原因必须写进探针（不许静默、也不许说成功）')
+  legacy.ask('call-legacy-B', LEGACY_DETAIL)
+  await legacy.tick()
+  assert.equal(
+    new Set(legacy.opened).size,
+    2,
+    `退化路径必须回到旧的"每问一页"（地址按 callId），实测 ${legacy.opened.join(' | ')}`,
   )
 })

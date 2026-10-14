@@ -7,7 +7,8 @@
 import { DIMENSIONS } from '../types.js'
 import { textOf } from '../infra/scalar.js'
 import type { DeliveryManifest } from '../domain/records.js'
-import type { Adr, ChangeRequest, ChangeRollback, Contract, DesignApplicability, DesignElement, DesignView, FeasibilityAssessment, GateEvaluation, GateSignature, GrillQuestion, QualityAssessment, QualityScenario, Requirement, RiskItem, SdoProject, TaskCard, TraceReport } from '../types.js'
+import type { Adr, ChangeRequest, ChangeRollback, Contract, DesignApplicability, DesignElement, DesignView, FeasibilityAssessment, GateEvaluation, GateSignature, GrillQuestion, QualityAssessment, QualityScenario, Requirement, RiskItem, SdoProject, StructuralCardPlan, StructuralPlan, StructuralSkip, StructuralSkipReason, TaskCard, TraceReport } from '../types.js'
+import type { StructuralGapRow, CoverageBasisItem } from '../domain/plan.js'
 import type { SignatureState } from '../domain/signature.js'
 import { channelLabel, signatureInvalidatingEventLine } from '../domain/signature.js'
 import { applicabilityLines } from '../domain/applicability.js'
@@ -22,6 +23,7 @@ import { contractFieldNoteHeader, contractFieldNoteLines } from '../domain/contr
 import type { ContractFieldNote } from '../domain/contracts.js'
 import { shapeNoteBlock } from '../domain/shapeNotes.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
+import { defectLinksExemptionLines, describeDefectLinks, readDefectLinksOf } from '../domain/trace.js'
 import { planStats } from '../domain/plan.js'
 import type { PlanIssue } from '../domain/plan.js'
 import type { RolePool } from '../domain/pool.js'
@@ -499,6 +501,20 @@ export function describeTrace(data: TraceReport): string {
   lines.push(fmt('uiDescribe.k84', { p1: data.orphans.design.length === 0 ? t('uiDescribe.k226') : data.orphans.design.join(' ') }))
   lines.push(fmt('uiDescribe.k85', { p1: data.orphans.tasks.length === 0 ? t('uiDescribe.k227') : data.orphans.tasks.join(' ') }))
   lines.push(fmt('uiDescribe.k86', { p1: data.orphans.tests.length === 0 ? t('uiDescribe.k228') : data.orphans.tests.join(' ') }))
+  /**
+   * **TASK-038 落点三/四**：缺陷这一类的缺口此前**既不可见也不可拦**（`describeTrace` 只列设计 /
+   * 任务 / 用例三类）—— 现在回执要给出孤儿缺陷、指向失效需求的边与**豁免清单**，以及覆盖率读数。
+   *
+   * 形状取自 `readDefectLinksOf`（`trace.ts` 的唯一现算出口的**读数消费面**，本文件不重算）；
+   * 老夹具手工拼的 `TraceReport` 没有这一位 ⇒ 退回只印孤儿 id，**不编造**覆盖率。
+   */
+  const defectLinks = readDefectLinksOf(data)
+  if (defectLinks === undefined) {
+    lines.push(fmt('uiDescribe.k86b', { p1: data.orphans.defects.length === 0 ? t('uiDescribe.k226') : data.orphans.defects.join(' ') }))
+  } else {
+    lines.push(`- ${describeDefectLinks(defectLinks)}`)
+    for (const line of defectLinksExemptionLines(defectLinks)) lines.push(`- ${line}`)
+  }
   lines.push(fmt('uiDescribe.k87', { p1: data.uncoveredMust.length === 0 ? t('uiDescribe.k229') : data.uncoveredMust.join(' ') }))
   for (const item of data.perRequirement) {
     lines.push(fmt('uiDescribe.k88', { p1: item.id, p2: item.design.join(' ') || t('uiDescribe.k161'), p3: item.tasks.join(' ') || t('uiDescribe.k162'), p4: item.tests.join(' ') || t('uiDescribe.k163') }))
@@ -506,8 +522,144 @@ export function describeTrace(data: TraceReport): string {
   return lines.join('\n')
 }
 
-/** 拆分结果：卡片 + 六条机械校验结果。 */
-export function describePlan(tasks: TaskCard[], issues: PlanIssue[], shapeNotes: FieldShapeNote[] = []): string {
+/**
+ * **结构通道的逐条回执**（TASK-074 落点三 / 缺陷 DEF-052）。
+ *
+ * 病根是"只说数量"：旧回执只印一句「本批有 N 张卡来自结构通道」，驾驶舱**不翻看板就发现不了**
+ * 那批卡写范围荒谬 —— 真机上就是这么放过了一张独占 **10 个模块**的卡（TASK-069，其写范围含
+ * `src/domain/plan.ts`，一度把真修卡堵在派发队列外）。所以这里**逐条**给出三样东西：
+ * ① 卡标题（含设计 id）② 写范围 ③ **判定依据**（命中/未命中哪条覆盖判定）；
+ * 另外把**没建卡**的元素也逐条印出来（被覆盖的 / 显式无需卡的 / **写范围超限被拒的**）——
+ * "拒绝生成"如果只写在代码里、不写进回执，用户会以为卡建好了。
+ *
+ * 纯渲染：判定与数据全部由域层（`structuralPlanOf` / `decompose`）给，文案全部走语言包
+ * （本文件在 m7 棘轮基线表内，允许的新增硬编码中文数为 0）。
+ */
+function structuralBasis(how: StructuralCardPlan['how']): string {
+  if (how === 'des-task') return t('uiIndex.kStructuralHowDesTask')
+  if (how === 'title-marker') return t('uiIndex.kStructuralHowTitleMarker')
+  if (how === 'no-card-element') return t('uiIndex.kStructuralHowNoCardElement')
+  return t('uiIndex.kStructuralHowNone')
+}
+
+/**
+ * **三态可辨**（TASK-104 落点一 / DEF-063）：把"凭什么说这个元素已经有卡了"与"压根没依据"
+ * 拆成两句不同的话。
+ *
+ * 为什么非拆不可：旧回执对 `how: 'none'` 印的是「未命中任何覆盖判定 ⇒ 所以才建卡」——
+ * 它把**"找不到覆盖证据"**说成了**"这个元素没人做"**。存量补录项目里追溯边（`des-task`）**天然缺失**
+ * （本仓 0 条），于是每轮 `decompose` 都按这句话长出一批废卡。三态与"依据为空"必须彼此可辨：
+ * `already-covered`（覆盖证据存在）／`no-card-needed`（人已裁决无需卡）／**依据为空**（上面两条都不是）。
+ */
+function structuralBasisState(row: StructuralCardPlan): string {
+  if (row.how === 'none') return t('uiIndex.kStructuralBasisEmpty')
+  return fmt('uiIndex.kStructuralBasisEvidence', { p1: structuralBasis(row.how) })
+}
+
+/**
+ * 依据为空的元素**缺哪几条依据**（逐条点名，不给一句笼统的"没依据"）。
+ *
+ * 为什么是**静态查表**而不是 `t(\`…_${item}\`)` 拼键名：`lang 守卫`（`test/m7.test.ts`）扫描的是
+ * 源码里**字面量**形态的 `t('…')` 引用 —— 拼出来的键名它看不见，于是"键漏了"会在真机上变成
+ * 一句 `kStructuralMissing_des-task`（本用例第一版就是这么红的）。查表让三条依据的键名
+ * 全部以字面量出现，漏键当场被扫出来。
+ */
+const MISSING_BASIS_LABEL: Record<CoverageBasisItem, string> = {
+  'des-task': t('uiIndex.kStructuralMissingDesTask'),
+  'title-marker': t('uiIndex.kStructuralMissingTitleMarker'),
+  'no-card-element': t('uiIndex.kStructuralMissingNoCardElement'),
+}
+
+function missingBasisText(row: StructuralGapRow): string {
+  return row.missing.map((item) => MISSING_BASIS_LABEL[item]).join(' / ')
+}
+
+/**
+ * **待裁决小节**（TASK-104 落点二/三）：依据为空的元素逐条列名 + 缺哪几条依据 + 三条出路 +
+ * **一次性收口动作**（把这次列出的 id 全部写进 `plan.noCardElements` 的现成片段）。
+ *
+ * 为什么把 `config.yml` 片段直接印在回执里：本仓的实测收口方式是**人工逐条列举** 12 个元素
+ * （`.sdo/config.yml` 的 `plan.noCardElements`）—— 那是**一次动作**，但不该由人去 `decompose`
+ * 的输出里一条条抄。回执给出"贴上就能用"的片段（含维护纪律注释），收口就从"逐条抄"变成"贴一次"。
+ * 注意这条动作**不写盘**：插件只给命令，改 `config.yml` 的是人（写配置属另一条线）。
+ */
+function structuralDispositionBlock(rows: StructuralGapRow[], policy: 'required' | 'advisory'): string[] {
+  const lines: string[] = []
+  lines.push(fmt('uiIndex.kStructuralDispositionHeader', { p1: String(rows.length) }))
+  for (const row of rows) {
+    lines.push(fmt('uiIndex.kStructuralDispositionLine', {
+      p1: row.designId,
+      p2: row.name,
+      p3: missingBasisText(row),
+    }))
+  }
+  lines.push(t(policy === 'required' ? 'uiIndex.kStructuralDispositionRefused' : 'uiIndex.kStructuralDispositionAdvisory'))
+  lines.push(t('uiIndex.kStructuralDispositionRemedies'))
+  lines.push(fmt('uiIndex.kStructuralDispositionCollect', { p1: rows.map((row) => row.designId).join('\n    - ') }))
+  return lines
+}
+
+/**
+ * 未建卡的原因**再加一位**（TASK-104 / DEF-063）：`no-basis` = 判重依据为空 ⇒ 拒绝生成。
+ *
+ * 为什么不直接改 `StructuralSkipReason`（`types.ts`）：那不是本卡的写范围（卡上边界明写
+ * "只改写范围内文件"）。判定与数据由域层给（`plan.ts` 里就是 `reason: 'no-basis'` 的字符串），
+ * 渲染层只需要一个能容纳它的联合类型 —— 于是**在这里显式加宽**，而不是就地改共享类型
+ * 或把它降级成 `string`（后者会连 `scope-too-broad` / `already-covered` 的窄化一起丢掉）。
+ */
+type StructuralSkipReasonWithBasis = StructuralSkipReason | 'no-basis'
+
+function structuralReason(row: StructuralSkip, reason: StructuralSkipReasonWithBasis): string {
+  if (reason === 'no-basis') return t('uiIndex.kStructuralReasonNoBasis')
+  if (reason === 'scope-too-broad') {
+    return t('uiIndex.kStructuralReasonScopeTooBroad') + fmt('uiIndex.kStructuralScopeTooBroadDetail', { p1: (row.scopes ?? []).join('、') })
+  }
+  if (reason === 'no-card-needed') return t('uiIndex.kStructuralReasonNoCardNeeded')
+  return t('uiIndex.kStructuralReasonAlreadyCovered')
+}
+
+export function describeStructuralPlan(plan: StructuralPlan | undefined): string {
+  if (plan === undefined) return ''
+  const { created, skipped } = plan
+  // **TASK-104**：`basisPolicy` / `needsDisposition` 是同一份判定的新增读数（`StructuralPlanResult`）。
+  // 这里的读取刻意**退化**成可选：老夹具手工拼的 `StructuralPlan` 没有这两位 ⇒ 退回旧口径，
+  // 而不是抛错或编造（同 `readDefectLinksOf` 的处理方式）。
+  const extended = plan as StructuralPlan & { basisPolicy?: 'required' | 'advisory' | undefined; needsDisposition?: StructuralGapRow[] | undefined }
+  const policy = extended.basisPolicy ?? 'advisory'
+  const gaps = extended.needsDisposition ?? []
+  if (created.length === 0 && skipped.length === 0 && gaps.length === 0) return ''
+  const lines: string[] = []
+  lines.push(fmt('uiIndex.kStructuralHeader', { p1: String(created.length), p2: String(skipped.length) }))
+  lines.push(t(policy === 'required' ? 'uiIndex.kStructuralPolicyRequired' : 'uiIndex.kStructuralPolicyAdvisory'))
+  for (const row of created) {
+    lines.push(fmt('uiIndex.kStructuralCreatedLine', { p1: row.title, p2: row.designId, p3: row.writeScopes.join('、') }))
+    lines.push(fmt('uiIndex.kStructuralCreatedBasis', { p1: structuralBasisState(row) }))
+  }
+  if (created.length === 0) lines.push(t('uiIndex.kStructuralNone'))
+  for (const row of skipped) {
+    // `reason` 取到局部常量：`StructuralSkip.reason` 的联合类型里**还没有** `no-basis`
+    // （`types.ts` 不在本卡写范围，见 `structuralReason` 的注释——它按运行时值渲染，
+    //  所以用带注的联合类型把这个值显式带进来，而不是把 `types.ts` 就地改掉）
+    const reason: StructuralSkipReasonWithBasis = row.reason
+    lines.push(fmt('uiIndex.kStructuralSkippedLine', {
+      p1: row.designId,
+      p2: row.name,
+      p3: structuralReason(row, reason),
+      p4: row.how === undefined ? '' : fmt('uiIndex.kStructuralHitBasis', { p1: structuralBasis(row.how) }),
+    }))
+  }
+  if (gaps.length > 0) lines.push(...structuralDispositionBlock(gaps, policy))
+  lines.push(t('uiIndex.kStructuralHint'))
+  return lines.join('\n')
+}
+
+/** 拆分结果：卡片 + 六条机械校验结果 + 结构通道的逐条明细（TASK-074）。 */
+export function describePlan(
+  tasks: TaskCard[],
+  issues: PlanIssue[],
+  shapeNotes: FieldShapeNote[] = [],
+  structural: StructuralPlan | undefined = undefined,
+): string {
   const stats = planStats(tasks)
   const lines: string[] = [fmt('uiDescribe.k194', { p1: stats.total, p2: Object.entries(stats.byStatus).map(([status, count]) => `${status} ${count}`).join('，') || t('uiDescribe.k193') })]
   for (const task of tasks) {
@@ -522,6 +674,8 @@ export function describePlan(tasks: TaskCard[], issues: PlanIssue[], shapeNotes:
     lines.push(fmt('uiDescribe.k92', { p1: issues.length }))
     for (const issue of issues) lines.push(`    · [${issue.code}] ${issue.taskId}：${issue.detail}　→ ${issue.remedy}`)
   }
+  const structuralBlock = describeStructuralPlan(structural)
+  if (structuralBlock !== '') lines.push(structuralBlock)
   lines.push(...shapeNoteBlock(shapeNotes))
   return lines.join('\n')
 }
@@ -561,16 +715,49 @@ export function describePoolBlock(pools: RolePool[], queued: string[], reuseSupp
       }),
     )
   }
+  // **DEF-066**：把"空闲可复用"按**宿主会不会拒**如实分栏 —— 真机矛盾：`sdo_status` 报
+  // 「空闲可复用 31」而派发器**永远新起**（那 31 个是上一任驾驶舱派的，宿主一律拒 `belongs to
+  // another parent session`）。分栏后读数与行为同源。
+  for (const pool of pools) {
+    if (pool.idleForeign.length === 0 && pool.idleUnknownParent === 0) continue
+    const same = pool.idleSameParent.map((child) => child.childSessionId.slice(0, 8)).join(' ')
+    lines.push(
+      fmt('uiDescribe.kPoolIdleScope', {
+        p1: pool.role,
+        p2: String(pool.idleSameParent.length),
+        p3: String(pool.idleForeign.length),
+        p4: String(pool.idleUnknownParent),
+        p5: same === '' ? t('uiDescribe.kPoolIdleNone') : same,
+      }),
+    )
+  }
+  // **DEF-066 落点一**：在飞子会话给出 `卡 → 子会话前 8 位` —— owner 槽位名（`subagent:角色:序`）
+  // 会被多个会话用过（实测一槽位 33 个会话），**唯一定位实现者靠的是 uuid**。
+  const busyRows = pools.flatMap((pool) => pool.busy.map((child) => ({ role: pool.role, child })))
+  if (busyRows.length > 0) {
+    const shown = busyRows.slice(0, 4).map((row) =>
+      `${row.child.task === '' ? t('uiDescribe.kPoolIdleNone') : row.child.task}→${row.child.childSessionId.slice(0, 8)}`
+      + fmt('uiDescribe.kPoolBusyLoad', {
+        p1: String(row.child.rounds),
+        p2: String(row.child.cards ?? row.child.rounds),
+      }),
+    )
+    lines.push(
+      fmt('uiDescribe.kPoolBusyMap', {
+        p1: shown.join(' '),
+        p2: busyRows.length > shown.length ? fmt('uiDescribe.kPoolUnusableMore', { p1: String(busyRows.length - shown.length) }) : '',
+      }),
+    )
+  }
   const stale = pools.reduce((sum, pool) => sum + pool.stale.length, 0)
   if (stale > 0) lines.push(fmt('uiDescribe.kPoolOrphanNote', { p1: String(stale), p2: String(orphanTtlMinutes) }))
   // **R-1**：不能复用、也**不占池位**的空闲子代理必须看得见（否则"池里明明有人却新起了一个"无法解释）
   const unusable = pools.flatMap((pool) => pool.unusable.map((item) => ({ ...item, role: pool.role })))
   if (unusable.length > 0) {
-    const shown = unusable.slice(0, 3).map((item) => `${item.childSessionId.slice(0, 8)}（${item.reason}）`)
-    const more = unusable.length > shown.length
-      ? ` ${fmt('uiDescribe.kPoolUnusableMore', { p1: String(unusable.length - shown.length) })}`
-      : ''
-    lines.push(fmt('uiDescribe.kPoolUnusable', { p1: String(unusable.length), p2: shown.join('；') + more }))
+    // **DEF-041**：**每个**未复用候选都要给出原因（旧实现只印前 3 个，其余折成"还有 N 个" ——
+    // 而"为什么没复用它"恰恰是判断池化有没有生效的关键）。
+    const shown = unusable.map((item) => `${item.childSessionId.slice(0, 8)}（${item.reason}）`)
+    lines.push(fmt('uiDescribe.kPoolUnusable', { p1: String(unusable.length), p2: shown.join('；') }))
   }
   if (queued.length > 0) lines.push(fmt('uiDescribe.kPoolQueued', { p1: String(queued.length), p2: queued.join(' ') }))
   if (!reuseSupported) lines.push(t('uiDescribe.kPoolNoReuse'))

@@ -19,6 +19,8 @@ import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { Requirement } from '../types.js'
+import { oracleGaps } from './evidence.js'
+import type { OracleRef } from './evidence.js'
 
 export interface TestCase {
   id: string
@@ -28,6 +30,17 @@ export interface TestCase {
   steps: string[]
   expected: string
   at: string
+  /**
+   * **判定基准来源（oracle）**（REQ-054 / TASK-020）。
+   *
+   * 病根：用例只记「期望」，不记「凭什么说这个期望是对的」⇒ 期望是作者随手写的也没人看得出来，
+   * 用例于是退化成走过场。四类取值（需求验收标准 / 契约的成功与失败语义 / 冻结的旧实现基线 /
+   * 专家判断）**都能机械核对**，核对实现只有一处：`oracleGaps()`（`evidence.ts`）。
+   *
+   * 与 `env` / `harness` 同口径：老台账没有这个字段照样读得出来（形状不是必填），
+   * 但**缺它的用例不计入通过覆盖**（降级口径在 `supportedOracle()` 里，一类一处、不重写）。
+   */
+  oracle?: OracleRef | undefined
 }
 
 export interface TestResult {
@@ -54,8 +67,54 @@ export interface TestResult {
    * 记下指纹后，红与绿**必须同指纹**才算是同一次实验。
    */
   harness?: string | undefined
+  /**
+   * **执行者**（REQ-053 / TASK-020）：跑出这条结果的人/会话（如 `subagent:tester:1`）。
+   *
+   * 与 `adoptedBy` 一起构成**独立性**这条判据的两个端点：两个值相同 = 自己给自己盖章。
+   * 老台账没有它 ⇒ `isAdopted()` 判"未采纳"而不是"默认通过"（宁可不计入，也不放行）。
+   */
+  executedBy?: string | undefined
+  /**
+   * **采纳者**（REQ-053 / TASK-020）：独立评审并采纳这条结果的人/会话。**采纳即终点**：
+   * 采纳动作本身不产生新的待采纳物（不得形成"评审自身还要被评审"的递归，C-42/C-52 那个坑）。
+   */
+  adoptedBy?: string | undefined
+  /** 采纳时刻（采纳动作的留痕；缺它就是还没采纳） */
+  adoptedAt?: string | undefined
+  /** 采纳依据说明（采纳者凭什么采纳：自己的复跑、报告、评审记录…） */
+  adoptionNote?: string | undefined
+  /**
+   * 结果级的判定基准**覆盖**（可选）：同一条用例在不同环境下判定基准会变时用它改判；
+   * 没给就回落到用例上登记的那份（回落顺序只有 `supportedOracle()` 一处实现）。
+   */
+  oracle?: OracleRef | undefined
 }
 
+/**
+ * **缺陷的发现级别**（TASK-021）：这条缺陷是在哪一道验证面上被发现的。
+ *
+ * 与"严重度"是**两个维度**：严重度说"它有多坏"，发现级别说"谁逮住它的"。
+ * 两者分开记，才判得出一件事：**断言面有没有漏**（漏了就是逃逸）。
+ *
+ * 为什么是这五档：V 模型左侧每落一级就有一道可分辨的验证面，
+ * 右侧的"生产"是最后一道（那时发现的都是逃逸）。档位是**词表**，
+ * 守卫用例按它逐条断言 —— 自由文本无法机械核对。
+ */
+export const DEFECT_DISCOVERY_LEVELS = ['评审', '单元', '集成', '系统', '验收', '生产'] as const
+export type DefectDiscoveryLevel = (typeof DEFECT_DISCOVERY_LEVELS)[number]
+
+export function isDefectDiscoveryLevel(value: string): value is DefectDiscoveryLevel {
+  return (DEFECT_DISCOVERY_LEVELS as readonly string[]).includes(value)
+}
+
+/**
+ * **缺陷记录**（`.sdo/defects/DEF-*.yml`）。
+ *
+ * 必填的仍是「标题 + 严重度 + 状态」——那是这条缺陷**是什么/多坏/还开不开**。
+ * 本轮（TASK-021，REQ-055）补上三个"**根因面**"字段，它们是可选的（老台账不受影响），
+ * 但给了就必须自洽：**逃逸**是"本该被前面的验证面逮住、却漏到后面才发现"，
+ * 所以它要求 `discoveryLevel` 与 `rootCause` 都在手，否则"是否逃逸"这个结论无从核对。
+ */
 export interface Defect {
   id: string
   title: string
@@ -63,6 +122,73 @@ export interface Defect {
   caseId?: string | undefined
   status: 'open' | 'fixed' | 'closed' | 'wontfix'
   at: string
+  /** **根因**（不是现象）：为什么它会进来 —— 缺判据 / 判据写错 / 断言面缺口 / 契约不清…… */
+  rootCause?: string | undefined
+  /** **发现级别**（`DEFECT_DISCOVERY_LEVELS` 之一）：这道缺陷是在哪一张验证面上被发现的。 */
+  discoveryLevel?: DefectDiscoveryLevel | string | undefined
+  /** **是否逃逸**：本该被更早的验证面逮住、却漏到了后面（`discoveryLevel` 越靠右越可疑）。 */
+  escaped?: boolean | undefined
+  // —————— §DEF-038（TASK-063）：**免责依据**两字段 ——————
+  // 与上面三个"根因面"字段**同族同纪律**：可选、空串不落键、不假装有值。
+  // 语义差别（不许混为一谈）：`rootCause` 答"**怎么进来的**"，这两个答"**为什么不修、谁拍的板**"。
+  /**
+   * **免责理由**（`status === 'wontfix'` 时的"为什么不修"）。
+   *
+   * 病根（DEF-038）：旧实现把 `wontfix` 与 `closed` 一起排除在"阻塞"之外 ⇒ **阻塞级缺陷标一个
+   * `wontfix` 就让计数归零**，验证门禁的 C-51 直接判绿。用户 2026-10-13 裁定：**不该放过** ——
+   * 语义从「放弃即不存在」改成「**放弃必须有人署名**」：阻塞级 + `wontfix` 必须**理由与批准人齐备**才放行。
+   */
+  waiveReason?: string | undefined
+  /**
+   * **免责批准人**（谁批准"这条阻塞级缺陷不修"）—— 与 `waiveReason` **缺一不可**。
+   *
+   * 只写理由不写人 = 没人负责；只写人不写理由 = 无从复核。两者齐备才进 C-51 的
+   * 「以 wontfix 放行的阻塞级缺陷」清单（**可见即约束**）。
+   */
+  waiveApprovedBy?: string | undefined
+}
+
+/** 阻塞级缺陷**尚未闭合**（`closed` 之外的四态都算）—— `blockersOpen` 与 C-51 的同一处口径。 */
+export function isBlockerOpen(defect: Defect): boolean {
+  return defect.severity === 'blocker' && defect.status !== 'closed'
+}
+
+/**
+ * **以 `wontfix` 放行的阻塞级缺陷**（DEF-038 / 用户 2026-10-13 裁定）。
+ *
+ * 「放行」只有一个成立条件：**`waiveReason` 与 `waiveApprovedBy` 两个字段都非空**
+ * （去空白后非空 —— 空串等于没写，与 `recordDefect` 的归一化口径一致）。
+ * 缺任一条都**不算免责成立**，该缺陷仍按"未关闭的阻塞级缺陷"计入 C-51 的判红名单。
+ *
+ * 为什么两字段必须一起判：只给理由 ⇒ 没人负责；只给批准人 ⇒ 无从复核。
+ * 这两条都是"放弃即不存在"的旧语义想掩盖的东西，所以判据不接受单边。
+ */
+export function isBlockerWaived(defect: Defect): boolean {
+  return isBlockerOpen(defect)
+    && defect.status === 'wontfix'
+    && textOf(defect.waiveReason).trim() !== ''
+    && textOf(defect.waiveApprovedBy).trim() !== ''
+}
+
+/**
+ * **阻塞级缺陷的四态分类**（防御门禁 C-51 与读数共用的**唯一出口**）。
+ *
+ * 为什么不把这件事散在 `gates.ts` 与 `records.ts` 各写一遍：`blockersOpen` 是既有读数、
+ * C-51 是判据 —— 两处过滤条件历史上就是这么分叉的（DEF-038：`records.ts` 排除 wontfix、
+ * `gates.ts` 一模一样再抄一遍）。这里收成一处，判据与读数不再各有一套"什么算阻塞"。
+ */
+export function blockerBreakdown(defects: Defect[]): {
+  /** 尚未闭合的阻塞级缺陷（含已用 wontfix 放行的） */
+  open: Defect[]
+  /** 免责依据**齐备**、以 `wontfix` 放行的 */
+  waived: Defect[]
+  /** 仍**拦住**门禁的：未闭合且免责依据不成立的 */
+  blocking: Defect[]
+} {
+  const open = defects.filter(isBlockerOpen)
+  const waived = open.filter(isBlockerWaived)
+  const blocking = open.filter((defect) => !isBlockerWaived(defect))
+  return { open, waived, blocking }
 }
 
 /**
@@ -118,7 +244,15 @@ export function listTestResults(store: SdoStore): TestResult[] {
 }
 
 export function recordTestResult(store: SdoStore, journal: Journal, input: Omit<TestResult, 'id' | 'at'>): TestResult {
-  const result: TestResult = { ...input, id: idOf(store, journal, 'tests/results', 'TR-'), at: new Date().toISOString() }
+  const adoptedBy = textOf(input.adoptedBy).trim()
+  const result: TestResult = {
+    ...input,
+    // **REQ-053**：`adoptedBy` 一给就是一次**采纳动作** ⇒ 由记录端盖上采纳时刻
+    // （不要求调用方自己记得写：会忘的字段迟早会忘，而"采纳了却说不出什么时候"就核不动了）。
+    ...(adoptedBy === '' || textOf(input.adoptedAt).trim() !== '' ? {} : { adoptedAt: new Date().toISOString() }),
+    id: idOf(store, journal, 'tests/results', 'TR-'),
+    at: new Date().toISOString(),
+  }
   store.writeYaml(['tests', 'results', `${result.id}.yml`], { result })
   journal.append('test/recorded', {
     id: result.id,
@@ -129,6 +263,13 @@ export function recordTestResult(store: SdoStore, journal: Journal, input: Omit<
     ...(result.artifact === undefined ? {} : { artifact: result.artifact, artifactSha256: result.artifactSha256 ?? '' }),
     // **R-3**：断言面指纹也进真源事件（红绿必须同指纹，判据从事件/记录都能复算）
     ...(result.harness === undefined ? {} : { harness: result.harness }),
+    // **REQ-053（TASK-020）**：「谁执行的 / 谁采纳的」必须进 append-only 的事件 ——
+    // `tests/results/*.yml` 是手可改的，独立性这条判据的两个端点只能靠真源佐证
+    // （与 D4/R1 的"文件 vs journal"同一纪律：文件里把 `adoptedBy` 改成另一个人也查得出来）。
+    ...(result.executedBy === undefined ? {} : { executedBy: result.executedBy }),
+    ...(result.adoptedBy === undefined ? {} : { adoptedBy: result.adoptedBy }),
+    ...(result.adoptedAt === undefined ? {} : { adoptedAt: result.adoptedAt }),
+    ...(result.oracle === undefined ? {} : { oracleKind: textOf(result.oracle.kind) }),
   })
   return result
 }
@@ -141,10 +282,54 @@ export function listDefects(store: SdoStore): Defect[] {
     .filter((item): item is Defect => item !== undefined)
 }
 
+/**
+ * 登记一条缺陷。
+ *
+ * **根因面三个字段**（TASK-021 / REQ-055）与"缺陷是什么"一起落盘，并**一并写进 `defect/recorded`
+ * 事件**：`defects/*.yml` 可手改，唯一挡得住事后改写的仍是 append-only 的真源事件
+ * （与 `recordTestResult` 把 `env`/`artifact`/`harness` 写进事件同一条纪律）。
+ *
+ * 归一化（免得磁盘上出现 `'true'` 这种"看着像真、其实是字符串"的值）：
+ *   · `rootCause` / `discoveryLevel` 去空白，空串 ⇒ 不写这个键（"没写"与"写了空"分开）；
+ *   · `escaped` 走 `boolField`：只认真正的布尔值，认不出的**原样带上**（不假装 false）。
+ */
 export function recordDefect(store: SdoStore, journal: Journal, input: Omit<Defect, 'id' | 'at'>): Defect {
-  const defect: Defect = { ...input, id: idOf(store, journal, 'defects', 'DEF-'), at: new Date().toISOString() }
+  const rootCause = textOf(input.rootCause).trim()
+  const discoveryLevel = textOf(input.discoveryLevel).trim()
+  // **DEF-038（TASK-063）**：免责依据两字段走**同一套归一化**（去空白、空串不落键）——
+  // 判据侧 `isBlockerWaived` 判的正是"去空白后非空"，两边口径同源，不会出现
+  // "盘上写了空串、读数以为齐备"这种假放行。
+  const waiveReason = textOf(input.waiveReason).trim()
+  const waiveApprovedBy = textOf(input.waiveApprovedBy).trim()
+  // `boolField` 只认**真正的布尔值**：写成 `'true'` / `'yes'` 一律归 `undefined`
+  // （宁可不写，也不要把"看着像真"的字符串落成真值 —— 逃逸判定会因此说反）
+  const escaped = boolField(input.escaped).value
+  const defect: Defect = {
+    ...input,
+    // 没写就不落键（`undefined` 在本仓的 YAML 子集里**不支持序列化**，落键即抛：
+    //  "没写"与"写了空"必须分开，靠"有没有这个键"表达）
+    ...(rootCause === '' ? {} : { rootCause }),
+    ...(discoveryLevel === '' ? {} : { discoveryLevel }),
+    ...(escaped === undefined ? {} : { escaped }),
+    ...(waiveReason === '' ? {} : { waiveReason }),
+    ...(waiveApprovedBy === '' ? {} : { waiveApprovedBy }),
+    id: idOf(store, journal, 'defects', 'DEF-'),
+    at: new Date().toISOString(),
+  }
   store.writeYaml(['defects', `${defect.id}.yml`], { defect })
-  journal.append('defect/recorded', { id: defect.id, severity: defect.severity, status: defect.status })
+  journal.append('defect/recorded', {
+    id: defect.id,
+    severity: defect.severity,
+    status: defect.status,
+    // **根因 / 发现级别 / 是否逃逸**：审计要能从真源重建"这条是逃逸还是本道面自己逮住的"
+    ...(defect.rootCause === undefined ? {} : { rootCause: defect.rootCause }),
+    ...(defect.discoveryLevel === undefined ? {} : { discoveryLevel: defect.discoveryLevel }),
+    ...(defect.escaped === undefined ? {} : { escaped: defect.escaped }),
+    // **免责依据**（DEF-038）：同样进 append-only 真源 —— "谁批的、凭什么批"必须能离线回读，
+    // 否则 C-51 的放行就只是 `defects/*.yml` 上的一句可手改的话。
+    ...(defect.waiveReason === undefined ? {} : { waiveReason: defect.waiveReason }),
+    ...(defect.waiveApprovedBy === undefined ? {} : { waiveApprovedBy: defect.waiveApprovedBy }),
+  })
   return defect
 }
 
@@ -161,6 +346,17 @@ export interface DefectUpdate {
    */
   evidence?: string | undefined
   reason?: string | undefined
+  // —————— §DEF-038（TASK-063）：免责依据两字段**在更新路径上也受理** ——————
+  // 与 `rootCause` 一族**不同**的一处（有意为之，理由如下）：根因面三个字段答的是"这条缺陷怎么来的"，
+  // 是**历史事实**，事后改它等于篡改历史 ⇒ 更新路径可读拒绝。而免责依据答的是"**现在**要不要放过它、
+  // 谁拍的板" —— 那是一个**决定**，决定本来就会被补、被改、被撤销（撤销 = 改回 `status=fixed` 并
+  // 把理由换成"决定返工"）。若这里也拒绝，修法就只剩"重建一条缺陷"，反而销毁审计链。
+  // 纪律仍与一族**同源**：空串不许当"填了"（调用方给空白 ⇒ 可读拒绝，见 `index.ts`），
+  // 与现值相同 ⇒ `no-op-update`，改动逐条写进 append-only 的 `defect/updated` 事件。
+  /** **免责理由**（"为什么不修"）—— 与 `waiveApprovedBy` 一起决定阻塞级 `wontfix` 能否放行 */
+  waiveReason?: string | undefined
+  /** **免责批准人**（谁批准不修）—— 与 `waiveReason` 缺一不可 */
+  waiveApprovedBy?: string | undefined
 }
 
 /**
@@ -212,6 +408,16 @@ export function updateDefect(
   if (patch.caseId !== undefined) {
     apply('caseId', defect.caseId ?? '', patch.caseId)
     next.caseId = patch.caseId
+  }
+  // **DEF-038（TASK-063）**：免责依据两字段就在这条更正链上改 —— 与 `status` 同一种处置
+  // （"从空到有"与"改写理由"都算**真实差异**，逐条进 `defect/updated` 的 `changes`）。
+  if (patch.waiveReason !== undefined) {
+    apply('waiveReason', defect.waiveReason ?? '', patch.waiveReason)
+    next.waiveReason = patch.waiveReason
+  }
+  if (patch.waiveApprovedBy !== undefined) {
+    apply('waiveApprovedBy', defect.waiveApprovedBy ?? '', patch.waiveApprovedBy)
+    next.waiveApprovedBy = patch.waiveApprovedBy
   }
   // **SDO-56**：标题里的状态前缀**由 status 派生**。两条都要做：
   // ① 调用方写进来的新标题若带前缀 ⇒ 剥掉；
@@ -335,6 +541,13 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
   failed: number
   skipped: number
   defectsOpen: number
+  /**
+   * **仍拦住门禁的阻塞级缺陷数**（DEF-038 / TASK-063 起）。
+   *
+   * 语义修正：`wontfix` **不再**与 `closed` 同等放过 —— 只有 `waiveReason` 与
+   * `waiveApprovedBy` **齐备**的阻塞级 `wontfix` 才不算（`isBlockerWaived`）。
+   * 读数与 C-51 共用 `blockerBreakdown` 一处过滤，不会再出现两套口径。
+   */
   blockersOpen: number
   failedCaseIds: string[]
   /**
@@ -350,6 +563,24 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
    * 问题，`passed=1`、`unjournaled=[]` ⇒ 纯 waterfall 项目里"把红改成绿"这条捷径仍然存在。
    */
   tampered: { id: string; file: string; journal: string }[]
+  /**
+   * **REQ-053（TASK-020）**：`status=pass` 但**没被独立采纳**的结果 id（执行者缺登记 / 采纳者缺登记 /
+   * 采纳者就是执行者 / 判定基准缺或不成立）。
+   *
+   * 病根：`passed` 此前等于"有一条 pass 结果"⇒ **开发者自己跑一遍自己盖章**就算通过，
+   * 门禁只看得见一个数字。降级口径与 REQ-053 一致：**不予计入 + 在门禁里点名**，
+   * 所以这份名单不是告警而是判据的输入（`passedAdopted` 就是"扣掉这些之后还剩几条"）。
+   */
+  unadopted: string[]
+  /**
+   * **真正计入通过**的结果数（`passed` 扣掉 `unadopted` 之后的条数）。
+   *
+   * 为什么与 `passed` 并存而不是改写 `passed`：`passed` 是**既有读数**（"台账里有几条 pass"），
+   * 多个历史用例与回执按它断言（m56/m52/m85 明写「统计口径不变」）—— 悄悄改它的语义就是
+   * 让既有结论换了个意思，正是本项目最忌讳的那种静默。**新语义用新字段**，
+   * 判据（G6 的 C-50 一族）要用"已采纳"时读 `passedAdopted` 并点名 `unadopted`。
+   */
+  passedAdopted: number
 } {
   const allResults = listTestResults(store)
   // **SDO-50（真机，判据层自锁）**：旧实现把所有历史结果**平铺**统计 ⇒ 一条用例历史上出现过一次 fail
@@ -360,7 +591,15 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
   const results = latestResultPerCase(allResults)
   const defects = listDefects(store)
   const failed = results.filter((result) => result.status === 'fail')
-  // **D4**：逐条核对"这条结果有没有 `test/recorded` 事件佐证"
+  // **REQ-053（TASK-020）**：「通过集只取已采纳的结果」——采纳判据的实现只有一处
+  // （`isAdopted()`，下面），这里按最新结果逐条问它；未采纳的**点名**而不是静默扣分。
+  const casesById = new Map(listTestCases(store).map((item) => [item.id, item]))
+  const adoptedPass = results.filter(
+    (result) => result.status === 'pass' && isAdopted(store, result, casesById.get(result.caseId)).adopted,
+  )
+  const unadopted = results
+    .filter((result) => result.status === 'pass' && !adoptedPass.includes(result))
+    .map((result) => result.id)  // **D4**：逐条核对"这条结果有没有 `test/recorded` 事件佐证"
   const recordedIds = new Set(
     (journal?.read().events ?? [])
       .filter((event) => event.type === 'test/recorded')
@@ -379,15 +618,60 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
   return {
     cases: listTestCases(store).length,
     results: results.length,
+    // **口径不变**：`passed` 仍是"台账里有几条最新 pass"（既有回执与用例按它断言）
     passed: results.filter((result) => result.status === 'pass').length,
+    // **新语义用新字段**：真正计入通过的是"已被独立采纳"的那些（REQ-053）
+    passedAdopted: adoptedPass.length,
     failed: failed.length,
     skipped: results.filter((result) => result.status === 'skip').length,
     defectsOpen: defects.filter((defect) => defect.status === 'open' || defect.status === 'fixed').length,
-    blockersOpen: defects.filter((defect) => defect.severity === 'blocker' && defect.status !== 'closed' && defect.status !== 'wontfix').length,
+    // **DEF-038（TASK-063，用户 2026-10-13 裁定）**：旧口径把 `wontfix` 与 `closed` 一起排除
+    // ⇒ **阻塞级缺陷标一个 `wontfix` 就让计数归零**，C-51（缺陷闭合）直接判绿。
+    // 新口径：`wontfix` **不再自动放过** —— 只有"理由与批准人齐备"的才不算阻塞（`isBlockerWaived`）。
+    // 过滤条件全部收在 `blockerBreakdown` 一处（判据与读数不再各抄一份，免得再次分叉）。
+    blockersOpen: blockerBreakdown(defects).blocking.length,
     failedCaseIds: failed.map((result) => result.caseId),
     unjournaled,
     tampered,
+    unadopted,
   }
+}
+
+/**
+ * **一条结果是否已被独立采纳**（REQ-053 / TASK-020 的**唯一**判定入口）。
+ *
+ * 四条判据逐条机械核对，任何一条不过都返回 `adopted: false` **并给出理由**（降级口径：
+ * 「不予计入 + 在门禁里点名未采纳的结果」，所以理由必须能被人看懂、能被人复算）：
+ *
+ *   ① **执行者缺登记** ⇒ 无从判断独立性（宁可不计入，也不把"没登记"读成"独立"）；
+ *   ② **采纳者缺登记 / 采纳时刻缺登记** ⇒ 还没有采纳动作，不算通过；
+ *   ③ **执行者与采纳者相同** ⇒ 自己给自己盖章（守卫用例钉的就是这条）；
+ *   ④ **判定基准（oracle）缺或不成立** ⇒ 没有判定基准的用例只是走过场（REQ-054）。
+ *
+ * 「采纳是终点」的落点也在这里：本函数**只看**一条结果自身的执行者/采纳者/判定基准，
+ * 不认识"谁采纳了采纳者"这种第二层 —— 采纳不产生新的待采纳物，不形成递归（C-42/C-52 那个坑）。
+ */
+export function isAdopted(
+  store: SdoStore,
+  result: Pick<TestResult, 'executedBy' | 'adoptedBy' | 'adoptedAt' | 'oracle' | 'status'>,
+  testCase?: TestCase | undefined,
+): { adopted: boolean; reason: string } {
+  const executedBy = textOf(result.executedBy).trim()
+  const adoptedBy = textOf(result.adoptedBy).trim()
+  if (executedBy === '') return { adopted: false, reason: '没有登记**执行者**（无从判断独立性）' }
+  if (adoptedBy === '') return { adopted: false, reason: '没有**采纳者**（尚未被独立采纳）' }
+  if (textOf(result.adoptedAt).trim() === '') return { adopted: false, reason: '没有采纳时刻（采纳动作未留痕）' }
+  if (executedBy === adoptedBy) {
+    return { adopted: false, reason: `采纳者就是执行者（${executedBy}）—— 自己给自己盖章不算独立采纳` }
+  }
+  // 缺口文案带上**用例号与它覆盖的需求**：REQ-054 的降级口径要求"在门禁里点名未采纳的结果"，
+  // 而点名只有在这一层拿得到 `caseId`/`requirement`（判定基准的核对实现仍在 `evidence.ts` 一处）。
+  const gaps = oracleGaps(store, result.oracle ?? testCase?.oracle, {
+    ...(testCase?.id === undefined ? {} : { caseId: testCase.id }),
+    ...(testCase?.requirement === undefined ? {} : { requirement: testCase.requirement }),
+  })
+  if (gaps.length > 0) return { adopted: false, reason: `判定基准不成立：${gaps.join('；')}` }
+  return { adopted: true, reason: `由 ${adoptedBy} 独立采纳（执行者 ${executedBy}）` }
 }
 
 // —————————————————————— 评审 ——————————————————————
@@ -402,8 +686,22 @@ export function findingHashOf(text: string): string {
  *
  * 两个用途（都在 `reviewVerification.ts` 收口）：① 记进 `review/recorded`，让"手改 verdict 再补核实"
  * 变成可判定的 `tampered`；② 核实记录绑**逐条发现**的指纹，发现被换掉 ⇒ 旧核实失效。
+ *
+ * **封印前缀（TASK-108 / `sdo_review action=append`）**：指纹覆盖的是 `findings[0, sealedFindings)` ——
+ * 追加路径在**第一次追加时**把"记录当时有几条"钉进 `sealedFindings`，此后新增的发现项落在封印之外。
+ * 为什么必须这样：指纹是**记录那一刻**的封印，而 `append` 只允许**只增不改**；若让新增的发现项也进指纹，
+ * 追加后算出来的值必然 ≠ 已记录的指纹 ⇒ 同一条评审会立刻被判 `tampered`，等于用"补录"把评审作废。
+ * 反过来说，**已封印前缀**（原 verdict + 原有发现正文）的任何改动仍然逐字判得出来 —— 这正是本检查要挡的东西；
+ * 新增发现项的部分由**逐条核实**兜底（核实记录绑每条正文的 `findingHashOf`，被换掉即 `stale`）。
+ *
+ * 没有 `sealedFindings` 的旧评审**逐字节等价**于旧实现（切片长度 = 全量 ⇒ JSON 一字不差），
+ * 所以既有的 `review/recorded.contentHash` 不会因为这次改动集体失效。
  */
 export function reviewContentHash(review: Review): string {
+  const findings = (review.findings ?? []).map((item) => textOf(item))
+  const sealed = review.sealedFindings === undefined
+    ? findings.length
+    : Math.max(0, Math.min(Math.trunc(review.sealedFindings), findings.length))
   return createHash('sha256')
     .update(
       JSON.stringify({
@@ -411,7 +709,7 @@ export function reviewContentHash(review: Review): string {
         taskId: textOf(review.taskId),
         reviewer: textOf(review.reviewer),
         verdict: textOf(review.verdict),
-        findings: (review.findings ?? []).map((item) => textOf(item)),
+        findings: findings.slice(0, sealed),
       }),
     )
     .digest('hex')
@@ -431,6 +729,13 @@ export interface Review {
    */
   taskRole?: string | undefined
   findings: string[]
+  /**
+   * **内容指纹覆盖到的前缀长度**（TASK-108 / `sdo_review action=append`）：只记"封印到第几条"，**不改正文**。
+   *
+   * 第一次追加时写入（值 = 当时已有的条数）；此后再追加保持不变。缺省（老评审、没追加过）= 覆盖全部发现项，
+   * 于是 `reviewContentHash` 对它们逐字节等价于旧实现。语义见 `reviewContentHash` 的注释。
+   */
+  sealedFindings?: number | undefined
   at: string
   /**
    * **记录这条评审的会话**（2026-10-08 评审核实口径）。
