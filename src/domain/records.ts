@@ -89,6 +89,15 @@ export interface TestResult {
    * 没给就回落到用例上登记的那份（回落顺序只有 `supportedOracle()` 一处实现）。
    */
   oracle?: OracleRef | undefined
+  /**
+   * **这条测试结论覆盖的缺陷**（DEF-075 / 第三批 §3.8，绑定方式 (a)）。
+   *
+   * 为什么把绑定长在**结论**上（而不是新增 `defect-tc` 追溯边）：闭合的**依据**就是"跑过、且通过了"，
+   * 依据与结论同生共死；而追溯边指向**用例**、依据却在**结果**上，读的时候还要再绕一层。
+   * 形状：缺陷 id 列表（`DEF-xxx`）；**未知 id 在记录时被可读拒绝**（免得打错一个字就"绑上了"）。
+   * 老台账没有这个字段照样读得出来（形状不是必填）。
+   */
+  defects?: string[] | undefined
 }
 
 /**
@@ -251,11 +260,46 @@ export function listTestResults(store: SdoStore): TestResult[] {
  * "指向不存在的用例"与"指向真实用例"（`cases=0 results=1 passed=1` 就是这么来的）。
  * 两条可读拒绝，都点名可执行修法；**不**猜、**不**自动造用例。
  */
+/**
+ * **已修但无测试结论的缺陷**（DEF-075 / 第三批 §3.8）—— 判据的唯一出口。
+ *
+ * 病根：`fixed` 的缺陷可以**永久不被测试**而门禁不判红任何一格（C-51 只管**阻塞级**；C-63 只遍历
+ * **卡上声明 `fixes`** 的行 —— 外部会话直接修的缺陷**没有卡** ⇒ `checked = 0` ⇒ 判 N/A ⇒ 盲区
+ * 正好覆盖本项目的修复主力通道）。用户的长期准则是"凡能机械强制的纪律，不要靠提醒记住"。
+ *
+ * 口径：
+ *   · **依据 = 一条 `pass` 的测试结论（TR）把它绑进 `defects`**（`fail`/`skip` 不算依据 —— 那说明它还坏着）；
+ *   · 只看 `status === 'fixed'` 的缺陷（`wontfix` 由 C-51/C-63 的免责两字段那套管；`closed` 不在本条范围，
+ *     措辞不写成"必须 closed"：`closed` 是**结果**、TR 是**依据**，只要求依据才可操作）；
+ *   · 有 `fail` 结果绑着它时**如实一并点名**（读者要看得见"它现在还是坏的"）。
+ */
+export function fixedDefectsWithoutTestResult(store: SdoStore): { id: string; failingResults: string[] }[] {
+  const passing = new Set<string>()
+  const failing = new Map<string, string[]>()
+  for (const result of listTestResults(store)) {
+    for (const raw of result.defects ?? []) {
+      const id = textOf(raw).trim()
+      if (id === '') continue
+      if (result.status === 'pass') passing.add(id)
+      else if (result.status === 'fail') failing.set(id, [...(failing.get(id) ?? []), result.id])
+    }
+  }
+  return listDefects(store)
+    .filter((defect) => defect.status === 'fixed')
+    .filter((defect) => !passing.has(defect.id))
+    .map((defect) => ({ id: defect.id, failingResults: failing.get(defect.id) ?? [] }))
+}
+
 export function recordTestResult(
   store: SdoStore,
   journal: Journal,
   input: Omit<TestResult, 'id' | 'at'>,
-): { ok: true; result: TestResult } | { ok: false; code: 'case-id-required' | 'case-not-found'; detail: string } {
+  /**
+   * **对账用上下文**（DEF-011）：给了 `workspace` 才能把调用方声明的 `artifactSha256` 与现算值对账。
+   * 不传 ⇒ 维持旧行为（不做核对，直接落调用方给的值）—— 直连域层的既有用例不受影响。
+   */
+  options: { workspace?: string | undefined } = {},
+): { ok: true; result: TestResult } | { ok: false; code: 'case-id-required' | 'case-not-found' | 'artifact-hash-mismatch' | 'unknown-defect'; detail: string } {
   const caseId = textOf(input.caseId).trim()
   if (caseId === '') {
     return { ok: false, code: 'case-id-required', detail: fmt('uiTest.kResultCaseIdRequired') }
@@ -271,9 +315,33 @@ export function recordTestResult(
       }),
     }
   }
+  // **DEF-075**：`defects` 是"这条结论依据于哪些缺陷已修"的**绑定** —— 打错一个字就静默绑不上，
+  // 所以未知 id 在写盘前**可读拒绝**（点名那几个 id 与台账里现有的缺陷数）。
+  const declaredDefects = (input.defects ?? []).map((id) => textOf(id).trim()).filter((id) => id !== '')
+  if (declaredDefects.length > 0) {
+    const known = new Set(listDefects(store).map((defect) => defect.id))
+    const unknown = declaredDefects.filter((id) => !known.has(id))
+    if (unknown.length > 0) {
+      return {
+        ok: false,
+        code: 'unknown-defect',
+        detail: fmt('uiTest.kResultUnknownDefect', { p1: unknown.join('、'), p2: String(known.size) }),
+      }
+    }
+  }
   const adoptedBy = textOf(input.adoptedBy).trim()
+  // **DEF-011**：声明了被检产物的哈希就必须与现算值对账（不一致 / 读不到 ⇒ 可读拒绝、零写盘）。
+  // 有 `workspace` 才核对得起来；没给就维持旧口径（直连域层的调用方拿不到路径上下文）。
+  const workspace = options.workspace ?? ''
+  const artifact = textOf(input.artifact).trim()
+  const bound = workspace === ''
+    ? { ok: true as const, sha256: textOf(input.artifactSha256).trim() }
+    : reconcileArtifactSha256(workspace, artifact, input.artifactSha256)
+  if (!bound.ok) return { ok: false, code: 'artifact-hash-mismatch', detail: bound.detail }
   const result: TestResult = {
     ...input,
+    ...(artifact === '' ? {} : { artifact, artifactSha256: bound.sha256 }),
+    ...(declaredDefects.length === 0 ? {} : { defects: declaredDefects }),
     // **REQ-053**：`adoptedBy` 一给就是一次**采纳动作** ⇒ 由记录端盖上采纳时刻
     // （不要求调用方自己记得写：会忘的字段迟早会忘，而"采纳了却说不出什么时候"就核不动了）。
     ...(adoptedBy === '' || textOf(input.adoptedAt).trim() !== '' ? {} : { adoptedAt: new Date().toISOString() }),
@@ -290,6 +358,8 @@ export function recordTestResult(
     ...(result.artifact === undefined ? {} : { artifact: result.artifact, artifactSha256: result.artifactSha256 ?? '' }),
     // **R-3**：断言面指纹也进真源事件（红绿必须同指纹，判据从事件/记录都能复算）
     ...(result.harness === undefined ? {} : { harness: result.harness }),
+    // **DEF-075**：绑定进真源（"这条结论依据于哪些缺陷已修"离线可读）
+    ...(declaredDefects.length === 0 ? {} : { defects: declaredDefects.join(',') }),
     // **REQ-053（TASK-020）**：「谁执行的 / 谁采纳的」必须进 append-only 的事件 ——
     // `tests/results/*.yml` 是手可改的，独立性这条判据的两个端点只能靠真源佐证
     // （与 D4/R1 的"文件 vs journal"同一纪律：文件里把 `adoptedBy` 改成另一个人也查得出来）。
@@ -775,6 +845,16 @@ export interface Review {
    * **存量不追溯**：旧评审没有这个键 ⇒ 读回来是 `undefined`，既有追加记录不受影响（历史不重写）。
    */
   originalTotal?: number | undefined
+  /**
+   * **当前仍然失败的复现命令**（DEF-048 / 第三批 §3.16）—— 非 `pass` 类主张**二选一**必填之一。
+   *
+   * 病根：`changes-requested` / `reject` 这类待修主张过去可以**不带复现命令**就落盘 ⇒ 已收敛的问题
+   * 被记成未决，后人照着修一个不存在的缺口，而且门禁不会变红、读者也无从复核。
+   * 写一条能跑的复现命令，等于把"现在还坏着"变成**可当场验证**的陈述。
+   */
+  repro?: string | undefined
+  /** 另一条出路：**显式声明"无法复现"+为什么**（把不确定性写成声明，而不是省略）。与 `repro` 二选一。 */
+  unreproducible?: string | undefined
   at: string
   /**
    * **记录这条评审的会话**（2026-10-08 评审核实口径）。
@@ -783,6 +863,47 @@ export interface Review {
    * 老评审没有这个字段 ⇒ 那条规则只在拿得到会话时才生效（与"用户原话核对"同口径）。
    */
   sessionId?: string | undefined
+}
+
+/** 非 `pass` 评审缺复现命令（或两条出路都给了）时抛的错 —— 让**最低层**写入也拦得住。 */
+export class ReviewReproError extends Error {
+  constructor(readonly code: 'repro-missing' | 'repro-ambiguous', readonly detail: string) {
+    super(detail)
+    this.name = 'ReviewReproError'
+  }
+}
+
+/**
+ * **待修主张必须带"当前仍失败的复现命令"**（DEF-048 / 第三批 §3.16）—— **唯一出口**。
+ *
+ * 病根：`changes-requested` / `reject` 这类**待修主张**过去可以**不带复现命令**就落盘
+ * （真机：一条待修主张被原样接受，落盘键只有 `taskId/reviewer/verdict/findings/id/at`）⇒
+ * 已收敛的问题被记成未决，后人照着去修一个不存在的缺口；而且**门禁不会变红**，读者也无从复核。
+ *
+ * 口径（**结构化，不解析散文**）：非 `pass` 的评审必须**二选一** ——
+ *   · `repro`：一条**当前仍然失败**的复现命令（后人照着跑，能看见它现在还是坏的）；
+ *   · `unreproducible`：显式声明「无法复现」+ 为什么（把不确定性写成**声明**，而不是省略）。
+ * 两个都给 ⇒ 读者判不出哪个作准 ⇒ 同样可读拒绝（`repro-ambiguous`）。
+ * `pass` 评审不受约束（没有"未决缺口"要复现）。
+ *
+ * 三处共用它：`recordReview`（最低层，违反即抛）、`office.recordReview`（工具面，可读拒绝）、
+ * `appendReviewFindings`（补录面，可读拒绝）。**不许任何一处另写一套判据**。
+ */
+export function reviewReproIssue(input: {
+  verdict: string
+  repro?: string | undefined
+  unreproducible?: string | undefined
+}): { code: 'repro-missing' | 'repro-ambiguous'; detail: string } | undefined {
+  if (input.verdict === 'pass') return undefined
+  const repro = textOf(input.repro).trim()
+  const unreproducible = textOf(input.unreproducible).trim()
+  if (repro === '' && unreproducible === '') {
+    return { code: 'repro-missing', detail: fmt('uiReview.kReproMissing', { p1: input.verdict }) }
+  }
+  if (repro !== '' && unreproducible !== '') {
+    return { code: 'repro-ambiguous', detail: fmt('uiReview.kReproAmbiguous') }
+  }
+  return undefined
 }
 
 export function listReviews(store: SdoStore): Review[] {
@@ -794,6 +915,9 @@ export function listReviews(store: SdoStore): Review[] {
 }
 
 export function recordReview(store: SdoStore, journal: Journal, input: Omit<Review, 'id' | 'at'>): Review {
+  // **DEF-048**：待修主张必须带复现命令（或显式声明无法复现）—— **最低层**也拦，别处不许绕开
+  const issue = reviewReproIssue({ verdict: input.verdict, repro: input.repro, unreproducible: input.unreproducible })
+  if (issue !== undefined) throw new ReviewReproError(issue.code, issue.detail)
   const review: Review = { ...input, id: idOf(store, journal, 'reviews', 'REV-'), at: new Date().toISOString() }
   store.writeYaml(['reviews', `${review.id}.yml`], { review })
   // **评审核实口径（2026-10-08）**：事件里同时记下"谁记的"与**判断内容的指纹** ——
@@ -806,6 +930,9 @@ export function recordReview(store: SdoStore, journal: Journal, input: Omit<Revi
     verdict: review.verdict,
     findings: review.findings.length,
     contentHash: reviewContentHash(review),
+    // **DEF-048**：两条出路随事件一起留痕（真源里能看出"当时是怎么复现的/为什么复现不了"）
+    ...(review.repro === undefined ? {} : { repro: review.repro }),
+    ...(review.unreproducible === undefined ? {} : { unreproducible: review.unreproducible }),
     ...(review.sessionId === undefined ? {} : { sessionId: review.sessionId }),
   })
   return review
@@ -817,6 +944,21 @@ export interface DeliveryArtifact {
   path: string
   kind: 'source' | 'docs' | 'config' | 'schema' | 'test'
   sha256: string
+  /**
+   * **这个哈希「截至何时」**（DEF-031 / 第三批 §3.12）—— 打包那一刻**现算**到的时刻（ISO 8601）。
+   *
+   * 为什么必须有：交付清单里只有「路径 + 哈希」，没有「截至何时」⇒ 事后发现产物与哈希不符时，
+   * **分不清"签完之后漂移了"与"从来就没一致过"**（用户 2026-10-13 追认 13 条「不修历史」时，
+   * 依据的正是"后续由 DEF-031 的修法承担"——本条就是兑现那句话）。
+   *
+   * 与 `manifest.at`（清单头的记账时刻）**不是一回事**：`at` 是"这份清单什么时候写的"，
+   * `asOf` 是"每个哈希是对**哪一刻**的产物现算的"。逐条记的原因：一次打包可以包含多个产物，
+   * 而"截至时刻"要能逐条核对（尤其事后补算/人工核对时）。
+   *
+   * 旧清单（或手写清单）里没有这个键 ⇒ 读出来是**空串**（与 `at`/`by` 同款：**不回写历史**），
+   * 回执显式标「未记时刻」——不假装它有一个"大致时刻"。
+   */
+  asOf: string
 }
 
 /**
@@ -920,8 +1062,9 @@ function normalizeManifest(raw: unknown, id: string, notes: FieldShapeNote[]): D
   const declaredId = textOf(record.id)
   const entityId = declaredId.trim() === '' ? id : declaredId
   // 标量写成的产物行没有哈希可算：`sha256: 'missing'` 与 `hashArtifact()` 的"算不出来"同口径，
-  // 于是既有的"产物缺失"判据会**可读地**判红，而不是悄悄放行一条空哈希
-  const artifacts = recordListOf<DeliveryArtifact>(record.artifacts, (text) => ({ path: text, kind: 'source', sha256: 'missing' }))
+  // 于是既有的"产物缺失"判据会**可读地**判红，而不是悄悄放行一条空哈希。
+  // **DEF-031**：标量形态同样没有"截至时刻" ⇒ `asOf: ''`（回执标「未记时刻」）。
+  const artifacts = recordListOf<DeliveryArtifact>(record.artifacts, (text) => ({ path: text, kind: 'source', sha256: 'missing', asOf: '' }))
   pushShapeNote(notes, 'manifest', entityId, 'artifacts', artifacts.issue)
   // 标量写成的验收行放进 `requirement`：既有的"验收未通过"判据会点名它（可读失败，不是静默通过）
   const acceptance = recordListOf<AcceptanceRow>(record.acceptance, (text) => ({
@@ -944,6 +1087,8 @@ function normalizeManifest(raw: unknown, id: string, notes: FieldShapeNote[]): D
       path: textOf(artifact.path),
       kind: textOf(artifact.kind) as DeliveryArtifact['kind'],
       sha256: textOf(artifact.sha256),
+      // **DEF-031**：旧清单没有这个键 ⇒ 空串（宽容读、不回写历史），回执标「未记时刻」
+      asOf: textOf(artifact.asOf),
     })),
     acceptance: acceptance.value.map((row) => ({
       requirement: textOf(row.requirement),
@@ -959,7 +1104,7 @@ function normalizeManifest(raw: unknown, id: string, notes: FieldShapeNote[]): D
 }
 
 /** 读一个交付清单文件（`id` 只在正文缺 id 时兜底；`manifest.yml` 传空串）。 */
-function readManifestFileChecked(
+export function readManifestFileChecked(
   store: SdoStore,
   file: string,
   fallbackId: string,
@@ -1056,6 +1201,11 @@ export interface RunInput {
   outcome: 'pass' | 'fail'
   evidence: string
   artifact?: string | undefined
+  /**
+   * **调用方手里那个哈希**（DEF-011）：给了就必须与现算值一致（不一致 ⇒ 可读拒绝并点名两值），
+   * 一致 ⇒ 记它；不给 ⇒ 由 `recordRun` 现算（旧行为）。
+   */
+  artifactSha256?: string | undefined
   exitCode?: string | undefined
   by: string
 }
@@ -1066,6 +1216,45 @@ export interface RunInput {
  * 目标 / 命令 / 证据为空一律**拒绝**（「跑过了」必须可复跑、可核对）；给了产物就**当场绑定哈希**
  * （`artifactSha256`），交付时用它判「跑的是不是这一份」。
  */
+/**
+ * **调用方声明的产物哈希与现算值对账**（DEF-011 / 第三批 §3.9）—— 唯一出口。
+ *
+ * 病根：`record` 类入口一律在**记录时刻现算**哈希，而**入参面根本没有这个参数**
+ *（`grep -c artifactSha256 src/interface/tools.ts` = 0）⇒「跑完必须逐字节恢复」的纪律在这条路上落不了地：
+ * 调用方**手里**就有哈希（构建脚本刚算过），却没有任何通路把它交进来，只能靠事后重算；
+ * 更糟的形态是"传了却被丢"（`RunInput.artifactSha256` 早就存在，写端直接覆盖成现算值）。
+ *
+ * 口径：给了就必须**可核对** ——
+ *   · 一致 ⇒ 记它（与记现算值等价，但"声明被核对过"这件事本身留下了）；
+ *   · 不一致 ⇒ **可读拒绝并点名两值**（绝不静默取现算值 —— 那等于把调用方的声明当没说过）；
+ *   · 读不到产物 / 给了哈希却没给路径 ⇒ 同样可读拒绝（无从核对）。
+ * 未声明（空）⇒ 维持旧行为（现算），零破坏。
+ */
+export function reconcileArtifactSha256(
+  workspace: string,
+  artifact: string,
+  declared: string | undefined,
+): { ok: true; sha256: string } | { ok: false; detail: string } {
+  const path = artifact.trim()
+  const claim = textOf(declared).trim()
+  if (claim === '') return { ok: true, sha256: path === '' ? '' : hashArtifact(workspace, path) }
+  if (path === '') {
+    return { ok: false, detail: '给了 `artifactSha256` 却没给 `artifact`：没有路径就无从核对这个哈希（补上 artifact，或去掉 artifactSha256）' }
+  }
+  const actual = hashArtifact(workspace, path)
+  if (actual === 'missing') {
+    return { ok: false, detail: `读不到被检产物 ${path}（现算 = missing）⇒ 无法核对调用方声明的 artifactSha256=${claim}；本次**没有写入**` }
+  }
+  if (actual !== claim) {
+    return {
+      ok: false,
+      detail: `artifactSha256 与现算值不符：声明 ${claim}，现算 ${actual}（产物 ${path}）—— 二者必须一致才落盘`
+        + '（不一致说明声明的不是这一份产物；静默取现算值等于丢掉了调用方的声明）；本次**没有写入**',
+    }
+  }
+  return { ok: true, sha256: claim }
+}
+
 export function recordRun(
   store: SdoStore,
   journal: Journal,
@@ -1078,6 +1267,9 @@ export function recordRun(
   if (command === '') return { ok: false, detail: '必须写下真实执行的命令（要可复跑）' }
   if (evidence === '') return { ok: false, detail: '必须给出运行证据（日志路径 / 截图 / 人工确认说明）' }
   const artifact = (input.artifact ?? '').trim()
+  // **DEF-011**：声明的哈希必须**可核对**（一致 ⇒ 记它；不一致 / 读不到 ⇒ 可读拒绝、零写盘）
+  const bound = reconcileArtifactSha256(input.workspace, artifact, input.artifactSha256)
+  if (!bound.ok) return { ok: false, detail: bound.detail }
   // **B-1**：`runs.yml` 形状坏时**拒绝写入** —— 这份写入是"整份重写"，以读回结果为基底，
   // 坏形状会让它把没读出来的历史记录**永久抹掉**（本项目最忌讳的静默丢内容）。
   const checked = readRunsChecked(store)
@@ -1099,7 +1291,7 @@ export function recordRun(
     ...((input.exitCode ?? '').trim() === '' ? {} : { exitCode: (input.exitCode ?? '').trim() }),
     evidence,
     artifact,
-    artifactSha256: artifact === '' ? '' : hashArtifact(input.workspace, artifact),
+    artifactSha256: bound.sha256,
     at: new Date().toISOString(),
     by: input.by,
   }
@@ -1180,6 +1372,9 @@ export function packageDelivery(
     path: artifact.path,
     kind: artifact.kind,
     sha256: hashArtifact(input.workspace, artifact.path),
+    // **DEF-031**：逐条记「这个哈希是**截至这一刻**现算的」——
+    // 与 `hashArtifact` 调用**同一轮**取时刻（不提前、不延后），于是"时刻晚于写盘"可机械核对。
+    asOf: new Date().toISOString(),
   }))
   const missing = artifacts.filter((artifact) => artifact.sha256 === 'missing').map((artifact) => artifact.path)
   // ——— **真机运行证据**（用户要求 2026-10-06：「要真机测试才能交付」，其他系统同理） ———

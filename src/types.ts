@@ -878,6 +878,22 @@ export interface TaskCard {
    */
   impact?: string[] | undefined
   /**
+   * **本次 `done` 时"未冻结"的兄弟卡**（DEF-033 / 第三批 §3.13）—— 完成语义的局部/全局之分。
+   *
+   * 病根：「卡 `done` 时全量必须全绿」与「兄弟卡在飞」**结构性冲突**：一张卡没法在别人的半成品上
+   * 宣布完成，而 `done` 又**不允许**"局部绿"（现盘既没有"局部态"也没有"全局冻结态"的字段或判据）。
+   * 与 `exclusive` **不是一回事**：后者管"同一时刻谁在跑"（派发面），`done` 路径不读它。
+   *
+   * 口径（**允许局部绿 + 显式声明未冻结**，两条都必须与"兄弟卡在飞"共存）：
+   *   · `done` 的语义 = **本卡范围内全绿**；`unfrozen` 逐条点名**哪些在飞卡的工作没有并进来**
+   *     （→ 于是"全项目尚未冻结"这件事有名字、有人认领，而不是靠"卡 done 了就等于全局绿"的错觉）；
+   *   · 每条必须是**存在且当前确实在飞**的卡 id（写错、或写一张已经 done 的卡 ⇒ **可读拒绝**，
+   *     不容许用假声明把"未冻结"糊过去）；
+   *   · 有在飞兄弟卡却**漏声明** ⇒ `done` 照常成功（不拦收工），但回执**逐条点名**缺失的那些；
+   *   · 没有任何在飞兄弟卡 ⇒ 回执明说"本次 `done` 等同于全量冻结"（语义同样明确）。
+   */
+  unfrozen?: string[] | undefined
+  /**
    * **影响面推不出来时的显式声明**（DEF-036；键名与 {@link TestingRegressionSource.undecidable} 逐字同款）。
    *
    * 口径：**不许默认「无影响」** —— 既给不出 `impact` 又说不清为什么推不出来的卡，判据
@@ -988,9 +1004,14 @@ export interface StructuralCardPlan {
  *   · `already-covered` —— 覆盖判定命中（`how` 说明是哪条口径）；
  *   · `no-card-needed` —— 元素被显式标记「无需卡」；
  *   · `scope-too-broad` —— 派生写范围超限（`scopes` 是**解析出来的那个写范围本身**，
- *     否则读者不知道是什么被拒了）。
+ *     否则读者不知道是什么被拒了）；
+ *   · **`no-basis`**（TASK-104 / DEF-063；**R6** 收进正式联合类型）—— 判重依据为空被拒（`gaps` 里给了缺什么）。
+ *
+ * **R6（第三批 §3.19）**：`no-basis` 原先**不在**这个联合里 —— `plan.ts` 用 `as unknown as` 强塞、
+ * `describe.ts` 只好就地加宽（`StructuralSkipReasonWithBasis`）⇒ **运行期正确、类型面说谎**
+ *（依赖"类型看不见的那一位"是最容易被后人误删的形态）。现在它就是正式取值之一，强转与局部加宽都已删除。
  */
-export type StructuralSkipReason = 'already-covered' | 'no-card-needed' | 'scope-too-broad'
+export type StructuralSkipReason = 'already-covered' | 'no-card-needed' | 'scope-too-broad' | 'no-basis'
 
 export interface StructuralSkip {
   designId: string
@@ -1926,13 +1947,17 @@ export interface GateSignature {
  *   · `requirement/baselined` —— 它是**消费**签字的动作本身（重新基线不该让刚签的字立刻失效，
  *     否则 M3 的"内容未改重新冻结"永远无法通过）；
  *   · `phase/*`、`gate/*`、`gate/signed` —— 阶段流转与门禁留痕不是需求真源；
+ *   · **`project/environment`**（**R7**，第三批 §3.20）—— 插件/宿主/node 版本与**环境指纹**入账是
+ *     **纯元数据**：它**不参与任何 G2 判据**（四条真源里没有它；`environment` 在 `design.ts` /
+ *     `derivedDocs.ts` 也零命中）。**修前它被列在下面这张表里**，而紧邻的注释写着"元数据，不作废签字"
+ *     ⇒ 表与注释**必然矛盾**，且后果是"登记一次环境"就把刚签的 G2 判失效（与 G3 侧 DEF-039 ② 同族）。
+ *     二者取一：这里**从表里去掉**（口径 = 表头那句"凡是会**改变 G2 判据所见真源**的事件"），
+ *     并由 `test/m165` 机械钉住"环境登记不使 G2/G3 签字失效"（G3 侧由 DEF-039 ② 承担）。
  *   · `requirement/updated` 之外的读/渲染类事件。
  */
 export const G2_SIGNATURE_INVALIDATING_EVENTS = [
   'project/created',
   'project/updated',
-  // **SDO-08**：插件/宿主/node 版本入账（跨版本复现的外部线索）—— 元数据，不作废签字
-  'project/environment',
   'tailoring/updated',
   'requirement/captured',
   'requirement/updated',
@@ -1970,6 +1995,12 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // 派生视图 / 渲染（不反向写台账）
   'design/rendered',
   'doc/rendered',
+  // **DEF-039 ②（第三批 §3.14）**：**环境指纹登记是纯元数据** —— `project/environment` 只记
+  // 插件/宿主/node 版本与环境串（`reason: 'declared'`），**不参与任何设计判据**（`environment` 在
+  // `design.ts` / `derivedDocs.ts` **零命中**，`DESIGN.md` 一字不变）。修前它**不在**中性表里
+  // ⇒ 按黑名单口径"登记一次环境就把 G3 设计签字判失效"（真机就是这么发生的）。
+  // G2 侧同口径：它也不在 `G2_SIGNATURE_INVALIDATING_EVENTS` 里（见那里的"有意不列"清单，R7）。
+  'project/environment',
   // 门禁与签字自身的产物
   'gate/result',
   'gate/signed',
@@ -2076,11 +2107,21 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
  */
 export function isSignatureInvalidatingEvent(gate: string, type: string, data?: unknown): boolean {
   if (gate === 'G2') return (G2_SIGNATURE_INVALIDATING_EVENTS as readonly string[]).includes(type)
+  // **DEF-039 ③（第三批 §3.14）—— 同一事件在 G2/G3 上**可以**不同口径，但差异必须**有据**并写在这里**：
+  //   · `trace/linked{kind: req-des}`（设计侧追溯边）：**G2 = false / G3 = true**。
+  //     据：G2 的四类真源是需求本身 / 项目与裁剪 / 问题账本 / 红队（见 `G2_SIGNATURE_INVALIDATING_EVENTS`
+  //     的表头口径），**不读任何设计侧追溯边**；而这条边会进 `DESIGN.md` 的「追溯矩阵」§8 ⇒ 改的是
+  //     **设计承诺** ⇒ 只该作废 G3。反过来若强行"同口径"，要么让 G2 被设计侧的边反复作废（白重签），
+  //     要么让 G3 漏掉真正的设计变更 —— 两种都更糟。
+  //   · `trace/linked{kind: req-task|req-tc}`（施工期覆盖边）：两侧都 false（施工记账，不是设计真源）。
+  //   · `requirement/updated` 这类**需求真源**变更：两侧都 true（G2 白名单含它；G3 走黑名单，它不中性）
+  //     —— 与 §6.1「需求变更后设计必须重签」一致。
+  // 这三态由 `test/m167` 机械钉住（改动任一侧都会红）。
   // **追溯边按作用域区分（2026-10-05 真机）**：设计侧边（`kind: req-des`）进 `DESIGN.md` 的
   // 「追溯矩阵」§8，改的是设计承诺 ⇒ 失效；施工期覆盖边（`req-task` / `req-tc`）**不进设计文档**
   // （实测：§8 只有需求↔设计元素/契约/界面条目四列）⇒ 属记账。开发者一开工就要挂这两类边，
   // 若它们也作废签字，"签完 G3 再开发"在机械上就不成立（真机：签 G3 后仅因 3 条 `req-task/req-tc`
-  // 边 #591-593 就被判 stale）。原口径担心的"新边喂 C-21"由 C-21 每次判定**现算**兜底。
+  // 边 #591-593 就被判 stale）。原口径担心的"新边喂 C-21"由 C-21 每次判定**现算**兜底.
   // **不传 `data` 的调用保守失效**（黑名单默认方向不变，老调用与既有断言口径不变）。
   if (type === 'trace/linked' || type === 'trace/unlinked') {
     const kind = (data as { kind?: unknown } | undefined)?.kind

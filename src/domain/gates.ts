@@ -91,6 +91,7 @@ import { checkWantsShapeNotes, collectShapeNotes, shapeNoteLines, shapeNotesForC
 import { assessDefectLinks, defectLinksExemptionLines, defectLinksRemedy, describeDefectLinks, report } from './trace.js'
 import { iterationTasks, listTasks, planStats, readIteration, textPathsOf, validatePlan } from './plan.js'
 import { declaredItemVerdict, fixesRemedy, fixStatusRows, mitigatesRemedy, mitigatesRows } from './collab.js'
+import { claimedSessionsByCard } from './roles.js'
 import { independenceViolations } from '../integration/orchestrator.js'
 import {
   blockerBreakdown,
@@ -100,6 +101,7 @@ import {
   listTestCases,
   listTestResults,
   verificationStats,
+  fixedDefectsWithoutTestResult,
 } from './records.js'
 import type { Review } from './records.js'
 import { reviewAdoptionLabel, reviewAdoptions } from './reviewVerification.js'
@@ -1696,6 +1698,20 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
    * 免得像 DEF-038 那样两处各抄一份再各自漂移。文案不在本文件（`gates.ts` 被 i18n 棘轮钉在
    * 硬编码中文 0），全部走 `uiGates.*` 的 `t()` / `fmt()`。
    */
+  // **DEF-075（第三批 §3.8）**：`fixed` 缺陷必须有**绑定的测试结论**（判据面缺的那条缺陷线）。
+  // 归属 G6（用户裁决/驾驶舱建议）：测试结论是**验证阶段**的产物，与 `tests.passed` / `trace.coverage` /
+  // `review.independent` 同属一族；不塞进 G7 —— 那会让 73 条历史缺陷一次性变成交付阻塞。
+  'defects.fixed-tested': (ctx) => {
+    const missing = fixedDefectsWithoutTestResult(ctx.store)
+    if (missing.length === 0) return ok('defects.fixed-tested', t('uiGates.kFixedTestedOk'))
+    const named = missing
+      .map((item) => (item.failingResults.length === 0
+        ? item.id
+        : fmt('uiGates.kFixedTestedWithFail', { p1: item.id, p2: item.failingResults.join(' ') })))
+      .join(' ')
+    return fail('defects.fixed-tested', fmt('uiGates.kFixedTestedMissing', { p1: String(missing.length), p2: named }), t('uiGates.kFixedTestedRemedy'))
+  },
+
   'defects.closed': (ctx) => {
     const stats = verificationStats(ctx.store)
     const breakdown = blockerBreakdown(listDefects(ctx.store))
@@ -1876,7 +1892,8 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   'review.independent': (ctx) => {
     const reviews = listReviews(ctx.store)
     const tasks = listTasks(ctx.store)
-    const violations = independenceViolations(reviews, tasks)
+    // **DEF-042**：判据按**会话 uuid** —— 材料是 `task/claimed` 事件里的会话（不看卡当前状态）
+    const violations = independenceViolations(reviews, tasks, claimedSessionsByCard(ctx.journal))
     if (violations.length > 0) {
       return fail('review.independent', violations.map((item) => item.detail).join('；'), t('uiGates.k114'))
     }

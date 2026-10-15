@@ -20,8 +20,8 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { boardModelFor, renderBoard } from './board/render.js'
 import { describeExemptions } from './interface/describe.js'
 import { exemptionLines } from './domain/construction.js'
-import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel } from './domain/records.js'
-import type { AcceptanceVerdict } from './domain/records.js'
+import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewReproError } from './domain/records.js'
+import type { AcceptanceVerdict, Review } from './domain/records.js'
 // **REQ-054（TASK-054）**：判定基准（oracle）—— 词表与逐类核对实现都只有一处（`evidence.ts`），
 // 工具面只负责"把参数搬到位 + 把缺口原话说出来"，**不在这里另写一份判定语义**。
 import { artifactEchoRows, evidenceTally, oracleGaps } from './domain/evidence.js'
@@ -182,7 +182,6 @@ import type { DispatchFinished } from './domain/dispatchReports.js'
 import { maskAllows } from './domain/roles.js'
 import { isAdrId } from './domain/adr.js'
 import { evaluateWriteScope, isDevicePath, normalizeWorkspacePath } from './domain/writeScope.js'
-import { findProjectRoot } from './infra/discovery.js'
 import type { ProposedQuestion } from './domain/grill.js'
 
 export const name = 'dsh-software-dev-office'
@@ -2108,6 +2107,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...((args.note ?? args.reason) === undefined ? {} : { note: args.note ?? args.reason }),
             // **DEF-016 降级路径**：宿主观测拿不到子会话写入 ⇒ 由执行者自报清单，插件用同一出口核对
             ...(args.reportedFiles === undefined ? {} : { reportedFiles: parseList(args.reportedFiles) ?? [] }),
+            // **DEF-033**：本次 done 未冻结的兄弟卡（逐条点名"哪些在飞卡的工作没并进来"）
+            ...(args.unfrozen === undefined ? {} : { unfrozen: parseList(args.unfrozen) ?? [] }),
           })
           if (!result.ok) return fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
           const taskText = describeTask(result.task, office.shapeNotes(call))
@@ -2179,9 +2180,29 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const selfReportNote = result.workspaceAudit?.selfReported === true
             ? '\n' + fmt('uiIndex.kWorkScopeSelfReported', { p1: String(result.workspaceAudit.changed) })
             : ''
+          // **R5（第三批 §3.7）**：`impact` 的 done 面对账 —— 声明过却没被"处理过"的影响面逐条点名
+          //（本卡改过 / 有 pass 结果绑着它 / 在自报清单里，三者之一即视为处理过）。
+          // 与 `fixBlock` 同款：**回显不拦截**（拦截会让"改既有语义"的卡永远收不了工），判据面归 G 门禁。
+          // **DEF-033（第三批 §3.13）**：完成语义的读数 —— 局部绿（含未冻结清单）／漏声明／全量冻结。
+          // 与 `impactBlock` 同款：**回显不拦截**（"卡 done 时全量必须全绿"与"兄弟卡在飞"结构性冲突，
+          // 拦下去就等于不许收工）；拦的是**假声明**（见 `unfrozen-bad-id`）。
+          const unfrozenDeclared = result.unfrozen ?? []
+          const unfrozenMissing = result.unfrozenMissing ?? []
+          const unfrozenBlock = unfrozenDeclared.length > 0
+            ? '\n' + fmt('uiIndex.kUnfrozenLocal', { p1: unfrozenDeclared.join(t('uiCollab.kListSep')) })
+              + (unfrozenMissing.length === 0 ? '' : '\n' + fmt('uiIndex.kUnfrozenMissing', { p1: unfrozenMissing.join(t('uiCollab.kListSep')) }))
+            : (unfrozenMissing.length > 0
+              ? '\n' + fmt('uiIndex.kUnfrozenMissing', { p1: unfrozenMissing.join(t('uiCollab.kListSep')) })
+              : '\n' + t('uiIndex.kUnfrozenFrozen'))
+          const impactGaps = result.impactGaps ?? []
+          const impactBlock = impactGaps.length === 0
+            ? ''
+            : '\n' + fmt('uiIndex.kImpactGapsHeader', { p1: String(impactGaps.length) })
+              + '\n' + impactGaps.map((path) => `- ${path}`).join('\n')
+              + '\n' + t('uiIndex.kImpactGapsRemedy')
           return (result.workspaceAudit !== undefined && !result.workspaceAudit.checked
             ? taskText + '\n' + t('uiIndex.kWorkScopeNotAudited')
-            : taskText + selfReportNote) + fixBlock + artifactBlock + naBlock + reportWarning + fragmentWarning
+            : taskText + selfReportNote) + fixBlock + artifactBlock + naBlock + impactBlock + unfrozenBlock + reportWarning + fragmentWarning
         }
         case 'errata': {
           // **DEF-071**：done 卡的**追加式**勘误通道 —— 历史不重写，但"本卡不做的说明"必须能补。
@@ -2388,6 +2409,22 @@ export function apply(ctx: Context, config: SdoConfig): void {
               p1: oracleGapList.join('；') + t('uiIndex.kOracleNothingWritten'),
             })
           }
+          // **DEF-075**：先解析"这条结论依据于哪些已修缺陷"（数组 / JSON 文本二选一）。
+          // 形状不对 ⇒ **可读拒绝**（不把异常抛到工具边界）：`defects` 是绑定，静默丢它等于没绑。
+          const defectsParsed = ((): { ids?: string[]; error?: string } => {
+            if (args.defects === undefined) return {}
+            const parsed = jsonOr<unknown>(args.defects, 'defects')
+            if (parsed.error !== undefined) return { error: parsed.error }
+            const list = parsed.value
+            if (list === undefined) return {}
+            if (!Array.isArray(list) || list.some((item) => typeof item !== 'string')) {
+              return { error: t('uiIndex.kBadDefects') }
+            }
+            const ids = list.map((item) => String(item).trim()).filter((item) => item !== '')
+            return ids.length === 0 ? {} : { ids }
+          })()
+          if (defectsParsed.error !== undefined) return fmt('uiIndex.k35', { p1: 'bad-defects', p2: defectsParsed.error })
+          const declaredDefects = defectsParsed.ids
           const outcome = office.addTestResult(call, {
             caseId: args.caseId,
             status: args.status,
@@ -2395,6 +2432,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // **SDO-57（C）**：证据自带**时点（at）+ 前置（env/被检产物）** ⇒ 限定语不再静默过期
             ...(args.env === undefined ? {} : { env: args.env }),
             ...(args.artifact === undefined ? {} : { artifact: args.artifact }),
+            // **DEF-011**：调用方声明了哈希就透传给域层对账（一致才落盘）
+            ...(args.artifactSha256 === undefined ? {} : { artifactSha256: args.artifactSha256 }),
+            ...(declaredDefects === undefined ? {} : { defects: declaredDefects }),
             // **R-3**：断言面指纹（红绿必须一致；不给就只按"出现过 fail、后有 pass"判，与旧行为一致）
             ...(args.harness === undefined ? {} : { harness: args.harness }),
             // **REQ-053（TASK-039）**：执行者与采纳者逐字段搬进域层 —— 漏一行就等于工具层**静默丢弃**
@@ -2453,13 +2493,31 @@ export function apply(ctx: Context, config: SdoConfig): void {
         case 'env': {
           // **SDO-57（C）**：环境**时序账本** —— 换 JDK/升探针/改类路径就再登记一条，
           // 此后"这条证据是不是在当前环境下得出的"可判（限定语不再静默过期）。
+          //
+          // **DEF-025（第三批 §3.10）**：不给 `env` ⇒ **只读回显当前环境串**（旧实现是可读拒绝，
+          // 于是"当前环境到底是什么"除了翻台账没别的办法拿到）；登记时回执必须**点名影响面**
+          //（会让哪些既有结果变成"证据过期"）并给**可执行的补做/重跑出路**。
+          if (args.env === undefined || args.env.trim() === '') {
+            const current = office.environmentStatus(call)
+            return current.env === ''
+              ? t('uiIndex.kEnvNeverRegistered')
+              : fmt('uiIndex.kEnvCurrent', { p1: current.env, p2: current.at })
+          }
           const recorded = office.noteEnvironment(call, {
-            env: args.env ?? '',
+            env: args.env,
             ...(args.reason === undefined ? {} : { note: args.reason }),
             by: 'human',
           })
           if (!recorded.ok) return t('uiIndex.kEnvMissing')
+          if (recorded.newlyStale.length === 0) {
+            return fmt('uiIndex.kEnvRecorded', { p1: recorded.env, p2: recorded.at }) + '\n' + fmt('uiIndex.kEnvNoImpact', { p1: recorded.env })
+          }
           return fmt('uiIndex.kEnvRecorded', { p1: recorded.env, p2: recorded.at })
+            + '\n' + fmt('uiIndex.kEnvImpact', {
+              p1: String(recorded.newlyStale.length),
+              p2: recorded.newlyStale.map((row) => `${row.resultId}（${row.caseId}）：${row.reason}`).join('；'),
+            })
+            + '\n' + t('uiIndex.kEnvRemedy')
         }
         case 'defect': {
           // **REQ-055（TASK-039）**：根因面三字段只在**新建**时可用（`DefectUpdate` 没有它们 —— 域模型边界
@@ -2616,6 +2674,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // **DEF-072**：条号声明（成对；缺一个由域层可读拒绝，不静默丢弃）
           ...(args.originalIndex === undefined ? {} : { originalIndex: args.originalIndex }),
           ...(args.originalTotal === undefined ? {} : { originalTotal: args.originalTotal }),
+          // **DEF-048**：补录也可以**补上**"当前仍失败的复现命令"（或"无法复现"声明）——
+          // 存量非 pass 评审缺这两条出路时，这是把它补齐的通道
+          ...(args.repro === undefined ? {} : { repro: args.repro }),
+          ...(args.unreproducible === undefined ? {} : { unreproducible: args.unreproducible }),
           ...(call.sessionId === undefined ? {} : { sessionId: call.sessionId }),
         })
         if (!result.ok) return `${result.code}：${result.detail}`
@@ -2688,14 +2750,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
       if (call.sessionId !== undefined && claimSession !== undefined && call.sessionId === claimSession) {
         return fmt('uiIndex.kSelfReviewSameSession', { p1: args.taskId, p2: claimSession })
       }
-      const review = office.addReview(call, {
-        taskId: args.taskId,
-        reviewer: args.reviewer,
-        verdict: args.verdict,
-        findings: findings.value ?? [],
-        // 记下"谁记的"：同会话不许自己核实自己（域层据此拒）
-        ...(call.sessionId === undefined ? {} : { sessionId: call.sessionId }),
-      })
+      // **DEF-048（第三批 §3.16）**：非 `pass` 的待修主张必须带 `repro`（当前仍失败的复现命令）
+      // 或 `unreproducible`（显式声明无法复现 + 为什么）—— 缺则**可读拒绝**（零写盘）。
+      // 判据在域层唯一出口（`reviewReproIssue`），这里只把抛出的 `ReviewReproError` 转成回执。
+      let review: Review
+      try {
+        review = office.addReview(call, {
+          taskId: args.taskId,
+          reviewer: args.reviewer,
+          verdict: args.verdict,
+          findings: findings.value ?? [],
+          ...(args.repro === undefined ? {} : { repro: args.repro }),
+          ...(args.unreproducible === undefined ? {} : { unreproducible: args.unreproducible }),
+          // 记下"谁记的"：同会话不许自己核实自己（域层据此拒）
+          ...(call.sessionId === undefined ? {} : { sessionId: call.sessionId }),
+        })
+      } catch (error) {
+        if (error instanceof ReviewReproError) return error.detail
+        throw error
+      }
       return fmt('uiIndex.k51', { p1: review.id, p2: review.taskId, p3: review.verdict, p4: review.reviewer, p5: task.owner === undefined ? '' : fmt('uiIndex.k117', { p1: task.owner }) })
         + '\n' + fmt('uiIndex.kReviewAwaitingVerification', { p1: String(review.findings.length), p2: review.id })
     },
@@ -2717,6 +2790,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           outcome: args.outcome === 'fail' ? 'fail' : 'pass',
           evidence: args.evidence ?? '',
           artifact: args.artifact,
+          artifactSha256: args.artifactSha256,
           exitCode: args.exitCode,
           by: args.by ?? 'human',
         })
@@ -3887,15 +3961,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // **DEF-047 落点一（其零）**：认领归属与卡的查找也必须按**工作区根** —— 会话 cwd 是子目录时
             // `<子目录>/.sdo` 不存在，按会话 cwd 查 `claimsBySession` 会**一条认领都读不到** ⇒ 角色被判成
             // "子会话但没认领" ⇒ `cardId` 缺席 ⇒ 闸门拿不到卡的写范围 ⇒ **在范围内的路径被误拒**。
-            // 用 `findProjectRoot`（既有发现口径，不新造），且**先算一次**给下面整段复用。
+            //
+            // **DEF-054（第三批 §3.17）**：这里原用 `findProjectRoot(call.cwd, …)` —— 它会**向上爬**，
+            // 会话 cwd 在 `<祖先项目>/proj/sub` 时会认到**祖先项目**的 `.sdo/` ⇒ **跨项目串账**
+            //（`dab49d5` 引入的回归，`git log -S 'findProjectRoot(call.cwd' -- src/index.ts` 一笔可查）。
+            // 现在改用**唯一出口** `office.workspaceRootFor`：只认"本次 cwd"或"本会话登记的 cwd"
+            // **本身**（谁真的含 `.sdo/` 用谁），**绝不向上爬**、绝不猜别的项目。
             const workspaceRoot = ((): string => {
-              if (call.cwd === undefined || call.cwd === '') return ''
               try {
-                return findProjectRoot(call.cwd, settings.projectDirName) ?? call.cwd
+                return office.workspaceRootFor(call) ?? ''
               } catch {
-                return call.cwd
+                return ''
               }
             })()
+            // **DEF-054 ②（fail-closed）**：归属不到工作区时**不许 fail-open** ——
+            // 修前 `call.cwd === undefined` ⇒ `kind='unknown'` ⇒ **掩码与写范围两段一起跳过**。
+            // 驾驶舱不受影响（它本就不受角色掩码约束、也没有卡的写范围）；**执行者子会话**一律拒绝。
+            if (isChildSession && workspaceRoot === '') {
+              return { kind: 'deny', reason: t('uiIndex.kWorkspaceUnknownExecutor') }
+            }
             // `.sdo/`、认领、卡都扎根在工作区根：只在与会话 cwd 不同时才改写 `cwd`（同值时原样传，零行为差）
             const rootCall = call.cwd === undefined || call.cwd === '' || workspaceRoot === call.cwd
               ? call
@@ -3970,7 +4054,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // **DEF-047 落点一（路径基准：两个，不是一个）**：闸门内部是**两个基准**，分工不同 ——
             //   · **会话工作目录**（`agent.session.header.cwd`，经 `injectionCall(resolveScopeCall)` 的既有
             //     取法，不新造口径）负责"**相对路径往哪解析**"；
-            //   · **工作区根**（`findProjectRoot` 的既有发现口径）负责"**写范围与公共面的前缀拿谁比**"
+            //   · **工作区根**（`office.workspaceRootFor`，DEF-054 起不再向上爬）负责"**写范围与公共面的前缀拿谁比**"
             //     —— 卡的 `writeScopes` 与 `disciplineAllowPaths` 都是相对工作区根声明的。
             // 会话 cwd 是子目录时二者不等：旧实现把一个字段同时当两者用 ⇒ 相对路径解析对了、前缀却比不中
             // ⇒ **在范围内的路径被误拒**（真机现象：绝对路径被拒、相对路径通过）。故分别传
@@ -3993,7 +4077,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               // **DEF-047 落点一**：把**两个基准分别**交给闸门（`exactOptionalPropertyTypes` ⇒ 不可用时
               // 整键省略，而不是塞 `undefined`）：
               //   · `workspace` = **会话 cwd**（`call.cwd`）—— 相对路径按它解析；
-              //   · `workspaceRoot` = **工作区根**（`findProjectRoot`，既有发现口径）—— 卡的 `writeScopes`
+              //   · `workspaceRoot` = **工作区根**（`office.workspaceRootFor`；DEF-054 起**不向上爬**）—— 卡的 `writeScopes`
               //     与公共面是相对工作区根声明的，前缀比对只能拿它比。
               // 判定**语义**一处不改（`evaluateWriteScope` 仍是唯一实现）：这里只是把两个本来就被挤在
               // 一个字段上的基准分开。会话 cwd 拿不到 ⇒ 不传 `workspace` ⇒ 闸门 fail-open（与修前一致）。

@@ -98,9 +98,27 @@ export function readReviewCollection(store: SdoStore, collection: string): Revie
   return { collection, items }
 }
 
-/** 读全部受审集合（集合按**声明序**）。 */
+/**
+ * 读全部受审集合（集合按**声明序**）。
+ *
+ * **DEF-028（第三批 §3.11）**：集合名是**集合** —— 同一个名字读两遍只会产出**两段一模一样的段落**
+ * （真机就是这么调进来的：`['tests','tests','decisions']` ⇒ 3 段）。这里按**首次出现顺序去重**。
+ *
+ * 为什么去重而不是拒绝：调用方给的是"我要受审的集合清单"，重复项**不含任何额外语义**，
+ * 拒绝一条意思完全正确的调用比接受它更糟（本仓 TASK-016 的既定口径）。去重也不掩盖任何东西 ——
+ * 逐条索引（`payloadIndex`）里本来就出现不了重复的 `collection/id`，而整篇指纹
+ *（`reviewFingerprint`）按 `(collection, id, hash)` 算 ⇒ **去重前后指纹一致**（`test/m167` 钉住这一点）。
+ */
 export function readReviewPayload(store: SdoStore, collections: readonly string[]): ReviewPayloadSection[] {
-  return collections.map((collection) => readReviewCollection(store, collection))
+  const seen = new Set<string>()
+  const sections: ReviewPayloadSection[] = []
+  for (const collection of collections) {
+    const key = collection.trim()
+    if (seen.has(key)) continue
+    seen.add(key)
+    sections.push(readReviewCollection(store, collection))
+  }
+  return sections
 }
 
 /** 逐条索引（比对与落盘用）。 */

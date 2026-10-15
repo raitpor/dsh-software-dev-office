@@ -565,6 +565,10 @@ uiClamp:
   truncated: "… (truncated — original {p1} characters, showing only the first {p2}. The full content is in the `.sdo/` source of truth — or re-fetch it with more specific filter parameters)"
 
 uiGates:
+  kFixedTestedMissing: 'REJECTED: **fixed defects with no test conclusion** ({p1}): {p2} — a fix must be backed by a **passing** test conclusion that lists its id in `defects`; otherwise the defect was never tested and no gate criterion said anything about it.'
+  kFixedTestedWithFail: '{p1} (**and a failing result is bound to it**: {p2} — it is still broken)'
+  kFixedTestedRemedy: 'Add the basis: run that test and record the conclusion with `sdo_test action=record caseId=<case> status=pass evidence=<evidence> defects=["DEF-xxx"]` (one conclusion may cover several defects). If the defect genuinely cannot be tested, mark it `wontfix` and supply `waiveReason`/`waiveApprovedBy` (same rule as C-63).'
+  kFixedTestedOk: 'OK: every `fixed` defect has a **bound passing conclusion** (the basis lives on the conclusion, in the `defects` field)'
   kQualityDocNaEmpty: "No quality scenario / ATAM truth (quality requirements are not managed yet); to start, record truth with sdo_quality action=scenario / action=evaluate, then sdo_render target=quality"
   kQualityDoc: "Quality doc rendered from current truth (render seq {p1}, {p2} scenarios)"
   kQualityDocMissing: "docs/QUALITY.md does not exist yet (quality scenarios and ATAM have no human-readable carrier)"
@@ -942,6 +946,7 @@ uiTrace:
   defectTraceNoReading: "this rendering got no reading (the trace report carries no such field)"
   defectTraceRemedy: "Add a `req-defect` edge for every orphan defect (`sdo_trace action=link from=REQ-001 to=DEF-001 kind=req-defect`; the target requirement must be **baselined** and not withdrawn), or write an explicit exemption into `.sdo/defects/DEF-*.yml` as `exemption: { reason: <why it can be ignored>, approvedBy: <who approved it> }` (both fields are required; a missing one is treated as unexempted). When an edge points at an invalid requirement, fix that edge first or re-point it at a valid one."
 uiCollab:
+  kUnfrozenBadId: 'REJECTED: {p1} in the unfrozen list cannot be accounted for: each entry must be the id of a sibling card that **exists and is still in progress** (a typo, a card already done/blocked, or this card itself does not count) — {p2} card(s) are in progress right now. **Nothing was written** (papering over "not frozen" with a false declaration turns delivery freeze into a verbal promise).'
   kErrataNotFound: "no such task card {p1} (errata can only be appended to an existing card)"
   kErrataNoteRequired: "the errata for {p1} cannot be empty: an errata is a **note**, and an empty note says nothing"
   kScopeViolationSelfReported: "{p1} wrote out of scope: {p2} (write scopes: {p3}) — note: this reconciliation used the **self-reported** file list (child sessions never receive the host workspace/changes events; upstream limit DEF-016), so the verdict is based on a **declaration**, not on host observation. Move the change back in scope, or have the process officer widen the card and re-claim."
@@ -972,7 +977,7 @@ uiPlan:
   kUiTextScopeNoPaths: 'the card declares it produces **user-visible text** (`uiText`), but the **project has not declared a text surface yet** (`.sdo/config.yml` → `plan.textPaths` is empty) ⇒ the criterion has nothing to reconcile against. The plugin deliberately hardcodes **no** path of its own (that would bake one project directory layout into a generic rule), so «where the text lives» must be declared by the project'
   kLandingOutsideScope: 'the card claims **landing paths** that fall **outside its own write scope**: landing {p1}; write scope {p2} — at landing time the card simply cannot write those files (it either crosses the boundary or has to fudge it elsewhere)'
   kLandingOutsideScopeRemedy: 'two ways out: ① bring the landing paths into the write scope (`sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...`, the append channel that keeps in-progress and owner; or `release` first and replace `writeScopes` wholesale); ② if those paths are not really written by this card (mere references or context in the DoD), withdraw the declaration: `sdo_task action=update id=<card> landing=[]`. The criterion only reconciles what the card itself declares — it never parses DoD prose'
-  kUiTextScopeRemedy: 'two ways out: ① **let the project declare the text surface** — add a `plan.textPaths` list to `.sdo/config.yml`, one entry per directory that holds user-visible text (this repo: `src/data/lang/`; other projects: their own layout); ② **bring that surface into this card scope**: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (the append channel keeps in-progress and owner). If the card does not actually produce user-visible text, withdraw the declaration with `sdo_task action=update id=<card> uiText=false`.'
+  kUiTextScopeRemedy: 'two ways out: ① **let the project declare the text surface** — add a `plan.textPaths` list to `.sdo/config.yml`, one entry per directory that holds user-visible text (fill in **the project own** directory names; the plugin hardcodes no path and assumes no project layout); ② **bring that surface into this card scope**: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (the append channel keeps in-progress and owner). If the card does not actually produce user-visible text, withdraw the declaration with `sdo_task action=update id=<card> uiText=false`.'
   kBlockedHolderNote: ' (that card is blocked: it may resume writing the same scope, so it still holds it exclusively)'
   kScopeReleaseHint: '  (DEF-049) when a **blocked** card holds it: first decide whether that card is still needed — if yes, `sdo_task action=unblock id=<holding card> reason=...` (blocking condition gone, back to ready); only if you really will not do it, use `sdo_task action=drop` (abandon) or `release` (hand it back). Do **not** use `release` as a way to "clear a block" any more. To widen a write scope while the card is in progress: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (append; keeps in-progress and owner); full replacement still requires releasing first.'
   k1: "The change has artifact evidence (path + hash)"
@@ -1131,6 +1136,8 @@ uiDescribe:
   k107: "Claiming requires `expectedRevision={p1}`"
   k108: "owner recorded as {p1}; when done you must report back with `sdo_task action=done id={p2} owner={p3} evidence=…`."
   k109: "Artifacts {p1}:"
+  kDeliveryAsOf: "as of {p1}"
+  kDeliveryAsOfUnknown: "time not recorded (legacy manifest)"
   k110: "Acceptance matrix {p1} rows: {p2}"
   k111: "Rollback point: {p1}"
   k112: "Prototype content excluded: {p1}"
@@ -1405,9 +1412,14 @@ shapeEntity:
   signature: "Gate signature ledger"
   budget: "Cost budget"
 uiIndex:
+  kUnfrozenLocal: 'FROZEN-SCOPE: this `done` is **locally green** (the changes inside this card scope are green) while **the whole project is not frozen** — sibling cards whose work is not included: {p1}. To learn whether everything is frozen, re-run the full suite once those cards settle.'
+  kUnfrozenMissing: 'WARNING: sibling cards are in progress but are **not** declared in the unfrozen list: {p1} — "card done" is not "globally frozen"; if their work really was included (for example the full suite was run), state that on the card, otherwise readers will assume the delivery surface is frozen.'
+  kUnfrozenFrozen: 'FROZEN-SCOPE: no sibling card is in progress ⇒ this `done` **equals a full freeze** (this card scope green = whole project green).'
+  kBadDefects: 'REJECTED: `defects` must be a list of strings (or its JSON text), e.g. ["DEF-001","DEF-002"] — the value had the wrong shape; nothing was written.'
   kErrataAdded: "📝 appended an errata to {p1} ({p2} total, card now r{p3}) — **append-only**: not a single word of history (dod/plan/status) was rewritten, and the next reader will see this note"
   kDispatchSummary: "🗂 **Dispatched {p1} card(s) this round**: {p2}{p3} (details below; the full id list comes first so a partial first screen cannot be misread as only one was dispatched)"
   kDispatchSummaryHeld: "; {p1} more held for the next round by capacity"
+  kWorkspaceUnknownExecutor: 'DENIED: **this session workspace cannot be determined** (neither the cwd of this call nor the cwd registered for this session contains `.sdo/`) — neither the role mask nor the write scope can be judged, so an executor is refused **fail-closed** rather than let through (before the fix both judgements were **skipped** here). Please call from inside the workspace, or have the process officer re-dispatch with the workspace as the working directory.'
   kWorkScopeSelfReported: "  🧾 Write-scope reconciliation: this run checked {p1} file(s) **self-reported** by the executor (child sessions never receive the host workspace/changes events; upstream limit DEF-016) — a declaration, not independent evidence; please review once by hand."
   kBuildInfo: "🧩 **Build loaded in this session**: {p1} (fingerprint {p2}, version {p3})"
   kBuildUnavailable: "🧩 **Build loaded in this session**: entry file unreadable (package root {p1}) — degraded honestly, no invented fingerprint"
@@ -1509,7 +1521,12 @@ uiIndex:
   kOracleNothingWritten: ' (nothing was written by this call; fix it and re-send the same `record`)'
   kFaceMismatch: 'WARNING: subagent {p1} (card {p2} / role {p3}) tool face differs from what we DECLARED: missing {p4}; extra {p5} — SDO-53: the announced list is not the effective one; the diff must be stated out loud (out-of-mask calls are still stopped by the hook)'
   kEnvRecorded: 'OK: environment fingerprint recorded: {p1} ({p2}) — evidence recorded from now on is attributed to it, so "was this produced in the current environment?" becomes machine-checkable'
-  kEnvMissing: 'REJECTED: action=env requires `env=` (e.g. `jdk=21.0.2; probe=run_checks.py@v3`) — an empty fingerprint is no registration'
+  kEnvNoImpact: 'Impact: **0** existing results become "evidence stale" because of this registration (the current evidence either already carries this environment or carries none).'
+  kEnvImpact: 'WARNING: **impact: {p1}** existing result(s) become "evidence stale" because of this registration (registering an environment is a **project-level** action, so evidence bound to the old environment goes stale across cards): {p2}'
+  kEnvRemedy: '**Way out (executable)**: re-run each one and record it again **with the new environment** — `sdo_test action=record caseId=<case id> status=pass evidence=<evidence> env=<new env string> artifact=<artifact path>`; if a piece of evidence is irrelevant to the judgment (a metadata-only registration, say) it does **not** need re-running, but the card must state explicitly why it is unaffected.'
+  kEnvCurrent: 'Current environment fingerprint: `{p1}` (registered at {p2}) — this is a **read-only** echo (nothing was registered; pass `env=` to register).'
+  kEnvNeverRegistered: 'Current environment fingerprint: **never registered** (read-only echo of `action=env`). Consequence: every "evidence freshness" verdict can only be marked "cannot be machine-checked" (`unrecorded`) — to enable freshness checking, register once with `action=env env=<env string> reason=<why>`.'
+  kEnvMissing: 'REJECTED: action=env requires `env=` (e.g. `jdk=21.0.2; probe=run_checks.py@v3`) — an empty fingerprint is no registration; to **merely read** the current environment, omit `env=` (that is a read-only echo)'
   kEvidenceStale: 'WARNING: evidence {p1} (case {p2}) is **STALE**: {p3}'
   kEvidenceNoEnv: 'WARNING: this result has **no environment fingerprint** — staleness cannot be checked (run `sdo_test action=env env=…` first, or pass `env=` per record)'
   kEvidenceEnvInherited: ' (no explicit env declared; attributed to the latest registered environment: {p1})'
@@ -1805,6 +1822,8 @@ uiIndex:
   kUnlinkDone: "Removed {p1} trace edge(s) ({p2} → {p3})"
   kWorkScopeNotAudited: '⚠️ **write scope not reconciled (an explicit warning, not a footnote)**: no `workspace/changes` was collected in this session (two known causes: the host only announces it for **top-level turns**, so subagent sessions see none; or the workspace is **not a git repository**, which the host cannot collect structurally), so the scope declared on the card was **never checked** — that is neither no-violation nor evidence of one (SDO-15). Fallbacks: (1) re-run in a session that can collect `workspace/changes`; (2) list the files you actually wrote through `evidence` `artifact` entries (dispatch protocol rule 5 already asks for this) and compare by hand. **We deliberately do not fall back to mtime scanning**: on the real machine mtime made a previous interrupted session-s files look like this round-s changes (incident F-7), which is more dangerous than not-reconciled.'
   kNaNotesHeader: "➖ **checks judged N/A on this card (recognised by the check itself, not an exemption)**:"
+  kImpactGapsHeader: "WARNING: **{p1} of the impact surfaces declared on this card were never dealt with** (this card did not change them and no passing test result is bound to them):"
+  kImpactGapsRemedy: "  -> give each one a mechanical piece of evidence: `sdo_test action=record caseId=<case> status=pass artifact=<that path>` (you ran it), bring the path into this card write scope (this card is the one changing it), or correct the declaration in the card `impact`/`undecidable`. **The echo does not block** (the card still finishes), but gates and reviews read the same numbers."
   # **DEF-050 point 3 (the echo on `sdo_task action=done`)**: show every declared fix with its current status.
   kFixCards: "- Defects this card declared as fixed (current status read from `.sdo/defects/*.yml`):"
   kArtifactEchoHeader: "artifact evidence echo (DEF-013): this call reports {p1} artifact item(s), the ledger holds {p2} — full sha256 and mtime below (echo only, never a red flag)"
@@ -1994,6 +2013,8 @@ uiApplicability:
   viewBoth: 'View {p1} appears in both viewsPresent and viewsAbsent — one declaration cannot contradict itself; pick one side and re-draft'
 uiReview:
   # —— Review-finding verification (2026-10-08: a review is a claim; the implementer must verify each finding before it is adopted) ——
+  kReproMissing: 'REJECTED: a non-`pass` finding call ({p1}) must carry either **a command that still fails right now** (`repro`) or **an explicit declaration that it cannot be reproduced, plus why** (`unreproducible`) — otherwise "to be fixed" is just a verbal memory: a settled problem gets recorded as open and the next person goes hunting for a gap that is not there. **Nothing was written.**'
+  kReproAmbiguous: 'REJECTED: give **only one** of `repro` / `unreproducible` — with both, the reader cannot tell which holds ("it reproduces" and "it cannot be reproduced" are mutually exclusive). **Nothing was written.**'
   noReview: "No such review: {p1}"
   badIndex: "{p1} has {p2} finding(s): there is no finding {p3} (ledger index {p4}). Valid range: finding {p5} (1-based); the **ledger stores 0-based**, so parameter finding N = ledger index N-1."
   badOutcome: "The outcome must be reproduced or refuted; got {p1}"
@@ -2958,6 +2979,7 @@ uiPool:
   kReuseHoldsCard: "this child session **still holds in-flight card {p1}** (the card is still in-progress) — dispatching a new card into the same session would make the two cards step on each other, so a fresh child is started"
 
 uiTest:
+  kResultUnknownDefect: 'REJECTED: `defects` names a defect id that is not in the ledger: {p1} ({p2} defect(s) exist). A single typo would silently bind nothing, so **nothing was written**; use a real `DEF-xxx`.'
   kResultCaseIdRequired: "a test result must say **which case** it belongs to: `caseId` is empty, so this result has no owner (create the case with `sdo_test action=plan`, then record against its id)"
   kResultCaseNotFound: "the case {p1} this result points at **does not exist in the case ledger** (ledger has: {p2}) — a result is a result **of a case**: create it with `sdo_test action=plan`, or use a real case id. **Nothing is written**, so an unowned green cannot appear"
   kListSep: ", "

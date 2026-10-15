@@ -65,7 +65,18 @@ export const WHITEBOX_COVERAGE_CRITERIA = ['statement', 'decision', 'path', 'con
 
 export type WhiteboxCoverageCriterion = (typeof WHITEBOX_COVERAGE_CRITERIA)[number]
 
-/** 口径 → 人话标签（回执与文档共用，不另造第二份）。 */
+/**
+ * 口径 → 人话标签（回执与文档共用，不另造第二份）。
+ *
+ * ⚠️ **这五个中文词是 DoD 逐字**（`语句 / 分支 / 路径 / 条件 / 定义-使用对`）⇒ 属**需求基线口径**，
+ * 不随实现改动（本文件另有三处逐字引用、`test/m34` 有守卫）。
+ *
+ * **与读数侧措辞的关系（DEF-034）**：`coverage.ts` 的 `CRITERION_FALLBACK_LABEL` 把同一个 token
+ * `decision` 印成**判定**（理由见那里的注释：本仓别名表把 `branch` 当待纠正的别名，且同表的
+ * `decision-condition` / `mc-dc` 已按"判定"成体系）。两层是**不同用途的两份词表**
+ *（本表 5 类设计口径 / 读数侧 7 类读数准则），**不是错抄**；二者的关系（设计侧必须是读数侧的**子集**）
+ * 由 `test/m161` 机械钉住 —— 只往一边加准则会红。**若要统一成同一个中文词，请驾驶舱裁决。**
+ */
 export const WHITEBOX_CRITERION_LABEL: Record<string, string> = {
   statement: '语句',
   decision: '分支',

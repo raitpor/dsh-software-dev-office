@@ -89,7 +89,7 @@ test('M68-01 工具层：record 回执要说"待核实"；实现会话 verify �
 
   // ① 评审会话记一条**要求改动**的评审：回执必须明说"不会自动被采纳"
   const recorded = await h.callTool('sdo_review', {
-    action: 'record', taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', findings: '["f1：并发下会串号","f2：缺失败路径用例"]',
+    action: 'record', taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: '["f1：并发下会串号","f2：缺失败路径用例"]',
   }, 'child-rev')
   assert.match(recorded, /REV-001/u, `记录要成功：${recorded}`)
   assert.match(recorded, /核实/u, `回执要说清"要核实才能采纳"：${recorded}`)
@@ -122,7 +122,7 @@ test('M68-01 工具层：record 回执要说"待核实"；实现会话 verify �
 
   // ⑥ 空 findings 的评审（任何 verdict）都不许记（否则没有任何可核实的东西）
   const empty = await h.callTool('sdo_review', {
-    action: 'record', taskId: 'TASK-001', reviewer: 'rev-c', verdict: 'reject', findings: '[]',
+    action: 'record', taskId: 'TASK-001', reviewer: 'rev-c', verdict: 'reject', repro: 'npm test（当前仍失败）', findings: '[]',
   }, 'child-rev')
   assert.match(empty, /findings/u, `空评审必须被拒：${empty}`)
   assert.equal(journal.read().events.filter((event) => event.type === 'review/recorded').length, 1, '被拒的评审不许留事件')
@@ -159,7 +159,7 @@ test('M68-04 工具层闭环（报告 §6 未实测的那条）：改动要求�
   const h = harness()
   assert.match(await h.callTool('sdo_task', { action: 'claim', id: 'TASK-001', owner: 'dev-a', expectedRevision: 1 }, 'child-dev'), /in-progress/u)
   const review = await h.callTool('sdo_review', {
-    action: 'record', taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', findings: '["f1：并发下串号","f2：缺失败路径用例"]',
+    action: 'record', taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: '["f1：并发下串号","f2：缺失败路径用例"]',
   }, 'child-rev')
   assert.match(review, /REV-001/u)
 

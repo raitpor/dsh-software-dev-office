@@ -8,6 +8,7 @@ import { Config, resolveSettings } from '../src/config.js'
 import { claim, reassign, release, report, staleClaims } from '../src/domain/collab.js'
 import { ROLES, planStats, readIteration, readyTasks, validatePlan } from '../src/domain/plan.js'
 import { auditWriteScopes, buildDispatch, capacityPlan, independenceViolations, pickBackend } from '../src/integration/orchestrator.js'
+import { claimedSessionsByCard } from '../src/domain/roles.js'
 import { listTestCases } from '../src/domain/records.js'
 import { link } from '../src/domain/trace.js'
 import { SoftwareDevOffice } from '../src/office.js'
@@ -308,14 +309,32 @@ test('验证与评审：用例覆盖 must、失败即拦、阻塞缺陷拦门禁
   office.claimTask(call(), { taskId: task.id, owner: 'dev-a', expectedRevision: task.revision })
   passAllCases()
   office.reportTask(call(), { taskId: task.id, owner: 'dev-a', status: 'done', evidence: EVIDENCE })
-  office.addReview(call(), { taskId: task.id, reviewer: 'dev-a', verdict: 'pass', findings: [] })
-  const violations = independenceViolations(office.reviews(call()), office.tasks(call()))
-  assert.equal(violations.length, 1, '作者自评必须被识别')
+  // **DEF-042（第三批 §3.15）**：独立性**按会话 uuid 判**。
+  // 这条守卫原先把"换个名字（`reviewer-b`）⇒ 0 条"当成**正确行为**钉住 —— 那正是缺陷长期无人察觉的
+  // 机械原因（改个名就绕过）。现在按 uuid 断言三态：同会话换名**仍判红**、同名异会话**不判**。
+  const claimed = claimedSessionsByCard(office.journalFor(workspace))
+  office.addReview(call(), { taskId: task.id, reviewer: 'dev-a', verdict: 'pass', findings: [], sessionId: 's1' })
+  const violations = independenceViolations(office.reviews(call()), office.tasks(call()), claimed)
+  assert.equal(violations.length, 1, '同会话自评必须被识别（uuid 口径）')
+  assert.match(violations[0]?.detail ?? '', /同一个会话/u, '拒因要说清是按会话判的')
   assert.equal(office.evaluate(call(), 'G6').criteria.find((criterion) => criterion.id === 'C-52')?.ok, false)
-  // 换人评审后通过
-  office.addReview(call(), { taskId: task.id, reviewer: 'reviewer-b', verdict: 'pass', findings: ['无阻塞问题'] })
+  // **同会话 + 换名字** ⇒ 仍判红（修前这里会被判成"独立"）
+  office.addReview(call(), { taskId: task.id, reviewer: 'reviewer-b', verdict: 'pass', findings: ['无阻塞问题'], sessionId: 's1' })
+  assert.equal(
+    independenceViolations(office.reviews(call()), office.tasks(call()), claimed).length,
+    2,
+    '同会话换个名字**不算独立**（C-52 按 uuid 判）',
+  )
+  // **同名 + 异会话** ⇒ 不判（名字不参与）
+  office.addReview(call(), { taskId: task.id, reviewer: 'dev-a', verdict: 'pass', findings: ['另一会话记的'], sessionId: 's-other' })
+  const sameName = independenceViolations(office.reviews(call()), office.tasks(call()), claimed)
+    .filter((item) => item.reviewId === 'REV-003')
+  assert.deepEqual(sameName, [], '同名但不同会话 ⇒ 独立（名字不再参与判定）')
+  // 真正独立的评审（异会话 + 异名）也不判
+  office.addReview(call(), { taskId: task.id, reviewer: 'reviewer-c', verdict: 'pass', findings: ['独立评审'], sessionId: 's-third' })
   const reviews = office.reviews(call()).filter((review) => review.reviewer !== 'dev-a')
-  assert.equal(independenceViolations(reviews, office.tasks(call())).length, 0)
+  assert.equal(independenceViolations(reviews, office.tasks(call()), claimed).length, 1,
+    '过滤掉 dev-a 之后只剩"同会话换名"那一条（其余都是独立会话）')
 })
 
 test('迭代：开/关迭代，增量与 DoD 由任务卡与证据决定（GI 门禁属于敏捷流程）', () => {

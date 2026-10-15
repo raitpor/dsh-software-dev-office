@@ -106,7 +106,7 @@ test('M67-01 采纳状态机：未核实 → 部分 → 已采纳；发现正文
   assert.ok(listDispositions(store).some((item) => item.reviewId === forgedReview.id), '台账文件也没被这段操作改掉')
 
   // ③ 手改评审文件（verdict 从 changes-requested 改成 pass）⇒ tampered，永远不采纳
-  const edited = recordReview(store, journal, { taskId: 'TASK-003', reviewer: 'rev-b', verdict: 'changes-requested', findings: ['d 处没做'] })
+  const edited = recordReview(store, journal, { taskId: 'TASK-003', reviewer: 'rev-b', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: ['d 处没做'] })
   store.writeYaml(['reviews', `${edited.id}.yml`], { review: { ...edited, verdict: 'pass' } })
   const reread = store.readYaml<{ review: import('../src/domain/records.js').Review }>('reviews', `${edited.id}.yml`)?.review
   assert.equal(reviewAdoption(store, journal, reread ?? edited).state, 'tampered')
@@ -126,7 +126,7 @@ test('M67-01 采纳状态机：未核实 → 部分 → 已采纳；发现正文
 test('M67-02 谁能核实：不能自己核实自己、只能由该卡的实现会话核实、必须给依据', () => {
   card('TASK-001', 'in-progress', { owner: 'dev-a' })
   journal.append('task/claimed', { id: 'TASK-001', owner: 'dev-a', sessionId: 'child-dev', expectedRevision: 1 })
-  const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', findings: ['f1', 'f2'], sessionId: 'child-rev' })
+  const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: ['f1', 'f2'], sessionId: 'child-rev' })
 
   // ① 记录评审的会话自己核实 ⇒ 拒
   const self = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'e', sessionId: 'child-rev' })
@@ -186,7 +186,7 @@ test('M67-03 门禁：没核实的通过评审**不被采纳**（且区别于"�
 
 test('M67-04 `done` 关：最新评审还在要求改动且发现没核实完 ⇒ 不许完成；核实完才放行', () => {
   card('TASK-001', 'in-progress', { owner: 'dev-a' })
-  const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', findings: ['f1 没做', 'f2 缺证据'] })
+  const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: ['f1 没做', 'f2 缺证据'] })
   const evidence = [{ kind: 'command' as const, detail: 'node --test 全绿', exitCode: 0, at: '2026-01-01T00:00:00.000Z' }]
 
   assert.equal(blockingReview(store, journal, 'TASK-001')?.review.id, review.id, '前置：最新评审是这条要改动的')

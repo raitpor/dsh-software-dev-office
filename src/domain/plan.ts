@@ -157,6 +157,8 @@ export function readTaskChecked(
     //   · `undecidable` 是**可缺省标量**，必须用展开省略（回写 `undefined` 会让任何卡的回写炸掉，
     //     见上面 `mutationExpected` 的注释与 DEF-027 实测的 92 条假红）。
     impact: list('impact'),
+    // **DEF-033**：`unfrozen` 同样进读端白名单（`list()` 同 `impact`：缺省 = 空数组，标量会被归一 + 给形状提示）
+    unfrozen: list('unfrozen'),
     ...(textOf(record.undecidable).trim() === '' ? {} : { undecidable: textOf(record.undecidable) }),
     // **DEF-055**：`uiText` 是**可缺省布尔** —— 只在**真为 `true`** 时落键（口径同 `.sdo/contracts` 的
     // `dropped`：非布尔值按"未声明"处理，绝不把字符串原样留在对象里当真的用）。回写 `undefined` 会炸，
@@ -225,6 +227,8 @@ export interface TaskDraft {
   mitigatesWaiver?: MitigatesWaiver[] | undefined
   /** **本卡点名的影响面**（DEF-036）：列出将被本卡改动影响的文件/用例。 */
   impact?: string[] | undefined
+  /** **本次 `done` 未冻结的兄弟卡**（DEF-033）：逐条点名"哪些在飞卡的工作没有并进来"。 */
+  unfrozen?: string[] | undefined
   /** **影响面推不出来的显式声明**（DEF-036）：与 `impact` 二者有其一即视为已声明。 */
   undecidable?: string | undefined
   /** **本卡产出/改动用户可见文案**（DEF-055）：声明后由 `ui-text-scope` 核对写范围含项目声明的文案面。 */
@@ -261,6 +265,7 @@ export function createTask(store: SdoStore, journal: Journal, draft: TaskDraft):
     mitigates: draft.mitigates ?? [],
     mitigatesWaiver: draft.mitigatesWaiver ?? [],
     impact: draft.impact ?? [],
+    unfrozen: draft.unfrozen ?? [],
     ...(draft.undecidable === undefined || draft.undecidable.trim() === '' ? {} : { undecidable: draft.undecidable }),
     ...(draft.uiText === true ? { uiText: true } : {}),
     landing: draft.landing ?? [],
@@ -690,11 +695,11 @@ export function structuralPlanOf(store: SdoStore, requirements: Requirement[]): 
     }
     if (basisEmpty && requireBasis) {
       gaps.push({ designId, name: element.name, missing: missingBasisOf() })
-      // **`reason: 'no-basis'` 是新的一位读数**（`StructuralSkipReason` 在 `types.ts`，不在本卡写范围）：
-      // 用显式断言把它放进去 —— 渲染层（`describe.ts`）已按运行时值加宽了联合类型并渲染它；
+      // **`reason: 'no-basis'` 是正式的一位读数**（**R6**：已收进 `types.ts` 的 `StructuralSkipReason`——
+      // 修前它不在联合里，只能 `as unknown as` 强塞、渲染层再就地加宽，类型面对不上运行期）。
       // 这里**不**把它降级成既有的某一位（那会让"拒绝"与"已有卡/无需卡/写范围超限"重新混同，
       // 正是 DEF-063 要消灭的形态）。
-      skipped.push({ designId, name: element.name, reason: 'no-basis' } as unknown as StructuralSkip)
+      skipped.push({ designId, name: element.name, reason: 'no-basis' })
       continue
     }
     created.push({ designId, title: fmt('uiPlan.t2', { p1: element.name, p2: designId }), writeScopes: scopes, how: 'none' })
@@ -893,8 +898,9 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
     for (let j = i + 1; j < active.length; j++) {
       const a = active[i] as TaskCard
       const b = active[j] as TaskCard
-      const related = a.blockedBy.includes(b.id) || b.blockedBy.includes(a.id)
-      if (related) continue
+      // **DEF-044**：走**唯一出口** —— 认 `'*'` 与**传递依赖**（修前这行既不认星号也不算闭包，
+      // 于是合法排队卡被误报成"可能并行但写范围重叠"，与同文件 `satisfied`/`acyclic` 的口径自相矛盾）
+      if (orderedPair(a, b, tasks)) continue
       if (a.iteration !== b.iteration && (a.iteration !== undefined || b.iteration !== undefined)) continue
       // **ADR-009 / DEF-057**：唯一出口（归一 + 目录边界前缀）—— 旧的双向 `startsWith`
       // 把 `src/a.ts` × `src/a.tsx` 判成"可能并行但写范围重叠"（假阳性，评审卡因此被无谓推迟）。
@@ -1182,6 +1188,45 @@ export interface ScopeHold {
 }
 
 /**
+ * **两张卡之间是否已存在依赖序**（⇒ **不可能并行**）—— 这是"是否可能并行"的**唯一出口**（DEF-044）。
+ *
+ * 为什么必须唯一：修前**三处判据逐字写了同一行**
+ * `a.blockedBy.includes(b.id) || b.blockedBy.includes(a.id)`，于是同一个洞被继承三遍 ——
+ * 既不认 `'*'`（"排在所有其它卡之后"），也不算**传递依赖**（A→B→C 时 A 与 C 明明不会并行），
+ * 而同一文件的 `readyTasks.satisfied` 与 `acyclic` **都认 `'*'`** ⇒ **口径内自相矛盾**：
+ * 判据说"可能并行但写范围重叠"，派发面却永远不会把它们同时派出（真机表现：合法的排队卡被当成冲突）。
+ *
+ * 三种"有序"形状（任一成立即视为**不并行**）：
+ *   ① **`'*'`**：任一方的 `blockedBy` 含 `'*'` —— 与 `satisfied` / `acyclic` **同一语义**；
+ *   ② **直接依赖**：`a.blockedBy` 含 `b.id` 或反之；
+ *   ③ **传递依赖**：沿 `blockedBy` 闭包任一方向可达（A→…→B 或 B→…→A）。环路用 `seen` 兜住。
+ *
+ * ⚠️ 依赖链上出现 `'*'` 的中间卡时同样判"有序"：那张卡"排在所有其它卡之后" ⇒ 它之后的我们
+ * 也在 `to` 之后（与 ① 同一语义往下传，不是新口径）。
+ */
+export function orderedPair(a: TaskCard, b: TaskCard, tasks: readonly TaskCard[]): boolean {
+  if (a.id === b.id) return true
+  const star = (task: TaskCard): boolean => task.blockedBy.includes('*')
+  if (star(a) || star(b)) return true
+  const byId = new Map(tasks.map((task) => [task.id, task]))
+  const reaches = (from: TaskCard, to: string): boolean => {
+    const seen = new Set<string>()
+    const stack = [...from.blockedBy]
+    while (stack.length > 0) {
+      const id = stack.pop() as string
+      if (id === to) return true
+      if (id === '*') return true
+      if (seen.has(id)) continue
+      seen.add(id)
+      const next = byId.get(id)
+      if (next !== undefined) stack.push(...next.blockedBy)
+    }
+    return false
+  }
+  return reaches(a, b.id) || reaches(b, a.id)
+}
+
+/**
  * **派发前置检查**（DEF-067 / ADR-009 的不变量「派发可认领」，2026-10-14 机制缺陷批）。
  *
  * 不变量：一张卡被派出时它必须**能够认领成功** —— 即「可派发」= 依赖已满足 ∧
@@ -1201,7 +1246,8 @@ export function scopeHeldTasks(tasks: readonly TaskCard[]): ScopeHold[] {
     if (task.status !== 'planned' && task.status !== 'ready') continue
     for (const holder of inFlight) {
       if (holder.id === task.id) continue
-      if (task.blockedBy.includes(holder.id) || holder.blockedBy.includes(task.id)) continue
+      // **DEF-044**：与 `validatePlan` / `classifyNonDispatchable` **同一个出口**（认 `'*'` 与传递依赖）
+      if (orderedPair(task, holder, tasks)) continue
       const overlap = scopeOverlaps(task.writeScopes, holder.writeScopes)
       if (overlap.length > 0) {
         out.push({ task, holder, overlap })
@@ -1255,7 +1301,8 @@ export function classifyNonDispatchable(tasks: TaskCard[], staleGate?: StaleGate
     for (const other of tasks) {
       if (other.id === task.id || ended(other)) continue
       if (other.status === 'blocked') continue
-      if (task.blockedBy.includes(other.id) || other.blockedBy.includes(task.id)) continue
+      // **DEF-044**：唯一出口（三处逐字同一行是这条缺陷的成因，别再各写一遍）
+      if (orderedPair(task, other, tasks)) continue
       // **ADR-009 / DEF-057**：与 `validatePlan` 同一个出口。这里保留"**对方**参与重叠的路径"
       // （回执要说清挡住你的是哪条路径）。
       const overlap = scopeOverlaps(other.writeScopes, task.writeScopes)

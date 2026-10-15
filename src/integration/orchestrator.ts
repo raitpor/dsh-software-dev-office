@@ -241,16 +241,49 @@ export interface ReviewRecord {
   reviewer: string
   /** 作者（任务卡 owner）；缺省时由调用方从任务卡解析 */
   author?: string | undefined
+  /**
+   * **记录这条评审的会话 uuid**（DEF-066 起的材料；DEF-042 起 C-52 用它判独立）。
+   * 缺省 = 存量记录（那时只能按名字判 —— 如实降级，不假装判过）。
+   */
+  sessionId?: string | undefined
   verdict: 'pass' | 'changes-requested' | 'reject'
   findings: string[]
   at: string
 }
 
-/** 独立性校验（T-M4-06）：作者不得评审自己的产出。 */
-export function independenceViolations(reviews: ReviewRecord[], tasks: TaskCard[]): { reviewId: string; detail: string }[] {
+/**
+ * 独立性校验（T-M4-06 / **C-52**）：作者不得评审自己的产出。
+ *
+ * **DEF-042（第三批 §3.15）**：判据从"只比**名字**"改成"**按会话 uuid 判**"。
+ * 病根：名字是**调用方自报**的字符串（`backend:role:序号`），改个名就能绕过独立性；
+ * 而 `DEF-066` 早就在评审记录里留了**会话 uuid**（`review.sessionId`）却没接到这条判据上。
+ *
+ * 口径（材料齐时 **uuid 说了算**，名字不参与）：
+ *   · 卡有认领会话（`claimed`，来自 `task/claimed` 事件）且评审记了 `sessionId` ⇒
+ *     两者有交集 ⇒ **判红**（名字不同也照样判红）；无交集 ⇒ **不判**（同名不同会话 = 独立）；
+ *   · 材料不全（存量记录没带 `sessionId`，或卡没有认领会话）⇒ 退回**名字口径**（旧行为，
+ *     如实降级；不假装判过 uuid）。
+ */
+export function independenceViolations(
+  reviews: ReviewRecord[],
+  tasks: TaskCard[],
+  claimedSessions: ReadonlyMap<string, readonly string[]> = new Map(),
+): { reviewId: string; detail: string }[] {
   const owners = new Map(tasks.map((task) => [task.id, task.owner]))
   const out: { reviewId: string; detail: string }[] = []
   for (const review of reviews) {
+    const claimed = claimedSessions.get(review.taskId) ?? []
+    const reviewSession = (review.sessionId ?? '').trim()
+    if (reviewSession !== '' && claimed.length > 0) {
+      if (claimed.includes(reviewSession)) {
+        out.push({
+          reviewId: review.id,
+          detail: `${review.id} 的评审者与实现者是**同一个会话**（${reviewSession}；显示名 ${review.reviewer}，卡 ${review.taskId}）`
+            + ' —— 独立性按会话判，换名字也不算独立',
+        })
+      }
+      continue
+    }
     const author = owners.get(review.taskId) ?? review.author
     if (review.reviewer === author) {
       out.push({ reviewId: review.id, detail: `${review.id} 的评审者与作者同为 ${review.reviewer}（${review.taskId}）` })

@@ -638,6 +638,8 @@ uiDescribe:
   k107: "- 认领需带 `expectedRevision={p1}`"
   k108: "- owner 记为 {p1}；完成后必须用 `sdo_task action=done id={p2} owner={p3} evidence=…` 回报。"
   k109: "- 产物 {p1} 项："
+  kDeliveryAsOf: "截至 {p1}"
+  kDeliveryAsOfUnknown: "未记时刻（旧清单）"
   k110: "- 验收矩阵 {p1} 行：{p2}"
   k111: "- 回滚点：{p1}"
   k112: "- 原型内容已排除：{p1}"
@@ -912,9 +914,14 @@ shapeEntity:
   signature: "门禁签字台账"
   budget: "成本预算"
 uiIndex:
+  kUnfrozenLocal: '🧊 完成语义：本次 `done` 是**局部绿**（本卡范围内的改动已绿），**全项目尚未冻结** —— 未并进来的在飞卡：{p1}。要看全量是否冻结，请等这些卡收口后再全量跑一次。'
+  kUnfrozenMissing: '⚠️ 还有在飞的兄弟卡**没有**被声明进未冻结清单：{p1} —— 「卡 done」不等于「全局冻结」；如果它们的工作这次确实并列了进来（例如全量已跑过），请在卡上写明理由，否则它们会让人误以为交付面已经冻结。'
+  kUnfrozenFrozen: '🧊 完成语义：当前**没有**在飞的兄弟卡 ⇒ 本次 `done` **等同于全量冻结**（本卡范围绿 = 全项目绿）。'
+  kBadDefects: '❌ `defects` 必须是字符串数组（或它的 JSON 文本），例如 ["DEF-001","DEF-002"] —— 收到的东西形状不对；本次没有写入。'
   kErrataAdded: "📝 已给 {p1} 追加勘误（累计 {p2} 条，卡推进到 r{p3}）—— **只能追加**：历史正文（dod/落点/状态）一个字都没改，下一位读卡人能看到这条说明"
   kDispatchSummary: "🗂 **本次派发 {p1} 张**：{p2}{p3}（详情见下；首屏先给全量卡号，避免「只派了一张」的误读）"
   kDispatchSummaryHeld: "；另有 {p1} 张因容量/上限留到下一轮"
+  kWorkspaceUnknownExecutor: '拒绝：**无法确定本会话的工作区**（本次调用的 cwd 与本会话登记的 cwd 里都没有 `.sdo/`）—— 角色掩码与写范围都判不了，执行者按 **fail-closed** 拒绝，而不是放行（修前这里会**跳过**掩码与写范围两段判定）。请在工作区内发起调用，或让流程官以工作区为工作目录重新派发。'
   kWorkScopeSelfReported: "　🧾 写范围对账：本次按**执行者自报**的 {p1} 个文件核对（子会话收不到宿主 workspace/changes，上游限制 DEF-016）—— 这是声明，不是独立证据；请人工复核一次。"
   kBuildInfo: "🧩 **本会话加载的构建**：{p1}（指纹 {p2}，版本 {p3}）"
   kBuildUnavailable: "🧩 **本会话加载的构建**：读不到入口文件（包根 {p1}）—— 如实降级，不编造指纹"
@@ -1016,7 +1023,12 @@ uiIndex:
   kOracleNothingWritten: '（本次调用没有写入任何东西；修好后重发同一条 `record`）'
   kFaceMismatch: '⚠️ 子代理 {p1}（卡 {p2}／角色 {p3}）的工具面与**声明**不一致：缺 {p4}；多 {p5} —— SDO-53：公告清单 ≠ 实际可调，差集必须显式说出来（掩码外的调用仍靠钩子兜底拦）'
   kEnvRecorded: '✅ 环境指纹已登记：{p1}（{p2}）—— 此后记录的证据按它归属，「是否在当前环境下得出的」可判'
-  kEnvMissing: '❌ `action=env` 必须给出 `env=`（如 `jdk=21.0.2; probe=run_checks.py@v3`）—— 空指纹等于没登记'
+  kEnvNoImpact: '影响面：**0 条**既有结果因这次登记变成「证据过期」（当前证据要么本来就绑着这个环境、要么没记环境）。'
+  kEnvImpact: '⚠️ **影响面：{p1} 条**既有结果因这次登记变成「证据过期」（登记是**项目级**动作，别的卡绑着旧环境的证据会一起失效）：{p2}'
+  kEnvRemedy: '**出路（可执行）**：逐条重跑并用**新环境**重新记录 —— `sdo_test action=record caseId=<用例 id> status=pass evidence=<证据> env=<新环境串> artifact=<产物路径>`；若某条证据与判定无关（例如只是元数据入账），**不必重跑**，但要在卡上显式说明它为什么不受影响。'
+  kEnvCurrent: '当前环境指纹：`{p1}`（登记于 {p2}）—— 这是**只读**回显（没有登记新的；要登记请给 `env=`）。'
+  kEnvNeverRegistered: '当前环境指纹：**尚未登记过**（`action=env` 只读回显）。后果：一切"证据时效"只能标「无法机械核验」（`unrecorded`）—— 要启用时效判定，请用 `action=env env=<环境串> reason=<为什么>` 登记一次。'
+  kEnvMissing: '❌ `action=env` 必须给出 `env=`（如 `jdk=21.0.2; probe=run_checks.py@v3`）—— 空指纹等于没登记；**只想看当前环境**就别带 `env=`（那是只读回显）'
   kEvidenceStale: '⚠️ 证据 {p1}（用例 {p2}）**已过期**：{p3}'
   kEvidenceNoEnv: '⚠️ 这条结果**没有环境指纹** —— 时效无法机械核验（先 `sdo_test action=env env=…` 登记环境，或 `action=record env=…` 逐条声明）'
   kEvidenceEnvInherited: '（环境指纹未显式声明，按最近登记的环境归属：{p1}）'
@@ -1314,6 +1326,8 @@ uiIndex:
   kUnlinkDone: "已撤销 {p1} 条追溯边（{p2} → {p3}）"
   kWorkScopeNotAudited: '⚠️ **写范围未对账（显式告警，不是脚注）**：本会话没有采集到 `workspace/changes`（两种已知原因：宿主只为**顶层轮次**公告它、子代理会话 0 条；或工作区**不是 git 仓库**，宿主结构性采不到），卡上声明的写范围**没有被核对过** —— 这既不等于「没有越界」，也不能据此判越界（SDO-15）。退路：① 在能采到 `workspace/changes` 的会话里重跑；② 完成时用 `evidence` 的 `artifact` **逐条列出本轮实际写入的文件**（派发协议第 5 条就是这么要求的），再按卡的写范围人工比对。**不自动退回 mtime 扫描**：真机上正是 mtime 把上一次中断会话留下的旧文件当成了本轮改动（F-7 事故），比「未对账」更危险。'
   kNaNotesHeader: "➖ **本卡判 N/A 的判据（判据自己认出来的，不是豁免）**："
+  kImpactGapsHeader: "⚠️ **卡上声明的影响面里有 {p1} 条没有被「处理过」**（既没被本卡改、也没有一条 pass 的测试结果绑着它）："
+  kImpactGapsRemedy: "　→ 逐条给一条机械证据即可：`sdo_test action=record caseId=<用例> status=pass artifact=<该路径>`（跑过它）、把该路径并入本卡写范围（本卡就是改它的那条路）、或在本卡的 `impact`/`undecidable` 里据实更正声明。**回显不拦截**（收工照常），但门禁与评审会按同一份读数看它。"
   # **DEF-050 落点三（`sdo_task action=done` 的回显）**：卡上 `fixes` 逐条现状态当场亮相。
   kFixCards: "- 卡上声明修复的缺陷（现状态取自 `.sdo/defects/*.yml`）："
   kArtifactEchoHeader: "产物证据回显（DEF-013）：本次自述 {p1} 条 artifact，台账累计 {p2} 条 —— 完整 sha256 与 mtime 如下（只回显，不判红）"
@@ -1341,6 +1355,10 @@ uiClamp:
   truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"
 
 uiGates:
+  kFixedTestedMissing: '❌ **已修但无测试结论**（{p1} 条）：{p2} —— 「已修」必须有一条**通过**的测试结论把它的 id 写进 `defects`；否则这条缺陷永远没被测过，而门禁此前不判红任何一格。'
+  kFixedTestedWithFail: '{p1}（**另有一条 fail 结果绑着它**：{p2} —— 它现在还是坏的）'
+  kFixedTestedRemedy: '补依据：跑那条测试并用 `sdo_test action=record caseId=<用例> status=pass evidence=<证据> defects=["DEF-xxx"]` 记下结论（一条结论可以绑定多个缺陷）；若这条缺陷本就无法测，请改成 `wontfix` 并补齐 `waiveReason`/`waiveApprovedBy`（口径同 C-63）。'
+  kFixedTestedOk: '✅ 每条 `fixed` 缺陷都有**绑定的通过结论**（依据长在结论上，见 `defects` 字段）'
   kQualityDocNaEmpty: "没有质量场景与 ATAM 真源（质量需求未纳管）；要纳管请先用 sdo_quality action=scenario / action=evaluate 落真源，再 sdo_render target=quality"
   kQualityDoc: "质量文档已生成且由当前真源渲染（渲染序号 {p1}，场景 {p2} 条）"
   kQualityDocMissing: "还没有 docs/QUALITY.md（质量场景与 ATAM 没有面向人读的载体）"
@@ -1721,6 +1739,7 @@ uiTrace:
   defectTraceNoReading: "这一次渲染没有拿到读数（追溯报告里缺这一位）"
   defectTraceRemedy: "给每条孤儿缺陷补一条 `req-defect` 边（`sdo_trace action=link from=REQ-001 to=DEF-001 kind=req-defect`，目标需求必须**已基线**且未作废），或者在 `.sdo/defects/DEF-*.yml` 里写显式豁免 `exemption: { reason: <为什么可以不管>, approvedBy: <谁批准的> }`（理由与批准人缺一不可，缺了按未豁免处理）；边指向失效需求时先改掉那条边或改挂到有效需求上"
 uiCollab:
+  kUnfrozenBadId: '❌ 未冻结清单里的 {p1} 交代不清：必须是**存在且当前确实在飞**的兄弟卡 id（写错、或写一张已经 done/blocked 的卡、或写本卡自己，都不算）—— 现在共有 {p2} 张卡在飞。**本次没有写入**（用假声明把「未冻结」糊过去，等于把交付冻结这件事变成口头承诺）。'
   kErrataNotFound: "找不到任务卡 {p1}（勘误只能追加到已存在的卡）"
   kErrataNoteRequired: "{p1} 的勘误不能不写内容：勘误是**说明**，空说明等于没写"
   kScopeViolationSelfReported: "{p1} 越界写：{p2}（写范围：{p3}）—— 注意：这次对账用的是**执行者自报**的写入清单（子会话收不到宿主的 workspace/changes，上游限制 DEF-016）⇒ 结论按**声明**判，不是宿主观测；把改动挪回写范围，或让流程官改卡后重新认领"
@@ -1751,7 +1770,7 @@ uiPlan:
   kUiTextScopeNoPaths: '卡声明会产生**用户可见文案**（`uiText`），但**项目还没有声明文案面**（`.sdo/config.yml` 的 `plan.textPaths` 为空）⇒ 判据无从核对它到底该写哪儿。插件**不内置**任何具体路径（那等于把某个项目的目录结构写进通用判据），所以「文案面在哪」必须由项目自己声明'
   kLandingOutsideScope: '卡自己声明的**落点**落在自己的**写范围之外**：落点 {p1}；写范围 {p2} —— 落地时那张卡根本写不了这些文件（要么越界、要么只能改别处糊过去）'
   kLandingOutsideScopeRemedy: '两条出路：① 把落点并进写范围（`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…` 追加通道，不丢 in-progress 与 owner；或先 `release` 再整份替换 `writeScopes`）；② 若这些路径其实不由本卡写（只是 DoD 里的引用/上下文），就把声明撤回：`sdo_task action=update id=<卡> landing=[]`。判据只核**卡自己声明的**落点与写范围，**不解析 DoD 散文**'
-  kUiTextScopeRemedy: '两条出路：① **让项目声明文案面** —— 在 `.sdo/config.yml` 里加 `plan.textPaths` 列表，每行一条「用户可见文案所在的目录」（本仓是 `src/data/lang/`，别的项目按自己的结构填）；② **把文案面并入本卡写范围**：`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…`（追加通道，不丢 in-progress 与 owner）。若本卡其实不产出用户可见文案，就撤回声明：`sdo_task action=update id=<卡> uiText=false`。'
+  kUiTextScopeRemedy: '两条出路：① **让项目声明文案面** —— 在 `.sdo/config.yml` 里加 `plan.textPaths` 列表，每行一条「用户可见文案所在的目录」（填**项目自己**的目录名；插件不内置任何路径，也不假设任何项目布局）；② **把文案面并入本卡写范围**：`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…`（追加通道，不丢 in-progress 与 owner）。若本卡其实不产出用户可见文案，就撤回声明：`sdo_task action=update id=<卡> uiText=false`。'
   kBlockedHolderNote: '（该卡处于 blocked：它随时可能继续写同一范围，故仍排他）'
   kScopeReleaseHint: '　（DEF-049）被 **blocked** 卡挡住时：先判断它还做不做 —— 还要做就 `sdo_task action=unblock id=<挡住的卡> reason=…`（阻塞解除、回到 ready），确实不做才 `sdo_task action=drop`（放弃）或 `release`（让回池子）；**不要**再拿 `release` 当"解除阻塞"用。在飞卡要扩写范围：`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…`（**追加**，不丢 in-progress 与 owner）；整份替换仍要求先释放。'
   k1: "改动有产物证据（路径 + 哈希）"
@@ -1955,6 +1974,8 @@ uiApplicability:
   viewBoth: '视图「{p1}」同时在 viewsPresent 与 viewsAbsent 里 —— 同一份声明不能自相矛盾；请二选一后重新起草'
 uiReview:
   # —— 评审发现核实（2026-10-08 口径：评审结果是主张，要由实现方逐条核实才能采纳）——
+  kReproMissing: '❌ 非 `pass` 的待修主张（{p1}）必须带**一条当前仍然失败的复现命令**（`repro`），或**显式声明无法复现 + 为什么**（`unreproducible`）—— 否则"待修"就只是一句口头记忆：已收敛的问题会被记成未决，后人去修一个不存在的缺口。**本次没有写入**。'
+  kReproAmbiguous: '❌ `repro` 与 `unreproducible` **只能给一个**：两个都给时读者判不出哪个作准（"有复现命令"与"无法复现"是互相排斥的两句话）。**本次没有写入**。'
   noReview: "找不到评审 {p1}"
   badIndex: "{p1} 只有 {p2} 条发现：找不到第 {p3} 条（台账 index {p4}）。合法范围：第 {p5} 条（1 起）；**台账按 0 起记**，所以参数第 N 条 = 台账 index N-1。"
   badOutcome: "核实结论只能是 reproduced（复现）/ refuted（反驳），收到 {p1}"
@@ -2919,6 +2940,7 @@ uiPool:
   kReuseHoldsCard: "该子会话**手上还有在飞卡 {p1}**（卡仍是 in-progress）—— 把新卡投进同一个会话会让两张卡互相踩，强制新起"
 
 uiTest:
+  kResultUnknownDefect: '❌ `defects` 里有点不出的缺陷 id：{p1}（台账现有 {p2} 条缺陷）—— 绑定打错一个字就等于没绑，所以**本次没有写入**；请改用真实存在的 `DEF-xxx`。'
   kResultCaseIdRequired: "测试结果必须说明**是哪条用例**的结果：`caseId` 为空 ⇒ 这条结果无处归属（先用 `sdo_test action=plan` 建用例，再用它的 id 记录结果）"
   kResultCaseNotFound: "测试结果指向的用例 {p1} **在用例台账里不存在**（台账现有：{p2}）—— 结果是**用例的**结果：先用 `sdo_test action=plan` 建这条用例，或改用真实存在的用例 id。**拒绝不写盘**，避免出现「无人认领的绿」"
   kListSep: "、"

@@ -21,7 +21,7 @@ import { normalizeScopePath, scopeOverlaps } from './scopePaths.js'
  * `cockpit` 落账（`office` 还是本项目的角色之一）。这里只做**身份白名单**，不含任何项目/语言假设。
  */
 const COCKPIT_ACTORS: readonly string[] = ['human', 'office', 'cockpit']
-import { listDefects, findingHashOf, listReviews, reviewContentHash } from './records.js'
+import { listDefects, findingHashOf, listReviews, listTestResults, reviewContentHash, reviewReproIssue } from './records.js'
 import type { Review } from './records.js'
 import { auditDoneEvidence } from './evidence.js'
 import { changedFilesSince } from './workspaceChanges.js'
@@ -521,6 +521,11 @@ export interface ReportInput {
   taskId: string
   owner: string
   status: 'done' | 'blocked'
+  /**
+   * **本次 `done` 未冻结的兄弟卡**（DEF-033 / 第三批 §3.13）：逐条点名"哪些在飞卡的工作没有并进来"。
+   * 形状与校验见 `TaskCard.unfrozen`（每条必须存在且**当前确实在飞**，否则可读拒绝）。
+   */
+  unfrozen?: string[] | undefined
   evidence?: EvidenceItem[] | undefined
   note?: string | undefined
   /** 当前阶段（增量 3：收工关按所选方法包检查时用得到；不传则从台账现读）。 */
@@ -535,6 +540,49 @@ export interface ReportInput {
    * ⚠️ 自报是**声明**，不是观测 —— 回执与事件必须如实标注来源，绝不冒充宿主观测。
    */
   reportedFiles?: string[] | undefined
+}
+
+/**
+ * **`impact` 的 done 面对账**（R5 / 第三批 §3.7）—— 只核**声明过的**影响面"有没有被处理过"。
+ *
+ * 背景：DEF-036 给了两条出口（`impact` 逐条点名 / `undecidable` 声明推不出来），但那**只在拆卡期**
+ * 判"有没有声明"；"点名的既有夹具**真的**被跑过 / 改过 / 豁免过"此前**完全靠纪律**（角色卡里
+ * 连落点都没有）。用户长期准则：**凡是能机械强制的纪律，不要靠提醒记住** ⇒ 本条做成**机械面**。
+ *
+ * 机械口径（**全部结构化**，不解析任何散文；二者之一即视为"处理过"）：
+ *   ① 该路径在**本卡写范围**内 —— 本卡就是改它的那条路（路径代数走唯一出口 `scopeOverlaps`）；
+ *   ② 有一条 **pass 的测试结果**把它绑成 `artifact` —— `sdo_test action=record artifact=<路径>`
+ *      就是"跑过它"的机械证据（DEF-011 起该哈希还必须与现算值一致）。
+ *
+ * ⚠️ **本实现刻意不留第三条**（初版曾把"出现在自报写入清单里"也当作一条出路）：实测它是**死路** ——
+ * 自报清单里只要出现写范围**之外**的路径，`done` 会先被 `write-scope-violation` 拒掉（DEF-016 的对账
+ * 就是干这个的）⇒ 能走到"清单含该路径"这一步的，必然已经在写范围内（即 ① 已成立）。留一条永不
+ * 独立成立的出路只会让读者以为有第三种绕法。`test/m168` M168-01 把这个反例钉住了。
+ *
+ * 声明了 `undecidable` 的卡**不逐条要求**（那条出口的语义就是"影响面推不出来"）；
+ * 没声明 `impact` 的卡同样不判（存量卡零噪声）。
+ */
+function impactGaps(store: SdoStore, task: TaskCard): string[] {
+  if (textOf(task.undecidable).trim() !== '') return []
+  const declared = task.impact ?? []
+  if (declared.length === 0) return []
+  const normalize = (path: unknown): string => textOf(path).replace(/^\.\//u, '').trim()
+  const scopes = task.writeScopes.map((scope) => normalize(scope)).filter((scope) => scope !== '')
+  const boundToPass = new Set(
+    listTestResults(store)
+      .filter((result) => result.status === 'pass')
+      .map((result) => normalize(result.artifact))
+      .filter((path) => path !== ''),
+  )
+  const gaps: string[] = []
+  for (const raw of declared) {
+    const path = normalize(raw)
+    if (path === '') continue
+    if (scopes.length > 0 && scopeOverlaps(scopes, [path]).length > 0) continue
+    if (boundToPass.has(path)) continue
+    gaps.push(path)
+  }
+  return gaps
 }
 
 export type ReportResult =
@@ -555,6 +603,22 @@ export type ReportResult =
        * 已写 `exempt` 的条目**不出现在这里**（豁免是人批的，N/A 是判据按写范围自己认出来的）。
        */
       naNotes?: string[]
+      /**
+       * **声明过却没被"处理过"的影响面**（R5 / 第三批 §3.7）：逐条点名，并给可执行出路。
+       * **不拒绝收工**（拒绝会让"改既有语义"的卡永远收不了工 —— 与 `DEF-033` 的顾虑同类）；
+       * 键为空时不出现（既有调用方形状不变）。
+       */
+      impactGaps?: string[]
+      /**
+       * **本次 `done` 已声明的未冻结兄弟卡**（DEF-033）：非空 = 本次是**局部绿**（本卡范围绿，全项目未冻结）。
+       * 键为空时不出现。
+       */
+      unfrozen?: string[]
+      /**
+       * **有在飞兄弟卡却没被声明**的那些（DEF-033）：`done` 照常成功（不拦收工），但这份读数必须被看见 ——
+       * 它把"卡 done ≠ 全局冻结"从共识变成回执上的点名。键为空时不出现。
+       */
+      unfrozenMissing?: string[]
       /**
        * **卡上 `fixes` 声明的逐条回显**（DEF-050 落点三）：每行形如
        * `DEF-xxx: fixed` / `DEF-xxx: open（需先闭合）` / `DEF-xxx: wontfix（理由…；批准人…）`。
@@ -593,6 +657,7 @@ export type ReportResult =
         | 'test-skip-unjustified'
         | 'construction-profile-missing'
         | 'tdd-red-green-missing'
+        | 'unfrozen-bad-id'
         | 'review-open-findings'
         | 'tdd-result-untraceable'
         | 'tdd-mutation-missing'
@@ -683,6 +748,34 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
     const fromSelfReport = changed.entries === 0 && selfReported.length > 0
     const audited = changed.entries > 0 ? auditable : selfReported
     const scopeAudit = auditWriteScopes(audited, task.writeScopes.map((scope) => textOf(scope)).filter((scope) => scope !== ''))
+
+    // **DEF-033（第三批 §3.13）**：完成语义的"局部绿 / 全局冻结"之分 —— `done` 时逐条对账。
+    // ① 声明的每条必须是**存在且当前确实在飞**的卡（假声明可读拒绝：写错 id、或写一张已 done 的卡）；
+    // ② 有在飞兄弟卡却**漏声明** ⇒ 不拦收工，但回执逐条点名（"卡 done ≠ 全局冻结"）；
+    // ③ 一条在飞兄弟卡都没有 ⇒ 回执明说"本次 done 等同于全量冻结"。
+    const declaredUnfrozen = (input.unfrozen ?? []).map((id) => textOf(id).trim()).filter((id) => id !== '')
+    if (input.status === 'done' && declaredUnfrozen.length > 0) {
+      const known = new Map(listTasks(store).map((item) => [item.id, item]))
+      const self = declaredUnfrozen.filter((id) => id === task.id)
+      const unknown = declaredUnfrozen.filter((id) => !known.has(id))
+      const settled = declaredUnfrozen.filter((id) => known.get(id)?.status !== 'in-progress' && id !== task.id)
+      if (self.length > 0 || unknown.length > 0 || settled.length > 0) {
+        return {
+          ok: false,
+          code: 'unfrozen-bad-id',
+          detail: fmt('uiCollab.kUnfrozenBadId', {
+            p1: [...new Set([...self, ...unknown, ...settled])].join(t('uiCollab.kListSep')),
+            p2: String([...known.values()].filter((item) => item.status === 'in-progress').length),
+          }),
+        }
+      }
+    }
+    const inFlightSiblings = input.status === 'done'
+      ? listTasks(store).filter((item) => item.id !== task.id && item.status === 'in-progress')
+      : []
+    const unfrozenMissing = input.status === 'done'
+      ? inFlightSiblings.filter((item) => !declaredUnfrozen.includes(item.id)).map((item) => item.id)
+      : []
     if (audited.length > 0 && !scopeAudit.ok) {
       return {
         ok: false,
@@ -722,6 +815,8 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
     const next: TaskCard = {
       ...task,
       status: 'done',
+      // **DEF-033**：把"本次 done 未冻结哪些在飞卡"写进卡（缺省不落键 ⇒ 存量形状不变）
+      ...(declaredUnfrozen.length === 0 ? {} : { unfrozen: declaredUnfrozen }),
       evidence: [...task.evidence, ...evidence],
       revision: task.revision + 1,
       updatedAt: now(),
@@ -755,6 +850,9 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
           p4: reviewAdoptionLabel(adoption.state),
         })
       })
+    // **R5（第三批 §3.7）**：`impact` 的 **done 面对账** —— 声明过的影响面里，哪些**既没被本卡改、
+    // 也没被跑过、也没在自报清单里**（逐条点名；不拒绝收工，见下面 `impactGaps` 的口径）。
+    const unresolvedImpact = impactGaps(store, task)
     return {
       ok: true,
       task: savedTask,
@@ -764,6 +862,10 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       ...(naNotes.length === 0 ? {} : { naNotes }),
       ...(fixEcho === undefined ? {} : { fixEcho }),
       ...(reviewEcho === undefined ? {} : { reviewEcho }),
+      ...(unresolvedImpact.length === 0 ? {} : { impactGaps: unresolvedImpact }),
+      // **DEF-033**：完成语义的读数 —— 未冻结清单（空数组时**不写**这个键，既有调用方形状不变）
+      ...(declaredUnfrozen.length === 0 ? {} : { unfrozen: declaredUnfrozen }),
+      ...(unfrozenMissing.length === 0 ? {} : { unfrozenMissing }),
     }
   }
   const next: TaskCard = {
@@ -801,6 +903,14 @@ export interface AppendReviewFindingsInput {
   by?: string | undefined
   /** 追加者的会话 id（与 `review/recorded` 同口径留痕：谁动过这条评审要查得到） */
   sessionId?: string | undefined
+  /**
+   * **补上"当前仍失败的复现命令"**（DEF-048 / 第三批 §3.16）：目标评审是非 `pass` 待修主张时，
+   * 它身上必须有 `repro` 或 `unreproducible` —— 缺了就在这次补录里补上（也可由原记录带上）。
+   * 两个都给 ⇒ 可读拒绝（读者判不出哪个作准）。
+   */
+  repro?: string | undefined
+  /** 补上「无法复现 + 为什么」（DEF-048）：与 `repro` 二选一。 */
+  unreproducible?: string | undefined
   /**
    * **本次补录的是原文的第几条**（DEF-072 / §3E 族 5）：1 起，指本次**第一条**发现项在原评审里的条号。
    *
@@ -853,6 +963,9 @@ export type AppendReviewFindingsResult =
         | 'original-overflow'
         | 'original-overlap'
         | 'original-gap'
+        // **DEF-048**：待修主张缺复现出路 / 两条出路都给了（与 `recordReview` 同一份判据）
+        | 'repro-missing'
+        | 'repro-ambiguous'
       detail: string
     }
 
@@ -899,6 +1012,17 @@ export function appendReviewFindings(
   if (appended.length === 0) {
     return { ok: false, code: 'empty-findings', detail: fmt('uiReview.appendEmpty', { p1: review.id }) }
   }
+  // ——— **DEF-048（第三批 §3.16）**：待修主张的"复现出路"也必须齐 ———
+  // 目标评审是非 `pass` 时，它身上（或本次补录里）必须有 `repro` / `unreproducible` 之一。
+  // 为什么在 append 面也要判：`append` 是**第三条写入路径**（另外两条是 `recordReview` 与工具面），
+  // 不判就等于留了一个"先记一条空口待修、再补录发现"的绕行通道。
+  const reproIssue = reviewReproIssue({
+    verdict: review.verdict,
+    repro: input.repro ?? review.repro,
+    unreproducible: input.unreproducible ?? review.unreproducible,
+  })
+  if (reproIssue !== undefined) return { ok: false, code: reproIssue.code, detail: reproIssue.detail }
+
   // ——— **DEF-072 / §3E 族 5**：补录的**条号自洽**（原第 k 条 / 原共 m 条）———
   // 为什么必须在这里拒：`fromIndex = findings.length` 是"这条记录现在有几条"**自算**的，推不出
   // "补的是原文第几条" —— 真机正是因此让「标题写原第 4 条 / 正文写原第 2 条」写进了台账
@@ -970,6 +1094,9 @@ export function appendReviewFindings(
     sealedFindings: review.sealedFindings ?? findings.length,
     // **DEF-072**：把"原文共几条"这个**声明**落进记录（缺省不落键，存量口径不变）
     ...(originalTotal === undefined ? {} : { originalTotal }),
+    // **DEF-048**：本次补录里带来的"复现出路"也落进记录（缺省不落键 ⇒ 存量形状不变）
+    ...(input.repro === undefined ? {} : { repro: input.repro }),
+    ...(input.unreproducible === undefined ? {} : { unreproducible: input.unreproducible }),
   }
   store.writeYaml(['reviews', `${review.id}.yml`], { review: next })
   const appendCount = reviewAppendCount(journal, review.id) + 1

@@ -171,6 +171,7 @@ test('M84-02 D-23：含"空格+井号"的评审记录后**不许**被判"被改�
     taskId: 'TASK-001',
     reviewer: 'reviewer:1',
     verdict: 'changes-requested',
+    repro: 'npm test（当前仍失败）', 
     findings: ['真机 #1132 复现：把变更单改成 approved 之后 claim 照常放行'],
   })
   const adoptions = office.reviewAdoptions(call)
@@ -187,6 +188,7 @@ test('M84-03 D-23：真改动仍然判红，且回执**不许**把没看过的�
     taskId: 'TASK-001',
     reviewer: 'reviewer:1',
     verdict: 'changes-requested',
+    repro: 'npm test（当前仍失败）', 
     findings: ['发现一', '发现二'],
   })
   // 手改 verdict（真篡改：把"要求返工"升级成通过）

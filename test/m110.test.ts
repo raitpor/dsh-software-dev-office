@@ -100,7 +100,7 @@ async function recordReview(
   findings: string,
 ): Promise<string> {
   const receipt = await callTool('sdo_review', {
-    action: 'record', taskId: 'TASK-001', reviewer: 'subagent:reviewer:2', verdict: 'changes-requested', findings,
+    action: 'record', taskId: 'TASK-001', reviewer: 'subagent:reviewer:2', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings,
   }, sessionId)
   const id = /REV-\d+/u.exec(receipt)?.[0]
   assert.ok(id !== undefined, `前置：评审要真的记下来：${receipt}`)

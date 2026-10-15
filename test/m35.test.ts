@@ -49,7 +49,9 @@ import { validateTestingSource, writeValidatedTestingSource } from '../src/domai
 // **TASK-053**：读数侧的准则别名只在**内容层**有一张表（`testDesignWhitebox.CRITERION_ALIASES`）——
 // 本用例拿它当"两侧该不该收下"的**唯一**裁判，谁再抄一份映射表，等价式那几条立刻红。
 import { canonicalCriterion } from '../src/domain/testDesignWhitebox.js'
-import { COVERAGE_CRITERIA } from '../src/domain/testingStore.js'
+// **DEF-034**：词表只有一份定义（`types.ts` 的 `TESTING_COVERAGE_CRITERIA`）—— 原先这里 import 的
+// `testingStore.js` 里那份 `COVERAGE_CRITERIA` 是**逐字相同的第二份 `as const`**（内容同、来源不同）。
+import { TESTING_COVERAGE_CRITERIA } from '../src/types.js'
 import { describeChange } from '../src/interface/describe.js'
 import type { Context } from '@deepseek-ai/cordis'
 import type { SdoConfig } from '../src/config.js'
@@ -1081,8 +1083,9 @@ test('M35-18 阈值比较收敛：同一组样本在「覆盖读数侧」与「�
  * ## 病灶（契约与实现相扭）
  *
  * CT-006 ③ 把覆盖读数的形状写成 `coverage.yml { criterion, … }`，**示例逐字写着**
- * `criterion: 'branch'`；而读数侧的两层都用**裸枚举**（`COVERAGE_CRITERIA` /
- * `TESTING_COVERAGE_CRITERIA`）拒它 —— 契约给的例子，落到盘上被判非法枚举。
+ * `criterion: 'branch'`；而读数侧的两层都用**裸枚举**（**同一份** `TESTING_COVERAGE_CRITERIA`：
+ * 判定侧在 `coverage.ts`、形状层在 `testingShapes.ts` —— DEF-034 之前它被抄成了两份逐字相同的
+ * `as const`）拒它 —— 契约给的例子，落到盘上被判非法枚举。
  * 内容层（`testDesignWhitebox.canonicalCriterion`）早就有唯一一张别名表
  * （`branch` / `branch-coverage` / `decision_coverage` → `decision`），读数侧只要**调它**即可，
  * 不该再抄一份枚举或映射表。
@@ -1146,7 +1149,7 @@ test('M35-19 读数侧准则别名：写 branch ⇒ 形状层与判定层同结�
     const shape = shapeOf(raw)
     const judged = judgedOf(raw)
     const canonical = canonicalCriterion(raw)
-    const expected = canonical !== undefined || (COVERAGE_CRITERIA as readonly string[]).includes(raw.trim())
+    const expected = canonical !== undefined || (TESTING_COVERAGE_CRITERIA as readonly string[]).includes(raw.trim())
     assert.equal(
       shape.accepted,
       judged.accepted,
@@ -1169,7 +1172,7 @@ test('M35-19 读数侧准则别名：写 branch ⇒ 形状层与判定层同结�
   assert.equal(bogusJudged.accepted, false, '判定层同样必须拒')
   assert.deepEqual(bogusShape.codes, ['enum'], '形状层判红用形状层自己的码（它的公共面）')
   assert.deepEqual(bogusJudged.codes, ['criterion-unknown'], '判定层判红用它自己的码')
-  for (const legal of COVERAGE_CRITERIA) {
+  for (const legal of TESTING_COVERAGE_CRITERIA) {
     assert.match(bogusShape.message, new RegExp(legal, 'u'), `形状层判红要点名合法集合里的「${legal}」：${bogusShape.message}`)
   }
   assert.equal(shapeOf('分支').accepted, false, '中文标签「分支」不是取值（词表与别名表都不认）⇒ 形状层拒')

@@ -391,7 +391,7 @@ export interface PlanArgs {
   derivedFrom?: string | undefined
   /** profile：给人看的理由 */
   reason?: string | undefined
-  /** profile：逐检查项的豁免（JSON 数组：{task, check, why}） */
+  /** profile：逐检查项的豁免（JSON 数组：`{task, check, why, approvedBy?, impact?}` —— 后两键是 DEF-030 新增的必署名面） */
   exempt?: string | undefined
 }
 
@@ -420,6 +420,11 @@ export interface TaskArgs {
    * 子会话收不到宿主的 `workspace/changes`（上游能力边界）⇒ 用它把写范围对账从「人工比对」拉回机械核对。
    */
   reportedFiles?: string | unknown[] | undefined
+  /**
+   * **本次 `done` 未冻结的兄弟卡**（DEF-033 / 第三批 §3.13）：在飞卡 id 列表（JSON 文本或真数组）。
+   * 逐条点名"哪些在飞卡的工作没有并进来" —— 每条必须**存在且当前确实在飞**，否则可读拒绝。
+   */
+  unfrozen?: string | unknown[] | undefined
   /**
    * **追加**写范围（DEF-012）：JSON 数组文本**或真数组**（宿主宽松路径）—— 与 `writeScopes` 互斥。
    * 语义（谁能追加 / 必须带 reason / 不得与在飞卡相交）在 `collab.updateTask` 里可读拒绝。
@@ -521,6 +526,16 @@ export interface TestArgs {
   env?: string | undefined
   /** record：**被检产物**（相对路径）——记录时绑定 sha256，交付时重算比对 */
   artifact?: string | undefined
+  /**
+   * record：**调用方手里那个哈希**（DEF-011）：给了就必须与现算值一致（不一致 ⇒ 可读拒绝并点名两值），
+   * 一致 ⇒ 记它；不给 ⇒ 由插件现算（旧行为）。
+   */
+  artifactSha256?: string | undefined
+  /**
+   * record：**这条结论依据于哪些已修缺陷**（DEF-075）：缺陷 id 列表（JSON 文本或数组，如
+   * `["DEF-001","DEF-002"]`）。绑上一条 `pass` 结论 ⇒ 该 `fixed` 缺陷才算有依据；未知 id 会被可读拒绝。
+   */
+  defects?: unknown
   /** record：**断言面指纹**（R-3）—— 红与绿必须同指纹，否则"改断言转绿"与"改实现转绿"无法区分 */
   harness?: string | undefined
   /**
@@ -560,6 +575,13 @@ export interface ReviewArgs {
   originalIndex?: number | undefined
   /** **append：原文（来源评审）共几条**（DEF-072）：与 `originalIndex` 成对，用来判超界。 */
   originalTotal?: number | undefined
+  /**
+   * **record：一条当前仍然失败的复现命令**（DEF-048）：非 `pass` 的待修主张**二选一**必填之一 ——
+   * 后人照着跑就能看见"现在还坏着"，不再靠"当时确实坏了"的口头记忆。
+   */
+  repro?: string | undefined
+  /** **record：显式声明"无法复现"+为什么**（DEF-048）：与 `repro` 二选一（两个都给会被可读拒绝）。 */
+  unreproducible?: string | undefined
 }
 
 export interface DeliverArgs {
@@ -574,6 +596,8 @@ export interface DeliverArgs {
   evidence?: string | undefined
   /** action=run：被运行的产物（相对路径）—— 记录时**绑定当时的 sha256** */
   artifact?: string | undefined
+  /** action=run：**调用方手里那个哈希**（DEF-011）：一致 ⇒ 记它；不一致 ⇒ 可读拒绝并点名两值 */
+  artifactSha256?: string | undefined
   /** action=run：退出码（有就写） */
   exitCode?: string | undefined
   /** action=package：本次交付要求覆盖的真机运行目标（如 "server,client"） */
@@ -1000,7 +1024,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         scope: { type: 'string', description: "profile: 'all' (default) or JSON **text** (a string) of task ids, e.g. '[\"TASK-001\"]' — not an array." },
         derivedFrom: { type: 'string', description: "profile: JSON **text** (a string) of the basis for the choice, e.g. '[\"scale=normal\",\"contractCount=12\"]'; at least one must be machine-checkable. Not an array." },
         reason: { type: 'string', description: 'profile: human-readable reason for the choice (required when `packages` is empty).' },
-        exempt: { type: 'string', description: "profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\"}]'. Not an array." },
+        exempt: { type: 'string', description: "profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\",\"approvedBy\":\"who approved this exemption\",\"impact\":\"what this waiver gives up\"}]'. Not an array. `approvedBy` and `impact` are the two keys **DEF-030** added and both are **plain strings** (unlike `impact` on a task card, which is a list): an exemption written without either — or with a non-string value — is rejected with a readable message and zero writes, while older entries are read tolerantly and shown as unsigned in receipts." },
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -1042,6 +1066,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         },
         blockedBy: { type: 'string', description: 'update: JSON **text** of blocking task ids, e.g. \'["TASK-001"]\' (supports ["*"] = after every other card). Do NOT pass an array.' },
         evidenceRequired: { type: 'string', description: 'update: JSON **text** of required evidence kinds, e.g. \'["command"]\'. Do NOT pass an array.' },
+        unfrozen: { type: 'string', description: 'done: JSON **text** (or a real array) of the sibling cards whose work is **not frozen into this completion** (DEF-033), e.g. \'["TASK-002"]\'. `done` means *this card scope is green* — not *the whole project is frozen*; each id must exist and still be in progress (otherwise the call is rejected readably), and in-flight siblings you omit are named back to you in the receipt.' },
         reportedFiles: { type: 'string', description: 'done: JSON **text** (or a real array) of the files this session actually wrote — the host does not announce workspace/changes for child sessions (upstream limit, DEF-016), so the write-scope reconciliation uses this **self-report**; the receipt always says it is a self-report and never claims host observation.' },
         requirements: { type: 'string', description: 'update: JSON **text** (a string) of requirement ids, e.g. \'["REQ-001"]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
         fixes: { type: 'string', description: 'update: JSON **text** (a string) of the defect ids this card claims to fix, e.g. \'["DEF-050"]\' — not an array. Replaces the whole declaration (an empty array withdraws it). Each entry must be an existing `DEF-xxx` id; a duplicate, a blank string or an unknown id is **rejected with a readable message** (never silently dropped). Criterion C-63 then requires every such defect to be `fixed`/`closed`, or `wontfix` with both `waiveReason` and `waiveApprovedBy` filled in (the DEF-038 basis) once this card reaches done/verified.' },
@@ -1098,6 +1123,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           addWriteScopes: compositeArg(args.addWriteScopes),
           // **DEF-016**：自报清单（execute 映射是与 schema/类型并列的第三处，缺它参数会被静默丢掉）
           reportedFiles: compositeArg(args.reportedFiles),
+          unfrozen: compositeArg(args.unfrozen),
           blockedBy: compositeArg(args.blockedBy),
           evidenceRequired: compositeArg(args.evidenceRequired),
           requirements: typeof args.requirements === 'string' ? args.requirements : undefined,
@@ -1198,6 +1224,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         },
         env: { type: 'string', description: 'env/record: environment fingerprint, e.g. "jdk=21.0.2; probe=run_checks.py@v3". Recorded with the result so staleness is machine-checkable (SDO-57).' },
         artifact: { type: 'string', description: 'record: the artifact this result was produced against (relative path) — its sha256 is bound now and re-checked at delivery.' },
+        defects: { type: 'string', description: 'record: **the fixed defects this conclusion covers** (DEF-075), as JSON **text** (a string), e.g. \'["DEF-001","DEF-002"]\' — not a bare list. Every `fixed` defect must be bound by at least one passing result (criterion `defects.fixed-tested` at the verification gate); an unknown defect id is rejected readably.' },
+        artifactSha256: { type: 'string', description: 'record: **the hash you already have** for that artifact (DEF-011). If given it must equal the freshly computed value, otherwise the call is **rejected with both values named** and nothing is written; if omitted the plugin computes it as before.' },
         // **R-3**：断言面指纹 —— 红与绿必须同指纹，否则"改断言转绿"与"改实现转绿"在台账上等价
         harness: { type: 'string', description: 'record: assertion-surface fingerprint (e.g. sha256 of the test harness, or a stable id like "node --test test/x.test.js"). The tdd red->green check requires the failing and the passing run of a case to carry the SAME fingerprint.' },
         // **REQ-054（TASK-054）**：判定基准的**参数面** —— 少了这一行，`oracle` 就在工具边界上被静默丢掉
@@ -1263,6 +1291,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           adoptedBy: typeof args.adoptedBy === 'string' ? args.adoptedBy : undefined,
           env: typeof args.env === 'string' ? args.env : undefined,
           artifact: typeof args.artifact === 'string' ? args.artifact : undefined,
+          // **DEF-011**：声明的产物哈希照样必须过 execute 映射（缺它 = 参数被静默丢弃 — tq_ff348198）
+          artifactSha256: typeof args.artifactSha256 === 'string' ? args.artifactSha256 : undefined,
+          // **DEF-075**：绑定的缺陷 id 列表（数组或 JSON 文本；缺它 = 参数被静默丢弃）
+          defects: args.defects,
           // **R-3**：断言面指纹（红绿必须同指纹）—— 必须进映射，否则工具边界上被静默丢掉
           harness: typeof args.harness === 'string' ? args.harness : undefined,
           // **REQ-054（TASK-054）**：判定基准 —— 同样必须逐字段搬（漏一行 = 静默丢弃，
@@ -1283,6 +1315,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         taskId: { type: 'string', description: t('param.taskId') },
         reviewer: { type: 'string', description: t('param.reviewer') },
         verdict: { type: 'string', description: "'pass' | 'changes-requested' | 'reject'." },
+        // **DEF-048**：待修主张必须带"当前仍失败的复现命令"或显式声明"无法复现"（二选一）
+        repro: { type: 'string', description: "record: **a command that still fails right now** (DEF-048). A non-`pass` verdict (changes-requested / reject) must carry either this or `unreproducible` — otherwise the call is rejected with both ways out named and nothing is written." },
+        unreproducible: { type: 'string', description: "record: **explicit declaration that it cannot be reproduced**, plus why (DEF-048). The alternative to `repro`; giving both is rejected (the reader could not tell which one holds)." },
         // **DEF-065 落点一**：与 `sdo_plan.suggestions` 同源同修 —— 原先是 `type: 'string'`，
         // 数组在这条工具上被宿主校验拒（`"findings" must be a string`）。联合声明见上。
         findings: {
@@ -1305,6 +1340,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           reviewer: typeof args.reviewer === 'string' ? args.reviewer : undefined,
           verdict: parseEnum(args.verdict, ['pass', 'changes-requested', 'reject'] as const),
           findings: compositeArg(args.findings),
+          // **DEF-048**：两条出路照样要过 execute 映射（缺它 = 参数被静默丢弃 —— tq_ff348198）
+          repro: typeof args.repro === 'string' ? args.repro : undefined,
+          unreproducible: typeof args.unreproducible === 'string' ? args.unreproducible : undefined,
           id: typeof args.id === 'string' ? args.id : undefined,
           actor: typeof args.actor === 'string' ? args.actor : undefined,
           // **DEF-072**：条号声明必须过 execute 映射（第四处；缺它参数被静默丢掉 — tq_ff348198）
@@ -1325,6 +1363,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         evidence: { type: 'string', description: 'run: evidence path or note (log / screenshot / manual confirmation).' },
         artifact: { type: 'string', description: 'run: the artifact you actually ran (relative path); its sha256 is bound at record time.' },
         exitCode: { type: 'string', description: 'run: exit code, if any.' },
+        artifactSha256: { type: 'string', description: 'run: **the hash you already have** for that artifact (DEF-011). If given it must equal the freshly computed value, otherwise the call is **rejected with both values named** and nothing is written; if omitted the plugin computes it as before.' },
         runsRequired: { type: 'string', description: t('param.runsRequired') },
         artifacts: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"path":"src/x.ts","kind":"source|docs|config|schema|test"}]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
         acceptance: { type: 'string', description: 'JSON **text** (a string), e.g. \'[{"requirement":"REQ-001","criterion":"AC-001","evidence":"…","verdict":"pass"}]\' — not an array. Verdicts: pass | pass-with-deviation | fail | unverified | blocked | waived. **pass-with-deviation** (accept with a known deviation) REQUIRES a non-empty `deviation` field (what the deviation is, why it is accepted, who approved it) — it is rendered into DELIVERY.md and reported as a warning by the delivery gate. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).' },
@@ -1341,6 +1380,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           outcome: typeof args.outcome === 'string' ? args.outcome : undefined,
           evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
           artifact: typeof args.artifact === 'string' ? args.artifact : undefined,
+          // **DEF-011**：声明的产物哈希照样必须过 execute 映射（缺它 = 参数被静默丢弃 — tq_ff348198）
+          artifactSha256: typeof args.artifactSha256 === 'string' ? args.artifactSha256 : undefined,
           exitCode: typeof args.exitCode === 'string' ? args.exitCode : undefined,
           runsRequired: typeof args.runsRequired === 'string' ? args.runsRequired : undefined,
           artifacts: typeof args.artifacts === 'string' ? args.artifacts : undefined,

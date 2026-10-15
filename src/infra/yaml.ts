@@ -123,21 +123,49 @@ function closingQuoteIndex(text: string, start: number): number | undefined {
  * 引号段内的 `:` / `#` / `\` **不参与**分隔与注释判定。**不动**值解析、缩进、列表、流式集合 ——
  * 那几处各有自己的引号处理（`parsePlainOrQuoted` / `stripInlineComment`），本函数只管"键在哪里结束"。
  */
-function splitKey(text: string): { key: string; rest: string | undefined } | undefined {
+function splitKey(text: string, lineNo?: number): { key: string; rest: string | undefined } | undefined {
+  // **流式集合/序列**（`{...}` / `[...]`）由 `parseValueToken` 处理，本函数只负责"块映射的键在哪里结束"
+  // ⇒ 这些形态里的 `:` 不是块映射的分隔符，DEF-061 的可读拒绝**不适用于它们**（否则 `- { id: X }`
+  // 这种既有写法会被误杀）。这是本轮实测出来的边界。
+  const flowish = /^[{[]/u.test(text)
   for (let i = 0; i < text.length; i++) {
     const ch = text[i]
     // **引号段跳过**（本卡新增的唯一扫描态）：起始引号 ⇒ 一路跳到它的闭引号。
     // 不闭合、或找不到闭引号 ⇒ 交给 `unwrapQuotedKey` 的既有口径去判（这里只跳过，不越权下结论）。
     if (ch === "'" || ch === '"') {
       const closing = closingQuoteIndex(text, i)
-      if (closing === undefined) return undefined
+      if (closing === undefined) {
+        // **DEF-061 残余面**：引号没闭合。若这一行**长得就是键值对**（后面还有 `: `），
+        // 那它就是"键里含引号却被裸写"⇒ 可读拒绝；否则（如标量 `don't stop`）照旧当标量。
+        if (!flowish && lineNo !== undefined && /:\s|:$/u.test(text.slice(i + 1))) {
+          throw new YamlSubsetError(
+            lineNo,
+            `键「${text.slice(0, Math.max(i, text.search(/:\s|:$/u))).trim()}」里含 ${ch} 却没有按引号键写 ——`
+            + '裸键里的引号读端不认，整行会被静默当成字符串；请写成 `\'键\': 值`（键里的单引号用两个单引号自转义）',
+          )
+        }
+        return undefined
+      }
       i = closing
       continue
     }
     // **行内注释**（` # 注释`）只可能出现在引号之外 —— 引号段已经整段跳过了。
     if (ch === '#' && isCommentHash(text, i)) return undefined
     if (ch === ':' && (i + 1 === text.length || text[i + 1] === ' ')) {
-      const key = unwrapQuotedKey(text.slice(0, i).trim())
+      const rawKey = text.slice(0, i).trim()
+      const key = unwrapQuotedKey(rawKey)
+      // **DEF-061 残余面（第三批 §3.18）**：这一行**长得就是键值对**（有 `: ` 分隔），却因为裸键里夹着
+      // 读端不认的字符而对不上 —— 旧口径在这里 `return undefined`，上层于是把**整行当标量**读走：
+      // 写得出、读不回，而且**一声不响**（本项目最忌讳的形态）。既然写读两端的合法面已经对齐
+      //（写端 `quoteKeyIfNeeded` 对这些键一定加引号），手写成裸形态就是**真错** ⇒ 可读拒绝并给修法。
+      // 只在调用方给了行号时抛（`splitKey` 也被内联集合的扫描复用过，那里没有行号语义）。
+      if ((key === undefined || key === '') && !flowish && lineNo !== undefined && rawKey !== '' && NEEDS_QUOTE_KEY.test(rawKey)) {
+        throw new YamlSubsetError(
+          lineNo,
+          `键「${rawKey}」里含必须加引号的字符（${rawKey.match(new RegExp(NEEDS_QUOTE_KEY.source, 'gu'))?.join(' ') ?? ''}）——`
+          + '裸键里的这些字符读端不认，整行会被静默当成字符串；请写成 `\'键\': 值`（写端对这类键一律加引号）',
+        )
+      }
       if (key === undefined || key === '') return undefined
       const rest = i + 1 === text.length ? '' : text.slice(i + 2).trim()
       return { key, rest }
@@ -145,7 +173,17 @@ function splitKey(text: string): { key: string; rest: string | undefined } | und
     // **plain 键里出现 `\` ⇒ 不是键值对**（原口径保留）：裸键不允许反斜杠。
     // 引号段已经在上面 `continue` 掉了，所以"引号内的反斜杠"不会再被这一条误杀 ——
     // 这正是 REV-041 主发现（`'a\b': 1` 被拒）与发现 7（`"a\"b": 1` 被拒）的共同根因。
-    if (ch === '\\') return undefined
+    if (ch === '\\') {
+      // `\` 在裸键里同样不被认（既有口径）：若这一行确实是「键: 值」形态 ⇒ 可读拒绝而不是静默降级
+      if (!flowish && lineNo !== undefined && /:\s|:$/u.test(text.slice(i))) {
+        throw new YamlSubsetError(
+          lineNo,
+          `键「${text.slice(0, text.indexOf(':')).trim()}」里含反斜杠 —— 裸键不允许反斜杠（读端会拒认，整行被静默当成字符串）；`
+          + '请写成 `\'键\': 值`',
+        )
+      }
+      return undefined
+    }
   }
   return undefined
 }
@@ -247,7 +285,7 @@ class Parser {
     const line = this.peek()
     if (line === undefined) return null
     if (line.content.startsWith('- ') || line.content === '-') return this.parseList(indent)
-    if (splitKey(line.content) !== undefined) return this.parseMap(indent)
+    if (splitKey(line.content, line.lineNo) !== undefined) return this.parseMap(indent)
     this.i++
     return parseValueToken(line.content, line.lineNo)
   }
@@ -260,7 +298,7 @@ class Parser {
       if (line.indent > indent) {
         throw new YamlSubsetError(line.lineNo, `缩进比同级深 ${line.indent - indent} 个空格，无法归属`)
       }
-      const split = splitKey(line.content)
+      const split = splitKey(line.content, line.lineNo)
       if (split === undefined) {
         if (line.content.startsWith('- ')) break
         throw new YamlSubsetError(line.lineNo, '期望 `键: 值`，但看到的是标量')
@@ -294,7 +332,7 @@ class Parser {
         list.push(this.parseBlockScalar(rest, itemIndent, line.lineNo))
         continue
       }
-      const split = splitKey(rest)
+      const split = splitKey(rest, line.lineNo)
       if (split === undefined) {
         list.push(parseValueToken(rest, line.lineNo))
         continue
@@ -309,7 +347,7 @@ class Parser {
           throw new YamlSubsetError(cont.lineNo, '序列项内的映射缩进不一致')
         }
         if (cont.content.startsWith('- ') || cont.content === '-') break
-        const contSplit = splitKey(cont.content)
+        const contSplit = splitKey(cont.content, cont.lineNo)
         if (contSplit === undefined) throw new YamlSubsetError(cont.lineNo, '期望 `键: 值`')
         this.i++
         map[contSplit.key] = this.parseValueAfterKey(contSplit.rest ?? '', itemIndent, cont.lineNo)
@@ -547,6 +585,26 @@ function quoteIfNeeded(value: string): string {
 }
 
 /**
+ * **键**的合法面（DEF-061 残余面 / 第三批 §3.18）—— 与 `NEEDS_QUOTE` 分开是**故意的**。
+ *
+ * 病根（现盘实测）：读端 `unwrapQuotedKey` 对**裸键**的合法面是"不含
+ * `[ ] { } ' " , # & * ! | > % @ \`` 中任一字符"，而写端 `quoteIfNeeded` 只在**起始位置**命中
+ * 这类字符时才加引号、`\` 更是**完全不查**（`NEEDS_ESCAPE_QUOTE` 只作用于**值**）
+ * ⇒ 键里**夹着**这些字符时（`a#b` / `a,b` / `a\b` / `a"b` / `a'b`）**写得出、读不回**：
+ * 读端 `splitKey` 返回 undefined ⇒ 整行被**静默读成字符串**（既不报错也不还原）。
+ *
+ * 口径 = **写读对称**：读端不认的裸形态，写端就必须加引号。所以键的判定要比值**严**：
+ * 只要**任意位置**出现上面那组字符就加引号（值不受影响 —— 值里的 `,`/`#`（非注释位）本身是合法的，
+ * 动它会把大批既有往返形态一起改掉，那是另一件事）。
+ */
+const NEEDS_QUOTE_KEY = /[\[\]{}'",#&*!|>%@`\\]/u
+
+function quoteKeyIfNeeded(key: string): string {
+  if (key !== '' && !NEEDS_QUOTE_KEY.test(key)) return quoteIfNeeded(key)
+  return `'${key.replace(/'/g, "''")}'`
+}
+
+/**
  * **多行字符串的转义双引号形式**（第二轮评审 §4.1/§4.2 的修法）。
  *
  * 病根：写出侧把多行串写成块标量（`key: |-` 或列表项 `- |-`），而**列表项**那种形式解析侧
@@ -625,7 +683,7 @@ function emitCollectionInline(value: unknown, indent: number, lines: string[]): 
     return
   }
   for (const [key, item] of entries) {
-    const keyText = quoteIfNeeded(key) + ':'
+    const keyText = quoteKeyIfNeeded(key) + ':'
     if (item === null || !isCollection(item)) {
       lines.push(' '.repeat(indent) + keyText + ' ' + emitScalar(item))
       continue

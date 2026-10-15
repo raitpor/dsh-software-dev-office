@@ -60,7 +60,11 @@ import { isAbsolute, join, relative, resolve } from 'node:path'
 
 import { SdoStore } from '../infra/store.js'
 import { textOf } from '../infra/scalar.js'
-import { COVERAGE_CRITERIA, TESTING_SOURCE_FILES, label, readTestingSource } from './testingStore.js'
+import { TESTING_SOURCE_FILES, label, readTestingSource } from './testingStore.js'
+// **DEF-034**：准则词表**直接从唯一来源取**（`types.ts` 的 `TESTING_COVERAGE_CRITERIA`）——
+// 本文件上面的注释一直这么写，修前 import 的却是 `testingStore.ts` 里**另一份**逐字相同的 `as const`
+// ⇒ 注释与实现相反，而"两份内容相同"挡不住将来改一处漏一处。现在全仓只有这一份定义。
+import { TESTING_COVERAGE_CRITERIA } from '../types.js'
 // **处置词表与校验器的唯一来源**（TASK-021 收口）：本模块的未覆盖项判定不再自己写一份枚举与 if 链，
 // 而是调用 `mutation.ts` 的 `assessCoverageItem` —— 它又调用同一份 `resolveDisposition`。
 // 两侧唯一的差异（「不可达」只对未覆盖项开放）由 `DISPOSITION_SCOPE_RULE` 声明，示例见 test/m40.test.ts 的 M40-21g。
@@ -78,6 +82,16 @@ import { canonicalCriterion } from './testDesignWhitebox.js'
  * 中文标签**优先**取 `testingStore.ts` 的 `TESTING_ZH`（`col.coverageCriterion` 一族的唯一来源），
  * 取不到时用本模块的兜底表 —— 兜底只为"语言包/标签表被改瘦"时不至于印出裸键，
  * 不构成第二套词表（取值仍只有 `TESTING_COVERAGE_CRITERIA` 一份）。
+ *
+ * **与设计侧措辞的关系（DEF-034）**：同一个 token 在两层可能印不同中文词 —— 例 `decision`
+ * 在这里是**判定**，而 `testDesignWhitebox.ts` 的 `WHITEBOX_CRITERION_LABEL` 是**分支**。
+ * 后者是**那张卡的 DoD 逐字**（`语句 / 分支 / 路径 / 条件 / 定义-使用对`，写在 `testDesignWhitebox.ts`
+ * 的三处注释与 `test/m34` 的守卫里）⇒ 属**需求基线口径**，本批不擅改；前者取"判定"是因为本仓的
+ * 别名表把 `branch` 当**待纠正的别名**（`CRITERION_ALIASES: branch → decision`），
+ * 且同表的 `decision-condition`（判定-条件）/ `mc-dc`（修正条件判定）已按"判定"成体系。
+ * 两层是**不同用途的两份词表**（读数 7 类 / 设计 5 类），**不是错抄**；差异由 `test/m161` 机械钉住
+ * （设计侧 5 类必须是读数侧的子集 ⇒ 加准则只加一边会红）。**若要统一成同一个中文词，请驾驶舱裁决**
+ *（改哪一处都只动一个映射 + 一条用例；但设计侧那 5 个词有 DoD 逐字出处）。
  */
 const CRITERION_FALLBACK_LABEL: Record<string, string> = {
   statement: '语句',
@@ -107,11 +121,11 @@ export function coverageCriterionLabel(criterion: string): string {
  * | `reportHash` | 读数说"我按这份报告读数" | 报告被改过 / 被换过也查不出来（只有数字没有可核对的依据） |
  * | `artifactHash` | 读数说"我读的是这一版产物" | **产物改动后无从判过期**（AC-198 落不了地） |
  *
- * ⚠️ **已知缺口（留给下一张卡，本卡写范围外）**：`TestingCoverageReading`（`types.ts`）与
- * `testingShapes.checkCoverageReading`（形状校验）都还没有这两个字段 —— 形状层因此
- * **不核**它们的写法（写了非法哈希也照样落盘），落盘路径也不保证它们不丢。本模块是
- * **判定侧的唯一出口**：读得出来就判，读不出来就判红（`artifact-hash-missing` /
- * `report-hash-mismatch`）。补形状位属 `types.ts` + `testingShapes.ts` 的后续卡。
+ * ⚠️ **缺口已闭合（原注释写于 TASK-011，DEF-034 复核时更正 —— 注释与实现相反正是这条最容易被
+ * 后人误信的部分）**：`TestingCoverageReading`（`types.ts`）与 `testingShapes.checkCoverageReading`
+ * （形状校验）**现在都有了** `reportHash` / `artifactHash`：形状层核**写法**（`sha256:` / `dir:`），
+ * 判定层核**值**（与现算指纹比对）。本模块仍是**判定侧的唯一出口**：读得出来就判，读不出来就判红
+ *（`artifact-hash-missing` / `report-hash-mismatch`）。
  */
 export interface CoverageReading {
   id: string
@@ -147,14 +161,15 @@ export interface CoverageSource {
 
 /** 合法准则的人话集合（判红时**点名合法集合**：只说"不合法"是不可执行的结论）。 */
 export function legalCoverageCriteriaText(): string {
-  return COVERAGE_CRITERIA.map((item) => `${item}（${coverageCriterionLabel(item)}）`).join(' / ')
+  return TESTING_COVERAGE_CRITERIA.map((item) => `${item}（${coverageCriterionLabel(item)}）`).join(' / ')
 }
 
 /**
  * **读数侧准则取值的唯一规范化入口**（TASK-053）：合法词表 **∪** 内容层那一张别名表。
  *
  * 为什么要有它：**CT-006 ③ 的 schema 示例自己写着 `criterion: 'branch'`**，而读数侧原先两层
- * 都用裸枚举（本模块的 `COVERAGE_CRITERIA` 与形状层的 `TESTING_COVERAGE_CRITERIA`）拒它 ——
+ * 都用裸枚举（**同一份**词表 `TESTING_COVERAGE_CRITERIA`：判定侧在本模块、形状层在 `testingShapes.ts`；
+ * DEF-034 之前它被抄成了两份逐字相同的 `as const`）拒它 ——
  * 契约给的例子落到盘上被判"非法枚举"（契约与实现相扭）。按契约统一：别名被**收下并纠正**。
  *
  * 归一化**不在本模块另写**：`branch` / `branch-coverage` / `decision_coverage` → `decision`
@@ -168,7 +183,7 @@ export function legalCoverageCriteriaText(): string {
 export function canonicalReadingCriterion(raw: string): string | undefined {
   const value = raw.trim()
   if (value === '') return undefined
-  if ((COVERAGE_CRITERIA as readonly string[]).includes(value)) return value
+  if ((TESTING_COVERAGE_CRITERIA as readonly string[]).includes(value)) return value
   return canonicalCriterion(value)
 }
 

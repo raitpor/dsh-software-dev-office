@@ -200,7 +200,9 @@ test('F-21 ①：交付清单的 artifacts / acceptance 写成标量——完整
   writeSdo('delivery/manifest.yml', [...MANIFEST_HEAD, '  artifacts: src/a.ts', '  acceptance: 对账通过'])
   const store = office.storeFor(workspace)
   const manifest = readManifest(store)
-  assert.deepEqual(manifest?.artifacts, [{ path: 'src/a.ts', kind: 'source', sha256: 'missing' }], '标量产物行保留 path（哈希算不出来 → 既有判据判红）')
+  // **DEF-031（第三批 §3.12）**：产物条目新增 `asOf`（"这个哈希截至何时"）—— 标量写成/旧清单
+  // 里没有这个键 ⇒ 读出来是**空串**（宽容读、不回写历史），回执显式标「未记时刻」。
+  assert.deepEqual(manifest?.artifacts, [{ path: 'src/a.ts', kind: 'source', sha256: 'missing', asOf: '' }], '标量产物行保留 path（哈希算不出来 → 既有判据判红）')
   assert.deepEqual(manifest?.acceptance, [{ requirement: '对账通过', criterion: '', evidence: '', verdict: 'fail' }])
   // ① 不崩：修复前 `manifest.artifacts.filter is not a function`
   let completeness: ReturnType<typeof deliveryCompleteness> | undefined

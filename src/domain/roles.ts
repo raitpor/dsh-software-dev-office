@@ -390,6 +390,28 @@ export interface SessionClaim {
  * 会被永久降级成那个角色的工具面（连 `sdo_gate`/`sdo_status` 都调不了）。所以这里用**卡的当前状态 +
  * 当前 owner** 过滤：只有 `in-progress` 且 owner 与认领时一致的卡才算数。
  */
+/**
+ * **卡的"认领会话"账**（DEF-042 / 第三批 §3.15）—— `cardId` → 认领过它的**会话 uuid** 列表。
+ *
+ * 与 {@link claimsBySession} 的关键差别：那份只看**当前仍在进行中**的认领（归属会随卡离开
+ * `in-progress` 失效），而独立性判定发生在**卡已经 done 之后**（实现完 → 才记评审）——
+ * 用"当前归属"去判就会永远是空集、静默退回名字口径（这正是缺陷长期无人察觉的原因之一）。
+ * 所以这里读的是 **`task/claimed` 事件本身**（append-only 真源），不看卡现在的状态。
+ */
+export function claimedSessionsByCard(journal: Journal): Map<string, string[]> {
+  const out = new Map<string, string[]>()
+  for (const event of journal.read().events) {
+    if (event.type !== 'task/claimed') continue
+    const sessionId = typeof event.data.sessionId === 'string' ? event.data.sessionId : ''
+    const cardId = typeof event.data.id === 'string' ? event.data.id : ''
+    if (sessionId === '' || cardId === '') continue
+    const sessions = out.get(cardId) ?? []
+    if (!sessions.includes(sessionId)) sessions.push(sessionId)
+    out.set(cardId, sessions)
+  }
+  return out
+}
+
 export function claimsBySession(store: SdoStore, journal: Journal): SessionClaim[] {
   const cards = new Map(listTasks(store).map((task) => [task.id, task]))
   const latest = new Map<string, SessionClaim>()

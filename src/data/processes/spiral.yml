@@ -160,6 +160,9 @@ gates:
   - id: G6
     name: 验证门禁
     criteria:
+      # **DEF-075（第三批 §3.8）**：缺陷线补进 G6（与 C-50/C-52 同族）。绑定方式是**TR 带 `defects` 字段**（方案 (a)）：
+      # 依据与结论同生共死，不必新增追溯边种类。四流程措辞一致（C-59 / C-64 都栽在"只改一处"上）。
+      - { id: C-65, check: "defects.fixed-tested", desc: "已修（fixed）的缺陷必须有**绑定的测试结论**：每条 `fixed` 缺陷至少要有一条 `pass` 的结果把它的 id 写进 `defects`；否则判红并逐条点名（`DEF-xxx 已修但无测试结论`）。`wontfix` 且免责两字段齐备者不算缺依据（口径同 C-51/C-63）；`closed` 不在本条范围（closed 是结果、TR 是依据）" }
       - { id: C-50, check: "tests.passed", desc: "must REQ 测试通过" }
       - { id: C-51, check: "defects.closed", desc: "无未关闭阻塞缺陷" }
       - { id: C-52, check: "review.independent", desc: "评审独立性" }

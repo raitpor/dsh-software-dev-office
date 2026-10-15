@@ -341,7 +341,7 @@ test('M85-09 N-10：`unwaive` 能撤销豁免（含历史残留），没豁免�
 test('M85-10 N-11：状态块披露"已核实成立"的评审发现（核实不是终点）', () => {
   const before = office.status(call)
   assert.equal(before.reproducedFindings?.count ?? 0, 0, '没有核实记录时不该有这条')
-  const review = office.addReview(call, { taskId: 'TASK-001', reviewer: 'reviewer:1', verdict: 'changes-requested', findings: ['发现一'] })
+  const review = office.addReview(call, { taskId: 'TASK-001', reviewer: 'reviewer:1', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: ['发现一'] })
   // 核实（照实现方身份；这里直接落域层留痕）
   office.verifyReviewFinding(call, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '照着发现能复现', by: 'subagent:developer' })
   const after = office.status(call)

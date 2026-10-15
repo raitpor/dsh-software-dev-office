@@ -8,7 +8,7 @@
  *
  * 本刀只做两件**诚实**的事：
  *   ① 把宿主回执**留下**（`dispatch/started.messageReceipt`）——可查"投出去没有"；
- *   ② 现算**可观测**的消费三态（`reuseDeliveries`：认领 / 结算 / 未见消费）——**不**把"受理了投递"
+ *   ② 现算**可观测**的消费**四态**（`reuseDeliveries`：held / claimed / ended / no-signal）——**不**把"受理了投递"
  *      说成"消费了"，也**不**把"未见消费"说成"没消费"。
  */
 import assert from 'node:assert/strict'
@@ -144,7 +144,7 @@ test('M158-01 投递收据不丢：宿主返回值归一成一行留在 outcome 
   assert.equal((failed as { messageReceipt?: string }).messageReceipt, undefined, '失败不得留收据')
 })
 
-test('M158-02 消费观测三态：投递前已持卡 ⇒ held（不报警）；投递后认领/结算 ⇒ 正面证据；都没有 ⇒ no-signal', () => {
+test('M158-02 消费观测四态：投递前已持卡 ⇒ held（不报警）；投递后认领/结算 ⇒ 正面证据；都没有 ⇒ no-signal', () => {
   const f = fixture('states')
   // ① 追加指令给**在飞**会话（投递前就已持卡）⇒ `held`：不该再要求一次认领
   const held = newCard(f, 'src/held/')

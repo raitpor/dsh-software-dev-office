@@ -160,18 +160,11 @@ export const WHITEBOX_TECHNIQUES = [
   'def-use',
 ] as const
 
-/** 覆盖读数可用的**准则**（REQ-049）。 */
-export const COVERAGE_CRITERIA = [
-  'statement',
-  'decision',
-  'condition',
-  'decision-condition',
-  'mc-dc',
-  'path',
-  'def-use',
-] as const
-
-export type CoverageCriterion = (typeof COVERAGE_CRITERIA)[number]
+// **DEF-034**：覆盖读数准则的词表**只有一份定义** —— `types.ts` 的 `TESTING_COVERAGE_CRITERIA`
+// （类型 `TestingCoverageCriterion`）。这里**不再**留第二份 `as const`：修前本文件另有一份
+// `COVERAGE_CRITERIA`，与本文件之外的 `TESTING_COVERAGE_CRITERIA` **逐字相同**，却是**两个来源** ——
+// "内容相同"不等于"同一个来源"：改一处漏一处就是漏判，而 `coverage.ts` 的注释还写着"同一个准则词表
+// （`types.ts` 的 …）"、import 的却是这一份。现在消费方一律直接 import `types.ts` 那一份。
 
 // —————————————————————— 三、双语标签 ——————————————————————
 

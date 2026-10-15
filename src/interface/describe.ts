@@ -600,16 +600,14 @@ function structuralDispositionBlock(rows: StructuralGapRow[], policy: 'required'
 }
 
 /**
- * 未建卡的原因**再加一位**（TASK-104 / DEF-063）：`no-basis` = 判重依据为空 ⇒ 拒绝生成。
+ * 未建卡的原因：`no-basis` = 判重依据为空 ⇒ 拒绝生成（TASK-104 / DEF-063）。
  *
- * 为什么不直接改 `StructuralSkipReason`（`types.ts`）：那不是本卡的写范围（卡上边界明写
- * "只改写范围内文件"）。判定与数据由域层给（`plan.ts` 里就是 `reason: 'no-basis'` 的字符串），
- * 渲染层只需要一个能容纳它的联合类型 —— 于是**在这里显式加宽**，而不是就地改共享类型
- * 或把它降级成 `string`（后者会连 `scope-too-broad` / `already-covered` 的窄化一起丢掉）。
+ * **R6（第三批 §3.19）**：`no-basis` 原先**不在** `StructuralSkipReason` 联合里 —— 域层用
+ * `as unknown as` 强塞、本文件只好**就地加宽**（曾有一个 `StructuralSkipReasonWithBasis`）⇒
+ * **运行期正确、类型面说谎**。现在 `no-basis` 已是 `types.ts` 里的正式取值：
+ * 局部加宽已删除，这里直接吃 `StructuralSkipReason`（强转也一并从域层删掉）。
  */
-type StructuralSkipReasonWithBasis = StructuralSkipReason | 'no-basis'
-
-function structuralReason(row: StructuralSkip, reason: StructuralSkipReasonWithBasis): string {
+function structuralReason(row: StructuralSkip, reason: StructuralSkipReason): string {
   if (reason === 'no-basis') return t('uiIndex.kStructuralReasonNoBasis')
   if (reason === 'scope-too-broad') {
     return t('uiIndex.kStructuralReasonScopeTooBroad') + fmt('uiIndex.kStructuralScopeTooBroadDetail', { p1: (row.scopes ?? []).join('、') })
@@ -637,10 +635,9 @@ export function describeStructuralPlan(plan: StructuralPlan | undefined): string
   }
   if (created.length === 0) lines.push(t('uiIndex.kStructuralNone'))
   for (const row of skipped) {
-    // `reason` 取到局部常量：`StructuralSkip.reason` 的联合类型里**还没有** `no-basis`
-    // （`types.ts` 不在本卡写范围，见 `structuralReason` 的注释——它按运行时值渲染，
-    //  所以用带注的联合类型把这个值显式带进来，而不是把 `types.ts` 就地改掉）
-    const reason: StructuralSkipReasonWithBasis = row.reason
+    // **R6**：`StructuralSkip.reason` 现在是完整的 `StructuralSkipReason`（含 `no-basis`）⇒ 直接用，
+    // 不再需要"按运行时值加宽"的局部类型
+    const reason: StructuralSkipReason = row.reason
     lines.push(fmt('uiIndex.kStructuralSkippedLine', {
       p1: row.designId,
       p2: row.name,
@@ -953,7 +950,11 @@ export function describeInlineHandoff(
 export function describeManifest(manifest: DeliveryManifest, shapeNotes: FieldShapeNote[] = []): string {
   const lines = [fmt('uiDescribe.k199', { p1: manifest.id, p2: manifest.by, p3: manifest.at })]
   lines.push(fmt('uiDescribe.k109', { p1: manifest.artifacts.length }))
-  for (const artifact of manifest.artifacts) lines.push(`    · ${artifact.path}　[${artifact.kind}]　${artifact.sha256.slice(0, 12)}…`)
+  for (const artifact of manifest.artifacts) {
+    // **DEF-031**：逐条印出「这个哈希截至何时」；旧清单没有该键 ⇒ 显式说「未记时刻」，不假装有
+    const asOf = artifact.asOf === '' ? t('uiDescribe.kDeliveryAsOfUnknown') : artifact.asOf
+    lines.push(`    · ${artifact.path}　[${artifact.kind}]　${artifact.sha256.slice(0, 12)}…　${fmt('uiDescribe.kDeliveryAsOf', { p1: asOf })}`)
+  }
   lines.push(fmt('uiDescribe.k110', { p1: manifest.acceptance.length, p2: manifest.acceptance.map((row) => `${row.requirement}:${row.verdict}`).join(' ') }))
   lines.push(fmt('uiDescribe.k111', { p1: manifest.rollbackPoint }))
   lines.push(fmt('uiDescribe.k112', { p1: manifest.prototypeExcluded ? t('uiDescribe.k230') : t('uiDescribe.k170') }))

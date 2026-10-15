@@ -1,0 +1,192 @@
+/**
+ * **增量 171：DEF-054（major，第三批 §3.17）—— 跨项目串账（含 `dab49d5` 引入的回归）**。
+ *
+ * 修前现盘：钩子（`tools/pre-execute`）用 `findProjectRoot(call.cwd, projectDirName)` 定位工作区根
+ * —— 它会**向上爬到祖先项目**的 `.sdo/`（`findProjectRoot("<祖先>/proj/sub", ".sdo")` ⇒ 认到祖先项目）
+ * ⇒ 卡的查找、认领台账、角色缓存键全部落到**别的项目**的真源上（跨项目串账）。
+ * 而 `office.workspaceFor` 的契约明写「**绝不向上爬、绝不猜别的项目**；`findProjectRoot` …不参与定位」
+ * ⇒ 实现与契约**互相打脸**（第三处打脸在 `test/m102` 的夹具注释里，已随本项统一）。
+ *
+ * 修法：定位改用**唯一出口** `office.workspaceRootFor`（三个**契约内**来源，逐条都不爬）：
+ *   ① 本次调用的 cwd 本身含 `.sdo/`；② 本会话**登记的** cwd 含 `.sdo/`；
+ *   ③ **凭据**：本会话在某个**已登记会话的**工作区里认领过卡（台账证明，不是路径上溯）。
+ * 都拿不到 ⇒ **fail-closed**（执行者子会话一律拒；修前是 `kind='unknown'` ⇒ 掩码与写范围**两段一起跳过**）。
+ * 驾驶舱不受限（它本就不受角色掩码约束、也没有卡的写范围）。
+ */
+import assert from 'node:assert/strict'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
+import { join } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { afterEach, beforeEach, test } from 'node:test'
+import type { Context } from '@deepseek-ai/cordis'
+
+import { Config } from '../src/config.js'
+import { SdoStore } from '../src/infra/store.js'
+import { apply } from '../src/index.js'
+import type { SdoConfig } from '../src/config.js'
+import type { TaskCard } from '../src/types.js'
+
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
+const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm171')
+/** 祖先项目（**别的**项目）：`.sdo/` 在它这一层，夹具故意在里面放一张被本会话"认领"的卡。 */
+const FOREIGN = join(BASE, 'outer')
+/** 本会话 cwd：落在祖先项目**下面**的深层子目录（自己这一路上都没有 `.sdo/`）。 */
+const DEEP = join(FOREIGN, 'deep', 'sub')
+
+const CARD_REVISION = 1
+
+interface ToolDefinition { name: string; parameters: unknown; execute: (args: Record<string, unknown>, exec: unknown) => unknown }
+type Decision = { kind: string; reason?: string }
+
+function hookHarness(): {
+  drive: (tool: string, args: Record<string, unknown>, opts?: { sessionId?: string; cwd?: string | undefined; depth?: number }) => Promise<Decision>
+  claim: (sessionId: string, taskId: string, cwd: string) => Promise<string>
+  registerSession: (sessionId: string, cwd: string) => void
+} {
+  const registered: ToolDefinition[] = []
+  const listeners = new Map<string, (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
+  const services: Record<string, unknown> = {
+    tools: { register: (tool: ToolDefinition) => { registered.push(tool); return () => {} } },
+    sessions: {},
+  }
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {},
+    on: (event: string, listener: never) => { listeners.set(event, listener); return () => {} },
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => { if (names.every((name) => name in services)) cb(makeCtx()) },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
+  const listener = listeners.get('tools/pre-execute')
+  assert.ok(listener !== undefined, '真实装配必须注册 tools/pre-execute')
+  const sessionCreated = listeners.get('session/created')
+  assert.ok(sessionCreated !== undefined, '真实装配必须注册 session/created（宿主登记会话工作目录的入口）')
+  return {
+    registerSession(sessionId, cwd) { sessionCreated({ id: sessionId, header: { cwd } }, async () => undefined) },
+    async drive(tool, args, opts = {}) {
+      const sessionId = opts.sessionId ?? 'child-dev'
+      const depth = opts.depth ?? 1
+      const header: Record<string, unknown> = { id: sessionId, delegationDepth: depth }
+      if (opts.cwd !== undefined) header['cwd'] = opts.cwd
+      if (depth > 0) header['parentSession'] = 'cockpit'
+      const exec = { name: tool, arguments: args, agent: { id: sessionId, session: { header } } }
+      return (await listener(exec, async () => ({ kind: 'allow' }))) as Decision
+    },
+    async claim(sessionId, taskId, cwd) {
+      const tool = registered.find((item) => item.name === 'sdo_task')
+      assert.ok(tool !== undefined, '工具面缺少 sdo_task')
+      const exec = { agent: { id: sessionId, session: { header: { id: sessionId, cwd, delegationDepth: 1, parentSession: 'cockpit' } } } }
+      return String(await tool.execute({ action: 'claim', id: taskId, owner: sessionId, expectedRevision: CARD_REVISION }, exec))
+    },
+  }
+}
+
+/** 在一个目录里初始化一个"项目"（`.sdo/`）并放一张卡；返回 store。 */
+function projectAt(dir: string, scopes: string[]): SdoStore {
+  mkdirSync(join(dir, '.sdo', 'tasks'), { recursive: true })
+  const store = new SdoStore(join(dir, '.sdo'))
+  const task: TaskCard = {
+    id: 'TASK-901', title: 't', goal: 'g', inputs: [], outputs: [], dod: ['d'], evidenceRequired: ['artifact'],
+    blockedBy: [], writeScopes: scopes, role: 'developer', size: 'small', revision: CARD_REVISION,
+    status: 'ready', requirements: [], evidence: [], createdAt: '', updatedAt: '',
+  }
+  store.writeYaml(['tasks', 'TASK-901.yml'], { task })
+  return store
+}
+
+beforeEach(() => {
+  rmSync(BASE, { recursive: true, force: true })
+  mkdirSync(DEEP, { recursive: true })
+})
+
+afterEach(() => {
+  rmSync(BASE, { recursive: true, force: true })
+})
+
+test('M171-01 祖先项目（串账现场）：**不许**认到祖先的 `.sdo/`，执行者按 fail-closed 拒', async () => {
+  const h = hookHarness()
+  // 祖先项目是**别的**项目：它的卡由**别的会话**认领（本会话在那边没有任何凭据）
+  projectAt(FOREIGN, ['src/index.ts'])
+  h.registerSession('other-session', FOREIGN)
+  const receipt = await h.claim('other-session', 'TASK-901', FOREIGN)
+  assert.match(receipt, /TASK-901/u, `夹具前提：别的会话认领必须成功：${receipt.slice(0, 200)}`)
+
+  const decision = await h.drive('edit', { file_path: join(DEEP, 'src/index.ts') }, { cwd: DEEP })
+  assert.equal(decision.kind, 'deny', 'cwd 一路上没有 `.sdo/` 且本会话无凭据 ⇒ 不许把祖先项目当成自己的工作区')
+  assert.match(decision.reason ?? '', /无法确定本会话的工作区/u, `必须是 fail-closed 的理由，而不是拿祖先项目的写范围去判：${decision.reason ?? ''}`)
+  // **关键**：别把祖先项目的写范围当成自己的（那正是串账）
+  assert.equal((decision.reason ?? '').includes('越界'), false, '拒因不得是"祖先项目的写范围"判出来的越界')
+
+  // **对照（修前的样子）**：把 cwd 直接放在祖先项目那一层时，它当然**就是**那个工作区 ——
+  // 这时拒因才是"拿那个项目的写范围判出来的越界"。两相对照说明：区别在于**有没有凭据**，
+  // 而不在于"路径上有没有祖先的 `.sdo/`"。
+  const asForeign = await h.drive('edit', { file_path: join(FOREIGN, 'src/other.ts') }, { cwd: FOREIGN, sessionId: 'child-foreign' })
+  assert.equal(asForeign.kind, 'deny', 'cwd 就是那个工作区时，按它的写范围判（越界）')
+  assert.match(asForeign.reason ?? '', /越界|写范围/u, `此时才是写范围判定：${asForeign.reason ?? ''}`)
+})
+
+test('M171-02 正常项目（零回归）：cwd 自己含 `.sdo/` ⇒ 照旧放行范围内的绝对路径', async () => {
+  const h = hookHarness()
+  const store = projectAt(BASE, ['src/index.ts'])
+  void store
+  h.registerSession('cockpit', BASE)
+  const receipt = await h.claim('child-dev', 'TASK-901', BASE)
+  assert.match(receipt, /TASK-901/u, `夹具前提：认领必须成功：${receipt.slice(0, 200)}`)
+  const inside = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { cwd: BASE })
+  assert.equal(inside.kind, 'allow', `正常项目的范围内的绝对路径必须放行：${inside.reason ?? ''}`)
+  const outside = await h.drive('edit', { file_path: join(BASE, 'src/other.ts') }, { cwd: BASE })
+  assert.equal(outside.kind, 'deny', '范围外仍然拒（判据没被放宽）')
+  assert.match(outside.reason ?? '', /other\.ts/u, '拒因要点名被拒路径')
+})
+
+test('M171-03 无 cwd：执行者**fail-closed 拒**（修前会跳过掩码与写范围两段）；驾驶舱不受影响', async () => {
+  const h = hookHarness()
+  projectAt(BASE, ['src/index.ts'])
+  h.registerSession('cockpit', BASE)
+  const child = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'child-nocwd', cwd: undefined })
+  assert.equal(child.kind, 'deny', '拿不到工作区的**执行者**必须 fail-closed，不许 fail-open')
+  assert.match(child.reason ?? '', /无法确定本会话的工作区/u, `拒因必须说明是工作区归属不到：${child.reason ?? ''}`)
+  // 驾驶舱（depth 0）本就不受角色掩码约束、也没有卡的写范围 ⇒ 不受这条影响
+  const cockpit = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'cockpit', cwd: undefined, depth: 0 })
+  assert.equal(cockpit.kind, 'allow', '驾驶舱不该被这条 fail-closed 拦住')
+  // **更强的那一态**：连"登记过的 cwd"都没有的驾驶舱（工作区**彻底**不可知）也必须放行 ——
+  // 它既没有角色掩码可判、也没有卡的写范围可判，锁死它只会把流程官挡在门外（判据是给执行者的）。
+  const cockpitUnknown = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'cockpit-unknown', cwd: undefined, depth: 0 })
+  assert.equal(cockpitUnknown.kind, 'allow', '工作区不可知的驾驶舱同样不该被锁死（fail-closed 只针对执行者）')
+})
+
+test('M171-04 子目录会话（DEF-047 不得回归）：靠**台账凭据**定位，而不是靠向上爬', async () => {
+  const h = hookHarness()
+  projectAt(BASE, ['src/index.ts'])
+  h.registerSession('cockpit', BASE)
+  const receipt = await h.claim('child-dev', 'TASK-901', BASE)
+  assert.match(receipt, /TASK-901/u, `夹具前提：认领必须成功：${receipt.slice(0, 200)}`)
+  const sub = join(BASE, 'src')
+  // 本会话 cwd 落在子目录（自己这一层没有 `.sdo/`），但它在 BASE 的工作区里**认领过卡** ⇒ 凭据成立
+  const inside = await h.drive('edit', { file_path: join(sub, 'index.ts') }, { cwd: sub })
+  assert.equal(inside.kind, 'allow', `DEF-047 的原始现场不得回归（子目录会话的范围内绝对路径必须放行）：${inside.reason ?? ''}`)
+  const relative = await h.drive('edit', { file_path: 'index.ts' }, { cwd: sub })
+  assert.equal(relative.kind, 'deny', '相对写法仍无法表达工作区根下的路径 ⇒ 照旧 fail-closed 拒')
+})
+
+test('M171-05 反例（如实记录的行为变化）：子目录 + 无任何凭据 ⇒ fail-closed（不再猜）', async () => {
+  const h = hookHarness()
+  projectAt(BASE, ['src/index.ts'])
+  h.registerSession('cockpit', BASE)
+  // 该会话**没有**在任何工作区认领过卡 ⇒ 三个来源都不成立
+  const orphan = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'child-orphan', cwd: join(BASE, 'src') })
+  assert.equal(orphan.kind, 'deny', '没有任何凭据 ⇒ 不许猜（这正是"不向上爬"的代价，如实钉住）')
+  assert.match(orphan.reason ?? '', /无法确定本会话的工作区/u, '理由必须是工作区归属不到')
+})
+
+test('M171-06 结构：`src/index.ts` 的**代码行**里不再有 `findProjectRoot`（定位不再向上爬）', () => {
+  const code = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
+    .split('\n')
+    .filter((line) => !/^\s*(\*|\/\*|\/\/)/u.test(line))
+    .join('\n')
+  assert.equal(/findProjectRoot/u.test(code), false, '钩子侧不许再用 findProjectRoot 定位（DEF-054）')
+  const office = readFileSync(join(ROOT, 'src', 'office.ts'), 'utf8')
+  assert.match(office, /workspaceRootFor\(call: OfficeCall\)/u, '唯一出口 workspaceRootFor 必须在位')
+  assert.match(office, /绝不向上爬/u, '契约里"不向上爬"的措辞必须在位（三处口径统一）')
+})

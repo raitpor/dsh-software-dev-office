@@ -45,9 +45,10 @@ const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm102')
  * **夹具根 = 会话工作目录 = 工作区根**，`.sdo/` 就建在它底下。
  *
  * 为什么（DEF-047 落点一，实测踩过两次，别改回去）：
- *   · 工作区根由 `findProjectRoot(cwd, projectDirName)` 从会话 cwd **向上找最近的 `.sdo/`** 得出
- *     （既有发现口径）。夹具若把 `.sdo` 放在**夹具根的上层**，上溯会**越过会话 cwd**、先撞见
- *     **本仓库自己的 `.sdo/`** ⇒ 卡的查找落到本仓真源上 ⇒ 用例会把"夹具位置不对"误报成"守卫坏了"；
+ *   · **DEF-054（第三批 §3.17）起定位已不再向上爬**：钩子走 `office.workspaceRootFor` ——
+ *     ① 本次 cwd 本身含 `.sdo/`；② 本会话**登记的** cwd 含 `.sdo/`；③ 凭**认领台账**证明
+ *     （在某个已登记会话的工作区里认领过卡）。三者都不含 ⇒ **fail-closed**。夹具因此必须
+ *     **登记驾驶舱会话**（`liveCard` 里已做），否则测的是"夹具没登记"而不是定位；
  *   · 反之，真机契约是"**不向上爬、不猜别的项目**"（`office.workspaceFor`）：会话 cwd 里没有 `.sdo/`
  *     就是**未初始化**。所以夹具必须让"会话 cwd"与"`.sdo` 所在处"**同一个目录**"——
  *     否则测的就不是守卫，而是"夹具没初始化"。
@@ -89,6 +90,8 @@ interface ToolDefinition { name: string; parameters: unknown; execute: (args: Re
 function hookHarness(): {
   drive: (tool: string, args: Record<string, unknown>, opts?: { sessionId?: string; cwd?: string; depth?: number }) => Promise<{ kind: string; reason?: string }>
   claim: (sessionId: string, taskId: string) => Promise<string>
+  /** 模拟宿主的 `session/created`（登记会话工作目录）—— DEF-054 起是钩子定位的合法来源之一 */
+  registerSession: (sessionId: string, cwd: string) => void
 } {
   const registered: ToolDefinition[] = []
   const listeners = new Map<string, (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
@@ -107,8 +110,15 @@ function hookHarness(): {
   apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
   const listener = listeners.get('tools/pre-execute')
   assert.ok(listener !== undefined, '真实装配必须注册 tools/pre-execute 监听器')
+  // **DEF-054（第三批 §3.17）**：真机上每个会话都由宿主的 `session/created` 登记工作目录；
+  // 钩子侧定位（`office.workspaceRootFor`）的第三步要靠它 —— 夹具必须同样登记，否则测的不是定位而是"夹具没登记"。
+  const sessionCreated = listeners.get('session/created')
+  assert.ok(sessionCreated !== undefined, '真实装配必须注册 session/created 监听器')
 
   return {
+    registerSession(sessionId: string, cwd: string): void {
+      sessionCreated({ id: sessionId, header: { cwd } }, async () => undefined)
+    },
     async drive(tool, args, opts = {}) {
       const sessionId = opts.sessionId ?? 'child-dev'
       const cwd = opts.cwd ?? SESSION_CWD
@@ -131,6 +141,8 @@ function hookHarness(): {
 
 /** 建卡 + 用**生产路径**认领（否则钩子的归属缓存不刷新，角色推不出来）。 */
 async function liveCard(h: ReturnType<typeof hookHarness>, sessionId: string, scopes: string[]): Promise<void> {
+  // 真机上驾驶舱会话就在工作区根活动（宿主的 `session/created` 会登记它）——夹具补上这一步
+  h.registerSession('cockpit', SESSION_CWD)
   const task = card('TASK-901', scopes)
   store.writeYaml(['tasks', 'TASK-901.yml'], { task })
   const receipt = await h.claim(sessionId, 'TASK-901')

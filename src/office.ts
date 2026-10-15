@@ -92,7 +92,8 @@ import {
   renderDelivery,
   renderTestPlan,
   updateDefect,
-  verificationStats, listRuns, recordRun, type DefectUpdate, evidenceFreshness, hashArtifact} from './domain/records.js'
+  verificationStats, listRuns, recordRun, type DefectUpdate, evidenceFreshness,
+  reviewReproIssue, ReviewReproError} from './domain/records.js'
 import type { RunInput, RunRecord } from './domain/records.js'
 import type {
   DeliveryManifest,
@@ -202,7 +203,7 @@ import { methodDocStatus } from './domain/methodDocs.js'
 import type { MethodDocStatus } from './domain/methodDocs.js'
 import { recordWorkspaceChanges, unresolvedSeqs, readWorkspaceChanges} from './domain/workspaceChanges.js'
 import { readChildFaces, recordChildFace } from './domain/dispatchFace.js'
-import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
+import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
 import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
 import { listDispositions, rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
@@ -540,7 +541,9 @@ export class SoftwareDevOffice {
    * 即"仍串工作区"）。因此现在**只认本层**：
    *   · 本层没有 `.sdo/` → 视为未初始化（`sdo_status` 报"尚未初始化"），
    *   · **绝不向上爬、绝不猜别的项目**（宁可少显示，也不显示错的）。
-   * `findProjectRoot` 仍保留在 `infra/discovery.ts`（供显式探测/测试用），但**不参与定位**。
+   * `findProjectRoot` 仍保留在 `infra/discovery.ts`（供显式探测/测试用），但**不参与定位**
+   * —— 钩子侧同理：它用 `workspaceRootFor`（本契约内的两个来源，只认本层），
+   * **修前它用 `findProjectRoot` 向上爬**（`dab49d5` 引入的跨项目串账，DEF-054 已修）。
    */
   workspaceFor(call: OfficeCall, explicit?: string): string | undefined {
     if (typeof explicit === 'string' && explicit !== '') return resolve(explicit)
@@ -551,6 +554,51 @@ export class SoftwareDevOffice {
     }
     // **没有兜底**：不读 process.cwd()、不向上查找、不猜别的项目。
     // 真源是工作区里的 `.sdo/`；工作区未知时宁可明确报错，也不显示错的项目。
+    return undefined
+  }
+
+  /**
+   * **钩子侧的工作区根**（DEF-054 / 第三批 §3.17）—— 与 `workspaceFor` **同一契约**（只认本层、
+   * 绝不向上爬、绝不猜别的项目），只多一条**择一**规则：两个契约内来源（本次调用携带的 `cwd` /
+   * 本会话登记的 `cwd`）里，**只有真的含 `.sdo/` 的那个**算数；都不含 ⇒ `undefined`
+   * （调用方按 **fail-closed** 处理）。
+   *
+   * 为什么必须这样：子代理的 `agent.cwd` 可能是工作区的**子目录**（DEF-047：按子目录读认领台账
+   * 会一条都读不到 ⇒ 闸门拿不到写范围 ⇒ 范围内的路径被误拒），而"**向上找最近的 `.sdo/`**"会认到
+   * **祖先项目**（DEF-054：跨项目串账，`dab49d5` 引入的回归）。这条规则两边都不违背 ——
+   * 答案只可能是"本次 cwd"或"本会话登记的 cwd"**本身**，绝不越过它们去爬。
+   */
+  workspaceRootFor(call: OfficeCall): string | undefined {
+    const candidates: (string | undefined)[] = [
+      typeof call.cwd === 'string' && call.cwd !== '' ? resolve(call.cwd) : undefined,
+      call.sessionId === undefined ? undefined : this.cwdBySession.get(call.sessionId),
+    ]
+    for (const dir of candidates) {
+      if (dir === undefined || dir === '') continue
+      try {
+        if (existsSync(join(dir, this.settings.projectDirName))) return dir
+      } catch {
+        continue
+      }
+    }
+    // **第三步：凭据（不是爬）**。子代理的 `agent.cwd` 可能是工作区子目录（DEF-047 的真机现场：
+    // 绝对路径写范围内的文件被误拒）。既然不许爬，就必须有**另一条契约内的来源**证明"这个会话属于哪个工作区"——
+    // 那就是**认领台账**：本会话在某个**已登记会话的**工作区里认领过卡 ⇒ 那个工作区就是它的工作区。
+    // 候选只有"进程里登记过的会话 cwd"（`cwdBySession`，来自宿主的 `session/created`），**不含任何上溯目录**
+    // ⇒ 既不会认到祖先项目（DEF-054），也不会把 DEF-047 的子目录会话打回 fail-closed。
+    if (call.sessionId === undefined) return undefined
+    const seen = new Set<string>()
+    for (const dir of this.cwdBySession.values()) {
+      if (dir === '' || seen.has(dir)) continue
+      seen.add(dir)
+      try {
+        if (!existsSync(join(dir, this.settings.projectDirName))) continue
+        const store = this.storeFor(dir)
+        if (claimsBySession(store, this.journalFor(dir)).some((claim) => claim.sessionId === call.sessionId)) return resolve(dir)
+      } catch {
+        continue
+      }
+    }
     return undefined
   }
 
@@ -3849,15 +3897,18 @@ export class SoftwareDevOffice {
     for (const name of input.scope === SCOPE_ALL ? [] : input.scope) {
       if (!listTasks(store).some((task) => task.id === name)) problems.push(fmt('uiConstruction.c19', { p1: name }))
     }
+    // **R1 附带（第三批实测）**：`.trim()` 只对**字符串**安全 —— 除"缺键"之外，**类型不对**也必须走
+    // **可读拒绝**而不是崩栈（实测：把 `impact` 照抄成 `sdo_task` 的**数组**形态时，这里抛
+    // `(item.impact ?? '').trim is not a function` —— 工具面直接炸，而不是给一句人话）。
+    // 口径：只有非空**字符串**才算"写了"；其余（缺键 / 数组 / 数字 / 对象）一律按"没写"处理 ⇒ 由 c40/c41 点名。
+    const exemptText = (value: unknown): string => (typeof value === 'string' ? value : '')
     for (const item of input.exempt) {
-      if (item.why.trim() === '') problems.push(fmt('uiConstruction.c20', { p1: item.task, p2: item.check }))
+      if (exemptText(item.why).trim() === '') problems.push(fmt('uiConstruction.c20', { p1: item.task, p2: item.check }))
       if (!(CONSTRUCTION_CHECKS as readonly string[]).includes(item.check)) problems.push(fmt('uiConstruction.c21', { p1: item.check }))
       // **DEF-030**：豁免是"跳过一条判据"的动作 ⇒ 新的豁免必须当场说清**谁批准**、**放掉的是什么**。
       // 旧条目不受影响（读端宽容 + 状态面标"未署名"）；但**新写进来**的缺一即整次拒绝（不写盘）。
-      // `?? ''`：类型上是必填，但**运行时可缺键**（JSON/YAML 里没写）——直接 `.trim()` 会抛，
-      // 而"缺键"正是本缺陷要拦的形态，必须走**可读拒绝**而不是崩溃。
-      if ((item.approvedBy ?? '').trim() === '') problems.push(fmt('uiConstruction.c40', { p1: item.task, p2: item.check }))
-      if ((item.impact ?? '').trim() === '') problems.push(fmt('uiConstruction.c41', { p1: item.task, p2: item.check }))
+      if (exemptText(item.approvedBy).trim() === '') problems.push(fmt('uiConstruction.c40', { p1: item.task, p2: item.check }))
+      if (exemptText(item.impact).trim() === '') problems.push(fmt('uiConstruction.c41', { p1: item.task, p2: item.check }))
     }
     const derivation = validateDerivation(store, input.derivedFrom)
     problems.push(...derivation.problems)
@@ -4241,10 +4292,27 @@ export class SoftwareDevOffice {
   noteEnvironment(
     call: OfficeCall,
     input: { env: string; note?: string | undefined; by?: string | undefined },
-  ): { ok: true; env: string; at: string } | { ok: false; detail: string } {
+  ): {
+    ok: true
+    env: string
+    at: string
+    /** 登记**之前**的当前环境（从未登记过 ⇒ 不给这个键） */
+    previousEnv?: string | undefined
+    /**
+     * **这次登记的"影响面"**（DEF-025 / 第三批 §3.10）：登记是**项目级**动作，一次登记会让别的卡
+     * 绑着旧环境的证据集体变成"证据过期" —— 回执必须点名是**哪些**，并给可执行的补做出路。
+     *
+     * 判据**复用唯一出口** `evidenceFreshness`（不另造一套"哪条会过期"的算法）：
+     * 影响面 = 按**新环境**判过期的那些 **减去** 登记**前**就已过期的 ⇒ 只报"**因这次登记而新过期**"的。
+     */
+    newlyStale: { resultId: string; caseId: string; reason: string }[]
+  } | { ok: false; detail: string } {
     const declared = input.env.trim()
     if (declared === '') return { ok: false, detail: '环境指纹不能为空（空指纹等于没登记）' }
-    const { store, journal } = this.contextFor(call)
+    const { store, journal, workspace } = this.contextFor(call)
+    const previous = this.currentEnvironment(call)
+    const already = new Set(evidenceFreshness(store, workspace, previous).stale.map((row) => row.resultId))
+    const newlyStale = evidenceFreshness(store, workspace, declared).stale.filter((row) => !already.has(row.resultId))
     const at = new Date().toISOString()
     journal.append('project/environment', {
       plugin: 'dsh-software-dev-office',
@@ -4258,7 +4326,21 @@ export class SoftwareDevOffice {
       at,
     })
     void store
-    return { ok: true, env: declared, at }
+    return { ok: true, env: declared, at, ...(previous === undefined ? {} : { previousEnv: previous }), newlyStale }
+  }
+
+  /**
+   * **当前环境状态**（只读，DEF-025 的 ③）：最近一次登记的环境串 + 它的登记时刻。
+   * 从未登记过 ⇒ `{ env: '', at: '' }`（**如实说没有**，而不是编一个"当前环境"）。
+   */
+  environmentStatus(call: OfficeCall): { env: string; at: string } {
+    const { journal } = this.contextFor(call)
+    const events = journal.read().events.filter((event) => event.type === 'project/environment')
+    for (let i = events.length - 1; i >= 0; i -= 1) {
+      const env = String(events[i]?.data.env ?? '').trim()
+      if (env !== '') return { env, at: String(events[i]?.data.at ?? '') }
+    }
+    return { env: '', at: '' }
   }
 
   /** 最近登记的**环境指纹**（没登记过 ⇒ `undefined`，此时一切"时效"都只能标"无法核验"）。 */
@@ -4341,13 +4423,16 @@ export class SoftwareDevOffice {
     const inherited = declared === '' ? this.currentEnvironment(call) : undefined
     const env = declared !== '' ? declared : inherited
     const artifact = (input.artifact ?? '').trim()
+    // **DEF-011**：这里**不再**一把覆盖成现算值 —— 把 `workspace` 交给域层，由**唯一出口**
+    //（`reconcileArtifactSha256`）对账：调用方声明了哈希就必须与现算值一致（不一致 ⇒ 可读拒绝、零写盘）；
+    // 没声明 ⇒ 域层照旧现算（零破坏）。
     return recordTestResult(store, journal, {
       ...input,
       ...(input.executedBy === undefined ? {} : { executedBy: input.executedBy }),
       ...(input.adoptedBy === undefined ? {} : { adoptedBy: input.adoptedBy }),
       ...(env === undefined || env === '' ? {} : { env, envSource: declared !== '' ? 'declared' as const : 'inherited' as const }),
-      ...(artifact === '' ? {} : { artifact, artifactSha256: hashArtifact(workspace, artifact) }),
-    })
+      ...(artifact === '' ? {} : { artifact }),
+    }, { workspace })
   }
 
   defects(call: OfficeCall): Defect[] {
@@ -4394,6 +4479,11 @@ export class SoftwareDevOffice {
 
   addReview(call: OfficeCall, input: Omit<Review, 'id' | 'at'>): Review {
     const { store, journal } = this.contextFor(call)
+    // **DEF-048（第三批 §3.16）**：待修主张（非 `pass`）必须带"当前仍失败的复现命令"或显式声明"无法复现"
+    // —— 判据走**唯一出口** `reviewReproIssue`（与 `recordReview` / `appendReviewFindings` 同一份）。
+    // 违反即抛 `ReviewReproError`（与域层同一类）：工具边界把它转成**可读回执**，异常不越过工具面。
+    const issue = reviewReproIssue({ verdict: input.verdict, repro: input.repro, unreproducible: input.unreproducible })
+    if (issue !== undefined) throw new ReviewReproError(issue.code, issue.detail)
     // **用户口径（2026-10-08）**：把**原卡所属角色**标在评审上 —— 这样"该由哪个角色来核实"这件事
     // 不依赖卡还在不在（卡会被 drop/重建/改角色），代核才判得出"同角色"。
     const card = this.tasks(call).find((task) => task.id === input.taskId)
@@ -4432,7 +4522,9 @@ export class SoftwareDevOffice {
 
   /** 评审独立性问题（作者 = 评审者）。 */
   reviewViolations(call: OfficeCall): { reviewId: string; detail: string }[] {
-    return independenceViolations(this.reviews(call), this.tasks(call))
+    // **DEF-042**：与 C-52 同一份材料（`task/claimed` 事件里的会话 uuid）
+    const { journal } = this.contextFor(call)
+    return independenceViolations(this.reviews(call), this.tasks(call), claimedSessionsByCard(journal))
   }
 
   // 交付
