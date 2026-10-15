@@ -1009,13 +1009,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         // 且 `compilePropertyMap` 允许属性节点带 `required` + `oneOf`）⇒ 这里**声明联合**：
         // 分支一是 JSON 文本（本仓的既有口径），分支二是数组（宿主宽松路径的真实形态）。
         // 两分支互斥，恰好命中一个（字符串不会同时是数组），下游仍由 `compositeArg` 归一。
-        suggestions: {
-          oneOf: [
-            { type: 'string' },
-            { type: 'array', items: { type: 'json' } },
-          ],
-          description: t('param.suggestions'),
-        },
+        // **R11（第五批 §3.3）**：手写 `oneOf` → `listDecl`（行为一字不变，只是把"列表记号"统一到一处，
+        // 消费面推导判据按这个记号核；`DEF-065` 当时就是手写的，所以它一直没进统一口径）。
+        suggestions: listDecl(t('param.suggestions')),
         goal: { type: 'string', description: t('param.goal') },
         limit: { type: 'number', description: t('param.limit') },
         orphanTtlMinutes: { type: 'number', description: 'next: override the orphan dispatch TTL (minutes) for this call — a card held by an unsettled dispatch becomes dispatchable without editing the preset (R-9).' },
@@ -1027,7 +1023,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         scope: listDecl("profile: 'all' (default) or JSON **text** (a string) of task ids, e.g. '[\"TASK-001\"]' — a real array is also accepted."),
         derivedFrom: listDecl("profile: JSON **text** (a string) of the basis for the choice, e.g. '[\"scale=normal\",\"contractCount=12\"]'; at least one must be machine-checkable. Not an array."),
         reason: { type: 'string', description: 'profile: human-readable reason for the choice (required when `packages` is empty).' },
-        exempt: listDecl("profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\",\"approvedBy\":\"who approved this exemption\",\"impact\":\"what this waiver gives up\"}]'. Not an array. `approvedBy` and `impact` are the two keys **DEF-030** added and both are **plain strings** (unlike `impact` on a task card, which is a list): an exemption written without either — or with a non-string value — is rejected with a readable message and zero writes, while older entries are read tolerantly and shown as unsigned in receipts."),
+        exempt: listDecl("profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\",\"approvedBy\":\"who approved this exemption\",\"impact\":\"what this waiver gives up\"}]'. `approvedBy` and `impact` are the two keys **DEF-030** added and both are **plain strings** (unlike `impact` on a task card, which is a list): they are **mapped through** (a non-string value is recorded as empty rather than silently dropped) and shown as **unsigned** in receipts when empty, while the **required** fields of every entry are `task` / `check` / `why` (a missing or empty `why` is rejected with a readable message). Older entries written without the two keys are read tolerantly and shown as unsigned."),
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -1062,33 +1058,24 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         title: { type: 'string', description: 'update: new title.' },
         dod: listDecl('update: JSON **text** of DoD items, e.g. \'["a","b"]\' — or a real array (the declaration accepts both).'),
         writeScopes: listDecl('update: JSON **text** of write scopes, e.g. \'["lib/"]\' (refused while another owner is working the card). Do NOT pass an array.'),
-        addWriteScopes: {
-          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'json' } }],
-          description:
-            "update: **append** write scopes instead of replacing them (DEF-012). Accepts a JSON text like '[\"src/domain/\"]' or a real array. Allowed while the card is in progress, for the process officer (human/office/cockpit) or the card owner, and **requires `reason`**. The appended paths must not intersect any in-progress card's scopes (that would create two writers) — rejected with the overlapping path named. Full replacement via `writeScopes` still requires releasing first.",
-        },
+        addWriteScopes: listDecl("update: **append** write scopes instead of replacing them (DEF-012). Accepts a JSON text like '[\"src/domain/\"]' or a real array. Allowed while the card is in progress, for the process officer (human/office/cockpit) or the card owner, and **requires `reason`**. The appended paths must not intersect any in-progress card's scopes (that would create two writers) — rejected with the overlapping path named. Full replacement via `writeScopes` still requires releasing first."),
         blockedBy: listDecl('update: JSON **text** of blocking task ids, e.g. \'["TASK-001"]\' (supports ["*"] = after every other card). Do NOT pass an array.'),
         evidenceRequired: listDecl('update: JSON **text** of required evidence kinds, e.g. \'["command"]\'. Do NOT pass an array.'),
-        unfrozen: listDecl('done: JSON **text** (or a real array) of the sibling cards whose work is **not frozen into this completion** (DEF-033), e.g. \'["TASK-002"]\'. `done` means *this card scope is green* — not *the whole project is frozen*; each id must exist and still be in progress (otherwise the call is rejected readably), and in-flight siblings you omit are named back to you in the receipt.'),
+        unfrozen: listDecl('done: JSON **text** (or a real array) of the sibling cards whose work is **not frozen into this completion** (DEF-033), e.g. \'["TASK-002"]\'. `done` means *this card scope is green* — not *the whole project is frozen*. Every in-flight sibling must be named here: an unknown id, a card that is no longer in progress, this card itself, or an in-flight sibling you leave out makes the whole call **rejected with a readable message naming the ids** and **nothing is written** (omitting `unfrozen` while a sibling is in flight is rejected too — declare it, or wait for it to settle).'),
         reportedFiles: listDecl('done: JSON **text** (or a real array) of the files this session actually wrote — the host does not announce workspace/changes for child sessions (upstream limit, DEF-016), so the write-scope reconciliation uses this **self-report**; the receipt always says it is a self-report and never claims host observation.'),
         requirements: listDecl('update: JSON **text** (a string) of requirement ids, e.g. \'["REQ-001"]\' — not an array. **Two failure shapes**: (1) *wrong shape* (not valid JSON: not an array, stray comma, bare newline in a string) => reported as a shape error; (2) *value cut off* (an unescaped ASCII quote inside the value - by far the most common here, since citing identifiers/commands/paths needs quotes) => the error names the character position. **Recommended**: use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes; and do not send several long JSON arguments in one message (that also interrupts the call).'),
         fixes: listDecl('update: JSON **text** (a string) of the defect ids this card claims to fix, e.g. \'["DEF-050"]\' — not an array. Replaces the whole declaration (an empty array withdraws it). Each entry must be an existing `DEF-xxx` id; a duplicate, a blank string or an unknown id is **rejected with a readable message** (never silently dropped). Criterion C-63 then requires every such defect to be `fixed`/`closed`, or `wontfix` with both `waiveReason` and `waiveApprovedBy` filled in (the DEF-038 basis) once this card reaches done/verified.'),
         mutationExpected: { type: 'number', description: t('param.mutationExpected') },
-        impact: {
-          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'json' } }],
-          description:
-            'update: the **impact surface** this card names (DEF-036) — the files/cases its change will affect. Accepts a JSON text like \'["test/m94.test.ts"]\' or a real array. Replaces the whole declaration; a blank or duplicate entry is **rejected with a readable message** (never silently dropped). The plan criterion `impact-undeclared` is red while a card that changes existing behaviour (it declares `fixes`, or its write scope intersects an already landed card) names neither `impact` nor `undecidable` — so scan the call sites of what you are changing first and list the fixtures/guards that can turn red.',
-        },
+        // **R11（第五批 §3.3）**：列表形态的**显式记号**统一成 `listDecl`（原先这里手写 `oneOf`）——
+        // 消费面推导判据（`test/m176` M176-05）按"`compositeArg(args.<名>)` ⇒ 声明处必须是 `listDecl(`"核，
+        // 记号不统一就会让判据把这一类误判成"没声明"（手写 oneOf 与 listDecl 的行为一模一样）。
+        impact: listDecl('update: the **impact surface** this card names (DEF-036) — the files/cases its change will affect. Accepts a JSON text like \'["test/m94.test.ts"]\' or a real array. Replaces the whole declaration; a blank or duplicate entry is **rejected with a readable message** (never silently dropped). The plan criterion `impact-undeclared` is red while a card that changes existing behaviour (it declares `fixes`, or its write scope intersects an already landed card) names neither `impact` nor `undecidable` — so scan the call sites of what you are changing first and list the fixtures/guards that can turn red.'),
         undecidable: {
           type: 'string',
           description:
             'update: an explicit **cannot-be-determined** declaration for the impact surface (DEF-036), reused verbatim from the change-request vocabulary: state **why** the affected files/cases cannot be worked out. Either `impact` or this one satisfies the criterion; defaulting to «no impact» is not allowed. An empty string **withdraws** the declaration.',
         },
-        landing: {
-          oneOf: [{ type: 'string' }, { type: 'array', items: { type: 'json' } }],
-          description:
-            'update: the **landing paths this card claims it will write** (DEF-018), given as JSON **text** (e.g. \'["src/domain/plan.ts"]\') or as a real array. Replaces the whole declaration. Plan criterion `landing-outside-scope` reconciles every declared path against the card write scope and is red when a path falls outside it, naming that path. Declaring nothing means the card claims no landing paths (existing cards are unaffected).',
-        },
+        landing: listDecl('update: the **landing paths this card claims it will write** (DEF-018), given as JSON **text** (e.g. \'["src/domain/plan.ts"]\') or as a real array. Replaces the whole declaration. Plan criterion `landing-outside-scope` reconciles every declared path against the card write scope and is red when a path falls outside it, naming that path. Declaring nothing means the card claims no landing paths (existing cards are unaffected).'),
         uiText: {
           type: 'boolean',
           description:
@@ -1325,13 +1312,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         unreproducible: { type: 'string', description: "record: **explicit declaration that it cannot be reproduced**, plus why (DEF-048). The alternative to `repro`; giving both is rejected (the reader could not tell which one holds)." },
         // **DEF-065 落点一**：与 `sdo_plan.suggestions` 同源同修 —— 原先是 `type: 'string'`，
         // 数组在这条工具上被宿主校验拒（`"findings" must be a string`）。联合声明见上。
-        findings: {
-          oneOf: [
-            { type: 'string' },
-            { type: 'array', items: { type: 'json' } },
-          ],
-          description: t('param.findings'),
-        },
+        findings: listDecl(t('param.findings')),
         id: { type: 'string', description: t('param.reviewId') },
         actor: { type: 'string', description: t('param.actor') },
         originalIndex: { type: 'number', description: t('param.originalIndex') },

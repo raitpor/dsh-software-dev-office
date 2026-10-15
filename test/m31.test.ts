@@ -194,8 +194,12 @@ test('M31-05 B5/B6 接线：钩子用推导出的角色（不得回退成写死�
   const source = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
   assert.match(source, /attributeRole\(/u, '钩子必须调用 attributeRole')
   assert.match(source, /role: attributed\.role/u, '阶段纪律必须用推导出的角色')
-  assert.match(source, /roleMaskDecision\(attributed\.role, tool, \{ executor: isChildSession \}\)/u, '掩码判定必须用推导出的角色与当次工具（并把"是不是执行者"带上）')
-  assert.match(source, /settings\.enforceRoleMask && attributed\.kind === 'dispatched'/u, '掩码硬拦只对"认得出的派发角色"生效')
+  // **第五批 §3.1（DEF-078）**：判定对象不再写死 `attributed.role` —— 变成"面码"`maskSubject`
+  //（认得出的派发角色 / 角色未知那一个），**掩码判定仍是同一条出口**（`roleMaskDecision`）。
+  assert.match(source, /roleMaskDecision\(maskSubject, tool, \{ executor: isChildSession \}\)/u, '掩码判定必须用推导出的面码与当次工具（并把"是不是执行者"带上）')
+  assert.match(source, /maskSubject[\s\S]{0,240}UNCLAIMED_CHILD_FACE/u, '角色未知（unclaimed-child）必须落**声明给出的最小面**（DEF-078），不得回退成"不施加掩码"')
+  assert.match(source, /attributed\.kind === 'unclaimed-child'/u, '钩子必须能认出"未认领的子会话"这一态')
+  assert.match(source, /settings\.enforceRoleMask && maskSubject !== undefined/u, '掩码硬拦对"认得出的面码"生效（角色 + 角色未知那一个）')
   assert.doesNotMatch(source, /role: 'cockpit',\n\s+tool: String\(exec\.name/u, '不得再写死 cockpit 传给阶段纪律')
   // 开关真的在配置里（关了就不拦，但声明照旧）
   const config = readFileSync(join(ROOT, 'src', 'config.ts'), 'utf8')
@@ -221,9 +225,9 @@ test('M31-07 F2 回归：归属只在「卡正被该会话做着」期间生效�
 
   // ① blocked（做不下去挂起）→ 归属解除，驾驶舱拿回流程工具
   report(store, journal, { taskId: 'TASK-001', owner: 'dev-a', status: 'blocked', note: '缺输入' })
-  // **R-1 的契约**：身份由血缘决定 —— 子会话解除归属后是 `unclaimed-child`（掩码不再拦它），
-  // 不会"变成驾驶舱"；驾驶舱也不会因为认领过卡而"变成 developer"。
-  assert.deepEqual(active(), { kind: 'unclaimed-child', role: 'dispatched' }, 'blocked 之后归属解除（掩码解除）')
+  // **R-1 的契约**：身份由血缘决定 —— 子会话解除归属后是 `unclaimed-child`（**掩码收窄到最小面**，
+  // 见 DEF-078：不是"不再拦它"），不会"变成驾驶舱"；驾驶舱也不会因为认领过卡而"变成 developer"。
+  assert.deepEqual(active(), { kind: 'unclaimed-child', role: 'dispatched' }, 'blocked 之后归属解除（掩码换成最小面）')
   assert.equal(roleMaskDecision('developer', 'sdo_gate').kind, 'deny')
   assert.deepEqual(roleMaskDecision('cockpit', 'sdo_gate'), { kind: 'allow' }, '驾驶舱必须能推门禁')
 
@@ -237,14 +241,14 @@ test('M31-07 F2 回归：归属只在「卡正被该会话做着」期间生效�
     { kind: 'artifact', detail: 'src/TASK-002/ok.ts', at: 'x' },
   ] })
   assert.deepEqual(attributeRole({ sessionId: 's2', delegationDepth: 1, claims: claimsBySession(store, journal) }),
-    { kind: 'unclaimed-child', role: 'dispatched' }, 'done 之后归属解除（掩码解除）')
+    { kind: 'unclaimed-child', role: 'dispatched' }, 'done 之后归属解除（掩码换成最小面）')
 
   // ③ release（显式释放回 ready）→ 解除
   writeCard('TASK-003', 'tester')
   claim(store, journal, { taskId: 'TASK-003', owner: 'dev-b', sessionId: 's3', expectedRevision: 1 })
   release(store, journal, { taskId: 'TASK-003', actor: 'dev-b', reason: '换手' })
   assert.deepEqual(attributeRole({ sessionId: 's3', delegationDepth: 1, claims: claimsBySession(store, journal) }),
-    { kind: 'unclaimed-child', role: 'dispatched' }, 'release 之后归属解除（掩码解除）')
+    { kind: 'unclaimed-child', role: 'dispatched' }, 'release 之后归属解除（掩码换成最小面）')
 
   // ④ 被换人（reassign）→ 原会话的归属解除（新 owner 由它自己重新认领）
   writeCard('TASK-004', 'architect')

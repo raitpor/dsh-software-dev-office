@@ -118,12 +118,16 @@ test('M171-01 祖先项目（串账现场）：**不许**认到祖先的 `.sdo/`
   // **关键**：别把祖先项目的写范围当成自己的（那正是串账）
   assert.equal((decision.reason ?? '').includes('越界'), false, '拒因不得是"祖先项目的写范围"判出来的越界')
 
-  // **对照（修前的样子）**：把 cwd 直接放在祖先项目那一层时，它当然**就是**那个工作区 ——
-  // 这时拒因才是"拿那个项目的写范围判出来的越界"。两相对照说明：区别在于**有没有凭据**，
-  // 而不在于"路径上有没有祖先的 `.sdo/`"。
+  // **对照（两层，口径随第五批 §3.1 / DEF-078 更新）**：
+  //   · 修前：把 cwd 直接放在祖先项目那一层时，拒因是"拿那个项目的写范围判出来的越界"；
+  //   · 现在：这个会话（`child-foreign`）在那边**没有任何认领** ⇒ 它是"角色未知的子会话" ⇒ 先被
+  //     **最小面**拦下（写类不在未认领子会话的面里）。它在**任何**项目里都没认领过，所以这与
+  //     "认到了祖先项目的写范围"无关 —— 那正是本用例要否证的事。
+  //     "按写范围判越界"这一层由 `M171-02`（**已认领**的会话，范围外路径）继续覆盖。
   const asForeign = await h.drive('edit', { file_path: join(FOREIGN, 'src/other.ts') }, { cwd: FOREIGN, sessionId: 'child-foreign' })
-  assert.equal(asForeign.kind, 'deny', 'cwd 就是那个工作区时，按它的写范围判（越界）')
-  assert.match(asForeign.reason ?? '', /越界|写范围/u, `此时才是写范围判定：${asForeign.reason ?? ''}`)
+  assert.equal(asForeign.kind, 'deny', 'cwd 就是那个工作区、但没有任何认领 ⇒ 仍未认领子会话 ⇒ 收窄')
+  assert.match(asForeign.reason ?? '', /最小面|未认领/u, `拒因必须说清是"角色未知的最小面"：${asForeign.reason ?? ''}`)
+  assert.equal((asForeign.reason ?? '').includes('越界'), false, '这一态不是"拿祖先项目的写范围判出来的越界"（那才是串账）')
 })
 
 test('M171-02 正常项目（零回归）：cwd 自己含 `.sdo/` ⇒ 照旧放行范围内的绝对路径', async () => {

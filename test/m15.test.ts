@@ -581,9 +581,27 @@ interface SchemaGapReport {
   coveredTools: string[]
 }
 
-/** 从一段编译产物里抽出它对 `args.<name>` 的读取。 */
+/**
+ * 从一段编译产物里抽出它对 `args.<name>` 的读取。
+ *
+ * ⚠️ **必须剥掉注释**（第五批如实记录的一处假阳性）：`tsc` 保留注释，而**文档里**也会出现
+ * `args.<名>` 这种写法（第五批在 `tools.ts` 的注释里写了 `compositeArg(args.X)` ⇒ 本守卫把
+ * `sdo_task:X` 报成"handler 参数没进 schema"）。注释不是读取 —— 不剥注释等于把文档也算成代码。
+ */
+function stripComments(code: string): string {
+  return code
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .split('\n')
+    .map((line) => {
+      // 行注释（不处理"字符串里出现 `//`"这种极端情形：本守卫只找 `args.` 读取，退化也只会更宽）
+      const at = line.indexOf('//')
+      return at < 0 ? line : line.slice(0, at)
+    })
+    .join('\n')
+}
+
 function argsReadsIn(code: string): string[] {
-  return [...new Set([...code.matchAll(/\bargs\.([A-Za-z_$][\w$]*)/gu)].map((match) => match[1] as string))].sort()
+  return [...new Set([...stripComments(code).matchAll(/\bargs\.([A-Za-z_$][\w$]*)/gu)].map((match) => match[1] as string))].sort()
 }
 
 /**

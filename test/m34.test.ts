@@ -222,7 +222,7 @@ test('M34-06 取汇报③「推」半：子代理结算后，**下一次工具�
 // 本卡的 writeScopes 只给了 `src/domain/testDesignWhitebox.ts` + `test/m34.test.ts`。
 //
 // 三条 DoD 逐条有对应用例：
-//   · 五类口径可声明（语句 / 分支 / 路径 / 条件 / 定义-使用对）—— WB-01 / WB-02
+//   · 五类口径可声明（语句 / 判定 / 路径 / 条件 / 定义-使用对）—— WB-01 / WB-02
 //   · 非法取值被拒**并点名合法集合** —— WB-03
 //   · 守卫两态（合法通过 / 非法拒绝）—— WB-09（两态）+ WB-06/07（非法侧的三条防线）
 //   · 口径位**跨层同结论**（内容层 ↔ 形状层，同一份真源值）—— WB-11（TASK-035 落点七）
@@ -430,8 +430,8 @@ test('WB-01 五类口径齐备时落盘：每条口径的声明数与覆盖数�
   }
   assert.deepEqual(
     result.report.coverage.map((row) => row.label),
-    ['语句', '分支', '路径', '条件', '定义-使用对'],
-    '五类口径的中文标签要与 DoD 逐字对上',
+    ['语句', '判定', '路径', '条件', '定义-使用对'],
+    '五类口径的中文标签要与 DoD 逐字对上（第五批 §3.2：卡面勘误后统一为「判定」）',
   )
 
   // 读了回来 + 指纹一致
@@ -775,8 +775,8 @@ test('WB-10 真实扫描：collectWhiteboxCodeIndex 扫本仓代码，真符号�
  *
  * ## 病灶（REV-007 的原文，逐条复现过）
  *
- * `branch` 是 `decision` 的**历史别名**（`WHITEBOX_CRITERION_LABEL` 把 `decision` 叫「分支」，
- * 人会照着中文标签写 `branch`）。内容层（`testDesignWhitebox.checkArtifact` →
+ * `branch` 是 `decision` 的**历史别名**（历史上 `WHITEBOX_CRITERION_LABEL` 把 `decision` 叫「分支」，
+ * 人会照着中文标签写 `branch`；第五批 §3.2 起中文标签已统一为「判定」，别名照旧收下）。内容层（`testDesignWhitebox.checkArtifact` →
  * `canonicalCriterion`）**收下并纠正**成 `decision`（WB-03 断言 `outcome==='ok'`）。
  * 形状层是**落盘闸门**（`testingShapes.checkDesignWhitebox`），它当时**完全不核 `criterion`** ——
  * 于是同一份真源在两层得到两种待遇：内容层说"这是 decision"、闸门说"我没看过这个位"；

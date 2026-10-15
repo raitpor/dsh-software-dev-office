@@ -66,3 +66,27 @@ roles:
     allow: [skill, read, grep, glob, write, edit, bash, sdo_deliver, sdo_trace, sdo_render, sdo_task]
     deny: [ask_user_question, sdo_review, sdo_requirement, sdo_design]
     rationale: 不得发布/上线（非目标）；不得改需求与设计（`sdo_*` 白名单）；交付清单要能外科手术式修改
+
+# **未认领子会话的最小面**（DEF-078 / 第五批 §3.1）—— 由**声明**给出，插件里不写任何工具名。
+#
+# 为什么必须有它：`attributeRole` 对"子会话但既没认领、也没有派发记录"的归属是 `unclaimed-child`
+# （角色未知），而旧口径把"角色未知"落成了"**不施加掩码**" ⇒ 它的工具面比**任何**角色都宽
+# （第四批复验 V7 实测：权威面 `sdo_plan` 在这个钩子面 **allow**）。
+# 而 `roles:` 里只有 8 个真角色 ⇒ 缺的正是这份"默认最小面"。
+#
+# **语义与 `roles[].allow`/`deny` 逐字相同**（`maskAllows` 同一条出口，不另写一套判据）：
+#   · SDO 流程面（`sdo_*`）—— 白名单：`allow` 里没列的**一律收窄**；
+#   · 通用面（`read`/`write`/`bash`/…）—— 黑名单：只有列进 `deny` 的才挡，其余继承宿主默认。
+# 于是"最小面"的组成**只在这份声明里**：加一条就放宽一项，删一条就收窄一项，插件代码一字不动。
+#
+# **必须保留**（认领是它拿到角色的**唯一**途径，挡住认领 = 把正常派发卡死）：
+#   · `sdo_task`（claim / release / report 等协议通道）、`sdo_status`、`sdo_hash`（只读核查面）；
+#   · `read` / `grep` / `glob`（`READ_ONLY_INSPECTION_TOOLS` 在代码里已对**所有**面并入，含 `read_image`）。
+# **应当收窄**：权威面（`sdo_plan` 派发 / `sdo_gate` 签字豁免 / `sdo_deliver` 交付 / `sdo_review` 评审）
+# 与其余流程面（SDO 白名单自然收窄）；写类（`write` / `edit` / `bash`）显式挡住 ——
+# 它还没有卡，写不出任何**合法**的东西（路径级写范围闸门只放公共面）。
+unclaimed:
+  name: 未认领的子会话（角色未知）
+  allow: [sdo_task, sdo_status, sdo_hash]
+  deny: [write, edit, bash, ask_user_question]
+  rationale: 角色未知 ⇒ 只保留「认领 + 探查 + 只读核查」，权威面与写类全部收窄；认领之后一切照旧（掩码换成那张卡的角色面）

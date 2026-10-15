@@ -27,6 +27,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { apply } from '../src/index.js'
+import { createOfficeTools } from '../src/interface/tools.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { TaskCard } from '../src/types.js'
@@ -253,9 +254,17 @@ test('M126-05 防回退：两包语言包都有新键，且腾范围提示指向
     }
     assert.match(text, /addWriteScopes/u, `${name} 的腾范围提示必须指向追加通道（DEF-012）`)
   }
-  // 工具面：schema 声明为**联合类型**（不是纯 string —— 那正是 DEF-073 那一类故障）
-  const schema = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')
-  assert.match(schema, /addWriteScopes: \{[^}]*oneOf/su, '工具面 schema 必须声明成 oneOf（string | array）')
+  // 工具面：schema 声明为**联合类型**（不是纯 string —— 那正是 DEF-073 那一类故障）。
+  // **第五批 §3.3（R11）**：声明形态从手写 `oneOf` 统一成 `listDecl(...)`（行为一字不变），
+  // 所以这里不再 pin 源码串，改成**行为面读数**：真注册工具的 schema 必须真的收两种形态。
+  const taskTool = createOfficeTools({} as never).find((item) => item.name === 'sdo_task') as unknown as
+    | { parameters: { properties: Record<string, Record<string, unknown>> } }
+    | undefined
+  assert.ok(taskTool !== undefined, '工具面必须有 sdo_task')
+  const addScope = taskTool.parameters.properties['addWriteScopes'] ?? {}
+  const branches = Array.isArray(addScope['oneOf']) ? (addScope['oneOf'] as { type?: unknown }[]) : []
+  assert.equal(branches.some((branch) => branch?.type === 'array'), true, '工具面 schema 必须声明成 oneOf（string | array）')
+  assert.equal(branches.some((branch) => branch?.type === 'string'), true, '联合里必须有 string 分支（JSON 文本形态）')
   // 执行面：走 `compositeArg` 归一（数组与 JSON 文本两形态等价）
   const wire = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
   assert.match(wire, /compositeArg\(args\.addWriteScopes\)/u, '执行面必须经 compositeArg 归一（不是只认字符串）')

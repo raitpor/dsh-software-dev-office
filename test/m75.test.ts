@@ -76,7 +76,7 @@ function writeCard(task: TaskCard, status: TaskCard['status'] = 'ready'): void {
   store.writeYaml(['tasks', `${task.id}.yml`], { task: { ...task, status } })
 }
 
-function hookHarness(): { drive: (name: string, sessionId: string) => Promise<{ kind: string; reason?: string }> } {
+function hookHarness(): { drive: (name: string, sessionId: string, depth?: number) => Promise<{ kind: string; reason?: string }> } {
   const listeners = new Map<string, (exec: unknown, next: () => Promise<unknown>) => Promise<unknown>>()
   const services: Record<string, unknown> = { tools: { register: () => () => {} }, sessions: {} }
   const makeCtx = (): Record<string, unknown> => ({
@@ -91,8 +91,11 @@ function hookHarness(): { drive: (name: string, sessionId: string) => Promise<{ 
   const listener = listeners.get('tools/pre-execute')
   assert.ok(listener !== undefined, '真实装配必须注册 tools/pre-execute 监听器')
   return {
-    async drive(name: string, sessionId: string): Promise<{ kind: string; reason?: string }> {
-      const exec = { name, arguments: {}, agent: { session: { header: { id: sessionId, cwd: BASE, delegationDepth: 1 } } } }
+    async drive(name: string, sessionId: string, depth = 1): Promise<{ kind: string; reason?: string }> {
+      // ⚠️ **夹具必须与它自称的身份一致**（第五批 §3.1 / DEF-078 暴露的一处夹具缺陷）：
+      // 旧版本这里恒给 `delegationDepth: 1` ⇒ 所谓"根会话（depth 0）"其实是**子会话**，
+      // 而它当时能过只是因为"角色未知 ⇒ 不施加掩码"。现在子会话会落最小面 ⇒ 真实 depth 必须能表达。
+      const exec = { name, arguments: {}, agent: { session: { header: { id: sessionId, cwd: BASE, delegationDepth: depth, ...(depth === 0 ? {} : { parentSession: 'cockpit' }) } } } }
       return (await listener(exec, async () => ({ kind: 'allow' }))) as { kind: string; reason?: string }
     },
   }
@@ -255,7 +258,11 @@ test('M75-06 真实钩子：已认领 developer 调 `technique_apply` 放行、�
   }
   // **驾驶舱例外**：根会话（depth 0）即使认领了卡仍是流程官 —— 派发是它的本职，不能被自己的角色归属锁死
   for (const tool of ['subagent', 'sdo_plan', 'sdo_gate']) {
-    assert.equal((await drive(tool, 'cockpit-root')).kind, 'allow', `驾驶舱必须能 ${tool}（否则流程推不动）`)
+    assert.equal((await drive(tool, 'cockpit-root', 0)).kind, 'allow', `驾驶舱必须能 ${tool}（否则流程推不动）`)
+  }
+  // **角色未知的子会话**（第五批 §3.1 / DEF-078）：同样的工具，落最小面 ⇒ 权威面与执行者禁令都收窄
+  for (const tool of ['subagent', 'sdo_plan', 'sdo_gate']) {
+    assert.equal((await drive(tool, 'child-unknown')).kind, 'deny', `未认领的子会话不得调用 ${tool}（DEF-078）`)
   }
   const denied = await drive('sdo_gate', 's-dev')
   assert.equal(denied.kind, 'deny', '流程面的职责分离仍然咬人')

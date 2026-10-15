@@ -27,7 +27,7 @@ import type { Context } from '@deepseek-ai/cordis'
 
 import { Config, resolveSettings } from '../src/config.js'
 import { apply } from '../src/index.js'
-import { listParamNames } from '../src/interface/tools.js'
+import { createOfficeTools, listParamNames } from '../src/interface/tools.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
@@ -228,4 +228,128 @@ test('M176-04 机械判据（DoD ④）：承诺数组就必须声明联合；�
   const testTool = registered('sdo_test')
   const defectsDecl = (testTool.parameters.properties ?? {})['defects'] as Record<string, unknown>
   assert.ok(Array.isArray(defectsDecl['oneOf']), '注释承诺两形态 ⇒ schema 必须是联合（否则注释是假陈述）')
+})
+
+
+/**
+ * **R11（第五批 §3.3）：把"列表参数"的集合**从消费面推导**，而不是从描述文本猜。
+ *
+ * 第四批复验 V7 的反例（当场构造并实测）：把 `sdo_task.unfrozen` 的描述改成**不提数组**（一个最自然的写法）
+ * ⇒ `listParamNames` 推导数 31→**30**、宿主实测 `"value.unfrozen" must be a string`（**与 `DEF-077` 原始现场逐字相同**），
+ * 而 `M176-04`（按描述文本命中）**4/4 全绿** —— 也就是说那条"防未来再漏"只覆盖**次要形态**（描述与声明互相打脸）。
+ * 根因是 DoD 太窄：它把"防漏"寄托在**描述文本**这个启发式上。
+ *
+ * 现在的判据**从使用点推导**（`ADR-016`）：扫消费面里的
+ *   ① `compositeArg(args.X)` —— 工具 execute 映射里"两种形态都收"的**唯一归一出入口**；
+ *   ② `Array.isArray(args.X)` —— 调用面显式的数组分支；
+ * 凡被这两类写法当列表用的 `X`，**声明处必须是 `listDecl(`**（这就是那个**显式记号**），
+ * 且真注册工具的 schema **必须真的**同时收 string 与 array（`listParamNames` 面）。
+ *
+ * **洞（DoD ④：写进判据里、可读）**：本判据**故意不认**下面这些写法 ——
+ *   · `parseList(args.X)`：它同样被列表参数用，但也**大量**被"逗号分隔文本"参数用（`scopeIn` / `stakeholders` /
+ *     `surfaces` / `ids`…）—— 那些参数**本就只收文本**（不是列表联合），当列表信号会造出大批假阳性；
+ *   · `jsonOr(args.X)` / `json<T>(args.X)` / `parseJson(args.X)`：它们被列表参数用，也被 **JSON 对象**参数用
+ *     （`oracle` / `mutation` / `contractTest`）—— 对象不是列表。
+ *   · 而且"扫描面"本身有边界：`src/index.ts` 里**只**认 `compositeArg`（钩子里的 `args.X` 是**宿主**参数，
+ *     不是本插件声明的参数；实测 `Array.isArray(args.paths)` 就在钩子那一侧）。
+ *   **后果（如实）**：新参数若只走 `jsonOr` 而不走 `compositeArg`，本判据**不会**拦住它 ——
+ *   `DEF-077` 的原始形态仍可能从那条路漏过去。补法是让那条路也留下可识别的写法（例如统一走 `compositeArg`），
+ *   而不是在这里再造一份名单（`ADR-016` 明令：别造人工名单）。
+ */
+test('M176-05 消费面推导（R11）：凡被当列表用的参数，声明处必须是 `listDecl`、schema 必须真收两种形态', () => {
+  // —— 扫消费面（**代码行**才算：注释里会引用这些名字讲历史）——
+  const codeLines = (rel: string): string[] =>
+    readFileSync(join(ROOT, rel), 'utf8').split('\n').filter((line) => !/^\s*(\*|\/\*|\/\/)/u.test(line))
+  // **扫描面**：`src/interface/tools.ts`（工具 execute 映射，两种形态都扫）+ `src/index.ts`
+  // **只扫 `compositeArg`** —— 因为钩子里 `exec.arguments` 是**宿主**工具的参数（`args.paths` 之类），
+  // 不是本插件声明的参数；把它当列表信号会造出假阳性（实测：`Array.isArray(args.paths)` 就在钩子那一侧）。
+  const forms = [
+    { label: 'compositeArg(args.X)', re: /compositeArg\(args\.([A-Za-z_$][\w$]*)\)/gu, files: ['src/interface/tools.ts', 'src/index.ts'] },
+    { label: 'Array.isArray(args.X)', re: /Array\.isArray\(args\.([A-Za-z_$][\w$]*)\)/gu, files: ['src/interface/tools.ts'] },
+  ]
+  const consumers = new Map<string, string[]>()
+  for (const form of forms) {
+    for (const file of form.files) {
+      for (const line of codeLines(file)) {
+        for (const match of line.matchAll(form.re)) {
+          const name = match[1] as string
+          consumers.set(name, [...(consumers.get(name) ?? []), `${file} · ${form.label}`])
+        }
+      }
+    }
+  }
+  // **非空下界（反空转）**：V7 的现场必须在被扫到之列，且扫出来的集合要有实际规模
+  assert.ok(consumers.has('unfrozen'), '夹具前提：`compositeArg(args.unfrozen)` 必须被扫到（V7 的反例就是它）')
+  assert.ok(consumers.size >= 10, `消费面推导出的列表参数应 ≥10 个（实际 ${consumers.size}）—— 少了说明扫描器自己失效了`)
+
+  // —— 判据 ①（源码面记号）：被当列表用 ⇒ 声明处必须是 `listDecl(` ——
+  const toolsSrc = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')
+  const missingMarker = [...consumers.keys()].filter((name) => !new RegExp(`\\b${name}: listDecl\\(`, 'u').test(toolsSrc))
+  assert.deepEqual(
+    missingMarker,
+    [],
+    `这些参数在消费面被当列表用，声明处却不是 \`listDecl(\`（${forms.map((form) => form.label).join(' / ')}）：${missingMarker.join(' ')}`,
+  )
+
+  // —— 判据 ②（行为面同源，**按工具块**判）：真注册工具的 schema 必须真的收两种形态 ——
+  // ⚠️ **必须按工具块判**，不能只按名字：`defectId` 在 `sdo_review` 上是列表、在 `sdo_test` 上是单个 id；
+  // `impact` 在 `sdo_task` 上是列表、在 `sdo_risk` 上是普通字符串。按名字判会把这些**同名不同义**的参数误报
+  // （本判据第一版就是这么红的 —— 如实记录在第五批报告里）。
+  const toolsSrcText = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')
+  const starts = [...toolsSrcText.matchAll(/^ {6}name: '([a-z_]+)',$/gmu)].map((match, index) => ({
+    name: String(match[1]),
+    from: match.index ?? 0,
+    index,
+  }))
+  const blocks = starts.map((item, index) => ({
+    name: item.name,
+    from: item.from,
+    to: index + 1 < starts.length ? (starts[index + 1]?.from ?? toolsSrcText.length) : toolsSrcText.length,
+  }))
+  assert.ok(blocks.length >= 20, `夹具前提：应切出二十来个工具块（实际 ${blocks.length}）`)
+  const perTool = new Map<string, string[]>()
+  for (const block of blocks) {
+    const body = toolsSrcText.slice(block.from, block.to)
+    const consumedHere = [...body.matchAll(/compositeArg\(args\.([A-Za-z_$][\w$]*)\)|Array\.isArray\(args\.([A-Za-z_$][\w$]*)\)/gu)]
+      .map((match) => String(match[1] ?? match[2]))
+    for (const name of consumedHere) perTool.set(`${block.name}.${name}`, [name, block.name] as [string, string])
+  }
+  const defs = createOfficeTools({} as never) as unknown as { name: string; parameters: { properties?: Record<string, unknown> } }[]
+  const offenders: string[] = []
+  for (const [key, entry] of perTool) {
+    const name = entry[0] ?? ''
+    const toolName = entry[1] ?? ''
+    const def = defs.find((item) => item.name === toolName)
+    if (def === undefined || name === '') continue
+    const properties = def.parameters.properties ?? {}
+    if (properties[name] === undefined) continue   // 该工具真有这个参数才判（块内消费点必然对应本工具的参数）
+    if (!listParamNames(properties).includes(name)) offenders.push(key)
+  }
+  // 判据 ① 的**跨文件补网**：`src/index.ts` 里也有 `compositeArg(args.X)`（`deps.*` 的映射），
+  // 那里按名字核对"**某个**工具把它声明成 listDecl"即可（避免同名不同义的误报）。
+  const declaredNames = new Set([...toolsSrcText.matchAll(/^\s*([A-Za-z_$][\w$]*): listDecl\(/gmu)].map((match) => match[1] as string))
+  const coveredByIndex = new Set([...codeLines('src/index.ts').flatMap((line) => [...line.matchAll(/compositeArg\(args\.([A-Za-z_$][\w$]*)\)/gu)].map((match) => match[1] as string))])
+  for (const name of coveredByIndex) if (!declaredNames.has(name)) offenders.push(`src/index.ts · ${name}`)
+  assert.deepEqual(
+    offenders,
+    [],
+    `这些参数消费面收数组、声明却不是 listDecl ⇒ 真机在**宿主 schema 阶段**就被拒（DEF-077 的原始现场）：${offenders.join(' ')}`,
+  )
+
+  // —— 判据 ③（洞的边界部分，name-free）：认不出的 `compositeArg` 形态必须**报出来**，不许静默漏过 ——
+  const allCompositeSites = codeLines('src/index.ts').concat(codeLines('src/interface/tools.ts'))
+    // **排除定义行**：`export function compositeArg(value: unknown)` 的参数是声明，不是调用点
+    .filter((line) => !/function compositeArg\(/u.test(line))
+    .flatMap((line) => [...line.matchAll(/compositeArg\(([^()]*)\)/gu)].map((match) => String(match[1]).trim()))
+  const nonParamSites = allCompositeSites.filter((expr) => !expr.startsWith('args.'))
+  for (const expr of nonParamSites) {
+    assert.equal(
+      /^[A-Za-z_$][\w$]*$/u.test(expr),
+      true,
+      `出现了本判据认不出的 \`compositeArg(...)\` 形态（要么把它纳入识别、要么把这条洞写进判据文案）：${expr}`,
+    )
+  }
+  // 判据①覆盖的调用点必须与"看起来像参数用法"的调用点数量一致（少了就是扫描器漏了）
+  const paramSites = allCompositeSites.filter((expr) => expr.startsWith('args.'))
+  assert.ok(paramSites.length >= consumers.size, `扫到的参数调用点（${paramSites.length}）不得少于参数个数（${consumers.size}）`)
 })

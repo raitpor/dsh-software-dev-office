@@ -173,3 +173,58 @@ test('M178-04 结构：C-67 挂在 **G7**（不重复进 G6）、四流程逐字
     assert.equal(desc.includes(runner), false, `判据措辞不许硬编码跑法：${runner}`)
   }
 })
+
+
+/**
+ * **R12（第五批 §3.4）：`C-67` 的**端到端链**要有单一用例。**
+ *
+ * 复验 V8 的现象：`M174-01` 覆盖"`done` 写 `unfrozen`"、`M178-01..04` 覆盖"`C-67` 读 `unfrozen`"，
+ * 但 `M178` 的夹具是**直写 `tasks/*.yml`** ⇒ **删掉 `src/domain/collab.ts` 里那一行落键，
+ * `M178-*` 仍全绿** —— 真实跨跳链（真 `done(unfrozen)` 落键 ⇒ `C-67` 读到并判红）**没有用例钉住**。
+ * V8 实测这条链**是通的**；本用例把它钉成机械读数，且**两端都走真注册面**。
+ */
+test('M178-05 端到端（真注册面）：真 `done(unfrozen)` 落键 ⇒ `C-67` 判红并点名；补全量绿 ⇒ 转绿（R12）', async () => {
+  const callTool = toolHarness()
+  // 本卡（in-progress）+ 一张在飞兄弟卡（`unfrozen` 因此**必须**声明）
+  office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-101.yml'], {
+    task: {
+      id: 'TASK-101', title: 't', goal: 'g', inputs: [], outputs: [], dod: ['d'], evidenceRequired: ['command'],
+      owner: 'dev-a', blockedBy: [], writeScopes: ['src/'], role: 'developer', size: 'small', revision: 1,
+      status: 'in-progress', requirements: [], evidence: [], createdAt: '', updatedAt: '',
+    },
+  })
+  office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-102.yml'], {
+    task: {
+      id: 'TASK-102', title: 't2', goal: 'g', inputs: [], outputs: [], dod: ['d'], evidenceRequired: ['command'],
+      owner: 'dev-b', blockedBy: [], writeScopes: ['src/'], role: 'developer', size: 'small', revision: 1,
+      status: 'in-progress', requirements: [], evidence: [], createdAt: '', updatedAt: '',
+    },
+  })
+  assert.equal(c67().na, true, '前置：还没有"未冻结完成"的卡 ⇒ C-67 是 N/A')
+
+  // ① **真注册的 `sdo_task action=done`**（真机面）声明未冻结 ⇒ 必须**落进卡**（删掉那一跳这条就红）
+  const done = await callTool('sdo_task', {
+    action: 'done', id: 'TASK-101', owner: 'dev-a',
+    evidence: '[{"kind":"command","detail":"npm test","exitCode":0}]',
+    unfrozen: ['TASK-102'],
+  })
+  assert.match(done, /局部绿/u, `真机面必须真的收工：${done.slice(0, 300)}`)
+  const stored = office.storeFor(WORKSPACE).readYaml<{ task: TaskCard }>('tasks', 'TASK-101.yml')?.task
+  assert.deepEqual(stored?.unfrozen, ['TASK-102'], '`done` 必须把未冻结清单**落进卡**（R12：这一跳没有别的用例钉）')
+
+  // ② **跨跳**：`C-67` 读到这张卡 ⇒ 判红并**点名它**（`doneAt` 来自 `task/done` 真源事件）
+  const red = c67()
+  assert.equal(red.ok, false, '有未冻结完成、又没有全量绿 ⇒ 必须判红（这就是端到端链）')
+  assert.match(red.detail, /TASK-101/u, `判红必须点名是哪张卡引出的：${red.detail}`)
+  const state = unfrozenFullGreenState(office.storeFor(WORKSPACE), office.journalFor(WORKSPACE))
+  assert.deepEqual(state.cards.map((card) => card.id), ['TASK-101'], '读数：引出的卡就是刚 done 的那张')
+  assert.notEqual(state.lastDoneAt, '', '读数：`done` 时刻必须来自真源事件（`task/done`）')
+
+  // ③ 补一条**真注册的**全量 pass 结论 ⇒ 转绿（反例：这条链不是"永远红"）
+  const green = await callTool('sdo_test', {
+    action: 'record', caseId: 'TC-001', status: 'pass', evidence: '全量跑过一次',
+    fullSuite: true, oracle: '{"kind":"expert","expert":"tester"}',
+  })
+  assert.match(green, /TR-/u, `全量结论必须记成功：${green.slice(0, 300)}`)
+  assert.equal(c67().ok, true, `补上全量绿之后必须转绿：${c67().detail}`)
+})

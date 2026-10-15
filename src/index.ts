@@ -138,7 +138,7 @@ import { recordWorkspaceChanges } from './domain/workspaceChanges.js'
 // **TASK-108**：`sdo_review action=append` 的域层入口在 `collab.ts`（它已持有 `reviewAdoption` ——
 // 篡改判据只此一份，不在这里另写）；`office.storeFor` / `office.journalFor` 是 index.ts 能拿到的公开入口。
 import { appendReviewFindings } from './domain/collab.js'
-import { attributeRole, claimsBySession, filterKnownTools, maskFingerprint, roleCardPath, roleMaskDecision, toolAllowList, curatedDenyPhantoms } from './domain/roles.js'
+import { UNCLAIMED_CHILD_FACE, attributeRole, claimsBySession, filterKnownTools, maskFingerprint, roleCardPath, roleMaskDecision, toolAllowList, curatedDenyPhantoms } from './domain/roles.js'
 import { PLUGIN_PACKAGE_NAME, loadedBuild, sameBuild, worktreeBuildOf } from './domain/buildInfo.js'
 
 /**
@@ -3973,7 +3973,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             //
             // **DEF-054（第三批 §3.17）**：这里原用 `findProjectRoot(call.cwd, …)` —— 它会**向上爬**，
             // 会话 cwd 在 `<祖先项目>/proj/sub` 时会认到**祖先项目**的 `.sdo/` ⇒ **跨项目串账**
-            //（`dab49d5` 引入的回归，`git log -S 'findProjectRoot(call.cwd' -- src/index.ts` 一笔可查）。
+            //（`dab49d5` 引入的回归 —— **第五批 §3.6 / R14 更正**：`git log -S 'findProjectRoot(call.cwd'
+            // -- src/index.ts` 现盘实为**两笔**（`dab49d5` 加、`cca0ca0` 减）—— 旧措辞说"只有一笔"是错的；
+            // 准确说法是「**引入**它的只有 `dab49d5`」，而"现盘代码行计数 0"为真）。
             // 现在改用**唯一出口** `office.workspaceRootFor`：只认"本次 cwd"或"本会话登记的 cwd"
             // **本身**（谁真的含 `.sdo/` 用谁），**绝不向上爬**、绝不猜别的项目。
             const workspaceRoot = ((): string => {
@@ -4050,21 +4052,52 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // ——— B6：认得出的派发角色 ⇒ 掩码**硬拦**（两层语义：`sdo_*` 白名单 + 通用面黑名单） ———
             // **执行者禁令**只对**子会话**生效：驾驶舱即使认领了卡（inline 后端就是这么跑的）仍是流程官，
             // 派发是它的本职（真机 F2：单会话模式下驾驶舱被自己的角色归属锁死，连 sdo_gate 都调不了）。
-            if (settings.enforceRoleMask && attributed.kind === 'dispatched') {
-              const mask = roleMaskDecision(attributed.role, tool, { executor: isChildSession })
+            //
+            // **DEF-078（第五批 §3.1）**：`unclaimed-child`（子会话但**角色未知**：没认领、也没有派发记录）
+            // 也**必须**施加掩码 —— 它的面来自 `roles.yml` 的 `unclaimed:` **声明**（最小面：保留认领与探查，
+            // 收窄权威面与写类）。旧口径是"角色未知 ⇒ 不施加掩码" ⇒ 它的工具面比**任何**角色都宽
+            // （第四批复验 V7 实测 `sdo_plan` 在这里 allow）。认不出面码仍然 fail-open（`unknown` 那一态）。
+            const maskSubject: string | undefined = attributed.kind === 'dispatched'
+              ? attributed.role
+              : attributed.kind === 'unclaimed-child' ? UNCLAIMED_CHILD_FACE : undefined
+            if (settings.enforceRoleMask && maskSubject !== undefined) {
+              const mask = roleMaskDecision(maskSubject, tool, { executor: isChildSession })
               if (mask.kind === 'deny') {
+                // **可读点名**（DEF-078）：说清"未认领 ⇒ 角色未知"、点出工具与最小面、给出拿到角色的**唯一**途径
+                if (mask.reason === 'unclaimed-face') {
+                  return {
+                    kind: 'deny',
+                    reason: fmt('uiIndex.kMaskUnclaimed', {
+                      p1: mask.tool,
+                      p2: toolAllowList(maskSubject).join(' / '),
+                      p3: t('uiIndex.kMaskUnclaimedRemedy'),
+                    }),
+                  }
+                }
+                if (attributed.kind === 'dispatched') {
+                  const role = attributed.role
+                  return {
+                    kind: 'deny',
+                    reason: mask.reason === 'executor-forbidden'
+                      ? fmt('uiIndex.kMaskExecutorForbidden', { p1: role, p2: mask.tool, p3: roleCardPath(role) })
+                      : mask.reason === 'executor-denied'
+                        ? fmt('uiIndex.kMaskExecutorDenied', { p1: role, p2: mask.tool, p3: roleCardPath(role) })
+                        : fmt('uiIndex.kMaskDenied', {
+                          p1: role,
+                          p2: mask.tool,
+                          p3: toolAllowList(role).join(' / '),
+                          p4: roleCardPath(role),
+                        }),
+                  }
+                }
+                // 兜底：未认领面的**其它**理由（当前实现不会发生）——仍然拒绝，绝不放行
                 return {
                   kind: 'deny',
-                  reason: mask.reason === 'executor-forbidden'
-                    ? fmt('uiIndex.kMaskExecutorForbidden', { p1: attributed.role, p2: mask.tool, p3: roleCardPath(attributed.role) })
-                    : mask.reason === 'executor-denied'
-                      ? fmt('uiIndex.kMaskExecutorDenied', { p1: attributed.role, p2: mask.tool, p3: roleCardPath(attributed.role) })
-                      : fmt('uiIndex.kMaskDenied', {
-                        p1: attributed.role,
-                        p2: mask.tool,
-                        p3: toolAllowList(attributed.role).join(' / '),
-                        p4: roleCardPath(attributed.role),
-                      }),
+                  reason: fmt('uiIndex.kMaskUnclaimed', {
+                    p1: mask.tool,
+                    p2: toolAllowList(maskSubject).join(' / '),
+                    p3: t('uiIndex.kMaskUnclaimedRemedy'),
+                  }),
                 }
               }
             }

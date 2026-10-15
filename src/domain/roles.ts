@@ -28,6 +28,45 @@ export interface RoleCard {
 
 interface RolesFile {
   roles: { code: string; name: string; allow: string[]; deny: string[]; rationale: string }[]
+  /** **未认领子会话的最小面**（DEF-078）：与 `roles[]` 同形，只是没有 `code`（它不是第八个角色）。 */
+  unclaimed?: { name: string; allow: string[]; deny: string[]; rationale: string } | undefined
+}
+
+/**
+ * **角色未知（未认领的子会话）的虚拟面码**（DEF-078 / 第五批 §3.1）。
+ *
+ * 它不是第 9 个角色：`ROLES` 恰好 8 个（流程引擎的角色集），这个码只用来在**掩码出口**上指代
+ * "角色未知 ⇒ 用声明给出的最小面"。`attributeRole` 的归属结果仍叫 `unclaimed-child`
+ *（身份判定与掩码施加是两件事，别混）。
+ */
+export const UNCLAIMED_CHILD_FACE = 'unclaimed-child'
+
+/** `roles.yml` 的 `unclaimed` 声明（角色未知时的最小面）。读不到 ⇒ `undefined`（调用方按 fail-closed 走）。 */
+export function unclaimedFace(): { name: string; allow: string[]; deny: string[]; rationale: string } | undefined {
+  const file = loadPackagedYaml<RolesFile>('src/data/roles.yml')
+  const face = file?.unclaimed
+  if (face === undefined || !Array.isArray(face.allow) || !Array.isArray(face.deny)) return undefined
+  return face
+}
+
+/**
+ * **面码 → 声明**（8 个真角色 ∪ 角色未知那一个）——**掩码判定的唯一入口**。
+ *
+ * 为什么要有这一层：DEF-078 之前"角色未知"根本走不到 `maskAllows`（`roleMaskDecision` 见
+ * `isRole('dispatched') === false` 就直接 allow）⇒ 缺的是一份"默认最小面"。现在把两个来源
+ * （`roles:` / `unclaimed:`）收敛到**同一个出口**上，掩码的语义只有一份实现（`DEF-044` 的教训）。
+ * 认不出的面码 ⇒ `undefined` ⇒ 调用方 fail-closed（不是 fail-open）。
+ */
+function faceCard(code: string): { code: string; allow: string[]; deny: string[] } | undefined {
+  if (isRole(code)) {
+    const card = roleCard(code)
+    return card === undefined ? undefined : { code, allow: card.allow, deny: card.deny }
+  }
+  if (code === UNCLAIMED_CHILD_FACE) {
+    const face = unclaimedFace()
+    return face === undefined ? undefined : { code, allow: face.allow, deny: face.deny }
+  }
+  return undefined
 }
 
 /** 角色掩码表（从随包数据加载；加载失败即报错——随包数据不该缺）。 */
@@ -83,8 +122,8 @@ export function isSdoTool(name: string): boolean {
  * ⚠️ 它**不再**是下发给宿主的 allow 白名单（那会把整个通用面一起挡掉，见 {@link maskAllows}）。
  * 现在的用途：掩码指纹、自检、回执里说明"这个角色声明了哪些工具"。
  */
-export function toolAllowList(code: Role): string[] {
-  const card = roleCard(code)
+export function toolAllowList(code: Role | string): string[] {
+  const card = faceCard(String(code))
   if (card === undefined) return []
   return [...new Set<string>([...READ_ONLY_INSPECTION_TOOLS, ...card.allow])]
 }
@@ -93,8 +132,8 @@ export function toolAllowList(code: Role): string[] {
  * **该角色在 SDO 流程面可用的工具**（`allow ∩ sdo_*`；只读检视工具不是 sdo 工具，天然人人可用）。
  * 这是流程面的**白名单** —— 不在这里的 `sdo_*` 一律进 deny 面。
  */
-export function sdoAllowList(code: Role, sdoNames: readonly string[]): string[] {
-  const card = roleCard(code)
+export function sdoAllowList(code: Role | string, sdoNames: readonly string[]): string[] {
+  const card = faceCard(String(code))
   if (card === undefined) return []
   return sdoNames.filter((name) => card.allow.includes(name))
 }
@@ -179,10 +218,10 @@ export interface MaskContext {
  * 而新加一个宿主工具时，8 个角色的 allow 全都要跟着改，谁忘了谁就静默少一项能力。
  * 角色职责分离真正需要的只是"SDO 流程面按角色分权"，通用面该由**黑名单**（`deny`）来挡。
  */
-export function toolDenyList(code: Role, sdoNames: readonly string[]): string[] {
+export function toolDenyList(code: Role | string, sdoNames: readonly string[]): string[] {
   // **执行者禁用面无条件并入**：这份面只会下发给被派发的子会话（见 `EXECUTOR_DENIED_TOOLS`）
   const forbidden = [...EXECUTOR_DENIED_TOOLS]
-  const card = roleCard(code)
+  const card = faceCard(String(code))
   // 角色认不出（掩码表缺失/角色名写错）⇒ **整个 SDO 流程面一律挡住**。
   // 方向必须是 fail-closed：这一层是职责分离，不是便利功能（旧实现读不到数据就退回"内置兜底名单"）。
   if (card === undefined) return [...new Set<string>([...sdoNames, ...forbidden])]
@@ -312,8 +351,8 @@ export function filterKnownTools(names: readonly string[], isKnown: (name: strin
  * 角色职责分离真正要护的是 **SDO 流程面**（developer 不许改门禁、reviewer 不许写、tester 不许碰需求），
  * 那一份是我们**完全掌握**的封闭集合，用白名单；通用面用黑名单，缺省继承。
  */
-export function maskAllows(code: Role, tool: string, context: MaskContext = {}): boolean {
-  const card = roleCard(code)
+export function maskAllows(code: Role | string, tool: string, context: MaskContext = {}): boolean {
+  const card = faceCard(String(code))
   if (card === undefined) return false
   // deny 永远优先（两层都算）
   if (card.deny.includes(tool)) return false
@@ -362,9 +401,11 @@ export function rolesConsistent(cards: RoleCard[] = listRoleCards()): { missing:
  *
  * 四态（**都保留 fail-open**：认不出来就按驾驶舱放行，纪律不能变成"插件认不出人就干不了活"）：
  *   · `dispatched`        —— 该会话认领过某张卡 ⇒ 角色 = 卡上的 `role`，**掩码硬拦**
- *   · `unclaimed-child`   —— 子会话但还没认领 ⇒ 角色未知 ⇒ **不施加掩码**，但按非驾驶舱走**阶段纪律**
+ *   · `unclaimed-child`   —— 子会话但还没认领（也没有派发记录）⇒ 角色未知 ⇒ **施加声明给出的最小面**
+ *     （`roles.yml` 的 `unclaimed:`，DEF-078 / 第五批 §3.1：保留认领与探查，收窄权威面与写类），
+ *     并仍按非驾驶舱走**阶段纪律**。旧口径是"角色未知 ⇒ 不施加掩码"，那让它的工具面**比任何角色都宽**。
  *   · `cockpit`           —— 根会话（驾驶舱）⇒ 不拦
- *   · `unknown`           —— 拿不到会话信息 ⇒ 按驾驶舱放行（fail-open）
+ *   · `unknown`           —— 拿不到会话信息 ⇒ 按驾驶舱放行（fail-open；与上一态不是一回事）
  */
 export type RoleAttribution =
   /**
@@ -484,9 +525,14 @@ export function roleMaskDecision(
   role: string,
   tool: string,
   context: MaskContext = {},
-): { kind: 'allow' } | { kind: 'deny'; role: Role; tool: string; reason?: 'executor-forbidden' | 'executor-denied' | undefined } {
-  if (role === 'cockpit' || role === '' || !isRole(role)) return { kind: 'allow' }
+): { kind: 'allow' } | { kind: 'deny'; role: string; tool: string; reason?: 'executor-forbidden' | 'executor-denied' | 'unclaimed-face' | undefined } {
+  // 驾驶舱看全集；**认不出的面码**才 fail-open（与"角色未知"不是一回事：那一个已有最小面，见下）
+  if (role === 'cockpit' || role === '') return { kind: 'allow' }
+  if (faceCard(role) === undefined) return { kind: 'allow' }
   if (maskAllows(role, tool, context)) return { kind: 'allow' }
+  // **角色未知**走专属理由（DEF-078）：回执要说清"未认领 ⇒ 角色未知"，而不是泛泛的"以某角色身份被拒"。
+  // 排在最前是有意的：`sdo_plan` 同时在执行者禁令里，但读者更需要知道"先认领自己的卡"。
+  if (role === UNCLAIMED_CHILD_FACE) return { kind: 'deny', role, tool, reason: 'unclaimed-face' }
   if (context.executor === true) {
     if ((EXECUTOR_FORBIDDEN_TOOLS as readonly string[]).includes(tool)) return { kind: 'deny', role, tool, reason: 'executor-forbidden' }
     if ((EXECUTOR_DENIED_TOOLS as readonly string[]).includes(tool)) return { kind: 'deny', role, tool, reason: 'executor-denied' }

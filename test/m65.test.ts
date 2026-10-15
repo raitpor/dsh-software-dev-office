@@ -5,6 +5,11 @@
  * blocked / ready）归属即失效，`attributeRole` 于是退回 `unclaimed-child` ⇒ **掩码整段跳过**。
  * 也就是说：驾驶舱把卡 `drop` 掉（或卡被 done）之后，那个**仍在飞 / 仍存活**的子会话就再没有掩码了。
  *
+ * ⚠️ **口径更新（第五批 §3.1 / `DEF-078`）**：上面那句「退回 `unclaimed-child` ⇒ 掩码整段跳过」
+ * 说的是**修前**。现在认得出**血缘角色**的会话照旧按角色（本轮修法）；而**真的角色未知**的会话
+ * （不是我们派的、或角色名坏掉）不再"跳过掩码"，而是落**声明给出的最小面**
+ * （`roles.yml` 的 `unclaimed:`：保留认领与探查，收窄权威面与写类）。见 `M65-03`。
+ *
  * 我的探针第一次也"没定住"：**角色缓存**（`roleCacheVersion` + 5 秒 TTL）只会在认领/回报时失效，
  * `drop` 不碰它，所以立刻重试仍是 DENY —— 等过 TTL 再试才现出原形：
  *
@@ -160,21 +165,26 @@ test('M65-02 血缘角色取**最新一次派发**（复用同一子会话换角
   assert.equal(await toolVerdict(h.pre, 'sdo_plan', 'child-1'), 'deny', 'developer 掩码里没有 sdo_plan ⇒ 仍要拒绝（新角色真的生效了）')
 })
 
-test('M65-03 反向不许扩权：**不是我们派发**的子会话保持原口径（fail-open，不误拦别人的子代理）', async () => {
+test('M65-03 口径已收紧（DEF-078）：**角色未知**的子会话落最小面（不再 fail-open），但认领与探查不受影响', async () => {
   const h = harness()
   card('TASK-001', 'reviewer')
   await h.callTool('sdo_task', { action: 'claim', id: 'TASK-001', owner: 'sub-reviewer', expectedRevision: 1 }, 'child-1')
   journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-1', tools: 9, role: 'reviewer' })
   assert.equal(await toolVerdict(h.pre, 'sdo_plan', 'child-1'), 'deny', '前置：认得出的派发角色受掩码约束（reviewer 没有 sdo_plan）')
 
-  // 台账里没有 `child-2` 的派发记录 ⇒ 不认识它 ⇒ 不施加掩码（这是既定的 fail-open 口径，本次不许改）。
-  // 探针用 `sdo_plan`：developer 掩码里也没有它 —— 这样"把不认识的孩子当成某个角色"的过度扩张会被抓住。
-  assert.equal(await toolVerdict(h.pre, 'sdo_plan', 'child-2'), 'allow', '不认识的子会话保持放行（掩码只约束认得出的派发角色）')
+  // **旧口径（本用例原来的断言）是"不认识 ⇒ 放行"** —— 那正是一条缺陷：它的工具面比任何角色都宽
+  // （第四批复验 V7 实测 `sdo_plan` allow）。第五批按 `ADR-016` 收紧成**声明给出的最小面**：
+  // 台账里没有 `child-2` 的派发记录 ⇒ 角色未知 ⇒ 权威面**收窄**，而认领通道与只读探查**保留**。
+  assert.equal(await toolVerdict(h.pre, 'sdo_plan', 'child-2'), 'deny', '角色未知 ⇒ 权威面收窄（DEF-078；旧口径在这里放行）')
+  assert.equal(await toolVerdict(h.pre, 'sdo_task', 'child-2'), 'allow', '认领协议通道必须保留（挡住认领 = 把正常派发卡死）')
+  assert.equal(await toolVerdict(h.pre, 'read', 'child-2'), 'allow', '只读探查面必须保留')
+  assert.equal(await toolVerdict(h.pre, 'write', 'child-2'), 'deny', '写类在最小面里显式挡住（它还没有卡）')
 
-  // 血缘里有这个会话、但角色名不是八个角色之一（真源被写坏）⇒ 同样不施加掩码（原口径）
+  // 血缘里有这个会话、但角色名不是八个角色之一（真源被写坏）⇒ 同样落最小面（角色未知）
   journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-3', tools: 9, role: 'wizard' })
   await bumpRoleCacheVersion(h.callTool)
-  assert.equal(await toolVerdict(h.pre, 'sdo_plan', 'child-3'), 'allow', '角色名认不出 ⇒ 不猜、不拦（原口径）')
+  assert.equal(await toolVerdict(h.pre, 'sdo_plan', 'child-3'), 'deny', '角色名认不出 ⇒ 也落最小面（不猜，也不放行权威面）')
+  assert.equal(await toolVerdict(h.pre, 'read', 'child-3'), 'allow', '只读面仍放行（不是全拒）')
 })
 
 test('M65-04 卡走**真实完成/阻塞**路径后掩码仍在（done 会自动 +1 角色缓存版本 ⇒ 不能用"缓存还没过期"解释）', async () => {

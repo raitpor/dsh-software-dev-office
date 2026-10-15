@@ -1065,6 +1065,8 @@ uiIndex:
   kGap_needs-bash: "它要求 `command` 证据（要跑命令），而这个角色的掩码里没有 `bash`"
   kGap_needs-write: "它有写范围（要落盘），而这个角色的掩码里 `write`/`edit` 都没有"
   kDeadExemption: "⚠️ 有 {p1} 条**死豁免**（`exempt` 绑的卡不存在或已 dropped）：{p2} —— 用 `drop`+重建绕限制时，按卡 id 绑定的附加物（豁免/评审/结果归属）不会跟随；把理由搬给新卡，或从 profile 里删掉这条。"
+  kMaskUnclaimed: "❌ 工具面收窄：这次调用是**未认领的子会话**（角色未知）发起的，而 {p1} 不在它的**最小面**里。\n　可用面（由 `src/data/roles.yml` 的 `unclaimed:` **声明**给出，插件不写工具名）：{p2}\n　{p3}"
+  kMaskUnclaimedRemedy: '拿到角色的**唯一**途径是认领一张自己的卡（`sdo_task action=claim id=TASK-xxx owner=<你>`）；认领之后掩码换成那张卡的角色面，一切照旧。权威面（派发/门禁/交付/评审）与写类对未认领子会话一律收窄 —— 这不是「不认识你」，是「还没有角色」。'
   kMaskDenied: "越界：角色 {p1} 的工具面里没有 {p2}（掩码在 src/data/roles.yml）。本角色可用：{p3}；角色卡：{p4}。要改掩码就改数据文件（不要绕过），确实该做这个动作就把它派给有权限的角色。"
   kMaskExecutorForbidden: "⛔ 越界：角色 {p1} 是被**派发的执行者**，不得调用 {p2} —— 它起的子代理**不带角色掩码**，等于绕开整张掩码表（`subagent`/`subagent_fork`/`workflow`/`sdo_plan` 一律禁用）。派发是驾驶舱的活。角色卡：{p3}"
   kMaskExecutorDenied: "⛔ 越界：角色 {p1} 是**被派发的执行者**，不得调用 {p2} —— 平台管理（`plugin_manager`）、用户交互与会话模式（`exit_plan_mode`）、共享知识库的不可逆删除（`memory_forget`/`technique_forget`）、纪律豁免（`failure_forgive`）、会话生命周期（`create_goal`/`update_goal`）都归驾驶舱：执行者只干这张卡。角色卡：{p3}"

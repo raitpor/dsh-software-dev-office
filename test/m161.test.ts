@@ -5,7 +5,7 @@
  *   · `src/types.ts` 与 `src/domain/testingStore.ts` **各有一份** `as const` 准则词表，内容**逐字相同**、
  *     来源却是**两处**；`coverage.ts` 的注释写"同一个准则词表（`types.ts` 的 …）"、import 的却是另一份
  *     ⇒ **注释与实现相反**（最容易被后人误信的部分）。
- *   · 同概念两个中文标签：读数侧 `decision → 判定`、设计侧 `decision → 分支`。
+ *   · 同概念两个中文标签（第五批 §3.2 已统一）：读数侧 `decision → 判定`、设计侧当时 `decision → 分支`。
  *   · `coverage.ts` 那段"读数与形状层都还没有 `reportHash`/`artifactHash`"的注释**已过时**（实现早有了）。
  *
  * 修法：词表收敛到**唯一来源**（`types.ts` 的 `TESTING_COVERAGE_CRITERIA`，其余处 import 它，
@@ -117,49 +117,47 @@ test('M161-04 两套标签"差异有据"：设计侧 5 类必须是读数侧子�
   // ② 设计侧措辞是 **DoD 逐字**（需求基线口径）⇒ 谁改这 5 个词，必须同时改 DoD 与出处，不能偷偷改
   assert.deepEqual(
     WHITEBOX_COVERAGE_CRITERIA.map((criterion) => WHITEBOX_CRITERION_LABEL[criterion]),
-    ['语句', '分支', '路径', '条件', '定义-使用对'],
-    '设计侧五个中文词是 DoD 逐字（本批不动需求基线；要统一措辞请驾驶舱裁决）',
+    ['语句', '判定', '路径', '条件', '定义-使用对'],
+    '设计侧五个中文词是 DoD 逐字（第五批 §3.2：卡面勘误后统一为「判定」）',
   )
   // ③ 两处都把差异**写在盘上**（各有出处），不是"没人发现"
   assert.equal(readSource('src/domain/coverage.ts').includes('DEF-034'), true, '读数侧必须写明与设计侧措辞的关系')
   assert.equal(readSource('src/domain/testDesignWhitebox.ts').includes('DEF-034'), true, '设计侧必须写明与读数侧措辞的关系')
 })
 
-test('M161-05 DEF-034 裁决后的口径（第四批 §3.7）：**词表唯一**，中文标签的差异**恰好一处**且那一处是 DoD 逐字', () => {
-  // **`ADR-014` 裁决"语义应统一"**。第四批 §3.7 的 DoD ② 同时给了停手条款：若两者**不是**同一概念
-  //（有语义差异）⇒ 说明依据、**不要硬统一**。本用例把"统一到哪一层、差在哪一处"变成机械读数：
-  //   · **统一的那一层是 token（机器取值）**：两层共用 `TESTING_COVERAGE_CRITERIA` 一份词表，
-  //     设计侧不另造词表（`canonicalReadingCriterion('branch')` ⇒ `decision`，别名只有一处）；
-  //   · **差的那一层只有一个中文标签**：`decision` 在设计侧是「分支」，而它是**那张卡 DoD 的逐字**
-  //     （需求基线口径，`§4.3` 明令不动基线）⇒ 这一处**不硬统一**，如实上报驾驶舱。
+test('M161-05 DEF-034 收口（第五批 §3.2）：词表唯一，**两层中文标签零差异**（变化本身就是机械读数）', () => {
+  // **`ADR-014` 裁决"语义应统一"分两步走**：第四批统一**词表/token**并把"差异恰好一处"钉成读数；
+  // 第五批（卡面勘误 `TASK-015` 之后）把**设计侧中文标签**也改成「判定」⇒ 差异归零。
+  // 这条用例的机械性不依赖某个字面：它比较的是**两张表逐条**（谁再分叉谁红）。
   const readingLabel = new Map(TESTING_COVERAGE_CRITERIA.map((criterion) => [criterion, coverageCriterionLabel(criterion)]))
-  const diffs = WHITEBOX_COVERAGE_CRITERIA
-    .map((criterion) => ({
-      criterion,
-      design: WHITEBOX_CRITERION_LABEL[criterion],
-      reading: readingLabel.get(criterion),
-    }))
-    .filter((row) => row.design !== row.reading)
+  const rows = WHITEBOX_COVERAGE_CRITERIA.map((criterion) => ({
+    criterion,
+    design: WHITEBOX_CRITERION_LABEL[criterion],
+    reading: readingLabel.get(criterion),
+  }))
+  // ① **零差异**（不是"恰好一处"）：两层对同一个 token 必须印同一个词
   assert.deepEqual(
-    diffs,
-    [{ criterion: 'decision', design: '分支', reading: '判定' }],
-    `两层的中文标签差异必须**恰好一处**（多一处就是漂移，少一处说明守卫失效）：${JSON.stringify(diffs)}`,
+    rows.filter((row) => row.design !== row.reading),
+    [],
+    `两层中文标签必须逐条同词（谁分叉谁红）：${JSON.stringify(rows.filter((row) => row.design !== row.reading))}`,
   )
-  // ① 另外 4 类必须**逐字相同**（这才是"统一"的实际内容：同一概念同一词，除基线那一处）
-  for (const criterion of WHITEBOX_COVERAGE_CRITERIA) {
-    if (criterion === 'decision') continue
-    assert.equal(
-      WHITEBOX_CRITERION_LABEL[criterion],
-      coverageCriterionLabel(criterion),
-      `${criterion} 的中文标签两层必须一致（只有 DoD 逐字的那一处允许不同）`,
-    )
+  // ② 每个 token 两层都**有**标签（"都空"不许冒充"都同" —— 那会让这条守卫变成永远绿）
+  for (const row of rows) {
+    assert.equal(typeof row.design === 'string' && row.design !== '', true, `${row.criterion} 在设计侧必须有中文标签`)
+    assert.equal(row.reading !== undefined && row.reading !== '', true, `${row.criterion} 在读数侧必须有中文标签`)
+    assert.notEqual(row.design, row.criterion, `${row.criterion} 的标签不许回落成裸 token（那等于没标签）`)
   }
-  // ② 差异那一处**必须是需求基线口径**：随出处一起钉住（改它必须同时改 DoD 与 m34/m161-04，不能偷偷改）
+  // ③ 取值口径仍是**一份词表**（别名归一只有一处），且设计侧 5 类是读数侧 7 类的子集
+  assert.equal(canonicalReadingCriterion('branch'), 'decision', '别名归一只有一处（`branch` ⇒ `decision`）')
+  const readingSide = new Set<string>(TESTING_COVERAGE_CRITERIA)
+  for (const criterion of WHITEBOX_COVERAGE_CRITERIA) {
+    assert.equal(readingSide.has(criterion), true, `设计侧口径 ${criterion} 必须在读数侧词表里（子集关系）`)
+  }
+  // ④ 两处都记录裁决/勘误的出处（读者要能顺着注释查到"为什么统一"）
   const wb = readSource('src/domain/testDesignWhitebox.ts')
-  assert.match(wb, /DoD 逐字/u, '设计侧必须写明这五个词是 DoD 逐字（基线口径）')
-  assert.match(wb, /ADR-014/u, '两层都必须记录第四批的裁决出处（ADR-014）')
+  assert.match(wb, /ADR-014/u, '设计侧必须记录裁决出处（ADR-014）')
+  assert.match(wb, /TASK-015/u, '设计侧必须记录卡面勘误的出处（TASK-015）')
   const reading = readSource('src/domain/coverage.ts')
   assert.match(reading, /ADR-014/u, '读数侧也必须记录裁决出处（ADR-014）')
-  // ③ 机器取值只有一份词表：别名归一与读数同源（`branch` 是历史别名，不是第二套取值）
-  assert.equal(canonicalReadingCriterion('branch'), 'decision', '别名归一只有一处（`branch` ⇒ `decision`）')
+  assert.match(reading, /TASK-015/u, '读数侧也必须记录卡面勘误的出处（TASK-015）')
 })
