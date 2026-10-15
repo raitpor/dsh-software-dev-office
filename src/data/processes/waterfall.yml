@@ -155,6 +155,10 @@ gates:
       # **DEF-075（第三批 §3.8）**：缺陷线补进 G6（与 C-50/C-52 同族）。绑定方式是**TR 带 `defects` 字段**（方案 (a)）：
       # 依据与结论同生共死，不必新增追溯边种类。四流程措辞一致（C-59 / C-64 都栽在"只改一处"上）。
       - { id: C-65, check: "defects.fixed-tested", desc: "已修（fixed）的缺陷必须有**绑定的测试结论**：每条 `fixed` 缺陷至少要有一条 `pass` 的结果把它的 id 写进 `defects`；否则判红并逐条点名（`DEF-xxx 已修但无测试结论`）。`wontfix` 且免责两字段齐备者不算缺依据（口径同 C-51/C-63）；`closed` 不在本条范围（closed 是结果、TR 是依据）" }
+      # **DEF-076（第四批 §3.3）**：把用户裁决的「先评审、后测试」（`ADR-013`）做成机械后果 ——
+      # 缺陷要能**被结构化地点名**（`sdo_review defectId`），且这条评审要**已采纳**（每条发现核实过）。
+      # 与 C-65 同一族、同一门（G6），但管的是不同的一格（评审 vs 测试）。四流程措辞逐字一致。
+      - { id: C-66, check: "defects.fixed-reviewed", desc: "已修（fixed）的缺陷拿到 `pass` 测试结论时，必须有一条**已采纳**的评审点名它（**先评审、后测试**）：对该缺陷，存在一条 `verdict=pass` 且每条发现都已被核实采纳的评审，其 `defects` 里含此 id；否则判红并逐条点名（`DEF-xxx 有测试结论但无已采纳评审`）。与 C-65 **分工不重复**：C-65 管「有没有 pass 的 TR」，本条管「有没有核实过的评审」 —— 只对**已有 pass TR** 的 `fixed` 缺陷判红，两样都缺的只被 C-65 点名一次。`closed` 不在本条范围（closed 是结果、评审与 TR 是依据）" }
       - { id: C-50, check: "tests.passed", desc: "全部 must REQ 有通过的测试用例" }
       - { id: C-51, check: "defects.closed", desc: "无未关闭的阻塞级缺陷" }
       - { id: C-52, check: "review.independent", desc: "评审独立性（作者 ≠ 评审者）" }
@@ -180,3 +184,7 @@ gates:
       - { id: C-60, check: "delivery.manifest", desc: "交付清单完整（含验收矩阵与回滚点）" }
       - { id: C-61, check: "prototype.excluded", desc: "交付包不含 prototype/ 内容（Q-05 / REQ-034）" }
       - { id: C-62, check: "prototype.backfilled", desc: "原型结论已回填为需求" }
+      # **DEF-033 第三面（第四批 §3.5 / `ADR-015`）**：把"局部收工"重新收成"全局冻结"的那一步挂到**交付前**。
+      # 与 G6 的 `defects.fixed-tested` / `defects.fixed-reviewed` 不是一回事（那两条管每条缺陷的依据），
+      # 故**不在 G6 重复声明**（同一概念两处判据是 `DEF-044` 的教训）。四流程措辞逐字一致。
+      - { id: C-67, check: "defects.unfrozen-full-green", desc: "有 `unfrozen` 非空的卡（某次完成是**局部绿**）⇒ **交付前必须有一次全量绿**：存在一条 `status=pass` 且声明覆盖全量（`fullSuite=true`）的测试结论，且其时刻**晚于**最后一次未冻结完成的 `done` 时刻；否则判红并**逐条点名**是哪几张卡的未冻结完成把这条要求引出来的。「全量」由**项目/调用方声明**，插件不硬编码任何跑法（它不认识某条命令、也不认识某个路径，只认「这条结论自称覆盖全量」这个结构化声明）—— 补法是跑一次全量并记一条 `status=pass` + `fullSuite=true` 的结论。**没有** `unfrozen` 非空的卡 ⇒ 判 N/A（不是判红）。" }

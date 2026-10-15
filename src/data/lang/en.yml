@@ -330,6 +330,8 @@ param:
   expected: Expected result
   caseId: Test case id
   defectId: Defect id
+  fullSuite: 'record: this conclusion **claims full-suite coverage** (DEF-033, third face). When a card completed without freezing its siblings, the delivery gate (C-67) requires a `pass` full-suite conclusion dated after the last such `done`. Omitted = not a full-suite conclusion.'
+  reviewDefectId: 'record: **the defects this review names** (DEF-076; one or more ids, as JSON text or a real array). Every id must exist (otherwise the call is rejected readably and nothing is written) — this gives a defect being "reviewed" a structured source of truth, which criterion `defects.fixed-reviewed` (C-66) reads to enforce review-before-test.'
   requirement: Requirement id
   reporter: Reporter
   designId: Design element id
@@ -566,6 +568,14 @@ uiClamp:
 
 uiGates:
   kFixedTestedMissing: 'REJECTED: **fixed defects with no test conclusion** ({p1}): {p2} — a fix must be backed by a **passing** test conclusion that lists its id in `defects`; otherwise the defect was never tested and no gate criterion said anything about it.'
+  kUnfrozenFullOk: 'OK: a **full-suite green** exists after the unfrozen completion(s) ({p2} card(s)): {p1} — the local completions have been collected back into a global freeze'
+  kUnfrozenFullNa: 'Not applicable: no card in the ledger has a non-empty `unfrozen` (no locally green completion), so this criterion does not take part'
+  kUnfrozenFullMissing: 'REJECTED: **no full-suite green after an unfrozen completion** ({p1} card(s)): {p2} — these cards declared at completion time that their siblings work was not included, so a run covering the **whole suite** is required before delivery; the last such `done` was at {p3} and no **pass + full-suite** conclusion exists after it.'
+  kUnfrozenFullRemedy: 'Run the **project-declared full suite** (`fullSuite` only declares full coverage; the plugin recognises no particular runner and hardcodes no command or path), then record a passing conclusion with `sdo_test action=record caseId=<any live case> status=pass fullSuite=true evidence=<full output> oracle=<expert oracle JSON>`; it must be **later than** the `done` above.'
+  kUnfrozenFullNoTime: '(timestamp unavailable: judged by existence of a full-suite green, not locked out)'
+  kFixedReviewedOk: 'OK: every `fixed` defect that already has a passing conclusion is named by an **adopted** review (review before test)'
+  kFixedReviewedMissing: 'REJECTED: **tested but not reviewed** ({p1}): {p2} — a fix must be verified by a review before its test conclusion counts (`ADR-013`: `closed` = verified AND tested). Only defects that already have a passing conclusion and are named by no adopted review are listed here; those with no conclusion at all are named by C-65.'
+  kFixedReviewedRemedy: 'Add the review: `sdo_review action=record taskId=<the implementing card> reviewer=<not the implementer> verdict=pass defectId=["DEF-xxx"] findings=["<one verifiable finding>"]`, then verify each finding through the existing flow (`sdo_task action=verify-review`) — only a review whose every finding was verified (`adopted`) counts as a basis.'
   kFixedTestedWithFail: '{p1} (**and a failing result is bound to it**: {p2} — it is still broken)'
   kFixedTestedRemedy: 'Add the basis: run that test and record the conclusion with `sdo_test action=record caseId=<case> status=pass evidence=<evidence> defects=["DEF-xxx"]` (one conclusion may cover several defects). If the defect genuinely cannot be tested, mark it `wontfix` and supply `waiveReason`/`waiveApprovedBy` (same rule as C-63).'
   kFixedTestedOk: 'OK: every `fixed` defect has a **bound passing conclusion** (the basis lives on the conclusion, in the `defects` field)'
@@ -946,6 +956,7 @@ uiTrace:
   defectTraceNoReading: "this rendering got no reading (the trace report carries no such field)"
   defectTraceRemedy: "Add a `req-defect` edge for every orphan defect (`sdo_trace action=link from=REQ-001 to=DEF-001 kind=req-defect`; the target requirement must be **baselined** and not withdrawn), or write an explicit exemption into `.sdo/defects/DEF-*.yml` as `exemption: { reason: <why it can be ignored>, approvedBy: <who approved it> }` (both fields are required; a missing one is treated as unexempted). When an edge points at an invalid requirement, fix that edge first or re-point it at a valid one."
 uiCollab:
+  kUnfrozenUndeclared: 'REJECTED: sibling cards are in progress but were **not declared** in the unfrozen list — {p1} ({p2} in progress). A `done` means "this card scope is green", so you must **name each** sibling whose work is not included (`ADR-014`: a locally green completion is allowed, an undeclared one is not). Fix it: `sdo_task action=done id={p3} ... unfrozen=["<every id above>"]`. **Nothing was written.**'
   kUnfrozenBadId: 'REJECTED: {p1} in the unfrozen list cannot be accounted for: each entry must be the id of a sibling card that **exists and is still in progress** (a typo, a card already done/blocked, or this card itself does not count) — {p2} card(s) are in progress right now. **Nothing was written** (papering over "not frozen" with a false declaration turns delivery freeze into a verbal promise).'
   kErrataNotFound: "no such task card {p1} (errata can only be appended to an existing card)"
   kErrataNoteRequired: "the errata for {p1} cannot be empty: an errata is a **note**, and an empty note says nothing"
@@ -1413,7 +1424,6 @@ shapeEntity:
   budget: "Cost budget"
 uiIndex:
   kUnfrozenLocal: 'FROZEN-SCOPE: this `done` is **locally green** (the changes inside this card scope are green) while **the whole project is not frozen** — sibling cards whose work is not included: {p1}. To learn whether everything is frozen, re-run the full suite once those cards settle.'
-  kUnfrozenMissing: 'WARNING: sibling cards are in progress but are **not** declared in the unfrozen list: {p1} — "card done" is not "globally frozen"; if their work really was included (for example the full suite was run), state that on the card, otherwise readers will assume the delivery surface is frozen.'
   kUnfrozenFrozen: 'FROZEN-SCOPE: no sibling card is in progress ⇒ this `done` **equals a full freeze** (this card scope green = whole project green).'
   kBadDefects: 'REJECTED: `defects` must be a list of strings (or its JSON text), e.g. ["DEF-001","DEF-002"] — the value had the wrong shape; nothing was written.'
   kErrataAdded: "📝 appended an errata to {p1} ({p2} total, card now r{p3}) — **append-only**: not a single word of history (dod/plan/status) was rewritten, and the next reader will see this note"
@@ -1488,6 +1498,7 @@ uiIndex:
   kReviewAppended: 'OK: {p1} appended for time #{p2}: {p3} finding(s) this round (from #{p4} to {p5} in total); the verdict is untouched (still `{p6}`) — appending only **adds**: the original conclusion and the existing bodies are unchanged, and the new findings go to the tail (stable indices, so earlier verifications do not go stale). Trace: `review/appended` (with `appendCount` / `appendedFindings`).'
   kReviewAppendCaliber: ' | the appended bodies are **claims** too: findings {p2}-{p3} (1-based parameter indexing) each need verification (`sdo_task action=verify-review id={p4} review={p1} index=<n> outcome=… proof=…`). If the payload was rejected by host validation (`invalid arguments`) because there were too many/too-long findings, **split it into several `append` calls** on the same review — that is exactly why this action exists (the old way forced a new record with the same verdict, shattering one review into several).'
   kReviewNotExamined: " | findings NOT examined ({p1}) — the tamper check did not pass, so unexamined findings must not be reported as verified"
+  kReviewDefects: '  NAMED DEFECTS: {p1} (criterion `defects.fixed-reviewed` / C-66 reads this to enforce review-before-test)'
   kReviewAwaitingVerification: "ℹ️ {p1} finding(s): **a review is not adopted automatically** — this card's implementing session must verify each finding (reproduce it, or give counter-evidence) first: `sdo_task action=verify-review id=<card> review={p2} index=1 outcome=... proof=...`"
   kRecordBadStatus: 'REJECTED: invalid case-result status `{p1}` (allowed: pass / fail / skip) — it is NOT defaulted to pass (a real machine sent passed and it was silently written as pass)'
   kRunBadOutcome: 'REJECTED: the real-run outcome is invalid/missing: `{p1}` (pass or fail must be stated explicitly) — a forgotten verdict must not be recorded as passing'
@@ -2014,6 +2025,8 @@ uiApplicability:
 uiReview:
   # —— Review-finding verification (2026-10-08: a review is a claim; the implementer must verify each finding before it is adopted) ——
   kReproMissing: 'REJECTED: a non-`pass` finding call ({p1}) must carry either **a command that still fails right now** (`repro`) or **an explicit declaration that it cannot be reproduced, plus why** (`unreproducible`) — otherwise "to be fixed" is just a verbal memory: a settled problem gets recorded as open and the next person goes hunting for a gap that is not there. **Nothing was written.**'
+  kDefectUnknown: 'REJECTED: the review names defect(s) that **do not exist**: {p1} — an id that names nothing cannot be tolerated, or "this defect was reviewed" degenerates into prose. Fix it: (1) resend with the real id; (2) the defect is not in the ledger yet => create it first with `sdo_test action=defect`. **Nothing was written** (no guessing, no auto-creating defects).'
+  kDefectBlankId: '(blank entry)'
   kReproAmbiguous: 'REJECTED: give **only one** of `repro` / `unreproducible` — with both, the reader cannot tell which holds ("it reproduces" and "it cannot be reproduced" are mutually exclusive). **Nothing was written.**'
   noReview: "No such review: {p1}"
   badIndex: "{p1} has {p2} finding(s): there is no finding {p3} (ledger index {p4}). Valid range: finding {p5} (1-based); the **ledger stores 0-based**, so parameter finding N = ledger index N-1."

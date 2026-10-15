@@ -98,6 +98,19 @@ export interface TestResult {
    * 老台账没有这个字段照样读得出来（形状不是必填）。
    */
   defects?: string[] | undefined
+  /**
+   * **这条结论自称覆盖「全量」**（DEF-033 第三面 / 第四批 §3.5）。
+   *
+   * 为什么要一个**结构化声明**：`done` 的语义是"**本卡范围**绿"，`unfrozen` 记下"还有谁在飞"；
+   * 于是"全局到底冻结了没有"只能靠**一次覆盖全量的跑**来回答 —— 而"哪条结论覆盖全量"过去无从机械判断
+   * （只能靠 `evidence` 里的散文，或者让插件去认 `npm test` 这种**跑法**：那正是 DoD 明令不许硬编码的东西）。
+   * 声明是调用方的事（谁跑的自己最清楚），核对自洽是插件的事 —— 与 `env` / `harness` 同一口径。
+   *
+   * 判据 `defects.unfrozen-full-green`（C-67，挂 **G7 交付门禁**）读它：有 `unfrozen` 非空的卡时，
+   * 必须存在一条 `status=pass` 且本字段为 `true`、且时刻**晚于**最后一次未冻结完成的 `done` 的结论。
+   * 缺省（老台账）= 不是全量结论，既有行为一字不变。
+   */
+  fullSuite?: boolean | undefined
 }
 
 /**
@@ -360,6 +373,8 @@ export function recordTestResult(
     ...(result.harness === undefined ? {} : { harness: result.harness }),
     // **DEF-075**：绑定进真源（"这条结论依据于哪些缺陷已修"离线可读）
     ...(declaredDefects.length === 0 ? {} : { defects: declaredDefects.join(',') }),
+    // **DEF-033 第三面**：`fullSuite` 也进真源事件（文件可手改，只有 append-only 的事件挡得住事后补标）
+    ...(result.fullSuite === true ? { fullSuite: true } : {}),
     // **REQ-053（TASK-020）**：「谁执行的 / 谁采纳的」必须进 append-only 的事件 ——
     // `tests/results/*.yml` 是手可改的，独立性这条判据的两个端点只能靠真源佐证
     // （与 D4/R1 的"文件 vs journal"同一纪律：文件里把 `adoptedBy` 改成另一个人也查得出来）。
@@ -807,6 +822,9 @@ export function reviewContentHash(review: Review): string {
         reviewer: textOf(review.reviewer),
         verdict: textOf(review.verdict),
         findings: findings.slice(0, sealed),
+        // **DEF-076**：点名的缺陷也是**主张**，必须一起进指纹；缺省（老评审）时整个键不出现
+        // ⇒ JSON 逐字节与修前相同 ⇒ 既有指纹一个都不失效（历史不重写）。
+        ...(review.defects === undefined ? {} : { defects: review.defects.map((item) => textOf(item)) }),
       }),
     )
     .digest('hex')
@@ -833,6 +851,19 @@ export interface Review {
    * 于是 `reviewContentHash` 对它们逐字节等价于旧实现。语义见 `reviewContentHash` 的注释。
    */
   sealedFindings?: number | undefined
+  /**
+   * **这条评审点名的缺陷**（DEF-076 / 第四批 §3.3）—— 让"缺陷已被评审"有**结构化真源**。
+   *
+   * 病根：`sdo_review` 过去只能绑卡（`taskId`）、**没有点名缺陷的入口** ⇒ 一条 `fixed` 缺陷可以跳过评审
+   * 直接拿到 `pass` 测试结论并 `closed`，而判据无从察觉（`C-65` 只看"有没有 pass 的 TR 绑定"）。
+   * 用户裁决是**先评审、后测试**（`ADR-013`），本条把这句话变成机械后果：`defects.fixed-reviewed`
+   * 对"有 pass TR 却无**已采纳**的评审点名它"的 `fixed` 缺陷判红并点名。
+   *
+   * 每个 id 必须**真实存在**（`reviewDefectIssue` 是唯一出口；未知 id ⇒ 可读拒绝、零写盘）。
+   * 进**内容指纹**（`reviewContentHash`）：`defects` 缺省的老评审指纹逐字节不变（历史不重写），
+   * 新评审改了这份名单就会被判 `tampered` —— 否则"事后往评审里补一个缺陷号"就是伪造评审凭证。
+   */
+  defects?: string[] | undefined
   /**
    * **这次补录的原文（来源评审）共几条**（DEF-072 / §3E 族 5「条号自洽」）。
    *
@@ -906,6 +937,37 @@ export function reviewReproIssue(input: {
   return undefined
 }
 
+/**
+ * 评审点名了**不存在**的缺陷时抛的错 —— 与 {@link ReviewReproError} 同一路数（域层抛、工具面转可读回执）。
+ */
+export class ReviewDefectError extends Error {
+  constructor(readonly code: 'defect-unknown', readonly detail: string) {
+    super(detail)
+    this.name = 'ReviewDefectError'
+  }
+}
+
+/**
+ * **评审点名的缺陷必须真实存在**（DEF-076 / 第四批 §3.3）—— **唯一出口**。
+ *
+ * 为什么不只在工具面核：与 `DEF-048` 同一课 —— **最低层**（`recordReview`）也得拦，别处不许绕开。
+ * 口径：`defects` 每一项都要能在 `.sdo/defects/` 里对上；空白项也算不上去（点不了名的 id 不能被容忍，
+ * 否则"评审点名"这件主张就退化成了散文）。**未知就拒，不猜、不自动建缺陷**（建缺陷是 `sdo_test action=defect`
+ * 的事，评审不许顺手造真源）。
+ */
+export function reviewDefectIssue(
+  store: SdoStore,
+  input: { defects?: string[] | undefined },
+): { code: 'defect-unknown'; detail: string } | undefined {
+  const ids = (input.defects ?? []).map((item) => textOf(item).trim())
+  if (ids.length === 0) return undefined
+  const known = new Set(listDefects(store).map((defect) => defect.id))
+  const unknown = ids.filter((id) => id === '' || !known.has(id))
+  if (unknown.length === 0) return undefined
+  const named = unknown.map((id) => (id === '' ? t('uiReview.kDefectBlankId') : id)).join(t('uiCollab.kListSep'))
+  return { code: 'defect-unknown', detail: fmt('uiReview.kDefectUnknown', { p1: named }) }
+}
+
 export function listReviews(store: SdoStore): Review[] {
   return store
     .listNames('reviews')
@@ -918,6 +980,9 @@ export function recordReview(store: SdoStore, journal: Journal, input: Omit<Revi
   // **DEF-048**：待修主张必须带复现命令（或显式声明无法复现）—— **最低层**也拦，别处不许绕开
   const issue = reviewReproIssue({ verdict: input.verdict, repro: input.repro, unreproducible: input.unreproducible })
   if (issue !== undefined) throw new ReviewReproError(issue.code, issue.detail)
+  // **DEF-076**：评审点名的缺陷必须真实存在 —— 同一份判据（`reviewDefectIssue`）在最低层也拦
+  const defectIssue = reviewDefectIssue(store, { defects: input.defects })
+  if (defectIssue !== undefined) throw new ReviewDefectError(defectIssue.code, defectIssue.detail)
   const review: Review = { ...input, id: idOf(store, journal, 'reviews', 'REV-'), at: new Date().toISOString() }
   store.writeYaml(['reviews', `${review.id}.yml`], { review })
   // **评审核实口径（2026-10-08）**：事件里同时记下"谁记的"与**判断内容的指纹** ——
@@ -933,6 +998,8 @@ export function recordReview(store: SdoStore, journal: Journal, input: Omit<Revi
     // **DEF-048**：两条出路随事件一起留痕（真源里能看出"当时是怎么复现的/为什么复现不了"）
     ...(review.repro === undefined ? {} : { repro: review.repro }),
     ...(review.unreproducible === undefined ? {} : { unreproducible: review.unreproducible }),
+    // **DEF-076**：点名的缺陷随事件留痕（判据读的是评审文件 + 采纳状态，事件用于对账/回溯）
+    ...(review.defects === undefined ? {} : { defects: review.defects }),
     ...(review.sessionId === undefined ? {} : { sessionId: review.sessionId }),
   })
   return review

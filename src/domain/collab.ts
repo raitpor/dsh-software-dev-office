@@ -615,10 +615,14 @@ export type ReportResult =
        */
       unfrozen?: string[]
       /**
-       * **有在飞兄弟卡却没被声明**的那些（DEF-033）：`done` 照常成功（不拦收工），但这份读数必须被看见 ——
-       * 它把"卡 done ≠ 全局冻结"从共识变成回执上的点名。键为空时不出现。
+       * **本卡声明的未冻结清单之外的、处于在飞的兄弟卡**（DEF-033 返工 / 第四批 §3.4）——
+       * ⚠️ 这个键**已不再出现**：漏声明现在**当场拒绝**（`unfrozen-undeclared`，零写盘），
+       * 所以"成功返回里还带着一份漏声明读数"这个形态不存在了。类型里保留说明、不再有字段。
+       *
+       * 为什么删掉而不是继续返回：`ADR-014` 要求**不得漏声明**；留着"成功 + 点名"会让人以为
+       * "反正会提醒我"，而那正是修前的形态。
        */
-      unfrozenMissing?: string[]
+      // （无 `unfrozenMissing` 字段：见上）
       /**
        * **卡上 `fixes` 声明的逐条回显**（DEF-050 落点三）：每行形如
        * `DEF-xxx: fixed` / `DEF-xxx: open（需先闭合）` / `DEF-xxx: wontfix（理由…；批准人…）`。
@@ -658,6 +662,8 @@ export type ReportResult =
         | 'construction-profile-missing'
         | 'tdd-red-green-missing'
         | 'unfrozen-bad-id'
+        // **DEF-033 返工（第四批 §3.4）**：漏声明是**另一种**拒绝（"你写的这条不成立" vs "你还有几条没写"）
+        | 'unfrozen-undeclared'
         | 'review-open-findings'
         | 'tdd-result-untraceable'
         | 'tdd-mutation-missing'
@@ -773,9 +779,23 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
     const inFlightSiblings = input.status === 'done'
       ? listTasks(store).filter((item) => item.id !== task.id && item.status === 'in-progress')
       : []
-    const unfrozenMissing = input.status === 'done'
-      ? inFlightSiblings.filter((item) => !declaredUnfrozen.includes(item.id)).map((item) => item.id)
-      : []
+    // **DEF-033 返工（第四批 §3.4）**：**漏声明 ⇒ 拒绝**（不再"照常成功 + 逐条点名"）。
+    // 用户裁决（`ADR-014`）：允许局部绿 + 留痕，但**不得漏声明** —— 有在飞兄弟卡却未逐条点名 ⇒
+    // 明确拒绝、点名缺哪几张、零写盘（写在任何 `save`/`journal.append` 之前）。
+    // **两类拒绝不混文案**：假声明（写错 / 已 done / 本卡自己）走上面的 `unfrozen-bad-id`；
+    // 漏声明走 `unfrozen-undeclared` —— 一个说"你写的这条不成立"，一个说"你还有几条没写"。
+    const unfrozenMissing = inFlightSiblings.filter((item) => !declaredUnfrozen.includes(item.id)).map((item) => item.id)
+    if (unfrozenMissing.length > 0) {
+      return {
+        ok: false,
+        code: 'unfrozen-undeclared',
+        detail: fmt('uiCollab.kUnfrozenUndeclared', {
+          p1: unfrozenMissing.join(t('uiCollab.kListSep')),
+          p2: String(inFlightSiblings.length),
+          p3: task.id,
+        }),
+      }
+    }
     if (audited.length > 0 && !scopeAudit.ok) {
       return {
         ok: false,
@@ -863,9 +883,9 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       ...(fixEcho === undefined ? {} : { fixEcho }),
       ...(reviewEcho === undefined ? {} : { reviewEcho }),
       ...(unresolvedImpact.length === 0 ? {} : { impactGaps: unresolvedImpact }),
-      // **DEF-033**：完成语义的读数 —— 未冻结清单（空数组时**不写**这个键，既有调用方形状不变）
+      // **DEF-033**：完成语义的读数 —— 未冻结清单（空数组时**不写**这个键，既有调用方形状不变）。
+      // 漏声明已在上面**拒绝**（`unfrozen-undeclared`）⇒ 这里只剩"声明齐备的局部绿"。
       ...(declaredUnfrozen.length === 0 ? {} : { unfrozen: declaredUnfrozen }),
-      ...(unfrozenMissing.length === 0 ? {} : { unfrozenMissing }),
     }
   }
   const next: TaskCard = {

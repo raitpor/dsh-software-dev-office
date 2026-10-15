@@ -18,7 +18,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import { parseYaml, stringifyYaml, YamlSubsetError } from '../src/infra/yaml.js'
+import { parseYaml, stringifyYaml, YamlSubsetError, YamlWriteError } from '../src/infra/yaml.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -37,6 +37,9 @@ test('M169-01 往返矩阵（≥5 类键形态）：写出去的一定读得回�
     { key: '- a', written: "'- a': 1" },        // 既有支：起始减号
     { key: '#a', written: "'#a': 1" },          // 既有支：起始井号
     { key: 'a ', written: "'a ': 1" },          // 既有支：结尾空格
+    // **第四批 §3.6 新增**：**前导**空格键 —— 旧实现裸写成 ` a: 1`，读端按 YAML 缩进读成键 `a`（**静默改名**）
+    { key: ' a', written: "' a': 1" },
+    { key: '   ', written: "'   ': 1" },        // 全空白键（同上，必须原样读回）
   ]
   for (const { key, written } of cases) {
     const doc = stringifyYaml({ [key]: 1 })
@@ -72,17 +75,67 @@ test('M169-02 可读拒绝（三态）：手写的裸形态**不许静默降级�
   assert.deepEqual(parseYaml('a: b: 1'), { a: 'b: 1' })
 })
 
-test('M169-03 结构：两端**同源**（写端加引号与读端拒认共用同一份字符集），不是各写一套', () => {
-  const code = readFileSync(join(ROOT, 'src', 'infra', 'yaml.ts'), 'utf8')
-    .split('\n')
-    .filter((line) => !/^\s*(\*|\/\*|\/\/)/u.test(line))
-    .join('\n')
-  const uses = code.match(/NEEDS_QUOTE_KEY/gu) ?? []
-  // 定义 1 处 + 写端 1 处 + 读端拒绝 2 处（键值分隔分支 / 反斜杠分支）——钉住"没有第二套字符表"
-  assert.equal(uses.length >= 4, true, `NEEDS_QUOTE_KEY 必须被写读两端共用（实测出现 ${uses.length} 处）`)
+test('M169-03 结构：两端**同源**（写端加引号与读端拒认共用同一份字符集），且**逐条**核对用点', () => {
+  // **第四批 §3.6（V6 的指出）**：原来这里只数 `uses.length >= 4` 就下结论，而注释把读端两处说成
+  // "键值分隔分支 / 反斜杠分支"——**实际只有键值分隔分支**用这份字符集（反斜杠分支有自己的文案）。
+  // 计数式断言既没钉住"用在哪"，注释也是错的 ⇒ 改成**逐条内容断言**（每一处用点的条件行/文案都要能指名）。
+  const lines = readFileSync(join(ROOT, 'src', 'infra', 'yaml.ts'), 'utf8').split('\n')
+  const code = lines.filter((line) => !/^\s*(\*|\/\*|\/\/)/u.test(line)).join('\n')
+  // ① 定义只有一处（没有第二套字符表）
+  assert.equal(code.split('NEEDS_QUOTE_KEY =').length - 1, 1, '`NEEDS_QUOTE_KEY` 只许定义一次')
+  // ② 写端：`quoteKeyIfNeeded` 的函数体里必须用它（而且是"任意位置命中"的那条判定）
+  const writerStart = code.indexOf('function quoteKeyIfNeeded(')
+  const writerBody = code.slice(writerStart, code.indexOf('\n}', writerStart))
+  assert.match(writerBody, /NEEDS_QUOTE_KEY\.test\(key\)/u, '写端必须用这份字符集判断"键要不要加引号"')
+  // ③ 读端：**键值分隔分支**里必须用它做可读拒绝（点名"裸形态"与修法）
+  const readerGuard = code.split('\n').find((line) => line.includes('NEEDS_QUOTE_KEY.test(rawKey)'))
+  assert.ok(readerGuard !== undefined, '读端必须有一处用 `NEEDS_QUOTE_KEY.test(rawKey)` 判裸键')
+  assert.match(readerGuard as string, /key === undefined/u, '读端这一处判的是"键对不上"的那一态')
+  // ④ 读端**反斜杠分支**是**另一处**、**不用**这份字符集（V6 指出的那处注释错误就在这）：
+  //    它有自己的条件与文案，各自点名（逐条断言，不靠计数）
+  const backslashGuard = code.split('\n').find((line) => line.includes('裸键里出现') || line.includes('裸键不允许反斜杠'))
+  assert.ok(backslashGuard !== undefined, '读端必须保留"裸键不许反斜杠"的可读拒绝')
+  assert.equal(backslashGuard.includes('NEEDS_QUOTE_KEY'), false, '反斜杠分支用的是自己的条件与文案（不是这份字符集）')
+  // ⑤ 行为证据逐条：每个字符都要"写端加引号 + 读端拒认"两条
   for (const ch of ILLEGAL_IN_BARE_KEY) {
-    // 每个字符都要有行为证据：写端加引号 + 读端拒认（双向都由同一份字符集导出）
     assert.equal(stringifyYaml({ [`a${ch}b`]: 1 }).startsWith("'"), true, `键里的 ${JSON.stringify(ch)} 必须触发引号`)
     assert.throws(() => parseYaml(`a${ch}b: 1`), YamlSubsetError, `裸形态的 ${JSON.stringify(ch)} 必须被拒`)
   }
+})
+
+test('M169-04 空键（第四批 §3.6 新增）：**写端拒绝**（可执行提示），读端提示词**正确**（不再自相矛盾）', () => {
+  // ① 写端：空键没有任何能读回来的写法 ⇒ **写的时候就拒**（不许写出读不回的东西）
+  let writeError: unknown
+  try {
+    stringifyYaml({ '': 'v' })
+    assert.fail('空键必须被写端拒绝（读端只认非空键）')
+  } catch (error) {
+    writeError = error
+  }
+  assert.ok(writeError instanceof YamlWriteError, `写端拒的是写端专属的那类错：${String(writeError)}`)
+  const writeMessage = (writeError as Error).message
+  assert.match(writeMessage, /键是空的/u, `提示词必须说清"键是空的"：${writeMessage}`)
+  assert.match(writeMessage, /非空键/u, `提示词必须可执行（换一个非空键）：${writeMessage}`)
+  assert.equal(/第 0 行/u.test(writeMessage), false, '写端错误不该假装有行号（那正是 YamlWriteError 存在的理由）')
+
+  // ② 读端：手写进来的 `'': v` / `"": v` ⇒ 提示词必须**正确**（旧实现说"请写成引号形态"，可它本来就是引号形态）
+  for (const raw of ["'': 1", '"": 1']) {
+    let thrown: unknown
+    try {
+      parseYaml(raw)
+      assert.fail(`${raw} 必须被拒绝`)
+    } catch (error) {
+      thrown = error
+    }
+    assert.ok(thrown instanceof YamlSubsetError, `${raw} 抛的必须是 YamlSubsetError`)
+    const message = (thrown as Error).message
+    assert.match(message, /键是空的/u, `必须点名真正的病根（空键）：${message}`)
+    assert.match(message, /第 1 行/u, '仍要点名行号')
+    assert.equal(message.includes('请写成'), false, `不许再出现"请写成引号形态"这种自相矛盾的提示：${message}`)
+  }
+
+  // ③ 反例：**非空**键与**空值**都不受这条影响（别把空键的判定扩散出去）
+  assert.deepEqual(parseYaml("'a': ''"), { a: '' }, '空值照旧')
+  assert.equal(stringifyYaml({ a: '' }), "a: ''\n", '空值照旧（写端只对键加引号）')
+  assert.deepEqual(parseYaml("'a''b': 1"), { "a'b": 1 }, '含引号的键照旧（别被空键那条误伤）')
 })

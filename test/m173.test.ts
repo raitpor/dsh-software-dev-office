@@ -19,7 +19,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
+import type { Context } from '@deepseek-ai/cordis'
+
 import { Config, resolveSettings } from '../src/config.js'
+import { apply } from '../src/index.js'
 import { fixedDefectsWithoutTestResult } from '../src/domain/records.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
@@ -139,4 +142,42 @@ test('M173-04 结构：**四流程**各声明一条且措辞逐字一致（C-59 
   }
   assert.match(desc ?? '', /defects/u, 'desc 必须点名绑定字段')
   assert.match(desc ?? '', /fixed/u, 'desc 必须说清管的是 `fixed`')
+})
+
+
+/**
+ * **R8（第四批 §3.8）**：守卫必须走**真机面**。
+ *
+ * 复验（V4）指出：`m173` 不过 `apply()` 注册的 `sdo_test` ⇒ `src/index.ts` 里 `defects` **透传那一跳**
+ * 只由 `m164` 的**源码串**钉住（删掉它 `m173` 不会红）。这一格补上：真注册的工具 + 真形态（真数组）。
+ */
+test('M173-05 工具面（真注册 + 真数组）：`defects` 透传那一跳必须在真机面上成立（R8）', async () => {
+  const tools: { name: string; execute: (args: Record<string, unknown>, exec: unknown) => unknown }[] = []
+  const services: Record<string, unknown> = { tools: { register: (tool: never) => { tools.push(tool); return () => {} } } }
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {}, on: () => () => {},
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => { if (names.every((name) => name in services)) cb(makeCtx()) },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
+  const tool = tools.find((item) => item.name === 'sdo_test')
+  assert.ok(tool !== undefined, '工具面缺少 sdo_test')
+  defect('DEF-001', 'fixed')
+  office.storeFor(WORKSPACE).writeYaml(['tests', 'TC-010.yml'], {
+    testCase: { id: 'TC-010', title: 't', kind: 'unit', requirement: '', steps: [], expected: 'x', at: '' },
+  })
+  const exec = { agent: { id: 's-batch3', session: { header: { id: 's-batch3', cwd: WORKSPACE, delegationDepth: 0 } } } }
+  const receipt = String(await tool.execute({
+    action: 'record', caseId: 'TC-010', status: 'pass', evidence: 'npm test 输出',
+    // **真数组**（`DEF-077` 的 `listDecl` 声明：宿主 schema 阶段不许拒）
+    defects: ['DEF-001'],
+    oracle: '{"kind":"expert","expert":"tester"}',
+  }, exec))
+  assert.match(receipt, /TR-/u, `工具面必须真的记下这条结论：${receipt.slice(0, 300)}`)
+  // **关键那一跳**：`src/index.ts` 的 `defects` 透传（删掉它 ⇒ 这里红）
+  const stored = office.storeFor(WORKSPACE).readYaml<{ result: { defects?: string[] } }>('tests', 'results', 'TR-001.yml')?.result
+  assert.deepEqual(stored?.defects, ['DEF-001'], '工具面传进来的 `defects` 必须落进真源（否则参数在边界被静默丢弃）')
+  assert.equal(c65().ok, true, `绑上之后判据必须转绿：${c65().detail}`)
 })

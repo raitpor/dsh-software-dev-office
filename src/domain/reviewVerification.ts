@@ -28,7 +28,7 @@
  */
 import { fmt, t } from './i18n.js'
 import { pushShapeNote, recordListOf, textOf } from '../infra/scalar.js'
-import { findingHashOf, listReviews, reviewContentHash } from './records.js'
+import { findingHashOf, listDefects, listReviews, listTestResults, reviewContentHash } from './records.js'
 import { listTasks } from './plan.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
@@ -434,6 +434,44 @@ export function adoptedPassReviews(store: SdoStore, journal: Journal, taskId: st
   return reviewsOfCard(store, taskId).filter(
     (review) => review.verdict === 'pass' && reviewAdoption(store, journal, review).state === 'adopted',
   )
+}
+
+/**
+ * **有 `pass` 测试结论、却没有被已采纳评审点名的 `fixed` 缺陷**（DEF-076 / 第四批 §3.3）—— 判据的唯一出口。
+ *
+ * 病根：缺陷的"已评审"状态过去**没有结构化真源**（`sdo_review` 只能绑卡、不能点名缺陷）⇒ 一条 `fixed`
+ * 缺陷可以跳过评审直接拿到 `pass` 测试结论并 `closed`，而判据无从察觉（`C-65` 只看"有没有 pass 的 TR 绑定"）。
+ * 用户裁决的顺序是**先评审、后测试**（`ADR-013`：`closed` = 已核实**且**已测试通过），本条把它变成机械后果。
+ *
+ * 口径（与 `C-65` 分工，不重复点名同一件事）：
+ *   · **触发**：`status === 'fixed'` **且**有一条 `pass` 的 TR 把它绑进 `defects`（`fixed` 却**没有** TR 的行
+ *     是 `C-65` 的红，不在这里重复 —— 同一概念两处判据必然分叉，`DEF-044` 的教训）；
+ *   · **依据**：存在一条**已采纳**（`reviewAdoption().state === 'adopted'`）**且 `pass`** 的评审，
+ *     它的 `defects` 里点了这个 id（= `adoptedPassReviews` 的"跨卡"版口径；`adopted` 本身就要求
+ *     每条 finding 都被实现方核实过，所以"已采纳"就是"核实过"）；
+ *   · **只看评审的 `defects` 声明**，不解析散文 —— 结构化真源是这条判据成立的前提。
+ */
+export function fixedDefectsWithoutAdoptedReview(store: SdoStore, journal: Journal): string[] {
+  const passing = new Set<string>()
+  for (const result of listTestResults(store)) {
+    if (result.status !== 'pass') continue
+    for (const raw of result.defects ?? []) {
+      const id = textOf(raw).trim()
+      if (id !== '') passing.add(id)
+    }
+  }
+  const reviewed = new Set<string>()
+  for (const adoption of reviewAdoptions(store, journal)) {
+    if (adoption.state !== 'adopted' || adoption.review.verdict !== 'pass') continue
+    for (const raw of adoption.review.defects ?? []) {
+      const id = textOf(raw).trim()
+      if (id !== '') reviewed.add(id)
+    }
+  }
+  return listDefects(store)
+    .filter((defect) => defect.status === 'fixed')
+    .filter((defect) => passing.has(defect.id) && !reviewed.has(defect.id))
+    .map((defect) => defect.id)
 }
 
 /**

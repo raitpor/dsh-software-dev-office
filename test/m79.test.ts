@@ -128,9 +128,9 @@ test('M79-04 R-18：复合参数两种形态都收，且 JSON 数组文本不被
   assert.deepEqual(parseJson<string[]>(['a']), ['a'])
   assert.deepEqual(parseJson('{"a":1}'), { a: 1 })
   assert.equal(parseJson('not json'), undefined)
-  // 接线与文案：schema 是 string ⇒ 描述必须说"JSON 文本"，别再说"JSON array"
+  // 接线与文案：描述必须与声明同口径（JSON 文本；DEF-077 起 `dod` 由 `listDecl` 声明联合）
   const tools = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')
-  assert.match(tools, /dod: \{ type: 'string', description: 'update: JSON \*\*text\*\*/u, 'description 要与 schema 对齐（JSON 文本）')
+  assert.match(tools, /dod: listDecl\('update: JSON \*\*text\*\*/u, 'description 要与声明对齐（JSON 文本）')
   assert.doesNotMatch(tools, /description: 'update: JSON array of DoD items\.'/u)
   assert.match(tools, /dod: compositeArg\(args\.dod\)/u, '复合参数要走 compositeArg')
   assert.match(tools, /findings: compositeArg\(args\.findings\)/u)
@@ -200,11 +200,14 @@ test('M79-07 R-20：复合参数的描述必须与 schema 同口径（不许再�
     const pack = readFileSync(join(ROOT, 'src', 'data', 'lang', file), 'utf8')
     assert.doesNotMatch(pack, /JSON array|JSON 数组/u, `${file} 里也不许再有"JSON 数组/JSON array"`)
   }
-  // ② 更强的口径：凡是 `type: 'string'` 且描述里带 JSON 例子的参数，描述必须说清是 **文本**
+  // ② 更强的口径：凡是**参数声明**（纯 `string` 或 `listDecl` 联合）且描述里带 JSON 例子的，描述必须说清形状
+  // **DEF-077（第四批 §3.2）**：列表参数从"纯 string + 注册前升级"搬到了 `listDecl(...)` 声明处，
+  // 于是扫描面要把这两种声明都算进来 —— 否则这条守卫会因为"行里不再有 type: 'string'"而漏掉一大片。
   const offenders: string[] = []
   let aligned = 0
   for (const [index, line] of tools.split('\n').entries()) {
-    if (!/type: 'string'/u.test(line) || !/description/u.test(line)) continue
+    const declared = /type: 'string'/u.test(line) || /\blistDecl\(/u.test(line)
+    if (!declared || !/description|listDecl\(/u.test(line)) continue
     // 触发条件要**精确**：描述里给了 JSON **字面量**例子（`[{` / `[\"` ⇒ 源码里是 `[\"`）才算复合参数。
     // `enum: ['append','replace']` 这类不是 JSON 例子 —— 用宽条件会造出假阳性（守卫也会逼人写废话）。
     if (!/\[\\?["{]/u.test(line)) continue
@@ -214,7 +217,7 @@ test('M79-07 R-20：复合参数的描述必须与 schema 同口径（不许再�
     }
     offenders.push(`${index + 1}: ${line.trim().slice(0, 90)}`)
   }
-  assert.deepEqual(offenders, [], `这些 string 参数的描述没说是 JSON 文本：\n${offenders.join('\n')}`)
+  assert.deepEqual(offenders, [], `这些参数声明的描述没说是 JSON 文本：\n${offenders.join('\n')}`)
   // 下限守卫：口径对了才可能数出这么多；否则说明触发条件失效（守卫变成永远通过的空壳）
   assert.ok(aligned >= 12, `对齐的复合参数至少要 12 个（实际 ${aligned}）—— 少了说明这条守卫自己失效了`)
   // ③ 运行时两形态都收（R-18 的机制仍然在）

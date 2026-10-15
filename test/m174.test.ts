@@ -88,15 +88,21 @@ afterEach(() => {
   rmSync(BASE, { recursive: true, force: true })
 })
 
-test('M174-01 三态：兄弟卡在飞 + 漏声明 ⇒ 逐条点名（不拦收工）；声明齐 ⇒ 局部绿；无在飞卡 ⇒ 全量冻结', () => {
-  // ① 兄弟卡在飞、**漏声明** ⇒ done 成功 + unfrozenMissing 逐条点名
+test('M174-01 四态（第四批 §3.4 收紧）：漏声明 ⇒ **拒绝**并点名；声明齐 ⇒ 局部绿；无在飞卡 ⇒ 全量冻结', () => {
+  // ① 兄弟卡在飞、**漏声明** ⇒ **拒绝**（可读、点名缺哪几张、零写盘）—— 修前是"照常成功 + 点名"
   card('TASK-002', 'in-progress')
   const missing = report()
-  assert.equal(missing.ok, true, '**不拦收工**：done 的语义是本卡范围绿，不是"全量必须绿"（修前的结构性冲突就在这）')
-  if (missing.ok) {
-    assert.deepEqual(missing.unfrozenMissing, ['TASK-002'], '漏声明的在飞兄弟卡必须逐条点名')
-    assert.equal(missing.unfrozen, undefined, '没声明 ⇒ 不写这个键（存量形状不变）')
+  assert.equal(missing.ok, false, '漏声明必须被拒（`ADR-014`：允许局部绿 + 留痕，但不得漏声明）')
+  if (!missing.ok) {
+    assert.equal(missing.code, 'unfrozen-undeclared', `拒因码要自成一类：${JSON.stringify(missing)}`)
+    assert.match(missing.detail, /TASK-002/u, '拒因必须点名缺哪几张')
+    assert.match(missing.detail, /没有写入/u, '拒因必须说清零写盘')
+    assert.match(missing.detail, /unfrozen=/u, '拒因必须给出可执行修法（怎么补声明）')
   }
+  // 零写盘：卡仍是 in-progress、没落 unfrozen 键
+  const untouched = office.storeFor(WORKSPACE).readYaml<{ task: TaskCard }>('tasks', 'TASK-001.yml')?.task
+  assert.equal(untouched?.status, 'in-progress', '被拒时卡状态不许变')
+  assert.equal(untouched?.unfrozen, undefined, '被拒时不许落键')
 
   // ② 声明齐 ⇒ done 成功 + 局部绿读数 + **落进卡**
   card('TASK-003', 'in-progress')
@@ -105,15 +111,14 @@ test('M174-01 三态：兄弟卡在飞 + 漏声明 ⇒ 逐条点名（不拦收�
     evidence: [{ kind: 'command', detail: 'npm test', exitCode: 0 }],
     unfrozen: ['TASK-002', 'TASK-003'],
   } as never)
-  assert.equal(declared.ok, true)
+  assert.equal(declared.ok, true, `声明齐备必须放行：${declared.ok ? '' : declared.detail}`)
   if (declared.ok) {
     assert.deepEqual(declared.unfrozen, ['TASK-002', 'TASK-003'], '局部绿读数 = 未冻结清单')
-    assert.equal(declared.unfrozenMissing, undefined, '声明齐了就不该再点名')
   }
   const stored = office.tasks(call).find((item) => item.id === 'TASK-001')
   assert.deepEqual(stored?.unfrozen, ['TASK-002', 'TASK-003'], '未冻结清单必须落进卡（否则下次读回来就没了）')
 
-  // ③ 无在飞兄弟卡 ⇒ 两个读数都空（= 回执那句"等同于全量冻结"）
+  // ③ 无在飞兄弟卡 ⇒ 读数空（= 回执那句"等同于全量冻结"）
   // 注意：② 里的"声明"只对**那一次** done 说话，不会把兄弟卡冻结掉 ⇒ 这里先把它们收口
   card('TASK-002', 'done')
   card('TASK-003', 'done')
@@ -124,8 +129,7 @@ test('M174-01 三态：兄弟卡在飞 + 漏声明 ⇒ 逐条点名（不拦收�
   } as never)
   assert.equal(frozen.ok, true)
   if (frozen.ok) {
-    assert.equal(frozen.unfrozen, undefined, '无在飞卡 ⇒ 不是局部绿')
-    assert.equal(frozen.unfrozenMissing, undefined, '无在飞卡 ⇒ 没有未声明的兄弟卡')
+    assert.equal(frozen.unfrozen, undefined, '无在飞卡 ⇒ 不是局部绿（读数空）')
   }
 })
 
@@ -151,32 +155,40 @@ test('M174-02 反例（假声明可读拒绝、零写盘）：不存在的 id / 
   assert.equal(stored?.unfrozen, undefined, '被拒时不许落键')
 })
 
-test('M174-03 工具面：回执把完成语义说清（局部绿 / 漏声明 / 等同于全量冻结），且参数进了注册面', async () => {
+test('M174-03 工具面：回执把完成语义说清（局部绿 / 漏声明被拒 / 等同于全量冻结），且参数进了注册面', async () => {
   const callTool = toolHarness()
   const c2 = createOfficeTools({} as never) as unknown as { name: string; parameters: { properties: Record<string, unknown> } }[]
   const taskTool = c2.find((item) => item.name === 'sdo_task')
   assert.ok(taskTool?.parameters.properties['unfrozen'] !== undefined, '注册面必须有 unfrozen（否则模型根本传不进来）')
 
   card('TASK-002', 'in-progress')
-  // ① 漏声明 ⇒ 回执点名
+  // ① 漏声明 ⇒ **拒绝**、点名（第四批 §3.4 收紧：不再是"照常成功 + 点名"）
   const missing = await callTool('sdo_task', {
     action: 'done', id: 'TASK-001', owner: 'dev-a', status: 'done',
     evidence: '[{"kind":"command","detail":"npm test","exitCode":0}]',
   })
-  assert.match(missing, /被声明进未冻结清单/u, `回执必须点名漏声明的在飞卡：${missing.slice(0, 300)}`)
+  assert.match(missing, /unfrozen-undeclared/u, `回执必须报出这一类拒绝：${missing.slice(0, 300)}`)
   assert.match(missing, /TASK-002/u, '点名要到 id')
+  assert.match(missing, /没有写入/u, '要说清零写盘')
 
   // ② 声明齐 ⇒ 回执说"局部绿"并列出未冻结面
-  card('TASK-004', 'in-progress')
   const local = await callTool('sdo_task', {
-    action: 'done', id: 'TASK-004', owner: 'dev-a', status: 'done',
+    action: 'done', id: 'TASK-001', owner: 'dev-a', status: 'done',
     evidence: '[{"kind":"command","detail":"npm test","exitCode":0}]',
-    // ① 之后 TASK-001 已经收口 ⇒ 在飞的只剩 TASK-002（声明的每条都必须在飞，否则可读拒绝）
     unfrozen: '["TASK-002"]',
   })
   assert.match(local, /局部绿/u, `回执必须说清"本次是局部绿"：${local.slice(0, 300)}`)
   assert.match(local, /TASK-002/u, '未冻结清单要出现在回执里')
   assert.match(local, /尚未冻结/u, '要说清全项目尚未冻结')
+
+  // ③ 没有在飞兄弟卡 ⇒ 回执说"等同于全量冻结"
+  card('TASK-002', 'done')
+  card('TASK-004', 'in-progress')
+  const frozen = await callTool('sdo_task', {
+    action: 'done', id: 'TASK-004', owner: 'dev-a', status: 'done',
+    evidence: '[{"kind":"command","detail":"npm test","exitCode":0}]',
+  })
+  assert.match(frozen, /等同于全量冻结/u, `无在飞卡时必须说清语义：${frozen.slice(0, 300)}`)
 })
 
 test('M174-04 结构：`unfrozen` 进了读端白名单（写盘能读回），且工具面参数在', () => {

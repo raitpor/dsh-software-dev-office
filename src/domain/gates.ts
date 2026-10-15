@@ -104,7 +104,8 @@ import {
   fixedDefectsWithoutTestResult,
 } from './records.js'
 import type { Review } from './records.js'
-import { reviewAdoptionLabel, reviewAdoptions } from './reviewVerification.js'
+import { fixedDefectsWithoutAdoptedReview, reviewAdoptionLabel, reviewAdoptions } from './reviewVerification.js'
+import { unfrozenFullGreenState } from './unfrozen.js'
 import { producesProductArtifacts } from './plan.js'
 
 /** 判定所需的全部输入（由 office 组装）。 */
@@ -1710,6 +1711,46 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
         : fmt('uiGates.kFixedTestedWithFail', { p1: item.id, p2: item.failingResults.join(' ') })))
       .join(' ')
     return fail('defects.fixed-tested', fmt('uiGates.kFixedTestedMissing', { p1: String(missing.length), p2: named }), t('uiGates.kFixedTestedRemedy'))
+  },
+
+  // **DEF-076（第四批 §3.3）**：`fixed` 缺陷在**拿到 pass 测试结论**之前/同时，必须有一条**已采纳**的
+  // 评审点名它 —— 把用户的裁决「先评审、后测试」（`ADR-013`：`closed` = 已核实且已测试通过）变成机械后果。
+  // 与 `C-65` **分工不重复**：`C-65` 管"有没有 pass 的 TR"，本条管"有没有核实过的评审"；同一条缺陷若
+  // 两样都缺，只会被 `C-65` 点名一次（本条只对**已有 pass TR** 的那些判红）。
+  // 归属同样在 G6（验证面）：它是**验证阶段**的产物序列问题，与 `defects.fixed-tested` 同族；
+  // 不塞 G7 —— 那会与 `DEF-075` 一样把历史缺陷一次性变成交付阻塞（历史缺陷的补评审是**驾驶舱的活**）。
+  'defects.fixed-reviewed': (ctx) => {
+    const missing = fixedDefectsWithoutAdoptedReview(ctx.store, ctx.journal)
+    if (missing.length === 0) return ok('defects.fixed-reviewed', t('uiGates.kFixedReviewedOk'))
+    return fail(
+      'defects.fixed-reviewed',
+      fmt('uiGates.kFixedReviewedMissing', { p1: String(missing.length), p2: missing.join(' ') }),
+      t('uiGates.kFixedReviewedRemedy'),
+    )
+  },
+
+  // **DEF-033 第三面（第四批 §3.5）**：`unfrozen` 非空的卡 ⇒ 交付前必须有一次**全量绿**。
+  // 归属 **G7 交付门禁**（`ADR-015`：按"交付前"的字面期限），**不在 G6 重复声明**
+  // —— 同一概念两处判据是 `DEF-044` 的教训（G6 已有 `defects.fixed-tested` / `defects.fixed-reviewed`，
+  // 那两条管"每条缺陷的依据"，本条管"局部收工之后有没有重新收成全局冻结"）。
+  'defects.unfrozen-full-green': (ctx) => {
+    const state = unfrozenFullGreenState(ctx.store, ctx.journal)
+    if (state.cards.length === 0) return na('defects.unfrozen-full-green', t('uiGates.kUnfrozenFullNa'))
+    if (state.satisfiedBy !== undefined) {
+      return ok('defects.unfrozen-full-green', fmt('uiGates.kUnfrozenFullOk', {
+        p1: state.satisfiedBy,
+        p2: String(state.cards.length),
+      }))
+    }
+    return fail(
+      'defects.unfrozen-full-green',
+      fmt('uiGates.kUnfrozenFullMissing', {
+        p1: String(state.cards.length),
+        p2: state.cards.map((card) => card.id).join(t('uiCollab.kListSep')),
+        p3: state.lastDoneAt === '' ? t('uiGates.kUnfrozenFullNoTime') : state.lastDoneAt,
+      }),
+      t('uiGates.kUnfrozenFullRemedy'),
+    )
   },
 
   'defects.closed': (ctx) => {

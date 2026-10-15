@@ -284,6 +284,8 @@ param:
   expected: 期望结果
   caseId: 用例 id
   defectId: 缺陷 id
+  fullSuite: 'record：这条结论**自称覆盖全量**（DEF-033 第三面）；有未冻结完成的卡时，交付门禁（C-67）要有一条晚于最后一次这类 `done` 的 `pass` + 全量结论。缺省 = 不是全量结论。'
+  reviewDefectId: 'record：这条评审**点名的缺陷**（DEF-076；一个或多个 id，可给 JSON 文本或真数组）。每个 id 必须真实存在（否则可读拒绝、零写盘）—— 缺陷的「已评审」由此有结构化真源，门禁 `defects.fixed-reviewed`（C-66）据此判「先评审、后测试」。'
   requirement: 需求 id
   reporter: 报告人
   designId: 设计元素 id
@@ -915,7 +917,6 @@ shapeEntity:
   budget: "成本预算"
 uiIndex:
   kUnfrozenLocal: '🧊 完成语义：本次 `done` 是**局部绿**（本卡范围内的改动已绿），**全项目尚未冻结** —— 未并进来的在飞卡：{p1}。要看全量是否冻结，请等这些卡收口后再全量跑一次。'
-  kUnfrozenMissing: '⚠️ 还有在飞的兄弟卡**没有**被声明进未冻结清单：{p1} —— 「卡 done」不等于「全局冻结」；如果它们的工作这次确实并列了进来（例如全量已跑过），请在卡上写明理由，否则它们会让人误以为交付面已经冻结。'
   kUnfrozenFrozen: '🧊 完成语义：当前**没有**在飞的兄弟卡 ⇒ 本次 `done` **等同于全量冻结**（本卡范围绿 = 全项目绿）。'
   kBadDefects: '❌ `defects` 必须是字符串数组（或它的 JSON 文本），例如 ["DEF-001","DEF-002"] —— 收到的东西形状不对；本次没有写入。'
   kErrataAdded: "📝 已给 {p1} 追加勘误（累计 {p2} 条，卡推进到 r{p3}）—— **只能追加**：历史正文（dod/落点/状态）一个字都没改，下一位读卡人能看到这条说明"
@@ -984,6 +985,7 @@ uiIndex:
   kReviewTamperCaliber: '防篡改口径：比的是 `review/recorded` 里的**语义哈希**（id/taskId/reviewer/verdict/findings 四项判定内容）—— 手改 verdict 或发现正文会判红；改缩进/行尾空白等**字节级**差异不判红（那两个量是两回事，本插件只承诺语义级）。'
   kReviewRehashCaliber: '（口径：补记的是**语义哈希** `reviewContentHash`，与 `review/recorded` 同源；字节级改动不在本检查的范围内）'
   kReviewNotExamined: "　｜ **逐条核实未进行**（{p1}）—— 防篡改校验没过，没看的发现不许算作已核实"
+  kReviewDefects: '　📌 本次点名的缺陷：{p1}（门禁 `defects.fixed-reviewed` / C-66 据此判「先评审、后测试」）'
   kReviewAwaitingVerification: "ℹ️ 发现 {p1} 条：**评审结果不会自动被采纳** —— 要由该卡的实现会话逐条核实（复现或给出反证）后才算数：`sdo_task action=verify-review id=<卡> review={p2} index=1 outcome=… proof=…`"
   # —— 向既有评审追加发现项（TASK-108 / DEF-065 拆出项）——
   kReviewAppendNoId: "❌ `append` 要说清追加到**哪一条**评审：`sdo_review action=append id=REV-044 findings=[\"…\",\"…\"]`（`id` 是既有评审号；`append` **不新建**记录）"
@@ -1356,6 +1358,14 @@ uiClamp:
 
 uiGates:
   kFixedTestedMissing: '❌ **已修但无测试结论**（{p1} 条）：{p2} —— 「已修」必须有一条**通过**的测试结论把它的 id 写进 `defects`；否则这条缺陷永远没被测过，而门禁此前不判红任何一格。'
+  kUnfrozenFullOk: '✅ 未冻结完成（{p2} 张卡）之后已有一次**全量绿**：{p1} —— 局部收工已重新收成全局冻结'
+  kUnfrozenFullNa: '不适用：台账里没有 `unfrozen` 非空的卡（没有「局部绿」的完成），本条不参与'
+  kUnfrozenFullMissing: '❌ **未冻结完成之后没有全量绿**（{p1} 张卡）：{p2} —— 这些卡收工时明确声明了「兄弟卡的工作没并进来」，所以交付前必须有一次覆盖**全量**的跑；最后一次这类 `done` 在 {p3}，之后找不到任何 **pass + 全量**的结论。'
+  kUnfrozenFullRemedy: '跑一次**本项目声明的全量**（`fullSuite` 只声明「覆盖全量」，插件不认任何具体跑法、不硬编码命令或路径），再用 `sdo_test action=record caseId=<任一在用用例> status=pass fullSuite=true evidence=<全量输出> oracle={"kind":"expert","expert":"<谁跑的>"}` 记一条通过结论；它必须**晚于**上面那次 `done`。'
+  kUnfrozenFullNoTime: '（取不到时刻：按「存在一次全量绿」判，不锁死）'
+  kFixedReviewedOk: '✅ 每条已有通过结论的 `fixed` 缺陷都被一条**已采纳**的评审点名过（先评审、后测试）'
+  kFixedReviewedMissing: '❌ **有测试结论但无已采纳评审**（{p1} 条）：{p2} —— 缺陷的「已修」要先被评审核实过，再谈测试结论（`ADR-013`：`closed` = 已核实且已测试通过）。这里只点「已有 pass 结论、却没有任何已采纳评审点名」的那些；一条结论都没有的由 C-65 点名。'
+  kFixedReviewedRemedy: '补评审：`sdo_review action=record taskId=<本卡的实现卡> reviewer=<非实现者> verdict=pass defectId=["DEF-xxx"] findings=["<一条可核实的发现>"]`，再按既有流程把发现逐条核实（`sdo_task action=verify-review`）—— 只有**每条发现都被核实**（`adopted`）的评审才算依据。'
   kFixedTestedWithFail: '{p1}（**另有一条 fail 结果绑着它**：{p2} —— 它现在还是坏的）'
   kFixedTestedRemedy: '补依据：跑那条测试并用 `sdo_test action=record caseId=<用例> status=pass evidence=<证据> defects=["DEF-xxx"]` 记下结论（一条结论可以绑定多个缺陷）；若这条缺陷本就无法测，请改成 `wontfix` 并补齐 `waiveReason`/`waiveApprovedBy`（口径同 C-63）。'
   kFixedTestedOk: '✅ 每条 `fixed` 缺陷都有**绑定的通过结论**（依据长在结论上，见 `defects` 字段）'
@@ -1739,6 +1749,7 @@ uiTrace:
   defectTraceNoReading: "这一次渲染没有拿到读数（追溯报告里缺这一位）"
   defectTraceRemedy: "给每条孤儿缺陷补一条 `req-defect` 边（`sdo_trace action=link from=REQ-001 to=DEF-001 kind=req-defect`，目标需求必须**已基线**且未作废），或者在 `.sdo/defects/DEF-*.yml` 里写显式豁免 `exemption: { reason: <为什么可以不管>, approvedBy: <谁批准的> }`（理由与批准人缺一不可，缺了按未豁免处理）；边指向失效需求时先改掉那条边或改挂到有效需求上"
 uiCollab:
+  kUnfrozenUndeclared: '❌ `done` 被拒：还有在飞的兄弟卡**没有被声明**进未冻结清单 —— {p1}（共 {p2} 张在飞）。本次 `done` 的语义是「本卡范围绿」，所以**必须逐条点名**哪些在飞卡的工作没并进来（`ADR-014`：允许局部绿，但不得漏声明）。修法：`sdo_task action=done id={p3} ... unfrozen=["<上面每一张>"]`（卡片收口后重发即可）。**本次没有写入**。'
   kUnfrozenBadId: '❌ 未冻结清单里的 {p1} 交代不清：必须是**存在且当前确实在飞**的兄弟卡 id（写错、或写一张已经 done/blocked 的卡、或写本卡自己，都不算）—— 现在共有 {p2} 张卡在飞。**本次没有写入**（用假声明把「未冻结」糊过去，等于把交付冻结这件事变成口头承诺）。'
   kErrataNotFound: "找不到任务卡 {p1}（勘误只能追加到已存在的卡）"
   kErrataNoteRequired: "{p1} 的勘误不能不写内容：勘误是**说明**，空说明等于没写"
@@ -1975,6 +1986,8 @@ uiApplicability:
 uiReview:
   # —— 评审发现核实（2026-10-08 口径：评审结果是主张，要由实现方逐条核实才能采纳）——
   kReproMissing: '❌ 非 `pass` 的待修主张（{p1}）必须带**一条当前仍然失败的复现命令**（`repro`），或**显式声明无法复现 + 为什么**（`unreproducible`）—— 否则"待修"就只是一句口头记忆：已收敛的问题会被记成未决，后人去修一个不存在的缺口。**本次没有写入**。'
+  kDefectUnknown: '❌ 评审点名的缺陷**不存在**：{p1} —— 点不了名的 id 不能被容忍（否则「这条缺陷已被评审」就退化成一句散文）。修法：① 用真号重发；② 缺陷还没入账 ⇒ 先用 `sdo_test action=defect` 建它。**本次没有写入**（不猜、不自动建缺陷）。'
+  kDefectBlankId: '（空白项）'
   kReproAmbiguous: '❌ `repro` 与 `unreproducible` **只能给一个**：两个都给时读者判不出哪个作准（"有复现命令"与"无法复现"是互相排斥的两句话）。**本次没有写入**。'
   noReview: "找不到评审 {p1}"
   badIndex: "{p1} 只有 {p2} 条发现：找不到第 {p3} 条（台账 index {p4}）。合法范围：第 {p5} 条（1 起）；**台账按 0 起记**，所以参数第 N 条 = 台账 index N-1。"

@@ -102,23 +102,32 @@ test('M139-02 联合形态的数组分支不得再出现作者侧伪类型 `json
   assert.deepEqual(arrayBranch?.items, {}, '数组分支的 items 必须是空 schema（与宿主编译产物一致）')
 })
 
-test("M139-03 源码级防回退：**归一函数体内**不得写 `items: { type: 'json' }`", async () => {
+test("M139-03 源码级防回退：**声明处**才许写 `items: { type: 'json' }`，注册出口不许再拼 schema", async () => {
   const { readFileSync } = await import('node:fs')
   const raw = readFileSync(new URL('../../src/interface/tools.ts', import.meta.url), 'utf8')
-  // **只查归一函数体**：作者侧声明（`findings` / `suggestions` / `addWriteScopes` 的字面量）在
-  // `defineTool` **之前**，伪类型会被宿主编译成空 schema ⇒ 那里写它是**正确**的；
-  // 只有"在 `defineTool` 之后拼 schema"的归一函数不能写（真机 400 就是它造成的）。
-  const start = raw.indexOf('function listSchema(')
-  assert.ok(start > 0, '找不到归一函数 listSchema（改名了？那这条守卫就失效了）')
-  const body = raw.slice(start, raw.indexOf('\n}', start))
-  const code = body
+  // **DEF-077（第四批 §3.2）改了结构**：联合形态从"注册前统一升级（`listSchema`）"搬到了**参数声明处**
+  // （`listDecl`，在 `defineTool` **之前**）。作者侧伪类型 `json` 在那里会被宿主编译成空 schema ⇒ **正确**；
+  // 而"在 `defineTool` 之后拼 schema"的注册出口**不许**再写它（真机 400 就是后一种写法造成的）。
+  const declStart = raw.indexOf('export function listDecl(')
+  assert.ok(declStart > 0, '找不到声明助手 listDecl（改名了？那这条守卫就失效了）')
+  const declBody = raw.slice(declStart, raw.indexOf('\n}', declStart))
+  assert.match(
+    declBody,
+    /items:\s*\{\s*type:\s*'json'\s*\}/u,
+    '声明处（defineTool 之前）必须用作者侧 `json` —— 它会被编译成"仅注解的空 schema"',
+  )
+  // 注册出口只许**读**声明（`listParamNames`）+ 归一入参，不许改 `parameters`
+  const wrapStart = raw.indexOf('function withListParamTools(')
+  assert.ok(wrapStart > 0, '找不到注册出口 withListParamTools')
+  const wrapBody = raw
+    .slice(wrapStart, raw.indexOf('\n}', wrapStart))
     .split('\n')
     .filter((line) => !line.trim().startsWith('//'))
     .join('\n')
   assert.equal(
-    /items:\s*\{\s*type:\s*'json'\s*\}/u.test(code),
+    /oneOf|items:\s*\{/u.test(wrapBody),
     false,
-    "归一发生在 defineTool 之后 ⇒ 不能写伪类型；要用空 schema（见本用例头注释的真机事故）",
+    '注册出口不许再拼 schema（defineTool 之后写伪类型 = 真机 400；见本用例头注释的真机事故）',
   )
-  assert.match(code, /items:\s*\{\s*\}/u, '数组分支必须是空 schema（= 宿主编译 `json` 的产物）')
+  assert.match(wrapBody, /parameters:\s*tool\.parameters/u, '注册出口必须原样透传声明好的 parameters')
 })

@@ -124,3 +124,42 @@ test('M161-04 两套标签"差异有据"：设计侧 5 类必须是读数侧子�
   assert.equal(readSource('src/domain/coverage.ts').includes('DEF-034'), true, '读数侧必须写明与设计侧措辞的关系')
   assert.equal(readSource('src/domain/testDesignWhitebox.ts').includes('DEF-034'), true, '设计侧必须写明与读数侧措辞的关系')
 })
+
+test('M161-05 DEF-034 裁决后的口径（第四批 §3.7）：**词表唯一**，中文标签的差异**恰好一处**且那一处是 DoD 逐字', () => {
+  // **`ADR-014` 裁决"语义应统一"**。第四批 §3.7 的 DoD ② 同时给了停手条款：若两者**不是**同一概念
+  //（有语义差异）⇒ 说明依据、**不要硬统一**。本用例把"统一到哪一层、差在哪一处"变成机械读数：
+  //   · **统一的那一层是 token（机器取值）**：两层共用 `TESTING_COVERAGE_CRITERIA` 一份词表，
+  //     设计侧不另造词表（`canonicalReadingCriterion('branch')` ⇒ `decision`，别名只有一处）；
+  //   · **差的那一层只有一个中文标签**：`decision` 在设计侧是「分支」，而它是**那张卡 DoD 的逐字**
+  //     （需求基线口径，`§4.3` 明令不动基线）⇒ 这一处**不硬统一**，如实上报驾驶舱。
+  const readingLabel = new Map(TESTING_COVERAGE_CRITERIA.map((criterion) => [criterion, coverageCriterionLabel(criterion)]))
+  const diffs = WHITEBOX_COVERAGE_CRITERIA
+    .map((criterion) => ({
+      criterion,
+      design: WHITEBOX_CRITERION_LABEL[criterion],
+      reading: readingLabel.get(criterion),
+    }))
+    .filter((row) => row.design !== row.reading)
+  assert.deepEqual(
+    diffs,
+    [{ criterion: 'decision', design: '分支', reading: '判定' }],
+    `两层的中文标签差异必须**恰好一处**（多一处就是漂移，少一处说明守卫失效）：${JSON.stringify(diffs)}`,
+  )
+  // ① 另外 4 类必须**逐字相同**（这才是"统一"的实际内容：同一概念同一词，除基线那一处）
+  for (const criterion of WHITEBOX_COVERAGE_CRITERIA) {
+    if (criterion === 'decision') continue
+    assert.equal(
+      WHITEBOX_CRITERION_LABEL[criterion],
+      coverageCriterionLabel(criterion),
+      `${criterion} 的中文标签两层必须一致（只有 DoD 逐字的那一处允许不同）`,
+    )
+  }
+  // ② 差异那一处**必须是需求基线口径**：随出处一起钉住（改它必须同时改 DoD 与 m34/m161-04，不能偷偷改）
+  const wb = readSource('src/domain/testDesignWhitebox.ts')
+  assert.match(wb, /DoD 逐字/u, '设计侧必须写明这五个词是 DoD 逐字（基线口径）')
+  assert.match(wb, /ADR-014/u, '两层都必须记录第四批的裁决出处（ADR-014）')
+  const reading = readSource('src/domain/coverage.ts')
+  assert.match(reading, /ADR-014/u, '读数侧也必须记录裁决出处（ADR-014）')
+  // ③ 机器取值只有一份词表：别名归一与读数同源（`branch` 是历史别名，不是第二套取值）
+  assert.equal(canonicalReadingCriterion('branch'), 'decision', '别名归一只有一处（`branch` ⇒ `decision`）')
+})

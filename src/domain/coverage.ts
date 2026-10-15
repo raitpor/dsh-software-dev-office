@@ -92,6 +92,14 @@ import { canonicalCriterion } from './testDesignWhitebox.js'
  * 两层是**不同用途的两份词表**（读数 7 类 / 设计 5 类），**不是错抄**；差异由 `test/m161` 机械钉住
  * （设计侧 5 类必须是读数侧的子集 ⇒ 加准则只加一边会红）。**若要统一成同一个中文词，请驾驶舱裁决**
  *（改哪一处都只动一个映射 + 一条用例；但设计侧那 5 个词有 DoD 逐字出处）。
+ *
+ * **第四批 §3.7：裁决已到（`ADR-014`「语义应统一」），落法是分层的**（如实上报，见 DoD ② 的停手条款）：
+ *   · **统一的那一层 = 词表 / token**：两层共用 `types.ts` 的 `TESTING_COVERAGE_CRITERIA` 一份取值，
+ *     `branch` 只是历史别名（`canonicalCriterion` 一处归一到 `decision`）；本表**不另造第二套词表**。
+ *   · **差的那一层 = 一个中文标签**：`decision` 在这里「判定」、设计侧「分支」，而设计侧那五个词是
+ *     **那张卡 DoD 的逐字**（需求基线口径，第四批红线 §4.3 明令不动基线）⇒ **不硬统一**：改它等于
+ *     改需求基线，且会同时打红 `test/m34` 与 `test/m161`。
+ *   · 差异**恰好一处**由 `test/m161` 的 `M161-05` 机械钉住（多一处 = 漂移；少一处 = 守卫失效）。
  */
 const CRITERION_FALLBACK_LABEL: Record<string, string> = {
   statement: '语句',

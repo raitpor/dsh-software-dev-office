@@ -240,7 +240,9 @@ test('M76-07 接线守卫：两个"死配置"必须真的被读（`disciplineToo
   assert.match(index, /guardedTools: settings\.disciplineTools/u, '`disciplineTools` 必须真的决定"哪些工具的写入受管"')
   assert.match(index, /sharedPaths: settings\.disciplineAllowPaths/u, '`disciplineAllowPaths` 必须真的作为公共放行面')
   assert.match(index, /evaluateWriteScope\(/u, '写范围纪律必须在真实钩子里被调用')
-  assert.match(index, /normalizeWorkspacePath\(path, call\.cwd\)/u, '路径必须先按工作区归一（真机传绝对路径）')
+  // **第四批 §3.1（DEF-054 残余）**：归一的基准从恒用 `call.cwd` 改为 `sessionCwd`（会话 cwd；本次调用
+  // 没带 cwd 时用**已解析的工作区根**兜底）。意图不变：真机传绝对路径，必须先按工作区归一一次。
+  assert.match(index, /normalizeWorkspacePath\(path, sessionCwd\)/u, '路径必须先按工作区归一（真机传绝对路径）')
   // 反向：不许再有"配了但没人读"的字段 —— 机械扫一遍 `SdoConfig` 的每个字段
   const config = readFileSync(join(ROOT, 'src', 'config.ts'), 'utf8')
   const body = /export interface SdoConfig \{([\s\S]*?)\n\}/u.exec(config)?.[1] ?? ''

@@ -76,6 +76,14 @@ export type WhiteboxCoverageCriterion = (typeof WHITEBOX_COVERAGE_CRITERIA)[numb
  * `decision-condition` / `mc-dc` 已按"判定"成体系）。两层是**不同用途的两份词表**
  *（本表 5 类设计口径 / 读数侧 7 类读数准则），**不是错抄**；二者的关系（设计侧必须是读数侧的**子集**）
  * 由 `test/m161` 机械钉住 —— 只往一边加准则会红。**若要统一成同一个中文词，请驾驶舱裁决。**
+ *
+ * **第四批 §3.7：裁决已到（`ADR-014`「语义应统一」），落法是分层的**（如实上报，见 DoD ② 的停手条款）：
+ *   · **统一的那一层 = 词表 / token**：两层共用 `types.ts` 的 `TESTING_COVERAGE_CRITERIA` 一份取值，
+ *     `branch` 只是历史别名；本表**不另造第二套词表**。
+ *   · **差的那一层 = 一个中文标签**：本表把 `decision` 印成「分支」，因为**这五个词就是本卡 DoD 的逐字**
+ *     （需求基线口径，第四批红线 §4.3 明令不动基线）⇒ **不硬统一**：改它等于改需求基线，
+ *     并同时打红 `test/m34` 与 `test/m161`。
+ *   · 差异**恰好一处**由 `test/m161` 的 `M161-05` 机械钉住（多一处 = 漂移；少一处 = 守卫失效）。
  */
 export const WHITEBOX_CRITERION_LABEL: Record<string, string> = {
   statement: '语句',

@@ -190,3 +190,24 @@ test('M171-06 结构：`src/index.ts` 的**代码行**里不再有 `findProjectR
   assert.match(office, /workspaceRootFor\(call: OfficeCall\)/u, '唯一出口 workspaceRootFor 必须在位')
   assert.match(office, /绝不向上爬/u, '契约里"不向上爬"的措辞必须在位（三处口径统一）')
 })
+
+test('M171-07 有凭据但**本次调用没有 cwd**：掩码与写范围**照判**（DEF-054 残余，不许退回放行态）', async () => {
+  const h = hookHarness()
+  projectAt(BASE, ['src/index.ts'])
+  h.registerSession('cockpit', BASE)
+  const receipt = await h.claim('child-dev', 'TASK-901', BASE)
+  assert.match(receipt, /TASK-901/u, `夹具前提：认领必须成功：${receipt.slice(0, 200)}`)
+  // 本会话**没有**在 `session/created` 里登记过 cwd（真机现场：宿主只登记驾驶舱，执行者子会话靠**凭据**定位）。
+  // 工作区仍能被 `workspaceRootFor` 解析出来（第三步凭据：本会话在 BASE 的台账里认领过卡）
+  // ⇒ 归属判定**必须**按这个工作区照判，而不是因为 `call.cwd === undefined` 就退回 `unknown/cockpit`。
+  const outside = await h.drive('edit', { file_path: join(BASE, 'src/other.ts') }, { sessionId: 'child-dev', cwd: undefined })
+  assert.equal(outside.kind, 'deny', `范围外必须拒（修前这里 allow：归属退回 unknown/cockpit 把掩码与写范围两段一起跳过）：${outside.reason ?? ''}`)
+  assert.match(outside.reason ?? '', /写范围|越界/u, `拒因必须是写范围判定：${outside.reason ?? ''}`)
+  const inside = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'child-dev', cwd: undefined })
+  assert.equal(inside.kind, 'allow', `范围内的路径仍放行（不是把执行者一律拒掉）：${inside.reason ?? ''}`)
+  // **执行者禁令**也走同一个归属：同一会话、同一张卡，只差 `call.cwd`
+  const plan = await h.drive('sdo_plan', {}, { sessionId: 'child-dev', cwd: undefined })
+  assert.equal(plan.kind, 'deny', `执行者禁令不许因 cwd 缺省而消失：${plan.reason ?? ''}`)
+  const planWithCwd = await h.drive('sdo_plan', {}, { sessionId: 'child-dev', cwd: BASE })
+  assert.equal(planWithCwd.kind, 'deny', '两态必须同判（对照：cwd 在的时候本来就拒）')
+})

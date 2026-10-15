@@ -16,7 +16,10 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
+import type { Context } from '@deepseek-ai/cordis'
+
 import { Config, resolveSettings } from '../src/config.js'
+import { apply } from '../src/index.js'
 import { listManifests, readManifest, readManifestFileChecked } from '../src/domain/records.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { describeManifest } from '../src/interface/describe.js'
@@ -102,4 +105,41 @@ test('M163-03 回执可见：每条产物印出「截至何时」；旧清单显
   const legacyReceipt = describeManifest(read.manifest!)
   assert.match(legacyReceipt, /未记时刻/u, `回执必须显式标未记时刻：${legacyReceipt.slice(0, 300)}`)
   assert.equal(readFileSync(join(WORKSPACE, '.sdo', 'delivery', 'DLV-900.yml'), 'utf8'), before, '只读不得改写历史清单（逐字节比较）')
+})
+
+
+/**
+ * **R9（第四批 §3.8）**：守卫必须走**真机面**。
+ *
+ * 复验（V4）指出：`m163` 不过 `sdo_deliver` 的注册/execute ⇒ `asOf` 的**工具面回执路径**没有机械守卫
+ * （已被钉住的只是**数据源** `describeManifest`）。删掉 `src/index.ts` 里那次 `describeManifest` 调用，
+ * 交付回执就不再印「截至何时」而**没有用例会红**。这一格补上。
+ */
+test('M163-04 工具面（真注册）：交付回执里必须能读到「截至何时」（R9）', async () => {
+  // 先真机面打一次包（包体走的是**工具面**，不是直接调 office）
+  const tools: { name: string; execute: (args: Record<string, unknown>, exec: unknown) => unknown }[] = []
+  const services: Record<string, unknown> = { tools: { register: (tool: never) => { tools.push(tool); return () => {} } } }
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {}, on: () => () => {},
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => { if (names.every((name) => name in services)) cb(makeCtx()) },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
+  const tool = tools.find((item) => item.name === 'sdo_deliver')
+  assert.ok(tool !== undefined, '工具面缺少 sdo_deliver')
+  const exec = { agent: { id: 's-batch3', session: { header: { id: 's-batch3', cwd: WORKSPACE, delegationDepth: 0 } } } }
+  const receipt = String(await tool.execute({
+    action: 'package', by: '验收人',
+    artifacts: '[{"path":"dist/app.bin","kind":"docs"}]',
+    acceptance: '[]',
+    rollbackPoint: 'git commit deadbee',
+  }, exec))
+  const manifest = readManifest(office.storeFor(WORKSPACE))
+  const asOf = manifest?.artifacts[0]?.asOf ?? ''
+  assert.notEqual(asOf, '', '夹具前提：新清单必须记了 asOf')
+  // **关键那一跳**：交付回执必须把「截至何时」印出来（删掉 index.ts 里那次 describeManifest ⇒ 这里红）
+  assert.equal(receipt.includes(asOf), true, `工具面回执必须逐条印出截至时刻（${asOf}）：${receipt.slice(0, 400)}`)
+  assert.match(receipt, /截至/u, '回执要有可读的"截至"字样，而不是一串裸时刻')
 })

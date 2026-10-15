@@ -30,6 +30,24 @@ export class YamlSubsetError extends Error {
   }
 }
 
+/**
+ * **写出被拒**（DEF-061 残余面 / 第四批 §3.6）—— 写端唯一会抛的错。
+ *
+ * 与 {@link YamlSubsetError} 分开是**故意的**：那个错带行号（读端按行定位），而写端要说的是
+ * "这份数据里有一个键**没有任何能读回来的写法**"，行号在这里毫无意义。分开之后提示词不必
+ * 假装自己是"第 0 行"。
+ *
+ * 为什么宁可在**写**的时候拒：本项目最忌讳"写出去读不回"（静默丢内容/静默改名）。空键就是这种形态
+ * —— 读端只认非空键，写出去的那一行会被当成**标量**（连报错都没有）。既然没有任何写法能读回来，
+ * 就在写出前把它变成一句**可读、可执行**的拒绝。
+ */
+export class YamlWriteError extends Error {
+  constructor(reason: string) {
+    super(`YAML 写入被拒：${reason}`)
+    this.name = 'YamlWriteError'
+  }
+}
+
 interface LineInfo {
   readonly lineNo: number
   readonly indent: number
@@ -159,6 +177,16 @@ function splitKey(text: string, lineNo?: number): { key: string; rest: string | 
       // 写得出、读不回，而且**一声不响**（本项目最忌讳的形态）。既然写读两端的合法面已经对齐
       //（写端 `quoteKeyIfNeeded` 对这些键一定加引号），手写成裸形态就是**真错** ⇒ 可读拒绝并给修法。
       // 只在调用方给了行号时抛（`splitKey` 也被内联集合的扫描复用过，那里没有行号语义）。
+      // **DEF-061 残余面（第四批 §3.6）：空键**（`'': 值` / `"": 值`）。这一态必须**先**判：旧实现落到
+      // 下面那条"键里含必须加引号的字符…请写成 `'键': 值`"上，而它本来**就是**引号形态 ⇒ 提示词自相矛盾
+      // （读者照着改也读不回来）。空键只有一种真相：读端只认**非空**键。
+      // `rawKey !== ''` 是必需的：`key === ''` 只可能来自"引号里恰好什么都没有"。
+      if (key === '' && rawKey !== '' && !flowish && lineNo !== undefined) {
+        throw new YamlSubsetError(
+          lineNo,
+          '键是空的（`\'\'`）—— 空键读不回来（读端只认非空键这一种「这里是键」的形态）。请换一个非空键，或删掉这一行。',
+        )
+      }
       if ((key === undefined || key === '') && !flowish && lineNo !== undefined && rawKey !== '' && NEEDS_QUOTE_KEY.test(rawKey)) {
         throw new YamlSubsetError(
           lineNo,
@@ -600,8 +628,17 @@ function quoteIfNeeded(value: string): string {
 const NEEDS_QUOTE_KEY = /[\[\]{}'",#&*!|>%@`\\]/u
 
 function quoteKeyIfNeeded(key: string): string {
-  if (key !== '' && !NEEDS_QUOTE_KEY.test(key)) return quoteIfNeeded(key)
-  return `'${key.replace(/'/g, "''")}'`
+  // **DEF-061 残余面（第四批 §3.6）之一：空键**。读端把 `': 值` 视作"不是键值对"（`splitKey` 无键可返），
+  // 所以空键**没有任何能读回来的写法** —— 写出去就是"存进去读不回"。既然无解，就在**写**的时候拒：
+  // 提示词要可执行（换一个非空键），而不是写出去之后在读端抛一句自相矛盾的话。
+  if (key === '') {
+    throw new YamlWriteError('键是空的（`\'\'`）—— 空键没有能读回来的写法（读端只认非空键这一种「这里是键」的形态），所以这里直接拒绝写入。请换一个非空键（或不要写出这个条目）。')
+  }
+  // **DEF-061 残余面之二：两端是空白的键必须加引号**。` a` 裸写出去就是 ` a: 值`，而读端按 YAML 缩进
+  // 把它读成"缩进 1 的映射、键是 `a`" ⇒ **静默改名**（`NEEDS_QUOTE_KEY` 里没有空格，故旧路径不查它）。
+  // 结尾空白此前靠 `NEEDS_QUOTE` 的 `.*\s$` 兜住；这里把**两端**收口到同一条口径上（不再是巧合）。
+  if (key !== key.trim() || NEEDS_QUOTE_KEY.test(key)) return `'${key.replace(/'/g, "''")}'`
+  return quoteIfNeeded(key)
 }
 
 /**

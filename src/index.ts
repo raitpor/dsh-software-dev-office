@@ -20,7 +20,7 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { boardModelFor, renderBoard } from './board/render.js'
 import { describeExemptions } from './interface/describe.js'
 import { exemptionLines } from './domain/construction.js'
-import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewReproError } from './domain/records.js'
+import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewDefectError, ReviewReproError } from './domain/records.js'
 import type { AcceptanceVerdict, Review } from './domain/records.js'
 // **REQ-054（TASK-054）**：判定基准（oracle）—— 词表与逐类核对实现都只有一处（`evidence.ts`），
 // 工具面只负责"把参数搬到位 + 把缺口原话说出来"，**不在这里另写一份判定语义**。
@@ -2183,17 +2183,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // **R5（第三批 §3.7）**：`impact` 的 done 面对账 —— 声明过却没被"处理过"的影响面逐条点名
           //（本卡改过 / 有 pass 结果绑着它 / 在自报清单里，三者之一即视为处理过）。
           // 与 `fixBlock` 同款：**回显不拦截**（拦截会让"改既有语义"的卡永远收不了工），判据面归 G 门禁。
-          // **DEF-033（第三批 §3.13）**：完成语义的读数 —— 局部绿（含未冻结清单）／漏声明／全量冻结。
-          // 与 `impactBlock` 同款：**回显不拦截**（"卡 done 时全量必须全绿"与"兄弟卡在飞"结构性冲突，
-          // 拦下去就等于不许收工）；拦的是**假声明**（见 `unfrozen-bad-id`）。
+          // **DEF-033（第三批 §3.13；第四批 §3.4 收紧）**：完成语义的读数 —— 局部绿（含未冻结清单）／全量冻结。
+          // **漏声明不再是一条"回执提醒"**：它现在**当场拒绝**（域层 `unfrozen-undeclared`，零写盘，
+          // 见 `ADR-014`）⇒ 能走到这里的只有"声明齐备"或"没有在飞兄弟卡"两态。
+          // 假声明（写错 / 已 done / 本卡自己）由 `unfrozen-bad-id` 拒绝，两类文案不混。
           const unfrozenDeclared = result.unfrozen ?? []
-          const unfrozenMissing = result.unfrozenMissing ?? []
           const unfrozenBlock = unfrozenDeclared.length > 0
             ? '\n' + fmt('uiIndex.kUnfrozenLocal', { p1: unfrozenDeclared.join(t('uiCollab.kListSep')) })
-              + (unfrozenMissing.length === 0 ? '' : '\n' + fmt('uiIndex.kUnfrozenMissing', { p1: unfrozenMissing.join(t('uiCollab.kListSep')) }))
-            : (unfrozenMissing.length > 0
-              ? '\n' + fmt('uiIndex.kUnfrozenMissing', { p1: unfrozenMissing.join(t('uiCollab.kListSep')) })
-              : '\n' + t('uiIndex.kUnfrozenFrozen'))
+            : '\n' + t('uiIndex.kUnfrozenFrozen')
           const impactGaps = result.impactGaps ?? []
           const impactBlock = impactGaps.length === 0
             ? ''
@@ -2435,6 +2432,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // **DEF-011**：调用方声明了哈希就透传给域层对账（一致才落盘）
             ...(args.artifactSha256 === undefined ? {} : { artifactSha256: args.artifactSha256 }),
             ...(declaredDefects === undefined ? {} : { defects: declaredDefects }),
+            // **DEF-033 第三面（第四批 §3.5）**：这条结论自称覆盖**全量**（C-67 在 G7 读它）。
+            // 漏这一行 = 声明在工具层被**静默丢弃** ⇒「全量绿」永远立不起来（`tq_ff348198` 的老坑）。
+            ...(args.fullSuite === true ? { fullSuite: true } : {}),
             // **R-3**：断言面指纹（红绿必须一致；不给就只按"出现过 fail、后有 pass"判，与旧行为一致）
             ...(args.harness === undefined ? {} : { harness: args.harness }),
             // **REQ-053（TASK-039）**：执行者与采纳者逐字段搬进域层 —— 漏一行就等于工具层**静默丢弃**
@@ -2753,6 +2753,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **DEF-048（第三批 §3.16）**：非 `pass` 的待修主张必须带 `repro`（当前仍失败的复现命令）
       // 或 `unreproducible`（显式声明无法复现 + 为什么）—— 缺则**可读拒绝**（零写盘）。
       // 判据在域层唯一出口（`reviewReproIssue`），这里只把抛出的 `ReviewReproError` 转成回执。
+      // **DEF-076（第四批 §3.3）**：这条评审**点名了哪些缺陷**（JSON 文本或真数组，`parseList` 两种都收）。
+      // 形状不对 ⇒ 当场可读拒绝；未知 id 由**域层唯一出口** `reviewDefectIssue` 拦（这里只转回执）。
+      const namedDefects = args.defectId === undefined ? undefined : (parseList(args.defectId) ?? [])
       let review: Review
       try {
         review = office.addReview(call, {
@@ -2762,14 +2765,20 @@ export function apply(ctx: Context, config: SdoConfig): void {
           findings: findings.value ?? [],
           ...(args.repro === undefined ? {} : { repro: args.repro }),
           ...(args.unreproducible === undefined ? {} : { unreproducible: args.unreproducible }),
+          // **DEF-076**：点名的缺陷进真源；缺省则不写这个键（存量形状不变）
+          ...(namedDefects === undefined ? {} : { defects: namedDefects }),
           // 记下"谁记的"：同会话不许自己核实自己（域层据此拒）
           ...(call.sessionId === undefined ? {} : { sessionId: call.sessionId }),
         })
       } catch (error) {
         if (error instanceof ReviewReproError) return error.detail
+        // **DEF-076**：点名的缺陷不存在 ⇒ 与 `ReviewReproError` 同一个出口（可读拒绝、零写盘）
+        if (error instanceof ReviewDefectError) return error.detail
         throw error
       }
       return fmt('uiIndex.k51', { p1: review.id, p2: review.taskId, p3: review.verdict, p4: review.reviewer, p5: task.owner === undefined ? '' : fmt('uiIndex.k117', { p1: task.owner }) })
+        // **DEF-076**：点名了缺陷就把名单回显（否则"这条评审点了谁"只写在文件里，回执读者看不见）
+        + ((review.defects ?? []).length === 0 ? '' : '\n' + fmt('uiIndex.kReviewDefects', { p1: review.defects?.join(t('uiCollab.kListSep')) ?? '' }))
         + '\n' + fmt('uiIndex.kReviewAwaitingVerification', { p1: String(review.findings.length), p2: review.id })
     },
 
@@ -3980,19 +3989,27 @@ export function apply(ctx: Context, config: SdoConfig): void {
             if (isChildSession && workspaceRoot === '') {
               return { kind: 'deny', reason: t('uiIndex.kWorkspaceUnknownExecutor') }
             }
-            // `.sdo/`、认领、卡都扎根在工作区根：只在与会话 cwd 不同时才改写 `cwd`（同值时原样传，零行为差）
-            const rootCall = call.cwd === undefined || call.cwd === '' || workspaceRoot === call.cwd
+            // **DEF-054 ③（第四批 §3.1：两道门必须同一个判据）**：`.sdo/`、认领、卡都扎根在**工作区根**，
+            // 所以本次调用的有效 `cwd` 就是它 —— 本次 cwd 与会话 cwd 相同（含都拿不到）时原样传，零行为差；
+            // 不同时（子目录会话、或本次调用没带 cwd 而工作区靠登记/凭据解析出来）才改写成工作区根。
+            const rootCall = workspaceRoot === '' || workspaceRoot === call.cwd
               ? call
               : { ...call, cwd: workspaceRoot }
             const attributed = ((): RoleAttribution => {
-              if (call.cwd === undefined) return { kind: 'unknown', role: 'cockpit' }
+              // **DEF-054 残余（第四批 §3.1）**：归属判定改为按**已解析的 `workspaceRoot`**，
+              // 不再按 `call.cwd === undefined`。修前：工作区**能**解析（凭据/登记）但本次调用没带 cwd 时，
+              // 第一道门放行、这一道却退回 `{kind:'unknown', role:'cockpit'}` ⇒ 掩码与写范围**两段一起跳过**
+              // （同一会话、同一张卡，只差 `call.cwd` 就一拒一放）。现在两道门**同一个判据**：
+              // 工作区能解析 ⇒ 照判（该 deny 的 deny）；解析不到时执行者已被上面那道门拒掉，
+              // 走到这里的只可能是**非执行者（驾驶舱）** ⇒ 退回驾驶舱态（驾驶舱本就不受限，DoD ④）。
+              // 台账基准：工作区根优先；解析不到时退回本次 cwd（老行为，只对非执行者可达）。
+              const ledgerAt = workspaceRoot === '' ? call.cwd : workspaceRoot
+              if (ledgerAt === undefined || ledgerAt === '') return { kind: 'unknown', role: 'cockpit' }
               // 缓存键用**工作区根**（台账所在处）：同一工作区里的不同子目录会话共享一份认领读数
-              const cacheKey = `${workspaceRoot === '' ? call.cwd : workspaceRoot}#${office.roleCacheVersion}`
+              const cacheKey = `${ledgerAt}#${office.roleCacheVersion}`
               if (roleCacheKey !== cacheKey || Date.now() - roleCacheAt > ROLE_CACHE_TTL_MS) {
                 roleCacheKey = cacheKey
                 roleCacheAt = Date.now()
-                // 认领台账在**工作区根**（`storeFor` 按传入目录拼 `.sdo`）；读不到就退回会话 cwd（fail-open）
-                const ledgerAt = workspaceRoot === '' ? call.cwd : workspaceRoot
                 roleClaims = claimsBySession(office.storeFor(ledgerAt), office.journalFor(ledgerAt))
               }
               const depth = delegationDepth
@@ -4021,7 +4038,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ]
             // **写范围纪律的前置**：真机传的是**绝对路径**，而卡写范围是相对路径 ——
             // 不归一就永远比不上（原 L3 纪律的 `startsWith('src/')` 就是这么空转的）。归一一次，三处共用。
-            const paths = rawPaths.map((path) => normalizeWorkspacePath(path, call.cwd))
+            // **DEF-054 残余（第四批 §3.1）**：解析基准 = **会话 cwd**；本次调用没带 cwd 时用**已解析的
+            // 工作区根**兜底（此时它是唯一可得的基准 —— 两者相同 ⇒ 退回"单基准"判定，与只给一个基准的
+            // 调用方语义一致）。修前这里恒用 `call.cwd`：cwd 缺省 ⇒ 归一拿不到基准（绝对路径被洗成
+            // `home/…` 这种**幽灵相对路径**）且闸门整段 fail-open。
+            const sessionCwd = call.cwd === undefined || call.cwd === ''
+              ? (workspaceRoot === '' ? undefined : workspaceRoot)
+              : call.cwd
+            const paths = rawPaths.map((path) => normalizeWorkspacePath(path, sessionCwd))
 
             // ——— B6：认得出的派发角色 ⇒ 掩码**硬拦**（两层语义：`sdo_*` 白名单 + 通用面黑名单） ———
             // **执行者禁令**只对**子会话**生效：驾驶舱即使认领了卡（inline 后端就是这么跑的）仍是流程官，
@@ -4076,16 +4100,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
               const guardedPaths = [...rawPaths, ...commandWrites.targets]
               // **DEF-047 落点一**：把**两个基准分别**交给闸门（`exactOptionalPropertyTypes` ⇒ 不可用时
               // 整键省略，而不是塞 `undefined`）：
-              //   · `workspace` = **会话 cwd**（`call.cwd`）—— 相对路径按它解析；
+              //   · `workspace` = **会话 cwd**（`call.cwd`；本次调用没带 cwd 时用已解析的工作区根兜底，
+              //     见上面的 `sessionCwd`）—— 相对路径按它解析；
               //   · `workspaceRoot` = **工作区根**（`office.workspaceRootFor`；DEF-054 起**不向上爬**）—— 卡的 `writeScopes`
               //     与公共面是相对工作区根声明的，前缀比对只能拿它比。
               // 判定**语义**一处不改（`evaluateWriteScope` 仍是唯一实现）：这里只是把两个本来就被挤在
-              // 一个字段上的基准分开。会话 cwd 拿不到 ⇒ 不传 `workspace` ⇒ 闸门 fail-open（与修前一致）。
+              // 一个字段上的基准分开。两个基准都拿不到（工作区彻底不可知、且不是执行者）⇒ 不传 `workspace`
+              // ⇒ 闸门 fail-open —— 那一态只对驾驶舱可达（执行者已被上面的 fail-closed 门拒掉）。
               const scopeDecision = evaluateWriteScope({
                 role: attributed.role,
                 tool,
                 paths: guardedPaths,
-                ...(call.cwd === undefined || call.cwd === '' ? {} : { workspace: call.cwd }),
+                ...(sessionCwd === undefined ? {} : { workspace: sessionCwd }),
                 ...(workspaceRoot === '' ? {} : { workspaceRoot }),
                 guardedTools: settings.disciplineTools,
                 sharedPaths: settings.disciplineAllowPaths,
