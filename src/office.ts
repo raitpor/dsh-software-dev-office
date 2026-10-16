@@ -3842,7 +3842,13 @@ export class SoftwareDevOffice {
       const read = readDirtyWorktree(root)
       return read.ok ? { ok: true, tracked: read.tracked } : { ok: false, reason: read.reason ?? '' }
     })()
-    const dirtyByScope = (dirtyRead?.ok === true ? dirtyScopeHolds(tasks, dirtyRead.tracked) : []).map((row) => ({
+    const dirtyRows = dirtyRead?.ok === true ? dirtyScopeHolds(tasks, dirtyRead.tracked) : []
+    const dirtyByScope = dirtyRows.filter((row) => row.grade === 'block').map((row) => ({
+      taskId: row.task.id,
+      over: row.over,
+    }))
+    // **F5**：超宽 glob（`**` / `src/**` …）**只提示不拦** —— 否则任何脏文件都会挡住这种卡
+    const dirtyHints = dirtyRows.filter((row) => row.grade === 'hint').map((row) => ({
       taskId: row.task.id,
       over: row.over,
     }))
@@ -3880,6 +3886,7 @@ export class SoftwareDevOffice {
       infeasible,
       ...(heldByScope.length === 0 ? {} : { heldByScope }),
       ...(dirtyByScope.length === 0 ? {} : { dirtyByScope }),
+      ...(dirtyHints.length === 0 ? {} : { dirtyHints }),
       ...(dirtyRead?.ok === false ? { dirtyUnjudgeable: { reason: dirtyRead.reason } } : {}),
     }
   }

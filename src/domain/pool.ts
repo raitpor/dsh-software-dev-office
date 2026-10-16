@@ -363,6 +363,11 @@ export interface PoolAdmission {
    */
   dirtyByScope?: { taskId: string; over: string[] }[] | undefined
   /**
+   * **F5（第八批 §3.1）**：写范围是**超宽 glob**（`**` / `src/**` / `src/*` …）的卡 —— 那些脏文件
+   * **只提示不拦**（拦住它们会让任何脏文件都把卡钉死）。要点名的仍是**相交的脏路径**。
+   */
+  dirtyHints?: { taskId: string; over: string[] }[] | undefined
+  /**
    * **DEF-080 F4**：工作树**读不动**（不是仓库/没有 git）⇒ 这一态**单列**出来，
    * 与"干净"（键不出现）可区分，带 `reason` 供人判读。
    */

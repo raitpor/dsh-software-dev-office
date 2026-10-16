@@ -58,7 +58,75 @@ export function scopePathsIntersect(a: string, b: string): boolean {
   const right = normalizeScopePath(b)
   if (left === '' || right === '') return false
   if (left === right) return true
-  return left.startsWith(`${right}/`) || right.startsWith(`${left}/`)
+  // **F5（第八批 §3.1）**：glob 形态在这里展开 —— 且**只在这里**（本函数是路径代数的唯一出口；
+  // `git.ts` 不许另写一份匹配）。**关键零破坏**：两边都没有 glob 时，走的就是原来那两行前缀判定，
+  // 逐字节不变（既有调用点与既有用例的行为不受影响）。
+  const leftGlob = hasGlob(left)
+  const rightGlob = hasGlob(right)
+  if (!leftGlob && !rightGlob) return left.startsWith(`${right}/`) || right.startsWith(`${left}/`)
+  const hit = (scope: string, target: string): boolean => globCovers(scope, target)
+  if (rightGlob && hit(right, left)) return true
+  if (leftGlob && hit(left, right)) return true
+  // 两边都是 glob：走**字面前缀**的保守判定（`src/a/**` vs `src/**` ⇒ 相交；`src/**` vs `test/**` ⇒ 不相交）
+  if (leftGlob && rightGlob) {
+    const lp = globLiteralPrefix(left)
+    const rp = globLiteralPrefix(right)
+    if (lp === '' || rp === '') return true   // 有一边是"全匹配" ⇒ 保守算相交
+    return lp === rp || lp.startsWith(`${rp}/`) || rp.startsWith(`${lp}/`)
+  }
+  return false
+}
+
+/** 该范围是否含 glob 元字符（`*` `?` `[`）。 */
+export function hasGlob(scope: string): boolean {
+  return /[*?[]/u.test(scope)
+}
+
+/** glob 的**字面前缀**（第一个含元字符的段之前的部分）。`src/integration/**` ⇒ `src/integration`。 */
+export function globLiteralPrefix(scope: string): string {
+  const parts = normalizeScopePath(scope).split('/')
+  const literal: string[] = []
+  for (const part of parts) {
+    if (/[*?[]/u.test(part)) break
+    literal.push(part)
+  }
+  return literal.join('/')
+}
+
+/** 字面前缀的**段数**（0 = 一开始就是 glob）。用于分级：≥2 段才拦，更宽只提示。 */
+export function globLiteralDepth(scope: string): number {
+  const prefix = globLiteralPrefix(scope)
+  return prefix === '' ? 0 : prefix.split('/').length
+}
+
+/**
+ * glob 是否覆盖某个**具体路径**（文件或目录）。
+ *
+ * 语义（与目录前缀判定同族，只是把 `*` / `**` 放开）：
+ *   · `**` = 跨段任意（`src/integration/**` 覆盖 `src/integration/a.ts` 与 `.../sub/b.ts`）；
+ *   · `*` / `?` = **段内**任意（不跨 `/`）；
+ *   · 覆盖"整条路径"**或它的任一段边界前缀**（`src/*` 覆盖 `src/a/b.ts`，因为 `src/a` 落在域内）。
+ */
+function globCovers(scope: string, target: string): boolean {
+  const pattern = scope
+    .split('/')
+    .map((part) => {
+      if (part === '**') return '(?:[^/]+/)*[^/]*'
+      let out = ''
+      for (const char of part) {
+        if (char === '*') out += '[^/]*'
+        else if (char === '?') out += '[^/]'
+        else out += char.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')
+      }
+      return out
+    })
+    .join('/')
+  const anchored = new RegExp(`^${pattern}$`, 'u')
+  const segments = target.split('/')
+  for (let take = segments.length; take >= 1; take -= 1) {
+    if (anchored.test(segments.slice(0, take).join('/'))) return true
+  }
+  return false
 }
 
 /**

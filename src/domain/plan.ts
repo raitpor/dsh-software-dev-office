@@ -18,7 +18,7 @@ import type { SdoStore } from '../infra/store.js'
 import type { DesignElement, EvidenceItem, Iteration, MitigatesWaiver, Requirement, StructuralCardPlan, StructuralPlan, StructuralSkip, TaskCard, TaskSize } from '../types.js'
 import { listElements, VIEW_KIND_OF_ELEMENT } from './architecture.js'
 import { linkMany, readLinks } from './trace.js'
-import { scopeOverlaps } from './scopePaths.js'
+import { globLiteralDepth, hasGlob, scopeOverlaps } from './scopePaths.js'
 
 /** 设计 §8.1 的八个角色（拆分器只允许这些值）。 */
 export const ROLES = ['analyst', 'red-team', 'architect', 'office', 'developer', 'tester', 'reviewer', 'delivery'] as const
@@ -1269,7 +1269,24 @@ export function scopeHeldTasks(tasks: readonly TaskCard[]): ScopeHold[] {
  * 口径：与 ② 一样只对**单一路径**写范围的 1:1 独占卡生效（多路径是共同公约声明）；未跟踪文件不算
  *（见 `infra/git.ts`）；`git` 读不动时不产生任何行（判不了 ⇒ 不拦）。
  */
-export interface DirtyScopeHold { task: TaskCard; over: string[] }
+export interface DirtyScopeHold {
+  task: TaskCard
+  over: string[]
+  /**
+   * **F5（第八批 §3.1）分级**：`block` = 本轮不派（写范围足够"窄"：无 glob，或 glob 的字面前缀 ≥2 段）；
+   * `hint` = 只提示不拦（超宽 glob：`**` / `*` / `src/**` / `src/*` / `test/m*.test.ts` 这类）。
+   *
+   * 为什么分级：把 `**` 当"拦"会让任何脏文件都挡住这张卡（回到当初收窄要避免的噪声）；
+   * 而 `src/integration/**` 这种**点了子树**的范围与"单一路径"信息量相当 ⇒ 拦是对的。
+   * 判定表见报告与 `test/m187`（两档各自的用例）。
+   */
+  grade: 'block' | 'hint'
+}
+
+/** 该卡是否只配得上"提示"档（任一写范围是**超宽 glob**：字面前缀 < 2 段）。 */
+export function dirtyGradeOf(task: TaskCard): 'block' | 'hint' {
+  return task.writeScopes.some((scope) => hasGlob(scope) && globLiteralDepth(scope) < 2) ? 'hint' : 'block'
+}
 
 export function dirtyScopeHolds(tasks: readonly TaskCard[], dirtyPaths: readonly string[]): DirtyScopeHold[] {
   if (dirtyPaths.length === 0) return []
@@ -1281,7 +1298,7 @@ export function dirtyScopeHolds(tasks: readonly TaskCard[], dirtyPaths: readonly
     // 现在口径是「**卡写范围内的任一路径** 与 **任一被跟踪的脏文件** 相交」（仍走唯一出口 `scopeOverlaps`；
     // `scopeOverlaps(脏路径, 卡写范围)` 返回的正是**脏的那些路径**，回执据此点名）。
     const over = scopeOverlaps(dirtyPaths, task.writeScopes)
-    if (over.length > 0) out.push({ task, over })
+    if (over.length > 0) out.push({ task, over, grade: dirtyGradeOf(task) })
   }
   return out
 }

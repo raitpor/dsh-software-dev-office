@@ -1605,6 +1605,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
         p1: row.taskId,
         p2: row.over.join(t('uiCollab.kListSep')),
       })).join('\n') + '\n'
+      const hintRows = plan.dirtyHints ?? []
+      const dirtyHintSection = hintRows.length === 0 ? '' : '\n' + hintRows.map((row) => fmt('uiIndex.kDispatchDirtyHintLine', {
+        p1: row.taskId,
+        p2: row.over.join(t('uiCollab.kListSep')),
+      })).join('\n') + '\n'
       const dirtyUnjudgedSection = plan.dirtyUnjudgeable === undefined
         ? ''
         : '\n' + fmt('uiIndex.kDispatchDirtyUnjudged', { p1: plan.dirtyUnjudgeable.reason }) + '\n'
@@ -1943,7 +1948,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。
       // 只在**真派发**这条路径上写：`why=true` 是纯诊断，不改台账。
       office.noteClaimMissing(call, health.claimMissing)
-      return `${dispatchSummary}\n\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      return `${dispatchSummary}\n\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
     },
 
     async task(call: OfficeCall, args: TaskArgs): Promise<string> {

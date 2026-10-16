@@ -160,8 +160,13 @@ test('M161-05 DEF-034 收口（第五批 §3.2）：词表唯一，**两层中�
   // 共 8 处、`m35` 共 18 处（其中大半是"控制流分支"这种正常用词）⇒ 把**任务书点名的那四处非法输入**
   // 换成别的 token，这条断言**照样绿**（下界钉不住站点）。现在改成**逐个钉住具体表达式**
   //（不钉整段措辞、更不钉行号）：任一处被换掉/删掉 ⇒ **点名是哪一处**。
-  const m34 = readSource('test/m34.test.ts')
-  const m35 = readSource('test/m35.test.ts')
+  // **DEF-085（第八批 §3.2）**：断言必须只喂**代码行** —— `readSource` 返回整份文件（含注释），
+  // 于是"注释里恰好写着同一串"就能把断言喂饱。这里统一过 `codeOnly()`（本文件既有的剥注释 helper）。
+  // ⚠️ 如实记：V16 报的"删掉 `m35:1146` 的代码、守卫仍绿"**在现盘不复现**（我实测那条删掉即红并点名；
+  // 注释里那行是 `` `coverage` / `分支` `` 的反引号+斜杠形态，本来就匹配不上带引号逗号的代码形态）。
+  // 本改动是**加固**（让"注释喂饱"这条路在结构上不可能），不是复现出来的修复。
+  const m34 = codeOnly(readSource('test/m34.test.ts'))
+  const m35 = codeOnly(readSource('test/m35.test.ts'))
   const sites: { what: string; where: string; source: string; pattern: RegExp }[] = [
     { what: 'm34 单值非法输入（`criterion: \'分支\'`）', where: 'm34:484', source: m34, pattern: /\{ criterion: '分支' \}/u },
     { what: 'm34 多值非法输入清单里的「分支」', where: 'm34:824', source: m34, pattern: /values = \[[^\]]*'分支'/u },

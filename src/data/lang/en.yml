@@ -1613,6 +1613,7 @@ uiIndex:
   kDispatchDirtyScopeLine: "STOPPED: {p1} is **not dispatched this round** — its write scope sits on **uncommitted tracked changes** ({p2}), which belong to no card, so whoever writes first silently overwrites the other. Fix: commit or move those changes aside first, or fold them into the same card (DEF-080)."
   kDispatchDirtyUnjudged: "WARNING: **cannot tell whether the worktree is clean** ({p1}) — this round did **not** filter by card-scope-vs-uncommitted-changes (unjudgeable is not refused), and that is **not** the same as clean: fix git and re-run this command to recompute."
   kNonDispatchableDirtyUnjudged: "WARNING: **worktree could not be judged** ({p1}) — this class was **not judged** (this is not clean): make git usable and recompute (DEF-080 F4)."
+  kDispatchDirtyHintLine: "NOTE: {p1} declares an **over-broad glob** write scope and it sits on uncommitted changes ({p2}) — a scope this wide (`**` / `src/**`) is **reported, not blocked** this round: if you really mean to touch those files, commit or move the changes aside first (DEF-080 F5)."
   kNonDispatchableDependencyHead: "WAITING: **unmet dependencies** ({p1} card(s)) — they enter the queue by themselves once the cards in `blockedBy` finish: {p2}"
   kNonDispatchableDependencyItem: "{p1} (waiting on: {p2})"
   kNonDispatchableScopeHead: "WAITING: **write-scope conflict** ({p1} card(s); an exclusive 1:1 scope overlaps another unfinished card): {p2}"

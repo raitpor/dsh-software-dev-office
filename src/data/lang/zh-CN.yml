@@ -1106,6 +1106,7 @@ uiIndex:
   kDispatchDirtyScopeLine: "🛑 {p1} **本轮不派发**：它的写范围压在**未提交的被跟踪改动**上（{p2}）—— 那些改动不属于任何卡，先落笔的一方会把另一方悄悄覆盖。修法：先提交/挪走那些改动，或者把它们**并进同一张卡**（`DEF-080`）。"
   kDispatchDirtyUnjudged: "⚠️ **无法判定工作树是否干净**（{p1}）—— 本轮**没有**按「卡写范围 ∩ 未提交改动」过滤（判不了不拦），但**这不等于干净**：修好 git 之后重跑这条命令再复算。"
   kNonDispatchableDirtyUnjudged: "⚠️ **无法判定工作树**（{p1}）—— 这一类**没判**（不是「干净」）：先让 git 可用，再复算（`DEF-080` F4）。"
+  kDispatchDirtyHintLine: "💡 {p1} 的写范围是**超宽 glob**，而它压住了未提交改动（{p2}）—— 该范围太宽（`**` / `src/**` 这类），**本轮只提示、不拦**：若真要动这些文件，先提交/挪走那些改动（`DEF-080` F5）。"
   kNonDispatchableDependencyHead: "⏳ **依赖未满足**（{p1} 张）：等 `blockedBy` 上的卡完成即可自动进入队列：{p2}"
   kNonDispatchableDependencyItem: "{p1}（等：{p2}）"
   kNonDispatchableScopeHead: "⏳ **写范围冲突**（{p1} 张，1:1 独占范围与别的未结束卡重叠）：{p2}"
