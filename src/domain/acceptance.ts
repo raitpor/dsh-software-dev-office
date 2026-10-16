@@ -23,8 +23,8 @@
  *       baseline: 读 acceptance.yml 逐条比对 AC 编号，缺任一即点名
  * ```
  *
- * ⚠️ **字段名与 `testingShapes.ts` 的 `TestingAcceptanceItem` 一一对应**（`item` = 验收项、
- * `baseline` = 判定基准）：跨模块改名字段名会让 G2 生成的产物**通不过测试域自己的形状校验**。
+ * ⚠️ **字段名与 `types.ts` 的 `TestingAcceptanceItem` 一一对应**（形状校验走 `testingShapes.ts` 的 `checkAcceptance`）：
+ * `item` = 验收项、`baseline` = 判定基准 —— 跨模块改名字段名会让 G2 生成的产物**通不过测试域自己的形状校验**。
  *
  * ## 三条纪律
  *

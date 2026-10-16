@@ -30,11 +30,34 @@ function readSource(relative: string): string {
   return readFileSync(join(ROOT, relative), 'utf8')
 }
 
-/** 只扫**代码行**：注释里正当地引用了旧名字（记录缺陷现场）⇒ 扫注释会造出假阳性。 */
+/**
+ * 只扫**代码行**：注释里正当地引用了旧名字（记录缺陷现场）⇒ 扫注释会造出假阳性。
+ *
+ * **DEF-085（第九批 §3.2）**：除了**整行**注释，还要剥**行尾注释** —— 否则
+ * `'statement', 'decision', // 'coverage', '分支'` 这种行会把断言喂饱（收口会话 E3 复现）。
+ * 剥法是**字符串感知**的：引号内的 `//`（URL、路径、正则字面量）**不许**被当成注释起点。
+ */
 function codeOnly(text: string): string {
   return text
     .split('\n')
     .filter((line) => !/^\s*(\*|\/\*|\/\/)/u.test(line))
+    .map((line) => {
+      let quote = ''
+      for (let index = 0; index < line.length; index += 1) {
+        const char = line[index]
+        if (quote !== '') {
+          if (char === '\\') index += 1
+          else if (char === quote) quote = ''
+          continue
+        }
+        if (char === '"' || char === "'" || char === '`') {
+          quote = char
+          continue
+        }
+        if (char === '/' && line[index + 1] === '/') return line.slice(0, index)
+      }
+      return line
+    })
     .join('\n')
 }
 
@@ -189,4 +212,31 @@ test('M161-05 DEF-034 收口（第五批 §3.2）：词表唯一，**两层中�
   const reading = readSource('src/domain/coverage.ts')
   assert.match(reading, /ADR-014/u, '读数侧也必须记录裁决出处（ADR-014）')
   assert.match(reading, /TASK-015/u, '读数侧也必须记录卡面勘误的出处（TASK-015）')
+})
+
+test('M161-06 §3.2（DEF-085）：codeOnly 必须剥**行尾注释**，但不许误伤字符串里的 `//`', () => {
+  const sample = [
+    "const a = 1 // 注释里写着 'coverage', '分支'",
+    "const url = 'https://example.com/x' // 尾巴",
+    "const b = 'a // b'",
+    '// 整行注释：\'coverage\', \'分支\'',
+    " * 块注释里的 'coverage', '分支'",
+  ].join('\n')
+  const code = codeOnly(sample)
+  assert.equal(code.includes("'coverage', '分支'"), false, '行尾注释 / 整行注释 / 块注释都必须剥掉')
+  assert.equal(code.includes('https://example.com/x'), true, '字符串里的 `//` 不许误剥（URL）')
+  assert.equal(code.includes("'a // b'"), true, '字符串里的 `//` 不许误剥（引号内）')
+  assert.equal(code.includes('const a = 1'), true, '代码本体必须留下')
+  // **豁免面（第九批 §8.1）逐条钉住**：这两条是**有意不抓**的形态（改它 ⇒ 这两格红，见 §8.1 的变异读数）
+  const multiline = 'const t = `a\n// 多行模板里的这一行\n`\n'
+  assert.equal(
+    codeOnly(multiline).includes('// 多行模板里的这一行'),
+    false,
+    '多行字符串/模板里的 `//` 会被当整行注释剥掉（**有意不做跨行词法**，见豁免面清单）',
+  )
+  assert.equal(
+    codeOnly('const a = 1 # 中文 # 形态').includes('# 中文 # 形态'),
+    true,
+    '非 JS 注释形态（`#`、`<!-- -->`）**有意不剥**（本仓测试全是 TS，见豁免面清单）',
+  )
 })

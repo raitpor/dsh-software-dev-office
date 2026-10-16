@@ -76,3 +76,8 @@
 5. **只读复验会话不得走 `npm test`** —— 它的脚本是 `npm run build && node scripts/run-tests.mjs`，**会重建 `lib/`**（= 改交付产物）。只读会话要跑全量就直接 `node scripts/run-tests.mjs`。
 6. **纯度不能只看 `git status`**：`lib/` 与 `.sdo/` **都不被 git 跟踪**（`git ls-files .sdo/` = 0）⇒ 判"有没有改交付产物 / 台账"必须加 `find <路径> -newermt <开工时刻>`（`lib/` 另加**整树 sha256** 前后比对）。
 7. **写范围闸门只看命令文本**：它会拦 `rm -rf` 这类**写形态**，而 `node scripts/run-tests.mjs` 会写 `node_modules/.sdo-test/` 却**不被拦** ⇒ **别把"没被拦"当成"写了也没关系"**（拦截是启发式，纪律是自律）。
+8. **副本树复制清单（完整版）**：`src` + `test` + `lib` + `skills` + **`docs`** + `scripts` + 仓库根被测试读到的文件（`CHANGELOG.md` / `client.js` / `package.json` / `package-lock.json`）+ **指向仓库 `node_modules` 的软链**。少一样，树内全量就会**假红**（实测：缺 `docs` ⇒ **9 fail**；再缺软链 ⇒ **1 fail**）。
+9. **变异要打在「守卫真正读的那一层」** —— 同一条守据可能**同时**读**编译产物**（`import` 的 helper）与**源码文本**（`readFileSync`）⇒ 只变异 `lib/` 对读源码的那半**天然无效**（**层选错，读数就不完整**）。
+10. **变异自证要加「脚本跑完了」的证据** —— `patch()` 能自证「字节变了」，**证不了「脚本跑完了」**（上一批有一次 `SyntaxError` 让脚本根本没跑，那一轮读数全是**遗留变异体**的旧读数）。
+11. **并发仓里的纯度采样** —— `find | xargs sha256sum` 这类**边读边算**的样本会被并发会话带偏 ⇒ 要**同一时刻连采两次互核**；且 **`newermt` 只证「被碰过」，「没变」必须靠整树 sha + `cmp`**。
+12. **`diff -rq` 的中文标签会骗出假 0** —— 按 `differ$` / `Only in` grep 计数会得 0 而总数 39（自相矛盾）⇒ **数行数，不要 grep 标签**。

@@ -1273,19 +1273,37 @@ export interface DirtyScopeHold {
   task: TaskCard
   over: string[]
   /**
-   * **F5（第八批 §3.1）分级**：`block` = 本轮不派（写范围足够"窄"：无 glob，或 glob 的字面前缀 ≥2 段）；
-   * `hint` = 只提示不拦（超宽 glob：`**` / `*` / `src/**` / `src/*` / `test/m*.test.ts` 这类）。
+   * **F5（第八批 §3.1）分级 + `DEF-090`（第九批 §3.3）"理由与真实分档键同源"**。
    *
-   * 为什么分级：把 `**` 当"拦"会让任何脏文件都挡住这张卡（回到当初收窄要避免的噪声）；
-   * 而 `src/integration/**` 这种**点了子树**的范围与"单一路径"信息量相当 ⇒ 拦是对的。
-   * 判定表见报告与 `test/m187`（两档各自的用例）。
+   * **真实分档键 = 字面前缀段数**（`globLiteralDepth`，即"锚定度"）：
+   *   · `block`（本轮不派）：无 glob，或**任一**含 glob 写范围的字面前缀 ≥ `DIRTY_BLOCK_LITERAL_DEPTH` 段；
+   *   · `hint`（只提示）：**至少一条**写范围的字面前缀 ≤ 1 段（`**` / `*` / `src/**` / `src/*` / `test/m*.test.ts`）。
+   *
+   * 为什么用"锚定度"而不是"匹配集大小"：匹配集大小只有**枚举仓库树**才知道 ⇒ 依赖环境
+   * （副本树 / 空项目 / 未安装的库各不相同），与本插件"语言无关、对多数场景普适"的口径冲突；
+   * 锚定度**只看写范围字符串**，处处可算、可复算。
+   *
+   * **它是保守近似，两个方向的偏差都是已知且写明的**（不许出现"读起来自洽、行为却相反"）：
+   *   · 偏松：`src/*.ts`（字面前缀 1 段）匹配集其实很小，却只给提示；
+   *   · 偏紧：`src/domain/**`（字面前缀 2 段）匹配集可以很大，却会被**拦**。
+   * 另有两条组合语义的代价：子树 glob 里**任一**脏文件就停派该卡（`block` 是安全侧，且回执点名
+   * 那些脏路径 ⇒ 可操作）；**多写范围取"任一宽度"**（`some`）⇒ 卡里只要有一条宽 glob，整卡降为提示。
+   * 判据表与各档读数见 `test/m187` 的 `M187-05`（表驱动守卫：以后改策略 ⇒ 表与守卫一起改）。
    */
   grade: 'block' | 'hint'
 }
 
-/** 该卡是否只配得上"提示"档（任一写范围是**超宽 glob**：字面前缀 < 2 段）。 */
+/**
+ * 分档键的阈值：字面前缀 ≥ 该段数 ⇒ **拦**（`block`）；更宽（前缀 0 / 1 段）⇒ 只提示（`hint`）。
+ * 表驱动守卫 `M187-05` 逐档钉住它 —— 改这个数就必须同时改那张表。
+ */
+export const DIRTY_BLOCK_LITERAL_DEPTH = 2
+
+/** 该卡是否只配得上"提示"档（任一写范围是**超宽 glob**：字面前缀 < `DIRTY_BLOCK_LITERAL_DEPTH` 段）。 */
 export function dirtyGradeOf(task: TaskCard): 'block' | 'hint' {
-  return task.writeScopes.some((scope) => hasGlob(scope) && globLiteralDepth(scope) < 2) ? 'hint' : 'block'
+  return task.writeScopes.some((scope) => hasGlob(scope) && globLiteralDepth(scope) < DIRTY_BLOCK_LITERAL_DEPTH)
+    ? 'hint'
+    : 'block'
 }
 
 export function dirtyScopeHolds(tasks: readonly TaskCard[], dirtyPaths: readonly string[]): DirtyScopeHold[] {

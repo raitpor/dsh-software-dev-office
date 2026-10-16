@@ -9,6 +9,8 @@
  * 新判据**只认标识符与结构标记，不认自然语言措辞**（因此中英文行为一致）：
  *   ① **解析性**（`dangling-id`）：凡是**标识符引用**（`DEF-123`，或 `` `file.ts` `` 的 `` `symbol` ``）都必须
  *      **在扫描面里别处可解析** —— 引用自己那一行不算。⇒ 引一个不存在的实体必红，引一个真存在的实体不红。
+ *      符号引用的"被指符号"取**结构上最近的那一个**（路径 token 左/右各取最近的标识符 token，见 `symbolsOf`），
+ *      **不再是**"引用行里所有反引号词"（`DEF-091`：那种口径下，行里多写一个真词就能喂饱真悬空）。
  *   ② **承载性**（`missing-carrier` / `empty-quote` / `quote-mismatch`）：凡把**结论委托给别处**的写法，
  *      必须用**结构标记**登记，且**逐字携带**载体的结论：
  *        · 引用方：`sdo:ref <id>` + `sdo:quote:begin` … `sdo:quote:end`
@@ -68,7 +70,63 @@ function blocksOf(text: string, begin: string, end: string): Block[] {
   return out
 }
 
-export interface Citation { id: string; kind: 'defect' | 'symbol'; line: number; path?: string; symbol?: string; raw?: string }
+export interface Citation {
+  id: string
+  kind: 'defect' | 'symbol'
+  line: number
+  path?: string
+  symbol?: string
+  /** **结构候选**：路径 token 左/右各最近的那一个标识符（去重后最多 2 个）。解析只需其一命中。 */
+  candidates?: string[]
+  raw?: string
+}
+
+/** 引用两侧的**结构间隔**上限（去空白与反引号后的字符数）：更远的标识符不算"结构上被指为符号"。 */
+export const CITATION_GAP_MAX = 6
+
+const PATH_TOKEN = /^[\w./-]+\.ts$/u
+const ID_TOKEN = /^[A-Za-z_$][\w$]*$/u
+
+interface Token { text: string; start: number; end: number }
+
+/** 一行里的所有反引号 token（记内容与**内容**在行内的起止位置）。 */
+function tokensIn(line: string): Token[] {
+  const out: Token[] = []
+  for (const match of line.matchAll(/`([^`]*)`/gu)) {
+    const text = match[1] as string
+    const start = (match.index ?? 0) + 1
+    out.push({ text, start, end: start + text.length })
+  }
+  return out
+}
+
+/** 两个 token 之间的间隔文本（去空白与反引号）—— 判"结构上是否绑在一起"只看它，不看任何词。 */
+function gapText(line: string, a: Token, b: Token): string {
+  const [left, right] = a.start <= b.start ? [a, b] : [b, a]
+  return line.slice(left.end, right.start).replace(/[\s`]/gu, '')
+}
+
+/**
+ * **结构上被指为符号的那一个**：路径 token **之后**最近的标识符 token，且
+ *   · 两侧之间**不许夹第二个路径 token**（`records.ts:199` 那种"并列文件清单 + 后面另起一句"不是引用；
+ *     `collab.ts` 里 `` `src/a.ts` `` × `` `src/a.tsx` `` 这种"举例"也不是）；
+ *   · 间隔不许超过 `CITATION_GAP_MAX`（`reviewDoc.ts:469` 里那句散文里的命令名 `tsc` 就是被这条挡掉的）。
+ * 于是"行里别处多写一个真词"**再也喂不饱**真悬空（`DEF-091` 的 S2/S3 同判）。
+ *
+ * **故意不认证的形态**（豁免面，见第九批 §8）：符号写在路径**之前**的写法（`sym` 从 `file.ts` 取）
+ * 一律不认证 —— 中文与英文都常把主语放在前面（"`environment` 在 `design.ts`"），
+ * 认它会把 5 条**举例性**路径当成引用（第九批判据实测）；代价是这类写法里的真悬空漏判。
+ */
+function symbolAfter(line: string, tokens: readonly Token[], index: number): string[] {
+  const anchor = tokens[index] as Token
+  for (let i = index + 1; i < tokens.length; i += 1) {
+    const token = tokens[i] as Token
+    if (PATH_TOKEN.test(token.text)) return []
+    if (!ID_TOKEN.test(token.text)) continue
+    return gapText(line, anchor, token).length <= CITATION_GAP_MAX ? [token.text] : []
+  }
+  return []
+}
 
 /** **标识符引用**（只认结构：`DEF-数字` 与 `` `路径` `` 的 `` `符号` `` 两种形态；不认任何措辞）。 */
 export function citationsIn(text: string): Citation[] {
@@ -78,11 +136,17 @@ export function citationsIn(text: string): Citation[] {
     // ⚠️ 只认**本仓缺陷号的形态**（三位起：台账是 `DEF-001`…）：`DEF-1`/`DEF-2` 这种是散文里的
     // **示例/占位符**（真机现场：`// 逐卡列出声明：\`TASK-xxx → DEF-1, DEF-2\``）—— 形态判定，与语言无关。
     for (const match of line.matchAll(/\bDEF-\d{3,}/gu)) out.push({ id: match[0], kind: 'defect', line: index + 1 })
-    // `path/to/file.ts` 的 `symbol`（两侧都是反引号包裹的标识符）
-    for (const match of line.matchAll(/`([\w./-]+\.ts)`[^\n]*?`([A-Za-z_$][\w$]*)`/gu)) {
+    // `path/to/file.ts` 的 `symbol`（被指符号 = 路径 token 左/右最近的标识符 token，见 `symbolsOf`）
+    const tokens = tokensIn(line)
+    for (const match of line.matchAll(/`([\w./-]+\.ts)`/gu)) {
       const file = match[1] as string
-      const symbol = match[2] as string
-      out.push({ id: `${file}#${symbol}`, kind: 'symbol', line: index + 1, path: file, symbol, raw: line })
+      const at = (match.index ?? 0) + 1
+      const tokenIndex = tokens.findIndex((token) => token.start === at && token.text === file)
+      if (tokenIndex < 0) continue
+      const candidates = symbolAfter(line, tokens, tokenIndex)
+      if (candidates.length === 0) continue
+      const symbol = candidates[0] as string
+      out.push({ id: `${file}#${symbol}`, kind: 'symbol', line: index + 1, path: file, symbol, candidates, raw: line })
     }
   }
   return out
@@ -108,13 +172,11 @@ export function checkDocs(docs: readonly DocText[], witnesses: readonly DocText[
   for (const doc of docs) {
     for (const citation of citationsIn(doc.text)) {
       if (citation.kind === 'symbol') {
-        // **候选口径**：一行里 `` `file.ts` `` 之后可能有**多个**反引号标识符（真机现场：注释里连着举好几个），
-        // 抽取器不猜"哪个才是符号"⇒ 只要**任一候选**能在被指的文件里找到定义就不算悬空（仍然是结构判定）。
+        // **候选口径（`DEF-091` 起）**：只认**结构上最近**的那一两个标识符 token（`citation.candidates`
+        // 由 `symbolsOf` 按"无第二个路径 token + 间隔 ≤ `CITATION_GAP_MAX`"选出），不再是"引用行里所有
+        // 反引号词" —— 后者会让行里别处一个真词把真悬空喂饱（S2 绿 / S3 红，同形不同判）。
         const target = witnesses.find((other) => other.path.endsWith(citation.path as string))
-        const candidates = [citation.symbol as string]
-        if (target !== undefined) {
-          for (const match of (citation.raw ?? '').matchAll(/`([A-Za-z_$][\w$]*)`/gu)) candidates.push(match[1] as string)
-        }
+        const candidates = citation.candidates ?? [citation.symbol as string]
         const found = target !== undefined
           && candidates.some((name) => new RegExp(`\\b${name}\\b`, 'u').test(target.text))
         if (!found) issues.push({ kind: 'dangling-id', path: doc.path, detail: `${citation.id}（第 ${citation.line} 行）指向的定义查无实体` })

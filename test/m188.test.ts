@@ -65,3 +65,52 @@ test('M188-02 行为（夹具三态）：齐备 ⇒ 无 missing/extra；少一�
   // ⑤ 目录不存在 ⇒ 全 missing，不抛
   assert.deepEqual(reportFaces(files, join(BASE, 'nope')).missing, expected, '目录不存在 ⇒ 全 missing（不抛）')
 })
+
+test('M188-03 §3.7（DEF-087）：判据下沉到**声明路径逐层对账** —— 面内多/少/内容不同各一格 + 未声明物化', () => {
+  const source = join(BASE, 'repo')
+  const dir = join(BASE, 'instance')
+  // 源树：一条声明目录（`src/data`）+ 一条声明单文件（`client.js`）+ 一条未声明的面内兄弟目录
+  mkdirSync(join(source, 'src', 'data'), { recursive: true })
+  writeFileSync(join(source, 'src', 'data', 'a.yml'), 'a: 1\n')
+  writeFileSync(join(source, 'client.js'), 'export const x = 1\n')
+  mkdirSync(join(source, 'skills'), { recursive: true })
+  writeFileSync(join(source, 'skills', 'k.md'), 'k\n')
+  const faceFiles = ['src/data', 'client.js', 'skills']
+  // 副本：面都齐备
+  mkdirSync(join(dir, 'src', 'data'), { recursive: true })
+  writeFileSync(join(dir, 'src', 'data', 'a.yml'), 'a: 1\n')
+  writeFileSync(join(dir, 'client.js'), 'export const x = 1\n')
+  mkdirSync(join(dir, 'skills'), { recursive: true })
+  writeFileSync(join(dir, 'skills', 'k.md'), 'k\n')
+  // ① 齐备 ⇒ 三列都空
+  const clean = reportFaces(faceFiles, dir, source)
+  assert.deepEqual(clean.paths, [
+    { path: 'src/data', missing: [], extra: [], drifted: [] },
+    { path: 'client.js', missing: [], extra: [], drifted: [] },
+    { path: 'skills', missing: [], extra: [], drifted: [] },
+  ], '逐条声明路径必须都报到、且三列皆空')
+  assert.deepEqual(clean.undeclared, [], '面内没有未声明文件 ⇒ 空')
+  // ② **面内多一个文件**（顶层面齐备 ⇒ 第八批的旧判据完全看不见它）
+  writeFileSync(join(dir, 'src', 'data', 'ghost.yml'), 'ghost: 1\n')
+  const extra = reportFaces(faceFiles, dir, source)
+  assert.deepEqual(extra.extra, [], '顶层面照旧不报（回归第八批口径）')
+  assert.deepEqual(extra.paths?.[0]?.extra, ['ghost.yml'], '面内多出来的文件必须报出来')
+  // ③ **面内少一个文件**
+  rmSync(join(dir, 'src', 'data', 'a.yml'))
+  assert.deepEqual(reportFaces(faceFiles, dir, source).paths?.[0]?.missing, ['a.yml'], '面内少的文件必须报出来')
+  // ④ 两边都有但**内容不同** ⇒ drifted（只报告；helper 只读）
+  rmSync(join(dir, 'src', 'data', 'ghost.yml'))
+  writeFileSync(join(dir, 'src', 'data', 'a.yml'), 'a: 2\n')
+  assert.deepEqual(reportFaces(faceFiles, dir, source).paths?.[0]?.drifted, ['a.yml'], '内容不同必须报出来')
+  writeFileSync(join(dir, 'client.js'), 'export const x = 2\n')
+  assert.deepEqual(reportFaces(faceFiles, dir, source).paths?.[1]?.drifted, [''], '单文件声明也要比内容')
+  // ⑤ **面内未声明物化**（这正是真实例 `src/` 的 71 个文件的形态）：`files` 只声明 `src/data`
+  mkdirSync(join(dir, 'src', 'domain'), { recursive: true })
+  writeFileSync(join(dir, 'src', 'domain', 'adr.ts'), 'export const adr = 1\n')
+  assert.deepEqual(reportFaces(['src/data'], dir, source).undeclared, ['src/domain/adr.ts'], '面内未声明文件必须报出来')
+  // ⑥ 路径参数化：不传 sourceRoot ⇒ 形状与第八批**逐字相同**（没有 paths / undeclared 两个键）
+  const legacy = reportFaces(faceFiles, dir)
+  assert.deepEqual(Object.keys(legacy).sort(), ['expected', 'extra', 'missing'], '不传 sourceRoot ⇒ 旧形状不变（零破坏）')
+  assert.equal('paths' in legacy, false)
+  assert.equal('undeclared' in legacy, false)
+})

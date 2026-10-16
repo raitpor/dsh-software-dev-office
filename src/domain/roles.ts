@@ -7,7 +7,7 @@
  *     角色**看不到** allow 之外的工具（这是"角色不是会话、而是一次派发运行"的落点）。
  *
  * 一致性由测试保证：8 个角色恰好等于 `domain/plan.ts` 的 `ROLES`，
- * 且 `allow` 与 `integration/orchestrator.ts` 的 `TOOL_FILTER_BY_ROLE` 一致（避免两份真相）。
+ * 且 `allow` 与 `integration/orchestrator.ts` 的 `TOOL_FILTER_FALLBACK` 一致（避免两份真相）。
  */
 import { createHash } from 'node:crypto'
 import { loadPackagedYaml } from '../infra/data.js'

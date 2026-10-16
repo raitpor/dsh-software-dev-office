@@ -63,10 +63,10 @@ export function scopePathsIntersect(a: string, b: string): boolean {
   // 逐字节不变（既有调用点与既有用例的行为不受影响）。
   const leftGlob = hasGlob(left)
   const rightGlob = hasGlob(right)
-  if (!leftGlob && !rightGlob) return left.startsWith(`${right}/`) || right.startsWith(`${left}/`)
-  const hit = (scope: string, target: string): boolean => globCovers(scope, target)
-  if (rightGlob && hit(right, left)) return true
-  if (leftGlob && hit(left, right)) return true
+  // 无 glob：与**上批逐字节相同**（`scopeMatchesPath` 在无 glob 时就是那条前缀判定）
+  if (!leftGlob && !rightGlob) return scopeMatchesPath(right, left) || scopeMatchesPath(left, right)
+  // 有 glob：两出口共用同一个原语（这里不再直接调 `globCovers`，避免出现"第二个入口"）
+  if (scopeMatchesPath(right, left) || scopeMatchesPath(left, right)) return true
   // 两边都是 glob：走**字面前缀**的保守判定（`src/a/**` vs `src/**` ⇒ 相交；`src/**` vs `test/**` ⇒ 不相交）
   if (leftGlob && rightGlob) {
     const lp = globLiteralPrefix(left)
@@ -147,10 +147,28 @@ export function scopeOverlaps(scopes: readonly string[], others: readonly string
 
 /** 该路径是否落在某个范围里（`==` 或目录边界前缀）—— 与 `scopePathsIntersect` **同一套语义**。 */
 export function scopePathWithin(path: string, scope: string): boolean {
-  const file = normalizeScopePath(path)
+  // **DEF-089（第九批 §3.1）**：这里**必须**与 `scopePathsIntersect` 共用同一套语义 ——
+  // 上一批只给 `scopePathsIntersect` 加了 glob 支持，本函数（注释还自称"同一套语义"）没有 ⇒
+  // **同一输入两出口答案相反**：写范围 `src/integration/**` 的卡改域内文件 ⇒ 派发面说"相交"，
+  // 而 `done` 对账（`auditWriteScopes` → 本函数）说"越界"（**反向假阳性**，真台账 `TASK-006.yml` 就是它）。
+  // ⇒ 下沉成一个原语 `scopeMatchesPath`，两出口都调它（谁再各写一份，对偶守卫会红）。
+  return scopeMatchesPath(scope, path)
+}
+
+/**
+ * **两出口共用原语**：这个 scope 是否**覆盖**这条具体路径。
+ *
+ * 语义（与目录前缀判定同族，只是把 glob 放开）：
+ *   · 无 glob ⇒ 相等，或差一个目录边界前缀（`src/` 覆盖 `src/a.ts`）；
+ *   · 有 glob ⇒ 交给 {@link globCovers}（`**` 跨段 / `*` `?` 段内 / 覆盖任一段边界前缀）。
+ */
+export function scopeMatchesPath(scope: string, path: string): boolean {
   const root = normalizeScopePath(scope)
-  if (file === '' || root === '') return false
-  return file === root || file.startsWith(`${root}/`)
+  const file = normalizeScopePath(path)
+  if (root === '' || file === '') return false
+  if (root === file) return true
+  if (!hasGlob(root)) return file.startsWith(`${root}/`)
+  return globCovers(root, file)
 }
 
 /**

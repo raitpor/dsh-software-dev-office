@@ -3847,7 +3847,8 @@ export class SoftwareDevOffice {
       taskId: row.task.id,
       over: row.over,
     }))
-    // **F5**：超宽 glob（`**` / `src/**` …）**只提示不拦** —— 否则任何脏文件都会挡住这种卡
+    // **F5**：超宽 glob（分档键 = **字面前缀段数** ≤1：`**` / `src/**` / `src/*` …）**只提示不拦**
+    // —— 否则任何脏文件都会挡住这种卡（`DEF-090` 起把键名写进注释，与判据表同源）
     const dirtyHints = dirtyRows.filter((row) => row.grade === 'hint').map((row) => ({
       taskId: row.task.id,
       over: row.over,
