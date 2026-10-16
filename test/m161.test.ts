@@ -153,6 +153,14 @@ test('M161-05 DEF-034 收口（第五批 §3.2）：词表唯一，**两层中�
   for (const criterion of WHITEBOX_COVERAGE_CRITERIA) {
     assert.equal(readingSide.has(criterion), true, `设计侧口径 ${criterion} 必须在读数侧词表里（子集关系）`)
   }
+  // ⑤ **§3.4（R15）口径收窄**：本判据断言的是**输出标签**（两层对同一 token 印同一个词），
+  // **不是**"全仓禁止出现「分支」这个词" —— 把「分支」当**非法输入**喂进去的四处用例必须**留着**
+  // （`m34` 两处、`m35` 两处；删了它们反而会让"中文标签不是取值"这条口径失去守卫）。
+  const m34 = readSource('test/m34.test.ts')
+  const m35 = readSource('test/m35.test.ts')
+  assert.ok((m34.match(/分支/gu) ?? []).length >= 2, '`m34` 必须留着把「分支」当非法取值的用例（≥2 处）')
+  assert.ok((m35.match(/分支/gu) ?? []).length >= 2, '`m35` 必须留着把「分支」当非法取值的用例（≥2 处）')
+
   // ④ 两处都记录裁决/勘误的出处（读者要能顺着注释查到"为什么统一"）
   const wb = readSource('src/domain/testDesignWhitebox.ts')
   assert.match(wb, /ADR-014/u, '设计侧必须记录裁决出处（ADR-014）')

@@ -27,7 +27,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config } from '../src/config.js'
 import { SdoStore } from '../src/infra/store.js'
 import { apply } from '../src/index.js'
-import { UNCLAIMED_CHILD_FACE, listRoleCards, maskAllows, roleMaskDecision, unclaimedFace } from '../src/domain/roles.js'
+import { EXECUTOR_DENIED_TOOLS, UNCLAIMED_CHILD_FACE, listRoleCards, maskAllows, roleMaskDecision, unclaimedFace } from '../src/domain/roles.js'
 import type { SdoConfig } from '../src/config.js'
 import type { TaskCard } from '../src/types.js'
 
@@ -217,4 +217,36 @@ test('M179-05 结构：最小面的**上下界**由声明给出且判据单一�
   // 通用面：没被 deny 的继承宿主默认（不能把通用面一起清空 —— 那正是 2026-10-08 真机事故）
   assert.equal(maskAllows(UNCLAIMED_CHILD_FACE, 'memory_save'), true, '通用面没 deny ⇒ 继承宿主默认（别把沉淀面清掉）')
   assert.equal(maskAllows(UNCLAIMED_CHILD_FACE, 'technique_apply'), true, '沉淀/上报面保留（用户点名要回的正是它）')
+})
+
+test('M179-06 通用面那一格（第六批 §3.9 / `DEF-082`）：未认领子会话**也是执行者** ⇒ 执行者禁用面照旧咬人', async () => {
+  // 修前的盲区：本文件的推导判据只扫 `sdo_*` ⇒ 在代码里"多放行一个**通用面**工具"（例如 `subagent`）
+  // 它 **5/5 全绿**（`TASK-128` 实测）。这里按**声明面**（`EXECUTOR_DENIED_TOOLS`）补一格：
+  // 未认领子会话**已被认成执行者**（钩子的 `executor` 来自会话血缘，不是 `dispatch/started`）⇒
+  // 执行者禁用面对它一样生效。**不新增任何名单**（读的就是那份既有常量）。
+  for (const tool of EXECUTOR_DENIED_TOOLS) {
+    assert.equal(
+      maskAllows(UNCLAIMED_CHILD_FACE, tool, { executor: true }),
+      false,
+      `未认领子会话不得用执行者禁用面的 ${tool}（DEF-082 的判据面）`,
+    )
+    assert.equal(
+      roleMaskDecision(UNCLAIMED_CHILD_FACE, tool, { executor: true }).kind,
+      'deny',
+      `${tool} 的判定必须是 deny`,
+    )
+  }
+  // 反例（不是恒拒）：非禁用面的通用工具照旧继承宿主默认（沉淀/上报面不能一起清掉）
+  for (const tool of ['technique_apply', 'memory_save', 'web_search']) {
+    assert.equal(maskAllows(UNCLAIMED_CHILD_FACE, tool, { executor: true }), true, `${tool} 是通用面 ⇒ 继承宿主默认`)
+  }
+  // **真机面**：未认领子会话调 `subagent` 一类必须 deny（走真钩子，不看纯函数）
+  const h = hookHarness()
+  projectAt(BASE, ['src/index.ts'])
+  h.registerSession('cockpit', BASE)
+  for (const tool of ['subagent', 'plugin_manager', 'exit_plan_mode', 'create_goal']) {
+    const decision = await h.drive(tool, {}, { cwd: BASE })
+    assert.equal(decision.kind, 'deny', `未认领子会话不得调用通用面的 ${tool}`)
+  }
+  assert.equal((await h.drive('technique_apply', {}, { cwd: BASE })).kind, 'allow', '通用面的非禁用工具照旧放行')
 })

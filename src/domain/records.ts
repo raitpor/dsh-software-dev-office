@@ -251,10 +251,23 @@ export function listTestCases(store: SdoStore): TestCase[] {
     .filter((item): item is TestCase => item !== undefined)
 }
 
-export function recordTestCase(store: SdoStore, journal: Journal, input: Omit<TestCase, 'id' | 'at'>): TestCase {
+export function recordTestCase(
+  store: SdoStore,
+  journal: Journal,
+  input: Omit<TestCase, 'id' | 'at'>,
+  /**
+   * **建案者**（`DEF-079` / 第六批 §3.3）。缺省 `'sdo'` = 旧口径（合成调用/脚本）。
+   *
+   * 病根（核过后收窄）：建案**本来就会**落 `test/recorded`（真源有痕、且该事件**本来就在**
+   * `SIGNATURE_NEUTRAL_EVENTS` 里 ⇒ 不作废签字）—— 缺的只是"**谁**建的"：事件里的 `actor`
+   * 一律是缺省 `'sdo'`，与"是哪个会话在什么时候建的"对不上。所以修法不是新增事件类型，
+   * 而是把调用方的身份**如实记进 `actor`**（`TestCase` 文件形状一字不动 ⇒ 存量 149 条不追溯）。
+   */
+  actor = 'sdo',
+): TestCase {
   const testCase: TestCase = { ...input, id: idOf(store, journal, 'tests', 'TC-'), at: new Date().toISOString() }
   store.writeYaml(['tests', `${testCase.id}.yml`], { testCase })
-  journal.append('test/recorded', { id: testCase.id, kind: testCase.kind, requirement: testCase.requirement ?? '' })
+  journal.append('test/recorded', { id: testCase.id, kind: testCase.kind, requirement: testCase.requirement ?? '' }, actor)
   return testCase
 }
 

@@ -476,7 +476,8 @@ export interface TestArgs {
   title?: string | undefined
   kind?: 'unit' | 'integration' | 'e2e' | undefined
   requirement?: string | undefined
-  steps?: string | undefined
+  /** plan：步骤（**JSON 文本或真数组**，见 schema 的 `oneOf` —— R11/§3.2）；`append`/`record` 路径同样收 */
+  steps?: string | unknown[] | undefined
   expected?: string | undefined
   caseId?: string | undefined
   status?: string | undefined
@@ -1023,7 +1024,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         scope: listDecl("profile: 'all' (default) or JSON **text** (a string) of task ids, e.g. '[\"TASK-001\"]' — a real array is also accepted."),
         derivedFrom: listDecl("profile: JSON **text** (a string) of the basis for the choice, e.g. '[\"scale=normal\",\"contractCount=12\"]'; at least one must be machine-checkable. Not an array."),
         reason: { type: 'string', description: 'profile: human-readable reason for the choice (required when `packages` is empty).' },
-        exempt: listDecl("profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\",\"approvedBy\":\"who approved this exemption\",\"impact\":\"what this waiver gives up\"}]'. `approvedBy` and `impact` are the two keys **DEF-030** added and both are **plain strings** (unlike `impact` on a task card, which is a list): they are **mapped through** (a non-string value is recorded as empty rather than silently dropped) and shown as **unsigned** in receipts when empty, while the **required** fields of every entry are `task` / `check` / `why` (a missing or empty `why` is rejected with a readable message). Older entries written without the two keys are read tolerantly and shown as unsigned."),
+        exempt: listDecl("profile: JSON **text** (a string) of per-check exemptions, e.g. '[{\"task\":\"TASK-007\",\"check\":\"tdd-mutation-missing\",\"why\":\"docs-only card\",\"approvedBy\":\"who approved this exemption\",\"impact\":\"what this waiver gives up\"}]'. `approvedBy` and `impact` are the two keys **DEF-030** added and both are **plain strings** (unlike `impact` on a task card, which is a list): a **new** exemption **must carry both** — a missing key, a non-string value or a blank string makes the whole call **rejected** with a readable message naming the entry and the missing field, and **nothing is written** (the write face enforces it). **Older** entries are read tolerantly on the **read** face (a missing key reads as an empty string and the receipt shows it as unsigned) — tolerance is for history, never for what you write today."),
       },
       output: OUTPUT,
       async execute(args, exec) {
@@ -1155,7 +1156,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         title: { type: 'string', description: t('param.title') },
         kind: { type: 'string', description: "plan: 'unit' | 'integration' | 'e2e'." },
         requirement: { type: 'string', description: t('param.requirement') },
-        steps: { type: 'string', description: t('param.steps') },
+        // **R11 / 第六批 §3.2**：语义上是列表、却声明成纯 `string` 的**活标本** —— 改用 `listDecl`（声明处给联合）
+        steps: listDecl(t('param.steps')),
         expected: { type: 'string', description: t('param.expected') },
         caseId: { type: 'string', description: t('param.caseId') },
         status: { type: 'string', description: "record: 'pass' | 'fail' | 'skip'. defect: 'open' | 'fixed' | 'closed' | 'wontfix'." },
@@ -1261,7 +1263,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           title: typeof args.title === 'string' ? args.title : undefined,
           kind: parseEnum(args.kind, ['unit', 'integration', 'e2e'] as const),
           requirement: typeof args.requirement === 'string' ? args.requirement : undefined,
-          steps: typeof args.steps === 'string' ? args.steps : undefined,
+          // **R11 / §3.2**：调用面走 `compositeArg`（字符串原样 / 真数组转 JSON 文本）—— 旧口径对非 string **静默丢成 undefined**
+          steps: compositeArg(args.steps),
           expected: typeof args.expected === 'string' ? args.expected : undefined,
           caseId: typeof args.caseId === 'string' ? args.caseId : undefined,
           status: typeof args.status === 'string' ? args.status : undefined,

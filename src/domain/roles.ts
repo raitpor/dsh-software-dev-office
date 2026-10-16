@@ -351,6 +351,22 @@ export function filterKnownTools(names: readonly string[], isKnown: (name: strin
  * 角色职责分离真正要护的是 **SDO 流程面**（developer 不许改门禁、reviewer 不许写、tester 不许碰需求），
  * 那一份是我们**完全掌握**的封闭集合，用白名单；通用面用黑名单，缺省继承。
  */
+/**
+ * ⚠️ **执行者判定是谁（第六批 §3.9 / `DEF-082` 的核实结论）**：钩子侧传的 `context.executor`
+ * 来自**会话血缘**（`agent.session.header.delegationDepth >= 1` 或带 `parentSession`），
+ * **不是** `isDispatchedChild`（那个只认 `dispatch/started`，是**观测面** `noteChildFace` 用的）。
+ * ⇒ "未认领、也没有派发记录"的子会话**也会**被认成执行者 ⇒ `EXECUTOR_DENIED_TOOLS`（含 `subagent`）
+ * 对它照样生效（实测：`subagent`/`plugin_manager`/`exit_plan_mode`/`create_goal`/`sdo_plan` 全 deny）。
+ * 交接书里"执行者判定走 `isDispatchedChild` ⇒ 仍能调 `subagent`"那句**与现盘不符**，已如实上报；
+ * 本批补的是**判据面**（`m179` 原先只扫 `sdo_*`，对"通用面多放行"全盲 ⇒ 见 `M179-06`）。
+ *
+ * ⚠️ **一处有意放行（第六批 §3.10 / `R17`）**：**拿不到 `sessionId`** 时（`attributeRole` 落
+ * `{kind:'unknown'}`）钩子**不施加掩码** ⇒ `sdo_plan` 在掩码路径上判 allow。可达性结论：**只有合成探针**能
+ * 造出这一态 —— 真实工具调用一定发生在某个会话里（宿主在 `ToolExecution.agent.session.header` 上给 id，
+ * 插件 `injectionCall` 也从那里取），我们构造不出"宿主给了调用却不给会话"的真实路径。
+ * ⇒ **有意放行**（fail-open：认不出人不该变成干不了活），理由记在这里与 `DEF-054` 的口径旁注里；
+ * 若将来宿主真的允许无名会话，这里要改成 fail-closed（归属不到 ⇒ deny 并点名"无法确定会话"）。
+ */
 export function maskAllows(code: Role | string, tool: string, context: MaskContext = {}): boolean {
   const card = faceCard(String(code))
   if (card === undefined) return false

@@ -1258,6 +1258,64 @@ export function scopeHeldTasks(tasks: readonly TaskCard[]): ScopeHold[] {
   return out
 }
 
+/**
+ * **DEF-080（第六批 §3.6）**：卡写范围 ∩ **未提交的被跟踪改动**。
+ *
+ * 写范围互斥原先只查"活着的**认领卡**"（`claimsBySession`）与"卡与卡"（`classifyNonDispatchable` ②），
+ * 而**未提交的工作树改动不属于任何卡** ⇒ "某张卡的写范围正好压在别人未提交的交付上"这条路上的
+ * 派发**无人拦**。判定仍走唯一出口 `scopeOverlaps`（只用到路径集合这一个事实 ⇒ 语言/项目无关），
+ * 回执点名的是**那些未提交的路径**（读者照做：先提交/先挪走，或者换一张卡）。
+ *
+ * 口径：与 ② 一样只对**单一路径**写范围的 1:1 独占卡生效（多路径是共同公约声明）；未跟踪文件不算
+ *（见 `infra/git.ts`）；`git` 读不动时不产生任何行（判不了 ⇒ 不拦）。
+ */
+export interface DirtyScopeHold { task: TaskCard; over: string[] }
+
+export function dirtyScopeHolds(tasks: readonly TaskCard[], dirtyPaths: readonly string[]): DirtyScopeHold[] {
+  if (dirtyPaths.length === 0) return []
+  const out: DirtyScopeHold[] = []
+  for (const task of tasks) {
+    if (task.status !== 'planned' && task.status !== 'ready') continue
+    if (task.writeScopes.length !== 1) continue
+    const over = scopeOverlaps(dirtyPaths, task.writeScopes)
+    if (over.length > 0) out.push({ task, over })
+  }
+  return out
+}
+
+/**
+ * **DEF-081（第六批 §3.7）**：`drop` 之前扫"谁会因此吊着"。
+ *
+ * `blockedBy` 是**别人写在我身上**的声明 ⇒ 把被引用那张卡作废，引用者的依赖就永远等不到
+ *（`blockedTasks` 只认"指向未结束的卡"，被作废的引用会变成"依赖一张永远不会完成的卡"而**永久卡住**）。
+ * 所以作废前必须点名：**直接引用者** + **传递下游**（B 引 A、C 引 B ⇒ C 也吊着）。
+ *
+ * `'*'`（"等所有其它卡"）**不算下游**：它等的是"全部"，少一张照样在等剩下的，没被吊住。
+ */
+export function dropDependents(
+  tasks: readonly TaskCard[],
+  taskId: string,
+): { direct: TaskCard[]; downstream: TaskCard[] } {
+  const live = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified' && task.status !== 'dropped')
+  const direct = live.filter((task) => task.id !== taskId && (task.blockedBy ?? []).includes(taskId))
+  const seen = new Set<string>([taskId, ...direct.map((task) => task.id)])
+  const downstream: TaskCard[] = []
+  let frontier = direct.map((task) => task.id)
+  while (frontier.length > 0) {
+    const next: string[] = []
+    for (const task of live) {
+      if (seen.has(task.id)) continue
+      const blocked = (task.blockedBy ?? []).filter((id) => id !== '*')
+      if (!blocked.some((id) => frontier.includes(id))) continue
+      seen.add(task.id)
+      downstream.push(task)
+      next.push(task.id)
+    }
+    frontier = next
+  }
+  return { direct, downstream }
+}
+
 export interface NonDispatchablePlan {
   /**
    * **当前阶段入口门禁失效**因此不派的卡（DEF-040）：与 `blocked` / `scope` / `dependencies` **并列**的第四类。
@@ -1282,9 +1340,21 @@ export interface NonDispatchablePlan {
   scope: { task: TaskCard; other: string; overlap: string[] }[]
   /** ③ 依赖未满足 */
   dependencies: { task: TaskCard; waitingOn: string[] }[]
+  /**
+   * ④ **写范围压在未提交的被跟踪改动上**（DEF-080）。
+   *
+   * **只在调用方传了工作树状态、且真有交集时出现**：不传 / 干净时这个键根本不出现
+   * ⇒ 既有调用点返回对象的形状与以前**逐字节相同**（与 `gateStale`/`exclusive` 同一套零破坏口径）。
+   */
+  dirty?: DirtyScopeHold[] | undefined
 }
 
-export function classifyNonDispatchable(tasks: TaskCard[], staleGate?: StaleGate | undefined): NonDispatchablePlan {
+export function classifyNonDispatchable(
+  tasks: TaskCard[],
+  staleGate?: StaleGate | undefined,
+  /** **DEF-080**：被跟踪文件的未提交改动（相对工作区）。不传 = 不做这一类判定（形状零破坏）。 */
+  dirtyPaths?: readonly string[] | undefined,
+): NonDispatchablePlan {
   const ended = (task: TaskCard): boolean =>
     task.status === 'done' || task.status === 'verified' || task.status === 'dropped'
   const blocked = tasks.filter((task) => task.status === 'blocked')
@@ -1347,9 +1417,12 @@ export function classifyNonDispatchable(tasks: TaskCard[], staleGate?: StaleGate
     exclusiveRows.push({ task, other: holder })
   }
   const exclusive = exclusiveRows.length === 0 ? {} : { exclusive: exclusiveRows }
+  const dirtyHolds = dirtyPaths === undefined ? [] : dirtyScopeHolds(tasks, dirtyPaths)
+  const dirty = dirtyHolds.length === 0 ? {} : { dirty: dirtyHolds }
   return {
     ...gateStale,
     ...exclusive,
+    ...dirty,
     blocked,
     scope,
     // ③ 依赖未满足：blocked 卡已归 ①，别在两类里各报一次（否则读者会以为有两张卡）

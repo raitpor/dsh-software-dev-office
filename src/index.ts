@@ -336,6 +336,7 @@ function describeNonDispatchable(plan: NonDispatchablePlan): string {
     && plan.blocked.length === 0
     && plan.scope.length === 0
     && plan.dependencies.length === 0
+    && plan.dirty === undefined
   ) {
     return t('uiIndex.kNonDispatchableIdle')
   }
@@ -364,6 +365,16 @@ function describeNonDispatchable(plan: NonDispatchablePlan): string {
           p2: (task.blockedReason ?? '').trim() === '' ? t('uiIndex.kTaskUnblockNoReason') : (task.blockedReason ?? ''),
         }))
         .join('；'),
+    }))
+  }
+  // **DEF-080（第六批 §3.6）**：写范围压在**未提交的被跟踪改动**上 —— 与其余各类并列单列一行
+  if (plan.dirty !== undefined) {
+    sections.push(fmt('uiIndex.kNonDispatchableDirtyHead', {
+      p1: String(plan.dirty.length),
+      p2: plan.dirty.map((row) => fmt('uiIndex.kNonDispatchableDirtyItem', {
+        p1: row.task.id,
+        p2: row.over.join('、'),
+      })).join('；'),
     }))
   }
   if (plan.dependencies.length > 0) {
@@ -2001,6 +2012,17 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // —— 真机上 developer 子代理 `drop` 掉未完成的卡后，`C-40` 立刻由 fail 变 ok（"已显式放弃，不计入完成率"）。
           // 卡是**计划产物**：放弃/改派属流程官职权（驾驶舱或 office 角色）。
           if (office.isDispatchedChild(call)) return t('uiIndex.kTaskAdminOnly')
+          // **DEF-081（第六批 §3.7）**：作废前扫依赖者（直接引用 + 传递下游）—— 被引用的卡一作废，
+          // 引用者的 `blockedBy` 就指向一张**永远不会完成**的卡（永久卡住，且回执里看不出为什么）。
+          const blockers = office.dropBlockers(call, args.id)
+          if (blockers.direct.length > 0 || blockers.downstream.length > 0) {
+            return fmt('uiIndex.kDropBlocked', {
+              p1: args.id,
+              p2: String(blockers.direct.length + blockers.downstream.length),
+              p3: blockers.direct.length === 0 ? t('uiIndex.kNone') : blockers.direct.map((task) => task.id).join('、'),
+              p4: blockers.downstream.length === 0 ? t('uiIndex.kNone') : blockers.downstream.map((task) => task.id).join('、'),
+            })
+          }
           const dropped = office.dropTask(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
           return dropped === undefined ? fmt('uiIndex.k34', { p1: args.id }) : describeTask(dropped, office.shapeNotes(call))
         }

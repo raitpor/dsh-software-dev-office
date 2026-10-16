@@ -77,7 +77,7 @@ import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domai
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, textPathsOf, validatePlan } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropDependents, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, textPathsOf, validatePlan } from './domain/plan.js'
 import type { DecomposeInput, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
   listDefects,
@@ -164,6 +164,7 @@ import { loadScoring, normalizeModelDimensions, scoreRequirement } from './domai
 import { Journal } from './infra/journal.js'
 import { nextId } from './infra/ids.js'
 import { renderSrs } from './infra/render.js'
+import { readDirtyWorktree } from './infra/git.js'
 import { SdoStore } from './infra/store.js'
 import type {
   Adr,
@@ -3340,7 +3341,21 @@ export class SoftwareDevOffice {
    * `readyForDispatch` 返回空，若回执不点名门禁，读者看到的就是"本轮没有可派发的卡"（读成"活干完了"）。
    */
   nonDispatchable(call: OfficeCall): NonDispatchablePlan {
-    return classifyNonDispatchable(this.tasks(call), this.staleEntryGate(call))
+    // **DEF-080（第六批 §3.6）**：把"被跟踪文件的未提交改动"也交给分类器 —— 写范围互斥过去只查
+    // **认领卡**与**卡与卡**，而"别人未提交的交付"不属于任何卡。`git` 读不动（不是仓库/没有 git）
+    // ⇒ 传 `undefined` ⇒ 这一类**不判**（判不了不拦，与 `DEF-054`/`R17` 同一方向），原因在 `reason` 里。
+    const root = this.workspaceRootFor(call) ?? call.cwd
+    const dirty = root === undefined ? { ok: false, tracked: [] as string[] } : readDirtyWorktree(root)
+    return classifyNonDispatchable(this.tasks(call), this.staleEntryGate(call), dirty.ok ? dirty.tracked : undefined)
+  }
+
+  /**
+   * **DEF-081（第六批 §3.7）**：`drop` 之前的**依赖者扫描**（只读）。
+   *
+   * 真正作废仍走 `dropTask` 唯一出口；这里只回答"作废它会把谁永久吊住"，由调用方决定拒还是放行。
+   */
+  dropBlockers(call: OfficeCall, taskId: string): { direct: TaskCard[]; downstream: TaskCard[] } {
+    return dropDependents(this.tasks(call), taskId)
   }
 
   /**
@@ -4281,7 +4296,8 @@ export class SoftwareDevOffice {
 
   addTestCase(call: OfficeCall, input: Omit<TestCase, 'id' | 'at'>): TestCase {
     const { store, journal } = this.contextFor(call)
-    return recordTestCase(store, journal, input)
+    // **DEF-079**：把"谁建的"记进事件 `actor`（缺会话 id 时才退回缺省 `sdo`）
+    return recordTestCase(store, journal, input, call.sessionId ?? 'sdo')
   }
 
   /**
