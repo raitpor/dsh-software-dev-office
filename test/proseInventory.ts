@@ -59,11 +59,25 @@ function assertArgs(line: string, open: number): string[] {
 /** "部分匹配"口径：读渲染文本（子串/正则）而不是整值比较。 */
 const PARTIAL_READ = /\.(?:includes|match|startsWith|endsWith)\(|assert\.(?:match|doesNotMatch)\(/u
 
+/**
+ * **文件内的中文绑定**（`const NAME = '中文…'` 这一形态）—— 用于抓"**中文先放变量、再 `includes(NAME)`**"
+ * 这条真缝隙（`DEF-093` 第十批 §3.5）：此前只认**内联**中文串 ⇒ `sites = 0` ⇒ 真漏判。
+ * 只做**同文件、字面量初值**这一层（跨文件/函数返回值/模板拼接不进：登记在豁免面表里）。
+ */
+function cjkBindings(text: string): Map<string, string> {
+  const out = new Map<string, string>()
+  for (const match of text.matchAll(/(?:const|let|var)\s+([A-Za-z_$][\w$]*)\s*=\s*(['"`])([^'"`\n]*[\u4e00-\u9fff][^'"`\n]*)\2/gu)) {
+    out.set(match[1] as string, (match[3] as string).trim())
+  }
+  return out
+}
+
 /** **候选抽取器**：行里出现**读文本的调用**（`assert.*` / `.includes` / `.match` / …）且带内联中文 ⇒ 在册。 */
 export function extractProseSites(docs: readonly DocSource[]): ProseSite[] {
   const out: ProseSite[] = []
   const READING = /\.(?:includes|match|startsWith|endsWith)\(|assert\.\w+\(/u
   for (const doc of docs) {
+    const bindings = cjkBindings(doc.text)
     doc.text.split('\n').forEach((line, index) => {
       if (!READING.test(line)) return
       // 断言行：按实参切分（第三个及以后实参是**消息** ⇒ 不算取值）
@@ -80,7 +94,14 @@ export function extractProseSites(docs: readonly DocSource[]): ProseSite[] {
       for (const { text, partial } of texts) {
         const str = STRING_CJK.exec(text)
         const re = REGEX_CJK.exec(text)
-        if (str === null && re === null) continue
+        if (str === null && re === null) {
+          // **变量再读**那一路：行里没有内联中文，但它读了本文件里绑定了中文的变量 ⇒ 同样是"读散文"
+          for (const [name, literal] of bindings) {
+            if (!new RegExp(`\\b${name}\\b`, 'u').test(text)) continue
+            out.push({ path: doc.path, line: index + 1, kind: 'partial', literal })
+          }
+          continue
+        }
         out.push({
           path: doc.path,
           line: index + 1,

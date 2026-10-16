@@ -17,7 +17,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -78,6 +78,14 @@ beforeEach(() => {
   // 真台账形态：`TASK-006.yml` 的写范围就是 `src/integration/**`（**卡号与写范围都与真台账一致**）；
   // ⚠️ 这里的 `TASK-007` 是**合成**对照 —— 真台账 `TASK-007.yml` 的 `writeScopes` 是 5 条**具体路径**、
   // 一个 glob 都没有（见第九批 §8 的反证），不要把这个夹具卡号当成真卡。
+  // **真台账的 glob 清单（`DEF-098` 第十批 §3.3 要求现算；2026-10-16 现算 = 134 张有 writeScopes / 5 张含 glob）**：
+  //   `TASK-006 src/integration/**`、`TASK-013`/`TASK-048 src/data/processes/*.yml`、
+  //   `TASK-027 src/domain/render*.ts` + `docs/*.md`、`TASK-096 src/interface/**`
+  //   ⇒ **会踩"整目录 `**`"形态的只有 `TASK-006` / `TASK-096`**（另三张是段内通配）。
+  // 现算命令（只读；台账不在副本树里，所以这里只留命令、不 import）：
+  //   `awk '/^  writeScopes:/{f=1;next} /^  [a-zA-Z]/{f=0} f&&/^    - /{print FILENAME": "$0}' .sdo/tasks/*.yml`
+  //   ⇒ 挂 `| wc -l` 得**非空** writeScopes 的条目数（第八批时 132，2026-10-16 现算 **134**；另 **142** 张声明了该键，8 张是 `[]`）；
+  //   ⇒ 挂 `| grep -E '[*?[]'` 得**含 glob 的 5 张卡 6 条**（上面点名的那 5 张，`TASK-027` 占两条）。
   store.writeYaml(['tasks', 'TASK-006.yml'], { task: card('TASK-006', ['src/integration/**']) })
   store.writeYaml(['tasks', 'TASK-007.yml'], { task: card('TASK-007', ['src/**']) })
   git(['add', '-A'])
@@ -217,6 +225,20 @@ test('M187-05 §3.3 表驱动守卫（DEF-090）：同一脏文件在各档下�
       assert.deepEqual(holds[0]?.over, [DIRTY], `点名的必须是那条脏路径：${label}`)
     }
   }
+})
+
+test('M187-07 §3.3（DEF-098）：夹具注释里的真台账 glob 清单必须**现算可复现**（5 张卡 + 命令在位）', () => {
+  const source = readFileSync(join(ROOT, 'test', 'm187.test.ts'), 'utf8')
+  // 只看**那一段夹具注释块**（`真台账的 glob 清单` 起 6 行）—— 别处正文里的同类字样不算这条判据的面
+  const lines = source.split('\n')
+  const at = lines.findIndex((line) => line.includes('真台账的 glob 清单'))
+  assert.ok(at > 0, '夹具注释里必须有一段"真台账的 glob 清单"')
+  const block = lines.slice(at, at + 6).join('\n')
+  for (const card of ['TASK-006', 'TASK-013', 'TASK-027', 'TASK-048', 'TASK-096']) {
+    assert.ok(block.includes(card), `夹具注释块必须点名 ${card}（真台账现算的 5 张含 glob 的卡）`)
+  }
+  assert.ok(block.includes('awk'), '夹具注释块必须给出可跑的现算命令（awk 那条）')
+  assert.ok(block.includes('134'), '夹具注释块必须写出"非空 writeScopes"的现算计数（2026-10-16 = 134）')
 })
 
 test('M187-06 §3.1 豁免面逐条钉住：两个 glob 的保守相交 + `[` 当字面量（改它 ⇒ 这一格必须红）', () => {

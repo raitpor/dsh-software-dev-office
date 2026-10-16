@@ -75,6 +75,9 @@ test('M188-03 §3.7（DEF-087）：判据下沉到**声明路径逐层对账** �
   writeFileSync(join(source, 'client.js'), 'export const x = 1\n')
   mkdirSync(join(source, 'skills'), { recursive: true })
   writeFileSync(join(source, 'skills', 'k.md'), 'k\n')
+  // 源里有、副本里没有的一条声明路径（用来把"源有副本缺"与"源与副本同时缺"分开）
+  mkdirSync(join(source, 'presets'), { recursive: true })
+  writeFileSync(join(source, 'presets', 'p.md'), 'p\n')
   const faceFiles = ['src/data', 'client.js', 'skills']
   // 副本：面都齐备
   mkdirSync(join(dir, 'src', 'data'), { recursive: true })
@@ -85,10 +88,10 @@ test('M188-03 §3.7（DEF-087）：判据下沉到**声明路径逐层对账** �
   // ① 齐备 ⇒ 三列都空
   const clean = reportFaces(faceFiles, dir, source)
   assert.deepEqual(clean.paths, [
-    { path: 'src/data', missing: [], extra: [], drifted: [] },
-    { path: 'client.js', missing: [], extra: [], drifted: [] },
-    { path: 'skills', missing: [], extra: [], drifted: [] },
-  ], '逐条声明路径必须都报到、且三列皆空')
+    { path: 'src/data', missing: [], extra: [], drifted: [], absent: false },
+    { path: 'client.js', missing: [], extra: [], drifted: [], absent: false },
+    { path: 'skills', missing: [], extra: [], drifted: [], absent: false },
+  ], '逐条声明路径必须都报到、且三列皆空（`absent` 全 false）')
   assert.deepEqual(clean.undeclared, [], '面内没有未声明文件 ⇒ 空')
   // ② **面内多一个文件**（顶层面齐备 ⇒ 第八批的旧判据完全看不见它）
   writeFileSync(join(dir, 'src', 'data', 'ghost.yml'), 'ghost: 1\n')
@@ -108,7 +111,22 @@ test('M188-03 §3.7（DEF-087）：判据下沉到**声明路径逐层对账** �
   mkdirSync(join(dir, 'src', 'domain'), { recursive: true })
   writeFileSync(join(dir, 'src', 'domain', 'adr.ts'), 'export const adr = 1\n')
   assert.deepEqual(reportFaces(['src/data'], dir, source).undeclared, ['src/domain/adr.ts'], '面内未声明文件必须报出来')
-  // ⑥ 路径参数化：不传 sourceRoot ⇒ 形状与第八批**逐字相同**（没有 paths / undeclared 两个键）
+  // ⑥ **源与副本同时缺的声明路径**（`DEF-087` 第十批 §3.6）：必须出列并点名（修前它一行都不报）
+  const absent = reportFaces([...faceFiles, 'ghost-dir'], dir, source)
+  assert.deepEqual(
+    absent.paths?.find((row) => row.path === 'ghost-dir'),
+    { path: 'ghost-dir', missing: [], extra: [], drifted: [], absent: true },
+    '源与副本都没有这条声明路径 ⇒ 必须报出并点名（`absent: true`）',
+  )
+  assert.equal(absent.paths?.length, 4, '每条声明路径都要有一行（不再被 `undefined` 吞掉）')
+  // 反例（不是恒真）：**源有、副本缺**的一条声明路径 ⇒ `absent: false` 且 `missing` 点名到文件
+  const sourceOnly = reportFaces([...faceFiles, 'presets'], dir, source)
+  assert.deepEqual(
+    sourceOnly.paths?.find((row) => row.path === 'presets'),
+    { path: 'presets', missing: ['p.md'], extra: [], drifted: [], absent: false },
+    '源有副本缺 ⇒ 不是 absent，而是 missing 点名（与"源与副本同时缺"分开）',
+  )
+  // ⑦ 路径参数化：不传 sourceRoot ⇒ 形状与第八批**逐字相同**（没有 paths / undeclared 两个键）
   const legacy = reportFaces(faceFiles, dir)
   assert.deepEqual(Object.keys(legacy).sort(), ['expected', 'extra', 'missing'], '不传 sourceRoot ⇒ 旧形状不变（零破坏）')
   assert.equal('paths' in legacy, false)

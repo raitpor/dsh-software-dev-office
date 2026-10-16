@@ -24,6 +24,16 @@ const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm189')
 beforeEach(() => { rmSync(BASE, { recursive: true, force: true }); mkdirSync(BASE, { recursive: true }) })
 afterEach(() => { rmSync(BASE, { recursive: true, force: true }) })
 
+/** 目录下全部 `.ts`（helper 也在内 —— `DEF-095` 的注释守卫要看它们）。 */
+function walkTs(dir: string, out: string[] = []): string[] {
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) walkTs(full, out)
+    else if (entry.name.endsWith('.ts')) out.push(full)
+  }
+  return out.sort()
+}
+
 /** 相对仓库根的路径（`ROOT` 自带尾斜杠，别用字符串拼）。 */
 const relPath = (path: string): string => (path.startsWith(ROOT) ? path.slice(ROOT.length).replace(/^\//u, '') : path)
 
@@ -233,10 +243,10 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   const KNOWN_PROSE_GAP: Record<string, number> = {
   'test/dor.test.ts': 14, 'test/grill.test.ts': 10, 'test/journal.test.ts': 2, 'test/m10.test.ts': 4,
   'test/m100.test.ts': 34, 'test/m101.test.ts': 26, 'test/m102.test.ts': 3, 'test/m103.test.ts': 9,
-  'test/m104.test.ts': 18, 'test/m105.test.ts': 18, 'test/m107.test.ts': 18, 'test/m108.test.ts': 4,
+  'test/m104.test.ts': 18, 'test/m105.test.ts': 18, 'test/m107.test.ts': 18, 'test/m108.test.ts': 5,
   'test/m109.test.ts': 10, 'test/m11.test.ts': 25, 'test/m110.test.ts': 9, 'test/m12.test.ts': 35,
   'test/m124.test.ts': 3, 'test/m125.test.ts': 4, 'test/m126.test.ts': 11, 'test/m127.test.ts': 7,
-  'test/m128.test.ts': 4, 'test/m129.test.ts': 2, 'test/m13.test.ts': 29, 'test/m130.test.ts': 3,
+  'test/m128.test.ts': 4, 'test/m129.test.ts': 2, 'test/m13.test.ts': 31, 'test/m130.test.ts': 3,
   'test/m131.test.ts': 7, 'test/m132.test.ts': 7, 'test/m133.test.ts': 3, 'test/m134.test.ts': 5,
   'test/m135.test.ts': 4, 'test/m136.test.ts': 6, 'test/m137.test.ts': 8, 'test/m138.test.ts': 8,
   'test/m139.test.ts': 4, 'test/m14.test.ts': 18, 'test/m140.test.ts': 2, 'test/m141.test.ts': 4,
@@ -244,17 +254,17 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m146.test.ts': 1, 'test/m147.test.ts': 5, 'test/m148.test.ts': 9, 'test/m149.test.ts': 2,
   'test/m15.test.ts': 29, 'test/m150.test.ts': 2, 'test/m151.test.ts': 3, 'test/m152.test.ts': 5,
   'test/m153.test.ts': 2, 'test/m154.test.ts': 2, 'test/m155.test.ts': 1, 'test/m156.test.ts': 1,
-  'test/m157.test.ts': 1, 'test/m159.test.ts': 2, 'test/m16.test.ts': 39, 'test/m161.test.ts': 5,
+  'test/m157.test.ts': 1, 'test/m159.test.ts': 2, 'test/m16.test.ts': 39, 'test/m161.test.ts': 6,
   'test/m162.test.ts': 11, 'test/m163.test.ts': 3, 'test/m164.test.ts': 2, 'test/m165.test.ts': 3,
   'test/m166.test.ts': 6, 'test/m168.test.ts': 1, 'test/m169.test.ts': 17, 'test/m17.test.ts': 32,
   'test/m170.test.ts': 13, 'test/m171.test.ts': 11, 'test/m172.test.ts': 2, 'test/m173.test.ts': 5,
   'test/m174.test.ts': 8, 'test/m176.test.ts': 16, 'test/m177.test.ts': 9, 'test/m178.test.ts': 8,
   'test/m179.test.ts': 8, 'test/m18.test.ts': 22, 'test/m180.test.ts': 18, 'test/m181.test.ts': 8,
-  'test/m182.test.ts': 4, 'test/m183.test.ts': 4, 'test/m184.test.ts': 18, 'test/m185.test.ts': 15,
-  'test/m186.test.ts': 2, 'test/m187.test.ts': 9, 'test/m189.test.ts': 20, 'test/m19.test.ts': 48,
-  'test/m190.test.ts': 15, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m21.test.ts': 16,
+  'test/m182.test.ts': 4, 'test/m183.test.ts': 4, 'test/m184.test.ts': 24, 'test/m185.test.ts': 15,
+  'test/m186.test.ts': 2, 'test/m187.test.ts': 14, 'test/m189.test.ts': 29, 'test/m19.test.ts': 48,
+  'test/m190.test.ts': 18, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m21.test.ts': 16,
   'test/m22.test.ts': 21, 'test/m23.test.ts': 65, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20,
-  'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 5,
+  'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6,
   'test/m3.test.ts': 27, 'test/m30.test.ts': 13, 'test/m31.test.ts': 15, 'test/m32.test.ts': 45,
   'test/m33.test.ts': 49, 'test/m34.test.ts': 23, 'test/m35.test.ts': 37, 'test/m36.test.ts': 27,
   'test/m37.test.ts': 8, 'test/m38.test.ts': 49, 'test/m39.test.ts': 8, 'test/m4.test.ts': 31,
@@ -267,7 +277,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m68.test.ts': 10, 'test/m69.test.ts': 1, 'test/m7.test.ts': 29, 'test/m71.test.ts': 2,
   'test/m72.test.ts': 5, 'test/m73.test.ts': 27, 'test/m74.test.ts': 24, 'test/m75.test.ts': 18,
   'test/m76.test.ts': 7, 'test/m77.test.ts': 15, 'test/m78.test.ts': 9, 'test/m79.test.ts': 4,
-  'test/m8.test.ts': 29, 'test/m80.test.ts': 25, 'test/m81.test.ts': 14, 'test/m82.test.ts': 5,
+  'test/m8.test.ts': 29, 'test/m80.test.ts': 25, 'test/m81.test.ts': 15, 'test/m82.test.ts': 5,
   'test/m83.test.ts': 24, 'test/m84.test.ts': 17, 'test/m85.test.ts': 35, 'test/m86.test.ts': 16,
   'test/m87.test.ts': 18, 'test/m88.test.ts': 60, 'test/m89.test.ts': 5, 'test/m9.test.ts': 34,
   'test/m90.test.ts': 18, 'test/m91.test.ts': 9, 'test/m92.test.ts': 13, 'test/m93.test.ts': 37,
@@ -291,4 +301,94 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   assert.equal(EXEMPTION_CLASSES.length, 2, '豁免类收敛到两类（label 子集 / 结构约束）')
   assert.ok(REJUDGED.length >= 2, '两类旧豁免必须逐条重判')
   assert.ok(REJUDGED.every((row) => row.evidence.length > 0), '重判必须带现盘证据站点')
+})
+
+test('M189-09 §3.1（DEF-096）：符号支路也"引用自己那一行不算" —— 自解析不许恒可解析 + 反例', () => {
+  // ① 自解析形态：引用写在**被指文件自己**里 ⇒ 必须红并点名
+  const selfBogus = checkDocs([{ path: 'a.ts', text: ' * 见 `a.ts` 的 `noSuchSymbolV22`。\n' }])
+  assert.deepEqual(selfBogus.map((issue) => issue.kind), ['dangling-id'], '自解析的真悬空必须红')
+  assert.match(selfBogus[0]?.detail ?? '', /noSuchSymbolV22|a\.ts#noSuchSymbolV22/u, '必须点名被指的符号')
+  // ② 写到**别的**文件里（同一符号）⇒ 同样红（两种写法同判）
+  const otherBogus = checkDocs([
+    { path: 'a.ts', text: ' * 见 `b.ts` 的 `noSuchSymbolV22`。\n' },
+    { path: 'b.ts', text: 'export const x = 1\n' },
+  ])
+  assert.deepEqual(otherBogus.map((issue) => issue.kind), selfBogus.map((issue) => issue.kind), '自解析与非自解析必须同判')
+  // ③ 反例（DoD ④）：**真存在**的符号写在被指文件自己里 ⇒ **不许红**
+  assert.deepEqual(
+    checkDocs([{ path: 'a.ts', text: ' * 见 `a.ts` 的 `realSymbol`。\nexport function realSymbol(): void {}\n' }]),
+    [],
+    '真存在的符号写在文件自己里不许红（别把"自己那一行不算"做成"凡自引用一律红"）',
+  )
+  // ④ 同一文件里"连举好几个"：各自独立点名 —— 悬空的那个红、真存在的那个不红
+  const mixed = checkDocs([{
+    path: 'a.ts',
+    text: ' * 见 `a.ts` 的 `realSymbol`。\n * 另见 `a.ts` 的 `noSuchSymbolV22`。\nexport function realSymbol(): void {}\n',
+  }])
+  assert.deepEqual(mixed.map((issue) => issue.kind), ['dangling-id'], '只点悬空那一个')
+  assert.match(mixed[0]?.detail ?? '', /noSuchSymbolV22/u, '点名的是悬空的那个符号（不是真存在的那个）')
+  // ⑤ 中英一致：英文写法同判
+  assert.deepEqual(
+    checkDocs([{ path: 'a.ts', text: ' * see `a.ts` the `noSuchSymbolV22`.\n' }]).map((issue) => issue.kind),
+    ['dangling-id'],
+    '英文写法必须同判',
+  )
+})
+
+test('M189-10 §3.2（DEF-095）：交付注释里的符号引用自己必须可解析（注释与实现同源）+ 反例', () => {
+  // 引用面 = `test/docRefs.ts` 自己；见证面 = src + test（含 helper）+ docs
+  const faces = repoDocFaces(ROOT)
+  const witnesses = [...faces.witnesses, ...walkTs(join(ROOT, 'test'))]
+  const issues = checkDocFiles([join(ROOT, 'test', 'docRefs.ts')], witnesses)
+  const dangling = issues.filter((issue) => issue.kind === 'dangling-id')
+  assert.deepEqual(dangling, [], `docRefs.ts 注释里的符号引用必须都能解析（真名）：${JSON.stringify(dangling).slice(0, 400)}`)
+  // ② 方向与数量必须与实现逐字相符（**措辞级**判据；行为面由 `M189-06`/`M189-07` 各自钉住：
+  //    "向左找"变异 ⇒ `M189-02`/`M189-05/06/07` 红；"候选取整行"变异 ⇒ `M189-05/06/07` 红）
+  const source = readFileSync(join(ROOT, 'test', 'docRefs.ts'), 'utf8')
+  assert.ok(source.includes('symbolAfter'), '注释必须引用真名 `symbolAfter`')
+  assert.equal(source.includes('symbolsOf'), false, '`symbolsOf` 是旧名（`DEF-095`）：注释里不许再出现')
+  assert.ok(source.includes('只向右、至多 1 个'), '方向与数量必须与实现逐字相符（只向右 / 至多 1 个）')
+  assert.equal(/左\/右各取|最多 2 个/u.test(source), false, '不许再写"左/右各取"或"最多 2 个"')
+  // 反例：同一机制喂一条**不存在的**标识符 ⇒ 必须红并点名
+  const bogus = checkDocs([{ path: 'test/docRefs.ts', text: ' * 见 `test/docRefs.ts` 的 `noSuchSymbolXyz`。\n' }], [
+    { path: 'test/docRefs.ts', text: 'export function checkDocs(): void {}\n' },
+  ])
+  assert.deepEqual(bogus.map((issue) => issue.kind), ['dangling-id'], '注释里的不存在标识符必须红并点名')
+  assert.match(bogus[0]?.detail ?? '', /noSuchSymbolXyz/u)
+  // 豁免面钉子：**裸反引号标识符**不构成引用形态（`DEF-095` 的判据面就是它）⇒ 加一个不存在的名字也不许红
+  assert.deepEqual(
+    checkDocs(
+      [{ path: 'test/docRefs.ts', text: ' * 见 `noSuchBareNameXyz` 这个裸标识符（不是引用形态）。\n' }],
+      [{ path: 'test/docRefs.ts', text: 'export function checkDocs(): void {}\n' }],
+    ),
+    [],
+    '裸反引号标识符不在判据面内（豁免面：只认"路径 之后 的符号"这一形态）',
+  )
+})
+
+test('M189-11 §3.5（DEF-093 第十批）：三条未登记豁免面 —— 形态集口径 / `siteKey` 折叠 / 变量再 `includes`', () => {
+  // ① **形态集口径与实现同源**：`assert.*` **整行**都在册（行里写 `indexOf`/`split` 也是），
+  //    而**非 assert** 行只认四类读文本调用（`includes`/`match`/`startsWith`/`endsWith`）
+  const inAssert = extractProseSites([{ path: 'x.test.ts', text: "assert.equal(x.indexOf('暂不可派'), 1)\n" }])
+  assert.equal(inAssert.length, 1, 'assert 行里的 `indexOf` 也在册（口径 = `assert.*` 整行）')
+  assert.deepEqual(
+    extractProseSites([{ path: 'x.test.ts', text: "const at = line.indexOf('暂不可派')\n" }]),
+    [],
+    '非 assert 行里的 `indexOf` 不在册（登记在豁免面表：只认四类调用）',
+  )
+  // ② `siteKey = path:line` 会把**同一行的两处**折叠成一个键（登记在表里 —— 不是漏，是已知代价）
+  const two = extractProseSites([{ path: 'x.test.ts', text: 'assert.match(a, /暂不可派/u); assert.match(b, /另说/u)\n' }])
+  assert.equal(two.length, 2, '同一行的两处都必须在候选集里（抽取器看得见）')
+  assert.equal(new Set(two.map(siteKey)).size, 1, '但 `siteKey` 把它们折叠成一个键（豁免面登记项）')
+  // ③ **真缝隙（第十批修）**：中文先放变量、再 `includes(变量)` ⇒ 必须被抓
+  const viaBinding = extractProseSites([{ path: 'x.test.ts', text: "const zh = '暂不可派'\nassert.ok(receipt.includes(zh))\n" }])
+  assert.equal(viaBinding.length, 1, '变量再 `includes` 的形态必须被抽取器抓住（此前 `sites = 0`）')
+  assert.equal(viaBinding[0]?.literal, '暂不可派', '被登记的必须是变量里绑定的那段中文')
+  assert.equal(viaBinding[0]?.kind, 'partial', '它是"读渲染文本"那一类')
+  // 反例（不是恒红）：变量绑的是**英文** ⇒ 不进候选集（判据只看字形）
+  assert.deepEqual(
+    extractProseSites([{ path: 'x.test.ts', text: "const en = 'dispatchable'\nassert.ok(receipt.includes(en))\n" }]),
+    [],
+    '英文变量的读取不进候选集（语言无关：只按"有没有汉字"判）',
+  )
 })

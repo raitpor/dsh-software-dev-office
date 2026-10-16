@@ -111,12 +111,25 @@ test('M184-03 §3.5（D1）结构：三条纪律写进了三张角色卡与 docs
     assert.match(text, /`git ls-files \.sdo\/` = 0/u, `${rel} 缺第 6 条：lib/ 与 .sdo/ 不被 git 跟踪 ⇒ 纯度要用 find -newermt + 整树 sha256`)
     assert.match(text, /写范围闸门只看命令文本/u, `${rel} 缺第 7 条：闸门只看命令文本，没被拦 ≠ 写了没关系`)
     // **R20（第九批 §3.8）**：五条**逐字**在位（删/改任一条 ⇒ 红并**点名是哪一条**）
-    assert.match(text, /副本树复制清单（完整版）/u, `${rel} 缺第 8 条：副本树复制清单（完整版，缺 docs ⇒ 9 fail、再缺软链 ⇒ 1 fail）`)
+    assert.match(text, /副本树复制清单（完整版/u, `${rel} 缺第 8 条：副本树复制清单（完整版，缺 docs ⇒ 9 fail、再缺软链 ⇒ 1 fail）`)
     assert.match(text, /指向仓库 `node_modules` 的软链/u, `${rel} 缺第 8 条里的"指向仓库 node_modules 的软链"`)
     assert.match(text, /守卫真正读的那一层/u, `${rel} 缺第 9 条：变异要打在守卫真正读的那一层（层选错 ⇒ 读数不完整）`)
     assert.match(text, /脚本跑完了/u, `${rel} 缺第 10 条：变异自证要加"脚本跑完了"的证据`)
     assert.match(text, /同一时刻连采两次互核/u, `${rel} 缺第 11 条：并发仓里的纯度采样要同一时刻连采两次互核`)
     assert.match(text, /数行数，不要 grep 标签/u, `${rel} 缺第 12 条：diff -rq 的中文标签会骗出假 0 ⇒ 数行数`)
+    // **`DEF-097`（第十批 §3.7）**：第 8 条的复制清单补成 **15 项** + "树内全量三个数一致"的自证 + **唯一来源**
+    assert.match(text, /`README\.md`/u, `${rel} 缺第 8 条里的 \`README.md\`（V22 实测 7 处假红）`)
+    assert.match(text, /`presets\/`/u, `${rel} 缺第 8 条里的 \`presets/\`（V22 实测 10 处假红）`)
+    assert.match(text, /`tsconfig\.json`/u, `${rel} 缺第 8 条里的 \`tsconfig.json\`（V22 实测 1 处假红）`)
+    assert.match(text, /`client\.d\.ts`/u, `${rel} 缺第 8 条里的 \`client.d.ts\`（V22 实测 1 处假红）`)
+    assert.match(text, /断言 `pass`\/`fail`\/`skip` 三个数与仓库读数一致/u, `${rel} 缺第 8 条里的"树内全量三个数一致"自证（树不完整要在第一步暴露）`)
+    assert.match(text, /这一份是\*\*唯一来源\*\*/u, `${rel} 缺"清单唯一来源"那句（R21 第 17 条只许引用它）`)
+    // **`R21`（第十批 §3.8）**：五条新方法论逐字在位（删/改任一条 ⇒ 红并点名是哪一条）
+    assert.match(text, /「哈希变了」 ≠ 「文件被写了」/u, `${rel} 缺第 13 条：哈希变了 ≠ 文件被写了（忘了 writeFileSync 会假绿）`)
+    assert.match(text, /`--test-reporter=tap`/u, `${rel} 缺第 14 条：自证"脚本跑完了"要用 tap reporter`)
+    assert.match(text, /每次读数都打印该树 `lib` 的整树 sha/u, `${rel} 缺第 15 条：树内 lib 与源码不同步会污染整轮读数`)
+    assert.match(text, /必须\*\*逐用例\*\*取读数/u, `${rel} 缺第 16 条：逐用例取读数（别数 ✖ 行）`)
+    assert.match(text, /运算符优先级会造出不存在的缺陷/u, `${rel} 缺第 17 条：运算符优先级会造出不存在的缺陷`)
     // 既有三条**不许被改写**（R18 的 DoD ⑤：只许追加）
     assert.match(text, /绝不改仓库的 `lib\/`/u, `${rel} 既有第 1 条被改写了`)
     assert.match(text, /先自证「字节真的变了」/u, `${rel} 既有第 2 条被改写了`)
@@ -135,5 +148,5 @@ test('M184-03 §3.5（D1）结构：三条纪律写进了三张角色卡与 docs
   // **单条可红**：删掉第 4 条那半句（"变异编译产物…源码哈希"）就必须红 —— 用节内**逐条分点**计数兜住
   const section = readFileSync(join(ROOT, targets[0] as string), 'utf8')
   const bullets = (section.slice(section.indexOf('## 变异与交付产物的纪律')).match(/^\d+\. /gmu) ?? []).length
-  assert.equal(bullets, 12, `D1 那一节必须是 12 条（3 条既有 + 4 条 R18 + 5 条 R20），实际 ${bullets} 条`)
+  assert.equal(bullets, 17, `D1 那一节必须是 17 条（3 条既有 + 4 条 R18 + 5 条 R20 + 5 条 R21），实际 ${bullets} 条`)
 })

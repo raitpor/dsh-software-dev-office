@@ -228,11 +228,19 @@ test('M161-06 §3.2（DEF-085）：codeOnly 必须剥**行尾注释**，但不�
   assert.equal(code.includes("'a // b'"), true, '字符串里的 `//` 不许误剥（引号内）')
   assert.equal(code.includes('const a = 1'), true, '代码本体必须留下')
   // **豁免面（第九批 §8.1）逐条钉住**：这两条是**有意不抓**的形态（改它 ⇒ 这两格红，见 §8.1 的变异读数）
-  const multiline = 'const t = `a\n// 多行模板里的这一行\n`\n'
+  // ⚠️ **两条机制分开钉**（`DEF-098` 第十批 §3.3 的改正：此前只有行首那一格，两条机制都能让它 false、
+  //    分辨不出是哪条在剥）：行首的 `//` 归**整行注释过滤**，行**内**的 `//` 归**行尾注释剥离**。
+  const lineStart = 'const t = `a\n// 多行模板里的这一行\n`\n'
   assert.equal(
-    codeOnly(multiline).includes('// 多行模板里的这一行'),
+    codeOnly(lineStart).includes('// 多行模板里的这一行'),
     false,
-    '多行字符串/模板里的 `//` 会被当整行注释剥掉（**有意不做跨行词法**，见豁免面清单）',
+    '跨行模板里**行首**的 `//` 被整行注释过滤剥掉（**有意不做任何跨行词法**，见豁免面清单）',
+  )
+  const inline = 'const t = `a\nx // 多行模板里的行内注释\n`\n'
+  assert.equal(
+    codeOnly(inline).includes('x // 多行模板里的行内注释'),
+    false,
+    '跨行模板里**行内**的 `//` 被行尾注释剥离剥掉（同上：有意不做跨行词法）',
   )
   assert.equal(
     codeOnly('const a = 1 # 中文 # 形态').includes('# 中文 # 形态'),

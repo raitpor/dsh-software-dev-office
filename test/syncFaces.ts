@@ -41,6 +41,14 @@ export interface PathReport {
   extra: string[]
   /** 两边都有但内容不同 */
   drifted: string[]
+  /**
+   * **该声明路径在源与副本里都不存在**（`DEF-087` 第十批 §3.6）。
+   *
+   * 修前这里直接 `return undefined` ⇒ `files` 声明了、而源与副本**同时缺**的一条路径
+   * **连一行都不报**（未登记的豁免面）。现在照样出列并点名（`path` 就是那一条），
+   * 三列空 + `absent: true` 表示"不是面内多/少/内容问题，而是**这条声明面整体不在**"。
+   */
+  absent: boolean
 }
 
 export interface FaceReport {
@@ -74,14 +82,15 @@ const sorted = (list: readonly string[]): string[] => [...list].sort()
 /** 单条声明路径的对账：目录递归比、单文件比存在性与内容。 */
 function reconcilePath(entry: string, dir: string, sourceRoot: string): PathReport | undefined {
   const source = join(sourceRoot, entry)
-  if (!existsSync(source)) return undefined
   const target = join(dir, entry)
+  // **源与副本同时缺** ⇒ 照样出列点名（`absent`），不再 `return undefined` 把它整条吞掉
+  if (!existsSync(source)) return { path: entry, missing: [], extra: [], drifted: [], absent: !existsSync(target) }
   if (statSync(source).isFile()) {
     const missing = existsSync(target) ? [] : ['']
     const drifted = missing.length === 0 && sha256(source) !== sha256(target) ? [''] : []
-    return { path: entry, missing, extra: [], drifted }
+    return { path: entry, missing, extra: [], drifted, absent: false }
   }
-  if (!existsSync(target)) return { path: entry, missing: sorted(walkFiles(source)), extra: [], drifted: [] }
+  if (!existsSync(target)) return { path: entry, missing: sorted(walkFiles(source)), extra: [], drifted: [], absent: false }
   const from = walkFiles(source)
   const to = walkFiles(target)
   const inTo = new Set(to)
@@ -91,6 +100,7 @@ function reconcilePath(entry: string, dir: string, sourceRoot: string): PathRepo
     missing: sorted(from.filter((rel) => !inTo.has(rel))),
     extra: sorted(to.filter((rel) => !inFrom.has(rel))),
     drifted: sorted(from.filter((rel) => inTo.has(rel) && sha256(join(source, rel)) !== sha256(join(target, rel)))),
+    absent: false,
   }
 }
 

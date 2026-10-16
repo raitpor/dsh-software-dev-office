@@ -94,8 +94,13 @@ description: SDO 角色卡｜测试工程师 —— 把验收标准变成可执�
 5. **只读复验会话不得走 `npm test`** —— 它的脚本是 `npm run build && node scripts/run-tests.mjs`，**会重建 `lib/`**（= 改交付产物）。只读会话要跑全量就直接 `node scripts/run-tests.mjs`。
 6. **纯度不能只看 `git status`**：`lib/` 与 `.sdo/` **都不被 git 跟踪**（`git ls-files .sdo/` = 0）⇒ 判"有没有改交付产物 / 台账"必须加 `find <路径> -newermt <开工时刻>`（`lib/` 另加**整树 sha256** 前后比对）。
 7. **写范围闸门只看命令文本**：它会拦 `rm -rf` 这类**写形态**，而 `node scripts/run-tests.mjs` 会写 `node_modules/.sdo-test/` 却**不被拦** ⇒ **别把"没被拦"当成"写了也没关系"**（拦截是启发式，纪律是自律）。
-8. **副本树复制清单（完整版）**：`src` + `test` + `lib` + `skills` + **`docs`** + `scripts` + 仓库根被测试读到的文件（`CHANGELOG.md` / `client.js` / `package.json` / `package-lock.json`）+ **指向仓库 `node_modules` 的软链**。少一样，树内全量就会**假红**（实测：缺 `docs` ⇒ **9 fail**；再缺软链 ⇒ **1 fail**）。
+8. **副本树复制清单（完整版，第 4 版，**唯一一份**）**：`src` + `test` + `lib` + `skills` + **`docs`** + `scripts` + **`README.md`** + **`presets/`** + **`tsconfig.json`** + **`client.d.ts`** + `CHANGELOG.md` + `client.js` + `package.json` + `package-lock.json` + **指向仓库 `node_modules` 的软链**（**15 项**）。少一样，树内全量就会**假红**（逐版实测：缺 `docs` ⇒ **9 fail**；再缺软链 ⇒ **1 fail**；第 3 版还缺 `README.md`（7 处）/ `presets/`（10 处）/ `tsconfig.json`（1 处）/ `client.d.ts`（1 处）⇒ **1371 / 1351 / 20 fail**）。**并在变异前先跑一次树内全量、断言 `pass`/`fail`/`skip` 三个数与仓库读数一致**（树不完整在**第一步**暴露，而不是变成后面某格的假红）。这一份是**唯一来源**：任何地方提到副本树清单都只许**引用**它（不许另写一份）。
 9. **变异要打在「守卫真正读的那一层」** —— 同一条守据可能**同时**读**编译产物**（`import` 的 helper）与**源码文本**（`readFileSync`）⇒ 只变异 `lib/` 对读源码的那半**天然无效**（**层选错，读数就不完整**）。
 10. **变异自证要加「脚本跑完了」的证据** —— `patch()` 能自证「字节变了」，**证不了「脚本跑完了」**（上一批有一次 `SyntaxError` 让脚本根本没跑，那一轮读数全是**遗留变异体**的旧读数）。
 11. **并发仓里的纯度采样** —— `find | xargs sha256sum` 这类**边读边算**的样本会被并发会话带偏 ⇒ 要**同一时刻连采两次互核**；且 **`newermt` 只证「被碰过」，「没变」必须靠整树 sha + `cmp`**。
 12. **`diff -rq` 的中文标签会骗出假 0** —— 按 `differ$` / `Only in` grep 计数会得 0 而总数 39（自相矛盾）⇒ **数行数，不要 grep 标签**。
+13. **「哈希变了」 ≠ 「文件被写了」** —— 探针若**算了哈希却忘了 `writeFileSync`**，会出现"自证字节变了 = true 而内容没变"的**假绿**（V23 六格假绿）⇒ 变异必须**从盘上读回**再断言（`onDisk === mutated`），不是只比内存里的字符串。
+14. **自证「脚本跑完了」要用 `--test-reporter=tap`** —— Node v26 默认 reporter **不打** `# pass/# fail` 两个数 ⇒ 拿不到"脚本真的跑到了底"的证据（`node --test --test-reporter=tap …` 才有）。
+15. **树内 `lib` 与源码不同步会污染整轮读数** —— 同一棵树"隔离跑 5 红 / 全量 1 红"就是这么来的 ⇒ **每次读数都打印该树 `lib` 的整树 sha**，并确认树内源码比 `lib` 新时先重建。
+16. **只用文件级 `fail` 会把「守卫没红」误读成「守卫红了」** ⇒ 必须**逐用例**取读数（`--test-reporter=tap | grep '^not ok' | sort -u`），不要数 `✖` 行（Node 会把每个失败用例打两遍）。
+17. **运算符优先级会造出不存在的缺陷** —— `'…' + JSON.stringify(a) === JSON.stringify(b)` 里 `+` 先结合 ⇒ 打出假的"零破坏 = false"（**信了就会报一条不存在的缺陷**）⇒ 先算再比、或加括号。

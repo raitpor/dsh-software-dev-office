@@ -7,10 +7,11 @@
  *   · **只认证词**：保留措辞、抽掉真正的结论 ⇒ 仍绿。
  *
  * 新判据**只认标识符与结构标记，不认自然语言措辞**（因此中英文行为一致）：
- *   ① **解析性**（`dangling-id`）：凡是**标识符引用**（`DEF-123`，或 `` `file.ts` `` 的 `` `symbol` ``）都必须
- *      **在扫描面里别处可解析** —— 引用自己那一行不算。⇒ 引一个不存在的实体必红，引一个真存在的实体不红。
- *      符号引用的"被指符号"取**结构上最近的那一个**（路径 token 左/右各取最近的标识符 token，见 `symbolsOf`），
- *      **不再是**"引用行里所有反引号词"（`DEF-091`：那种口径下，行里多写一个真词就能喂饱真悬空）。
+ *   ① **解析性**（`dangling-id`）：凡是**标识符引用**（`DEF-123`，或 `` `test/docRefs.ts` `` 的 `` `checkDocs` ``）都必须
+ *      **在扫描面里别处可解析** —— **引用自己那一行不算**（两条支路同口径：`DEF-` 号支路与符号支路）。
+ *      ⇒ 引一个不存在的实体必红，引一个真存在的实体不红。
+ *      符号引用的"被指符号"取**结构上最近的那一个**（路径 token **之后**最近的标识符 token，见 `symbolAfter`，
+ *      **只向右、至多 1 个**），**不再是**"引用行里所有反引号词"（`DEF-091`：那种口径下，行里多写一个真词就能喂饱真悬空）。
  *   ② **承载性**（`missing-carrier` / `empty-quote` / `quote-mismatch`）：凡把**结论委托给别处**的写法，
  *      必须用**结构标记**登记，且**逐字携带**载体的结论：
  *        · 引用方：`sdo:ref <id>` + `sdo:quote:begin` … `sdo:quote:end`
@@ -76,7 +77,7 @@ export interface Citation {
   line: number
   path?: string
   symbol?: string
-  /** **结构候选**：路径 token 左/右各最近的那一个标识符（去重后最多 2 个）。解析只需其一命中。 */
+  /** **结构候选**：路径 token **之后**最近的那一个标识符（**只向右、至多 1 个**）。解析只需它命中。 */
   candidates?: string[]
   raw?: string
 }
@@ -136,7 +137,7 @@ export function citationsIn(text: string): Citation[] {
     // ⚠️ 只认**本仓缺陷号的形态**（三位起：台账是 `DEF-001`…）：`DEF-1`/`DEF-2` 这种是散文里的
     // **示例/占位符**（真机现场：`// 逐卡列出声明：\`TASK-xxx → DEF-1, DEF-2\``）—— 形态判定，与语言无关。
     for (const match of line.matchAll(/\bDEF-\d{3,}/gu)) out.push({ id: match[0], kind: 'defect', line: index + 1 })
-    // `path/to/file.ts` 的 `symbol`（被指符号 = 路径 token 左/右最近的标识符 token，见 `symbolsOf`）
+    // `test/docRefs.ts` 的 `checkDocs` 这种写法（被指符号 = 路径 token **之后**最近的标识符 token，见 `symbolAfter`）
     const tokens = tokensIn(line)
     for (const match of line.matchAll(/`([\w./-]+\.ts)`/gu)) {
       const file = match[1] as string
@@ -172,13 +173,21 @@ export function checkDocs(docs: readonly DocText[], witnesses: readonly DocText[
   for (const doc of docs) {
     for (const citation of citationsIn(doc.text)) {
       if (citation.kind === 'symbol') {
-        // **候选口径（`DEF-091` 起）**：只认**结构上最近**的那一两个标识符 token（`citation.candidates`
-        // 由 `symbolsOf` 按"无第二个路径 token + 间隔 ≤ `CITATION_GAP_MAX`"选出），不再是"引用行里所有
-        // 反引号词" —— 后者会让行里别处一个真词把真悬空喂饱（S2 绿 / S3 红，同形不同判）。
+        // **候选口径（`DEF-091` 起）**：只认**结构上最近的那一个**标识符 token（`citation.candidates`
+        // 由 `symbolAfter` 按"无第二个路径 token + 间隔 ≤ `CITATION_GAP_MAX`"选出，**只向右、至多 1 个**），
+        // 不再是"引用行里所有反引号词" —— 后者会让行里别处一个真词把真悬空喂饱（S2 绿 / S3 红，同形不同判）。
         const target = witnesses.find((other) => other.path.endsWith(citation.path as string))
         const candidates = citation.candidates ?? [citation.symbol as string]
+        // **`DEF-096`（第十批 §3.1）**：`DEF-` 号支路早有"引用自己那一行不算"，符号支路此前没有 ⇒
+        // 把引用写在**被指文件自己**里时**恒可解析**（自解析）。现在同口径：引用那一行**不算数**，
+        // 必须在**别的行**上还能找到这个符号（真存在的符号写在文件自己里照样绿，见 `test/m189`）。
+        const haystack = target === undefined
+          ? ''
+          : doc.path === target.path
+            ? target.text.split('\n').filter((_line, at) => at + 1 !== citation.line).join('\n')
+            : target.text
         const found = target !== undefined
-          && candidates.some((name) => new RegExp(`\\b${name}\\b`, 'u').test(target.text))
+          && candidates.some((name) => new RegExp(`\\b${name}\\b`, 'u').test(haystack))
         if (!found) issues.push({ kind: 'dangling-id', path: doc.path, detail: `${citation.id}（第 ${citation.line} 行）指向的定义查无实体` })
         continue
       }
