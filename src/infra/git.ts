@@ -30,23 +30,30 @@ export function readDirtyWorktree(workspace: string): DirtyWorktree {
     } catch {
       prefix = ''
     }
-    const raw = run(['status', '--porcelain', '--untracked-files=no'])
+    // **DEF-084（第七批 §3.2）**：必须用 `-z`。默认出参受 `core.quotePath=true` 影响，会把非 ASCII
+    // 文件名**八进制转义**（`文档/说明.md` ⇒ `"\\346\\226\\207…"`）⇒ 与写范围里的真名**永不相等**
+    //（违反"语言无关"长期约束；中文名在本仓是常态）。`-z` 直接给**原始字节**、以 `\0` 分隔，
+    // 且**改名条目会多一段**（`XY <新路径>\0<旧路径>\0`）⇒ 取新路径并跳过紧随的旧路径段。
+    // **不自己写反转义实现**（优先让 git 给原文）：源码里也不许出现八进制反转义。
+    const raw = run(['status', '--porcelain', '-z', '--untracked-files=no'])
     const tracked: string[] = []
-    for (const line of raw.split('\n')) {
-      if (line.trim() === '') continue
-      const rest = line.slice(3).trim()   // 形如 `XY <path>`；`XY` 恒为两列
-      // 改名形态 `R  old -> new`：取新路径（那才是工作区里现在存在的那个）
-      const arrow = rest.indexOf(' -> ')
-      let path = arrow >= 0 ? rest.slice(arrow + 4) : rest
-      if (path.startsWith('"') && path.endsWith('"') && path.length > 1) path = path.slice(1, -1)
+    const parts = raw.split('\0')
+    for (let index = 0; index < parts.length; index += 1) {
+      const entry = parts[index] ?? ''
+      if (entry === '') continue
+      const status = entry.slice(0, 2)
+      const path = entry.slice(3)
+      // 改名 / 复制：紧随其后的那一段是**旧路径**，跳过（工作区里现在存在的是新路径）
+      if (status.startsWith('R') || status.startsWith('C')) index += 1
       // **porcelain 的路径恒为「仓库根相对」**（实测：在子目录里跑也是仓库根相对）⇒
       // 工作区是仓库子目录时：① 剥掉工作区前缀；② **不属于工作区的改动直接丢掉**
       //（否则"仓库别处的未提交文件"会被当成"压在这张卡写范围上"，把派发面误拦）。
+      let relative = path
       if (prefix !== '') {
-        if (!path.startsWith(prefix)) continue
-        path = path.slice(prefix.length)
+        if (!relative.startsWith(prefix)) continue
+        relative = relative.slice(prefix.length)
       }
-      if (path !== '') tracked.push(path)
+      if (relative !== '') tracked.push(relative)
     }
     return { ok: true, tracked: [...new Set(tracked)] }
   } catch (error) {

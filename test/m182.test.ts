@@ -80,6 +80,22 @@ test('M182-02 §3.10（R17）：无 `sessionId` 的 fail-open 记为**有意放�
   assert.match(roles, /有意放行/u, '必须明确记"有意放行"（不许含糊）')
   assert.match(roles, /只有合成探针/u, '必须给可达性结论：只有合成探针能造出这一态')
   assert.match(roles, /fail-closed/u, '必须写明"若将来宿主真的允许无名会话 ⇒ 改成 fail-closed"的触发条件')
+  // **DEF-086（第七批 §3.4）**：交叉引用要么有实体、要么不存在 —— 全仓不许出现"理由记在 <别处>"这种
+  // **悬空指针**（上一版就是写"理由记在这里与 `DEF-054` 的口径旁注里"，而那一处并没有这个结论）。
+  assert.equal(
+    /理由记在[^\n]*DEF-\d+/u.test(roles),
+    false,
+    '`roles.ts` 里不许再出现"理由记在 … DEF-xxx …"这种指向别处的悬空引用（本条理由必须自足）',
+  )
+  const dangling: string[] = []
+  for (const file of ['src/domain/roles.ts', 'src/domain/plan.ts', 'src/office.ts', 'src/index.ts', 'src/infra/git.ts']) {
+    const text = readFileSync(join(ROOT, file), 'utf8')
+    for (const line of text.split('\n')) {
+      // 形态：`理由记在/结论记在/详见 … DEF-xxx`（指向**别处**承载结论）—— 只认这种"把结论外包"的写法
+      if (/理由记在|结论记在|详见/u.test(line) && /DEF-\d+/u.test(line)) dangling.push(`${file}: ${line.trim().slice(0, 80)}`)
+    }
+  }
+  assert.deepEqual(dangling, [], `不许把结论外包给别处缺陷却不说清是哪里（悬空引用）：${dangling.join(' | ')}`)
   // 行为三态（不因留痕改动而变）：无 sessionId ⇒ allow；带 sessionId 的未认领子会话 ⇒ 权威面 deny
   assert.deepEqual(roleMaskDecision('cockpit', 'sdo_plan'), { kind: 'allow' }, '驾驶舱不受限（口径不变）')
   assert.equal(roleMaskDecision(UNCLAIMED_CHILD_FACE, 'sdo_plan').kind, 'deny', '带会话的未认领子会话仍收窄（口径不变）')

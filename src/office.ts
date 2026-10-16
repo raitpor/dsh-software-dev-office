@@ -77,8 +77,8 @@ import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domai
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropDependents, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, textPathsOf, validatePlan } from './domain/plan.js'
-import type { DecomposeInput, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropDependents, dirtyScopeHolds, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, textPathsOf, validatePlan  } from './domain/plan.js'
+import type { DecomposeInput, DirtyRead, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
   listDefects,
   listReviews,
@@ -3345,8 +3345,15 @@ export class SoftwareDevOffice {
     // **认领卡**与**卡与卡**，而"别人未提交的交付"不属于任何卡。`git` 读不动（不是仓库/没有 git）
     // ⇒ 传 `undefined` ⇒ 这一类**不判**（判不了不拦，与 `DEF-054`/`R17` 同一方向），原因在 `reason` 里。
     const root = this.workspaceRootFor(call) ?? call.cwd
-    const dirty = root === undefined ? { ok: false, tracked: [] as string[] } : readDirtyWorktree(root)
-    return classifyNonDispatchable(this.tasks(call), this.staleEntryGate(call), dirty.ok ? dirty.tracked : undefined)
+    // **第七批 §3.1 F4**：这里也必须把**三种状态**如实传下去（上一批只传 `ok ? tracked : undefined`
+    // ⇒ 诊断面把"读不动"折叠成了"没判"＝与"干净"逐字节相同 —— 同一判据的**两个消费点**都得改）。
+    const dirty: DirtyRead = root === undefined
+      ? { ok: false, reason: '无法确定工作区根（拿不到 cwd / 会话登记）' }
+      : ((): DirtyRead => {
+          const read = readDirtyWorktree(root)
+          return read.ok ? { ok: true, tracked: read.tracked } : { ok: false, reason: read.reason ?? '' }
+        })()
+    return classifyNonDispatchable(this.tasks(call), this.staleEntryGate(call), dirty)
   }
 
   /**
@@ -3824,11 +3831,28 @@ export class SoftwareDevOffice {
       overlap: row.overlap,
     }))
     const heldByScopeIds = new Set(heldByScope.map((row) => row.taskId))
+    // **DEF-080（第七批 §3.1 F1/F2）—— 真拦**：写范围压在**未提交的被跟踪改动**上的卡**本轮不派**。
+    // 为什么必须在这一层拦：这一层（`admission`）是**两条派发路径共用的候选筛选**（`plan.dispatch`），
+    // 而上一批只把 `dirty` 接进 `describeNonDispatchable` ⇒ 它只出现在 `why=true` / 队列满 / 无卡三支，
+    // **派发主路径（`sdo_plan action=next`）既不停卡、回执也一个字不提**（F1 的真机读数）。
+    // 口径与 `heldByScope` 完全同构：**跳过该卡、不阻断整轮**；回执单列一行点名**相交的那条未提交路径**。
+    const dirtyRead = ((): DirtyRead | undefined => {
+      const root = this.workspaceRootFor(call) ?? call.cwd
+      if (root === undefined) return undefined
+      const read = readDirtyWorktree(root)
+      return read.ok ? { ok: true, tracked: read.tracked } : { ok: false, reason: read.reason ?? '' }
+    })()
+    const dirtyByScope = (dirtyRead?.ok === true ? dirtyScopeHolds(tasks, dirtyRead.tracked) : []).map((row) => ({
+      taskId: row.task.id,
+      over: row.over,
+    }))
+    const dirtyScopeIds = new Set(dirtyByScope.map((row) => row.taskId))
     const admission = admitDispatch({
       // **DEF-067 落点一（ADR-009 的不变量「派发可认领」）**：写范围与**任一在飞卡**相交的卡**不派**
       // —— 旧实现这里只排"已在飞"与 `blockedBy`，于是派出注定认领失败的卡
       //（真机：三张核实卡写同一个 `.sdo/reviews/`，两张白烧一轮会话）。判定走唯一出口。
-      ready: fairReady.filter((task) => !inFlight.has(task.id) && !heldByScopeIds.has(task.id)),
+      ready: fairReady.filter((task) =>
+        !inFlight.has(task.id) && !heldByScopeIds.has(task.id) && !dirtyScopeIds.has(task.id)),
       pools: snapshot.pools,
       globalRoom: Math.max(0, this.settings.maxParallelDispatch - inProgress),
       // **R-5 症状 D**：全局预算拒收回执要报**真实**的"进行中"张数（旧实现硬编码 0）
@@ -3850,7 +3874,14 @@ export class SoftwareDevOffice {
       .map((row) => ({ taskId: row.task.id, role: row.task.role, gaps: [...row.gaps] }))
       // 同一张卡可能出现两次（fairReady 是 snapshot.ready 的重排）⇒ 去重
       .filter((row, index, all) => all.findIndex((item) => item.taskId === row.taskId) === index)
-    return { ...admission, heldByDispatch, infeasible, ...(heldByScope.length === 0 ? {} : { heldByScope }) }
+    return {
+      ...admission,
+      heldByDispatch,
+      infeasible,
+      ...(heldByScope.length === 0 ? {} : { heldByScope }),
+      ...(dirtyByScope.length === 0 ? {} : { dirtyByScope }),
+      ...(dirtyRead?.ok === false ? { dirtyUnjudgeable: { reason: dirtyRead.reason } } : {}),
+    }
   }
 
   /**

@@ -357,6 +357,16 @@ export interface PoolAdmission {
    * 有写范围却没有 `write/edit`）—— 派发前就要说出来，别等子会话动手失败（真机赔了一整轮）。
    */
   infeasible?: { taskId: string; role: string; gaps: string[] }[] | undefined
+  /**
+   * **DEF-080（第七批 §3.1 F1/F2）**：这些计划卡的写范围压在**未提交的被跟踪改动**上 ⇒ 本轮**不派**
+   *（与 `heldByScope` 同一形状、同一回执面）。点名的 `over` 是**那些未提交的路径**，读者照做即可。
+   */
+  dirtyByScope?: { taskId: string; over: string[] }[] | undefined
+  /**
+   * **DEF-080 F4**：工作树**读不动**（不是仓库/没有 git）⇒ 这一态**单列**出来，
+   * 与"干净"（键不出现）可区分，带 `reason` 供人判读。
+   */
+  dirtyUnjudgeable?: { reason: string } | undefined
 }
 
 /**

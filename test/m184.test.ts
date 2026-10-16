@@ -9,6 +9,7 @@
  * 「`lib/` 不被 git 跟踪 ⇒ 用 sha256/cmp 判定」三条必须写进**随包交付的角色卡**与 docs 约定处。
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -104,5 +105,28 @@ test('M184-03 §3.5（D1）结构：三条纪律写进了三张角色卡与 docs
     assert.match(text, /自证「字节真的变了」/u, `${rel} 必须写"变异先自证字节变了"`)
     assert.match(text, /`sha256sum` \/ `cmp`/u, `${rel} 必须写"用 sha256sum/cmp 判定交付产物有没有被改（git status 看不出来）"`)
     assert.match(text, /`git checkout --` \/ `git restore` \/ `git stash`/u, `${rel} 必须写明不许用哪三条命令`)
+    // **R18（第七批 §3.6）**：四条新纪律**逐字**在位（任一条被删/改 ⇒ 这条断言红并**点名是哪一条**）
+    assert.match(text, /`tdd-red-green-missing`/u, `${rel} 缺第 4 条：变异编译产物 ⇒ 红→绿绑同一源码哈希 ⇒ 判无效（点名是哪一条）`)
+    assert.match(text, /只读复验会话不得走 `npm test`/u, `${rel} 缺第 5 条：只读复验不得走 npm test（会重建 lib/）`)
+    assert.match(text, /`git ls-files \.sdo\/` = 0/u, `${rel} 缺第 6 条：lib/ 与 .sdo/ 不被 git 跟踪 ⇒ 纯度要用 find -newermt + 整树 sha256`)
+    assert.match(text, /写范围闸门只看命令文本/u, `${rel} 缺第 7 条：闸门只看命令文本，没被拦 ≠ 写了没关系`)
+    // 既有三条**不许被改写**（R18 的 DoD ⑤：只许追加）
+    assert.match(text, /绝不改仓库的 `lib\/`/u, `${rel} 既有第 1 条被改写了`)
+    assert.match(text, /先自证「字节真的变了」/u, `${rel} 既有第 2 条被改写了`)
+    assert.match(text, /`sha256sum` \/ `cmp`/u, `${rel} 既有第 3 条被改写了`)
   }
+  // **四份的那一节必须逐字节相同**（R18 的 DoD ①）—— 按"节"取哈希，不是整份文件（角色卡正文本来就不同）
+  const hashes = new Map<string, string[]>()
+  for (const rel of targets) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const at = text.indexOf('## 变异与交付产物的纪律')
+    assert.ok(at > 0, `${rel} 缺 D1 那一节`)
+    const digest = createHash('sha256').update(text.slice(at)).digest('hex')
+    hashes.set(digest, [...(hashes.get(digest) ?? []), rel])
+  }
+  assert.equal(hashes.size, 1, `四份文件的 D1 那一节必须逐字节相同，实际有 ${hashes.size} 种：${[...hashes.values()].map((group) => group.join('+')).join(' / ')}`)
+  // **单条可红**：删掉第 4 条那半句（"变异编译产物…源码哈希"）就必须红 —— 用节内**逐条分点**计数兜住
+  const section = readFileSync(join(ROOT, targets[0] as string), 'utf8')
+  const bullets = (section.slice(section.indexOf('## 变异与交付产物的纪律')).match(/^\d+\. /gmu) ?? []).length
+  assert.equal(bullets, 7, `D1 那一节必须是 7 条（3 条既有 + 4 条 R18），实际 ${bullets} 条`)
 })

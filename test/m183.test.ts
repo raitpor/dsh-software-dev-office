@@ -85,7 +85,7 @@ test('M183-01 行为：卡写范围 ∩ **未提交的被跟踪改动** ⇒ 判"
   assert.equal(again.includes('未提交的被跟踪改动'), false, '提交之后必须恢复可派发')
 })
 
-test('M183-02 反例：**未跟踪**草稿不算"别人的交付"；多路径共同公约卡不算 1:1 独占；不是仓库则不判', () => {
+test('M183-02 反例（F2/F4 口径）：**未跟踪**草稿不算；多路径卡照样命中；读不动单列不假装干净', () => {
   // ① 未跟踪（`??`）不触发
   writeFileSync(join(WORKSPACE, 'src', 'scratch.ts'), '// wip\n')
   assert.deepEqual(readDirtyWorktree(WORKSPACE).tracked, [], '未跟踪文件不计入')
@@ -94,9 +94,18 @@ test('M183-02 反例：**未跟踪**草稿不算"别人的交付"；多路径共
   const rows = classifyNonDispatchable([card('planned')], undefined, ['src/app.ts'])
   assert.deepEqual(rows.dirty?.map((row) => row.task.id), ['TASK-001'], '被跟踪改动压在写范围上 ⇒ 出现这一行')
   assert.deepEqual(rows.dirty?.[0]?.over, ['src/app.ts'], '点名的是**那条未提交路径**')
-  // ③ 多路径写范围（共同公约）不算 1:1 独占 ⇒ 不报（与 ② 类同口径）
+  // ③ **F2（第七批 §3.1）**：多路径卡**照样命中** —— 上一批"只对单一路径 1:1 独占卡生效"的收窄
+  // 把现象段逐字点名的 `TASK-109` 形态（3 条写范围、其中一条正脏）整类豁免掉了。
   const shared = { ...card('planned'), writeScopes: ['src/', 'docs/'] }
-  assert.equal(classifyNonDispatchable([shared], undefined, ['src/app.ts']).dirty, undefined, '多路径不算独占')
+  const multi = classifyNonDispatchable([shared], undefined, ['src/app.ts']).dirty
+  assert.deepEqual(multi?.map((row) => row.task.id), ['TASK-001'], '多路径卡必须命中（F2）')
+  assert.deepEqual(multi?.[0]?.over, ['src/app.ts'], '必须点名那条脏路径（F2）')
+  // `TASK-109` 的形状：3 条写范围、其中 `src/index.ts` 正脏 ⇒ 必须命中并点名它
+  const three = { ...card('planned'), writeScopes: ['src/index.ts', 'src/domain/', 'test/'] }
+  const hit = classifyNonDispatchable([three], undefined, ['src/index.ts', 'README.md']).dirty
+  assert.deepEqual(hit?.[0]?.over, ['src/index.ts'], '三条写范围里脏的那条必须被点名（F2 的正例）')
+  // 反例：与卡写范围**不相交**的脏文件 ⇒ 不命中
+  assert.equal(classifyNonDispatchable([three], undefined, ['README.md', 'package.json']).dirty, undefined, '不相交 ⇒ 不命中')
   // ④ 工作区是**更大仓库的子目录**时：只报**工作区内**的改动，且路径相对工作区
   //（porcelain 的路径恒为仓库根相对 —— 不丢别处路径就会把派发面误拦）
   const sub = join(WORKSPACE, 'sub')
@@ -114,6 +123,17 @@ test('M183-02 反例：**未跟踪**草稿不算"别人的交付"；多路径共
     ['inside.txt'],
     '只报工作区内的改动（工作区外那条 `outside.txt` 也算脏，但不许混进来），且路径相对工作区',
   )
+  // ④b **F4（第七批 §3.1）**：三态在**分类结果**层面两两可区分（干净 / 脏 / 读不动）
+  const cleanPlan = classifyNonDispatchable([card('planned')], undefined, [])
+  const dirtyPlan = classifyNonDispatchable([card('planned')], undefined, ['src/app.ts'])
+  const blindPlan = classifyNonDispatchable([card('planned')], undefined, { ok: false, reason: 'git 不在' })
+  assert.equal(cleanPlan.dirty, undefined, '干净 ⇒ 没有 dirty 键')
+  assert.equal(cleanPlan.dirtyUnjudgeable, undefined, '干净 ⇒ 也没有"判不了"键')
+  assert.equal(dirtyPlan.dirty?.length, 1, '脏 ⇒ 有 dirty 键')
+  assert.equal(dirtyPlan.dirtyUnjudgeable, undefined, '脏 ⇒ 不许同时报"判不了"')
+  assert.equal(blindPlan.dirty, undefined, '读不动 ⇒ 不许报出"脏"（那会假装判过）')
+  assert.deepEqual(blindPlan.dirtyUnjudgeable, { reason: 'git 不在' }, '读不动 ⇒ 单列并带 reason')
+  assert.notDeepEqual(cleanPlan, blindPlan, '干净与读不动**不许**逐字节相同（F4 的核心）')
   // ⑤ 读不动（路径不存在 ⇒ git 直接失败）⇒ `ok:false`，带上原因、**不假装干净**
   const none = readDirtyWorktree(join(BASE, 'does-not-exist'))
   assert.equal(none.ok, false, '读不动 ⇒ ok:false（判不了不拦，但绝不说"干净"）')

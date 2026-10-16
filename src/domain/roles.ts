@@ -364,7 +364,11 @@ export function filterKnownTools(names: readonly string[], isKnown: (name: strin
  * `{kind:'unknown'}`）钩子**不施加掩码** ⇒ `sdo_plan` 在掩码路径上判 allow。可达性结论：**只有合成探针**能
  * 造出这一态 —— 真实工具调用一定发生在某个会话里（宿主在 `ToolExecution.agent.session.header` 上给 id，
  * 插件 `injectionCall` 也从那里取），我们构造不出"宿主给了调用却不给会话"的真实路径。
- * ⇒ **有意放行**（fail-open：认不出人不该变成干不了活），理由记在这里与 `DEF-054` 的口径旁注里；
+ * ⇒ **有意放行**（fail-open：认不出人不该变成干不了活）。**理由就写在这一段里**（自足，不指向别处）：
+ * 与 `DEF-054` 那次"跨项目串账"的分界一致 —— **认不出归属时不许硬猜**（猜错比不判更贵），
+ * 所以这里选择"不施加掩码"而不是"随便挑一个面"；`DEF-054` 的旁注讲的是**工作区根**的归属，
+ * **不承担**本条的结论（第七批 §3.4 / `DEF-086`：上一版把本条的结论**外包**给 `DEF-054` 的旁注，
+ * 而那一处并没有它 —— 那是**悬空引用**，现已改成自足）；
  * 若将来宿主真的允许无名会话，这里要改成 fail-closed（归属不到 ⇒ deny 并点名"无法确定会话"）。
  */
 export function maskAllows(code: Role | string, tool: string, context: MaskContext = {}): boolean {

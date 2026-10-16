@@ -337,6 +337,7 @@ function describeNonDispatchable(plan: NonDispatchablePlan): string {
     && plan.scope.length === 0
     && plan.dependencies.length === 0
     && plan.dirty === undefined
+    && plan.dirtyUnjudgeable === undefined
   ) {
     return t('uiIndex.kNonDispatchableIdle')
   }
@@ -376,6 +377,10 @@ function describeNonDispatchable(plan: NonDispatchablePlan): string {
         p2: row.over.join('、'),
       })).join('；'),
     }))
+  }
+  // **DEF-080 F4（第七批 §3.1）**：读不动**单列**，且措辞**不许**说成"干净/无冲突"
+  if (plan.dirtyUnjudgeable !== undefined) {
+    sections.push(fmt('uiIndex.kNonDispatchableDirtyUnjudged', { p1: plan.dirtyUnjudgeable.reason }))
   }
   if (plan.dependencies.length > 0) {
     sections.push(fmt('uiIndex.kNonDispatchableDependencyHead', {
@@ -1592,6 +1597,17 @@ export function apply(ctx: Context, config: SdoConfig): void {
         p3: row.holderOwner === '' ? t('uiCollab.unblockNoOwner') : row.holderOwner,
         p4: row.overlap.join(t('uiCollab.kListSep')),
       })).join('\n') + '\n'
+      // **DEF-080 F1（第七批 §3.1）**：因**未提交改动**压在写范围上而**本轮不派**的卡 —— 与
+      // `heldByScopeSection` 同一形状、同一位置。上一批这一类只在诊断面可见 ⇒ 派发主路径
+      // （`sdo_plan action=next`）既不停卡也不提示（F1 的真机读数）。
+      const dirtyRows = plan.dirtyByScope ?? []
+      const dirtyByScopeSection = dirtyRows.length === 0 ? '' : '\n' + dirtyRows.map((row) => fmt('uiIndex.kDispatchDirtyScopeLine', {
+        p1: row.taskId,
+        p2: row.over.join(t('uiCollab.kListSep')),
+      })).join('\n') + '\n'
+      const dirtyUnjudgedSection = plan.dirtyUnjudgeable === undefined
+        ? ''
+        : '\n' + fmt('uiIndex.kDispatchDirtyUnjudged', { p1: plan.dirtyUnjudgeable.reason }) + '\n'
       // **DEF-053**：孤儿锁（卡在 in-progress 但拥有它的子会话已结算）与"派发未认领"必须**主动**提示
       //（不再靠撞锁才暴露）；每条都给可执行命令。这里是**只读判定**，落事件在真正派发那条路径上做。
       const health = office.dispatchHealth(call)
@@ -1927,7 +1943,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。
       // 只在**真派发**这条路径上写：`why=true` 是纯诊断，不改台账。
       office.noteClaimMissing(call, health.claimMissing)
-      return `${dispatchSummary}\n\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${healthSection}${rejectedSection}${structuralSection}`
+      return `${dispatchSummary}\n\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
     },
 
     async task(call: OfficeCall, args: TaskArgs): Promise<string> {

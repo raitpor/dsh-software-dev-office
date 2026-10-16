@@ -1276,7 +1276,10 @@ export function dirtyScopeHolds(tasks: readonly TaskCard[], dirtyPaths: readonly
   const out: DirtyScopeHold[] = []
   for (const task of tasks) {
     if (task.status !== 'planned' && task.status !== 'ready') continue
-    if (task.writeScopes.length !== 1) continue
+    // **第七批 §3.1 F2**：不再收窄到"单一路径 1:1 独占卡" —— 那条收窄把**现象段逐字点名的形态**
+    //（`TASK-109`：3 条写范围、其中 `src/index.ts` 正脏）整类豁免掉，真台账命中 0 行。
+    // 现在口径是「**卡写范围内的任一路径** 与 **任一被跟踪的脏文件** 相交」（仍走唯一出口 `scopeOverlaps`；
+    // `scopeOverlaps(脏路径, 卡写范围)` 返回的正是**脏的那些路径**，回执据此点名）。
     const over = scopeOverlaps(dirtyPaths, task.writeScopes)
     if (over.length > 0) out.push({ task, over })
   }
@@ -1316,6 +1319,17 @@ export function dropDependents(
   return { direct, downstream }
 }
 
+/**
+ * **第七批 §3.1 F4**：工作树判定的**三态**输入。
+ *
+ * `undefined` = **调用方不做这一类判定**（键不出现，旧调用点形状零破坏）；
+ * 数组 = 兼容旧的"已经是干净读数"形态（等价于 `{ok:true, tracked}`）；
+ * `{ok:false}` = **读不动**（不是仓库 / 没有 git / 命令失败）⇒ 必须与"干净"**可区分**。
+ */
+export type DirtyRead =
+  | { readonly ok: true; readonly tracked: readonly string[] }
+  | { readonly ok: false; readonly reason: string }
+
 export interface NonDispatchablePlan {
   /**
    * **当前阶段入口门禁失效**因此不派的卡（DEF-040）：与 `blocked` / `scope` / `dependencies` **并列**的第四类。
@@ -1347,13 +1361,22 @@ export interface NonDispatchablePlan {
    * ⇒ 既有调用点返回对象的形状与以前**逐字节相同**（与 `gateStale`/`exclusive` 同一套零破坏口径）。
    */
   dirty?: DirtyScopeHold[] | undefined
+  /**
+   * ⑤ **无法判定工作树**（`DEF-080` F4）：`git` 读不动时这个键带着 `reason` 出现
+   * —— 与"干净"（键不出现）和"脏"（`dirty` 非空）**三态两两可区分**，且**不许**在这一态
+   * 输出"干净/无冲突"这类确定性结论。
+   */
+  dirtyUnjudgeable?: { reason: string } | undefined
 }
 
 export function classifyNonDispatchable(
   tasks: TaskCard[],
   staleGate?: StaleGate | undefined,
-  /** **DEF-080**：被跟踪文件的未提交改动（相对工作区）。不传 = 不做这一类判定（形状零破坏）。 */
-  dirtyPaths?: readonly string[] | undefined,
+  /**
+   * **DEF-080**：被跟踪文件的未提交改动（相对工作区）。
+   * 不传 = 不做这一类判定（形状零破坏）；也接受 {@link DirtyRead} 以表达"读不动"。
+   */
+  dirtyPaths?: readonly string[] | DirtyRead | undefined,
 ): NonDispatchablePlan {
   const ended = (task: TaskCard): boolean =>
     task.status === 'done' || task.status === 'verified' || task.status === 'dropped'
@@ -1417,12 +1440,20 @@ export function classifyNonDispatchable(
     exclusiveRows.push({ task, other: holder })
   }
   const exclusive = exclusiveRows.length === 0 ? {} : { exclusive: exclusiveRows }
-  const dirtyHolds = dirtyPaths === undefined ? [] : dirtyScopeHolds(tasks, dirtyPaths)
-  const dirty = dirtyHolds.length === 0 ? {} : { dirty: dirtyHolds }
+  // **F4**：把三种输入归一成「判过/没判/判不了」——"判不了"**不许**折叠成"干净"
+  const dirtyState = ((): { rows: DirtyScopeHold[]; unjudgeable?: string } => {
+    if (dirtyPaths === undefined) return { rows: [] }
+    if (Array.isArray(dirtyPaths)) return { rows: dirtyScopeHolds(tasks, dirtyPaths) }
+    const read = dirtyPaths as DirtyRead
+    return read.ok ? { rows: dirtyScopeHolds(tasks, read.tracked) } : { rows: [], unjudgeable: read.reason }
+  })()
+  const dirty = dirtyState.rows.length === 0 ? {} : { dirty: dirtyState.rows }
+  const dirtyUnjudged = dirtyState.unjudgeable === undefined ? {} : { dirtyUnjudgeable: { reason: dirtyState.unjudgeable } }
   return {
     ...gateStale,
     ...exclusive,
     ...dirty,
+    ...dirtyUnjudged,
     blocked,
     scope,
     // ③ 依赖未满足：blocked 卡已归 ①，别在两类里各报一次（否则读者会以为有两张卡）

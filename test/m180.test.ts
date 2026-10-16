@@ -50,8 +50,31 @@ test('M180-02 R14②：第三批任务书里的四处更正块**逐条**在位�
   const summaryBlock = doc.slice(sec911)
   assert.match(inlineBlock, /现盘实为\*\*两笔\*\*/u, '§9.7 那一块必须**自己**带"两笔"读数（单点钉住：删了它就红）')
   assert.match(summaryBlock, /现盘实为\*\*两笔\*\*/u, '§9.11 第 4 条必须**自己**带"两笔"读数（单点钉住：删了它就红）')
-  // 顺带：`asOf` 计数口径的**追加式**更正（第六批 §3.8）也必须在位
-  assert.match(summaryBlock, /2 处对象属性赋值/u, '§9.11 必须带上"2 处对象属性赋值 + 1 处声明 + 1 处消费"的精确口径（追加式更正）')
+  // **DEF-083（第七批 §3.5）**：`asOf` 的计数口径不许再以**字面量**形式钉住（上一版是"必须存在 `2 处对象属性赋值`"
+  // ⇒ **谁把数字改对，反而把守卫弄红**）。现在改成**现算对账**：按三条机械口径从源码现算，与文档里写的数逐个比对。
+  // 行号**不参与**判定（漂移不该红）；删掉一处赋值点 / 把文档里的数字改错 ⇒ 红。
+  const marker = '二次更正（第七批 §3.5'
+  const at = doc.lastIndexOf(marker)
+  assert.ok(at > 0, '第三批 §9.11 必须有第七批的**二次更正**（追加式；上一版把对的数改成了错的）')
+  const tail = doc.slice(at)
+  const block = tail.slice(0, tail.indexOf(String.fromCharCode(10, 10)) < 0 ? undefined : tail.indexOf(String.fromCharCode(10, 10)))
+  const docNumber = (pattern: RegExp, what: string): number => {
+    const found = block.match(pattern)
+    assert.ok(found !== null, `二次更正里必须给出「${what}」的计数（现算对账的锚）`)
+    return Number(found[1])
+  }
+  const codeLines = (text: string): string[] => text.split('\n').filter((line) => !/^\s*(\*|\/\/|\/\*)/u.test(line))
+  const records = read('src/domain/records.ts')
+  const described = read('src/interface/describe.ts')
+  // 口径①：**对象属性赋值**（行首或行内的 `asOf:`，排除接口声明的 `asOf: string` 与注释行）
+  const assignments = codeLines(records).filter((line) => /(^|[\s{(,])asOf:/u.test(line) && !/asOf\??:\s*string/u.test(line)).length
+  // 口径②：**接口声明**（`asOf: string` / `asOf?: string`）
+  const declarations = (records.match(/^\s+asOf\??: string/mu) ?? []).length
+  // 口径③：**消费行数**（`describe.ts` 里引用 `asOf` 的行）
+  const consumed = described.split('\n').filter((line) => /asOf/u.test(line)).length
+  assert.equal(docNumber(/\*\*对象属性赋值 (\d+) 处\*\*/u, '对象属性赋值'), assignments, `文档写的赋值点数必须等于**现算**值（现算 ${assignments}）`)
+  assert.equal(docNumber(/\*\*接口声明 (\d+) 处\*\*/u, '接口声明'), declarations, `文档写的声明数必须等于**现算**值（现算 ${declarations}）`)
+  assert.equal(docNumber(/\*\*消费 (\d+) 行\*\*/u, '消费'), consumed, `文档写的消费行数必须等于**现算**值（现算 ${consumed}）`)
   // 汇总节也在位（四条同处可读）
   assert.match(doc, /### 9\.11/u, '四条口径更正必须有一个汇总节（§9.11）')
   // 反例：**原条保留**（不是把历史结论改写掉）—— 原句必须还在

@@ -156,10 +156,26 @@ test('M161-05 DEF-034 收口（第五批 §3.2）：词表唯一，**两层中�
   // ⑤ **§3.4（R15）口径收窄**：本判据断言的是**输出标签**（两层对同一 token 印同一个词），
   // **不是**"全仓禁止出现「分支」这个词" —— 把「分支」当**非法输入**喂进去的四处用例必须**留着**
   // （`m34` 两处、`m35` 两处；删了它们反而会让"中文标签不是取值"这条口径失去守卫）。
+  // **DEF-085（第七批 §3.3）**：上一版这里是"整文件出现次数 ≥ 2"的**计数下界** —— 而 `m34` 里「分支」
+  // 共 8 处、`m35` 共 18 处（其中大半是"控制流分支"这种正常用词）⇒ 把**任务书点名的那四处非法输入**
+  // 换成别的 token，这条断言**照样绿**（下界钉不住站点）。现在改成**逐个钉住具体表达式**
+  //（不钉整段措辞、更不钉行号）：任一处被换掉/删掉 ⇒ **点名是哪一处**。
   const m34 = readSource('test/m34.test.ts')
   const m35 = readSource('test/m35.test.ts')
-  assert.ok((m34.match(/分支/gu) ?? []).length >= 2, '`m34` 必须留着把「分支」当非法取值的用例（≥2 处）')
-  assert.ok((m35.match(/分支/gu) ?? []).length >= 2, '`m35` 必须留着把「分支」当非法取值的用例（≥2 处）')
+  const sites: { what: string; where: string; source: string; pattern: RegExp }[] = [
+    { what: 'm34 单值非法输入（`criterion: \'分支\'`）', where: 'm34:484', source: m34, pattern: /\{ criterion: '分支' \}/u },
+    { what: 'm34 多值非法输入清单里的「分支」', where: 'm34:824', source: m34, pattern: /values = \[[^\]]*'分支'/u },
+    { what: 'm35 非法取值清单里的「分支」', where: 'm35:1146', source: m35, pattern: /'coverage', '分支'/u },
+    { what: 'm35 形状层拒「分支」', where: 'm35:1178', source: m35, pattern: /shapeOf\('分支'\)\.accepted, false/u },
+    { what: 'm35 判定层拒「分支」', where: 'm35:1179', source: m35, pattern: /judgedOf\('分支'\)\.accepted, false/u },
+  ]
+  for (const site of sites) {
+    assert.equal(
+      site.pattern.test(site.source),
+      true,
+      `必须留着这处把「分支」当**非法输入**的用例（${site.what}，现盘约在 ${site.where}）—— 它是"中文标签不是取值"这条口径的守卫`,
+    )
+  }
 
   // ④ 两处都记录裁决/勘误的出处（读者要能顺着注释查到"为什么统一"）
   const wb = readSource('src/domain/testDesignWhitebox.ts')
