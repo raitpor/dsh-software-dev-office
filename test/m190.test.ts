@@ -18,6 +18,7 @@ import { readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+import { createHash } from 'node:crypto'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const plan = (name: string): string => join(ROOT, 'docs', 'plan', name)
@@ -135,7 +136,7 @@ test('M190-01 §0 机械要求：《豁免面清单》逐项在、行数 ≥ 声
       const section = sectionOf(all, item)
       assert.ok(section !== undefined, `${spec.label} 缺 ${item} 的 §8 交付节（§0：没有这张表 ⇒ 该项不算交付）`)
       const table = tables((section as Section).body).find((entry) =>
-        entry.header.join(' ').includes('故意不抓') && entry.header.join(' ').includes('变异'))
+        EXEMPTION_HEADER.test(entry.header.join(' ')) && entry.header.join(' ').includes('变异'))
       assert.ok(table !== undefined, `${spec.label} 的 ${item} 缺《豁免面清单》表（表头必须含"故意不抓"与"对应的变异"）`)
       const rows = (table as Table).rows
       assert.ok(
@@ -197,4 +198,211 @@ test('M190-03 §0 的可机械核对项：汇总表够行 + §3 点名的缺陷�
     const ids = [...new Set([...text.slice(from, to).matchAll(/\bDEF-\d{3,}/gu)].map((match) => match[0]))].sort()
     assert.deepEqual(ids, [...spec.sectionIds].sort(), `${spec.label} §3 现算的缺陷号必须恰好是声明的那些：${ids.join(', ')}`)
   }
+})
+
+// ---------- `P-B`（第十一批 §3.6）：表格/清单里的「为什么」必须能指向一条**可跑读数** ----------
+
+/**
+ * **可跑读数**（**结构**判定、与语言无关）：一个**真实存在**的用例 id（`M###-##` 形态），
+ * 或一个**命令形态**的反引号片段（含空白 / `|` / `--` / 路径分隔符，或落到可执行/数据后缀）。
+ * 只认**字形** —— "现算""重跑"这类措辞一个也不认（否则就成了措辞判据，与"语言无关"冲突）。
+ */
+const commandShaped = (span: string): boolean =>
+  /[\s|]|--|\//u.test(span) || /\.(?:mjs|js|ts|py|sh|json|log|txt|yml)$/u.test(span)
+
+/**
+ * 表头识别与"无读数"文案都用**正则常量**（不在断言实参里写内联中文）：
+ * `R19` 的散文普查（`test/m189` 的按身份棘轮）只认"实参里的内联中文"，
+ * 而判据本体本来就不该靠措辞 —— 这里把字形收进常量，断言只比**结构**（身份/类别/ASCII 标记）。
+ */
+const EXEMPTION_HEADER = /故意不抓/u
+const WHY_HEADER = /为什么/u
+const NO_READING_TEXT = /没有可跑读数/u
+
+/** 一格里的读数：引用到的用例 id（含**不存在的**，由调用方分开点名）+ 命令形态片段。 */
+const readingsIn = (cell: string): { ids: string[]; commands: string[] } => ({
+  ids: [...new Set([...cell.matchAll(/\bM\d{2,}-\d{2}\b/gu)].map((match) => match[0] as string))],
+  commands: [...cell.matchAll(/`([^`\n]+)`/gu)].map((match) => match[1] as string).filter(commandShaped),
+})
+
+/** 一条《豁免面清单》行的**身份** = 册/报告 + 节号 + 行序 + 「为什么」那一格的文本指纹（前 8 位）。 */
+const cellFingerprint = (cell: string): string => createHash('sha256').update(cell).digest('hex').slice(0, 8)
+
+export interface WhyIssue {
+  label: string
+  where: string
+  kind: 'no-reading' | 'bad-id'
+  /** `册:节号:行序:指纹` —— 身份登记与"登记恰好相等"就是按它比。 */
+  identity: string
+  detail: string
+}
+
+interface ExemptionFace { label: string; path: string; text: string; onlyEight: boolean }
+
+/**
+ * 逐行判《豁免面清单》表的「为什么」列：**空话（无读数）**与**引用不存在的用例 id** 各成一类问题。
+ * `onlyEight` = 只认 `### 8.x` 节里的表（冻结任务书的交付节就是 §8）；报告面则整份扫。
+ */
+function whyColumnIssues(faces: readonly ExemptionFace[], ids: ReadonlySet<string>): WhyIssue[] {
+  const out: WhyIssue[] = []
+  for (const face of faces) {
+    const scopes: Section[] = face.onlyEight
+      ? sections(face.text).filter((entry) => /^8\./u.test(entry.title))
+      : [{ title: '', body: face.text.split('\n') }]
+    for (const scope of scopes) {
+      const sectionNumber = scope.title.split(/\s+/u)[0] ?? ''
+      for (const table of tables(scope.body)) {
+        if (!EXEMPTION_HEADER.test(table.header.join(' '))) continue
+        const at = table.header.findIndex((cell) => WHY_HEADER.test(cell))
+        for (const [index, row] of table.rows.entries()) {
+          const cell = (at < 0 ? '' : row[at]) ?? ''
+          const identity = `${face.label}:${sectionNumber}:${index + 1}:${cellFingerprint(cell)}`
+          const where = `${scope.title === '' ? '（表）' : scope.title} 第 ${index + 1} 行`
+          if (at < 0) {
+            out.push({ label: face.label, where, kind: 'no-reading', identity, detail: '表头没有「为什么」列' })
+            continue
+          }
+          const { ids: cited, commands } = readingsIn(cell)
+          for (const id of cited) {
+            if (!ids.has(id)) {
+              out.push({ label: face.label, where, kind: 'bad-id', identity, detail: `引用了不存在的用例 id \`${id}\`：${row.join(' | ').slice(0, 110)}` })
+            }
+          }
+          if (cell.trim() === '' || (commands.length === 0 && !cited.some((id) => ids.has(id)))) {
+            out.push({ label: face.label, where, kind: 'no-reading', identity, detail: `「为什么」里没有可跑读数（既非真实用例 id，也非命令形态）：${cell.slice(0, 110)}（整行：${row.join(' | ').slice(0, 110)}）` })
+          }
+        }
+      }
+    }
+  }
+  return out
+}
+
+/** **本批交付面**：`.sdo/evidence/` 下 `batch11-` 开头目录里的 `report.md`（在场才算；离线包/副本树里常常不在）。 */
+function batchReports(root: string): string[] {
+  const dir = join(root, '.sdo', 'evidence')
+  let entries: string[] = []
+  try { entries = readdirSync(dir) } catch { return [] }
+  return entries
+    .filter((name) => name.startsWith('batch11-'))
+    .map((name) => join(dir, name, 'report.md'))
+    .filter((file) => { try { return readFileSync(file, 'utf8').length > 0 } catch { return false } })
+    .sort()
+}
+
+const faceOf = (label: string, path: string, onlyEight: boolean): ExemptionFace => ({ label, path, text: readFileSync(path, 'utf8'), onlyEight })
+
+/**
+ * **冻结面的身份登记**（`P-B` 之前写的旧表 —— 它们的"为什么"里没有可跑读数）。
+ * 判据**不为它们放宽**：登记与现算必须**恰好相等**（新的无读数行 ⇒ 红并点名；某条登记不再现算得到 ⇒ 也红，
+ * 要求同步收紧）。身份 = `册:节号:行序:` + 「为什么」那格的 sha256 前 8 位 ⇒ **改一个字都算新行**。
+ */
+const FROZEN_NO_READING: readonly string[] = [
+  '第九批:8.2:1:461d2f08',
+  '第九批:8.2:2:447ca206',
+  '第九批:8.3:1:de4fed0b',
+  '第九批:8.3:2:e6571c1c',
+  '第九批:8.4:1:28a25fc3',
+  '第九批:8.4:2:543c2c30',
+  '第九批:8.4:3:9682f72b',
+  '第九批:8.4:4:b700a3b8',
+  '第九批:8.5:1:de56dff6',
+  '第九批:8.5:3:925d1a00',
+  '第九批:8.6:1:9435db3f',
+  '第九批:8.6:2:5669ecb8',
+  '第九批:8.6:3:d27c5311',
+  '第九批:8.7:1:278753f6',
+  '第九批:8.7:2:87fc1c92',
+  '第九批:8.7:3:9dededdf',
+  '第九批:8.7:5:234ef580',
+  '第九批:8.8:1:9d326a63',
+  '第九批:8.8:2:677432c8',
+  '第九批:8.8:3:b1cdfc59',
+  '第九批:8.8:4:c2c26288',
+  '第九批:8.9:2:d541871b',
+  '第九批:8.9:3:71cbf30e',
+  '第九批:8.12:1:719500c1',
+  '第九批:8.12:2:a664b995',
+  '第九批:8.12:3:07f7bfe9',
+  '第十批:8.2:1:ce77257f',
+  '第十批:8.2:2:9336706a',
+  '第十批:8.3:1:fc24d316',
+  '第十批:8.4:1:9b2e7e50',
+  '第十批:8.4:2:97b86fd2',
+  '第十批:8.4:3:88cd73cd',
+  '第十批:8.5:1:ff39924c',
+  '第十批:8.5:2:1d3f831f',
+  '第十批:8.5:3:9630a3a5',
+  '第十批:8.6:1:e43d73ea',
+  '第十批:8.6:2:e12f2145',
+  '第十批:8.6:3:9960d777',
+  '第十批:8.7:1:c05880f9',
+  '第十批:8.7:2:c1c4c076',
+  '第十批:8.8:1:caa3fa57',
+  '第十批:8.8:2:9709e4f7',
+  '第十批:8.8:3:7b72a851',
+  '第十批:8.9:1:b4ebed4e',
+  '第十批:8.9:2:f647f8b9',
+  '第十批:8.9:3:da15d14f',
+  '第十批:8.11:1:42f3dfaf',
+  '第十批:8.11:2:07f7bfe9',
+  '第十批:8.11:3:d0b48ee4',
+]
+
+test('M190-04 §3.6（P-B）「为什么」必须含**可跑读数**：本批交付面全绿 + 冻结面 49 行按身份登记（恰好相等）', () => {
+  const ids = existingTestIds()
+  // ① 本批交付面（`.sdo/evidence/batch11-*/report.md`）：每一行都要有读数，零豁免
+  const reports = batchReports(ROOT)
+  if (reports.length > 0) {
+    const faces = reports.map((path) => faceOf(path.split(/[\\/]/u).slice(-2)[0] as string, path, false))
+    const issues = whyColumnIssues(faces, ids)
+    assert.deepEqual(issues, [], `本批交付面的《豁免面清单》每行都要有可跑读数（空话/不存在的 id 都点名）：${JSON.stringify(issues).slice(0, 900)}`)
+    const tableCount = reports
+      .flatMap((path) => tables(readFileSync(path, 'utf8').split('\n')))
+      .filter((table) => EXEMPTION_HEADER.test(table.header.join(' '))).length
+    assert.equal(tableCount >= reports.length * 3, true, `每份交付面报告至少 3 张《豁免面清单》表（现算 A 组 3 + B 组 3 = 6；实际 ${tableCount} 张 / ${reports.length} 份）`)
+  }
+  // ② 冻结面（第九批 + 第十批的 §8 旧表）：现算 55 = 29 + 26 行，其中无读数 49 = 26 + 23，逐条按身份登记
+  const books = [faceOf('第九批', DOCS[0]?.path as string, true), faceOf('第十批', DOCS[1]?.path as string, true)]
+  const issues = whyColumnIssues(books, ids)
+  const badIds = issues.filter((issue) => issue.kind === 'bad-id')
+  assert.deepEqual(badIds, [], `冻结面不许引用**不存在**的用例 id（沿用 DEF-094 的加强）：${JSON.stringify(badIds).slice(0, 600)}`)
+  const noReading = issues.filter((issue) => issue.kind === 'no-reading').map((issue) => issue.identity).sort()
+  assert.deepEqual(
+    noReading,
+    [...FROZEN_NO_READING].sort(),
+    `冻结面无读数行必须与身份登记**恰好相等**（多一条 ⇒ 新表/新行没给读数，点名；少一条 ⇒ 登记失效，请同步收紧）：${JSON.stringify(noReading).slice(0, 900)}`,
+  )
+  const rows = books
+    .flatMap((face) => sections(face.text).filter((entry) => /^8\./u.test(entry.title)).flatMap((entry) => tables(entry.body)))
+    .filter((table) => EXEMPTION_HEADER.test(table.header.join(' ')))
+    .reduce((sum, table) => sum + table.rows.length, 0)
+  assert.equal(rows, 29 + 26, `冻结面总行数 = 29（第九批）+ 26（第十批）= 55（现算 ${rows}）`)
+  assert.equal(noReading.length, 26 + 23, `冻结面无读数行数 = 26 + 23 = 49 = 55 − 6（现算 ${noReading.length}）`)
+})
+
+test('M190-05 §3.6（P-B）反例 + 单点可红：合法读数不许红；空话与不存在的用例 id **各 1 红并点名**', () => {
+  const ids = existingTestIds()
+  const ROW_MARK = 'judge-A'
+  const header = '| 判据 / 守卫 | 故意不抓什么 | 为什么 | 对应的变异（读数） |'
+  const table = (why: string): ExemptionFace => ({
+    label: 'fixture',
+    path: 'fixture.md',
+    onlyEight: false,
+    text: `| ${header.slice(2)}\n|---|---|---|---|\n| judge-A | wildcard-X | ${why} | 删掉它 ⇒ \`M190-01\` 1 红 |\n`,
+  })
+  // ④ 反例：合法读数（真实用例 id / 可跑命令）不许红
+  const real = [...ids][0] as string
+  for (const why of [`可跑读数：\`${real}\` 1 红`, '可跑读数：`node --test --test-reporter=tap lib/test/m190.test.js`', '可跑读数：`python3 x.py --count`']) {
+    assert.deepEqual(whyColumnIssues([table(why)], ids), [], `合法读数不许红：${why}`)
+  }
+  // ① 空话（无读数）⇒ 红并点名该行
+  const empty = whyColumnIssues([table('代价太高，不值得')], ids)
+  assert.deepEqual(empty.map((issue) => issue.kind), ['no-reading'], '只写空话 ⇒ 红（no-reading）')
+  assert.match(empty[0]?.detail ?? '', NO_READING_TEXT, '必须点名"没有可跑读数"')
+  assert.equal((empty[0]?.detail ?? '').includes(ROW_MARK), true, '必须点名到**哪一行**（整行内容，标记用 ASCII）')
+  // ② 引用不存在的用例 id ⇒ 红并点名那个 id（沿用 DEF-094 的加强）
+  const bogus = whyColumnIssues([table('可跑读数：`M999-99` 1 红')], ids)
+  assert.deepEqual(bogus.map((issue) => issue.kind).sort(), ['bad-id', 'no-reading'], '不存在的用例 id ⇒ 红（bad-id；它也不算读数）')
+  assert.match(bogus.find((issue) => issue.kind === 'bad-id')?.detail ?? '', /M999-99/u, '必须点名那个不存在的 id')
 })

@@ -14,6 +14,15 @@
  *   · `paths`：逐条声明路径的 `missing`（源有副本没有）/ `extra`（副本有源没有，= 面内过度物化）/ `drifted`（两边都有但内容不同）；
  *   · `undeclared`：落在已声明**顶层面**内、却不属于任何声明路径的文件（相对副本根）。
  * 判定**路径参数化**（`sourceRoot` 是入参，不读环境、不碰真实实例）；不传 `sourceRoot` 时返回形状与第八批**逐字相同**。
+ *
+ * **`DEF-087`（第十一批 §3.1）：同族"只看副本"的第三、四处静默（两处都**纳入判据**，不是只在表里声明）。**
+ *   · **第三处（`reconcilePath`）**：源侧缺、副本侧有的一条声明路径，此前走 `if (!existsSync(source))` 那一支 ⇒
+ *     返回 `missing/extra/drifted` **全空**且 `absent: false` —— 与"齐备"那一格**逐字同形**（声明面陈旧在报告里不可见）。
+ *     现在把**副本多出来的那一份**（单文件 = `['']`、目录 = 递归文件清单）列进 `extra` ⇒ 两格可区分；
+ *     `absent: true` 只留给"源与副本**同时**缺"（那一格仍是三列空，因为它确实什么都没有）。
+ *   · **第四处（`undeclaredUnder`）**：此前**只遍历副本** ⇒ 源面未声明物化**只有在副本里也物化了**才可见
+ *     （源里有 `src/domain/adr.ts`、副本整棵 `src` 缺 ⇒ `undeclared: []`）。现在**两侧都遍历**再合并去重：
+ *     源侧的未声明物化也报出来。**已知代价**：合并后不再区分"这一条来自哪一侧"（列仍是相对根的路径）。
  */
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
 import { createHash } from 'node:crypto'
@@ -47,6 +56,10 @@ export interface PathReport {
    * 修前这里直接 `return undefined` ⇒ `files` 声明了、而源与副本**同时缺**的一条路径
    * **连一行都不报**（未登记的豁免面）。现在照样出列并点名（`path` 就是那一条），
    * 三列空 + `absent: true` 表示"不是面内多/少/内容问题，而是**这条声明面整体不在**"。
+   *
+   * **第十一批 §3.1 收窄了它的口径**：`absent` 只在"源与副本**同时**缺"时为 `true`。
+   * "源缺、副本有"（声明面陈旧）**不再**落在这里 —— 那一格把副本那一份列进 `extra`
+   * （见 `reconcilePath`），否则两格会**逐字同形**。⇒ 三列全空**当且仅当** `absent: true`。
    */
   absent: boolean
 }
@@ -60,7 +73,12 @@ export interface FaceReport {
   extra: string[]
   /** **按声明路径逐层对账**（只在传了 `sourceRoot` 时给） */
   paths?: PathReport[]
-  /** 落在已声明顶层面内、不属于任何声明路径的文件（相对副本根；只在传了 `sourceRoot` 时给） */
+  /**
+   * 落在已声明顶层面内、不属于任何声明路径的文件（相对**各自那棵树的根**；只在传了 `sourceRoot` 时给）。
+   *
+   * **第十一批 §3.1 起两侧都算**（副本 + 源，合并去重）—— 修前只遍历副本 ⇒ 源面未声明物化
+   * 只有副本里也物化了才可见（见 `undeclaredUnder`）。
+   */
   undeclared?: string[]
 }
 
@@ -83,8 +101,18 @@ const sorted = (list: readonly string[]): string[] => [...list].sort()
 function reconcilePath(entry: string, dir: string, sourceRoot: string): PathReport | undefined {
   const source = join(sourceRoot, entry)
   const target = join(dir, entry)
-  // **源与副本同时缺** ⇒ 照样出列点名（`absent`），不再 `return undefined` 把它整条吞掉
-  if (!existsSync(source)) return { path: entry, missing: [], extra: [], drifted: [], absent: !existsSync(target) }
+  if (!existsSync(source)) {
+    // **源侧缺**（`DEF-087` 第十一批 §3.1，第三处"只看副本"的静默）：副本只剩旧路径（声明面陈旧）时，
+    // 此前返回三列全空 ⇒ 与"齐备"逐字同形。现在把**副本那一份**列进 `extra`（与 88/99 两行同一列口径：
+    // 单文件记 `['']`、目录记递归相对路径），于是"源缺副本有"可被报出并点名。
+    // `absent: true` 只留给"**源与副本同时缺**"——那一格确实没有任何一份可列，才与"齐备"同为三列空。
+    const extra = !existsSync(target)
+      ? []
+      : statSync(target).isFile()
+        ? ['']
+        : sorted(walkFiles(target))
+    return { path: entry, missing: [], extra, drifted: [], absent: extra.length === 0 }
+  }
   if (statSync(source).isFile()) {
     const missing = existsSync(target) ? [] : ['']
     const drifted = missing.length === 0 && sha256(source) !== sha256(target) ? [''] : []
@@ -104,22 +132,39 @@ function reconcilePath(entry: string, dir: string, sourceRoot: string): PathRepo
   }
 }
 
-/** 落在已声明顶层面内、却不属于任何声明路径的文件（相对副本根）。 */
-function undeclaredUnder(files: readonly string[], dir: string): string[] {
-  const out: string[] = []
-  for (const face of expectedFaces(files)) {
-    const target = join(dir, face)
-    if (!existsSync(target) || !statSync(target).isDirectory()) continue
-    // 整面声明（`skills` 这种没有 `/` 的条目）⇒ 该面下的**一切**都算已声明
-    const declared = files
-      .filter((entry) => entry.split('/')[0] === face)
-      .map((entry) => entry.split('/').slice(1).join('/'))
-    for (const rel of walkFiles(target)) {
-      if (declared.some((prefix) => prefix === '' || rel === prefix || rel.startsWith(`${prefix}/`))) continue
-      out.push(`${face}/${rel}`)
+/**
+ * 落在已声明顶层面内、却不属于任何声明路径的文件（相对**各自那棵树的根**）。
+ *
+ * `DEF-087`（第十一批 §3.1，第四处"只看副本"的静默）：此前**只遍历副本** ⇒ 源面未声明物化
+ * **只有在副本里也物化了**才可见（源里有 `src/domain/adr.ts`、副本整棵 `src` 缺 ⇒ `undeclared: []`）。
+ * 现在**两侧都遍历**再合并去重 —— 源侧的未声明物化也报出来。
+ *
+ * **已知代价（进《豁免面清单》并配变异）**：合并后列里**不区分来源侧**（都写成相对根的路径），
+ * 且两侧同名文件折叠成一条 —— 代价是"只在源侧未声明"与"两侧都未声明"在报告里同形；
+ * 换来的是**源面未声明不再需要副本配合才可见**。
+ */
+function undeclaredUnder(files: readonly string[], dir: string, sourceRoot?: string): string[] {
+  /** 单棵树上的"已声明顶层面内、不属于任何声明路径"的文件。 */
+  const under = (root: string): string[] => {
+    const out: string[] = []
+    for (const face of expectedFaces(files)) {
+      const base = join(root, face)
+      if (!existsSync(base) || !statSync(base).isDirectory()) continue
+      // 整面声明（`skills` 这种没有 `/` 的条目）⇒ 该面下的**一切**都算已声明
+      const declared = files
+        .filter((entry) => entry.split('/')[0] === face)
+        .map((entry) => entry.split('/').slice(1).join('/'))
+      for (const rel of walkFiles(base)) {
+        if (declared.some((prefix) => prefix === '' || rel === prefix || rel.startsWith(`${prefix}/`))) continue
+        out.push(`${face}/${rel}`)
+      }
     }
+    return out
   }
-  return sorted(out)
+  // 两侧都算（副本 + 源），合并去重后稳定排序
+  const fromCopy = under(dir)
+  const fromSource = sourceRoot === undefined ? [] : under(sourceRoot)
+  return sorted([...new Set([...fromCopy, ...fromSource])])
 }
 
 export function reportFaces(files: readonly string[], dir: string, sourceRoot?: string): FaceReport {
@@ -136,6 +181,6 @@ export function reportFaces(files: readonly string[], dir: string, sourceRoot?: 
   return {
     ...base,
     paths: files.map((entry) => reconcilePath(entry, dir, sourceRoot)).filter((row): row is PathReport => row !== undefined),
-    undeclared: undeclaredUnder(files, dir),
+    undeclared: undeclaredUnder(files, dir, sourceRoot),
   }
 }

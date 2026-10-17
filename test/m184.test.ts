@@ -27,6 +27,31 @@ const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm184')
 const WORKSPACE = join(BASE, 'proj')
 
+/**
+ * **`R22`（第十一批 §3.4）—— `R21` 的三处精确化，逐字形态。**
+ *
+ * 三处都要**逐字**在四份随包文件的该节里；判据是**标识符/字面串的存在性**（不读措辞、不看语言），
+ * 缺哪一处就**点名哪一处**。单点可红由 `M184-04` 用合成节自证（把该处逐字删掉 ⇒ 只报它一条）。
+ */
+const R22_PRECISIONS: readonly { id: string; literal: string }[] = [
+  {
+    id: 'R22-①（唯一来源句后补的半句：历史任务书是冻结件）',
+    literal: '（**`docs/plan/` 下的历史任务书是冻结件，副本树清单以本条为准**）。',
+  },
+  {
+    id: 'R22-②（tap 适用面：只在直接 `node --test` 下有效、经 `scripts/run-tests.mjs` 传不进去）',
+    literal: '**只在直接** `node --test --test-reporter=tap <file>` **下有效**；经 `scripts/run-tests.mjs` **传不进去**（该脚本第 **37** 行自拼 `spawnSync` 参数）。',
+  },
+  {
+    id: 'R22-③（基数类断言必须给算式，不许只引用一个数字）',
+    literal: '18. **基数类断言必须给算式** —— 凡引用**台账基数**（卡数、缺陷数、用例数、站点数…）一律**现算并写出算式**',
+  },
+]
+
+/** 缺失的精确化条目（空数组 = 三处齐备）；用于"删/改任一处 ⇒ 点名是哪一处"。 */
+const missingPrecisions = (text: string): string[] =>
+  R22_PRECISIONS.filter((item) => !text.includes(item.literal)).map((item) => item.id)
+
 interface ToolDefinition { name: string; execute: (args: Record<string, unknown>, exec: unknown) => unknown }
 
 function harness(): ToolDefinition[] {
@@ -130,6 +155,12 @@ test('M184-03 §3.5（D1）结构：三条纪律写进了三张角色卡与 docs
     assert.match(text, /每次读数都打印该树 `lib` 的整树 sha/u, `${rel} 缺第 15 条：树内 lib 与源码不同步会污染整轮读数`)
     assert.match(text, /必须\*\*逐用例\*\*取读数/u, `${rel} 缺第 16 条：逐用例取读数（别数 ✖ 行）`)
     assert.match(text, /运算符优先级会造出不存在的缺陷/u, `${rel} 缺第 17 条：运算符优先级会造出不存在的缺陷`)
+    // **`R22`（第十一批 §3.4）**：三处精确化**逐字**在位；缺任一处 ⇒ 这条红并**点名是哪一处**
+    assert.deepEqual(
+      missingPrecisions(text),
+      [],
+      `${rel} 缺 R22 精确化 ⇒ ${missingPrecisions(text).join(' / ')}`,
+    )
     // 既有三条**不许被改写**（R18 的 DoD ⑤：只许追加）
     assert.match(text, /绝不改仓库的 `lib\/`/u, `${rel} 既有第 1 条被改写了`)
     assert.match(text, /先自证「字节真的变了」/u, `${rel} 既有第 2 条被改写了`)
@@ -148,5 +179,16 @@ test('M184-03 §3.5（D1）结构：三条纪律写进了三张角色卡与 docs
   // **单条可红**：删掉第 4 条那半句（"变异编译产物…源码哈希"）就必须红 —— 用节内**逐条分点**计数兜住
   const section = readFileSync(join(ROOT, targets[0] as string), 'utf8')
   const bullets = (section.slice(section.indexOf('## 变异与交付产物的纪律')).match(/^\d+\. /gmu) ?? []).length
-  assert.equal(bullets, 17, `D1 那一节必须是 17 条（3 条既有 + 4 条 R18 + 5 条 R20 + 5 条 R21），实际 ${bullets} 条`)
+  assert.equal(bullets, 18, `D1 那一节必须是 18 条（3 条既有 + 4 条 R18 + 5 条 R20 + 5 条 R21 + 1 条 R22），实际 ${bullets} 条`)
+})
+
+test('M184-04 §3.4（R22）三处精确化**单点可红**：逐字删任一处 ⇒ 只报那一处（并点名）', () => {
+  const base = readFileSync(join(ROOT, 'skills', 'role-developer.md'), 'utf8')
+  assert.deepEqual(missingPrecisions(base), [], '现盘该节必须三处齐备（缺任一处 ⇒ 这里先红并点名）')
+  // 反例：三处都改成**旧形态**（R22 之前的文本）—— 只删掉新加的那一段，其余字节不动
+  for (const item of R22_PRECISIONS) {
+    const legacy = base.replace(item.literal, '')
+    assert.notEqual(legacy, base, `变异必须真的改了字节：${item.id}`)
+    assert.deepEqual(missingPrecisions(legacy), [item.id], `删/改 ${item.id} ⇒ 只报它一处`)
+  }
 })

@@ -261,7 +261,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m174.test.ts': 8, 'test/m176.test.ts': 16, 'test/m177.test.ts': 9, 'test/m178.test.ts': 8,
   'test/m179.test.ts': 8, 'test/m18.test.ts': 22, 'test/m180.test.ts': 18, 'test/m181.test.ts': 8,
   'test/m182.test.ts': 4, 'test/m183.test.ts': 4, 'test/m184.test.ts': 24, 'test/m185.test.ts': 15,
-  'test/m186.test.ts': 2, 'test/m187.test.ts': 14, 'test/m189.test.ts': 29, 'test/m19.test.ts': 48,
+  'test/m186.test.ts': 2, 'test/m187.test.ts': 14, 'test/m189.test.ts': 34, 'test/m19.test.ts': 48,
   'test/m190.test.ts': 18, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m21.test.ts': 16,
   'test/m22.test.ts': 21, 'test/m23.test.ts': 65, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20,
   'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6,
@@ -364,6 +364,83 @@ test('M189-10 §3.2（DEF-095）：交付注释里的符号引用自己必须可
     [],
     '裸反引号标识符不在判据面内（豁免面：只认"路径 之后 的符号"这一形态）',
   )
+})
+
+test('M189-12 §3.2（DEF-096）：符号存在性判定不许被**超串**喂饱 —— 判据做的是整词匹配 + 反例', () => {
+  // 修前形态（V24 实测）：把 `checkDocs` 里的 `\b${name}\b` 词边界去掉 ⇒ 判据退化成**子串包含** ⇒
+  // 被指文件里只要有一个**名字是目标符号超串**的标识符（`realSymbolEdgeX` ⊃ `realSymbolEdge`），
+  // 真悬空就被喂饱、判成"存在"。本格就是那格的守卫（单点：去掉 `\b` ⇒ 下面第 ② 条断言红）。
+  const cite = (witnessText: string, line: string): { path: string; text: string }[] => [
+    { path: 'lib.ts', text: witnessText },
+    { path: 'a.ts', text: ` * ${line}\n` },
+  ]
+  // ① 反例的反面（防"一律判悬空"）：**恰好等于**目标符号的标识符 ⇒ 不许判悬空
+  assert.deepEqual(
+    checkDocs(cite('export function realSymbolEdge(): void {}\n', 'see `lib.ts` the `realSymbolEdge`.')),
+    [],
+    '恰好等于目标符号的标识符不许判悬空（整词命中 ⇒ 存在）',
+  )
+  // ② 子串喂饱（前缀方向）：被指文件里**没有** `realSymbolEdge`，只有它的超串 `realSymbolEdgeX` ⇒ 仍必须判悬空
+  assert.deepEqual(
+    checkDocs(cite('export function realSymbolEdgeX(): void {}\n', 'see `lib.ts` the `realSymbolEdge`.')).map((issue) => issue.kind),
+    ['dangling-id'],
+    '被指文件里只有**超串**（realSymbolEdgeX）时，realSymbolEdge 仍必须判悬空（不许被喂饱）',
+  )
+  // ②-b 同一格里断言真的点到了那个符号（不是"因为别的原因红了"）
+  assert.match(
+    checkDocs(cite('export function realSymbolEdgeX(): void {}\n', 'see `lib.ts` the `realSymbolEdge`.'))[0]?.detail ?? '',
+    /realSymbolEdge\b/u,
+    '必须点名被指的那个符号（而不是超串的那一个）',
+  )
+  // ③ 子串喂饱（后缀方向）：只有 `realSymbolEdgeXyz`（含 `Edge` 前缀、另加长尾）时同理 —— 两个方向都不许被喂饱
+  assert.deepEqual(
+    checkDocs(cite('export function realSymbolEdgeXyz(): void {}\n', 'see `lib.ts` the `realSymbolEdge`.')).map((issue) => issue.kind),
+    ['dangling-id'],
+    '超串在**后缀**方向也一样不许喂饱（整词匹配没有方向性）',
+  )
+  // ④ 中文书写形态同判（判据与语言无关）
+  assert.deepEqual(
+    checkDocs(cite('export function realSymbolEdgeX(): void {}\n', '见 `lib.ts` 的 `realSymbolEdge`。')).map((issue) => issue.kind),
+    ['dangling-id'],
+    '中文写法必须给出同一个判定',
+  )
+})
+
+test('M189-13 §3.3（DEF-093 第十一批）：**枚举补全** —— 「行内没有该中文但被登记」的 6 个站点逐个点名 + 反例', () => {
+  // V24 实测：§8.6 修法③只点名 **3** 个新站点（`test/m108.test.ts:245`、`test/m29.test.ts:42`、`test/m81.test.ts:275`），
+  // 而现算共 **6** 个 ⇒ **少报**（不是错报）。本格把枚举**钉住**：这 6 个（且只有这 6 个）允许"行内没有该中文"，
+  // 其余 2257 个候选站点（**2263 − 6 = 2257**；2263 = 第十批 V24 的 2258 + 本批两格新带的 5）**必须**在那一行里真出现该中文。多一个、少一个、换位置都红。
+  const testFiles = walkTests(join(ROOT, 'test'))
+  const docs = testFiles.map((path) => ({ path: relPath(path), text: readFileSync(path, 'utf8') }))
+  const sites = extractProseSites(docs)
+  const rawLines = new Map(docs.map((doc) => [doc.path, doc.text.split('\n')]))
+  /** 「行内没有该中文但被登记」的站点键（**现算**：抽取器的 literal 是否真出现在它自己那一行里）。 */
+  const notOnLine = (): string[] => sites
+    .filter((site) => !((rawLines.get(site.path) ?? [])[site.line - 1] ?? '').includes(site.literal))
+    .map(siteKey)
+  const KNOWN = [
+    `${'test/m1'}08.test.ts:245`, // 中文绑在 `PROSE_RESPONSIBILITY` 常量上，断言那一行只有常量名
+    `${'test/m1'}3.test.ts:639`,  // 中文绑在 `why` 变量上，断言那一行只有 `new RegExp(why)`
+    `${'test/m1'}3.test.ts:649`,  // 同上（第二处）
+    'test/m189.test.ts:102',      // 中文绑在 `body` 变量上，断言那一行只有 `carrier('r17', body)`
+    'test/m29.test.ts:42',        // 中文绑在 `current` 上，断言那一行是 `line.startsWith('## ')`
+    'test/m81.test.ts:275',       // 「变量再读」的字面量命中：行里 `'no-basis'` 含标识符 `basis`（已知代价）
+  ]
+  assert.deepEqual(notOnLine(), KNOWN, '这 6 个站点必须被逐个点名（多/少/换位置都红）')
+  // 反例（DoD ③）：**行内有该中文**的站点不许被列进"被登记" —— 现算的 6 个就是全部
+  assert.equal(sites.length - notOnLine().length, sites.length - KNOWN.length, '反例计数恒等（其余站点全部"行内出现"）')
+  assert.ok(sites.length >= 2263, `候选站点量级不许退化（现算 ${sites.length}）`)
+  // ② 普查数字（**第十一批现算**，与第十批 V24 的 2258 / 2191 的关系给算式）：
+  //    `2263 = label 67 + 读散文 2196`；`2196 = 2191（第十批登记值）+ 5`（本批 `M189-12`/`M189-13` 两格自带的读散文站点）
+  const pack = loadLangPack(ROOT)
+  const verdicts = sites.map((site) => classifySite(site, pack))
+  const labelSites = verdicts.filter((verdict) => verdict.cls === 'label').length
+  const proseSites = sites.length - labelSites
+  const gapFiles = new Set(sites.filter((_site, index) => (verdicts[index] as { cls: string }).cls === 'prose').map((site) => site.path))
+  assert.equal(sites.length, labelSites + proseSites, '恒等式：站点 = label + 读散文')
+  assert.ok(labelSites >= 67 && proseSites >= 2196, `普查：${sites.length} = label ${labelSites} + 读散文 ${proseSites}`)
+  assert.ok(gapFiles.size >= 171, `登记面（含读散文站点的文件）不许退化（现算 ${gapFiles.size}）`)
+  assert.ok(docs.length >= 185, `普查文件数不许退化（现算 ${docs.length}）`)
 })
 
 test('M189-11 §3.5（DEF-093 第十批）：三条未登记豁免面 —— 形态集口径 / `siteKey` 折叠 / 变量再 `includes`', () => {
