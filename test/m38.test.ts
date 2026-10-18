@@ -23,6 +23,15 @@
  * （`derivable = seeds.length > 0`，也就是"图里没写 = 没影响"那种静默口径），
  * 同一个探针必须**在变异体上判红、在当前实现上判绿** —— 变异过程与实测结论都印在下面那条用例里。
  * 它挡的正是本模块最危险的那种退化：**判据自己把"图里没写"读成"不用跑"**。
+ *
+ * —————————————————————— TASK-154 / DEF-114：live 探针不许把"真源在不在盘上"当不变量 ——————————————————————
+ *
+ * "TASK-019 真机接线"这条探针读的是**真实** `.sdo/`。真源（`.sdo/testing/regression.yml`）是
+ * TASK-064 的交付物 ⇒ 它在不在盘上**不由本测试决定**。旧写法把"真源在盘上"写成"outcome 必须不是 ok"，
+ * 与 C-57 的绿侧（`outcome === 'ok'`）**同一张盘上互斥** ⇒ 真源一落盘套件必红（做对即红）。
+ * 现在按**现场读数**分两态判：不在盘上 ⇒ 判据仍判红 + 回执给修法；在盘上 ⇒ 不判存在性，
+ * 判**可复算的读数**（条数 / 与违规项自洽 / C-57 一致），并用同一套生产判定函数把
+ * `stale` / `incomplete` 两态**也**判过去（放宽的是存在性，不是判别力）。
  */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
@@ -37,7 +46,7 @@ import { SdoStore } from '../src/infra/store.js'
 import { answerQuestion, readQuestion } from '../src/domain/grill.js'
 import { attributeRole } from '../src/domain/roles.js'
 import { changedFilesSince, recordWorkspaceChanges, unresolvedSeqs } from '../src/domain/workspaceChanges.js'
-import { link, traceClosure, traceGraphOf } from '../src/domain/trace.js'
+import { link, traceClosure, traceGraph, traceGraphOf } from '../src/domain/trace.js'
 import { CHECKERS, evaluateGate } from '../src/domain/gates.js'
 import { loadProcess } from '../src/domain/process.js'
 import { TESTING_SOURCE_FILES, readTestingSource } from '../src/domain/testingStore.js'
@@ -48,6 +57,7 @@ import {
   assessRegression,
   assessRegressionFromStore,
   changeSetFromLedger,
+  changeSetSeeds,
   deriveImpact,
   describeRegression,
   type ChangeSet,
@@ -632,21 +642,174 @@ test('TASK-019 DoD（守卫用例两态）：把"图空 ⇒ 判不可推导"变�
   rmSync(guard, { recursive: true, force: true })
 })
 
-test('TASK-019 真机接线：本仓现取一次回归链（图 / 变更集 / 真源都在盘上时必须给出可复算的结论）', () => {
+test('TASK-019 真机接线：本仓现取一次回归链（真源在盘上 / 不在盘上两态都必须判得出可复算的结论）', () => {
   const live = new SdoStore(join(ROOT, '.sdo'))
   const changeSet = changeSetFromLedger(live)
   // 走**生产路径**读盘（`traceGraph` + `readTestingSource`），而不是把边喂给纯函数
   const assessment = assessRegressionFromStore(live, ROOT, changeSet)
   const text = describeRegression(assessment)
+  const graph = traceGraph(live)
   assert.ok(text.length > 0)
-  // 结论要么是"真源不在盘上"（本仓的实证状态），要么是一份可复算的链上读数；
-  // **绝不许**出现"图空却判绿"这种静默（那正是两态守卫挡的那条）
+
+  // —————————————————————— 两态都可判（TASK-154 / DEF-114） ——————————————————————
+  //
+  // 这条探针**不许**把"本仓此刻有没有 `.sdo/testing/regression.yml`"当成不变量：
+  // 真源是 TASK-064 的交付物，它在不在盘上由那一侧决定。探针只能按**现场读数**分两态判，
+  // 而且两态各自都要有判别力：
+  //   · **不在盘上** ⇒ 有变更时 C-57 必须**判红**，回执带可读修法（既不是绿的、也不是 N/A）；
+  //   · **在盘上**   ⇒ **不判存在性**，判**可复算的读数**（变更集 / 影响集 / 回归集条数逐条现算、
+  //                    `outcome` 与违规项自洽），并把 `stale` / `incomplete` 两态**也**判过去。
+  //
+  // 旧写法是 `if (!present) 断言文案 else assert.notEqual(outcome, 'ok')` —— 它把"真源在盘上"
+  // 写成了"它必须不是绿的"，而 C-57 的绿侧正要求 `outcome === 'ok'` ⇒ 同一张盘上二者不可同时成立：
+  // 真源一落盘（TASK-064 交出的就是一份全绿的）套件必红。**做对即红**就是这条守卫的病根（DEF-114）。
+  const checker = CHECKERS['regression.discipline']
+  assert.equal(typeof checker, 'function', 'regression.discipline 必须在 CHECKERS 里注册（这条探针判的正是它给 C-57 的结论）')
+  if (checker === undefined) throw new Error('regression.discipline 未注册')
+  const ctx = { workspace: ROOT, store: live, journal: new Journal(live), requirements: [], waivedGates: [] } as unknown as GateContext
+  const verdict = checker(ctx)
+
   if (!assessment.present) {
+    // ———————————————— 态 B：真源**不在盘上** ————————————————
+    //
+    // 如实说"没记回归"（判定层的话原样带出来），而"该不该判红"由**变更集**决定（TASK-055）：
+    // 有变更却完全没记回归 ⇒ 判红；没有变更 ⇒ N/A（不误伤）。两条都断言，免得"永远判红"蒙过去。
     assert.match(text, /regression\.yml 不在盘上/u, `如实说"没记回归"：${text}`)
-  } else {
-    assert.notEqual(assessment.outcome, 'ok', `真源在盘上时必须逐条判过：${text}`)
+    // 判定层在"没记回归"这一支给 `present:false`（+ 中性的 `ok`，含义是"没有可判的对象"，**不是绿**）。
+    // 会判的是门禁判据。所以这里断言的是「**不许出现绿读数**」——C-57 的绿侧 = `present ∧ ok`，
+    // 真源不在盘上时这个合取必须为假；在判定层上写 `outcome !== 'ok'` 等于把"没记回归"又写成一条
+    // **格式不变量**，那正是 DEF-114 的镜像（做对即红）。
+    assert.equal(assessment.present && assessment.outcome === 'ok', false, `真源不在盘上 ⇒ 不许给出"绿读数"（C-57 的绿侧要求 present 且 outcome ok）：${text}`)
+    if (changeSet.items.length === 0) {
+      assert.equal(verdict.na, true, `没有变更就没有回归义务 ⇒ 按 N/A 放行（不误伤）：${verdict.detail}`)
+    } else {
+      assert.equal(verdict.ok, false, `有变更（${changeSet.items.length} 项）却完全没记回归 ⇒ C-57 必须判红：${verdict.detail}`)
+      assert.equal(verdict.na, undefined, '判红就是判红，不许降级成 N/A（N/A 既不算过也不算不过）')
+      assert.match(verdict.detail, /本次变更未记回归/u, `回执要点名"本次变更未记回归"：${verdict.detail}`)
+      const remedy = verdict.remedy ?? ''
+      assert.match(remedy, /\.sdo\/testing\/regression\.yml/u, `修法要点名该补哪个真源：${remedy}`)
+      assert.match(remedy, /undecidable/u, `修法要给出"确实无影响面就显式声明"的出路：${remedy}`)
+      assert.match(remedy, /sdo_test/u, `修法要给出可执行的补记入口：${remedy}`)
+    }
+    return
   }
-  assert.ok(assessment.impact.totalLines >= 0)
+
+  // ———————————————— 态 A：真源**在盘上**（不判存在性，判读数） ————————————————
+  //
+  // ① 真源读得懂、判得动（读不动 ⇒ `unknown` + 原因，那是真源的病，不是"没记回归"）
+  assert.equal(assessment.unknownReason, '', `真源在盘上却读不动 ⇒ 先修真源自己（这不是"没记回归"）：${text}`)
+  // ② 三态之一：`stale` / `incomplete` 都**不许**被这一格放过（放宽的是存在性，不是判别力）
+  assert.ok(
+    assessment.outcome === 'ok' || assessment.outcome === 'incomplete' || assessment.outcome === 'stale',
+    `真源在盘上时 outcome 只许是 ok / incomplete / stale（unknown 已由上面那格挡掉）：${assessment.outcome}｜${text}`,
+  )
+
+  // ③ **回归集条数逐条现算**（不抄 `counts`，从 `cases` 自己数一遍再对账）
+  const liveCases = assessment.cases
+  const expectedCounts = {
+    impacted: assessment.impact.byPrefix.cases.length,
+    cases: liveCases.length,
+    passed: liveCases.filter((item) => item.outcome === 'ok').length,
+    failed: liveCases.filter((item) => item.outcome === 'failed').length,
+    notRun: liveCases.filter((item) => item.outcome === 'not-run').length,
+    stale: liveCases.filter((item) => item.outcome === 'stale').length,
+    unbound: liveCases.filter((item) => item.outcome === 'unbound').length,
+    artifactMissing: liveCases.filter((item) => item.outcome === 'missing-artifact').length,
+  }
+  assert.deepEqual(assessment.counts, expectedCounts, '回执里的条数必须能由逐条结论现算出来（不做加权合并，也不许抄死数）')
+
+  // ④ **变更集 / 影响集逐条现算**：变更集来自台账，影响集由图多跳闭包现推（不是人手写死的一份）
+  assert.equal(changeSet.rawFileCount, changeSet.items.filter((item) => item.id === '').length, '变更集里的文件项条数要能现算（rawFileCount）')
+  assert.ok(
+    changeSet.items.every((item) => item.id !== '' || item.file !== ''),
+    '变更集的每一项要么是实体 id、要么是文件路径（空项不许混进来）',
+  )
+  assert.ok(
+    changeSet.items.length <= changeSet.sources.changes + changeSet.sources.defects + changeSet.sources.workspaceFiles,
+    `变更集条目不许多于三路来源之和（多于就是凭空造出来的）：${changeSet.items.length} > ${changeSet.sources.changes}+${changeSet.sources.defects}+${changeSet.sources.workspaceFiles}`,
+  )
+  const recomputedImpact = deriveImpact(changeSetSeeds(changeSet, graph.edges), graph.edges, graph.badLines, graph.totalLines)
+  assert.deepEqual(assessment.impact, recomputedImpact, '影响集必须能由「变更集种子 + 追溯图」现推出来（判据读的是图，不是真源里那份留痕）')
+  assert.ok(assessment.impact.totalLines >= assessment.impact.edges, `图里可用的边不许多于非空行：${assessment.impact.edges} 条边 / ${assessment.impact.totalLines} 行`)
+
+  // ⑤ **漏跑 / 判红项 / 过期产物**逐条现算（点名清单是可复算的差集，不是抄来的）
+  const ranIds = new Set(liveCases.map((item) => item.caseId))
+  const expectedMissing = assessment.impact.derivable
+    ? assessment.impact.byPrefix.cases.filter((id) => !ranIds.has(id)).sort()
+    : []
+  assert.deepEqual(assessment.missing, expectedMissing, '漏跑清单必须等于「影响集内用例 − 回归集」的现算差集')
+  const expectedOffenders = [
+    ...new Set([...liveCases.filter((item) => item.outcome !== 'ok').map((item) => item.caseId).filter((id) => id !== ''), ...expectedMissing]),
+  ].sort()
+  assert.deepEqual(assessment.offenders, expectedOffenders, '判红清单必须等于「逐条不通过 + 漏跑」的现算并集')
+  const expectedStaleArtifacts = [...new Set(liveCases.filter((item) => item.outcome === 'stale' && item.artifactPath !== '').map((item) => item.artifactPath))]
+  assert.deepEqual(assessment.staleArtifacts, expectedStaleArtifacts, '过期产物清单必须由逐条结论现算（AC-208：点名产物路径）')
+
+  // ⑥ `outcome` 与违规项**自洽**（优先序 stale > incomplete > ok，与判定层文档逐字同口径）
+  const expectedOutcome = expectedCounts.stale > 0 ? 'stale' : assessment.violations.length > 0 ? 'incomplete' : 'ok'
+  assert.equal(assessment.outcome, expectedOutcome, `outcome 必须与违规项自洽（stale > incomplete > ok）：${text}`)
+
+  // ⑦ `describeRegression()` 印出来的读数必须就是上面现算的那几个数（变更集 / 影响集 / 回归集条数）
+  const seedCount = recomputedImpact.seeds.length
+  const nodeCount = recomputedImpact.nodes.length
+  assert.ok(text.includes(`变更集 ${seedCount} 项`), `回执里的变更集条数要与现算一致（${seedCount}）：${text}`)
+  assert.ok(text.includes(`影响集 ${nodeCount} 项`), `回执里的影响集条数要与现算一致（${nodeCount}）：${text}`)
+  assert.ok(text.includes(`影响集内用例 ${expectedCounts.impacted} 条`), `回执里的影响集内用例数要与现算一致（${expectedCounts.impacted}）：${text}`)
+  assert.ok(text.includes(`回归集 ${expectedCounts.cases} 条`), `回执里的回归集条数要与现算一致（${expectedCounts.cases}）：${text}`)
+  if (expectedOutcome === 'ok') {
+    assert.match(text, /回归链可用/u, `判绿时回执要说清链条走通了：${text}`)
+  } else {
+    assert.match(text, /回归链不通过/u, `判红时回执要说清是哪一档（stale / incomplete）：${text}`)
+  }
+
+  // ⑧ C-57 的结论必须与判定层一致（绿侧 = `outcome === 'ok'`，红侧 = 其余三态）
+  assert.equal(verdict.ok, expectedOutcome === 'ok', `C-57 与判定层结论一致（不许两套）：${verdict.detail}`)
+
+  // ———————————————— 判别力格：`stale` / `incomplete` 仍会红 ————————————————
+  //
+  // 放宽的是"真源在不在盘上"，**不是**"跑过没有"。这一格用**同一套生产判定函数** + 现场变更集/图
+  // 造两态夹具：对照态绿 ⇒ 说明夹具本身成立；改坏一格 ⇒ 必须 `incomplete` / `stale`。
+  // 产物取 `package.json`（本包必然存在的常规文件）——不读 `.sdo` / `lib` 的内部结构，也不硬编码任何条数。
+  const PROBE_ARTIFACT = 'package.json'
+  const probeHash = createHash('sha256').update(readFileSync(join(ROOT, PROBE_ARTIFACT))).digest('hex')
+  const probeCase = (caseId: string): { case: string; result: string; artifact: string; artifactPath: string } => ({
+    case: caseId,
+    result: 'pass',
+    artifact: `sha256:${probeHash}`,
+    artifactPath: PROBE_ARTIFACT,
+  })
+  const judge = (source: RegressionSourceInput) =>
+    assessRegression({ workspace: ROOT, changeSet, source, edges: graph.edges, badLines: graph.badLines, totalLines: graph.totalLines })
+  const needed = assessment.impact.byPrefix.cases
+  const victim = needed[0] ?? 'TC-LIVE-PROBE'
+
+  // 对照态：影响集内用例齐备 + 产物哈希与当前一致 ⇒ **ok**（判据不是"永远红"）
+  const greenBase = judge({ impact: assessment.impact.nodes, cases: needed.map(probeCase) })
+  assert.equal(greenBase.outcome, 'ok', `对照态（齐备 + 哈希一致）必须判绿，否则下面的"判红"没有判别力：${describeRegression(greenBase)}`)
+
+  // 态 C-1：`present` 但**结果缺失** ⇒ `incomplete` 并点名那条用例
+  const withoutResult = judge({ impact: assessment.impact.nodes, cases: [{ case: victim, result: '' }, ...needed.filter((id) => id !== victim).map(probeCase)] })
+  assert.equal(withoutResult.outcome, 'incomplete', `results 缺失 ⇒ 必须判 incomplete（不许因为放宽了存在性就放过）：${describeRegression(withoutResult)}`)
+  assert.ok(withoutResult.violations.some((issue) => issue.code === 'not-run'), `要点名"没跑"：「${withoutResult.violations.map((issue) => issue.code).join(' ')}」`)
+  assert.ok(describeRegression(withoutResult).includes(victim), `回执要点名是哪条用例没结果：${describeRegression(withoutResult)}`)
+
+  // 态 C-2：`present` 但**哈希不符** ⇒ `stale` 并点名产物路径 + 两侧哈希（AC-208）
+  const mismatched = judge({
+    impact: assessment.impact.nodes,
+    cases: [...needed.filter((id) => id !== victim).map(probeCase), { case: victim, result: 'pass', artifact: `sha256:${'0'.repeat(64)}`, artifactPath: PROBE_ARTIFACT }],
+  })
+  assert.equal(mismatched.outcome, 'stale', `哈希不符 ⇒ 必须判 stale（过期优先于其它问题）：${describeRegression(mismatched)}`)
+  assert.ok(mismatched.staleArtifacts.includes(PROBE_ARTIFACT), `要点名过期的是哪个产物：${mismatched.staleArtifacts.join(' ')}`)
+  const staleText = describeRegression(mismatched)
+  assert.ok(staleText.includes(PROBE_ARTIFACT), `AC-208：回执要点名产物路径：${staleText}`)
+  // 两侧哈希按 `regression.ts` 的 `shorten` 口径（>16 位取前 16 位 + 省略号）印出来
+  const recordedShort = shortenHash(`sha256:${'0'.repeat(64)}`)
+  const actualShort = shortenHash(probeHash)
+  assert.notEqual(recordedShort, actualShort, '两侧哈希必须真的不同（否则"点名两侧"是恒真断言）')
+  assert.ok(
+    staleText.includes(recordedShort) && staleText.includes(actualShort),
+    `回执要印出"记录时 vs 现在"两侧哈希（${recordedShort} / ${actualShort}）：${staleText}`,
+  )
 })
 
 // —————————————————————— TASK-037：回归集进门禁判据（G6 C-57）+ regression.yml 落盘 ——————————————————————
