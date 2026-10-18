@@ -81,14 +81,15 @@ import {
 } from './testingStore.js'
 import { issueClosure } from './issues.js'
 import { methodConsistency, methodLabel, methodProducts, methodSelection } from './method.js'
-import { claimGaps, doneGaps, readConstructionProfile, scopeCovers } from './construction.js'
+import { claimGaps, contractTestGaps, doneGaps, readConstructionProfile, scopeCovers } from './construction.js'
+import { deliveryBinding } from './records.js'
 import { readProjectConfig } from '../config.js'
 import { methodDocHeader, methodDocStatus } from './methodDocs.js'
 import { gateDef, gatePhase, legalRollbackTargets } from './process.js'
 import { listRisks, riskStats } from './risks.js'
 import { channelLabel, signoffInput, signatureInvalidatingEventLine, signatureState } from './signature.js'
 import { checkWantsShapeNotes, collectShapeNotes, shapeNoteLines, shapeNotesForCheck } from './shapeNotes.js'
-import { assessDefectLinks, defectLinksExemptionLines, defectLinksRemedy, describeDefectLinks, report } from './trace.js'
+import { assessDefectLinks, defectLinksExemptionLines, defectLinksRemedy, describeDefectLinks, readLinksChecked, report } from './trace.js'
 import { iterationTasks, listTasks, planStats, readIteration, textPathsOf, validatePlan } from './plan.js'
 import { declaredItemVerdict, fixesRemedy, fixStatusRows, mitigatesRemedy, mitigatesRows } from './collab.js'
 import { claimedSessionsByCard } from './roles.js'
@@ -369,7 +370,103 @@ export function assessRegressionCriterion(ctx: GateContext): GateCriterionResult
   return fail(REGRESSION_CRITERION_ID, describeRegression(assessment), regressionRemedy(notRecorded))
 }
 
+/**
+ * **"在册无守"的收口**（第十二批 §3.4 `DEF-105` ③ / 复活 `TASK-003` 的意图）：
+ * 把"**未覆盖的 must 需求**"变成门禁判据 —— 一条 must 约束**没有任何机制接住**时，门禁必须红。
+ *
+ * 覆盖口径**只认结构**：该 `must` 需求在 `trace/links.jsonl` 里有**一条 `req-tc` 边**（有用例覆盖它）。
+ * 不读需求正文、不猜实现形态 —— 这正是 `AC-241`（`REQ-060`）要的"项目声明 + 格式无关的通用比较"。
+ * 坏行必须如实上报（沿用 `traceBadLinesFailure`：被静默缩短的边集合会让"覆盖率"无声变小）。
+ */
+export const MUST_COVERAGE_CRITERION_ID = 'C-must-coverage'
+
+function mustCoverage(ctx: GateContext): GateCriterionResult {
+  // **项目声明才启用**（`AC-241`）：判据本身与项目无关，但"要不要把 must 需求的用例覆盖当门禁"是项目选择
+  // （有的项目不用用例覆盖需求）。声明位置 `.sdo/config.yml` 的 `trace.mustCoverage: true`。
+  const declared = ((): boolean => {
+    try {
+      const raw = ctx.store.readYaml<{ trace?: { mustCoverage?: unknown } }>('config.yml')
+      return raw?.trace?.mustCoverage === true
+    } catch {
+      return false // 读不到配置 ⇒ 不启用（fail-open：不许因为配置读不动把门禁打开）
+    }
+  })()
+  if (!declared) return na(MUST_COVERAGE_CRITERION_ID, t('uiGates.kMustCoverageUndeclared'))
+  const broken = traceBadLinesFailure(ctx, MUST_COVERAGE_CRITERION_ID)
+  if (broken !== undefined) return broken
+  const must = ctx.requirements.filter((item) => textOf(item.priority) === 'must')
+  if (must.length === 0) return na(MUST_COVERAGE_CRITERION_ID, t('uiGates.kMustCoverageNone'))
+  const covered = new Set(
+    readLinksChecked(ctx.store).links.filter((link) => link.kind === 'req-tc').map((link) => textOf(link.from)),
+  )
+  const gaps = must.map((item) => textOf(item.id)).filter((id) => id !== '' && !covered.has(id))
+  if (gaps.length === 0) return ok(MUST_COVERAGE_CRITERION_ID, fmt('uiGates.kMustCoverageOk', { p1: String(must.length) }))
+  return fail(
+    MUST_COVERAGE_CRITERION_ID,
+    fmt('uiGates.kMustCoverageGaps', { p1: gaps.join(' / '), p2: String(gaps.length), p3: String(must.length) }),
+    fmt('uiGates.kMustCoverageRemedy', { p1: gaps.join(' / ') }),
+  )
+}
+
+/**
+ * **`DEF-106`（第十二批 §3.5）**：契约的**契约测试**覆盖 —— 每份契约至少一条记录，或项目**显式豁免并给理由**。
+ * 判据只认 id 与记录（`contractTestGaps` 现算），不认实现形态；**项目声明才启用**（`contractTests.enforce: true`）。
+ */
+export const CONTRACTS_TESTED_CRITERION_ID = 'C-contracts-tested'
+
+function contractsTested(ctx: GateContext): GateCriterionResult {
+  const declared = ((): boolean => {
+    try {
+      const raw = ctx.store.readYaml<{ contractTests?: { enforce?: unknown } }>('config.yml')
+      return raw?.contractTests?.enforce === true
+    } catch {
+      return false
+    }
+  })()
+  if (!declared) return na(CONTRACTS_TESTED_CRITERION_ID, t('uiGates.kContractsTestedUndeclared'))
+  const assessment = contractTestGaps(ctx.store)
+  if (assessment.contracts.length === 0) return na(CONTRACTS_TESTED_CRITERION_ID, t('uiGates.kContractsTestedNone'))
+  if (assessment.gaps.length === 0) {
+    return ok(CONTRACTS_TESTED_CRITERION_ID, fmt('uiGates.kContractsTestedOk', {
+      p1: String(assessment.contracts.length), p2: String(assessment.exempt.length),
+    }))
+  }
+  return fail(
+    CONTRACTS_TESTED_CRITERION_ID,
+    fmt('uiGates.kContractsTestedGaps', {
+      p1: assessment.gaps.map((gap) => `${gap.id}（${gap.reason}）`).join(' / '),
+      p2: String(assessment.gaps.length),
+      p3: String(assessment.contracts.length),
+    }),
+    t('uiGates.kContractsTestedRemedy'),
+  )
+}
+
+/**
+ * **`DEF-107`（第十二批 §3.5）**：**交付绑定** —— 形态由项目声明（`delivery.bind: 'commit' | 'manifest'`），
+ * 插件按声明核对：commit ⇒ 最近一次提交信息里要能查到 **40/64 位十六进制**；manifest ⇒ 声明的清单落点
+ * 必须存在且含至少一个 hex。未声明 ⇒ N/A 并说明原因（与 `DEF-105③`/`DEF-106` 同一口径）。
+ */
+export const DELIVERY_BOUND_CRITERION_ID = 'C-delivery-bound'
+
+function deliveryBound(ctx: GateContext): GateCriterionResult {
+  const assessment = deliveryBinding(ctx.store, ctx.workspace)
+  if (!assessment.declared) return na(DELIVERY_BOUND_CRITERION_ID, t('uiGates.kDeliveryBoundUndeclared'))
+  if (assessment.ok) return ok(DELIVERY_BOUND_CRITERION_ID, fmt('uiGates.kDeliveryBoundOk', { p1: assessment.kind }))
+  return fail(
+    DELIVERY_BOUND_CRITERION_ID,
+    fmt('uiGates.kDeliveryBoundFail', { p1: assessment.kind, p2: assessment.detail }),
+    t('uiGates.kDeliveryBoundRemedy'),
+  )
+}
+
 export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult> = {
+  // **`DEF-105` ③**：未覆盖的 must 需求 ⇒ 红并点名（`REQ-060` 就是它的第一个实例）
+  'coverage.uncovered': (ctx) => mustCoverage(ctx),
+  // **`DEF-106`**：契约的契约测试覆盖（记录或项目豁免；缺一份即红并点名契约 id）
+  'contracts.tested': (ctx) => contractsTested(ctx),
+  // **`DEF-107`**：交付绑定形态（commit 提交信息含哈希 / manifest 清单含哈希；未声明 ⇒ N/A）
+  'delivery.bound': (ctx) => deliveryBound(ctx),
   // —————————————— G2 的 DoR 判据：**按 check 键**挂载（B1） ——————————————
   //
   // 旧实现把 `evaluateDor` 的产出按**判据 id** 顶掉同名判据，于是"配置假装数据驱动，

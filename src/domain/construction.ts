@@ -610,6 +610,59 @@ export function readContractTests(store: SdoStore): ContractTestRecord[] {
   return out
 }
 
+export interface ContractTestGap {
+  id: string
+  /** `no-record` = 既没有记录也没豁免；`exempt-needs-reason` = 声明了豁免但**没给理由**。 */
+  reason: 'no-record' | 'exempt-needs-reason'
+}
+
+/**
+ * **`DEF-106`（第十二批 §3.5）**：契约的**契约测试覆盖** —— 判据只认 **id 与记录**，不认实现形态。
+ *
+ * 每份（未作废的）契约至少一条 `contractTest` 记录；或者由**项目显式豁免并给理由**
+ * （`.sdo/config.yml` 的 `contractTests.exempt: [{ id, reason }]`，结构声明、语言无关 ⇒ `AC-241`）。
+ * 记录面来自 `contract-first.yml` 的 `contractTests[]`（`recordContractTest` 写的同一份真源）。
+ */
+export function contractTestGaps(store: SdoStore): {
+  contracts: string[]
+  recorded: string[]
+  exempt: string[]
+  gaps: ContractTestGap[]
+} {
+  const contracts = listContracts(store).filter((item) => item.dropped !== true).map((item) => item.id)
+  const recordedIds = [...new Set(readContractTests(store).map((entry) => entry.contract))]
+  const recorded = new Set(recordedIds)
+  const declared = ((): Map<string, string> => {
+    const out = new Map<string, string>()
+    try {
+      const raw = store.readYaml<{ contractTests?: { exempt?: unknown } }>('config.yml')
+      const list = raw?.contractTests?.exempt
+      if (!Array.isArray(list)) return out
+      for (const item of list) {
+        const row = item as { id?: unknown; reason?: unknown }
+        const id = typeof row.id === 'string' ? row.id.trim() : ''
+        if (id === '') continue
+        out.set(id, typeof row.reason === 'string' ? row.reason.trim() : '')
+      }
+    } catch {
+      return out // 读不到配置 ⇒ 只有"记录"这一条出路（不把读不动当豁免）
+    }
+    return out
+  })()
+  const gaps: ContractTestGap[] = []
+  const exempt: string[] = []
+  for (const id of contracts) {
+    if (recorded.has(id)) continue
+    const reason = declared.get(id)
+    if (reason !== undefined && reason !== '') {
+      exempt.push(id)
+      continue
+    }
+    gaps.push({ id, reason: reason === undefined ? 'no-record' : 'exempt-needs-reason' })
+  }
+  return { contracts, recorded: recordedIds.filter((id) => contracts.includes(id)), exempt, gaps }
+}
+
 export function recordContractTest(store: SdoStore, entry: ContractTestRecord): void {
   const existing = readContractTests(store)
   store.writeYaml([CONSTRUCTION_DIR, CONSTRUCTION_CONTRACT_FILE], { contractTests: [...existing, entry] })

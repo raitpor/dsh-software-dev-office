@@ -28,29 +28,30 @@ const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm184')
 const WORKSPACE = join(BASE, 'proj')
 
 /**
- * **`R22`（第十一批 §3.4）—— `R21` 的三处精确化，逐字形态。**
- *
- * 三处都要**逐字**在四份随包文件的该节里；判据是**标识符/字面串的存在性**（不读措辞、不看语言），
- * 缺哪一处就**点名哪一处**。单点可红由 `M184-04` 用合成节自证（把该处逐字删掉 ⇒ 只报它一条）。
+ * **`R22`（第十一批 §3.4）的三处精确化 —— 第十二批 `DEF-102` 起按落点分开判**：
+ *   · **随包卡**（`skills/role-*.md`）：只留与项目无关的**原则**（`R22-③` 基数给算式）；
+ *   · **项目侧**（`docs/README.md`）：冻结件、tap 的适用面与项目命令（`R22-①` / `R22-②`）。
+ * 判据都是**字面串 / 标识符存在性**（不读措辞、不看语言），缺哪一处就**点名哪一处**。
  */
-const R22_PRECISIONS: readonly { id: string; literal: string }[] = [
+const R22_CARD: readonly { id: string; literal: string }[] = [
   {
-    id: 'R22-①（唯一来源句后补的半句：历史任务书是冻结件）',
-    literal: '（**`docs/plan/` 下的历史任务书是冻结件，副本树清单以本条为准**）。',
-  },
-  {
-    id: 'R22-②（tap 适用面：只在直接 `node --test` 下有效、经 `scripts/run-tests.mjs` 传不进去）',
-    literal: '**只在直接** `node --test --test-reporter=tap <file>` **下有效**；经 `scripts/run-tests.mjs` **传不进去**（该脚本第 **37** 行自拼 `spawnSync` 参数）。',
-  },
-  {
-    id: 'R22-③（基数类断言必须给算式，不许只引用一个数字）',
+    id: 'R22-③（随包卡：基数类断言必须给算式）',
     literal: '18. **基数类断言必须给算式** —— 凡引用**台账基数**（卡数、缺陷数、用例数、站点数…）一律**现算并写出算式**',
   },
 ]
 
-/** 缺失的精确化条目（空数组 = 三处齐备）；用于"删/改任一处 ⇒ 点名是哪一处"。 */
-const missingPrecisions = (text: string): string[] =>
-  R22_PRECISIONS.filter((item) => !text.includes(item.literal)).map((item) => item.id)
+const R22_PROJECT: readonly { id: string; literal: string }[] = [
+  { id: 'R22-①（项目侧：历史任务书是冻结件）', literal: '**不许**改历史任务书' },
+  {
+    id: 'R22-②（项目侧：tap 只在直接 node --test 下有效）',
+    literal: '经 `scripts/run-tests.mjs` **传不进去**（该脚本第 **37** 行自拼 `spawnSync`）',
+  },
+]
+
+const missingCardPrecisions = (text: string): string[] =>
+  R22_CARD.filter((item) => !text.includes(item.literal)).map((item) => item.id)
+const missingProjectPrecisions = (text: string): string[] =>
+  R22_PROJECT.filter((item) => !text.includes(item.literal)).map((item) => item.id)
 
 interface ToolDefinition { name: string; execute: (args: Record<string, unknown>, exec: unknown) => unknown }
 
@@ -120,75 +121,88 @@ test('M184-02 §3.7 读数（`dropDependents`）：直接/传递分层，`*` 与
   assert.deepEqual(dropDependents(tasks, 'TASK-003').downstream, [], '末端卡没有下游')
 })
 
-test('M184-03 §3.5（D1）结构：三条纪律写进了三张角色卡与 docs 约定处', () => {
-  const targets = ['skills/role-developer.md', 'skills/role-tester.md', 'skills/role-reviewer.md', 'docs/README.md']
-  for (const rel of targets) {
+test('M184-03 §3.5（`D1`）/ `DEF-102`：原则进随包卡、清单与命令只落项目侧（**两份不同源**）', () => {
+  const cards = ['skills/role-developer.md', 'skills/role-tester.md', 'skills/role-reviewer.md']
+  // **随包卡**：只留与项目无关的原则（缺任一条 ⇒ 红并点名）
+  const PRINCIPLES: readonly [string, string][] = [
+    ['绝不改主工作区的交付产物目录', '第 1 条：交付产物目录不许就地改'],
+    ['副本树必须**完整**', '第 1 条：副本树要完整（清单以项目声明为准）'],
+    ['以项目声明为准', '第 1/7/8 条：具体清单与工具以项目声明为准'],
+    ['从盘上读回', '第 13 条：哈希变了 ≠ 文件被写了'],
+    ['必须**逐用例**取读数', '第 16 条：逐用例取读数'],
+    ['基数类断言必须给算式', '第 18 条：基数给算式'],
+    ['副本树清单只在项目侧维护', '第 8 条：清单只在项目侧维护'],
+    ['「哈希变了」 ≠ 「文件被写了」', '第 13 条标题'],
+    ['运算符优先级会造出不存在的缺陷', '第 17 条'],
+  ]
+  for (const rel of cards) {
     const text = readFileSync(join(ROOT, rel), 'utf8')
     assert.match(text, /变异与交付产物的纪律/u, `${rel} 缺 D1 那一节`)
-    assert.match(text, /绝不改仓库的 `lib\/`/u, `${rel} 必须逐字写明"绝不改仓库的 lib/"`)
-    assert.match(text, /副本树/u, `${rel} 必须写"在副本树里做"`)
-    assert.match(text, /自证「字节真的变了」/u, `${rel} 必须写"变异先自证字节变了"`)
-    assert.match(text, /`sha256sum` \/ `cmp`/u, `${rel} 必须写"用 sha256sum/cmp 判定交付产物有没有被改（git status 看不出来）"`)
-    assert.match(text, /`git checkout --` \/ `git restore` \/ `git stash`/u, `${rel} 必须写明不许用哪三条命令`)
-    // **R18（第七批 §3.6）**：四条新纪律**逐字**在位（任一条被删/改 ⇒ 这条断言红并**点名是哪一条**）
-    assert.match(text, /`tdd-red-green-missing`/u, `${rel} 缺第 4 条：变异编译产物 ⇒ 红→绿绑同一源码哈希 ⇒ 判无效（点名是哪一条）`)
-    assert.match(text, /只读复验会话不得走 `npm test`/u, `${rel} 缺第 5 条：只读复验不得走 npm test（会重建 lib/）`)
-    assert.match(text, /`git ls-files \.sdo\/` = 0/u, `${rel} 缺第 6 条：lib/ 与 .sdo/ 不被 git 跟踪 ⇒ 纯度要用 find -newermt + 整树 sha256`)
-    assert.match(text, /写范围闸门只看命令文本/u, `${rel} 缺第 7 条：闸门只看命令文本，没被拦 ≠ 写了没关系`)
-    // **R20（第九批 §3.8）**：五条**逐字**在位（删/改任一条 ⇒ 红并**点名是哪一条**）
-    assert.match(text, /副本树复制清单（完整版/u, `${rel} 缺第 8 条：副本树复制清单（完整版，缺 docs ⇒ 9 fail、再缺软链 ⇒ 1 fail）`)
-    assert.match(text, /指向仓库 `node_modules` 的软链/u, `${rel} 缺第 8 条里的"指向仓库 node_modules 的软链"`)
-    assert.match(text, /守卫真正读的那一层/u, `${rel} 缺第 9 条：变异要打在守卫真正读的那一层（层选错 ⇒ 读数不完整）`)
-    assert.match(text, /脚本跑完了/u, `${rel} 缺第 10 条：变异自证要加"脚本跑完了"的证据`)
-    assert.match(text, /同一时刻连采两次互核/u, `${rel} 缺第 11 条：并发仓里的纯度采样要同一时刻连采两次互核`)
-    assert.match(text, /数行数，不要 grep 标签/u, `${rel} 缺第 12 条：diff -rq 的中文标签会骗出假 0 ⇒ 数行数`)
-    // **`DEF-097`（第十批 §3.7）**：第 8 条的复制清单补成 **15 项** + "树内全量三个数一致"的自证 + **唯一来源**
-    assert.match(text, /`README\.md`/u, `${rel} 缺第 8 条里的 \`README.md\`（V22 实测 7 处假红）`)
-    assert.match(text, /`presets\/`/u, `${rel} 缺第 8 条里的 \`presets/\`（V22 实测 10 处假红）`)
-    assert.match(text, /`tsconfig\.json`/u, `${rel} 缺第 8 条里的 \`tsconfig.json\`（V22 实测 1 处假红）`)
-    assert.match(text, /`client\.d\.ts`/u, `${rel} 缺第 8 条里的 \`client.d.ts\`（V22 实测 1 处假红）`)
-    assert.match(text, /断言 `pass`\/`fail`\/`skip` 三个数与仓库读数一致/u, `${rel} 缺第 8 条里的"树内全量三个数一致"自证（树不完整要在第一步暴露）`)
-    assert.match(text, /这一份是\*\*唯一来源\*\*/u, `${rel} 缺"清单唯一来源"那句（R21 第 17 条只许引用它）`)
-    // **`R21`（第十批 §3.8）**：五条新方法论逐字在位（删/改任一条 ⇒ 红并点名是哪一条）
-    assert.match(text, /「哈希变了」 ≠ 「文件被写了」/u, `${rel} 缺第 13 条：哈希变了 ≠ 文件被写了（忘了 writeFileSync 会假绿）`)
-    assert.match(text, /`--test-reporter=tap`/u, `${rel} 缺第 14 条：自证"脚本跑完了"要用 tap reporter`)
-    assert.match(text, /每次读数都打印该树 `lib` 的整树 sha/u, `${rel} 缺第 15 条：树内 lib 与源码不同步会污染整轮读数`)
-    assert.match(text, /必须\*\*逐用例\*\*取读数/u, `${rel} 缺第 16 条：逐用例取读数（别数 ✖ 行）`)
-    assert.match(text, /运算符优先级会造出不存在的缺陷/u, `${rel} 缺第 17 条：运算符优先级会造出不存在的缺陷`)
-    // **`R22`（第十一批 §3.4）**：三处精确化**逐字**在位；缺任一处 ⇒ 这条红并**点名是哪一处**
-    assert.deepEqual(
-      missingPrecisions(text),
-      [],
-      `${rel} 缺 R22 精确化 ⇒ ${missingPrecisions(text).join(' / ')}`,
-    )
-    // 既有三条**不许被改写**（R18 的 DoD ⑤：只许追加）
-    assert.match(text, /绝不改仓库的 `lib\/`/u, `${rel} 既有第 1 条被改写了`)
-    assert.match(text, /先自证「字节真的变了」/u, `${rel} 既有第 2 条被改写了`)
-    assert.match(text, /`sha256sum` \/ `cmp`/u, `${rel} 既有第 3 条被改写了`)
+    for (const [phrase, why] of PRINCIPLES) assert.ok(text.includes(phrase), `${rel} 缺原则「${phrase}」（${why}）`)
+    // **`DEF-102` 的验收**：随包面不许出现本仓的工具链 / 目录（任何项目装上都会读到）
+    const hits = text.match(/\bnpm\b|\btsc\b|node_modules|tsconfig|client\.d\.ts|presets\/|package-lock|sha256sum|diff -rq|xargs/u)
+    assert.equal(hits, null, `${rel} 的随包面不许出现本仓工具链（命中了「${hits?.[0]}」）`)
+    const section = text.slice(text.indexOf('## 变异与交付产物的纪律'))
+    const bullets = (section.match(/^\d+\. /gmu) ?? []).length
+    assert.equal(bullets, 18, `${rel} 的 D1 必须是 18 条原则，实际 ${bullets} 条`)
+    assert.deepEqual(missingCardPrecisions(text), [], `${rel} 缺 R22 的随包卡部分：${missingCardPrecisions(text).join(' / ')}`)
   }
-  // **四份的那一节必须逐字节相同**（R18 的 DoD ①）—— 按"节"取哈希，不是整份文件（角色卡正文本来就不同）
-  const hashes = new Map<string, string[]>()
-  for (const rel of targets) {
+  // 三张随包卡的那个节必须**逐字节相同**（同属交付侧）
+  const cardHash = (rel: string): string => {
     const text = readFileSync(join(ROOT, rel), 'utf8')
-    const at = text.indexOf('## 变异与交付产物的纪律')
-    assert.ok(at > 0, `${rel} 缺 D1 那一节`)
-    const digest = createHash('sha256').update(text.slice(at)).digest('hex')
-    hashes.set(digest, [...(hashes.get(digest) ?? []), rel])
+    return createHash('sha256').update(text.slice(text.indexOf('## 变异与交付产物的纪律'))).digest('hex')
   }
-  assert.equal(hashes.size, 1, `四份文件的 D1 那一节必须逐字节相同，实际有 ${hashes.size} 种：${[...hashes.values()].map((group) => group.join('+')).join(' / ')}`)
-  // **单条可红**：删掉第 4 条那半句（"变异编译产物…源码哈希"）就必须红 —— 用节内**逐条分点**计数兜住
-  const section = readFileSync(join(ROOT, targets[0] as string), 'utf8')
-  const bullets = (section.slice(section.indexOf('## 变异与交付产物的纪律')).match(/^\d+\. /gmu) ?? []).length
-  assert.equal(bullets, 18, `D1 那一节必须是 18 条（3 条既有 + 4 条 R18 + 5 条 R20 + 5 条 R21 + 1 条 R22），实际 ${bullets} 条`)
+  assert.equal(new Set(cards.map(cardHash)).size, 1, '三张随包卡的 D1 必须逐字节相同')
+  // **项目侧**：清单 / 命令 / 路径只在 `docs/README.md`（第十二批 §0-2：项目侧 ≠ 交付侧）
+  const docs = readFileSync(join(ROOT, 'docs', 'README.md'), 'utf8')
+  const PROJECT: readonly [string, string][] = [
+    ['15 项', '副本树 15 项'],
+    ['指向仓库 `node_modules` 的软链', '清单第 15 项'],
+    ['node scripts/run-tests.mjs', '全量测试命令'],
+    ['不许', '`npm test` 的禁令'],
+    ['npm test', '被禁的复合命令'],
+    ['`git ls-files .sdo/` = 0', '台账不被跟踪'],
+    ['sha256sum', '哈希工具'],
+    ['diff -rq', '中文标签会骗出假 0'],
+    ['`--test-reporter=tap`', '完成计数的来源'],
+    ['第 **37** 行', '`scripts/run-tests.mjs` 自拼 spawnSync 的位置'],
+  ]
+  for (const [literal, why] of PROJECT) assert.ok(docs.includes(literal), `docs/README.md 缺项目侧项「${literal}」（${why}）`)
+  for (const file of ['README.md', 'presets/', 'tsconfig.json', 'client.d.ts', 'CHANGELOG.md', 'client.js', 'package.json', 'package-lock.json']) {
+    assert.ok(docs.includes(file), `docs/README.md 的 15 项清单缺「${file}」`)
+  }
+  assert.deepEqual(missingProjectPrecisions(docs), [], `docs/README.md 缺 R22 的项目侧部分：${missingProjectPrecisions(docs).join(' / ')}`)
+  // **两份不同源**（第十二批 §0-2 作废了"四份同哈希"）
+  const docsHash = createHash('sha256').update(docs.slice(docs.indexOf('## 变异与交付产物的纪律'))).digest('hex')
+  assert.notEqual(cardHash(cards[0] as string), docsHash, '项目侧与交付侧不该同源（`DEF-102` 就是同源灌出来的）')
 })
 
-test('M184-04 §3.4（R22）三处精确化**单点可红**：逐字删任一处 ⇒ 只报那一处（并点名）', () => {
-  const base = readFileSync(join(ROOT, 'skills', 'role-developer.md'), 'utf8')
-  assert.deepEqual(missingPrecisions(base), [], '现盘该节必须三处齐备（缺任一处 ⇒ 这里先红并点名）')
-  // 反例：三处都改成**旧形态**（R22 之前的文本）—— 只删掉新加的那一段，其余字节不动
-  for (const item of R22_PRECISIONS) {
-    const legacy = base.replace(item.literal, '')
-    assert.notEqual(legacy, base, `变异必须真的改了字节：${item.id}`)
-    assert.deepEqual(missingPrecisions(legacy), [item.id], `删/改 ${item.id} ⇒ 只报它一处`)
+test('M184-04 §3.4（R22）三处精确化**单点可红**：按落点逐处删 ⇒ 只报那一处（并点名）', () => {
+  const card = readFileSync(join(ROOT, 'skills', 'role-developer.md'), 'utf8')
+  assert.deepEqual(missingCardPrecisions(card), [], '现盘随包卡该节必须齐备（缺任一处 ⇒ 这里先红并点名）')
+  for (const item of R22_CARD) {
+    const legacy = card.replace(item.literal, '')
+    assert.notEqual(legacy, card, `变异必须真的改了字节：${item.id}`)
+    assert.deepEqual(missingCardPrecisions(legacy), [item.id], `删/改 ${item.id} ⇒ 只报它一处`)
   }
+  const docs = readFileSync(join(ROOT, 'docs', 'README.md'), 'utf8')
+  assert.deepEqual(missingProjectPrecisions(docs), [], '现盘项目侧该节必须齐备（缺任一处 ⇒ 这里先红并点名）')
+  for (const item of R22_PROJECT) {
+    const legacy = docs.replace(item.literal, '')
+    assert.notEqual(legacy, docs, `变异必须真的改了字节：${item.id}`)
+    assert.deepEqual(missingProjectPrecisions(legacy), [item.id], `删/改 ${item.id} ⇒ 只报它一处`)
+  }
+})
+
+test('M184-05 §3.2（`DEF-103`）：语言包示例去项目化 —— 不许出现具体命令 / 具体数字例子', () => {
+  for (const rel of ['src/data/lang/zh-CN.yml', 'src/data/lang/en.yml']) {
+    const text = readFileSync(join(ROOT, rel), 'utf8')
+    const hits = text.match(/\bnpm\b|\btsc\b|\b420\b|lib\/x\.js|node --test/u)
+    assert.equal(hits, null, `${rel} 的示例不许出现具体命令 / 具体数字（命中了「${hits?.[0]}」）—— 改成工具无关占位（\`DEF-103\`）`)
+  }
+  // 占位形态在位（中英同义；两包的键集与结构由既有 `m7` / `m36` 守）
+  const zh = readFileSync(join(ROOT, 'src/data/lang', 'zh-CN.yml'), 'utf8')
+  const en = readFileSync(join(ROOT, 'src/data/lang', 'en.yml'), 'utf8')
+  assert.ok(zh.includes('＜项目的测试命令＞') && zh.includes('＜产物路径＞'), '中文包要给出工具无关占位（测试命令 / 产物路径）')
+  assert.ok(en.includes("<the project's test command>") && en.includes('<artifact path>'), '英文包要给出同义的占位')
 })

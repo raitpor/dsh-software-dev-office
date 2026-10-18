@@ -62,8 +62,11 @@ export interface ReviewFindingDisposition {
    *     或卡已不存在。一次性子代理跑完就退役，这时**没人能替代它**（真机实测：卡 done 后原实现会话
    *     无法再被唤醒，重新认领也进不去）⇒ 放行并标注，否则该评审**永久**不可采纳、C-42/C-52 不可达；
    *   · `owner-settled`：认领会话被派发过且**已结算**（`dispatch/finished`）⇒ 看不到活的执行者；同上放行并标注。
+   *   · **`claim-released`（`DEF-099` 真机第三副面孔，2026-10-18）**：认领之后**已被释放**
+   *     （`task/released`）⇒ 当前**没有** owner。旧实现只看"最后一次认领"，释放之后仍把前一个会话当
+   *     实现方 ⇒ 驾驶舱"认领后释放、让位给评审会话代录"仍被判 `not-implementer`（真机 TASK-145 就是这样被堵死）。
    */
-  ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled'
+  ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' | 'claim-released'
   /**
    * **R-16（sdo-test-new 2026-10-08）**：核实者的角色码 + 它与该卡角色的关系。
    *
@@ -158,6 +161,8 @@ export type VerifyFailure =
   | 'no-review'
   | 'bad-index'
   | 'empty-evidence'
+  /** **`DEF-100`（第十二批 §3.5）**：`reproduced` 的证词必须含**可读的读数形态**（占位文本不算复现）。 */
+  | 'placeholder-evidence'
   | 'bad-outcome'
   | 'self-verify'
   | 'not-implementer'
@@ -194,6 +199,15 @@ export type VerifyResult =
 
 /** 一条发现的**首句摘录**上限（够认出是哪条即可，不把正文塞进回执与事件）。 */
 const FINDING_EXCERPT_MAX = 80
+
+/**
+ * **可读的读数形态**（`DEF-100`，第十二批 §3.5）：`⇒` / `=>` / `exitCode` / 64 位十六进制。
+ *
+ * 为什么只认这几种：它们是**判据形态**（不是措辞）—— 一条"复现"要么把**读数**摆出来（命令行输出、
+ * 退出码、产物哈希），要么就只是**断言**。占位文本（`'x'`、`'复现成功'`）一律不算复现。
+ * 只对 `reproduced` 生效（`refuted` 给的是**反证**，本来就可能是散文）。
+ */
+const READABLE_PROOF = /⇒|=>|\bexitCode\b|\b[0-9a-f]{64}\b/u
 
 /**
  * 取一条发现的**首句**（到第一个句号/分号/换行，或上限截断）。
@@ -277,18 +291,42 @@ export function listDispositions(store: SdoStore): ReviewFindingDisposition[] {
   return readDispositionsChecked(store).dispositions
 }
 
-/** 某个会话在某张卡上的**最新认领**（"谁是实现方"的唯一判据；与 `claimBaseline` 同源同口径）。 */
-function latestClaimSession(journal: Journal, taskId: string): string | undefined {
-  const claims = journal
+/**
+ * 某张卡的**当前**认领会话（"谁是实现方"的唯一判据；与 `claimBaseline` 同源同口径）。
+ *
+ * **`DEF-099`（真机第三副面孔，2026-10-18）**：必须把 `task/released` 算进去 —— 认领之后若**释放**了，
+ * 当前就**没有** owner。旧实现只看"最后一次 `task/claimed`"，于是释放后仍把旧会话当实现方：
+ * 真机 TASK-145 上驾驶舱"认领后代录评审"被拒，按机制让位**释放**之后**仍然**被拒（报"由 session-… 认领"），
+ * 最终只能把卡 drop 掉、评审结论改由 `errata` 承载。
+ *
+ * 返回 `released`：卡是否存在"认领之后又被释放"（供 `ownerChecked` 如实标注，不把它混成 `no-claim`）。
+ */
+function currentClaim(journal: Journal, taskId: string): { sessionId: string | undefined; released: boolean } {
+  const events = journal
     .read()
-    .events.filter((event) => event.type === 'task/claimed' && String(event.data['id'] ?? '') === taskId)
-  const sessionId = claims[claims.length - 1]?.data['sessionId']
-  return typeof sessionId === 'string' && sessionId !== '' ? sessionId : undefined
+    .events.filter(
+      (event) =>
+        (event.type === 'task/claimed' || event.type === 'task/released') && String(event.data['id'] ?? '') === taskId,
+    )
+  let sessionId: string | undefined
+  let released = false
+  for (const event of events) {
+    if (event.type === 'task/claimed') {
+      const claimed = event.data['sessionId']
+      sessionId = typeof claimed === 'string' && claimed !== '' ? claimed : undefined
+      released = false
+    } else {
+      released = true
+    }
+  }
+  return { sessionId: released ? undefined : sessionId, released }
 }
 
-function normalizeOwnerChecked(value: string): 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' {
+
+function normalizeOwnerChecked(value: string): 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' | 'claim-released' {
   switch (value) {
     case 'no-claim': return 'no-claim'
+    case 'claim-released': return 'claim-released'
     case 'owner-tenure-over': return 'owner-tenure-over'
     case 'owner-settled': return 'owner-settled'
     default: return 'session'
@@ -543,11 +581,14 @@ export function verifyReviewFinding(
   }
   // **实现方才能核实**：该卡最新认领会话。拿不到认领、或实现方**已经不可达**（任期结束／派发已结算）
   // ⇒ 放行并**如实标注**（G-1：否则一次性子代理退役后，它留下的评审**永久**不可采纳）。
-  const claimSession = latestClaimSession(journal, review.taskId)
+  const claimed = currentClaim(journal, review.taskId)
+  const claimSession = claimed.sessionId
   const card = listTasks(store).find((item) => item.id === review.taskId)
   // 核实者的角色：从"这个会话被派发成什么角色"现算（拿不到就是 unknown，编不出来）
   const verifierRole = input.sessionId === undefined ? '' : dispatchRoleOf(journal, input.sessionId)
-  const ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' = (() => {
+  const ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' | 'claim-released' = (() => {
+    // **`DEF-099`（真机，2026-10-18）**：认领后**释放** ⇒ 当前没有 owner（旧实现把释放后的旧会话当 owner）。
+    if (claimed.released) return 'claim-released'
     if (claimSession === undefined) return 'no-claim'
     if (input.sessionId !== undefined && claimSession === input.sessionId) return 'session'
     // 卡已离开 in-progress（或卡不存在）⇒ 实现方对这张卡的任期已结束
@@ -593,6 +634,11 @@ export function verifyReviewFinding(
       }),
     }
   }
+  // **`DEF-100`（第十二批 §3.5）**：`reproduced` 的证词必须含**读数形态**（占位文本不算复现）。
+  // 放在授权类判定（自己核自己 / 谁实现谁核 / 代核角色 / 已核过）**之后**：先回答"谁能核"，再要求"核得像读数"。
+  if (input.outcome === 'reproduced' && !READABLE_PROOF.test(evidence)) {
+    return { ok: false, code: 'placeholder-evidence', detail: t('uiReview.placeholderEvidence') }
+  }
   // **R-19 A**：覆盖时要留痕（台账里看得出"这里曾被改判"）
   const revised = previous === undefined ? undefined : { outcome: previous.outcome, by: previous.by, at: previous.at }
   const disposition: ReviewFindingDisposition = {
@@ -632,6 +678,8 @@ export function verifyReviewFinding(
     by: disposition.by,
     ...(disposition.sessionId === undefined ? {} : { sessionId: disposition.sessionId }),
     ownerChecked: disposition.ownerChecked,
+    // **`DEF-100`**：覆盖时把**被覆盖的那条**写进事件（派生视图只计最新，但审计要看得出"改过判"）
+    ...(revised === undefined ? {} : { supersedes: revised }),
   })
   const after = reviewAdoption(store, journal, review)
   const verified = findings.length - after.pending.length - after.stale.length - after.forged.length

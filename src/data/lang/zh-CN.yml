@@ -207,7 +207,7 @@ tool:
   sdo_task: 任务卡与协同协议：认领走比较交换（版本号对不上即冲突）、只有 owner 能回报、**完成必须带证据**、卡住要说明原因；失联的 owner **不会自动释放**，只能显式释放或改派（都留痕）。
   sdo_test: 测试计划、结果与缺陷。`plan` 写用例（建议绑定需求 id）、`record` 记录结果（通过也要带证据）、`defect` 登记或更新缺陷（严重度/状态）。未关闭的阻塞级缺陷会拦住验证门禁。
   sdo_review: 评审记录：记录结论（通过/要求修改/驳回）与发现项；**评审者不得是作者**（独立性是机械校验的，不靠自觉）。
-  sdo_hash: "现算一个产物的**完整 sha256**（+ mtime + 字节数）—— **只读纯查询**，不写任何台账、不落事件。为什么需要它：评审者的掩码 `deny` 里有 `bash`（跑不了 sha256sum），而唯一产出产物哈希的 `sdo_test` 也被 deny ⇒ 没有它，评审者只能看 done 回执里的**截断**指纹，无法自证「我核的是不是这份产物」。"
+  sdo_hash: "现算一个产物的**完整 sha256**（+ mtime + 字节数）—— **只读纯查询**，不写任何台账、不落事件。为什么需要它：评审者的掩码 `deny` 里有 `bash`（跑不了任何命令），而唯一产出产物哈希的 `sdo_test` 也被 deny ⇒ 没有它，评审者只能看 done 回执里的**截断**指纹，无法自证「我核的是不是这份产物」。"
   sdo_deliver: 交付包：产物清单（含 sha256）、验收矩阵（每条必须级需求一行）、回滚点，并声明不含原型内容。只到"可部署产物"，发布与运维明确不做。
   sdo_cost: 成本报告：已消耗 token；只有在用户填了单价时才给金额，且**处处标注"估算"**。预算可选——没填总额就只报消耗（不给剩余/百分比、不触发阈值）；超预算**不会自动停**，只提醒人去选追加/豁免/收敛。模型只读。
   sdo_gate: 门禁引擎（流程即数据，门禁逐条判定，绝不臆测）。`check` 判定并留痕；`advance` 仅在当前阶段出口门禁全部通过或已豁免时推进；`waive` 显式豁免并留痕。**未实现的检查器一律判失败**——绝不允许"查不到就算过"。
@@ -238,7 +238,7 @@ param:
   gate: 门禁（可用中文名，如"立项门禁"，也可用标识 G0）
   approver: 批准人
   approvedBy: 人类签字人（基线门禁需要）
-  evidence: "done 的证据 JSON 文本。形状：[{\"kind\":\"command\",\"detail\":\"npm test（420 passed）\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"lib/x.js sha256=<64 位十六进制>\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-…@42\"}]。校验：种类要覆盖卡的 evidenceRequired；artifact 的路径必须真实存在（给了哈希就复算）；command 的 exitCode 是**独立字段** —— 写进 detail 文本不会被读到，要它生效就单独给字段。"
+  evidence: "done 的证据 JSON 文本。形状：[{\"kind\":\"command\",\"detail\":\"＜项目的测试命令＞（＜通过数＞ passed）\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"＜产物路径＞ sha256=＜64 位十六进制＞\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-…@42\"}]。校验：种类要覆盖卡的 evidenceRequired；artifact 的路径必须真实存在（给了哈希就复算）；command 的 exitCode 是**独立字段** —— 写进 detail 文本不会被读到，要它生效就单独给字段。"
   status: 状态
   severity: 严重度
   kind: 类型
@@ -916,6 +916,7 @@ shapeEntity:
   signature: "门禁签字台账"
   budget: "成本预算"
 uiIndex:
+  kDodToolGap: '⚠️ 卡 {p1}（角色 **{p2}**）的 DoD 点名了本角色面里没有的工具 **{p3}** —— 改法：把这一步交给有这个工具的角色卡，或删掉 DoD 里对它的要求；否则这张卡在真机上注定做不完（S1 立卡对账）'
   kUnfrozenLocal: '🧊 完成语义：本次 `done` 是**局部绿**（本卡范围内的改动已绿），**全项目尚未冻结** —— 未并进来的在飞卡：{p1}。要看全量是否冻结，请等这些卡收口后再全量跑一次。'
   kUnfrozenFrozen: '🧊 完成语义：当前**没有**在飞的兄弟卡 ⇒ 本次 `done` **等同于全量冻结**（本卡范围绿 = 全项目绿）。'
   kBadDefects: '❌ `defects` 必须是字符串数组（或它的 JSON 文本），例如 ["DEF-001","DEF-002"] —— 收到的东西形状不对；本次没有写入。'
@@ -1367,6 +1368,20 @@ uiClamp:
   truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"
 
 uiGates:
+  kDeliveryBoundUndeclared: '不适用：项目没有在 `.sdo/config.yml` 的 `delivery.bind` 里声明交付绑定形态（`commit` = 提交信息带产物哈希 / `manifest` = 清单落点带产物哈希）；插件不猜形态（AC-241）'
+  kDeliveryBoundOk: '✅ 交付绑定成立（形态 **{p1}**）：{p1} 的落点里能查到 40/64 位十六进制（关键产物哈希）'
+  kDeliveryBoundFail: '❌ **交付绑定不成立**（形态 **{p1}**）：{p2}'
+  kDeliveryBoundRemedy: '按项目声明的形态绑定产物：`commit` ⇒ 提交信息里写关键产物的 64 位 sha256；`manifest` ⇒ 在 `delivery.manifestPath` 指的清单里逐行写「路径 + sha256」。判据只认哈希形态与落点，不认用什么工具算的'
+  kContractsTestedUndeclared: '不适用：项目没有在 `.sdo/config.yml` 的 `contractTests.enforce` 里声明启用（判据与项目无关 —— 要不要把"每份契约都有契约测试"当门禁是项目选择，AC-241）'
+  kContractsTestedNone: '不适用：`.sdo/contracts/` 里没有未作废的契约（没有可判的契约面）'
+  kContractsTestedOk: '✅ 契约的契约测试覆盖齐备：{p1} 份逐份有记录或项目豁免（其中豁免 {p2} 份）'
+  kContractsTestedGaps: '❌ **契约缺契约测试**（{p2} / {p3} 份）：{p1} —— `no-record` = 既无记录也无豁免；`exempt-needs-reason` = 声明了豁免但**没给理由**'
+  kContractsTestedRemedy: '给这些契约补一条契约测试记录（`sdo_test action=record contractTest=…`），或在 `.sdo/config.yml` 的 `contractTests.exempt` 里逐份声明 `{ id, reason }`（结构声明、语言无关）；判据只认 id 与记录，不认实现形态'
+  kMustCoverageUndeclared: '不适用：项目没有在 `.sdo/config.yml` 的 `trace.mustCoverage` 里声明启用（判据与项目无关，要不要把它当门禁是项目选择 —— AC-241）'
+  kMustCoverageNone: '不适用：需求里没有 must 级条目（没有被本判据接住的约束）'
+  kMustCoverageOk: '✅ 每条 must 需求都有 `req-tc` 边（用例覆盖）：{p1} 条逐条在册'
+  kMustCoverageGaps: '❌ **未覆盖的 must 需求**（{p2} / {p3} 条）：{p1} —— 一条 must 约束必须有**用例**接住；这里没有任何 `req-tc` 边'
+  kMustCoverageRemedy: '给这些 must 需求补 `req-tc` 边（`sdo_trace action=link from=<REQ> to=<TC> kind=req-tc`），或把需求降级/作废并留痕；未覆盖的 must 需求会在需求基线门禁上**永久**红（{p1}）'
   kFixedTestedMissing: '❌ **已修但无测试结论**（{p1} 条）：{p2} —— 「已修」必须有一条**通过**的测试结论把它的 id 写进 `defects`；否则这条缺陷永远没被测过，而门禁此前不判红任何一格。'
   kUnfrozenFullOk: '✅ 未冻结完成（{p2} 张卡）之后已有一次**全量绿**：{p1} —— 局部收工已重新收成全局冻结'
   kUnfrozenFullNa: '不适用：台账里没有 `unfrozen` 非空的卡（没有「局部绿」的完成），本条不参与'
@@ -1994,6 +2009,7 @@ uiApplicability:
   listSep: "、"
   viewBoth: '视图「{p1}」同时在 viewsPresent 与 viewsAbsent 里 —— 同一份声明不能自相矛盾；请二选一后重新起草'
 uiReview:
+  placeholderEvidence: '`reproduced` 的证词必须含**可读的读数**（`⇒` / `=>` / `exitCode` / 64 位十六进制之一）—— 占位文本（`x`、`复现成功`）不算复现；给不出就读数，或改判 `refuted` 并写反证'
   # —— 评审发现核实（2026-10-08 口径：评审结果是主张，要由实现方逐条核实才能采纳）——
   kReproMissing: '❌ 非 `pass` 的待修主张（{p1}）必须带**一条当前仍然失败的复现命令**（`repro`），或**显式声明无法复现 + 为什么**（`unreproducible`）—— 否则"待修"就只是一句口头记忆：已收敛的问题会被记成未决，后人去修一个不存在的缺口。**本次没有写入**。'
   kDefectUnknown: '❌ 评审点名的缺陷**不存在**：{p1} —— 点不了名的 id 不能被容忍（否则「这条缺陷已被评审」就退化成一句散文）。修法：① 用真号重发；② 缺陷还没入账 ⇒ 先用 `sdo_test action=defect` 建它。**本次没有写入**（不猜、不自动建缺陷）。'

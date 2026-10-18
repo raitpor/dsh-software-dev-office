@@ -31,6 +31,8 @@ interface DocSpec {
   /** §3 现算应当恰好等于的缺陷号（`7 = 7 + 0` / `12 = 7 + 5`）。 */
   sectionIds: string[]
   summaryMin: number
+  /** 报告节的编号（`### <n>.x`）：第九批/第十批是 §8，第十二批的报告追加在 §9。 */
+  reportSection?: string
   /** 是否要判 `DEF-090` 的判据表（只有第九批有）。 */
   judgeTable?: boolean
 }
@@ -50,6 +52,16 @@ const DOCS: DocSpec[] = [
     min: { 'DEF-096': 3, 'DEF-095': 2, 'DEF-098': 4, 'DEF-094': 3, 'DEF-093': 3, 'DEF-087': 2, 'DEF-097': 3, R21: 3, M190: 3 },
     sectionIds: ['DEF-085', 'DEF-087', 'DEF-089', 'DEF-090', 'DEF-091', 'DEF-092', 'DEF-093', 'DEF-094', 'DEF-095', 'DEF-096', 'DEF-097', 'DEF-098'],
     summaryMin: 8,
+  },
+  {
+    label: '第十二批',
+    reportSection: '9',
+    path: plan('2026-10-17-交接-给创造模式会话-第十二批.md'),
+    // 只登记**本轮已交付**的项（未交付项按 §9.1 如实标注，不给"空表"充数）
+    min: { 'DEF-099': 3, 'DEF-100': 3, 'S1': 3, 'S2': 2, 'DEF-102': 3, 'DEF-103': 1, 'DEF-104': 4, 'DEF-105': 5, 'DEF-106': 4, 'DEF-107': 4, 'DEF-108': 3 },
+    // **现算**：13 个本批条目 + §3 里被引用作对照的 3 条（`DEF-080` 名单类比、`DEF-094` 同族、`DEF-098` 已在 13 内）
+    sectionIds: ['DEF-080', 'DEF-087', 'DEF-093', 'DEF-094', 'DEF-096', 'DEF-098', 'DEF-099', 'DEF-100', 'DEF-101', 'DEF-102', 'DEF-103', 'DEF-104', 'DEF-105', 'DEF-106', 'DEF-107', 'DEF-108'],
+    summaryMin: 13,
   },
 ]
 
@@ -123,9 +135,11 @@ function existingTestIds(): Set<string> {
 /** 报告里引用的用例 id（`M123-45` 形态）。 */
 const citedIds = (cell: string): string[] => [...new Set([...cell.matchAll(/\bM\d{2,}-\d{2}\b/gu)].map((match) => match[0]))]
 
-/** 该报告的 §8 交付节里、`item` 对应的那一节。 */
-const sectionOf = (all: readonly Section[], item: string): Section | undefined =>
-  all.find((entry) => /^8\./u.test(entry.title) && entry.title.includes(item))
+/** 该报告的交付节里、`item` 对应的那一节（节号按 `reportSection`，第九/十批是 §8、第十二批是 §9）。 */
+const sectionOf = (all: readonly Section[], item: string, spec?: DocSpec): Section | undefined => {
+  const prefix = `${spec?.reportSection ?? '8'}.`
+  return all.find((entry) => entry.title.startsWith(prefix) && entry.title.includes(item))
+}
 
 test('M190-01 §0 机械要求：《豁免面清单》逐项在、行数 ≥ 声明数、每行都有变异读数**且引用真实用例 id**', () => {
   const ids = existingTestIds()
@@ -133,7 +147,7 @@ test('M190-01 §0 机械要求：《豁免面清单》逐项在、行数 ≥ 声
   for (const spec of DOCS) {
     const all = sections(readFileSync(spec.path, 'utf8'))
     for (const [item, min] of Object.entries(spec.min)) {
-      const section = sectionOf(all, item)
+      const section = sectionOf(all, item, spec)
       assert.ok(section !== undefined, `${spec.label} 缺 ${item} 的 §8 交付节（§0：没有这张表 ⇒ 该项不算交付）`)
       const table = tables((section as Section).body).find((entry) =>
         EXEMPTION_HEADER.test(entry.header.join(' ')) && entry.header.join(' ').includes('变异'))
@@ -164,7 +178,7 @@ test('M190-01 §0 机械要求：《豁免面清单》逐项在、行数 ≥ 声
 
 test('M190-02 §3.3（DEF-090）DoD ①：判据表每一行的理由都点名**真实分档键**「字面前缀段数」', () => {
   for (const spec of DOCS.filter((entry) => entry.judgeTable === true)) {
-    const section = sectionOf(sections(readFileSync(spec.path, 'utf8')), 'DEF-090')
+    const section = sectionOf(sections(readFileSync(spec.path, 'utf8')), 'DEF-090', spec)
     assert.ok(section !== undefined, `${spec.label} 缺 DEF-090 那一节`)
     const judge = tables((section as Section).body).find((entry) =>
       entry.header.includes('字面前缀段数') && entry.header.includes('期望档'))
@@ -181,7 +195,7 @@ test('M190-03 §0 的可机械核对项：汇总表够行 + §3 点名的缺陷�
   for (const spec of DOCS) {
     const text = readFileSync(spec.path, 'utf8')
     const summary = sections(text).find((entry) => entry.title.includes('汇总'))
-    assert.ok(summary !== undefined, `${spec.label} 缺 §8.1 汇总表`)
+    assert.ok(summary !== undefined, `${spec.label} 缺 §${spec.reportSection ?? '8'}.1 汇总表`)
     const summaryTable = tables((summary as Section).body).find((entry) => entry.header.join(' ').includes('钉红读数'))
     assert.ok(summaryTable !== undefined, `${spec.label} 汇总表必须含"钉红读数"列`)
     assert.ok(
@@ -216,6 +230,31 @@ const commandShaped = (span: string): boolean =>
  * 而判据本体本来就不该靠措辞 —— 这里把字形收进常量，断言只比**结构**（身份/类别/ASCII 标记）。
  */
 const EXEMPTION_HEADER = /故意不抓/u
+
+/**
+ * **`DEF-108`（第十二批 §3.6）逐份判**：每份报告 ≥3 张《豁免面清单》表，**或** 0 张 + 显式声明
+ * 「本报告不含《豁免面清单》」并给理由。**不许面级分母**（旧口径 `总表数 >= 份数 × 3` 会被
+ * "6 表 + 0 表"垫平 —— RV24 的 0 张就是被 RERUN 的 6 张盖住的）。
+ */
+const exemptionTables = (text: string): number =>
+  tables(text.split('\n')).filter((table) => EXEMPTION_HEADER.test(table.header.join(' '))).length
+
+const declaresNoExemption = (text: string): boolean => /本报告不含《豁免面清单》/u.test(text)
+
+/**
+ * **现盘"0 张且未声明"的报告（按身份登记）** —— `DEF-108` 现场：`batch11-RV24` 是 tester 复验报告，
+ * 本来不含《豁免面清单》（12 张 / 4 份 = 3 + 3 + 6 + 0 里的那个 0）。红线：我不写 `.sdo/`，
+ * 所以这里**按身份**接受它，同时要求"登记与现算恰好相等"（它一旦有了表、或出现新的 0 张报告 ⇒ 红）。
+ * **出路**：驾驶舱在 `batch11-RV24/report.md` 里加一句「本报告不含《豁免面清单》：<理由>」⇒ 可删除本条登记。
+ */
+const NO_EXEMPTION_REPORTS: readonly string[] = ['batch11-RV24']
+
+/** 不合格的份（`tables` 是逐份现算的读数；`declared` = 0 张并显式声明为不含）。 */
+function offendingReports(texts: readonly string[]): { index: number; tables: number; declared: boolean }[] {
+  return texts
+    .map((text, index) => ({ index, tables: exemptionTables(text), declared: declaresNoExemption(text) }))
+    .filter((row) => row.tables < 3 && !(row.tables === 0 && row.declared))
+}
 const WHY_HEADER = /为什么/u
 const NO_READING_TEXT = /没有可跑读数/u
 
@@ -357,10 +396,26 @@ test('M190-04 §3.6（P-B）「为什么」必须含**可跑读数**：本批交
     const faces = reports.map((path) => faceOf(path.split(/[\\/]/u).slice(-2)[0] as string, path, false))
     const issues = whyColumnIssues(faces, ids)
     assert.deepEqual(issues, [], `本批交付面的《豁免面清单》每行都要有可跑读数（空话/不存在的 id 都点名）：${JSON.stringify(issues).slice(0, 900)}`)
-    const tableCount = reports
-      .flatMap((path) => tables(readFileSync(path, 'utf8').split('\n')))
-      .filter((table) => EXEMPTION_HEADER.test(table.header.join(' '))).length
-    assert.equal(tableCount >= reports.length * 3, true, `每份交付面报告至少 3 张《豁免面清单》表（现算 A 组 3 + B 组 3 = 6；实际 ${tableCount} 张 / ${reports.length} 份）`)
+    // **`DEF-108`**：**逐份判**（每份 ≥3 张，或 0 张 + 显式声明不含）—— 不再用"总表数 ≥ 份数 × 3"的面级分母
+    const texts = reports.map((path) => readFileSync(path, 'utf8'))
+    const names = reports.map((path) => path.split(/[\\/]/u).slice(-2)[0] as string)
+    const perReport = texts.map((text) => exemptionTables(text))
+    const offenders = offendingReports(texts)
+    const label = (row: { index: number; tables: number; declared: boolean }): string =>
+      `${names[row.index] ?? row.index}（${row.tables} 张${row.declared ? '，已声明不含' : ''}）`
+    // ① **登记与现算恰好相等**：登记的那些必须仍是"0 张且未声明"（有表 / 换了名字 ⇒ 红，要求收紧）
+    assert.deepEqual(
+      offenders.filter((row) => NO_EXEMPTION_REPORTS.includes(names[row.index] as string)).map((row) => `${names[row.index]}（${row.tables} 张）`),
+      NO_EXEMPTION_REPORTS.map((name) => `${name}（0 张）`),
+      `按身份登记的"0 张且未声明"报告必须与现算恰好相等（多/少/有表都红；出路是让报告自己声明不含）：${JSON.stringify(offenders.map(label))}`,
+    )
+    // ② 登记之外**逐份判**：每份 ≥3 张（或 0 张 + 显式声明不含）—— 不再用"总表数 ≥ 份数 × 3"的面级分母
+    assert.deepEqual(
+      offenders.filter((row) => !NO_EXEMPTION_REPORTS.includes(names[row.index] as string)).map(label),
+      [],
+      `**逐份**判：每份交付面报告至少 3 张《豁免面清单》表（或 0 张 + 显式声明"本报告不含"并给理由）；` +
+        `逐份现算 = ${perReport.join(' + ')} = ${perReport.reduce((sum, n) => sum + n, 0)} 张 / ${reports.length} 份`,
+    )
   }
   // ② 冻结面（第九批 + 第十批的 §8 旧表）：现算 55 = 29 + 26 行，其中无读数 49 = 26 + 23，逐条按身份登记
   const books = [faceOf('第九批', DOCS[0]?.path as string, true), faceOf('第十批', DOCS[1]?.path as string, true)]
@@ -405,4 +460,39 @@ test('M190-05 §3.6（P-B）反例 + 单点可红：合法读数不许红；空�
   const bogus = whyColumnIssues([table('可跑读数：`M999-99` 1 红')], ids)
   assert.deepEqual(bogus.map((issue) => issue.kind).sort(), ['bad-id', 'no-reading'], '不存在的用例 id ⇒ 红（bad-id；它也不算读数）')
   assert.match(bogus.find((issue) => issue.kind === 'bad-id')?.detail ?? '', /M999-99/u, '必须点名那个不存在的 id')
+})
+
+test('M190-06 §3.6（`DEF-108`）两格守卫：0 表报告**单点红**；"多份大表 + 0 表"**仍然红**（专挡垫绿）', () => {
+  const exemption = (n: number): string =>
+    Array.from({ length: n }, (_unused, index) =>
+      `| 判据 ${index} | 不抓 | 因为 | 红（\`M190-06\`） |\n`).join('')
+  /** `n` = **表的张数**（每张表 = 表头 + 分隔行 + 一行数据）。 */
+  const table = (n: number): string =>
+    '# 报告\n\n' + (n === 0
+      ? '没有表。\n'
+      : Array.from({ length: n }, (_unused, index) =>
+        `| 判据 / 守卫 | 故意不抓什么 | 为什么 | 对应的变异（读数） |\n|---|---|---|---|\n${exemption(1).replace('判据 0', `判据 ${index}`)}`).join('\n'))
+  // ① 一份 3 表 ⇒ 合格（不是恒红）
+  assert.deepEqual(offendingReports([table(3)]), [], '3 张表的报告必须合格')
+  // ② 一份 **0 表**（且没声明不含）⇒ **单点红**，且点名的那一份就是它
+  const alone = offendingReports([table(0)])
+  assert.deepEqual(alone.map((row) => row.tables), [0], '0 表报告必须单点红')
+  // ③ 一份 3 表 + 一份 0 表 ⇒ **仍然红**（旧的面级分母 `3 ≥ 2×3` 会红，但"6 表 + 0 表"会被垫平 —— 下面那格才是要害）
+  assert.deepEqual(offendingReports([table(3), table(0)]).map((row) => row.tables), [0], '3 + 0 ⇒ 红在 0 表那份')
+  // ④ **垫绿形态**：两份 6 表 + 两份 0 表 ⇒ 总数 12 ≥ 4×3 = 12（旧口径**绿**）而**逐份判必须红**
+  assert.deepEqual(
+    offendingReports([table(6), table(6), table(0), table(0)]).map((row) => row.index),
+    [2, 3],
+    '12 张 / 4 份 = 6 + 6 + 0 + 0：旧面级分母会假绿，逐份判必须点名两个 0 表',
+  )
+  // ⑤ 每份只有 1 张 ⇒ 三份全红（"至少 3 张"这条下界是逐份的）
+  assert.deepEqual(offendingReports([table(1), table(1), table(1)]).map((row) => row.tables), [1, 1, 1], '1 张 × 3 份必须全红')
+  // ⑥ 0 张 + **显式声明**「本报告不含《豁免面清单》」⇒ 放行（有出路的豁免，不是死门）
+  assert.deepEqual(offendingReports([`${table(0)}本报告不含《豁免面清单》：本份只交只读核，不碰判据。\n`]), [], '显式声明不含 ⇒ 放行')
+  // ⑦ 反例：声明了但**仍有 1 张** ⇒ 不许用声明换豁免（声明只对"0 张"成立）
+  assert.deepEqual(
+    offendingReports([`${table(1)}本报告不含《豁免面清单》。\n`]).map((row) => row.tables),
+    [1],
+    '声明"不含"却又放了 1 张 ⇒ 仍然红（声明只对 0 张成立）',
+  )
 })

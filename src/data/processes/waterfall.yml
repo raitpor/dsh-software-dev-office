@@ -102,6 +102,7 @@ gates:
       # **REQ-046**：验收准备左移到需求基线。冻结这一刻就要写清"每条 must 需求的每条 AC 怎么验"，
       # 否则交付期的验收矩阵只能倒推（也就无法反证"这条 AC 没验"）。需求变更 ⇒ 整份大纲失效。
       - { id: C10-acceptance-outline, check: "dor.acceptance_outline", desc: "验收大纲已按每条 must 需求的每条 AC 生成（验收项 + 判定基准），且与当前需求基线一致；需求变更后整份失效，须重新生成并随 G2 重签" }
+      - { id: C-must-coverage, check: "coverage.uncovered", desc: "每条 must 需求都有 req-tc 边（有用例覆盖它）；未覆盖的 must 需求 ⇒ 红并点名（REQ-060 的机械化，AC-241 的结构比较）" }
   - id: G3
     name: 架构门禁
     criteria:
@@ -121,6 +122,7 @@ gates:
       - { id: C-2G, check: "quality.doc", desc: "质量需求落人读文档并受约束：docs/QUALITY.md 存在且由当前真源渲染、每条质量场景可度量（刺激/响应/度量可核对）；真源为空时必须在设计适用性声明里显式声明不做质量场景/ATAM 并给理由（否则判红）" }
       - { id: C-2D, check: "design.signed", desc: "G3 门禁级用户签字（必须带用户原话或所选选项原文；无引用视为无效；签字后声明 / 需求 / 契约变更即失效）" }
       - { id: C-2E, check: "phase.rollback-recorded", desc: "阶段回退留痕合规（回退必须有 reason，且只能沿流程声明的合法回退边）" }
+      - { id: C-contracts-tested, check: "contracts.tested", desc: "每份（未作废）契约至少一条 contractTest 记录，或在 `.sdo/config.yml` 的 `contractTests.exempt` 里逐份显式豁免并给理由；缺一份即红并点名契约 id（项目声明 `contractTests.enforce` 才启用）" }
   - id: G4
     name: 详细设计门禁
     criteria:
@@ -188,3 +190,4 @@ gates:
       # 与 G6 的 `defects.fixed-tested` / `defects.fixed-reviewed` 不是一回事（那两条管每条缺陷的依据），
       # 故**不在 G6 重复声明**（同一概念两处判据是 `DEF-044` 的教训）。四流程措辞逐字一致。
       - { id: C-67, check: "defects.unfrozen-full-green", desc: "有 `unfrozen` 非空的卡（某次完成是**局部绿**）⇒ **交付前必须有一次全量绿**：存在一条 `status=pass` 且声明覆盖全量（`fullSuite=true`）的测试结论，且其时刻**晚于**最后一次未冻结完成的 `done` 时刻；否则判红并**逐条点名**是哪几张卡的未冻结完成把这条要求引出来的。「全量」由**项目/调用方声明**，插件不硬编码任何跑法（它不认识某条命令、也不认识某个路径，只认「这条结论自称覆盖全量」这个结构化声明）—— 补法是跑一次全量并记一条 `status=pass` + `fullSuite=true` 的结论。**没有** `unfrozen` 非空的卡 ⇒ 判 N/A（不是判红）。" }
+      - { id: C-delivery-bound, check: "delivery.bound", desc: "交付绑定成立：项目声明的形态（`commit` = 提交信息含 40/64 位产物哈希 / `manifest` = `delivery.manifestPath` 的清单里含哈希）查得到；未声明 ⇒ N/A（AC-241）" }

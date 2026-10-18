@@ -106,7 +106,7 @@ test('SDO-34：`.sdo/` 下的台账写入**不占卡的写范围**（要求如�
   const claimed = claim(store, journal, { taskId: 'TASK-010', owner: 'dev-a', sessionId: 's1', expectedRevision: 1 })
   assert.equal(claimed.ok, true)
   const claimSeq = journal.read().events.filter((event) => event.type === 'task/claimed').map((event) => event.seq).pop() as number
-  // 工具类写入（`sdo_test`/`sdo_defect` 走 `.sdo/`）落在卡的写范围之外
+  // 工具类写入（`sdo_test action=record|defect` 走 `.sdo/`）落在卡的写范围之外
   recordWorkspaceChanges({
     store, sessionId: 's1', seq: claimSeq + 1, journalSeq: claimSeq + 1,
     summary: { files: [{ path: '.sdo/defects/DEF-001.yml' }, { path: 'src/TASK-010/ok.ts' }] },

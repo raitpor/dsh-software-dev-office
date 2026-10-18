@@ -108,7 +108,7 @@ test('M71-02 G-2：**不许洗白** —— 已记录指纹与当前内容不一�
 test('M71-03 G-2 可见性：被采纳的老格式 pass 评审必须在门禁成功文案里点名（不许读成"已防篡改"）', () => {
   card('TASK-001', 'done')
   legacyReview('REV-001', 'pass', ['f1'])
-  const verified = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '复现', sessionId: 'child-dev' })
+  const verified = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '复现 ⇒ exitCode=0', sessionId: 'child-dev' })
   assert.equal(verified.ok, true)
   assert.equal(reviewAdoption(store, journal, first()).state, 'adopted', '前置：老格式评审照旧可以被采纳（不把老台账判死）')
 

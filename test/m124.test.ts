@@ -225,3 +225,34 @@ test('M124-07 防再生：四处调用点必须走**唯一出口**，不得再�
   assert.match(outlet, /export function scopePathsIntersect/u)
   assert.match(outlet, /export function scopePathWithin/u)
 })
+
+test('M124-09 §3.8（`S2`）真机形态：宿主给的 `paths` 是**绝对路径**（工作区内）—— 归一后仍按卡范围判', () => {
+  // 真机实录形态：`write`/`edit` 的 `file_path` 是 `/ws/src/a.ts` 这种**工作区内绝对路径**。
+  const scopeOf = (paths: string[]) => evaluateWriteScope({
+    role: 'dispatched',
+    tool: 'edit',
+    paths,
+    workspace: '/ws',
+    workspaceRoot: '/ws',
+    guardedTools: ['edit', 'write'],
+    sharedPaths: ['.sdo/', 'docs/', 'test/'],
+    cardScopes: ['src/a.ts'],
+  })
+  // ① 绝对路径**在卡范围内** ⇒ 放行（修前这里会被当"工作区外"或"越界"）
+  const allowed = scopeOf(['/ws/src/a.ts'])
+  assert.equal(allowed.kind, 'allow', '工作区内的绝对路径必须归一后按卡范围判（放行）')
+  // ② 绝对路径**越出卡范围**（同名前缀文件）⇒ 拒并点名
+  const denied = scopeOf(['/ws/src/a.tsx'])
+  assert.equal(denied.kind, 'deny', '绝对路径的 `src/a.tsx` 不在卡范围 `src/a.ts` 内')
+  // ③ 绝对路径落在**公共面**（`test/`）⇒ 放行（公共面不受卡范围约束）
+  assert.equal(scopeOf(['/ws/test/x.test.ts']).kind, 'allow', '公共面放行')
+  // ④ 反例：前缀**不许越界命中** —— `/wsx/src/a.ts` 不是 `/ws` 下的文件
+  const outside = scopeOf(['/wsx/src/a.ts'])
+  assert.equal(outside.kind, 'deny', '`/wsx/...` 不是工作区内路径')
+  if (outside.kind === 'deny') assert.equal(outside.code, 'write-scope-outside-workspace', '必须按"工作区外"拒（而不是"越界"）')
+  // ⑤ 已登记的**口径差异**（第十二批 §9.10 如实记）：POSIX 工作区里给**反斜杠绝对路径**（`\ws\src\a.ts`）
+  //    会被归一成相对路径 `ws/src/a.ts` ⇒ 仍**拒**（安全侧），但分类是 `write-scope-violation` 而不是
+  //    `write-scope-outside-workspace`。**判据只看归一后的字符串**：跨平台的路径归属需要平台知识（不在本判据面内）。
+  const backslash = scopeOf(['\\ws\\src\\a.ts'])
+  assert.equal(backslash.kind, 'deny', '反斜杠绝对路径仍然拒（安全侧；分类差异见上）')
+})

@@ -362,7 +362,7 @@ test('M30-12 D9 G5-C-42：size ≥ medium 的完成卡没有通过评审即判�
   assert.match(beforeVerify.detail, /未核实/u, `理由要说清是"没核实"而不是"没评审"：${beforeVerify.detail}`)
 
   // ③ 由实现方逐条核实（复现）→ 才被采纳、才放行
-  office.verifyReviewFinding(call(), { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复核：确无阻塞问题', by: 'dev-a' })
+  office.verifyReviewFinding(call(), { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复核：确无阻塞问题 ⇒ exitCode=0', by: 'dev-a' })
   assert.equal(gate().ok, true, `核实后应放行：${JSON.stringify(gate())}`)
 
   // ④ 反向：**另一张 small 卡**完成、且完全没有评审 → 这条不拦（拦它是 G6 的 C-52 的事）

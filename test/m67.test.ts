@@ -71,7 +71,7 @@ test('M67-01 采纳状态机：未核实 → 部分 → 已采纳；发现正文
   const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'pass', findings: ['a 处溢出', 'b 处超时'] })
   assert.equal(reviewAdoption(store, journal, review).state, 'unverified', '一条都没核实 ⇒ 未核实')
 
-  const first = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '按发现复现：溢出确实发生' })
+  const first = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '按发现复现：溢出确实发生 ⇒ exitCode=0' })
   assert.equal(first.ok, true)
   const partial = reviewAdoption(store, journal, review)
   assert.equal(partial.state, 'partial')
@@ -92,7 +92,7 @@ test('M67-01 采纳状态机：未核实 → 部分 → 已采纳；发现正文
   // ② 台账里有核实、journal 里没有对应事件（伪造）⇒ 不采纳
   const forgedReview = recordReview(store, journal, { taskId: 'TASK-002', reviewer: 'rev-b', verdict: 'pass', findings: ['c 处丢数据'] })
   // 先正常核实拿到"正确的指纹"，再把 journal 事件的佐证删掉（模拟只手写台账）
-  const good = verifyReviewFinding(store, journal, { reviewId: forgedReview.id, index: 0, outcome: 'reproduced', evidence: 'e' })
+  const good = verifyReviewFinding(store, journal, { reviewId: forgedReview.id, index: 0, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0' })
   assert.equal(good.ok, true)
   const kept = listDispositions(store)
   const events = journal.read().events
@@ -117,7 +117,7 @@ test('M67-01 采纳状态机：未核实 → 部分 → 已采纳；发现正文
   })
   journal.append('review/recorded', { id: 'REV-901', taskId: 'TASK-004', verdict: 'pass', findings: 1 })
   store.writeYaml(['reviews', 'verified.yml'], {
-    verifications: [{ reviewId: 'REV-901', index: 0, findingHash: 'deadbeef', outcome: 'reproduced', evidence: 'e', by: 'dev', ownerChecked: 'no-claim', at: 'x' }],
+    verifications: [{ reviewId: 'REV-901', index: 0, findingHash: 'deadbeef', outcome: 'reproduced', evidence: 'e ⇒ exitCode=0', by: 'dev', ownerChecked: 'no-claim', at: 'x' }],
   })
   const legacy = store.readYaml<{ review: import('../src/domain/records.js').Review }>('reviews', 'REV-901.yml')?.review
   assert.equal(reviewAdoption(store, journal, legacy ?? edited).state, 'stale', '老台账：核实过的发现正文被改 ⇒ stale')
@@ -129,23 +129,23 @@ test('M67-02 谁能核实：不能自己核实自己、只能由该卡的实现�
   const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: ['f1', 'f2'], sessionId: 'child-rev' })
 
   // ① 记录评审的会话自己核实 ⇒ 拒
-  const self = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'e', sessionId: 'child-rev' })
+  const self = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0', sessionId: 'child-rev' })
   assert.equal(self.ok, false)
   assert.equal(self.ok ? '' : self.code, 'self-verify')
 
   // ② 不是该卡的实现会话 ⇒ 拒
-  const other = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'e', sessionId: 'child-other' })
+  const other = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0', sessionId: 'child-other' })
   assert.equal(other.ok, false)
   assert.equal(other.ok ? '' : other.code, 'not-implementer')
 
   // ③ 实现会话 + 依据 ⇒ 过
-  const ok = verifyReviewFinding(store, journal, { reviewId: review.id, index: 1, outcome: 'reproduced', evidence: '按发现复现成功', sessionId: 'child-dev' })
+  const ok = verifyReviewFinding(store, journal, { reviewId: review.id, index: 1, outcome: 'reproduced', evidence: '按发现复现成功 ⇒ exitCode=0', sessionId: 'child-dev' })
   assert.equal(ok.ok, true)
   assert.equal(ok.ok ? ok.disposition.ownerChecked : '', 'session')
 
   // ④ 空依据 / 越界下标 / 非法结论 ⇒ 拒（且都不写台账）
   assert.equal(verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'refuted', evidence: '   ', sessionId: 'child-dev' }).ok, false)
-  assert.equal(verifyReviewFinding(store, journal, { reviewId: review.id, index: 9, outcome: 'reproduced', evidence: 'e', sessionId: 'child-dev' }).ok, false)
+  assert.equal(verifyReviewFinding(store, journal, { reviewId: review.id, index: 9, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0', sessionId: 'child-dev' }).ok, false)
   assert.equal(
     verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'maybe' as never, evidence: 'e', sessionId: 'child-dev' }).ok,
     false,
@@ -155,7 +155,7 @@ test('M67-02 谁能核实：不能自己核实自己、只能由该卡的实现�
 
   // ⑤ 老台账（卡上没有任何认领）⇒ 放行但如实标注 no-claim
   const legacyReview = recordReview(store, journal, { taskId: 'TASK-900', reviewer: 'rev-b', verdict: 'pass', findings: ['g'] })
-  const legacy = verifyReviewFinding(store, journal, { reviewId: legacyReview.id, index: 0, outcome: 'reproduced', evidence: 'e', sessionId: 'child-dev' })
+  const legacy = verifyReviewFinding(store, journal, { reviewId: legacyReview.id, index: 0, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0', sessionId: 'child-dev' })
   assert.equal(legacy.ok, true)
   assert.equal(legacy.ok ? legacy.disposition.ownerChecked : '', 'no-claim')
 })
@@ -174,7 +174,7 @@ test('M67-03 门禁：没核实的通过评审**不被采纳**（且区别于"�
   assert.match(c42a.detail, new RegExp(review.id, 'u'), '要点名是哪条评审')
 
   // ② 实现方核实后 ⇒ 两条都绿
-  verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '复现成功，已修' })
+  verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '复现成功，已修 ⇒ exitCode=0' })
   assert.equal(c42().ok, true, `核实后 C-42 应绿：${c42().detail}`)
   assert.equal(c52().ok, true, `核实后 C-52 应绿：${c52().detail}`)
 
@@ -197,7 +197,7 @@ test('M67-04 `done` 关：最新评审还在要求改动且发现没核实完 �
   assert.match(blocked.ok ? '' : blocked.detail, /1、2/u, '要点名还差哪几条发现')
 
   // 逐条核实（一条复现、一条反驳）⇒ 不再拦
-  verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '复现成功' })
+  verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '复现成功 ⇒ exitCode=0' })
   verifyReviewFinding(store, journal, { reviewId: review.id, index: 1, outcome: 'refuted', evidence: '反证：证据已在 REV 里给出' })
   assert.equal(blockingReview(store, journal, 'TASK-001'), undefined, '核实完 ⇒ 不再拦')
   const done = report(store, journal, { taskId: 'TASK-001', owner: 'dev-a', status: 'done', evidence })

@@ -138,7 +138,7 @@ import { recordWorkspaceChanges } from './domain/workspaceChanges.js'
 // **TASK-108**：`sdo_review action=append` 的域层入口在 `collab.ts`（它已持有 `reviewAdoption` ——
 // 篡改判据只此一份，不在这里另写）；`office.storeFor` / `office.journalFor` 是 index.ts 能拿到的公开入口。
 import { appendReviewFindings } from './domain/collab.js'
-import { UNCLAIMED_CHILD_FACE, attributeRole, claimsBySession, filterKnownTools, maskFingerprint, roleCardPath, roleMaskDecision, toolAllowList, curatedDenyPhantoms } from './domain/roles.js'
+import { UNCLAIMED_CHILD_FACE, attributeRole, claimsBySession, dodToolGaps, filterKnownTools, maskFingerprint, roleCardPath, roleMaskDecision, toolAllowList, curatedDenyPhantoms } from './domain/roles.js'
 import { PLUGIN_PACKAGE_NAME, loadedBuild, sameBuild, worktreeBuildOf } from './domain/buildInfo.js'
 
 /**
@@ -1549,7 +1549,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const scopeNote = (result.notes ?? []).length === 0
           ? ''
           : `\n${fmt('uiIndex.scopeDerivedNote', { p1: (result.notes ?? []).join('、') })}`
-        return planSummary + scopeNote + structuralNote
+        // **`S1`（第十二批 §3.8）**：立卡时按**角色工具面**对账 —— DoD 点名了本角色面里没有的工具 ⇒ **当场告警**并给改法
+        const dodNote = ((): string => {
+          const warnings = result.tasks.flatMap((task) =>
+            dodToolGaps(task.dod, task.role).map((gap) => fmt('uiIndex.kDodToolGap', { p1: task.id, p2: task.role, p3: gap.tool })))
+          return warnings.length === 0 ? '' : `\n${warnings.join('\n')}`
+        })()
+        return planSummary + scopeNote + structuralNote + dodNote
       }
 
       if (args.action === 'iteration') {
@@ -4240,12 +4246,29 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 }
               }
             }
+            // **`DEF-104`（第十二批 §3.3）**：宿主给的 `paths` 是**绝对路径** ⇒ 把工作区根传下去归一；
+            // 实现代码面**项目可声明**（`.sdo/config.yml` 的 `discipline.codePaths`），缺省用默认面。
+            const disciplineRoot = office.workspaceRootFor(call) ?? call.cwd
+            const declaredCodePaths = ((): readonly string[] | undefined => {
+              try {
+                if (disciplineRoot === undefined) return undefined
+                const raw = office.storeFor(disciplineRoot).readYaml<{ discipline?: { codePaths?: unknown } }>('config.yml')
+                const list = raw?.discipline?.codePaths
+                if (!Array.isArray(list)) return undefined
+                const clean = list.map((item) => String(item).trim()).filter((item) => item !== '')
+                return clean.length > 0 ? clean : undefined
+              } catch {
+                return undefined // fail-open：读不到配置就按默认面判
+              }
+            })()
             const decision = disciplineOrAllow({
               gateLevel: settings.gateLevel,
               phase: status.project?.phase ?? '',
               role: attributed.role,
               tool,
               paths,
+              ...(disciplineRoot === undefined ? {} : { root: disciplineRoot }),
+              ...(declaredCodePaths === undefined ? {} : { codePaths: declaredCodePaths }),
               initialized: status.project !== undefined,
             })
             if (decision.kind === 'deny') return { kind: 'deny', reason: decision.reason }

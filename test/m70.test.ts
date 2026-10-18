@@ -72,7 +72,7 @@ test('M70-01 G-1：实现会话退役后，评审必须能被采纳（否则 C-4
   const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'pass', findings: ['f1'], sessionId: 'child-rev' })
 
   // ① 卡已离开 in-progress ⇒ 实现方任期结束 ⇒ 放行并标注 owner-tenure-over
-  const byCockpit = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复现', sessionId: 'session-cockpit' })
+  const byCockpit = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复现 ⇒ exitCode=0', sessionId: 'session-cockpit' })
   assert.equal(byCockpit.ok, true, `实现会话退役时必须放行（否则评审永久不可采纳）：${JSON.stringify(byCockpit)}`)
   assert.equal(byCockpit.ok ? byCockpit.disposition.ownerChecked : '', 'owner-tenure-over')
   assert.equal(listDispositions(store)[0]?.ownerChecked, 'owner-tenure-over', '台账里也要如实记原因')
@@ -89,13 +89,13 @@ test('M70-02 G-1 反向：卡仍在进行中 + 子会话在飞 ⇒ 仍必须由�
   assert.equal(claim(store, journal, { taskId: 'TASK-001', owner: 'dev-a', expectedRevision: 1, sessionId: 'child-live' }).ok, true)
   dispatched('child-live', 'TASK-001', false)
   const review = recordReview(store, journal, { taskId: 'TASK-001', reviewer: 'rev-b', verdict: 'pass', findings: ['x'], sessionId: 'child-rev' })
-  const other = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'y', sessionId: 'session-cockpit' })
+  const other = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'y ⇒ exitCode=0', sessionId: 'session-cockpit' })
   assert.equal(other.ok, false, '实现方还在飞时，别人不得代核')
   assert.equal(other.ok ? '' : other.code, 'not-implementer')
 
   // 派发结算（一次性子代理跑完）⇒ 标注 owner-settled 放行
   dispatched('child-live', 'TASK-001', true)
-  const after = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'y', sessionId: 'session-cockpit' })
+  const after = verifyReviewFinding(store, journal, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: 'y ⇒ exitCode=0', sessionId: 'session-cockpit' })
   assert.equal(after.ok, true)
   assert.equal(after.ok ? after.disposition.ownerChecked : '', 'owner-settled')
 })

@@ -138,7 +138,7 @@ test('M68-02 状态块：未核实的评审必须每轮说出来（核实完就�
   assert.match(block(), new RegExp(review.id, 'u'), `状态块要点名待核实的评审：${block()}`)
   assert.match(block(), /待核实/u)
 
-  office.verifyReviewFinding(call, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '复现成功，已修' })
+  office.verifyReviewFinding(call, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '复现成功，已修 ⇒ exitCode=0' })
   assert.doesNotMatch(block(), /待核实/u, `核实完就不再提示：${block()}`)
 })
 

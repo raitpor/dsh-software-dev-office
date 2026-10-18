@@ -401,7 +401,14 @@ test('R-11 / R-13：回退留痕带 desc、按审计需要裁剪，键名是 inv
   const passed = g3.criteria.filter((item) => item.ok && item.detail === undefined)
   assert.ok(passed.length > 0, 'R-13：通过的判据只留 id/ok（体积可控）')
   const js = JSON.stringify(event.data)
-  assert.ok(Buffer.byteLength(js, 'utf8') < 7900, `R-13：裁剪后的事件应小于旧实现（实测约 7.9KB），当前 ${Buffer.byteLength(js, 'utf8')} 字节`)
+  // **界给算式**（`R22-③`）：旧界 **7900** 字节是在"没有本批两条判据"时定的；第十二批给 G2/G3 各加了一条
+  // （`C-must-coverage` / `C-contracts-tested`，各自带 `desc`）⇒ 现算 **8006** ⇒ 新界 = `7900 + 500`（约 6% 余量，
+  // 仍远小于"每条判据都带 detail"的未裁剪形态）。**加判据就要同时看这条**，别让体积无声涨回去。
+  const BYTE_BUDGET = 7900 + 500
+  assert.ok(
+    Buffer.byteLength(js, 'utf8') < BYTE_BUDGET,
+    `R-13：裁剪后的事件应小于旧实现（旧界 7900 + 本批两条判据的余量 500 = ${BYTE_BUDGET}），当前 ${Buffer.byteLength(js, 'utf8')} 字节`,
+  )
 })
 
 // —————————————————————— R-4：命令面 --turn ——————————————————————

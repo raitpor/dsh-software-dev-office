@@ -343,7 +343,7 @@ test('M85-10 N-11：状态块披露"已核实成立"的评审发现（核实不�
   assert.equal(before.reproducedFindings?.count ?? 0, 0, '没有核实记录时不该有这条')
   const review = office.addReview(call, { taskId: 'TASK-001', reviewer: 'reviewer:1', verdict: 'changes-requested', repro: 'npm test（当前仍失败）', findings: ['发现一'] })
   // 核实（照实现方身份；这里直接落域层留痕）
-  office.verifyReviewFinding(call, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '照着发现能复现', by: 'subagent:developer' })
+  office.verifyReviewFinding(call, { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '照着发现能复现 ⇒ exitCode=0', by: 'subagent:developer' })
   const after = office.status(call)
   assert.equal(after.reproducedFindings?.count, 1, `要数出 1 条已核实成立：${JSON.stringify(after.reproducedFindings)}`)
   assert.deepEqual(after.reproducedFindings?.items, [`${review.id}#1`], '要能看出是哪条评审的第几条发现')

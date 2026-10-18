@@ -135,7 +135,7 @@ test('M177-01 行为三态：有采纳评审 ⇒ 绿；只有 pass TR ⇒ 判红
 
   // ③ 逐条核实 ⇒ 采纳 ⇒ 转绿（反例：证明判据不是"永远红"）
   const verified = office.verifyReviewFinding(call, {
-    reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: '照着发现能复现', by: 'subagent:developer',
+    reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: '照着发现能复现 ⇒ exitCode=0', by: 'subagent:developer',
   })
   assert.equal(verified.ok, true, `夹具前提：核实必须成功：${JSON.stringify(verified)}`)
   const green = c66()
@@ -145,7 +145,7 @@ test('M177-01 行为三态：有采纳评审 ⇒ 绿；只有 pass TR ⇒ 判红
 test('M177-02 分工：没有测试结论的缺陷**留给 C-65 点名**，本条不抢（两个方向都钉住）', () => {
   defect('DEF-002')
   const recorded = review(['DEF-002'])
-  office.verifyReviewFinding(call, { reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: 'x', by: 'subagent:developer' })
+  office.verifyReviewFinding(call, { reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: 'x ⇒ exitCode=0', by: 'subagent:developer' })
   // ① 有评审、**没有 pass 结论** ⇒ 本条不参与（trigger 未成立）
   const reading = c66()
   assert.equal(reading.ok, true, `没有 pass TR 的缺陷不归本条管：${reading.detail}`)
@@ -218,7 +218,7 @@ test('M177-05 防伪：事后往评审里补一个缺陷号 ⇒ 内容指纹判 
   defect('DEF-002')
   passingResult('TC-001', ['DEF-001', 'DEF-002'])
   const recorded = review(['DEF-001'])
-  office.verifyReviewFinding(call, { reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: 'x', by: 'subagent:developer' })
+  office.verifyReviewFinding(call, { reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: 'x ⇒ exitCode=0', by: 'subagent:developer' })
   assert.equal(c66().ok, false, '前置：DEF-002 还没被任何评审点名 ⇒ 红')
   assert.match(c66().detail, /DEF-002/u, '前置：点名的是 DEF-002')
   // 手工把 DEF-002 塞进评审文件（`.sdo/reviews/` 是手可编辑真源）⇒ 与记录的指纹不一致

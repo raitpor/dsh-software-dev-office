@@ -252,7 +252,7 @@ tool:
   sdo_task: "Task cards and the collaboration protocol: claiming uses compare-and-swap (a stale revision is a conflict), only the owner may report back, **completion must carry evidence**, and blocked cards must state why. A vanished owner is **never released automatically** — only an explicit release or reassignment (both recorded)."
   sdo_test: "Test plans, results and defects. `plan` writes test cases (binding them to requirement ids is recommended), `record` records results (even passes need evidence), `defect` files or updates a defect (severity/status). Open blocker-level defects block the verification gate."
   sdo_review: "Review records: record the verdict (pass / changes requested / reject) and the findings. **A reviewer may not be the author** — independence is checked mechanically, not left to good intentions."
-  sdo_hash: "Compute the **full sha256** of one artifact (+ mtime + byte size) — a **read-only query** that writes no ledger and emits no event. Why it exists: the reviewer mask denies `bash` (so sha256sum is out of reach) and also denies `sdo_test`, the only other producer of artifact hashes ⇒ without it a reviewer can only see the **truncated** fingerprint in the done receipt and cannot prove «this is the artifact I checked»."
+  sdo_hash: "Compute the **full sha256** of one artifact (+ mtime + byte size) — a **read-only query** that writes no ledger and emits no event. Why it exists: the reviewer mask denies `bash` (so no command can run a hash reach) and also denies `sdo_test`, the only other producer of artifact hashes ⇒ without it a reviewer can only see the **truncated** fingerprint in the done receipt and cannot prove «this is the artifact I checked»."
   sdo_deliver: "Delivery package: artifact manifest (with sha256), acceptance matrix (one row per must-have requirement), rollback point, and an explicit statement that prototype content is excluded. It stops at a deployable artifact; release and operations are explicitly out of scope."
   sdo_cost: "Cost report: tokens consumed; a monetary amount appears only when the user has supplied unit prices, and it is labelled an **estimate** everywhere. The budget is optional — with no total it reports consumption only (no remaining amount, no percentage, no threshold alerts); exceeding the budget **never stops anything**, it only asks a human to top up, waive, or narrow scope. Model read-only."
   sdo_gate: "Gate engine (the process is data, every gate is evaluated criterion by criterion, never guessed). `check` evaluates and records; `advance` moves on only when every exit gate of the current phase passed or was waived; `waive` waives explicitly with a trace. **An unimplemented checker always fails** — \"cannot check\" must never mean \"passes\"."
@@ -284,7 +284,7 @@ param:
   gate: "Gate (accepts a readable name such as \"Intake Gate\", or the id G0)"
   approver: Approver
   approvedBy: Human sign-off (required by the baseline gate)
-  evidence: "Evidence JSON text for done. Shape: [{\"kind\":\"command\",\"detail\":\"npm test (420 passed)\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"lib/x.js sha256=<64-hex>\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-...@42\"}]. Checks: kinds must cover the card evidenceRequired; artifact paths must exist (a given hash is recomputed); command exitCode is a SEPARATE FIELD - writing it inside detail text is not read, so pass it as its own field."
+  evidence: "Evidence JSON text for done. Shape: [{\"kind\":\"command\",\"detail\":\"<the project's test command> (<passed> passed)\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"<artifact path> sha256=<64-hex>\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-...@42\"}]. Checks: kinds must cover the card evidenceRequired; artifact paths must exist (a given hash is recomputed); command exitCode is a SEPARATE FIELD - writing it inside detail text is not read, so pass it as its own field."
   status: Status
   severity: Severity
   kind: Kind
@@ -567,6 +567,20 @@ uiClamp:
   truncated: "… (truncated — original {p1} characters, showing only the first {p2}. The full content is in the `.sdo/` source of truth — or re-fetch it with more specific filter parameters)"
 
 uiGates:
+  kDeliveryBoundUndeclared: 'N/A: the project has not declared a delivery-binding shape in `.sdo/config.yml` -> `delivery.bind` (`commit` = the commit message carries artifact hashes / `manifest` = the declared manifest carries them); the plugin does not guess (AC-241)'
+  kDeliveryBoundOk: 'OK: delivery binding holds (shape **{p1}**): a 40/64-hex artifact hash is found at its landing spot'
+  kDeliveryBoundFail: 'BLOCKED: **delivery binding does not hold** (shape **{p1}**): {p2}'
+  kDeliveryBoundRemedy: 'bind artifacts according to the declared shape: `commit` => write the key artifacts 64-hex sha256 into the commit message; `manifest` => list one "path + sha256" per line in the file named by `delivery.manifestPath`. The criterion reads hash shapes and landing spots only'
+  kContractsTestedUndeclared: 'N/A: the project has not enabled `.sdo/config.yml` -> `contractTests.enforce` (the criterion is project-independent; gating on it is the project choice - AC-241)'
+  kContractsTestedNone: 'N/A: no non-dropped contract exists under `.sdo/contracts/` (nothing to judge)'
+  kContractsTestedOk: 'OK: contract-test coverage is complete: {p1} contract(s) each have a record or a project exemption ({p2} exempt)'
+  kContractsTestedGaps: 'BLOCKED: **contracts without a contract test** ({p2} / {p3}): {p1} - `no-record` = no record and no exemption; `exempt-needs-reason` = declared exempt without a reason'
+  kContractsTestedRemedy: 'add one contract-test record per contract (`sdo_test action=record contractTest=...`), or declare each one in `.sdo/config.yml` -> `contractTests.exempt` as `{ id, reason }` (structural, language-agnostic); the criterion reads ids and records only'
+  kMustCoverageUndeclared: 'N/A: the project has not enabled `.sdo/config.yml` -> `trace.mustCoverage` (the criterion is project-independent; whether it gates delivery is the project choice - AC-241)'
+  kMustCoverageNone: 'N/A: no must-priority requirement exists (nothing for this criterion to hold)'
+  kMustCoverageOk: 'OK: every must requirement has a `req-tc` edge (a test case covers it): {p1} checked'
+  kMustCoverageGaps: 'BLOCKED: **uncovered must requirement(s)** ({p2} / {p3}): {p1} - a must constraint needs a **test case**; no `req-tc` edge points at it'
+  kMustCoverageRemedy: 'add a `req-tc` edge for those must requirements (`sdo_trace action=link from=<REQ> to=<TC> kind=req-tc`), or downgrade/drop the requirement with a recorded reason; an uncovered must requirement keeps the baseline gate red ({p1})'
   kFixedTestedMissing: 'REJECTED: **fixed defects with no test conclusion** ({p1}): {p2} — a fix must be backed by a **passing** test conclusion that lists its id in `defects`; otherwise the defect was never tested and no gate criterion said anything about it.'
   kUnfrozenFullOk: 'OK: a **full-suite green** exists after the unfrozen completion(s) ({p2} card(s)): {p1} — the local completions have been collected back into a global freeze'
   kUnfrozenFullNa: 'Not applicable: no card in the ledger has a non-empty `unfrozen` (no locally green completion), so this criterion does not take part'
@@ -1423,6 +1437,7 @@ shapeEntity:
   signature: "Gate signature ledger"
   budget: "Cost budget"
 uiIndex:
+  kDodToolGap: 'WARNING: card {p1} (role **{p2}**) names tool **{p3}** in its DoD, but that tool is not in this role face - move that step to a role that has it, or drop the requirement; otherwise the card cannot be finished on a real machine (S1 card-time check)'
   kUnfrozenLocal: 'FROZEN-SCOPE: this `done` is **locally green** (the changes inside this card scope are green) while **the whole project is not frozen** — sibling cards whose work is not included: {p1}. To learn whether everything is frozen, re-run the full suite once those cards settle.'
   kUnfrozenFrozen: 'FROZEN-SCOPE: no sibling card is in progress ⇒ this `done` **equals a full freeze** (this card scope green = whole project green).'
   kBadDefects: 'REJECTED: `defects` must be a list of strings (or its JSON text), e.g. ["DEF-001","DEF-002"] — the value had the wrong shape; nothing was written.'
@@ -2033,6 +2048,7 @@ uiApplicability:
   listSep: ", "
   viewBoth: 'View {p1} appears in both viewsPresent and viewsAbsent — one declaration cannot contradict itself; pick one side and re-draft'
 uiReview:
+  placeholderEvidence: 'a `reproduced` verdict needs a **readable reading** (`⇒` / `=>` / `exitCode` / a 64-hex hash) - placeholder text (`x`, `reproduced it`) is not a reproduction; give the reading, or use `refuted` with counter-evidence'
   # —— Review-finding verification (2026-10-08: a review is a claim; the implementer must verify each finding before it is adopted) ——
   kReproMissing: 'REJECTED: a non-`pass` finding call ({p1}) must carry either **a command that still fails right now** (`repro`) or **an explicit declaration that it cannot be reproduced, plus why** (`unreproducible`) — otherwise "to be fixed" is just a verbal memory: a settled problem gets recorded as open and the next person goes hunting for a gap that is not there. **Nothing was written.**'
   kDefectUnknown: 'REJECTED: the review names defect(s) that **do not exist**: {p1} — an id that names nothing cannot be tolerated, or "this defect was reviewed" degenerates into prose. Fix it: (1) resend with the real id; (2) the defect is not in the ledger yet => create it first with `sdo_test action=defect`. **Nothing was written** (no guessing, no auto-creating defects).'

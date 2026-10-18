@@ -206,7 +206,7 @@ test('M78-06 R-16：核实者身份与角色关系要如实记账（代核 = 谁
   // ② **同角色代核放行**（另一个 developer 会话）
   journal.append('dispatch/started', { task: 'TASK-050', provider: 'spawn', childSessionId: 'dev-2', role: 'developer', tools: 9 })
   const same = verifyReviewFinding(store, journal, {
-    reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '复现了', by: 'sub-dev', sessionId: 'dev-2',
+    reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '复现了 ⇒ exitCode=0', by: 'sub-dev', sessionId: 'dev-2',
   })
   assert.equal(same.ok, true, JSON.stringify(same))
   assert.equal(same.ok ? same.disposition.ownerChecked : '', 'owner-tenure-over', '代核要如实标注"不是实现者本人"')
@@ -214,7 +214,7 @@ test('M78-06 R-16：核实者身份与角色关系要如实记账（代核 = 谁
   assert.equal(same.ok ? same.disposition.roleMatch : '', 'same-role')
   // **R-19 A**：同一 `(评审, 发现)` 再次核实**默认被拒**（真机：先代核、后实现者核，视图静默留后写的那条）
   const again = verifyReviewFinding(store, journal, {
-    reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '再核一次', by: 'sub-dev', sessionId: 'dev-2',
+    reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '再核一次 ⇒ exitCode=0', by: 'sub-dev', sessionId: 'dev-2',
   })
   assert.equal(again.ok, false, '默认不许覆盖已有核实')
   assert.equal(again.ok ? '' : again.code, 'already-verified')
@@ -234,7 +234,7 @@ test('M78-06 R-16：核实者身份与角色关系要如实记账（代核 = 谁
   // ③ **人工核实**（不传会话）仍然可以：拿不到角色关系 ⇒ 不判角色，如实标 unknown。
   // 注意 R-19 A 之后连人工也要显式 `revise: true` 才能覆盖已有核实（这正是"默认拒绝再次核实"的强度）
   const human = verifyReviewFinding(store, journal, {
-    reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '我自己复跑了', by: 'human', revise: true,
+    reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: '我自己复跑了 ⇒ exitCode=0', by: 'human', revise: true,
   })
   assert.equal(human.ok, true, JSON.stringify(human))
   assert.equal(human.ok ? human.disposition.roleMatch : '', 'unknown')
@@ -245,7 +245,7 @@ test('M78-06 R-16：核实者身份与角色关系要如实记账（代核 = 谁
     review: { ...legacyReview, id: 'REV-002', findings: ['老评审的一条发现'] },
   })
   const legacy = verifyReviewFinding(store, journal, {
-    reviewId: 'REV-002', index: 0, outcome: 'reproduced', evidence: '复现', by: 'sub-tester', sessionId: 'test-session',
+    reviewId: 'REV-002', index: 0, outcome: 'reproduced', evidence: '复现 ⇒ exitCode=0', by: 'sub-tester', sessionId: 'test-session',
   })
   assert.equal(legacy.ok, false, '没有 taskRole 时退回卡上的角色（这张卡是 developer）⇒ 跨角色一样被拒')
   assert.equal(legacy.ok ? '' : legacy.code, 'cross-role-verifier')
@@ -254,7 +254,7 @@ test('M78-06 R-16：核实者身份与角色关系要如实记账（代核 = 谁
     review: { ...review, id: 'REV-003', taskId: 'TASK-GONE', taskRole: 'developer', findings: ['卡已被 drop'] },
   })
   const gone = verifyReviewFinding(store, journal, {
-    reviewId: 'REV-003', index: 0, outcome: 'reproduced', evidence: '复现', by: 'sub-tester', sessionId: 'test-session',
+    reviewId: 'REV-003', index: 0, outcome: 'reproduced', evidence: '复现 ⇒ exitCode=0', by: 'sub-tester', sessionId: 'test-session',
   })
   assert.equal(gone.ok, false, '卡不在也要按评审记下的角色判同角色')
   assert.equal(gone.ok ? '' : gone.code, 'cross-role-verifier')

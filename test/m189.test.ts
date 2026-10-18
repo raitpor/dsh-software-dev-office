@@ -242,7 +242,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   })
   const KNOWN_PROSE_GAP: Record<string, number> = {
   'test/dor.test.ts': 14, 'test/grill.test.ts': 10, 'test/journal.test.ts': 2, 'test/m10.test.ts': 4,
-  'test/m100.test.ts': 34, 'test/m101.test.ts': 26, 'test/m102.test.ts': 3, 'test/m103.test.ts': 9,
+  'test/m100.test.ts': 34, 'test/m101.test.ts': 26, 'test/m102.test.ts': 3, 'test/m103.test.ts': 10,
   'test/m104.test.ts': 18, 'test/m105.test.ts': 18, 'test/m107.test.ts': 18, 'test/m108.test.ts': 5,
   'test/m109.test.ts': 10, 'test/m11.test.ts': 25, 'test/m110.test.ts': 9, 'test/m12.test.ts': 35,
   'test/m124.test.ts': 3, 'test/m125.test.ts': 4, 'test/m126.test.ts': 11, 'test/m127.test.ts': 7,
@@ -260,30 +260,32 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m170.test.ts': 13, 'test/m171.test.ts': 11, 'test/m172.test.ts': 2, 'test/m173.test.ts': 5,
   'test/m174.test.ts': 8, 'test/m176.test.ts': 16, 'test/m177.test.ts': 9, 'test/m178.test.ts': 8,
   'test/m179.test.ts': 8, 'test/m18.test.ts': 22, 'test/m180.test.ts': 18, 'test/m181.test.ts': 8,
-  'test/m182.test.ts': 4, 'test/m183.test.ts': 4, 'test/m184.test.ts': 24, 'test/m185.test.ts': 15,
+  'test/m182.test.ts': 4, 'test/m183.test.ts': 4, 'test/m184.test.ts': 8, 'test/m185.test.ts': 15,
   'test/m186.test.ts': 2, 'test/m187.test.ts': 14, 'test/m189.test.ts': 34, 'test/m19.test.ts': 48,
-  'test/m190.test.ts': 18, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m21.test.ts': 16,
-  'test/m22.test.ts': 21, 'test/m23.test.ts': 65, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20,
-  'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6,
-  'test/m3.test.ts': 27, 'test/m30.test.ts': 13, 'test/m31.test.ts': 15, 'test/m32.test.ts': 45,
-  'test/m33.test.ts': 49, 'test/m34.test.ts': 23, 'test/m35.test.ts': 37, 'test/m36.test.ts': 27,
-  'test/m37.test.ts': 8, 'test/m38.test.ts': 49, 'test/m39.test.ts': 8, 'test/m4.test.ts': 31,
-  'test/m40.test.ts': 25, 'test/m41.test.ts': 7, 'test/m42.test.ts': 17, 'test/m43.test.ts': 14,
-  'test/m44.test.ts': 7, 'test/m45.test.ts': 9, 'test/m46.test.ts': 2, 'test/m47.test.ts': 11,
-  'test/m48.test.ts': 6, 'test/m49.test.ts': 2, 'test/m5.test.ts': 11, 'test/m51.test.ts': 9,
-  'test/m52.test.ts': 1, 'test/m53.test.ts': 2, 'test/m54.test.ts': 1, 'test/m55.test.ts': 2,
-  'test/m56.test.ts': 3, 'test/m60.test.ts': 1, 'test/m62.test.ts': 2, 'test/m63.test.ts': 3,
-  'test/m64.test.ts': 4, 'test/m65.test.ts': 2, 'test/m66.test.ts': 2, 'test/m67.test.ts': 2,
-  'test/m68.test.ts': 10, 'test/m69.test.ts': 1, 'test/m7.test.ts': 29, 'test/m71.test.ts': 2,
-  'test/m72.test.ts': 5, 'test/m73.test.ts': 27, 'test/m74.test.ts': 24, 'test/m75.test.ts': 18,
-  'test/m76.test.ts': 7, 'test/m77.test.ts': 15, 'test/m78.test.ts': 9, 'test/m79.test.ts': 4,
-  'test/m8.test.ts': 29, 'test/m80.test.ts': 25, 'test/m81.test.ts': 15, 'test/m82.test.ts': 5,
-  'test/m83.test.ts': 24, 'test/m84.test.ts': 17, 'test/m85.test.ts': 35, 'test/m86.test.ts': 16,
-  'test/m87.test.ts': 18, 'test/m88.test.ts': 60, 'test/m89.test.ts': 5, 'test/m9.test.ts': 34,
-  'test/m90.test.ts': 18, 'test/m91.test.ts': 9, 'test/m92.test.ts': 13, 'test/m93.test.ts': 37,
-  'test/m94.test.ts': 12, 'test/m95.test.ts': 11, 'test/m96.test.ts': 5, 'test/m97.test.ts': 23,
-  'test/m98.test.ts': 18, 'test/m99.test.ts': 6, 'test/office.test.ts': 46, 'test/scoring.test.ts': 7,
-  'test/task001-acceptance.test.ts': 4, 'test/task001-red-baseline.test.ts': 3, 'test/yaml.test.ts': 10,
+  'test/m190.test.ts': 20, 'test/m192.test.ts': 7, 'test/m193.test.ts': 9, 'test/m195.test.ts': 3,
+  'test/m196.test.ts': 9, 'test/m197.test.ts': 5, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20,
+  'test/m21.test.ts': 16, 'test/m22.test.ts': 21, 'test/m23.test.ts': 64, 'test/m24.test.ts': 4,
+  'test/m25.test.ts': 20, 'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11,
+  'test/m29.test.ts': 6, 'test/m3.test.ts': 27, 'test/m30.test.ts': 13, 'test/m31.test.ts': 15,
+  'test/m32.test.ts': 45, 'test/m33.test.ts': 49, 'test/m34.test.ts': 23, 'test/m35.test.ts': 37,
+  'test/m36.test.ts': 27, 'test/m37.test.ts': 8, 'test/m38.test.ts': 49, 'test/m39.test.ts': 8,
+  'test/m4.test.ts': 31, 'test/m40.test.ts': 25, 'test/m41.test.ts': 7, 'test/m42.test.ts': 17,
+  'test/m43.test.ts': 14, 'test/m44.test.ts': 7, 'test/m45.test.ts': 9, 'test/m46.test.ts': 2,
+  'test/m47.test.ts': 11, 'test/m48.test.ts': 6, 'test/m49.test.ts': 2, 'test/m5.test.ts': 11,
+  'test/m51.test.ts': 9, 'test/m52.test.ts': 1, 'test/m53.test.ts': 2, 'test/m54.test.ts': 1,
+  'test/m55.test.ts': 2, 'test/m56.test.ts': 3, 'test/m60.test.ts': 1, 'test/m62.test.ts': 2,
+  'test/m63.test.ts': 3, 'test/m64.test.ts': 4, 'test/m65.test.ts': 2, 'test/m66.test.ts': 2,
+  'test/m67.test.ts': 2, 'test/m68.test.ts': 10, 'test/m69.test.ts': 1, 'test/m7.test.ts': 29,
+  'test/m71.test.ts': 2, 'test/m72.test.ts': 5, 'test/m73.test.ts': 27, 'test/m74.test.ts': 24,
+  'test/m75.test.ts': 18, 'test/m76.test.ts': 7, 'test/m77.test.ts': 15, 'test/m78.test.ts': 9,
+  'test/m79.test.ts': 4, 'test/m8.test.ts': 29, 'test/m80.test.ts': 25, 'test/m81.test.ts': 15,
+  'test/m82.test.ts': 5, 'test/m83.test.ts': 24, 'test/m84.test.ts': 17, 'test/m85.test.ts': 35,
+  'test/m86.test.ts': 16, 'test/m87.test.ts': 18, 'test/m88.test.ts': 60, 'test/m89.test.ts': 5,
+  'test/m9.test.ts': 34, 'test/m90.test.ts': 18, 'test/m91.test.ts': 9, 'test/m92.test.ts': 13,
+  'test/m93.test.ts': 37, 'test/m94.test.ts': 12, 'test/m95.test.ts': 11, 'test/m96.test.ts': 5,
+  'test/m97.test.ts': 23, 'test/m98.test.ts': 18, 'test/m99.test.ts': 6, 'test/office.test.ts': 46,
+  'test/scoring.test.ts': 7, 'test/task001-acceptance.test.ts': 4, 'test/task001-red-baseline.test.ts': 3,
+  'test/yaml.test.ts': 10,
   }
   const actualGap = Object.fromEntries(Object.entries(gap).sort(([a], [b]) => (a < b ? -1 : 1)))
   assert.deepEqual(
@@ -409,7 +411,11 @@ test('M189-12 §3.2（DEF-096）：符号存在性判定不许被**超串**喂�
 test('M189-13 §3.3（DEF-093 第十一批）：**枚举补全** —— 「行内没有该中文但被登记」的 6 个站点逐个点名 + 反例', () => {
   // V24 实测：§8.6 修法③只点名 **3** 个新站点（`test/m108.test.ts:245`、`test/m29.test.ts:42`、`test/m81.test.ts:275`），
   // 而现算共 **6** 个 ⇒ **少报**（不是错报）。本格把枚举**钉住**：这 6 个（且只有这 6 个）允许"行内没有该中文"，
-  // 其余 2257 个候选站点（**2263 − 6 = 2257**；2263 = 第十批 V24 的 2258 + 本批两格新带的 5）**必须**在那一行里真出现该中文。多一个、少一个、换位置都红。
+  // 其余 **2247** 个候选站点（**2253 − 6 = 2247**）**必须**在那一行里真出现该中文。多一个、少一个、换位置都红。
+  // **第十二批的现算账**：`2253 = label 67 + 读散文 2186`；相对第十一批的 `2263`（读散文 2196）**−10** ——
+  // 逐文件现算（`git show HEAD:test/m189.test.ts` 的旧登记 vs 现算）：`test/m184.test.ts` **24 → 8**
+  // （本批把"四份同哈希 / 18 条清单"的逐条中文断言改写成项目无关的原则与落点断言 ⇒ 断言消息少了 16 处）、
+  // `test/m192.test.ts` **0 → 6**（本批新增的随包面无关性判据）。
   const testFiles = walkTests(join(ROOT, 'test'))
   const docs = testFiles.map((path) => ({ path: relPath(path), text: readFileSync(path, 'utf8') }))
   const sites = extractProseSites(docs)
@@ -429,16 +435,16 @@ test('M189-13 §3.3（DEF-093 第十一批）：**枚举补全** —— 「行�
   assert.deepEqual(notOnLine(), KNOWN, '这 6 个站点必须被逐个点名（多/少/换位置都红）')
   // 反例（DoD ③）：**行内有该中文**的站点不许被列进"被登记" —— 现算的 6 个就是全部
   assert.equal(sites.length - notOnLine().length, sites.length - KNOWN.length, '反例计数恒等（其余站点全部"行内出现"）')
-  assert.ok(sites.length >= 2263, `候选站点量级不许退化（现算 ${sites.length}）`)
-  // ② 普查数字（**第十一批现算**，与第十批 V24 的 2258 / 2191 的关系给算式）：
-  //    `2263 = label 67 + 读散文 2196`；`2196 = 2191（第十批登记值）+ 5`（本批 `M189-12`/`M189-13` 两格自带的读散文站点）
+  assert.ok(sites.length >= 2253, `候选站点量级不许退化（现算 ${sites.length}；第十二批基线 2253 = label 67 + 读散文 2186）`)
+  // ② 普查数字（**第十二批现算**，与第十一批的 2263 / 2196 的关系见上面的 −10 算式）：
+  //    `2253 = label 67 + 读散文 2186`
   const pack = loadLangPack(ROOT)
   const verdicts = sites.map((site) => classifySite(site, pack))
   const labelSites = verdicts.filter((verdict) => verdict.cls === 'label').length
   const proseSites = sites.length - labelSites
   const gapFiles = new Set(sites.filter((_site, index) => (verdicts[index] as { cls: string }).cls === 'prose').map((site) => site.path))
   assert.equal(sites.length, labelSites + proseSites, '恒等式：站点 = label + 读散文')
-  assert.ok(labelSites >= 67 && proseSites >= 2196, `普查：${sites.length} = label ${labelSites} + 读散文 ${proseSites}`)
+  assert.ok(labelSites >= 67 && proseSites >= 2180, `普查：${sites.length} = label ${labelSites} + 读散文 ${proseSites}（第十二批实测 2186；留 6 格余量防自指抖动）`)
   assert.ok(gapFiles.size >= 171, `登记面（含读散文站点的文件）不许退化（现算 ${gapFiles.size}）`)
   assert.ok(docs.length >= 185, `普查文件数不许退化（现算 ${docs.length}）`)
 })

@@ -256,6 +256,50 @@ export function capabilityGaps(
   return gaps
 }
 
+/** 该角色面里出现过的**通用工具名**（"这个名字是不是真实工具"只认我们自己声明过的）。 */
+function knownGenericTools(): Set<string> {
+  const out = new Set<string>()
+  for (const code of ROLES) for (const tool of toolAllowList(code)) if (!isSdoTool(tool)) out.add(tool)
+  for (const tool of EXECUTOR_DENIED_TOOLS) if (!isSdoTool(tool)) out.add(tool)
+  return out
+}
+
+export interface DodToolGap {
+  role: string
+  tool: string
+  /** `true` = `sdo_*`（流程面）；`false` = 通用面工具（`bash` / `write`…） */
+  sdo: boolean
+}
+
+/**
+ * **`S1`（第十二批 §3.8 结构项）**：立卡时按**角色工具面**对账。
+ *
+ * 病根：`roles.ts` 早就知道每个角色的工具面，但**建卡时不看它** —— 于是出现"reviewer 卡的 DoD 要 `bash`"
+ * （reviewer 的掩码里没有 `bash`）、"tester 卡的 DoD 要 `sdo_hash`"（不在 tester 的流程面里）这类卡：
+ * 卡立出来就**注定做不完**，而当时没有任何一处会说出来。
+ *
+ * 判据只认**工具名**（`sdo_*` 一律按流程面认；通用名只认我们声明过的），不读 DoD 的措辞。
+ */
+export function dodToolGaps(dod: readonly string[], role: string): DodToolGap[] {
+  if (!isRole(role)) return []
+  const allow = new Set(toolAllowList(role))
+  const generic = knownGenericTools()
+  const text = dod.map((item) => String(item)).join('\n')
+  const gaps: DodToolGap[] = []
+  const seen = new Set<string>()
+  const pattern = /(^|[^A-Za-z0-9_])(sdo_[a-z][a-z0-9_]*|[a-z][a-z0-9_]*)(?=[^A-Za-z0-9_]|$)/gu
+  for (const match of text.matchAll(pattern)) {
+    const name = match[2] ?? ''
+    if (name === '' || name.length < 4 || seen.has(name)) continue
+    const sdo = isSdoTool(name)
+    if (!sdo && !generic.has(name)) continue
+    if (allow.has(name)) continue
+    seen.add(name)
+    gaps.push({ role, tool: name, sdo })
+  }
+  return gaps
+}
+
 /** 该角色是否可见某工具（白名单语义：不在 allow 里就不可见；只读检视工具人人可见）。 */
 /**
  * 按**宿主已知工具**过滤工具面（送进 `tools.restrict()` 之前必须过这一道）。

@@ -150,7 +150,7 @@ test('M79-05 R-19 A：默认拒绝"再次核实"，覆盖要显式 revise 且留
   journal.append('task/claimed', { id: 'TASK-001', owner: 'd', sessionId: 'dev-1', revision: 1 })
   journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'dev-2', role: 'developer', tools: 9 })
 
-  const first = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: 'e1', sessionId: 'dev-2' })
+  const first = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: 'e1 ⇒ exitCode=0', sessionId: 'dev-2' })
   assert.equal(first.ok, true, JSON.stringify(first))
   const second = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'refuted', evidence: 'e2', sessionId: 'dev-2' })
   assert.equal(second.ok, false, '默认必须拒绝再次核实（旧实现静默覆盖）')
@@ -176,14 +176,14 @@ test('M79-06 R-19 B：缺省 `by` 不许把子会话写成 `human`；回执直�
   journal.append('task/claimed', { id: 'TASK-001', owner: 'd', sessionId: 'dev-1', revision: 1 })
   journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: '4d6be6fe-aaaa', role: 'developer', tools: 9 })
   // 有 sessionId、没传 by ⇒ 不许落成 human（真机就是这条被标错，且去重后存活的恰好是它）
-  const auto = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: 'e', sessionId: '4d6be6fe-aaaa' })
+  const auto = verifyReviewFinding(store, journal, { reviewId: 'REV-001', index: 0, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0', sessionId: '4d6be6fe-aaaa' })
   assert.equal(auto.ok, true, JSON.stringify(auto))
   assert.notEqual(auto.ok ? auto.disposition.by : 'human', 'human', '有会话就不许标成 human')
   assert.match(auto.ok ? auto.disposition.by : '', /subagent:developer:4d6be6fe/u, `要能看出是谁（实际 ${auto.ok ? auto.disposition.by : ''}）`)
   // 真的人工通道（不传 sessionId）⇒ 仍然是 human
   const humanReview: Review = { id: 'REV-002', taskId: 'TASK-001', taskRole: 'developer', reviewer: 'human', verdict: 'pass', findings: ['f2'], at: 'x' }
   store.writeYaml(['reviews', 'REV-002.yml'], { review: humanReview })
-  const human = verifyReviewFinding(store, journal, { reviewId: 'REV-002', index: 0, outcome: 'reproduced', evidence: 'e' })
+  const human = verifyReviewFinding(store, journal, { reviewId: 'REV-002', index: 0, outcome: 'reproduced', evidence: 'e ⇒ exitCode=0' })
   assert.equal(human.ok ? human.disposition.by : '', 'human')
   assert.equal(human.ok ? human.disposition.roleMatch : '', 'unknown')
   // 回执要印核实者与依据（真机教训：按 `by` 读会得出错误结论）

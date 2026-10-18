@@ -19,6 +19,29 @@ export interface DirtyWorktree {
   reason?: string
 }
 
+export interface LastCommit {
+  ok: boolean
+  message: string
+  reason?: string
+}
+
+/**
+ * **读最近一次提交的完整信息**（`DEF-107` 第十二批 §3.5 的"交付绑定 = commit"那一形态）。
+ *
+ * 与 `readDirtyWorktree` 同一套失败口径：git 不在 / 不是仓库 / 命令失败 ⇒ `ok: false` + 可读原因，
+ * **绝不假装"没有提交"**（那会让"提交信息里没有产物哈希"变成一条假绿）。
+ */
+export function readLastCommitMessage(workspace: string): LastCommit {
+  try {
+    const message = execFileSync('git', ['log', '-1', '--format=%B'], {
+      cwd: workspace, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'],
+    })
+    return { ok: true, message: String(message ?? '') }
+  } catch (error) {
+    return { ok: false, message: '', reason: error instanceof Error ? error.message : String(error) }
+  }
+}
+
 export function readDirtyWorktree(workspace: string): DirtyWorktree {
   const run = (args: string[]): string =>
     execFileSync('git', args, { cwd: workspace, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })

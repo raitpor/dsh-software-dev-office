@@ -12,6 +12,7 @@ import { fmt, t } from './i18n.js'
 import { readFileSync, readdirSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 
+import { readLastCommitMessage } from '../infra/git.js'
 import { nextId } from '../infra/ids.js'
 import { phaseIndex } from './process.js'
 import { loadProcess } from './process.js'
@@ -1573,6 +1574,56 @@ export function packageDelivery(
 }
 
 /** 交付完整性（G7 的 `delivery.manifest` 准则）。 */
+/** 交付产物哈希的形态：40/64 位十六进制（与 `DEF-107` 的验收同口径，不认别的"像哈希"的串）。 */
+const DELIVERY_HASH_SHAPE = /\b[0-9a-f]{40,64}\b/u
+
+export interface DeliveryBindingAssessment {
+  /** 项目是否声明了交付绑定形态（没声明 ⇒ 判据 N/A，插件不猜） */
+  declared: boolean
+  kind: 'commit' | 'manifest' | 'none'
+  ok: boolean
+  detail: string
+}
+
+/**
+ * **`DEF-107`（第十二批 §3.5）**：**交付绑定** —— 形态由**项目声明**，插件按声明核对。
+ *
+ *   · `delivery.bind: 'commit'`  ⇒ 最近一次提交信息里必须能查到 **40/64 位十六进制**（关键产物的 sha256）；
+ *   · `delivery.bind: 'manifest'` ⇒ `delivery.manifestPath` 指的清单文件必须存在**且含至少一个** 40/64 位 hex；
+ *   · 未声明 ⇒ `declared: false`（门禁判 N/A 并说明原因 —— 与 `DEF-105③`/`DEF-106` 同一口径：
+ *     判据与项目无关，"交付怎么绑定产物"是项目选择，`AC-241`）。
+ *
+ * 判据只认**哈希形态与落点**，不认"用哪个工具算的"（格式无关、语言无关）。
+ */
+export function deliveryBinding(store: SdoStore, workspace: string): DeliveryBindingAssessment {
+  const raw = store.readYaml<{ delivery?: { bind?: unknown; manifestPath?: unknown } }>('config.yml')
+  const bind = raw?.delivery?.bind
+  const kind: 'commit' | 'manifest' | 'none' = bind === 'commit' || bind === 'manifest' ? bind : 'none'
+  if (kind === 'none') {
+    return { declared: false, kind, ok: false, detail: '未声明交付绑定形态（`.sdo/config.yml` 的 `delivery.bind`）' }
+  }
+  if (kind === 'commit') {
+    const read = readLastCommitMessage(workspace)
+    if (!read.ok) return { declared: true, kind, ok: false, detail: `读不到提交信息：${read.reason ?? 'git 不可用'}` }
+    return DELIVERY_HASH_SHAPE.test(read.message)
+      ? { declared: true, kind, ok: true, detail: '最近一次提交信息里能查到产物哈希' }
+      : { declared: true, kind, ok: false, detail: '最近一次提交信息里**没有** 40/64 位十六进制（关键产物哈希）' }
+  }
+  const manifestPath = typeof raw?.delivery?.manifestPath === 'string' ? raw.delivery.manifestPath.trim() : ''
+  if (manifestPath === '') {
+    return { declared: true, kind, ok: false, detail: '声明了 `manifest` 形态但没有给 `delivery.manifestPath`' }
+  }
+  let text = ''
+  try {
+    text = readFileSync(join(workspace, manifestPath), 'utf8')
+  } catch {
+    return { declared: true, kind, ok: false, detail: `清单落点不存在：${manifestPath}` }
+  }
+  return DELIVERY_HASH_SHAPE.test(text)
+    ? { declared: true, kind, ok: true, detail: `清单里能查到产物哈希：${manifestPath}` }
+    : { declared: true, kind, ok: false, detail: `清单里没有 40/64 位十六进制：${manifestPath}` }
+}
+
 export function deliveryCompleteness(
   store: SdoStore,
   requirements: Requirement[],

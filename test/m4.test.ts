@@ -368,7 +368,7 @@ test('迭代：开/关迭代，增量与 DoD 由任务卡与证据决定（GI �
   // **2026-10-08 口径**：评审结果要由**实现方逐条核实**才被采纳，所以这里补上核实这一步。
   for (const task of office.tasks(call())) {
     const review = office.addReview(call(), { taskId: task.id, reviewer: 'reviewer-b', verdict: 'pass', findings: ['无阻塞问题'] })
-    office.verifyReviewFinding(call(), { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复核确认', by: 'dev-a' })
+    office.verifyReviewFinding(call(), { reviewId: review.id, index: 0, outcome: 'reproduced', evidence: '逐条复核确认 ⇒ exitCode=0', by: 'dev-a' })
   }
   const gi = office.evaluate(call(), 'GI')
   assert.equal(gi.status, 'passed', `迭代门应通过：${gi.criteria.filter((c) => !c.ok).map((c) => `${c.id}:${c.detail}`).join(' | ')}`)
