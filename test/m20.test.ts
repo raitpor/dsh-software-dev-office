@@ -302,8 +302,7 @@ test('D1 工具通道：sdo_gate action=sign gate=G2 的回执必须写出失效
   const receipt = await harness.callTool('sdo_gate', {
     action: 'sign',
     gate: 'G2',
-    channel: 'statement',
-    quote: '我确认需求基线可以冻结',
+    channel: 'question',
     approvedBy: '张三',
   })
   assert.match(receipt, /requirement\/updated/u, `签字回执必须列出 G2 的失效事件集合：\n${receipt}`)
@@ -703,6 +702,11 @@ function toolHarness(ws: string): ToolHarness {
   const registered: ToolDefinition[] = []
   const services: Record<string, unknown> = {
     tools: { register: (tool: ToolDefinition): (() => void) => { registered.push(tool); return () => {} } },
+    // **`DEF-112`（第十三批 §2.1）**：陈述面签字降为**弱签字**（不冻结门禁）⇒ 要签过的用例改走问答通道：
+    // 工具自己问、宿主回传所选选项 —— 这条通道的原话**不经过模型**，是唯一被门禁承认的签字。
+    userQuestions: {
+      ask: async () => ({ answers: [{ id: 'sdo-gate-sign', selected: ['签字确认，批准通过'] }] }),
+    },
   }
   const makeCtx = (): Record<string, unknown> => ({
     logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),

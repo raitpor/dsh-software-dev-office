@@ -916,6 +916,10 @@ shapeEntity:
   signature: "门禁签字台账"
   budget: "成本预算"
 uiIndex:
+  kTestOrphanResults: '⚠️ **{p1} 条结果指向不存在的用例**（幽灵用例）：{p2} —— 它们**不计入覆盖率**；写入面自 `DEF-037` 起会拒这种记录，历史记录只标注、不删'
+  kSignWeak: '📌 这条签字**不冻结 {p1}**（陈述面弱签字）：请用 `channel=question` 由工具当场问、你点选项——那条通道的原话不经过模型，才会被门禁承认'
+  kReviewLandedAt: '落点：`{p1}`（**`.yml`**，由工具写；`artifact` 证据指它）'
+  kTaskRestored: '✅ {p1}：{p2} → **{p3}**（恢复已落事件，带 reason + approvedBy；历史正文未改写）'
   kDodToolGap: '⚠️ 卡 {p1}（角色 **{p2}**）的 DoD 点名了本角色面里没有的工具 **{p3}** —— 改法：把这一步交给有这个工具的角色卡，或删掉 DoD 里对它的要求；否则这张卡在真机上注定做不完（S1 立卡对账）'
   kUnfrozenLocal: '🧊 完成语义：本次 `done` 是**局部绿**（本卡范围内的改动已绿），**全项目尚未冻结** —— 未并进来的在飞卡：{p1}。要看全量是否冻结，请等这些卡收口后再全量跑一次。'
   kUnfrozenFrozen: '🧊 完成语义：当前**没有**在飞的兄弟卡 ⇒ 本次 `done` **等同于全量冻结**（本卡范围绿 = 全项目绿）。'
@@ -1328,7 +1332,7 @@ uiIndex:
   kChangeAcceptanceAdd: "新增验收标准 {p1}：Given {p2}；When {p3}；Then {p4}"
   kChangeAcceptanceReplace: "替换整份验收标准（{p1} 条）：新编号 {p2}"
   kSignQuoteMismatch: "引用对不上：这段话没有出现在本次会话的用户发言里，因此不能作为签字依据（若确实说过，请原样复制该句；若用户是通过**提问**表态的（选项或文字回答都一样 —— 0.2.1 起这类回答的出处是 `user-question-reply`，不再算「用户原话」），改用 `channel=question` 由本工具当场取回）。"
-  kSignNoChannel: "人机关口问答通道不可用：请改用会话明确表述并给出用户原话（quote）"
+  kSignNoChannel: "⚠️ **问答通道不可用**（宿主没装配提问服务，或这一问没弹出来）—— 这不是「你拒签」：台账会记一条 `gate/sign-unavailable`。三条出路：① 在 Web GUI 里重试（侧边栏/卡片弹出后再选）；② 让驾驶舱确认宿主注入了提问服务；③ 若确实无法弹问，**改由会话明确表述并给出你原话**（`channel=statement` + `quote`，会另记 `channel=command`）"
   kSignDeclined: "用户没有选择签字（所选：{p1}），{p2} 保持未签字状态"
   kRollbackNoTarget: "阶段回退必须给出目标阶段（to=…）"
   unusedArgs: '这些入参本次**没有被使用**：{p1}（该动作不消费它们，台账里不会留下痕迹）—— 请改用会消费它们的动作，或删掉这些参数'
@@ -1796,6 +1800,12 @@ uiCollab:
   unblockReasonMissing: "{p1} 的恢复必须带 reason：写明\"阻塞条件怎么解除的\"—— 静默恢复等于把一次计划变更藏起来（回执与 task/unblocked 事件都要留它）"
   unblockNotBlocked: "{p1} 现在的状态是 {p2}，**不是 blocked** —— 无需恢复（unblock 只处理 blocked 卡；ready / planned 卡要改范围请走 `sdo_task action=update`，确实不做请走 `sdo_task action=drop`）"
 uiPlan:
+  kDropNotFound: '找不到卡 {p1}（drop / reopen / restore 都需要一张真实存在的卡）'
+  kDropSettled: '**{p1} 已完成（{p2}）：不能 drop** —— 历史不重写。两条出路：① 先 `reopen`（带 reason + approvedBy）再处理；② 只是想补字段 ⇒ 用 `update`（不要抹掉完成态）'
+  kReopenBadStatus: '{p1} 当前是 {p2}：只有 `done` / `verified` 需要 reopen（未落地的卡本来就能改）'
+  kReopenNeedsApproval: '`reopen` 必须同时给 `reason` 与 `approvedBy`（署名恢复：没有理由/没有批准人，恢复等于悄悄改写历史）'
+  kRestoreBadStatus: '{p1} 当前是 {p2}：只有 `dropped` 的卡需要 restore'
+  kRestoreNeedsApproval: '`restore` 必须同时给 `reason` 与 `approvedBy`（署名恢复；来源状态取自最近一条 drop 事件，缺省回 `ready`）'
   kScopeSplitSuggestion: "；若两张卡都要改同一份文件，首选把**该路径拆成一张独立卡**（共享文件由一张卡独占，其余卡用 `blockedBy` 声明先后）。"
   kWriteScopeEmpty: '任务卡没有写范围（writeScopes 为空）—— 空写范围既不占位、也不受越界审计（C-31 要求写范围齐备）'
   kWriteScopeEmptyRemedy: '给这张卡填上它要写的路径前缀（例：src/booking/）；**不写代码的卡**（如纯评审卡）按实填它真正会写的台账目录 —— 纯评审卡通常填 [".sdo/"]（评审员只写 `.sdo/reviews/*.yml`），或把卡改成有写范围的卡、显式放弃'
@@ -2046,6 +2056,7 @@ uiReview:
   appendOriginalGap: "❌ 条号**跳号**（{p1}）：已补录到原第 {p2} 条，本次却从原第 {p3} 条开始 ⇒ 中间那几条被跳过（残缺会读成「原文只有这些」）。先把缺的那几条补上，或把本次改成从原第 {p2} 条起"
 
 uiSignature:
+  weak: '⚠️ **弱签字**（陈述面 `channel=command`）：只入账、**不冻结门禁** —— 门禁 C7 只认问答通道（`channel=question`，原话由宿主回传、不经过模型）的签字'
   journalOnly: '⚠️ 但真源 journal 里有 {p1} 条 gate/signed 事件 —— 签字台账文件被删或被改写（这不是「从来没签过」，是不一致，D8）'
   noEvent: '⚠️ 但真源 journal 里找不到与这条签字（{p1} {p2}）对应的 gate/signed 事件 —— 手写/绕过工具写入（D8）'
   basisRequired: "签字必须带引用文本：请给出用户原话（channel=statement）或走人机关口问答（channel=question）"

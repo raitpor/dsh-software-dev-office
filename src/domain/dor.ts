@@ -52,7 +52,8 @@ export interface DorInput {
    * 这是 C7 **唯一**的放行依据：`approvedBy` 之类的入参字符串**不再**能让 C7 变绿。
    * 传 `undefined` 等价于"台账里没有签字"（`missing`）——**fail-closed**，不是"跳过判定"。
    */
-  signoff?: { status: 'missing' | 'unquoted' | 'stale' | 'valid' | 'unknown'; reason: string; signer?: string | undefined } | undefined
+  /** **`DEF-112`**：`weak` = 陈述式弱签字（只入账、不冻结门禁 —— C7 只认 `valid`）。 */
+  signoff?: { status: 'missing' | 'unquoted' | 'stale' | 'valid' | 'unknown' | 'weak'; reason: string; signer?: string | undefined } | undefined
   /**
    * 人类签字（设计 §15.3 G2 末条）—— **D1 之后只是附加信息**：
    * 它会被如实写进 C7 的 detail（不静默忽略），但**不参与**通过与失败的判定。

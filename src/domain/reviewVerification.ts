@@ -77,6 +77,13 @@ export interface ReviewFindingDisposition {
    */
   verifierRole?: string | undefined
   roleMatch?: 'same-role' | 'cross-role' | 'unknown' | undefined
+  /**
+   * **`DEF-117`（第十三批 §1.3）**：这条核实与**评审作者**是不是同一个人。
+   *
+   * 旧台账**无法区分** independent / same-author（真机：同一会话既是 `REV-056` 的作者、又落了 9 条
+   * verify-review ⇒ 自证，事后读账看不出）。新记录必须带这个字段；**历史记录缺省 `unknown`**（不改写历史）。
+   */
+  independence?: 'independent' | 'same-author' | 'unknown' | undefined
   /** **被本次覆盖掉的那条核实**（R-19 A）：只记最关键的三个字段，台账里能看出"这里曾被改判"。 */
   revisedFrom?: { outcome: ReviewFindingOutcome; by: string; at: string } | undefined
   at: string
@@ -280,6 +287,10 @@ export function readDispositionsChecked(store: SdoStore): { dispositions: Review
         : {}),
       ...(['same-role', 'cross-role', 'unknown'].includes(textOf(item.roleMatch))
         ? { roleMatch: textOf(item.roleMatch) as 'same-role' | 'cross-role' | 'unknown' }
+        : {}),
+      // **`DEF-117`**：历史记录没有这个字段 ⇒ 不写（保持 `undefined` = 未声明），不假装 `independent`
+      ...(['independent', 'same-author', 'unknown'].includes(textOf(item.independence))
+        ? { independence: textOf(item.independence) as 'independent' | 'same-author' | 'unknown' }
         : {}),
       at: textOf(item.at),
     }))
@@ -617,6 +628,14 @@ export function verifyReviewFinding(
     }
   }
 
+  // **`DEF-117`（第十三批 §1.3）**：与**评审作者**的会话比对（作者会话来自 `review/recorded` 事件）。
+  // 拿不到作者会话（老评审 / 人工记录）⇒ `unknown`（不假装独立，也不假装同人）。
+  const independence: 'independent' | 'same-author' | 'unknown' =
+    input.sessionId === undefined || recordedSession === undefined
+      ? 'unknown'
+      : input.sessionId === recordedSession
+        ? 'same-author'
+        : 'independent'
   const roleMatch: 'same-role' | 'cross-role' | 'unknown' =
     verifierRole === '' || card === undefined ? 'unknown' : verifierRole === card.role ? 'same-role' : 'cross-role'
   // **R-19 A**：同一 `(评审, 发现)` 已有核实 ⇒ 默认拒绝（回执说清"已由谁、什么时候、判成什么"）
@@ -658,6 +677,7 @@ export function verifyReviewFinding(
     ownerChecked,
     ...(verifierRole === '' ? {} : { verifierRole }),
     roleMatch,
+    independence,
     ...(revised === undefined ? {} : { revisedFrom: revised }),
     at: new Date().toISOString(),
   }
@@ -678,6 +698,8 @@ export function verifyReviewFinding(
     by: disposition.by,
     ...(disposition.sessionId === undefined ? {} : { sessionId: disposition.sessionId }),
     ownerChecked: disposition.ownerChecked,
+    // **`DEF-117`**：事件里显式写「这条核实与评审作者是不是同一个人」（旧事件没有该字段 = `unknown`）
+    independence: disposition.independence ?? 'unknown',
     // **`DEF-100`**：覆盖时把**被覆盖的那条**写进事件（派生视图只计最新，但审计要看得出"改过判"）
     ...(revised === undefined ? {} : { supersedes: revised }),
   })

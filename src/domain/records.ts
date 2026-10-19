@@ -288,6 +288,20 @@ export function listTestResults(store: SdoStore): TestResult[] {
  * 两条可读拒绝，都点名可执行修法；**不**猜、**不**自动造用例。
  */
 /**
+ * **`DEF-115`（第十三批 §3.3）**：指向**不存在的用例**的结果（"幽灵用例"）。
+ *
+ * 写入面自 `DEF-037` 起会拒（`caseId` 必须对得上真实用例），但**历史记录**仍在（append-only 不可删）：
+ * 真机 `TR-211` 的 `caseId` 指向未登记的 `TC-076-GREEN-SUB`。旧投影把它**静默算进覆盖** —— 于是
+ * "覆盖率"里混进了没有用例的通过。这里把它们**点名**出来（回执与覆盖读数都能用），不删、不改历史。
+ */
+export function orphanTestResults(store: SdoStore): { id: string; caseId: string }[] {
+  const known = new Set(listTestCases(store).map((item) => item.id))
+  return listTestResults(store)
+    .filter((result) => result.caseId !== '' && !known.has(result.caseId))
+    .map((result) => ({ id: result.id, caseId: result.caseId }))
+}
+
+/**
  * **已修但无测试结论的缺陷**（DEF-075 / 第三批 §3.8）—— 判据的唯一出口。
  *
  * 病根：`fixed` 的缺陷可以**永久不被测试**而门禁不判红任何一格（C-51 只管**阻塞级**；C-63 只遍历

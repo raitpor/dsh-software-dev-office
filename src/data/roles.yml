@@ -53,7 +53,7 @@ roles:
     rationale: 不可见评审（不得自评）；不得改契约与需求（走 CR）
   - code: tester
     name: 测试工程师
-    allow: [skill, read, grep, glob, write, edit, bash, sdo_test, sdo_deliver, sdo_task, sdo_trace]
+    allow: [skill, read, grep, glob, write, edit, bash, sdo_test, sdo_task, sdo_trace]
     deny: [ask_user_question, sdo_review, sdo_requirement]
     rationale: 独立性靠**写范围纪律**（只能写本卡 writeScopes + 公共面），不靠「没有 edit」—— 测试脚本写错了要能改（旧口径把改一处逼成整篇重写，SDO-23 同类风险）；不改被测实现 = 写不了 `src/`
   - code: reviewer

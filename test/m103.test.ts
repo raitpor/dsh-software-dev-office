@@ -307,3 +307,43 @@ test('M103-10 §3.7（`DEF-099` 真机第三副面孔）认领后**释放**即�
     '再认领之后，owner 是新认领者（旧认领不许继续当 owner）',
   )
 })
+
+test('M103-11 §1.3（`DEF-117`）核实者 ≠ 评审作者：作者本人 ⇒ `self-verify`；换会话 ⇒ 通过且事件带 `independence: independent`；作者会话未知 ⇒ `unknown`', () => {
+  writeTaskCard('TASK-001', 'in-progress', 'dev-a')
+  journal.append('task/claimed', { id: 'TASK-001', owner: 'dev-a', sessionId: 'child-impl', revision: 1 })
+  journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-impl', tools: 9, role: 'developer' })
+  // ① 评审由 `child-rev` 记下 ⇒ 它自己再核 ⇒ `self-verify`（作者不得自证：DEF-117 的要害）
+  const reviewId = recordReview(store, journal, {
+    taskId: 'TASK-001', reviewer: 'rev-a', verdict: 'pass', findings: [FINDING_A], sessionId: 'child-rev', taskRole: 'developer',
+  }).id
+  const byAuthor = verifyReviewFinding(store, journal, { reviewId, index: 0, outcome: 'reproduced', evidence: '重跑 ⇒ 1 pass', sessionId: 'child-rev' })
+  assert.equal(byAuthor.ok, false, '评审作者不得核实自己写的评审')
+  if (!byAuthor.ok) assert.equal(byAuthor.code, 'self-verify')
+  // ② 换一个**同角色**会话 ⇒ 通过，且事件带 `independence: independent`
+  //    （实现方任期先结束：`task/released`，否则 `not-implementer` 会挡住任何非 owner —— 见 M103-09/10）
+  journal.append('task/released', { id: 'TASK-001', actor: 'cockpit', reason: '让位给同角色复核', previousOwner: 'dev-a' })
+  journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-impl2', tools: 9, role: 'developer' })
+  const independent = verifyReviewFinding(store, journal, { reviewId, index: 0, outcome: 'reproduced', evidence: '重跑 ⇒ 1 pass', sessionId: 'child-impl2' })
+  assert.equal(independent.ok, true, '换会话核实必须放行（同角色）')
+  if (independent.ok) assert.equal(independent.disposition.independence, 'independent', '台账要能区分 independent')
+  const event = journal.read().events.filter((item) => item.type === 'review/verified').at(-1)
+  assert.equal(event?.data['independence'], 'independent', '事件必须带 independence（旧台账读不出这个区分）')
+  // ③ 老评审（`review/recorded` 里没有 sessionId）⇒ 标 `unknown`（不假装独立）
+  const legacyReview = recordReview(store, journal, {
+    taskId: 'TASK-001', reviewer: 'rev-a', verdict: 'pass', findings: [FINDING_A], taskRole: 'developer',
+  }).id
+  const legacy = verifyReviewFinding(store, journal, { reviewId: legacyReview, index: 0, outcome: 'reproduced', evidence: '重跑 ⇒ 1 pass', sessionId: 'child-impl2' })
+  assert.equal(legacy.ok, true, '作者会话未知时不得拒绝（老数据不可采纳就永久死锁）')
+  if (legacy.ok) assert.equal(legacy.disposition.independence, 'unknown', '作者会话未知 ⇒ unknown，不假装 independent')
+})
+
+/** 写一张真卡（本文件的其它用例只读台账；这一格要卡存在，`recordReview` 才拿得到 taskRole）。 */
+function writeTaskCard(id: string, status: 'in-progress', owner: string): void {
+  store.writeYaml(['tasks', `${id}.yml`], {
+    task: {
+      id, title: id, goal: 'g', inputs: [], outputs: [], dod: ['d'], evidenceRequired: ['command'],
+      blockedBy: [], writeScopes: ['src/a/'], role: 'developer', size: 'medium', revision: 1, status, owner,
+      requirements: [], evidence: [], createdAt: '', updatedAt: '',
+    },
+  })
+}

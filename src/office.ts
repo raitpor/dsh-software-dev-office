@@ -77,7 +77,8 @@ import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domai
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropDependents, dirtyScopeHolds, dropTask, listTasks, readIteration, readyTasks, startIteration, structuralPlanOf, textPathsOf, validatePlan  } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan  } from './domain/plan.js'
+import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
 import type { DecomposeInput, DirtyRead, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
   listDefects,
@@ -93,7 +94,7 @@ import {
   renderTestPlan,
   updateDefect,
   verificationStats, listRuns, recordRun, type DefectUpdate, evidenceFreshness,
-  reviewReproIssue, ReviewReproError} from './domain/records.js'
+  orphanTestResults, reviewReproIssue, ReviewReproError} from './domain/records.js'
 import type { RunInput, RunRecord } from './domain/records.js'
 import type {
   DeliveryManifest,
@@ -2159,6 +2160,8 @@ export class SoftwareDevOffice {
     by: string
     basis: string
     channel: 'command' | 'question'
+    /** **`DEF-112`**：陈述面只能记**弱签字**（只入账、不冻结门禁）。 */
+    weak?: boolean | undefined
     turn?: string | undefined
     basisChecked?: 'session' | 'role-only' | 'unavailable' | undefined
     /**
@@ -2240,6 +2243,20 @@ export class SoftwareDevOffice {
    * ② 它在 `SIGNATURE_NEUTRAL_EVENTS` 里 ⇒ 不会顺带作废已有的签字（被拒 ≠ 真源变更）；
    * ③ 依据原文照录（审计要看得出"被拒的是哪句话"）。
    */
+  /**
+   * **`DEF-110`（第十三批 §2.2）**：问答通道**不可用**（宿主没装配 `userQuestions` / 没弹出来）
+   * 与"用户**拒签**"必须分开记账 —— 旧实现两者都落 `gate/sign-rejected`，事后读账分不出
+   * "没问过"和"问过被拒"（真机：seq 3484 把插件自己的诊断「侧边栏没弹出」记成了拒签）。
+   */
+  noteSignUnavailable(call: OfficeCall, gate: string, channel: 'question', reason: string): void {
+    const { journal, project } = this.contextFor(call)
+    journal.append('gate/sign-unavailable', {
+      gate: normalizeGateId(gate, processOfProject(project)),
+      channel,
+      reason: reason.slice(0, 200),
+    })
+  }
+
   noteSignRejected(call: OfficeCall, gate: string, channel: 'command' | 'question', basis: string): void {
     const { journal, project } = this.contextFor(call)
     journal.append('gate/sign-rejected', {
@@ -3450,6 +3467,24 @@ export class SoftwareDevOffice {
     return dropTask(store, journal, taskId, reason)
   }
 
+  /** **`DEF-118`**：带判定细节的 drop（已完成卡会被拒并给出路）。工具面走这一个。 */
+  dropTaskChecked(call: OfficeCall, taskId: string, reason: string): DropOutcome {
+    const { store, journal } = this.contextFor(call)
+    return dropTaskChecked(store, journal, taskId, reason)
+  }
+
+  /** **`DEF-118`**：`reopen`（done/verified → in-progress，须带 reason + approvedBy）。 */
+  reopenTask(call: OfficeCall, input: { taskId: string; reason: string; approvedBy: string }): LifecycleOutcome {
+    const { store, journal } = this.contextFor(call)
+    return reopenTask(store, journal, input)
+  }
+
+  /** **`DEF-118`**：`restore`（dropped → 上一状态，须带 reason + approvedBy）。 */
+  restoreTask(call: OfficeCall, input: { taskId: string; reason: string; approvedBy: string }): LifecycleOutcome {
+    const { store, journal } = this.contextFor(call)
+    return restoreTask(store, journal, input)
+  }
+
   /** 作废契约（回收路径，留痕）。 */
   dropContract(call: OfficeCall, contractId: string, reason: string): Contract | undefined {
     const { store, journal } = this.contextFor(call)
@@ -4521,6 +4556,12 @@ export class SoftwareDevOffice {
   updateDefect(call: OfficeCall, id: string, patch: DefectUpdate, by = 'human'): ReturnType<typeof updateDefect> {
     const { store, journal } = this.contextFor(call)
     return updateDefect(store, journal, id, patch, by)
+  }
+
+  /** **`DEF-115`**：指向不存在用例的结果（幽灵用例），回执要点名。 */
+  orphanTestResults(call: OfficeCall): { id: string; caseId: string }[] {
+    const { store } = this.contextFor(call)
+    return orphanTestResults(store)
   }
 
   verification(call: OfficeCall): ReturnType<typeof verificationStats> {

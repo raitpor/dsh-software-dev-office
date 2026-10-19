@@ -372,11 +372,12 @@ test('R-7：拿不到会话历史时不得静默放行 —— 签字必须记录
   dataReadyForG2()
   // 宿主不提供 `deriveMessages`（=headless/精简装配）→ 旧实现 `return true` 静默通过
   seedSignReview(workspace, 'G2')
+  // **`DEF-112`**：陈述面走的是**弱签字**（只入账、不冻结门禁）—— R-7 要的"没核过必须留痕"仍在
   const text = await gateViaTool({ action: 'sign', gate: 'G2', channel: 'statement', quote: '我确认需求基线可以冻结', approvedBy: '张三' })
-  assert.match(text, /已记录门禁签字|已由用户签字/u, `签字应成功（不是把路焊死）：\n${text}`)
+  assert.match(text, /弱签字/u, `陈述面必须明说这是**弱签字**（只入账、不冻结门禁）：\n${text}`)
   assert.match(text, /未经过会话历史核对/u, `回执必须当场告警（不能只在状态行里带过）：\n${text}`)
   const state = office.signatureState(call(), 'G2')
-  assert.equal(state.status, 'valid')
+  assert.equal(state.status, 'weak', '陈述面签字 = weak（C7 只认 valid）')
   assert.equal(state.signature?.basisChecked, 'unavailable', '必须如实记录"没核过"')
   assert.match(state.reason, /未经过会话历史核对/u, `理由必须显式告警：${state.reason}`)
   // 事件里也要能看到（审计读 journal 时同样不该被静默）
@@ -439,6 +440,11 @@ function toolHarness(): { callTool(name: string, args: Record<string, unknown>):
   const registered: ToolDefinition[] = []
   const services: Record<string, unknown> = {
     tools: { register: (tool: ToolDefinition): (() => void) => { registered.push(tool); return () => {} } },
+    // **`DEF-112`（第十三批 §2.1）**：陈述面签字降为**弱签字**（不冻结门禁）⇒ 要签过的用例改走问答通道：
+    // 工具自己问、宿主回传所选选项 —— 这条通道的原话**不经过模型**，是唯一被门禁承认的签字。
+    userQuestions: {
+      ask: async () => ({ answers: [{ id: 'sdo-gate-sign', selected: ['签字确认，批准通过'] }] }),
+    },
   }
   const makeCtx = (): Record<string, unknown> => ({
     logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),

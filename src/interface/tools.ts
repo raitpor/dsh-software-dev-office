@@ -398,6 +398,11 @@ export interface TaskArgs {
    */
   reason?: string | undefined
   actor?: string | undefined
+  /**
+   * **`DEF-118`（第十三批 §1.2）**：`reopen` / `restore` 的**署名批准人**（与 `reason` 一样必填）。
+   * 恢复是"向上改写历史"，没有理由/没有批准人就不许发生。
+   */
+  approvedBy?: string | undefined
   /** action=update：要改的字段（都给 JSON 数组/字符串；SDO-14(3)/SDO-15(3)） */
   title?: string | undefined
   dod?: string | undefined
@@ -1097,6 +1102,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         note: { type: 'string', description: t('param.note') },
         reason: { type: 'string', description: t('param.reason') },
         actor: { type: 'string', description: t('param.actor') },
+        approvedBy: { type: 'string', description: t('param.approvedBy') },
         review: { type: 'string', description: t('param.reviewId') },
         index: { type: 'number', description: t('param.reviewIndex') },
         outcome: { type: 'string', description: t('param.reviewOutcome') },
@@ -1138,6 +1144,8 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           evidence: typeof args.evidence === 'string' ? args.evidence : undefined,
           note: typeof args.note === 'string' ? args.note : undefined,
           reason: typeof args.reason === 'string' ? args.reason : undefined,
+          // **`DEF-118`（第十三批 §1.2）**：恢复动作的署名批准人（缺它参数会被静默丢掉 — tq_ff348198）
+          approvedBy: typeof args.approvedBy === 'string' ? args.approvedBy : undefined,
           actor: typeof args.actor === 'string' ? args.actor : undefined,
           review: typeof args.review === 'string' ? args.review : undefined,
           index: typeof args.index === 'number' ? args.index : undefined,

@@ -2050,8 +2050,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
               p4: blockers.downstream.length === 0 ? t('uiIndex.kNone') : blockers.downstream.map((task) => task.id).join('、'),
             })
           }
-          const dropped = office.dropTask(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
-          return dropped === undefined ? fmt('uiIndex.k34', { p1: args.id }) : describeTask(dropped, office.shapeNotes(call))
+          // **`DEF-118`（第十三批 §1.2）**：已完成卡不许 drop —— 旧实现零守卫，真机把 8 张 done 卡抹成 dropped。
+          const dropped = office.dropTaskChecked(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
+          if (!dropped.ok) return `${dropped.detail}`
+          return describeTask(dropped.card, office.shapeNotes(call))
+        }
+        case 'reopen':
+        case 'restore': {
+          // **`DEF-118`**：向上恢复（done/verified → in-progress / dropped → 上一状态），必须带 reason + approvedBy。
+          if (office.isDispatchedChild(call)) return t('uiIndex.kTaskAdminOnly')
+          if (args.id === undefined) return t('uiIndex.k34').replace('{p1}', '')
+          const reason = String(args.reason ?? '').trim()
+          const approvedBy = String(args.approvedBy ?? '').trim()
+          if (reason === '' || approvedBy === '') {
+            return args.action === 'reopen' ? t('uiPlan.kReopenNeedsApproval') : t('uiPlan.kRestoreNeedsApproval')
+          }
+          const outcome = args.action === 'reopen'
+            ? office.reopenTask(call, { taskId: args.id, reason, approvedBy })
+            : office.restoreTask(call, { taskId: args.id, reason, approvedBy })
+          if (!outcome.ok) return outcome.detail
+          return fmt('uiIndex.kTaskRestored', { p1: args.id, p2: outcome.from, p3: outcome.card.status })
         }
         case 'verify-review': {
           // **2026-10-08 口径**：评审发现要由**该卡的实现会话**逐条核实（复现 / 反驳）后才被采纳。
@@ -2682,6 +2700,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
         default: {
           const stats = office.verification(call)
           const lines = [fmt('uiIndex.k118', { p1: stats.cases, p2: stats.results, p3: stats.passed, p4: stats.failed, p5: stats.skipped, p6: stats.defectsOpen, p7: stats.blockersOpen })]
+          // **`DEF-115`（第十三批 §3.3）**：指向**不存在用例**的历史结果（"幽灵用例"）必须**点名**，
+          // 不许静默算进覆盖率（真机 `TR-211` → `TC-076-GREEN-SUB`，该用例从未登记）。
+          const orphans = office.orphanTestResults(call)
+          if (orphans.length > 0) {
+            lines.push(fmt('uiIndex.kTestOrphanResults', {
+              p1: String(orphans.length),
+              p2: orphans.map((item) => `${item.id}→${item.caseId}`).join('、'),
+            }))
+          }
           for (const testCase of office.testCases(call)) {
             lines.push(fmt('uiIndex.k137', { p1: testCase.id, p2: testCase.kind, p3: testCase.title, p4: testCase.requirement === undefined ? '' : fmt('uiIndex.k136', { p1: testCase.requirement }) }))
           }
@@ -2825,7 +2852,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
         if (error instanceof ReviewDefectError) return error.detail
         throw error
       }
+      // **`DEF-111`（第十三批 §3.1）**：回执**印出真实落点** —— 工具描述与卡面模板曾写 `.md`、实际是 `.yml`，
+      // 害两个子会话按卡面去找证据而 `done` 被拒（`TASK-145` / `TASK-151`）。
+      const landedAt = `${settings.projectDirName}/reviews/${review.id}.yml`
       return fmt('uiIndex.k51', { p1: review.id, p2: review.taskId, p3: review.verdict, p4: review.reviewer, p5: task.owner === undefined ? '' : fmt('uiIndex.k117', { p1: task.owner }) })
+        + '\n' + fmt('uiIndex.kReviewLandedAt', { p1: landedAt })
         // **DEF-076**：点名了缺陷就把名单回显（否则"这条评审点了谁"只写在文件里，回执读者看不见）
         + ((review.defects ?? []).length === 0 ? '' : '\n' + fmt('uiIndex.kReviewDefects', { p1: review.defects?.join(t('uiCollab.kListSep')) ?? '' }))
         + '\n' + fmt('uiIndex.kReviewAwaitingVerification', { p1: String(review.findings.length), p2: review.id })
@@ -2980,7 +3011,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
           //    客户端半按**固定路径**只读取它并放进右侧边栏（顺带成为"签字时看到过什么"的审计件）。
           const review = office.signReview(call, args.gate)
           const answer = await deps.gateSignQuestion?.(call, args.gate, review.summary)
-          if (answer === undefined) return t('uiIndex.kSignNoChannel')
+          if (answer === undefined) {
+            // **`DEF-110`（第十三批 §2.2）**：通道不可用 ≠ 用户拒签 —— 落**独立事件**并在回执给出路
+            office.noteSignUnavailable(call, args.gate, 'question', 'no-answerer-or-no-answer')
+            return t('uiIndex.kSignNoChannel')
+          }
           if (answer.selectedLabel !== t('uiSign.signOption')) {
             // **次要 2（2026-10-09 整体评审）**：question 通道的"用户拒绝"以前**不留痕** ⇒
             // 台账上"问过、被拒"与"没问过"长得一样。与陈述式拒绝同口径记一条中性事件。
@@ -3051,17 +3086,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p3: String(replay.lastInvalidation ?? '?'),
           })
         }
+        // **`DEF-112`（第十三批 §2.1）**：陈述面（`command`）的签字 = **弱签字** —— 只入账、**不冻结门禁**。
+        // 为什么：`basis` 是**模型给出的文本**（问答通道才由宿主回传）。真机 seq 3490 把一句工作指令
+        // （"把 REQ-060 补进需求基线，重签 G2"）记成 `channel=command` 后把 G2 当场判绿。
+        // 现在 `signatureState` 返回 `weak`（C7 / `design.signed` / `testing.report-signed` 只认 `valid`），
+        // 回执同时给出路：走 `channel=question`（工具自己问、原话不经过模型）。
         const signature = office.signGate(call, {
           gate: args.gate,
           by: args.approvedBy ?? 'human',
           basis: quote,
           channel: 'command',
+          weak: true,
           basisChecked: quoteCheck.basisChecked,
           ...(quoteCheck.basisMsgId === undefined ? {} : { basisMsgId: quoteCheck.basisMsgId }),
           ...(quoteCheck.basisAt === undefined ? {} : { basisAt: quoteCheck.basisAt }),
           ...(args.turn === undefined ? {} : { turn: args.turn }),
         })
-        return describeSignature(signature, office.signatureState(call, signature.gate)) + signPrecheck(signature.gate)
+        return describeSignature(signature, office.signatureState(call, signature.gate))
+          + signPrecheck(signature.gate)
+          + '\n' + fmt('uiIndex.kSignWeak', { p1: gateLabel(args.gate) })
       }
       if (args.action === 'waive') {
         if (args.gate === undefined) return t('uiIndex.k56')

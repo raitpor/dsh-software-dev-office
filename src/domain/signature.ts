@@ -47,6 +47,8 @@ export function readSignaturesChecked(
     channel: textOf(item.channel) as GateSignature['channel'],
     at: textOf(item.at),
     atSeq: typeof item.atSeq === 'number' && Number.isFinite(item.atSeq) ? item.atSeq : Number(textOf(item.atSeq)) || 0,
+    // **`DEF-112`**：弱签字（陈述面）—— 读回时必须保留，否则"只入账、不冻结门禁"在读面上就丢了
+    ...(item.weak === true ? { weak: true } : {}),
     // **R-28**：依据是本次当场取回的（question 通道）
     ...(item.basisFresh === true ? { basisFresh: true } : {}),
     // **R-27**：依据在会话里的位置（允许"用户又原样说了一次"）
@@ -211,6 +213,8 @@ export interface RecordSignatureInput {
   /** 用户原话引用 / 所选选项原文（**必填**） */
   basis: string
   channel: 'command' | 'question'
+  /** **`DEF-112`**：陈述式（`command`）签字只能记成**弱签字**（不入 `valid`）。 */
+  weak?: boolean | undefined
   turn?: string | undefined
   /**
    * R-7：引用是否与本次会话的用户发言核对过。
@@ -287,6 +291,7 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     by,
     basis,
     channel: input.channel,
+    ...(input.weak === true ? { weak: true } : {}),
     // **R-27**：依据的出处要进真源（审计一眼可见"这句话最早用在哪儿"）
     ...(prior === undefined ? {} : { basisFirstSeq: prior.atSeq }),
     ...(input.basisAt === undefined ? {} : { basisAt: input.basisAt }),
@@ -305,6 +310,8 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     by,
     basis,
     channel: input.channel,
+    // **`DEF-112`**：陈述面 = 弱签字（只入账、不冻结门禁）
+    ...(input.weak === true ? { weak: true } : {}),
     at: event.at,
     // 首次使用 ⇒ 记自己的序号（审计读作"这句话出现于本条"）
     basisFirstSeq: prior?.atSeq ?? event.seq,
@@ -328,7 +335,13 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
  * 本身读得动，但"签字之后有没有发生过失效事件"**读不出来** —— 此时绝不能报 `valid`（假绿），
  * 也说不清是 `stale`，只能如实报"无法判定"。
  */
-export type SignatureStatus = 'missing' | 'unquoted' | 'stale' | 'valid' | 'unknown'
+/**
+ * **`DEF-112`（第十三批 §2.1）**：`weak` = **陈述式弱签字**（`channel=command`）。
+ *
+ * 它不是"有效签字"：门禁 C7 只认 `valid`。弱签字仍然**入账**（用户确实说过这句话，可审计），
+ * 但**不冻结门禁** —— 真机 seq 3490 就是一句工作指令被记成 `command` 后当场把 G2 判绿。
+ */
+export type SignatureStatus = 'missing' | 'unquoted' | 'stale' | 'valid' | 'unknown' | 'weak'
 
 /** `signatureState` 的**紧凑投影**（D1）：给 `evaluateDor` 这类纯函数用的入参形状。 */
 export interface SignoffInput {
@@ -414,6 +427,19 @@ function signatureStateCore(store: SdoStore, journal: Journal, gate: string): Si
       status: 'unquoted',
       signature,
       reason: fmt('uiSignature.unquoted', { p1: gate, p2: signature.by }),
+    }
+  }
+  // **`DEF-112`（第十三批 §2.1）**：`command` 形态 = **弱签字** —— 只入账、不冻结门禁。
+  // 这不是"再判一次措辞"，而是**通道强度**：问答通道的原话由宿主回传、不经过模型；陈述式的原话
+  // 由模型给出（真机 seq 3490 把一句工作指令当过批准）。
+  if (signature.weak === true) {
+    return {
+      status: 'weak',
+      signature,
+      reason: fmt('uiSignature.weak', { p1: gate, p2: signature.by, p3: signature.basis })
+        + (signature.basisChecked === 'unavailable'
+          ? ' ' + fmt('uiSignature.validUnchecked', { p1: gate, p2: signature.by, p3: signature.basis })
+          : ''),
     }
   }
   const read = journal.read()

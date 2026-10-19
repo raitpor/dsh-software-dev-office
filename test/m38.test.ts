@@ -716,7 +716,11 @@ test('TASK-019 真机接线：本仓现取一次回归链（真源在盘上 / �
     unbound: liveCases.filter((item) => item.outcome === 'unbound').length,
     artifactMissing: liveCases.filter((item) => item.outcome === 'missing-artifact').length,
   }
-  assert.deepEqual(assessment.counts, expectedCounts, '回执里的条数必须能由逐条结论现算出来（不做加权合并，也不许抄死数）')
+  // **`DEF-116`**：`narrowed` 是新增读数，**由源里的 `narrow` 现算**、不属于这四个逐条结论的量；
+  // 这一格（活台账）只对账那八个数，另单断言类型（避免把活数据写进绿侧 —— `DEF-120` 的教训）。
+  const { narrowed: narrowedCount, ...countsWithoutNarrow } = assessment.counts
+  assert.equal(typeof narrowedCount, 'number', '`narrowed` 必须是数值读数（0 也要给）')
+  assert.deepEqual(countsWithoutNarrow, expectedCounts, '回执里的条数必须能由逐条结论现算出来（不做加权合并，也不许抄死数）')
 
   // ④ **变更集 / 影响集逐条现算**：变更集来自台账，影响集由图多跳闭包现推（不是人手写死的一份）
   assert.equal(changeSet.rawFileCount, changeSet.items.filter((item) => item.id === '').length, '变更集里的文件项条数要能现算（rawFileCount）')
@@ -767,11 +771,23 @@ test('TASK-019 真机接线：本仓现取一次回归链（真源在盘上 / �
 
   // ———————————————— 判别力格：`stale` / `incomplete` 仍会红 ————————————————
   //
-  // 放宽的是"真源在不在盘上"，**不是**"跑过没有"。这一格用**同一套生产判定函数** + 现场变更集/图
-  // 造两态夹具：对照态绿 ⇒ 说明夹具本身成立；改坏一格 ⇒ 必须 `incomplete` / `stale`。
-  // 产物取 `package.json`（本包必然存在的常规文件）——不读 `.sdo` / `lib` 的内部结构，也不硬编码任何条数。
+  // **`DEF-120`（第十三批 §1.4）**：这一格原来是拿**现盘台账**造的（`assessment.impact` / 现场变更集 / 图），
+  // 台账一合法地动（缺陷置 fixed、评审落账、卡 update）影响集就变 ⇒ 对照态判红（假红）。现在改成**纯夹具世界**：
+  // 只用**假 id**（`REQ-900` / `DES-900` / `TC-900`，台账里不存在）+ 两条自造边 + 一份自造变更集。
+  // 台账再动也影响不到它 —— 判绿/判红都只由夹具决定（这正是"对照态"该有的样子）。
+  // 产物取 `package.json`（本包必然存在的常规文件）——不读 `.sdo` 的内部结构，也不硬编码任何条数。
   const PROBE_ARTIFACT = 'package.json'
   const probeHash = createHash('sha256').update(readFileSync(join(ROOT, PROBE_ARTIFACT))).digest('hex')
+  const FIXTURE_EDGES = [
+    { from: 'REQ-900', to: 'DES-900', kind: 'req-des' },
+    { from: 'DES-900', to: 'TC-900', kind: 'des-ct' },
+  ] as never
+  const FIXTURE_CHANGE_SET = {
+    items: [{ id: 'REQ-900', file: '', from: 'DEF-900' }],
+    sources: { changes: 0, defects: 1, workspaceFiles: 0 },
+    rawFileCount: 0,
+  } as never
+  const FIXTURE_IMPACT = ['DES-900', 'REQ-900', 'TC-900']
   const probeCase = (caseId: string): { case: string; result: string; artifact: string; artifactPath: string } => ({
     case: caseId,
     result: 'pass',
@@ -779,24 +795,34 @@ test('TASK-019 真机接线：本仓现取一次回归链（真源在盘上 / �
     artifactPath: PROBE_ARTIFACT,
   })
   const judge = (source: RegressionSourceInput) =>
-    assessRegression({ workspace: ROOT, changeSet, source, edges: graph.edges, badLines: graph.badLines, totalLines: graph.totalLines })
-  const needed = assessment.impact.byPrefix.cases
-  const victim = needed[0] ?? 'TC-LIVE-PROBE'
+    assessRegression({ workspace: ROOT, changeSet: FIXTURE_CHANGE_SET, source, edges: FIXTURE_EDGES, badLines: 0, totalLines: 2 })
+  const victim = 'TC-900'
 
-  // 对照态：影响集内用例齐备 + 产物哈希与当前一致 ⇒ **ok**（判据不是"永远红"）
-  const greenBase = judge({ impact: assessment.impact.nodes, cases: needed.map(probeCase) })
-  assert.equal(greenBase.outcome, 'ok', `对照态（齐备 + 哈希一致）必须判绿，否则下面的"判红"没有判别力：${describeRegression(greenBase)}`)
+  // 对照态：夹具齐备 + 产物哈希与当前一致 ⇒ **ok**（判据不是"永远红"）
+  const greenBase = judge({ impact: FIXTURE_IMPACT, cases: [probeCase(victim)] })
+  assert.equal(greenBase.outcome, 'ok', `对照态（齐备 + 哈希一致）必须判绿：${describeRegression(greenBase)}`)
+  // **台账无关性**：读数必须恰好等于**夹具的规模**（1 条影响用例 / 1 条结果 / 1 条通过）——
+  // 若它偷偷读了真实台账，这里会是几百条（424/59 那种）而不是 1。
+  assert.deepEqual(
+    { impacted: greenBase.counts.impacted, cases: greenBase.counts.cases, passed: greenBase.counts.passed },
+    { impacted: 1, cases: 1, passed: 1 },
+    `读数必须只由夹具决定（不许读台账）：${JSON.stringify(greenBase.counts)}`,
+  )
+  // 台账无关性第二格：同一份夹具连跑两次必须逐字段相同（纯函数、无隐藏读盘）
+  const greenAgain = judge({ impact: FIXTURE_IMPACT, cases: [probeCase(victim)] })
+  assert.deepEqual(greenAgain.counts, greenBase.counts, '同一份夹具连跑两次读数必须相同（台账无关）')
+  assert.equal(greenAgain.outcome, greenBase.outcome, '同一份夹具连跑两次结论必须相同（台账无关）')
 
   // 态 C-1：`present` 但**结果缺失** ⇒ `incomplete` 并点名那条用例
-  const withoutResult = judge({ impact: assessment.impact.nodes, cases: [{ case: victim, result: '' }, ...needed.filter((id) => id !== victim).map(probeCase)] })
+  const withoutResult = judge({ impact: FIXTURE_IMPACT, cases: [{ case: victim, result: '' }] })
   assert.equal(withoutResult.outcome, 'incomplete', `results 缺失 ⇒ 必须判 incomplete（不许因为放宽了存在性就放过）：${describeRegression(withoutResult)}`)
   assert.ok(withoutResult.violations.some((issue) => issue.code === 'not-run'), `要点名"没跑"：「${withoutResult.violations.map((issue) => issue.code).join(' ')}」`)
   assert.ok(describeRegression(withoutResult).includes(victim), `回执要点名是哪条用例没结果：${describeRegression(withoutResult)}`)
 
   // 态 C-2：`present` 但**哈希不符** ⇒ `stale` 并点名产物路径 + 两侧哈希（AC-208）
   const mismatched = judge({
-    impact: assessment.impact.nodes,
-    cases: [...needed.filter((id) => id !== victim).map(probeCase), { case: victim, result: 'pass', artifact: `sha256:${'0'.repeat(64)}`, artifactPath: PROBE_ARTIFACT }],
+    impact: FIXTURE_IMPACT,
+    cases: [{ case: victim, result: 'pass', artifact: `sha256:${'0'.repeat(64)}`, artifactPath: PROBE_ARTIFACT }],
   })
   assert.equal(mismatched.outcome, 'stale', `哈希不符 ⇒ 必须判 stale（过期优先于其它问题）：${describeRegression(mismatched)}`)
   assert.ok(mismatched.staleArtifacts.includes(PROBE_ARTIFACT), `要点名过期的是哪个产物：${mismatched.staleArtifacts.join(' ')}`)
@@ -1309,3 +1335,38 @@ test('TASK-055 DoD（变异自证）：把"有变更却无真源 ⇒ 判红"回�
   rmSync(guard, { recursive: true, force: true })
 })
 
+
+test('M38-90 §3.2（`DEF-116`）`narrow` 不是死出口：点名收窄的用例不再算缺失（读数给 `narrowed`），未点名的照旧判红', () => {
+  // 纯夹具世界（`DEF-120` 的同一套口径）：假 id + 两条自造边，不读现盘台账。
+  const edges = [
+    { from: 'REQ-900', to: 'DES-900', kind: 'req-des' },
+    { from: 'DES-900', to: 'TC-900', kind: 'des-ct' },
+    { from: 'DES-900', to: 'TC-901', kind: 'des-ct' },
+  ] as never
+  const changeSet = { items: [{ id: 'REQ-900', file: '', from: 'DEF-900' }], sources: { changes: 0, defects: 1, workspaceFiles: 0 }, rawFileCount: 0 } as never
+  const hash = createHash('sha256').update(readFileSync(join(ROOT, 'package.json'))).digest('hex')
+  const judge = (narrow?: string) =>
+    assessRegression({
+      workspace: ROOT,
+      changeSet,
+      edges,
+      badLines: 0,
+      totalLines: 3,
+      source: { impact: ['DES-900', 'REQ-900', 'TC-900', 'TC-901'], narrow, cases: [{ case: 'TC-900', result: 'pass', artifact: `sha256:${hash}`, artifactPath: 'package.json' }] },
+    })
+  // ① 不收窄：TC-901 缺失 ⇒ incomplete 并点名
+  const baseline = judge()
+  assert.equal(baseline.outcome, 'incomplete', '不收窄时必须判 incomplete')
+  assert.deepEqual(baseline.missing, ['TC-901'], '必须点名缺的那条')
+  assert.equal(baseline.counts.narrowed, 0, '没有收窄 ⇒ narrowed = 0')
+  // ② 点名收窄 TC-901 ⇒ **不再算缺失**，读数额外给 narrowed = 1
+  const narrowed = judge('这次只跑纯逻辑，TC-901（UI 面）不在范围：TC-901')
+  assert.equal(narrowed.outcome, 'ok', `点名收窄后必须能判绿：${describeRegression(narrowed)}`)
+  assert.deepEqual(narrowed.missing, [], '已收窄的用例不许再进 missing')
+  assert.equal(narrowed.counts.narrowed, 1, '读数必须说清"这次收窄了 1 条"（可复算）')
+  // ③ 反例：`narrow` 里写的 id **不在影响集里** ⇒ 不产生任何豁免（仍判 incomplete）
+  const irrelevant = judge('TC-999 不在影响面：TC-999')
+  assert.equal(irrelevant.outcome, 'incomplete', '收窄名单里写别的 id 不许把真缺失也放过')
+  assert.deepEqual(irrelevant.missing, ['TC-901'], '真缺失仍然要点名')
+  assert.equal(irrelevant.counts.narrowed, 0, '没命中影响集的收窄不计入 narrowed')
+})

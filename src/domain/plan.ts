@@ -15,7 +15,7 @@ import type { FieldShapeNote } from '../infra/scalar.js'
 import { fmt, t } from './i18n.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
-import type { DesignElement, EvidenceItem, Iteration, MitigatesWaiver, Requirement, StructuralCardPlan, StructuralPlan, StructuralSkip, TaskCard, TaskSize } from '../types.js'
+import type { DesignElement, EvidenceItem, Iteration, MitigatesWaiver, Requirement, StructuralCardPlan, StructuralPlan, StructuralSkip, TaskCard, TaskSize, TaskStatus } from '../types.js'
 import { listElements, VIEW_KIND_OF_ELEMENT } from './architecture.js'
 import { linkMany, readLinks } from './trace.js'
 import { globLiteralDepth, hasGlob, scopeOverlaps } from './scopePaths.js'
@@ -719,7 +719,12 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
   for (const task of tasks) {
     // **D3-3**：已 drop 的卡不参与校验（它们只是留痕，不是待办）
     if (task.status === 'dropped') continue
-    if (!isRole(task.role)) {
+    // **`DEF-119`（第十三批 §1.1，blocker）**：已落地卡（done / verified）是**历史** —— 与下面
+    // `impact-undeclared` 的既有口径一致（"落地后是历史，不重写历史"），不再对它们判拆卡期规则。
+    // 病根：这些规则此前不看状态，而 `update` 面对 done 卡一律拒（`not-updatable`）⇒ 校验器要的字段
+    // 永远补不上 ⇒ `sdo_plan action=next` 永久判红、一张卡也派不出去（真机 TASK-145/151/152/153）。
+    const settled = task.status === 'done' || task.status === 'verified'
+    if (!settled && !isRole(task.role)) {
       issues.push({
         code: 'single-role',
         taskId: task.id,
@@ -730,7 +735,7 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
     // **D7（整仓评审 major）**：`waterfall.yml` 的 C-31 写「任务卡齐备（DoD/依赖/**写范围**）」，但旧实现**不校验
     // 写范围非空** —— 而空写范围在下面的互斥判断里不冲突、在 `auditWriteScopes` 里"写哪儿都不算越界"
     // （实测：`auditWriteScopes(['outside/x.ts'], [])` = ok）。卡可以既不占位也不受审计 ⇒ 这里判成计划问题。
-    if (task.writeScopes.filter((scope) => textOf(scope).trim() !== '').length === 0) {
+    if (!settled && task.writeScopes.filter((scope) => textOf(scope).trim() !== '').length === 0) {
       issues.push({
         code: 'write-scope-empty',
         taskId: task.id,
@@ -738,7 +743,7 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
         remedy: t('uiPlan.kWriteScopeEmptyRemedy'),
       })
     }
-    if (task.dod.length === 0 || task.dod.some((item) => textOf(item).trim() === '')) {
+    if (!settled && (task.dod.length === 0 || task.dod.some((item) => textOf(item).trim() === ''))) {
       issues.push({
         code: 'dod-nonempty',
         taskId: task.id,
@@ -746,7 +751,7 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
         remedy: t('uiPlan.k6'),
       })
     }
-    if (task.size === 'large') {
+    if (!settled && task.size === 'large') {
       issues.push({
         code: 'size-cap',
         taskId: task.id,
@@ -754,7 +759,7 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
         remedy: t('uiPlan.k8'),
       })
     }
-    if (task.evidenceRequired.length === 0) {
+    if (!settled && task.evidenceRequired.length === 0) {
       issues.push({
         code: 'evidence-required',
         taskId: task.id,
@@ -779,7 +784,7 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
     // 认出"该声明"的时刻，不假装能算出语义影响本身）。
     // 时机：只在**还没落地**的卡上判 —— 拆卡期判红才有意义（落地后是历史，不重写历史）；
     // 存量卡（本字段生效前建的）因此**不追溯**，与 `fixes` / `mitigates` 的存量口径一致。
-    if (task.status !== 'done' && task.status !== 'verified') {
+    if (!settled) {
       const declaredImpact = (task.impact ?? []).length > 0 || textOf(task.undecidable).trim() !== ''
       if (!declaredImpact) {
         const fixes = task.fixes ?? []
@@ -1005,14 +1010,115 @@ export function decompose(
   }
 }
 
-/** **D3-3 回收路径**：把建错/作废的卡置为 dropped 并留痕（真源仍是追加式，不删除记录）。 */
-export function dropTask(store: SdoStore, journal: Journal, taskId: string, reason: string): TaskCard | undefined {
+/**
+ * 作废一张卡的**判定结果**（`DEF-118`，第十三批 §1.2）。
+ *
+ * 为什么要有这个联合类型：旧实现 `dropTask` 只返回 `TaskCard | undefined`，**无法表达"拒绝"** ——
+ * 于是"对已完成卡 drop"这类动作只能成功，回执也没有位置说"为什么不行"。
+ */
+export type DropOutcome =
+  | { ok: true; card: TaskCard }
+  | { ok: false; code: 'not-found' | 'settled'; detail: string }
+
+/**
+ * **D3-3 回收路径**：把建错/作废的卡置为 dropped 并留痕（真源仍是追加式，不删除记录）。
+ *
+ * **`DEF-118`（第十三批 §1.2，破坏力=blocker）**：已完成卡（`done` / `verified`）**不许 drop** ——
+ * 真机事故：驾驶舱把校验器的 `write-scope-empty` 误读成"废卡证据"，对 8 张已完成 reviewer 卡连发 drop，
+ * 卡面 status 与 `done` 证据被覆盖，而 `TASK_ACTIONS` 里没有 undo ⇒ **结构上只能向下、不能向上**。
+ * 现在：拒 drop 并给两条确定出路（① `reopen` 后再说；② 用 `update` 补字段）。
+ * 未落地的卡照旧可 drop；**卡面 `evidence` 不因 drop 清空**（history 与 status 无关）。
+ */
+export function dropTaskChecked(store: SdoStore, journal: Journal, taskId: string, reason: string): DropOutcome {
   const task = listTasks(store).find((item) => item.id === taskId)
-  if (task === undefined) return undefined
+  if (task === undefined) return { ok: false, code: 'not-found', detail: fmt('uiPlan.kDropNotFound', { p1: taskId }) }
+  if (task.status === 'done' || task.status === 'verified') {
+    return { ok: false, code: 'settled', detail: fmt('uiPlan.kDropSettled', { p1: taskId, p2: task.status }) }
+  }
   const dropped: TaskCard = { ...task, status: 'dropped', revision: task.revision + 1 }
   writeTask(store, dropped)
-  journal.append('task/dropped', { id: taskId, reason })
-  return dropped
+  // `previousStatus` 记账：`restore` 靠它回到原状态（旧事件没有这个字段 ⇒ 读到就按 `ready` 兜底）
+  journal.append('task/dropped', { id: taskId, reason, previousStatus: task.status })
+  return { ok: true, card: dropped }
+}
+
+/** 兼容既有调用（`office.dropTask` 与既有用例）：只要卡，不要判定细节。 */
+export function dropTask(store: SdoStore, journal: Journal, taskId: string, reason: string): TaskCard | undefined {
+  const outcome = dropTaskChecked(store, journal, taskId, reason)
+  return outcome.ok ? outcome.card : undefined
+}
+
+/** `reopen` / `restore` 的判定结果（同 `DropOutcome`：拒绝也要能说清为什么）。 */
+export type LifecycleOutcome =
+  | { ok: true; card: TaskCard; from: string }
+  | { ok: false; code: 'not-found' | 'bad-status' | 'missing-approval'; detail: string }
+
+/**
+ * **`DEF-118` 恢复路径 ①**：`reopen`（`done` / `verified` → `in-progress`）。
+ *
+ * 为什么需要：`update` 面对 done 卡一律拒（"历史不重写"），而 drop 以前又能抹掉它 ⇒ 卡一旦落地，
+ * 连"补一个字段"都没有合法出口。`reopen` 是**向上**的那条路：必须带 `reason` 与 `approvedBy`（署名）。
+ */
+export function reopenTask(
+  store: SdoStore,
+  journal: Journal,
+  input: { taskId: string; reason: string; approvedBy: string },
+): LifecycleOutcome {
+  const task = listTasks(store).find((item) => item.id === input.taskId)
+  if (task === undefined) return { ok: false, code: 'not-found', detail: fmt('uiPlan.kDropNotFound', { p1: input.taskId }) }
+  if (task.status !== 'done' && task.status !== 'verified') {
+    return { ok: false, code: 'bad-status', detail: fmt('uiPlan.kReopenBadStatus', { p1: input.taskId, p2: task.status }) }
+  }
+  const reason = textOf(input.reason).trim()
+  const approvedBy = textOf(input.approvedBy).trim()
+  if (reason === '' || approvedBy === '') {
+    return { ok: false, code: 'missing-approval', detail: t('uiPlan.kReopenNeedsApproval') }
+  }
+  const reopened: TaskCard = { ...task, status: 'in-progress', revision: task.revision + 1 }
+  writeTask(store, reopened)
+  journal.append('task/reopened', { id: task.id, from: task.status, to: 'in-progress', reason, approvedBy })
+  return { ok: true, card: reopened, from: task.status }
+}
+
+/**
+ * **`DEF-118` 恢复路径 ②**：`restore`（`dropped` → 上一状态）。
+ *
+ * 上一状态取**最近一条 `task/dropped` 事件的 `previousStatus`**；老事件没有该字段 ⇒ 回 `ready`
+ * （那正是"建错/作废"最常见的场景），并在事件里如实记 `restoredTo` 与来源（`event` / `fallback`）。
+ */
+export function restoreTask(
+  store: SdoStore,
+  journal: Journal,
+  input: { taskId: string; reason: string; approvedBy: string },
+): LifecycleOutcome {
+  const task = listTasks(store).find((item) => item.id === input.taskId)
+  if (task === undefined) return { ok: false, code: 'not-found', detail: fmt('uiPlan.kDropNotFound', { p1: input.taskId }) }
+  if (task.status !== 'dropped') {
+    return { ok: false, code: 'bad-status', detail: fmt('uiPlan.kRestoreBadStatus', { p1: input.taskId, p2: task.status }) }
+  }
+  const reason = textOf(input.reason).trim()
+  const approvedBy = textOf(input.approvedBy).trim()
+  if (reason === '' || approvedBy === '') {
+    return { ok: false, code: 'missing-approval', detail: t('uiPlan.kRestoreNeedsApproval') }
+  }
+  const dropEvent = [...journal.read().events]
+    .reverse()
+    .find((event) => event.type === 'task/dropped' && String(event.data['id'] ?? '') === task.id)
+  const recorded = dropEvent?.data['previousStatus']
+  const restoredTo: TaskStatus =
+    recorded === 'planned' || recorded === 'ready' || recorded === 'in-progress' || recorded === 'blocked' || recorded === 'done' || recorded === 'verified'
+      ? recorded
+      : 'ready'
+  const restored: TaskCard = { ...task, status: restoredTo, revision: task.revision + 1 }
+  writeTask(store, restored)
+  journal.append('task/restored', {
+    id: task.id,
+    to: restoredTo,
+    reason,
+    approvedBy,
+    source: recorded === undefined ? 'fallback-ready' : 'drop-event',
+  })
+  return { ok: true, card: restored, from: 'dropped' }
 }
 
 /** 当前迭代（`.sdo/iteration.yml`）。 */

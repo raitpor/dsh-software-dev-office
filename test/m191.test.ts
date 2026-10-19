@@ -177,7 +177,7 @@ export const KNOWN_DANGLING: readonly KnownDangling[] = [
   // 历史形态的旧入口名（已移除，仅注释记述）
   { file: 'src/interface/argv.ts', line: 243, head: 'bare', tail: 'Option', why: '旧入口名（已移除；注释只在记述历史形态）' },
   // 举例性函数名（描述"属性节点可以带哪些键"），仓内无此定义
-  { file: 'src/interface/tools.ts', line: 1010, head: 'compile', tail: 'PropertyMap', why: '举例性函数名（注释在描述联合声明口径）' },
+  { file: 'src/interface/tools.ts', line: 1015, head: 'compile', tail: 'PropertyMap', why: '举例性函数名（注释在描述联合声明口径）' },
   // 被**否决**的候选名（"而不是新造它"）⇒ 按定义不存在
   { file: 'src/types.ts', line: 872, head: 'introduces', tail: 'Semantics', why: '被否决的候选名（原句是"而不是新造它"）⇒ 按定义不存在' },
   { file: 'src/types.ts', line: 872, head: 'impact', tail: 'Surface', why: '同上（被否决的候选名）' },

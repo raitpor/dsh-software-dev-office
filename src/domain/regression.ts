@@ -366,7 +366,7 @@ export interface RegressionAssessment {
   present: boolean
   outcome: RegressionOutcome
   /** 链上三个环节各自的条数（逐条现算，**不做加权合并**）。 */
-  counts: { impacted: number; cases: number; passed: number; failed: number; notRun: number; stale: number; unbound: number; artifactMissing: number }
+  counts: { impacted: number; cases: number; passed: number; failed: number; notRun: number; stale: number; unbound: number; artifactMissing: number; narrowed?: number | undefined }
   /** 逐条判红的用例 id（点名用；**不许用整体结论掩盖个别项**）。 */
   offenders: string[]
   /** 过期结果的产物路径（AC-208：点名产物路径）。 */
@@ -506,7 +506,7 @@ function emptyAssessment(present: boolean, unknownReason: string, impact: Impact
   return {
     present,
     outcome: unknownReason === '' ? 'ok' : 'unknown',
-    counts: { impacted: impact.byPrefix.cases.length, cases: 0, passed: 0, failed: 0, notRun: 0, stale: 0, unbound: 0, artifactMissing: 0 },
+    counts: { impacted: impact.byPrefix.cases.length, cases: 0, passed: 0, failed: 0, notRun: 0, stale: 0, unbound: 0, artifactMissing: 0, narrowed: 0 },
     offenders: [],
     staleArtifacts: [],
     missing: [],
@@ -613,9 +613,18 @@ export function assessRegression(input: RegressionAssessmentInput): RegressionAs
   // 只在影响面推得出来时对账 —— 推不出来时"该跑什么"本身是未知，硬对账会退化成"图上没写=不用跑"
   // （那正是 REQ-052 降级口径要挡的东西）。
   const ranIds = new Set(cases.map((item) => item.caseId))
-  const missing = impact.derivable
+  // **`DEF-116`（第十三批 §3.2）**：`narrow` 以前是**死出口** —— 报文让"范围收窄写进 `narrow`"，
+  // 而判定层**从不读它**（实测：抽掉用例 + 写 narrow ⇒ 仍 `incomplete` / `missing=[…]`）。
+  // 现在：`narrow` 里点名、且确实在影响集里的用例 id 视为**已收窄**（不收进 missing），
+  // 读数额外给 `narrowed`（"这次不跑 N 条"）—— 收窄是**人的决定**，但必须留痕且**可复算**。
+  // 解析口径：逗号 / 分号 / 空白分隔的 `TC-…` 记号；其余文字当理由（不参与判定）。
+  const narrowTokens = (textOf(raw.narrow).match(/TC-[A-Za-z0-9_-]+/gu) ?? []).map((token) => token.toUpperCase())
+  const narrowedIds = new Set(narrowTokens)
+  const missingAll = impact.derivable
     ? impact.byPrefix.cases.filter((id) => !ranIds.has(id)).sort()
     : []
+  const narrowed = missingAll.filter((id) => narrowedIds.has(id.toUpperCase()))
+  const missing = missingAll.filter((id) => !narrowedIds.has(id.toUpperCase()))
   for (const id of missing) {
     const known = input.knownCaseIds !== undefined && input.knownCaseIds.includes(id)
     violations.push({
@@ -636,6 +645,7 @@ export function assessRegression(input: RegressionAssessmentInput): RegressionAs
     stale: stale.length,
     unbound: unbound.length,
     artifactMissing: artifactMissing.length,
+    narrowed: narrowed.length,
   }
   const offenders = [...new Set([...cases.filter((item) => item.outcome !== 'ok').map((item) => item.caseId).filter((id) => id !== ''), ...missing])].sort()
 

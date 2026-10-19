@@ -256,3 +256,21 @@ test('M124-09 §3.8（`S2`）真机形态：宿主给的 `paths` 是**绝对路�
   const backslash = scopeOf(['\\ws\\src\\a.ts'])
   assert.equal(backslash.kind, 'deny', '反斜杠绝对路径仍然拒（安全侧；分类差异见上）')
 })
+
+test('M124-10 §1.1（`DEF-119`）已落地卡（done/verified）不参与拆卡期校验：四条规则只在未落地卡上判（**两态**）', () => {
+  const malformed = (status: TaskCard['status'], id: string): TaskCard =>
+    card(id, [], { status, dod: [], size: 'large', evidenceRequired: [] })
+  const CODES = ['write-scope-empty', 'dod-nonempty', 'size-cap', 'evidence-required'] as const
+  // ① 已落地（done / verified）⇒ 四条**一条都不许出现**（否则历史卡把派发面永久判红：DEF-119 的真机现象）
+  for (const status of ['done', 'verified'] as const) {
+    const codes = validatePlan([malformed(status, `TASK-96${status === 'done' ? 1 : 2}`)]).map((issue) => issue.code)
+    for (const code of CODES) {
+      assert.equal(codes.includes(code), false, `已落地卡（${status}）不许判 \`${code}\`（历史不重写）`)
+    }
+  }
+  // ② 同形状但**未落地** ⇒ 四条**必须全在**（没松过头：两态都要断言）
+  const planned = validatePlan([malformed('planned', 'TASK-963')]).map((issue) => issue.code)
+  for (const code of CODES) {
+    assert.ok(planned.includes(code), `未落地卡必须仍判 \`${code}\`（松紧两态都要有判别力）`)
+  }
+})

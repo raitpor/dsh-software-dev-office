@@ -193,6 +193,11 @@ function toolHarness(ws: string): ToolHarness {
   const registered: ToolDefinition[] = []
   const services: Record<string, unknown> = {
     tools: { register: (tool: ToolDefinition): (() => void) => { registered.push(tool); return () => {} } },
+    // **`DEF-112`（第十三批 §2.1）**：陈述面签字降为**弱签字**（不冻结门禁）⇒ 要签过的用例改走问答通道：
+    // 工具自己问、宿主回传所选选项 —— 这条通道的原话**不经过模型**，是唯一被门禁承认的签字。
+    userQuestions: {
+      ask: async () => ({ answers: [{ id: 'sdo-gate-sign', selected: ['签字确认，批准通过'] }] }),
+    },
   }
   const makeCtx = (): Record<string, unknown> => ({
     logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
@@ -515,7 +520,7 @@ test('F-7/F-9 工具通道端到端：create ui 视图 → 写方法产物 → C
 
   // ⑦ G3 在工具通道上**整体可达**：签字后整门通过（不残留别的红项）
   seedSignReview(workspace, 'G3')
-  await harness.callTool('sdo_gate', { action: 'sign', gate: 'G3', channel: 'statement', quote: '我签字确认这次设计可以放行', approvedBy: '张三' })
+  await harness.callTool('sdo_gate', { action: 'sign', gate: 'G3', channel: 'question', approvedBy: '张三' })
   const final = g3()
   const failures = final.criteria.filter((item) => !item.ok && item.na !== true).map((item) => `${item.id}:${item.detail}`)
   assert.deepEqual(failures, [], `G3 必须整体通过，实际红项：${failures.join(' | ')}`)

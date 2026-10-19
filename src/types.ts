@@ -1446,7 +1446,7 @@ export interface TestingReportSource {
  * （`tools.ts` 的 `action` 描述由 `actionList(TASK_ACTIONS)` 生成），不登记的动作对调用方
  * **不可发现** —— 那等于没做（知识库 `tq_ff348198`：新增参数/动作要类型、schema、execute 同改）。
  */
-export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'release', 'reassign', 'update', 'unblock', 'verify-review', 'errata'] as const
+export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'reopen', 'restore', 'release', 'reassign', 'update', 'unblock', 'verify-review', 'errata'] as const
 export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list', 'env'] as const
 /**
  * `sdo_review` 的动作面（**唯一**一处词表：`tools.ts` 的 `action` 描述由 `actionList(REVIEW_ACTIONS)` 生成）。
@@ -1876,8 +1876,16 @@ export interface GateSignature {
   by: string
   /** 用户原话引用或所选选项原文（**空 → 签字无效**） */
   basis: string
-  /** 来源通道：命令面（强）或人机关口问答面（弱） */
+  /** 来源通道：问答面（**强**：值由宿主回传、不经过模型）或陈述面（`command`） */
   channel: 'command' | 'question'
+  /**
+   * **`DEF-112`（第十三批 §2.1）**：陈述面（`command`）的签字是**弱签字** —— 只入账、**不冻结门禁**。
+   *
+   * 旧口径把两种通道都当有效签字，于是真机 seq 3490 里一句**工作指令**（"把 REQ-060 补进需求基线，
+   * 重签 G2"）被记成 `channel=command` 后当场把 G2 判绿。现在：`weak: true` 的签字
+   * `signatureState` 返回 **`weak`**（C7/`design.signed`/`testing.report-signed` 只认 `valid`）。
+   */
+  weak?: boolean | undefined
   at: string
   /** 会话轮次引用（`session:turn`，可空但建议填写） */
   turn?: string | undefined
@@ -2006,6 +2014,7 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'gate/signed',
   // **R-28（sdo-test-new 2026-10-09）**：被拒的签字尝试（不是签字、也没改任何真源）
   'gate/sign-rejected',
+  'gate/sign-unavailable',
   // 阶段记账（设计内容不变；DESIGN.md 正文里已不含阶段，见 N-8/N-13）
   'phase/entered',
   'phase/exited',
@@ -2037,6 +2046,8 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'task/released',
   // **DEF-071**：勘误是**追加**记录（不改真源、不改写历史正文）
   'task/errata',
+  'task/reopened',
+  'task/restored',
   'task/done',
   'task/blocked',
   // **DEF-049 / TASK-078**：从 blocked 恢复为 ready 的**追加式**留痕。与 `task/released` 同类 ——
@@ -2283,6 +2294,7 @@ export type SdoEventType =
   | 'design/applicability-confirmed'
   | 'gate/signed'
   | 'gate/sign-rejected'
+  | 'gate/sign-unavailable'
   | 'phase/rolled-back'
   | 'adr/recorded'
   | 'quality/recorded'
@@ -2308,6 +2320,8 @@ export type SdoEventType =
   | 'task/released'
   // **DEF-071**：done 卡的**追加式**勘误（不改写历史正文）
   | 'task/errata'
+  | 'task/reopened'
+  | 'task/restored'
   | 'task/done'
   | 'task/blocked'
   // **DEF-049**：从 blocked 恢复为 ready 的**追加式**留痕（与 task/released 同类：只改调度状态，

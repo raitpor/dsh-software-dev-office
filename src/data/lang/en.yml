@@ -992,6 +992,12 @@ uiCollab:
   unblockReasonMissing: "resuming {p1} requires `reason`: state how the blocking condition was resolved — a silent resume hides a plan change (both the receipt and the `task/unblocked` event keep it)"
   unblockNotBlocked: "{p1} is currently {p2}, **not blocked** — there is nothing to resume (unblock only handles blocked cards; to change a ready / planned card use `sdo_task action=update`, and if you really will not do it use `sdo_task action=drop`)"
 uiPlan:
+  kDropNotFound: 'card {p1} not found (drop / reopen / restore all need a real card)'
+  kDropSettled: '**{p1} is already {p2}: cannot drop** - history is not rewritten. Two ways out: (1) `reopen` first (with reason + approvedBy); (2) to fill fields only, use `update` (do not erase the completed state)'
+  kReopenBadStatus: '{p1} is currently {p2}: only `done` / `verified` need reopen (unfinished cards stay editable)'
+  kReopenNeedsApproval: '`reopen` requires both `reason` and `approvedBy` (a signed recovery; without them it is a silent rewrite of history)'
+  kRestoreBadStatus: '{p1} is currently {p2}: only `dropped` cards need restore'
+  kRestoreNeedsApproval: '`restore` requires both `reason` and `approvedBy` (signed recovery; the target status comes from the latest drop event, falling back to `ready`)'
   kScopeSplitSuggestion: "; if two cards must edit the same file, prefer splitting that path into its own card (one card owns a shared file; the others declare order with `blockedBy`)."
   kWriteScopeEmpty: 'the card declares no write scope (writeScopes is empty) — an empty scope neither reserves anything nor is audited for out-of-scope writes (C-31 requires scopes)'
   kWriteScopeEmptyRemedy: 'give the card the path prefixes it will write (e.g. src/booking/); a card that writes no code (a pure review card) should declare what it really writes — normally [".sdo/"] (a reviewer only writes `.sdo/reviews/*.yml`) — or be reshaped with a scope, or dropped explicitly'
@@ -1437,6 +1443,11 @@ shapeEntity:
   signature: "Gate signature ledger"
   budget: "Cost budget"
 uiIndex:
+  kTestOrphanResults: 'WARNING: **{p1} result(s) point at a non-existent test case** (ghost cases): {p2} - they are **not counted as coverage**; the write face has rejected such records since DEF-037, history is annotated, never deleted'
+  kSignWeak: 'NOTE: this signature does **not** freeze {p1} (statement-channel weak signature). Use `channel=question` so the tool asks you directly and you pick the option - only that channel (words returned by the host) counts for the gate'
+  kSignNoChannel: "WARNING: the **question channel is unavailable** (the host did not inject the ask service, or this question never surfaced) - this is **not** a refusal: the ledger records `gate/sign-unavailable`. Three ways out: (1) retry in the Web GUI (pick the option once the card/sidebar shows up); (2) have the cockpit confirm the host injected the question service; (3) if asking is impossible, state it explicitly in the session and provide the user's own words (`channel=statement` + `quote`, recorded as `channel=command`)"
+  kReviewLandedAt: 'landed at: `{p1}` (**`.yml`**, written by the tool; point `artifact` evidence at it)'
+  kTaskRestored: 'OK {p1}: {p2} -> **{p3}** (recovery recorded with reason + approvedBy; no history is rewritten)'
   kDodToolGap: 'WARNING: card {p1} (role **{p2}**) names tool **{p3}** in its DoD, but that tool is not in this role face - move that step to a role that has it, or drop the requirement; otherwise the card cannot be finished on a real machine (S1 card-time check)'
   kUnfrozenLocal: 'FROZEN-SCOPE: this `done` is **locally green** (the changes inside this card scope are green) while **the whole project is not frozen** — sibling cards whose work is not included: {p1}. To learn whether everything is frozen, re-run the full suite once those cards settle.'
   kUnfrozenFrozen: 'FROZEN-SCOPE: no sibling card is in progress ⇒ this `done` **equals a full freeze** (this card scope green = whole project green).'
@@ -1847,7 +1858,6 @@ uiIndex:
   kChangeAcceptanceAdd: "New acceptance criterion {p1}: Given {p2}; When {p3}; Then {p4}"
   kChangeAcceptanceReplace: "Replace all acceptance criteria ({p1}): new ids {p2}"
   kSignQuoteMismatch: "The quote does not match: this passage does not appear in the user messages of this session, so it cannot serve as the basis of a signature (if the user did say it, copy that sentence verbatim; if the user answered a question (option or typed reply alike — since 0.2.1 such replies carry `user-question-reply` provenance and no longer count as the user own words), use `channel=question` so this tool fetches it on the spot)."
-  kSignNoChannel: "The human question channel is unavailable: state it in the session instead and give the user's own words (quote)"
   kSignDeclined: "The user did not choose to sign (chosen: {p1}); {p2} stays unsigned"
   kRollbackNoTarget: "A phase rollback must name its target phase (to=…)"
   unusedArgs: 'These arguments were NOT used: {p1} (this action does not consume them, so nothing is recorded) — switch to an action that does, or drop them'
@@ -2085,6 +2095,7 @@ uiReview:
   appendOriginalGap: "Index **gap** ({p1}): backfill has reached source entry {p2}, but this call starts at entry {p3} — the entries in between are skipped (the gap reads as «the source only had these»). Backfill the missing entries first, or start this call at entry {p2}"
 
 uiSignature:
+  weak: 'WARNING: **weak signature** (statement channel `channel=command`): recorded but does **not** freeze the gate - C7 accepts only question-channel signatures (`channel=question`, where the host returns the words verbatim)'
   journalOnly: 'WARNING: however the journal holds {p1} gate/signed event(s) — the signature file was deleted or rewritten (this is NOT never-signed, it is an inconsistency, D8)'
   noEvent: 'WARNING: no gate/signed event in the journal matches this signature ({p1} {p2}) — it was hand-written or written around the tool (D8)'
   basisRequired: "A signature must carry quoted text: give the user's own words (channel=statement) or go through the human question channel (channel=question)"
