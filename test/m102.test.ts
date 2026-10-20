@@ -14,6 +14,12 @@
  * **一手现场**（它本人被 `2>/dev/null` 与探针文本各拦过一次），守卫见本文件 §⑥–§⑨。
  * 口径：**先钉红再改** —— 四条新用例在修前逐条红（m102：11 tests / 7 pass / 4 fail），修后 11/11 绿。
  *
+ * **TASK-109 后半（REV-039 返工后半）**：两个方向相反的缺口各补一组 ——
+ *   · **漏拦**（M102-10…13）：前缀包装（`sudo`/`env`/`nice`/`time`/`xargs`/`nohup`）里的写入命令，
+ *     以及 `git worktree add/remove`、`git -C <dir> <写入子命令>` 这两类工作树写入；
+ *   · **不退化**（M102-14）：新拦截**不得**把 `/dev/*`、引号内文本、heredoc 体重新卷回判定。
+ * 同样**先钉红再改**（修前 m102：17 tests / 12 pass / 5 fail），修后全绿。
+ *
  * 断言要点名**被拒的路径**与**命中的形态**（只看 `kind === 'deny'` 的断言是空转的：
  * 拦错了路径也照样"绿"）。
  *
@@ -423,4 +429,196 @@ test('M102-09 命令文本里的字面量不算真实写入（给守卫写用例
   const reason = reasonOf(mixed)
   assert.match(reason, /lib\/real\.ts/u, `拒绝理由要点名真写入路径：${reason}`)
   assert.doesNotMatch(reason, /ghost/u, `拒绝理由不得点名字面量里的幽灵路径：${reason}`)
+})
+
+// ═══════════ TASK-109 后半：两类**漏拦**形态（前缀包装 / git 工作树） ═══════════
+//
+// 背景（REV-039 发现三，实现按源码逐条核过）：`detectCommandWrites` 拿 `words[0]` 当命令头**逐个
+// 字面量比较**（`head === 'tee'` / `'cp'` / `'sed'`…），于是
+//   · **前缀包装**（`sudo tee x`、`env A=1 rm x`、`nice -n 5 cp a b`、`time sed -i …`、`xargs rm x`）
+//     里的写入命令一律不命中 —— 一行 `sudo`/`env` 就把闸门绕过去了；
+//   · `git` 整条命令都没有形态：`git worktree add <path>` 与 `git -C <dir> restore <file>` 改的正是
+//     工作树里的文件，却完全不经过判定。
+// 两类现盘都是**漏拦**（TASK-090 已把它们如实登记进 `COMMAND_WRITE_RISKS`），本卡补拦截并把登记收窄。
+//
+// 口径与 TASK-090 一致：**先钉红再改**；断言**点名路径与形态**；"拦住"与"放行"成对出现 ——
+// 新增拦截最容易顺手把只读命令与 in-scope 写入一起拦掉（那是 TASK-090 刚修掉的那类假阳性）。
+// 落点三（不退化）单独一条：`/dev/*`、引号内文本、heredoc 体不得被新拦截重新卷回判定。
+
+test('M102-10 前缀包装下的真实写入必须被拦（env/sudo/nice/time/xargs/nohup；点名路径与形态）', async () => {
+  const h = hookHarness()
+  await liveCard(h, 'child-dev', ['src/index.ts'])
+  const outside = join(BASE, 'src/other.ts')
+  const inside = join(BASE, 'src/index.ts')
+
+  const cases: { cmd: string; path: string; shape: RegExp }[] = [
+    { cmd: `env FOO=1 tee ${outside}`, path: 'src/other.ts', shape: /tee/u },
+    { cmd: `sudo -u root rm ${outside}`, path: 'src/other.ts', shape: /rm/u },
+    { cmd: `nice -n 5 cp ${inside} ${outside}`, path: 'src/other.ts', shape: /cp/u },
+    { cmd: `time sed -i 's/a/b/' ${outside}`, path: 'src/other.ts', shape: /sed -i/u },
+    { cmd: `xargs rm ${outside}`, path: 'src/other.ts', shape: /rm/u },
+    { cmd: `nohup tee ${outside}`, path: 'src/other.ts', shape: /tee/u },
+  ]
+  for (const item of cases) {
+    const decision = await h.drive('bash', { command: item.cmd })
+    assert.equal(decision.kind, 'deny', `前缀包装里的写入形态必须被拦：${item.cmd}（现状：${decision.kind}）`)
+    const reason = reasonOf(decision)
+    assert.match(
+      reason,
+      new RegExp(item.path.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'),
+      `拒绝理由要点名被写路径：${item.cmd} → ${reason}`,
+    )
+    assert.match(reason, item.shape, `拒绝理由要点名命中的形态：${item.cmd} → ${reason}`)
+  }
+
+  // 反例（不许把闸拦错）：包装只把命令挪到后面，不改变"这条命令要不要写" —— in-scope 的写入必须放行。
+  for (const cmd of [
+    `env A=1 tee ${inside}`,
+    `sudo -u root tee ${inside}`,
+    `time sed -i 's/a/b/' ${inside}`,
+    `xargs rm ${inside}`,
+  ]) {
+    const decision = await h.drive('bash', { command: cmd })
+    assert.equal(decision.kind, 'allow', `包装下的 in-scope 写入必须放行：${cmd}（被拒理由：${reasonOf(decision)}）`)
+  }
+})
+
+test('M102-11 `git worktree add/remove` 是工作树写入，必须被拦（点名 worktree 路径与形态）', async () => {
+  const h = hookHarness()
+  await liveCard(h, 'child-dev', ['src/index.ts'])
+
+  for (const cmd of ['git worktree add src/wt', 'git worktree remove src/wt']) {
+    const decision = await h.drive('bash', { command: cmd })
+    assert.equal(decision.kind, 'deny', `git worktree 的写入形态必须被拦：${cmd}（现状：${decision.kind}）`)
+    const reason = reasonOf(decision)
+    assert.match(reason, /src\/wt/u, `拒绝理由要点名 worktree 路径：${cmd} → ${reason}`)
+    assert.match(reason, /worktree/u, `拒绝理由要点名形态（worktree）：${cmd} → ${reason}`)
+  }
+
+  // 反例：`git worktree list` 是只读，不得被卷进判定。
+  const list = await h.drive('bash', { command: 'git worktree list' })
+  assert.equal(list.kind, 'allow', `git worktree list 是只读命令，必须放行（被拒理由：${reasonOf(list)}）`)
+
+  // 包装 + git 组合：`sudo` 不是"整条命令无害"的免死金牌。
+  const wrapped = await h.drive('bash', { command: 'sudo git worktree add src/wt' })
+  assert.equal(wrapped.kind, 'deny', `包装下的 git worktree 仍必须拦（现状：${wrapped.kind}）`)
+  assert.match(reasonOf(wrapped), /src\/wt/u, `拒绝理由要点名 worktree 路径：${reasonOf(wrapped)}`)
+})
+
+test('M102-11b 卡声明**目录**时，其下的 worktree 路径放行（只按写范围判，语言无关）', async () => {
+  const h = hookHarness()
+  await liveCard(h, 'child-dev', ['src/'])
+  const decision = await h.drive('bash', { command: 'git worktree add src/wt' })
+  assert.equal(
+    decision.kind,
+    'allow',
+    `worktree 路径落在声明的目录范围内 ⇒ 必须放行（被拒理由：${reasonOf(decision)}）`,
+  )
+})
+
+test('M102-12 `git -C <dir>` 的写入按**目录基准**合成后判定（越界点名合成路径、范围内放行）', async () => {
+  const h = hookHarness()
+  await liveCard(h, 'child-dev', ['src/index.ts'])
+
+  const outside = await h.drive('bash', { command: 'git -C src restore other.ts' })
+  assert.equal(outside.kind, 'deny', `git -C 下的写入必须被拦（现状：${outside.kind}）`)
+  const reason = reasonOf(outside)
+  assert.match(reason, /src\/other\.ts/u, `拒绝理由要点名**按目录基准合成后**的路径：${reason}`)
+  assert.match(reason, /git -C/u, `拒绝理由要点名形态（git -C）：${reason}`)
+
+  // 合成后落在写范围内 ⇒ 放行。这条正是"合成"本身的价值：不做合成只能把目录 `src` 整个当目标，
+  // 范围内的窄写入会被误拒（那是"拦错了路径"的另一面）。
+  const inside = await h.drive('bash', { command: 'git -C src restore index.ts' })
+  assert.equal(inside.kind, 'allow', `合成后 in-scope 的写入必须放行（被拒理由：${reasonOf(inside)}）`)
+
+  // 没有文件操作数的整树重写（`reset --hard`）改的是整个 `<dir>` ⇒ 点名该目录并拦。
+  const tree = await h.drive('bash', { command: 'git -C src reset --hard' })
+  assert.equal(tree.kind, 'deny', `git -C 下的整树重写必须被拦（现状：${tree.kind}）`)
+  const treeReason = reasonOf(tree)
+  assert.match(treeReason, /(^|[^A-Za-z0-9_-])src($|[^A-Za-z0-9_-])/u, `拒绝理由要点名被写的目录：${treeReason}`)
+  assert.match(treeReason, /git -C reset/u, `拒绝理由要点名形态：${treeReason}`)
+
+  // 反例：只读子命令不得被卷进判定（`-C` 只是改基准目录，不是"写"）。
+  for (const cmd of ['git -C src status', 'git -C src log --oneline -n 1']) {
+    const decision = await h.drive('bash', { command: cmd })
+    assert.equal(decision.kind, 'allow', `只读的 git 子命令必须放行：${cmd}（被拒理由：${reasonOf(decision)}）`)
+  }
+
+  // `git checkout <ref>` 的操作数是**引用名**（分支/提交），不是路径 —— 合成它只会点名一个
+  // 工作区里并不存在的 `src/main`（DEF-074 同族的幽灵路径）⇒ 退回"整棵树"口径（点名 `src`）。
+  const ref = await h.drive('bash', { command: 'git -C src checkout main' })
+  assert.equal(ref.kind, 'deny', `git -C 下的 checkout 会重写整棵树 ⇒ 必须拦（现状：${ref.kind}）`)
+  const refReason = reasonOf(ref)
+  assert.doesNotMatch(refReason, /src\/main/u, `引用名不得被当成路径点名：${refReason}`)
+  // 而 `--` **之后**的操作数一定是路径 ⇒ 按合成后的真实路径点名。
+  const withSep = await h.drive('bash', { command: 'git -C src checkout -- other.ts' })
+  assert.equal(withSep.kind, 'deny', '`git checkout -- <path>` 是路径写入 ⇒ 必须拦')
+  assert.match(reasonOf(withSep), /src\/other\.ts/u, `\`--\` 之后的路径要点名：${reasonOf(withSep)}`)
+})
+
+test('M102-13 扫描器：前缀包装与 git 形态进目标并点名形态；只读形态与设备路径不进', () => {
+  // 包装：真正的写入命令在包装后面 —— 目标与形态都要点名（形态是被拦的**写入命令**，不是包装词）。
+  const wrapped = detectCommandWrites('sudo -u root tee src/other.ts')
+  assert.deepEqual(wrapped.targets, ['src/other.ts'], `包装下的写入目标必须进判定：${JSON.stringify(wrapped)}`)
+  assert.deepEqual(wrapped.shapes, ['tee'], `形态要点名被拦的写入命令：${JSON.stringify(wrapped)}`)
+
+  const assigned = detectCommandWrites('env FOO=1 rm -f src/other.ts')
+  assert.deepEqual(assigned.targets, ['src/other.ts'], `env 的变量赋值不是命令：${JSON.stringify(assigned)}`)
+  assert.deepEqual(assigned.shapes, ['rm'], `形态：${JSON.stringify(assigned)}`)
+
+  const nice = detectCommandWrites('nice -n 5 sed -i "s/a/b/" src/index.ts')
+  assert.deepEqual(nice.targets, ['src/index.ts'], `nice 的 -n 取值不是目标：${JSON.stringify(nice)}`)
+  assert.deepEqual(nice.shapes, ['sed -i'], `形态：${JSON.stringify(nice)}`)
+
+  // 包装 + git 组合：两层都剥掉，落到 worktree add 的路径。
+  const combo = detectCommandWrites('sudo git worktree add src/wt')
+  assert.deepEqual(combo.targets, ['src/wt'], `包装下的 git worktree 仍要进判定：${JSON.stringify(combo)}`)
+  assert.deepEqual(combo.shapes, ['git worktree add'], `形态：${JSON.stringify(combo)}`)
+
+  // `git -C`：写入操作数按**目录基准合成**（`index.ts` 实际指的是 `src/index.ts`）。
+  const composed = detectCommandWrites('git -C src restore index.ts')
+  assert.deepEqual(composed.targets, ['src/index.ts'], `git -C 的写入按目录基准合成：${JSON.stringify(composed)}`)
+  assert.deepEqual(composed.shapes, ['git -C restore'], `形态：${JSON.stringify(composed)}`)
+
+  // 引用名不是路径：`git checkout <ref>` 的目标退回目录基准（不点名幽灵 `src/main`），
+  // 而 `git checkout -- <path>` 的路径照样合成（`--` 之后一定是路径）。
+  assert.deepEqual(detectCommandWrites('git -C src checkout main').targets, ['src'], '引用名不得被当成路径')
+  assert.deepEqual(
+    detectCommandWrites('git -C src checkout -- a.ts').targets,
+    ['src/a.ts'],
+    '`--` 之后的路径必须合成到目录基准下',
+  )
+
+  // 只读 / 设备：不进（不许把闸拦错）。
+  assert.deepEqual(detectCommandWrites('git -C src status').targets, [], '只读子命令不是写入')
+  assert.deepEqual(detectCommandWrites('git worktree list').targets, [], 'worktree list 是只读')
+  assert.deepEqual(detectCommandWrites('sudo cat /dev/null').targets, [], '设备路径不得成为写目标')
+})
+
+test('M102-14 落点三不退化：新拦截不得把 /dev、引号内文本、heredoc 体重新卷回判定', async () => {
+  const h = hookHarness()
+  await liveCard(h, 'child-dev', ['src/index.ts'])
+
+  for (const cmd of [
+    'sudo tee /dev/null',
+    'env A=1 node scripts/run-tests.mjs 2>/dev/null',
+    `sudo cat > test/probe-body.ts <<'EOF'\necho x > lib/ghost.ts\nEOF`,
+    `xargs grep -n 'echo x > lib/ghost.ts' test/m102.test.ts`,
+  ]) {
+    const decision = await h.drive('bash', { command: cmd })
+    assert.equal(
+      decision.kind,
+      'allow',
+      `新拦截不得把非写入形态卷回来：${JSON.stringify(cmd)}（被拒理由：${reasonOf(decision)}）`,
+    )
+  }
+
+  // 同命令里的真越界仍必须拦，且**只点名真路径**（设备路径与引号内字面量不得进拒绝理由）。
+  const mixed = await h.drive('bash', {
+    command: `env A=1 tee /dev/null && sudo rm ${join(BASE, 'lib/real.ts')}`,
+  })
+  assert.equal(mixed.kind, 'deny', '同命令里的真写入仍必须拦（包装与设备路径都不是免死金牌）')
+  const reason = reasonOf(mixed)
+  assert.match(reason, /lib\/real\.ts/u, `拒绝理由要点名真写入路径：${reason}`)
+  assert.doesNotMatch(reason, /dev\/null|ghost/u, `设备路径与字面量不得进拒绝理由：${reason}`)
 })

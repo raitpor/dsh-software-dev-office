@@ -181,7 +181,7 @@ import { excerpt as excerptOf } from './domain/dispatchReports.js'
 import type { DispatchFinished } from './domain/dispatchReports.js'
 import { maskAllows } from './domain/roles.js'
 import { isAdrId } from './domain/adr.js'
-import { evaluateWriteScope, isDevicePath, normalizeWorkspacePath } from './domain/writeScope.js'
+import { composeUnderBase, evaluateWriteScope, isDevicePath, normalizeWorkspacePath } from './domain/writeScope.js'
 import type { ProposedQuestion } from './domain/grill.js'
 
 export const name = 'dsh-software-dev-office'
@@ -545,7 +545,8 @@ function guardedRead<T>(label: string, read: () => T): { ok: true; value: T } | 
 // 不是本插件产出的用户可见文案。要中文版请走语言包键（属另一张卡：本卡写范围不含 `src/data/lang/`，
 // 实测想改 `zh-CN.yml` 会被钩子以「越界写」直接拒绝）。
 const COMMAND_WRITE_RISKS: readonly string[] = [
-  'paths built by command substitution / variable expansion: $(...), ${VAR}, eval, xargs',
+  // **TASK-109 收窄**：`xargs` 的前缀**已剥**（它后面的命令照样判），剩下的真缺口是"路径由 stdin 拼出"
+  'paths built by command substitution / variable expansion: $(...), ${VAR}, eval — and the paths `xargs` appends from stdin (its command is parsed, its stdin is not)',
   'nested shells: sh -c, bash -c, env ... bash, curl | sh',
   // **TASK-090 假阳性修复的代价（如实披露）**：把"引号内 / heredoc 体内"的字面量排除出判定，
   // 就必然把"真命令写在引号里"的写法一起放过 —— 它们不是漏扫，是**有意的**：那两处是数据，
@@ -553,9 +554,10 @@ const COMMAND_WRITE_RISKS: readonly string[] = [
   'command text INSIDE quotes is not scanned: bash -c "...", eval "...", sh -c \'...\', ssh host "..."',
   'heredoc bodies are not scanned: a script written via heredoc (cat > s.sh <<EOF ... EOF) is only judged at the redirect; what it does when RUN is not re-scanned',
   'arithmetic `<<` (shift) looks like a heredoc start to this scanner and may hide following lines from judgment',
-  // 后半那张卡的范围（**本卡不做**，但必须如实列在风险里，不能因为"待办"就假装已封）
-  'command wrappers / prefixes are not recognised: env X=1 cmd, sudo cmd, nice cmd, time cmd, xargs cmd, nohup cmd',
-  'git subcommands that write into a worktree are not recognised: git worktree add/remove, git -C <dir> checkout/restore',
+  // **TASK-109 收窄**：`env/sudo/nice/time/nohup/xargs/command/exec/builtin` 已被剥成"看它们后面的命令"，
+  // `git worktree add|remove|move` 与 `git -C <dir> <writer>` 已进判定。没拦住的仍然如实列在这里。
+  'command wrappers OUTSIDE the recognised set are not stripped (their own positional arguments would be mistaken for the command): timeout DURATION cmd, taskset MASK cmd, chrt PRIO cmd, ionice -c N cmd, stdbuf -oX cmd, setsid cmd, arch -x86_64 cmd',
+  'git writes are recognised only as `git worktree add|remove|move` and `git -C <dir> <worktree-writing subcommand>`; bare `git checkout -- f` / `git restore f` / `git stash pop` / `git clean -fd` / `git apply` run in the session cwd and are NOT judged (their targets live in subcommand semantics), and `-C` with a subcommand outside that list is not judged either',
   'device paths under /dev are deliberately NOT judged (they are not workspace files); the same applies to every other path outside the workspace that no listed form produces',
   'interpreter write forms not listed here: perl -i, ruby -e, awk redirection, install, truncate of a symlink',
   'write a script first, then run it (the script write itself is judged; writes inside it are not re-scanned)',
@@ -798,7 +800,186 @@ function shellWords(segment: readonly ShellToken[]): string[] {
 
 /** 命令串里的目标路径是否是指向别处的变量/替换（`$VAR` / `$(...)`）—— 静态判不了，如实跳过。 */
 function isOpaqueTarget(word: string): boolean {
+  // **TASK-109**：`xargs -I{} rm {}` 的 `{}` 是**占位符**（真路径由 stdin 逐行喂进来）——
+  // 把它当目标会点名一个工作区里不存在的 `{}`（DEF-074 同族的幽灵路径）。
+  if (word === '{}') return true
   return word.includes('$') || word.startsWith('`')
+}
+
+// —————————————————————— TASK-109：前缀包装与 git 工作树的写入形态 ——————————————————————
+//
+// 这两族都是 REV-039 发现三在**源码里核出来的**漏拦（不是猜测）：旧实现拿 `words[0]` 当命令头
+// 逐个字面量比较，于是"真正的写入命令不在第 0 个词"的写法一律不命中。
+
+/**
+ * **前缀包装命令**：它们本身不写文件，真正的写入是**它后面那条命令**（REV-039 发现三①）。
+ *
+ * 为什么必须剥：`sudo tee /path`、`env A=1 rm /path`、`nice -n 5 cp a b`、`time sed -i …`、
+ * `xargs rm /path` —— 一行包装就把整道闸门绕过去了（`sudo` 是最廉价的绕过方式）。
+ *
+ * 清单外的**不猜**（`timeout 5 cp` / `taskset mask cmd` / `chrt prio cmd` 这类"包装命令自己还带
+ * 位置操作数"的写法仍不剥）—— 猜错方向会把包装的**参数**当成命令或目标，那是新的假阳性；
+ * 如实留在 `COMMAND_WRITE_RISKS` 里。
+ */
+const COMMAND_WRAPPERS: readonly string[] = ['env', 'sudo', 'nice', 'time', 'nohup', 'xargs', 'command', 'exec', 'builtin']
+
+/** 包装命令里**带取值**的选项：跳过它们后面的那个词，别把取值当成要执行的命令（`sudo -u root tee`）。 */
+const WRAPPER_VALUE_FLAGS: Record<string, readonly string[]> = {
+  env: ['-u', '--unset', '-C', '--chdir', '-S', '--split-string'],
+  sudo: ['-u', '-g', '-p', '-C', '-h', '-r', '-t', '-T', '-U', '-R', '-D', '--user', '--group', '--prompt', '--chdir', '--close-from'],
+  nice: ['-n', '--adjustment'],
+  time: ['-f', '--format', '-o', '--output'],
+  nohup: [],
+  xargs: ['-I', '-n', '-P', '-L', '-s', '-E', '-d', '-a', '--replace', '--max-args', '--max-lines', '--max-procs', '--max-chars', '--delimiter', '--arg-file', '--eof'],
+  command: [],
+  exec: ['-a'],
+  builtin: [],
+}
+
+/** 形如 `FOO=1` 的环境变量赋值（`env` 的参数，不是命令）。 */
+const ENV_ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/u
+
+/** 一个选项词往后吞掉几个词（`--flag=value` / `-n5` 自带取值 ⇒ 只吞自己）。 */
+function skipOptionValue(words: readonly string[], index: number, valueFlags: readonly string[]): number {
+  const word = words[index] as string
+  if (word.includes('=')) return index + 1
+  return valueFlags.includes(word) ? index + 2 : index + 1
+}
+
+/**
+ * **剥掉前缀包装，找到真正干活的命令头**（TASK-109；REV-039 发现三①）。
+ *
+ * 返回的是"命令头"在 `words` 里的下标（找不到 ⇒ 返回 `words.length`，于是 head 为空、该段不判）。
+ * 剥的同时跳过包装自己的选项与取值（`sudo -u root tee` / `nice -n 5 cp` / `xargs -n1 rm`）以及
+ * `env` 的变量赋值（`env FOO=1 rm`）—— 否则命令头会落在 `root` / `5` / `rm` 的前一个词上。
+ */
+function effectiveHeadIndex(words: readonly string[]): number {
+  let index = 0
+  for (;;) {
+    const word = words[index]
+    if (word === undefined) return index
+    if (ENV_ASSIGNMENT.test(word)) {
+      index += 1
+      continue
+    }
+    if (!COMMAND_WRAPPERS.includes(word)) return index
+    const valueFlags = WRAPPER_VALUE_FLAGS[word] ?? []
+    index += 1
+    while (index < words.length) {
+      const next = words[index] as string
+      if (next.startsWith('-') && next !== '-') {
+        index = skipOptionValue(words, index, valueFlags)
+        continue
+      }
+      if (ENV_ASSIGNMENT.test(next)) {
+        index += 1
+        continue
+      }
+      break
+    }
+  }
+}
+
+/**
+ * **会改写工作树的 git 子命令**（TASK-109；REV-039 发现三②）。
+ *
+ * 判据是"这条子命令会不会就地改工作树里的文件"，**不是**"git 是不是写工具"——
+ * `status` / `log` / `diff` 一律不进清单（否则只读命令会被整条拦下，那是 TASK-090 刚修掉的假阳性）。
+ */
+const GIT_WORKTREE_WRITERS: readonly string[] = [
+  'checkout', 'restore', 'reset', 'switch', 'clean', 'stash', 'merge', 'rebase',
+  'cherry-pick', 'revert', 'apply', 'am', 'pull', 'worktree', 'mv', 'rm',
+]
+
+/** 以**文件路径**为操作数的写入子命令：它们的操作数要合成到 `-C` 的目录下（其余子命令改的是整棵树）。 */
+const GIT_PATH_WRITERS: readonly string[] = ['restore', 'apply', 'mv', 'rm', 'checkout', 'worktree']
+
+/** git 里**带取值**的选项（跳过取值，别把取值当成子命令或路径）。 */
+const GIT_VALUE_FLAGS: readonly string[] = ['-C', '-c', '--git-dir', '--work-tree', '--namespace', '-b', '-B', '--reason', '-m']
+
+interface GitArgs {
+  /** `-C <dir>` 给的**目录基准**（没给 ⇒ git 在会话 cwd 里就地执行，本闸门判不了） */
+  dir?: string
+  /** 子命令（第一个非选项词） */
+  sub?: string
+  /** 子命令之后的**操作数**（选项与其取值已摘掉，`--` 分隔符也摘掉） */
+  operands: string[]
+  /** `--` **之后**的操作数（`git checkout -- <path>` 里的 `<path>` 一定是路径，不是引用名） */
+  paths: string[]
+}
+
+/** 把 git 的词序列切成「目录基准 / 子命令 / 操作数」三段（`--flag=value` 与 `-C <dir>` 都认）。 */
+function parseGitArgs(words: readonly string[]): GitArgs {
+  const out: GitArgs = { operands: [], paths: [] }
+  let index = 0
+  let separator = false
+  while (index < words.length) {
+    const word = words[index] as string
+    if (word === '-C') {
+      const value = words[index + 1]
+      if (value !== undefined && !value.startsWith('-')) out.dir = value
+      index += 2
+      continue
+    }
+    if (word === '--') {
+      separator = true
+      index += 1
+      continue
+    }
+    if (word.startsWith('-')) {
+      index = skipOptionValue(words, index, GIT_VALUE_FLAGS)
+      continue
+    }
+    if (out.sub === undefined) out.sub = word
+    else {
+      out.operands.push(word)
+      if (separator) out.paths.push(word)
+    }
+    index += 1
+  }
+  return out
+}
+
+/**
+ * **把 git 命令的写入目标并进判定**（TASK-109；REV-039 发现三②）。两类形态：
+ *
+ *   · `git worktree add|remove|move <path>`：worktree 的增删**就是**一次文件写入（`<path>` 相对会话
+ *     cwd；给了 `-C <dir>` 就相对 `<dir>`）；
+ *   · `git -C <dir> <写入子命令> …`：`-C` 把 git 的基准目录换成 `<dir>` ⇒ 写入落在 `<dir>` 之下。
+ *     **路径操作数要合成到 `<dir>` 下再判**（`composeUnderBase`，唯一实现在 `writeScope.ts`）——
+ *     不合成只能把 `<dir>` 整个当目标，范围内的窄写入（`git -C src restore index.ts`）会被误拒；
+ *     整树重写的子命令（`reset --hard` / `stash pop` / `clean -fd` / `merge` …）没有文件操作数 ⇒
+ *     目标就是 `<dir>` 本身（它改的正是整棵树）。
+ *
+ * **`checkout` 只认 `--` 之后的操作数**：`git checkout <ref>` 的操作数是**引用名**（分支/提交），
+ * 把它当路径合成会点名一个工作区里并不存在的 `sub/main`（DEF-074 同族的幽灵路径）；而
+ * `git checkout -- <path>` 的路径**一定**在 `--` 之后。没有 `--` 就退回"整棵树"口径（点名 `<dir>`）。
+ *
+ * 只认这两类形态，**不**去拦"裸 git 写入"（`git checkout -- f` / `git stash pop`）：那类命令的目标
+ * 散在子命令语义里，静态判不出"改的是哪几个文件"，硬判只会把整条只读命令拦掉 —— 如实留在风险清单。
+ */
+function detectGitWrites(words: readonly string[], push: (target: string, shape: string) => void): void {
+  const parsed = parseGitArgs(words)
+  const sub = parsed.sub
+  if (sub === undefined) return
+  if (sub === 'worktree') {
+    const verb = parsed.operands[0] ?? ''
+    if (verb !== 'add' && verb !== 'remove' && verb !== 'move') return
+    for (const path of parsed.operands.slice(1)) {
+      push(composeUnderBase(parsed.dir, path), `git worktree ${verb}`)
+    }
+    return
+  }
+  // 没有 `-C`：git 就在会话 cwd 里执行，写入目标是"工作树里的哪些文件"，静态判不出来 ⇒ 不判
+  if (parsed.dir === undefined) return
+  if (!GIT_WORKTREE_WRITERS.includes(sub)) return
+  const shape = `git -C ${sub}`
+  const pathOperands = sub === 'checkout' ? parsed.paths : parsed.operands
+  if (GIT_PATH_WRITERS.includes(sub) && pathOperands.length > 0) {
+    for (const path of pathOperands) push(composeUnderBase(parsed.dir, path), shape)
+    return
+  }
+  push(parsed.dir, shape)
 }
 
 /**
@@ -810,9 +991,13 @@ function isOpaqueTarget(word: string): boolean {
  *   · `sed -i`（就地编辑）
  *   · `cp` / `mv` / `rm` / `truncate` / `touch` / `dd of=`
  *   · `python -c` / `python3 -c` 里的 `open(..., 'w'/'a')`、`node -e` 里的 `writeFileSync(...)`
+ *   · **前缀包装下面的**上述形态（`env` / `sudo` / `nice` / `time` / `nohup` / `xargs` / `command` /
+ *     `exec` / `builtin`；TASK-109）—— 命令头先剥包装再认，`xargs` 的 `{}` 占位符按"判不了"跳过
+ *   · `git worktree add|remove|move <path>` 与 `git -C <dir> <写入子命令>`（TASK-109；
+ *     `-C` 的文件操作数按目录基准合成，实现在 `writeScope.composeUnderBase`）
  *
  * 不参与判定的三类（都是**误拒**的来源，TASK-090 修复）：`/dev` 下的设备节点、
- * 引号内的字面量、heredoc 体内的一切。
+ * 引号内的字面量、heredoc 体内的一切。**新形态不得把它们重新卷回判定**（M102-14 守着这条）。
  *
  * 返回的 `shapes` 只含**触发拦截的**形态名（供回执点名"是哪种写法被拦"），不含路径。
  */
@@ -831,8 +1016,11 @@ export function detectCommandWrites(command: string): { targets: string[]; shape
   const source = stripHeredocBodies(command)
   for (const segment of shellSegments(tokenizeShell(source))) {
     const words = shellWords(segment)
-    const head = words[0] ?? ''
-    const rest = words.slice(1)
+    // **TASK-109**：命令头要**先剥前缀包装**（`sudo tee` / `env A=1 rm` / `nice -n 5 cp` …），
+    // 否则真正的写入命令不在第 0 个词，下面每条 `head === …` 都命中不了（REV-039 发现三①）。
+    const headIndex = effectiveHeadIndex(words)
+    const head = words[headIndex] ?? ''
+    const rest = words.slice(headIndex + 1)
 
     // ① 重定向（`>` / `>>` / `&>`，含 `2>` 这类 fd 前缀）：算符**只在引号外**成立 ——
     //    引号里的 `>` 是字面量（`grep -n 'echo x > f' t` 是纯读命令），不参与判定。
@@ -867,6 +1055,8 @@ export function detectCommandWrites(command: string): { targets: string[]; shape
       for (const match of raw.matchAll(/open\(\s*[^)]*?['"]([^'"]+)['"][^)]*?['"][wa]/gu)) push(match[1] ?? '', `${head} -c open(w)`)
       for (const match of raw.matchAll(/writeFileSync\(\s*['"]([^'"]+)['"]/gu)) push(match[1] ?? '', `${head} -e fs.write`)
     }
+    // ⑥ git 工作树写入（`worktree add/remove/move <path>`、`git -C <dir> <写入子命令>`；TASK-109）
+    if (head === 'git') detectGitWrites(rest, push)
   }
   return { targets, shapes }
 }

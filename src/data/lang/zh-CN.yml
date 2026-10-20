@@ -146,56 +146,17 @@ taskStatus:
   done: 已完成
   verified: 已验收
   dropped: 已放弃
-taskSize:
-  small: 小
-  medium: 中
-  large: 大（未拆完）
 requirementStatus:
   draft: 草稿
   grilled: 已审讯
   baselined: 已基线
   changed: 已变更
   dropped: 已放弃
-gateStatus:
-  passed: 通过
-  failed: 未通过
-  waived: 已豁免
-riskLevel:
-  low: 低
-  medium: 中
-  high: 高
-  blocker: 阻塞
-defectSeverity:
-  blocker: 阻塞
-  major: 严重
-  minor: 轻微
-defectStatus:
-  open: 未关闭
-  fixed: 已修复
-  closed: 已关闭
-  wontfix: 不修
-reviewVerdict:
-  pass: 通过
-  changes-requested: 要求修改
-  reject: 驳回
-testKind:
-  unit: 单元
-  integration: 集成
-  e2e: 端到端
 priority:
   must: 必须
   should: 应该
   could: 可以
   wont: 不做
-verdict:
-  go: 可行
-  no-go: 不可行
-  conditional: 有条件可行
-progress:
-  done: 已完成
-  current: 进行中
-  waived: 已豁免
-  todo: 未开始
 tool:
   sdo_init: 初始化 SDO 项目（在当前工作目录建 `.sdo/` 台账）。**关键参数缺一不可**：项目名/开发流程/规模档/干系人——缺了不会拿默认值立项，而是先给出一张问询单让你去确认。
   sdo_status: 查看项目状态：当前阶段、待判定门禁、需求与问题计数、最近一次门禁判定、派生投影是否需要重建。只读。
@@ -228,29 +189,19 @@ param:
   redteamAction: "attack＝按题库攻击；propose＝请模型针对需求生成质询；file＝回填模型生成的质询（插件校验）；on／off＝开关红队模式；status＝查看当前模式。"
   requirementId: 回填时针对的需求 id（REQ-xxx）。
   questions: JSON 文本，形如 `[{"text":"…？","dimension":"data","options":[{"label":"…","cost":"…"}],"recommendation":"…"}]`（仅 action=file 使用）。**带上 `options` 的题才能用 `pickedOption` 答复**；不带选项的题只能用自由文本 `answer`。
-  action: 动作
   issueId: 要处置的议题 id（仅 action=dispose）：REQ-ISSUE-001。
   disposition: 议题去向：`risk`（转为风险）或 `requirement`（回到需求）。仅 action=dispose。
   disposeNote: 处置理由 —— 写进议题文件与 `issue/closed` 事件。仅 action=dispose。
   id: 标识（如 REQ-001 / TASK-001 / Q-0001）
   name: 名称
   owner: 责任人 / 执行者
-  gate: 门禁（可用中文名，如"立项门禁"，也可用标识 G0）
   approver: 批准人
   approvedBy: 人类签字人（基线门禁需要）
   evidence: "done 的证据 JSON 文本。形状：[{\"kind\":\"command\",\"detail\":\"＜项目的测试命令＞（＜通过数＞ passed）\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"＜产物路径＞ sha256=＜64 位十六进制＞\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-…@42\"}]。校验：种类要覆盖卡的 evidenceRequired；artifact 的路径必须真实存在（给了哈希就复算）；command 的 exitCode 是**独立字段** —— 写进 detail 文本不会被读到，要它生效就单独给字段。"
-  status: 状态
-  severity: 严重度
-  kind: 类型
   title: 标题
-  statement: 需求陈述（要写成可判定的"指标+条件+阈值"）
-  priority: 优先级
-  level: 等级
-  probability: 概率
   impact: 影响
   mitigation: 缓解措施
   origin: 来源（例如红队议题 id；带来源即视为把议题转为风险）
-  conclusion: 结论
   rationale: 理由说明
   note: 备注 / 说明
   notes: 备注
@@ -260,19 +211,12 @@ param:
   requirements: 需求 id（JSON 文本）
   suggestions: "卡片建议。**两种形态都收**（DEF-065 起 schema 声明的是 `string | array` 联合）：①**JSON 文本**（推荐，形如 `[{\"title\":\"卡名\"}]`）；②**数组**（数组原样到达也会被接受并由插件归一）。每项的字段名必须与任务卡一致：`title` / `dod`（字符串数组）/ `writeScopes`（字符串数组，**不是** `scope`）/ `evidenceRequired` / `blockedBy`（**支持 `[「*」]` 这种写法 = 排在所有其它卡之后**，用于最终构建/全量验证这类需要独占窗口的卡） / `role` / `size` / `requirements`。**写错键名不报错**，会静默落成空值（真机教训：写成 `scope` ⇒ `writeScopes: []`）。未给 `writeScopes` 时按「设计元素职责里的『写范围：…』→ config.yml 的 plan.scopeTemplate → `src/<slug>/` 占位」依次推导。**两类失败要分清**：①**宿主校验拒**（工具 schema 校验阶段，插件收不到这次调用）⇒ 文案形如 `invalid arguments: \"suggestions\" must be a string`；DEF-065 前数组恒走这条，现在联合声明已放行数组。②**插件解析拒**（文本形态写坏）⇒ 文案是「形状不对」或「值被打断」，并明说本次未写入。**不要把①误报成②**（英文 `param.suggestions` 同义）。"
   goal: 目标
-  backend: 派发后端偏好
   expectedRevision: 你读到的版本号（比较交换，用于认领）
-  stage: 阶段
   actor: 操作人
-  artifact: 产物
-  artifacts: 产物清单（JSON 文本：路径 + 类型）
-  acceptance: 验收矩阵（JSON 文本）
   rollbackPoint: 回滚点
   reviewer: 评审者
-  verdict: 结论
   findings: "record / append：发现项 —— **两种形态都收**（DEF-065 起 schema 声明的是 `string | array` 联合）：①**JSON 文本**（推荐，形如 `[\"第一条\",\"第二条\"]`）；②**数组**（数组原样到达也收，插件归一后再解析）。**两类失败要分清**：①**宿主校验拒**（工具 schema 校验阶段，插件收不到这次调用）⇒ 文案形如 `invalid arguments: \"findings\" must be a string` —— DEF-065 前这就是数组恒被拒的那条路，现在联合声明已放行数组；②**插件解析拒**（文本写坏，由 `jsonOr` 报）——**形状不对**（不是合法 JSON：值不是数组、多了逗号、字符串里有裸换行）⇒ 报「形状」并说明本次未写入；**值被打断**（值里出现**未转义的 ASCII 引号**，本字段最常见 —— 引用标识符/命令/路径几乎必然用到引号）⇒ 报错会**点名第 N 个字符**。**推荐写法**：值里一律用**中文引号**（`「」`/`“”`）或按 JSON 规则转义，**不要**用 ASCII 引号；一条消息里**并发多个长 JSON 参数**也容易触发中断，建议逐个发。**`append` 专用**：追加到**既有**评审时，值只放**新增**的发现项（已封印的原正文不必重发，也不许夹带改写 —— 追加路径没有 `verdict` 入参，原结论改不了）；空数组 / 全空白会被拒且**不改动任何文件**。"
   # —— verify（核实评审发现）：评审结果是主张，要由实现方逐条核实才能采纳 ——
-  landing: "`update`：本卡声称要**落地**的路径（JSON 文本或真数组），整份替换。`sdo_plan` 的判据 `landing-outside-scope` 会逐条核对它是否落在本卡写范围内；不写 = 声称没有落点（存量卡不受影响）"
   hashPath: "要现算指纹的产物路径（**工作区相对路径**）。越出工作区 / 不存在 / 不是文件都会被可读拒绝 —— 这条入口是只读查询，不接受通配、也不写台账。"
   reviewId: 评审 id（`REV-*`）：`rehash` = 要给哪条老格式评审补记内容指纹；`append` = 追加到哪条既有评审；verification 面 = 要核实哪条评审
   originalIndex: "`append`：本次补录的是**原文的第几条**（1 起，指本次第一条发现项在来源评审里的条号）。与 `originalTotal` **必须成对**：声明后重号/跳号/超界会被可读拒绝，不声明则维持旧口径（存量不追溯）"
@@ -287,25 +231,19 @@ param:
   fullSuite: 'record：这条结论**自称覆盖全量**（DEF-033 第三面）；有未冻结完成的卡时，交付门禁（C-67）要有一条晚于最后一次这类 `done` 的 `pass` + 全量结论。缺省 = 不是全量结论。'
   reviewDefectId: 'record：这条评审**点名的缺陷**（DEF-076；一个或多个 id，可给 JSON 文本或真数组）。每个 id 必须真实存在（否则可读拒绝、零写盘）—— 缺陷的「已评审」由此有结构化真源，门禁 `defects.fixed-reviewed`（C-66）据此判「先评审、后测试」。'
   requirement: 需求 id
-  reporter: 报告人
-  designId: 设计元素 id
   dependsOn: 依赖的元素名（逗号分隔）
   elementKind: 元素类型
   responsibility: 职责
   summary: 摘要
   schema: 契约正文（结构/字段/示例）
-  contractKind: 契约类型
   contractRequires: "**本契约挂在哪条需求上**（DEF-056）：填需求 id（`REQ-*`）：可以是 JSON **文本**（如 `[\"REQ-001\"]`），或逗号分隔的多个 id。判据 `contract-test-missing` 用它判「这张卡有没有契约对象」——**不写就等于该契约对所有卡都不算对象**（那些卡的判据会走 N/A）。写不存在的号会被当场拒绝（零写盘）。"
   timeout: 超时语义
   retry: 重试语义
   idempotency: 幂等语义
-  alternatives: 备选方案（JSON 文本，含各自利弊）
   consequences: "后果（**JSON 文本**）：数组元素可以是字符串，也可以是 `{\"item\":\"后果\",\"mitigation\":\"缓解措施\"}`（`mitigation` 可选、会被保留并渲染）。**写进去就一定读得出来**（读写同一形状）"
   supersedes: 取代哪条记录
-  attribute: 质量属性
   stimulus: 刺激（什么事件触发）
   response: 响应（系统怎么做）
-  measure: 可测度量（指标+条件+阈值）
   targets: 关联的设计元素 id（逗号分隔）
   risks: 风险点（JSON 文本）
   sensitivities: 敏感点（JSON 文本）
@@ -313,27 +251,13 @@ param:
   by: 执行人
   from: 起点 id
   to: 终点 id
-  links: 批量边（JSON 文本）
-  telos: TELOS 五维评估（JSON 文本）
-  poc: PoC / 验证建议（JSON 文本）
-  verdictLevel: 结论档位
   scopeIn: 范围（做什么，逗号分隔）
   scopeOut: 非目标（明确不做什么，逗号分隔）
   metricsSuccess: 成功度量（可测，逗号分隔）
-  glossary: 术语表（JSON 对象：术语→定义）
   stakeholders: 干系人（逗号分隔）
-  process: 开发流程
-  scale: 规模档
   rebuild: 是否强制从真源重建派生投影
-  expand: 是否展开细节
-  all: 是否显示全部
-  write: 是否写入文件产物
   answer: 答复内容
   assume: 是否记为假设（未获用户确认时用）
-  dimensions: 八维评分（JSON 对象）
-  accepted: 是否接受建议选项
-  banned: 是否包含禁词类问题
-  redTeam: 是否包含红队质询
   quick: 是否只问最关键的问题
   target: 渲染目标
   taskId: 任务卡 id
@@ -439,9 +363,6 @@ command:
   sdo-design-issues: "列出设计问题与**必须确认但尚未确认**的关键条目；`--state=all` 连已答复/已关闭的一起列出"
   sdo-design-render: "渲染设计文档到 docs/DESIGN.md（只读台账、只写文档），并回报路径与字节数"
 
-  elementKind: "'system' | 'service' | 'store' | 'queue' | 'external' …"
-  adrMitigation: "缓解"
-
 uiTools:
   k1: "JSON object of domain terms, e.g. {\"差异\":\"同一笔业务在两侧系统的不一致记录\"} (merged into the existing glossary)."
   k2: "The requirement statement — what must be true (\"系统须…\")."
@@ -454,7 +375,6 @@ uiTools:
   k9: "Measurable response: metric + condition + threshold, e.g. \"单日 100 万条下 P99 < 500 毫秒\"."
 
   kGateChannel: "签字来源通道（action=sign）：statement = 用户在会话中明确表述（必须同时给出 quote 用户原话）；question = 走人机关口问答让用户亲自选（工具自己发问，引用不经过模型）。"
-  kGateQuote: "用户在会话里的原话引用（channel=statement 必填；会被拿去会话记录里核对，对不上即拒绝）。"
   kGateTurn: "会话轮次引用（可选，落 journal 便于审计）。"
   kGateRollbackTo: "阶段回退的目标阶段（action=rollback）；只能沿流程数据 rollback 段声明的合法边。"
   kApplicabilityFocus: "设计适用性声明的 focus：本项目性质与设计重点（自由文本，模型起草，如「旧系统重构：只优化流程与效率，业务逻辑不变」）。"
@@ -857,7 +777,6 @@ uiDescribe:
   kDispatchEmptyFace: "- 🛑 **警告：下发的 deny 面是空集** —— 这个角色在 SDO 流程面上**没有任何限制**（掩码没生效）。SDO 面是白名单语义，正常路径下「不属于该角色的 sdo_* 工具」必须都进 deny；空集意味着角色名认不出或工具名没取到。"
   kDispatchLimitHeld: "⏳ 另有 {p1} 张已通过容量准入、但被本次 `limit={p2}` 挡下（既没派发、也没排队）：{p3} —— 下一次 `next` 会再挑它们。"
   kDispatchDegraded: "- ⚠️ {p1}"
-  kDispatchNotStarted: "- ⚠️ 未真正派发（{p1}）：{p2}"
   k201MaskHandedOver: "已把 `toolFilter` 下发给宿主；provider「{p1}」声明的能力 `capabilities.toolFilter` = {p2}"
   k202MaskNotSelfVerifiable: "⚠️ **子代理的工具面是否真的收窄，本插件无法自证**：真机反例（sdo-test §8.4②）里，`spawn` 派发出去的子代理**仍然可以调用**掩码外的 `sdo_plan` / `sdo_review` / `sdo_gate`（全部被**钩子兜底拦下**）。要确证，请看子会话自己的工具清单或它被拒的调用记录"
   k231Yes: "true"
@@ -1112,7 +1031,6 @@ uiIndex:
   k27: "开迭代需要 `goal`（没有目标的迭代无法判定\"完成\"）。"
   k28: "已开启迭代 {p1}：{p2}（status={p3}）\n- 下一步：`sdo_plan action=decompose` 拆出本迭代的卡，然后 `sdo_plan action=next` 派发。"
   k29: "未知 action：{p1}（可用：{p2}）"
-  k30: "没有可派发的任务卡（都已认领/完成）。用 `sdo_task action=list` 看全貌。"
   kNonDispatchableIdle: "🟢 **本次没有派发**：没有可派发的任务卡 —— 本轮的卡都在进行中/已完成。用 `sdo_task action=list` 看全貌。"
   kNonDispatchableGateStaleHead: "🔒 **本次没有派发**：当前阶段的**入口门禁 {p1}** 的签字已**失效**（{p2}）—— 这一轮**一张卡都不派**（{p3} 张可派卡被拦下）。**这不等于「活干完了」**：先由流程官重签该门禁（`sdo_gate action=sign gate={p1}`）再派；若失效的原因是真源变更，先按流程回到上游把变更消化掉。（只拦**失效**：该门禁从没签过不在此列。）"
   kNonDispatchableExclusiveHead: "🔒 **独占窗口排队**（{p1} 张）：它们声明了同一个独占窗口组（`exclusive`），而同组**同时只能有一张卡在跑** ⇒ 这 {p1} 张被挡下（挡路者：{p2}）。这不是「活干完了」：等挡路那张收工/作废即可自动放行；若某张卡其实不需要独占窗口，撤回声明即可（`sdo_task action=update id=<卡> exclusive=`）。"
@@ -1267,8 +1185,6 @@ uiIndex:
   planExitReview: "出口一：请用户在本会话内评审计划，然后调用 `sdo_design action=review approvedBy=<评审人>`。"
   planExitWaive: "出口二：确实无法评审时，显式豁免并留痕：`sdo_design action=waive-plan reason=<理由> by=<豁免人>`（SDO 不提供\"跳过\"开关，豁免必须写明理由）。"
   acWritten: "- 已写入 {n} 条验收标准（来源：本次 capture 的 acceptance）。"
-  note: "评审备注（可选，写入留痕）。"
-  by: "豁免人（谁批准的豁免），默认 human。"
   planLoadDiag: "- （诊断）自行装载 plan-mode 失败：{p1}"
   planLoadNone: "本 preset 的 `planning` 组没能把 planMode 服务注册起来（宿主把该行停用了、或装配层拒绝了该行）"
   planChecklist: "计划必须**结构化**，至少覆盖以下 8 项（每项都要具体到本项目的名字，不要写空话）：\n1) 目标与非目标：本轮架构阶段要产出什么、明确不做什么；\n2) 关键设计决策：每个决策给出 **≥2 个备选方案** + 取舍理由 + 后果（G3 要求每条 ADR 含备选与后果）；\n3) 视图清单：要画哪些视图（逻辑/数据/接口/部署/其他），每个视图准备表达什么；\n4) 组件与契约：组件划分、跨组件交互、哪些交互必须落契约、各自的写范围边界；\n5) 追溯计划：哪些需求（REQ-xxx）会映射到哪些设计元素（DES-xxx），如何避免孤儿；\n6) 风险与缓解：高风险条目**必须**带缓解措施与责任人；\n7) 任务拆分预览：卡片粒度、DoD、依赖顺序、每张卡的写范围（避免互相覆盖）；\n8) 测试计划：must 级需求如何被用例覆盖；\n提交前请用 sdo_gate action=check gate=架构门禁 逐条自检；提交时用 exit_plan_mode，并在计划末尾列出**希望用户重点确认的 2~3 个问题**。"
@@ -2413,8 +2329,6 @@ uiSignPayload:
   intro: "> 本段由**真源现读现渲染**（真源仍在 `.sdo/`，本审核单只是渲染快照）；每条末尾给出源文件路径。"
   section: "### {p1}（{p2} 条）"
   none: "（无）"
-  source: "- 源：`{p1}`"
-  itemHash: "- 指纹：`{p1}`"
   fingerprintHeading: "## 审核单指纹"
   fingerprintLine: "- 整篇指纹：`{p1}`（生成于 journal 序号 {p2}）"
   fingerprintRule: "- **真源任一受审条目变化 ⇒ 本审核单即失效**：签字会被拒绝，须重新生成审核单。"
@@ -2449,7 +2363,6 @@ uiDesign:
   uiReasonNo: "不含界面：没有任何需求声明界面/页面面（kind: ui），项目级 surfaces 也没声明 web/desktop/mobile"
   uiNoReqs: "（无）"
   uiNoSurfaces: "（未声明）"
-  uiMethodRule: "含UI := 任一需求 kind: ui 或 项目级 surfaces 含 web/desktop/mobile（需求真源现算）"
   # 方法论选择题
   qMethodText: "本项目用哪些设计方法：结构化 / 面向对象 / 敏捷-演进式 / 移植-迁移式 porting（可多选，用 + 连接）；确实不做方法产物时选 none"
   qMethodWhy: "设计方法决定接下来要产出哪些设计产物（数据流图/类图/演进记录），不能由 agent 替你定"
@@ -2460,8 +2373,6 @@ uiDesign:
   methodOoCost: "要先做完领域建模，对需求稳定性有要求"
   methodAgile: "敏捷-演进式 evolutionary（技术债 + 可逆性 + 迭代增量）"
   methodAgileCost: "要持续维护技术债台账与设计增量记录"
-  methodHybrid: "组合（主干结构化 + 前端面向对象）"
-  methodHybridCost: "要写清哪部分用哪种，边界不清容易两套都不完整"
   methodRecommendDefault: "敏捷-演进式 evolutionary（小步演进 + 演进记录）"
   methodRecommendWhy: "需求还在演化、交付要求尽快见效，先小步演进、把设计决策记进演进记录，比一次性做全量建模更稳"
   # 形态与部署
@@ -2786,7 +2697,6 @@ uiDesign:
   uiAnswerNotFound: "没有设计问题 {p1}（用 `sdo_design action=issues` 看清单）"
   uiAnswerNeedChoice: "答复不能为空：给 `--choice=0`（选项下标）或选项原文；若用户已授权按建议办，用 `--assume`"
   uiConfirmOk: "{p1} 已确认（依据：{p2}）"
-  uiConfirmDefaultBasis: "用户在会话中确认"
   uiConfirmMissing: "确认需要 `target`（元素/契约/界面条目 id）"
   uiConfirmNoBasis: "⛔ 缺**用户授权原话**：设计确认是「人此刻为这份设计背书」，不是流程动作。请传 `basis=<用户原话>`（工具会核对它确实出现在本次会话的用户发言里），或先用提问工具取得用户明示。**不许**用工具自己的文案充当用户原话。"
   uiConfirmQuoteMismatch: "⛔ 依据 `{p1}` 在**本次会话的用户发言**里找不到 ⇒ 拒绝（不许用编造的原话盖「用户确认」戳）。请让用户本人说一句，或传真实原话。"
@@ -2839,8 +2749,6 @@ uiDesign:
   uiInputBadBreakpoints: "界面视图的 breakpoints 必须是数组（每项形如 {name:…,width:…,changes:[…]}）"
   uiInputBadAccessibility: "界面视图的 accessibility 必须是对象（形如 {contrast:…,keyboard:true,screenReader:…}）"
   uiScreensNa: "（无页面）"
-  uiErrorsHeader: "设计问题账本为空"
-  uiNoQuestionsHint: "先问再动手：`sdo_design action=grill`"
   # 增量 2：设计方法与采用理由 / 各方法产物（新增两章，原第 3-9 章顺延为 5-11 章）
   docSMethod: "设计方法与采用理由"
   docSProducts: "各方法产物"

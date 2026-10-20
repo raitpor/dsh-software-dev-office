@@ -180,11 +180,6 @@ taskStatus:
   verified: Verified
   dropped: Dropped
 
-taskSize:
-  small: Small
-  medium: Medium
-  large: Large (not decomposed yet)
-
 requirementStatus:
   draft: Draft
   grilled: Grilled
@@ -192,54 +187,11 @@ requirementStatus:
   changed: Changed
   dropped: Dropped
 
-gateStatus:
-  passed: Passed
-  failed: Failed
-  waived: Waived
-
-riskLevel:
-  low: Low
-  medium: Medium
-  high: High
-  blocker: Blocker
-
-defectSeverity:
-  blocker: Blocker
-  major: Major
-  minor: Minor
-
-defectStatus:
-  open: Open
-  fixed: Fixed
-  closed: Closed
-  wontfix: Won't fix
-
-reviewVerdict:
-  pass: Pass
-  changes-requested: Changes requested
-  reject: Reject
-
-testKind:
-  unit: Unit
-  integration: Integration
-  e2e: End-to-end
-
 priority:
   must: Must
   should: Should
   could: Could
   wont: Won't
-
-verdict:
-  go: Go
-  no-go: No-go
-  conditional: Conditional go
-
-progress:
-  done: Done
-  current: In progress
-  waived: Waived
-  todo: Not started
 
 tool:
   sdo_init: "Initialise an SDO project (creates the `.sdo/` ledger in the current working directory). **No key parameter may be omitted**: project name / process / scale / stakeholders — if one is missing the tool does not guess defaults, it returns a questionnaire for you to confirm first."
@@ -274,29 +226,19 @@ param:
   redteamAction: "attack = attack from the question bank; propose = ask the model to generate challenges for a requirement; file = write back model-generated challenges (the plugin validates them); on/off = toggle red-team mode; status = report the current mode."
   requirementId: "Target requirement id for a write-back (REQ-xxx)."
   questions: "JSON text shaped like `[{\"text\":\"…?\",\"dimension\":\"data\",\"options\":[{\"label\":\"…\",\"cost\":\"…\"}],\"recommendation\":\"…\"}]` (only used with action=file). **Only a question with `options` can be answered via `pickedOption`**; one without options takes free-text `answer` only."
-  action: Action
   issueId: "Issue id to dispose (only action=dispose): REQ-ISSUE-001."
   disposition: "Where the issue goes: `risk` (converted into a risk) or `requirement` (settled back into the requirements). Only action=dispose."
   disposeNote: "Why it is disposed — written into the issue file and the `issue/closed` event. Only action=dispose."
   id: Identifier (such as REQ-001 / TASK-001 / Q-0001)
   name: Name
   owner: Owner / assignee
-  gate: "Gate (accepts a readable name such as \"Intake Gate\", or the id G0)"
   approver: Approver
   approvedBy: Human sign-off (required by the baseline gate)
   evidence: "Evidence JSON text for done. Shape: [{\"kind\":\"command\",\"detail\":\"<the project's test command> (<passed> passed)\",\"exitCode\":0}, {\"kind\":\"artifact\",\"detail\":\"<artifact path> sha256=<64-hex>\"}, {\"kind\":\"workspace-changes\",\"detail\":\"session-...@42\"}]. Checks: kinds must cover the card evidenceRequired; artifact paths must exist (a given hash is recomputed); command exitCode is a SEPARATE FIELD - writing it inside detail text is not read, so pass it as its own field."
-  status: Status
-  severity: Severity
-  kind: Kind
   title: Title
-  statement: "Requirement statement (write it as a decidable indicator + condition + threshold)"
-  priority: Priority
-  level: Level
-  probability: Probability
   impact: Impact
   mitigation: Mitigation
   origin: "Origin (for example a red-team issue id; supplying an origin converts the issue into a risk)"
-  conclusion: Conclusion
   rationale: Rationale
   note: Note / explanation
   notes: Notes
@@ -306,19 +248,12 @@ param:
   requirements: Requirement ids (JSON text)
   suggestions: "Card suggestions. **Both shapes are accepted** (since DEF-065 the schema declares a `string | array` union): (1) **JSON text** (preferred, e.g. `[{\"title\":\"card title\"}]`); (2) **an array** (a raw array is accepted too and normalised by the plugin). Field names must match the task card: `title` / `dod` (string array) / `writeScopes` (string array, **not** `scope`) / `evidenceRequired` / `blockedBy` (**supports `[「*」]` = after every other card**, for final build / full-verification cards that need an exclusive window) / `role` / `size` / `requirements`. **A wrong key is not reported** and silently lands as empty (observed on a real machine: `scope` produced `writeScopes: []`). Without `writeScopes`, the value is derived in order: the design element responsibility line that declares its scope (see `parseWriteScopes` in `plan.ts`) -> `plan.scopeTemplate` in config.yml -> the `src/<slug>/` placeholder. **Two failure kinds, keep them apart**: (a) **host schema rejection** — the tool schema is validated before the plugin is ever called, so the plugin never sees the call; the receipt reads `invalid arguments: suggestions must be a string` (an array used to take exactly this path; the union declaration now admits arrays). (b) **plugin parse rejection** — a malformed text value, reported as a shape error or an interrupted-value error, always stating that nothing was written. **Never report (a) as (b)** (mirrors the zh-CN `param.suggestions`)."
   goal: Goal
-  backend: Preferred dispatch backend
   expectedRevision: The revision you read (compare-and-swap, used when claiming)
-  stage: Stage
   actor: Actor
-  artifact: Artifact
-  artifacts: "Artifact manifest (JSON text: path + kind)"
-  acceptance: Acceptance matrix (JSON text)
   rollbackPoint: Rollback point
   reviewer: Reviewer
-  verdict: Verdict
   findings: "record / append: findings. **Both shapes are accepted** (since DEF-065 the schema declares a `string | array` union): (1) **JSON text** (preferred, e.g. `[\"first\",\"second\"]`); (2) **an array** (a raw array is accepted too; the plugin normalises it before parsing). **Two failure kinds, keep them apart**: (a) **host schema rejection** — validation happens before the plugin is called, so the plugin never sees the call; the receipt reads `invalid arguments: findings must be a string` (before DEF-065 an array always took this path; the union declaration now admits arrays). (b) **plugin parse rejection** — a malformed text value, reported by `jsonOr`: either *wrong shape* (not valid JSON: not an array, a stray comma, a bare newline inside a string) which reports the shape and states that nothing was written, or *interrupted value* (an unescaped ASCII quote inside the value — by far the most common here, since citing identifiers, commands or paths needs quotes) which names the character position. **Recommended**: use CJK quotes (`「」` / `“”`) inside values or escape per JSON rules; never raw ASCII quotes; also avoid sending several long JSON arguments in one message — send them one at a time. **For `append` specifically**: when adding to an **existing** review, pass only the **new** findings (the sealed bodies need not be resent, and smuggling a rewrite in is not possible — the append path takes no `verdict` argument); an empty array or an all-blank one is refused and **changes no file**."
   # —— verify (verifying review findings): a review is a claim; the implementer verifies each finding ——
-  landing: "`update`: the **landing paths this card claims it will write** (JSON text or a real array), replacing the whole declaration. The `sdo_plan` criterion `landing-outside-scope` reconciles each path against the card write scope; omitting it means the card claims no landing paths (existing cards are unaffected)"
   hashPath: "Path of the artifact to hash (**relative to the workspace**). Anything outside the workspace, missing, or not a file is rejected with a readable reason — this entry is a read-only query: no globs, no ledger writes."
   reviewId: "Review id (`REV-*`): for `rehash` the legacy review to seal; for `append` the existing review to append to; on the verification face, the review to verify"
   originalIndex: "`append`: which entry of the **source review** this backfill starts at (1-based; the position of this call's first finding in the source). Must be given as a pair with `originalTotal`: once declared, overlap / gap / overflow are rejected with a readable message; when omitted the old wording applies (existing records are not revisited)"
@@ -333,25 +268,19 @@ param:
   fullSuite: 'record: this conclusion **claims full-suite coverage** (DEF-033, third face). When a card completed without freezing its siblings, the delivery gate (C-67) requires a `pass` full-suite conclusion dated after the last such `done`. Omitted = not a full-suite conclusion.'
   reviewDefectId: 'record: **the defects this review names** (DEF-076; one or more ids, as JSON text or a real array). Every id must exist (otherwise the call is rejected readably and nothing is written) — this gives a defect being "reviewed" a structured source of truth, which criterion `defects.fixed-reviewed` (C-66) reads to enforce review-before-test.'
   requirement: Requirement id
-  reporter: Reporter
-  designId: Design element id
   dependsOn: "Depended-on element names (comma separated)"
   elementKind: Element kind
   responsibility: Responsibility
   summary: Summary
   schema: "Contract body (structure / fields / example)"
-  contractKind: Contract kind
   contractRequires: "**Which requirement this contract hangs on** (DEF-056): requirement ids (`REQ-*`), given as JSON **text** (e.g. `[\"REQ-001\"]`) or as a comma separated list. Criterion `contract-test-missing` uses it to decide whether a card has a contract object — **declaring nothing means this contract is no object for any card** (those cards go N/A). An id that does not exist is rejected on the spot (zero writes)."
   timeout: Timeout semantics
   retry: Retry semantics
   idempotency: Idempotency semantics
-  alternatives: "Alternatives (JSON text, each with its pros and cons)"
   consequences: "Consequences (**JSON text**): each element may be a plain string or `{\"item\":\"consequence\",\"mitigation\":\"mitigation\"}` (mitigation is optional, kept and rendered). What you write is always readable (the read and write shapes are the same)."
   supersedes: Which record this one supersedes
-  attribute: Quality attribute
   stimulus: Stimulus (what event triggers it)
   response: Response (what the system does)
-  measure: Measurable metric (indicator + condition + threshold)
   targets: "Related design element ids (comma separated)"
   risks: Risks (JSON text)
   sensitivities: Sensitivities (JSON text)
@@ -359,27 +288,13 @@ param:
   by: Performed by
   from: Source id
   to: Target id
-  links: Edges in bulk (JSON text)
-  telos: TELOS five-dimension assessment (JSON text)
-  poc: PoC / verification suggestions (JSON text)
-  verdictLevel: Verdict level
   scopeIn: "Scope (what we do; comma separated)"
   scopeOut: "Non-goals (what we explicitly do not do; comma separated)"
   metricsSuccess: "Success metrics (measurable; comma separated)"
-  glossary: "Glossary (JSON object: term → definition)"
   stakeholders: "Stakeholders (comma separated)"
-  process: Development process
-  scale: Scale
   rebuild: Whether to rebuild derived projections from the source of truth
-  expand: Whether to expand details
-  all: Whether to show everything
-  write: Whether to write file artifacts
   answer: Answer text
   assume: Whether to record this as an assumption (use when the user has not confirmed)
-  dimensions: Eight-dimension scoring (JSON object)
-  accepted: Whether the suggested option was accepted
-  banned: Whether banned-word questions are included
-  redTeam: Whether red-team challenges are included
   quick: Whether to ask only the most critical questions
   target: Render target
   taskId: Task card id
@@ -484,9 +399,6 @@ command:
   sdo-design-issues: "List design questions and the key items that still need confirmation; `--state=all` also lists answered/closed ones"
   sdo-design-render: "Render the design document to docs/DESIGN.md (reads the ledger, writes only the document) and report the path and byte count"
 
-  elementKind: "'system' | 'service' | 'store' | 'queue' | 'external' ..."
-  adrMitigation: "Mitigation"
-
 uiTools:
   k1: "JSON object of domain terms, e.g. {\"difference\":\"a record of the same business transaction disagreeing between the two systems\"} (merged into the existing glossary)."
   k2: "The requirement statement — what must be true (\"the system shall …\")."
@@ -499,7 +411,6 @@ uiTools:
   k9: "Measurable response — metric + condition + threshold, e.g. \"P99 < 500 ms at 1 million records per day\"."
 
   kGateChannel: "Signature channel (action=sign): statement = the user stated it explicitly in the session (then quote with their own words is mandatory); question = go through the human question channel so the user picks in person (the tool asks; the quote never passes through the model)."
-  kGateQuote: "The user's own words from the session (mandatory for channel=statement; it is checked against the session transcript and rejected on mismatch)."
   kGateTurn: "Session turn reference (optional; recorded in the journal for audit)."
   kGateRollbackTo: "Target phase for a rollback (action=rollback); only edges declared in the process data rollback section are allowed."
   kApplicabilityFocus: "The focus of the design-applicability declaration: this project's nature and design emphasis (free text drafted by the model)."
@@ -1388,7 +1299,6 @@ uiDescribe:
   kDispatchEmptyFace: "- BLOCKING WARNING: the deny face sent is EMPTY — this role has **no restriction at all** on the SDO flow plane (the mask did not take effect). That plane is an allow list, so every `sdo_*` tool the role may not use must appear in deny; an empty face means the role name was unrecognised or the tool names were not collected."
   kDispatchLimitHeld: "HELD: {p1} more card(s) passed the capacity check but were held by this call's `limit={p2}` (neither dispatched nor queued): {p3} — the next `next` will pick them up again."
   kDispatchDegraded: "- WARNING: {p1}"
-  kDispatchNotStarted: "- WARNING: not started for real ({p1}): {p2}"
   k201MaskHandedOver: "Handed `toolFilter` to the host; provider {p1} declares `capabilities.toolFilter` = {p2}"
   k202MaskNotSelfVerifiable: "WARNING: whether the child tool face was ACTUALLY narrowed cannot be self-verified by this plugin: in the real counterexample (sdo-test 8.4-2) a child dispatched via `spawn` can still CALL out-of-mask tools (`sdo_plan` / `sdo_review` / `sdo_gate`), all stopped by the hook. To confirm, inspect the child session own tool list or its rejected calls"
   k231Yes: "true"
@@ -1644,7 +1554,6 @@ uiIndex:
   k27: "Starting an iteration requires `goal` (an iteration without a goal cannot be judged \"done\")."
   k28: "Iteration {p1} started: {p2} (status={p3})\n- Next: `sdo_plan action=decompose` to break out this iteration's cards, then `sdo_plan action=next` to dispatch."
   k29: "Unknown action: {p1} (available: {p2})"
-  k30: "No task cards available to dispatch (all are claimed or done). Use `sdo_task action=list` for the full picture."
   kNonDispatchableIdle: "OK: **nothing was dispatched** this round — no card is dispatchable; this round's cards are all in progress or done. Use `sdo_task action=list` for the full picture."
   kNonDispatchableGateStaleHead: "LOCKED: **nothing was dispatched** this round — the **entry gate {p1}** of the current phase has a **stale** signature ({p2}), so **no card is dispatched** ({p3} dispatchable card(s) held back). This does **not** mean the work is finished: have the process officer re-sign that gate (`sdo_gate action=sign gate={p1}`) first; if the cause is a truth-source change, go back upstream and digest it. (Only **stale** is refused: a gate that was never signed is not held back.)"
   kNonDispatchableExclusiveHead: "LOCKED: **queued behind an exclusive window** ({p1} card(s)) — they declare the same exclusive-window group (`exclusive`), and cards of one group never run **at the same time**, so these {p1} are held back (blocked by: {p2}). This does **not** mean the work is finished: they enter the queue by themselves once the blocking card finishes or is dropped; if a card does not really need the window, withdraw the declaration (`sdo_task action=update id=<card> exclusive=`)."
@@ -1799,8 +1708,6 @@ uiIndex:
   planExitReview: "Exit one: ask the user to review the plan in this session, then call `sdo_design action=review approvedBy=<reviewer>`."
   planExitWaive: "Exit two: if review is truly impossible, waive it explicitly with a trace: `sdo_design action=waive-plan reason=<reason> by=<approver>` (SDO offers no \"skip\" switch, and a waiver must state its reason)."
   acWritten: "- Wrote {n} acceptance criteria (source: the acceptance from this capture)."
-  note: "Review note (optional, written to the trace)."
-  by: "Approver (who approved the waiver), defaults to human."
   planLoadDiag: "- (diagnostic) Self-loading plan-mode failed: {p1}"
   planLoadNone: "this preset `planning` group did not register the planMode service (the row was disabled, or the assembly layer rejected it)"
   planChecklist: "The plan must be **structured** and cover at least the following 8 items (each item must name something specific to this project; no empty talk):\n1) Goals and non-goals: what this architecture phase will produce, and what it explicitly will not do;\n2) Key design decisions: for each decision give **>=2 alternatives** + tradeoff rationale + consequences (G3 requires every ADR to include alternatives and consequences);\n3) View inventory: which views to draw (logical/data/interface/deployment/other) and what each view is meant to express;\n4) Components and contracts: component split, cross-component interactions, which interactions must become contracts, and the write-scope boundary of each;\n5) Traceability plan: which requirements (REQ-xxx) map to which design elements (DES-xxx), and how orphans are avoided;\n6) Risks and mitigations: high-risk items **must** carry a mitigation and an owner;\n7) Task breakdown preview: card granularity, DoD, dependency order, and each card's write scope (to avoid overwriting each other);\n8) Test plan: how must-level requirements are covered by test cases;\nBefore submitting, self-check item by item with sdo_gate action=check gate=G3; submit with exit_plan_mode, and list **2-3 questions you want the user to confirm** at the end of the plan."
@@ -2452,8 +2359,6 @@ uiSignPayload:
   intro: "> Assembled **live from the source of truth** (which stays in `.sdo/`; this review is only a rendered snapshot); each item ends with its source path."
   section: "### {p1} ({p2} items)"
   none: "(none)"
-  source: "- Source: `{p1}`"
-  itemHash: "- Hash: `{p1}`"
   fingerprintHeading: "## Review fingerprint"
   fingerprintLine: "- Whole-review fingerprint: `{p1}` (generated at journal seq {p2})"
   fingerprintRule: "- **Any change to a reviewed item invalidates this review**: signing will be refused and the review must be regenerated."
@@ -2488,7 +2393,6 @@ uiDesign:
   uiReasonNo: "No UI: no requirement declares a UI/screen surface (kind: ui), and project surfaces declares no web/desktop/mobile"
   uiNoReqs: "(none)"
   uiNoSurfaces: "(not declared)"
-  uiMethodRule: "hasUI := any requirement with kind: ui, or project surfaces containing web/desktop/mobile (computed live from the requirement source)"
   # Method question
   qMethodText: "Which design methods does this project use: structured / object-oriented / agile-evolutionary (multi-select, join with +); choose none when the project genuinely produces no method artefacts"
   qMethodWhy: "The design method decides which design artefacts come next (data-flow diagrams, class diagrams, evolution records); the agent must not choose it for you"
@@ -2499,8 +2403,6 @@ uiDesign:
   methodOoCost: "The domain model must be finished first; needs stable requirements"
   methodAgile: "Agile-evolutionary evolutionary (technical debt + reversibility + per-iteration increment)"
   methodAgileCost: "The technical-debt ledger and design increments must be maintained continuously"
-  methodHybrid: "Combined (structured core + object-oriented front end)"
-  methodHybridCost: "You must state which part uses which; a fuzzy boundary leaves both halves incomplete"
   methodRecommendDefault: "Agile-evolutionary evolutionary (small steps + evolution records)"
   methodRecommendWhy: "Requirements are still evolving and delivery must show value soon; small steps plus a design-decision record are steadier than one full modelling pass"
   # Shape and deployment
@@ -2825,7 +2727,6 @@ uiDesign:
   uiAnswerNotFound: "No design question {p1} (list them with `sdo_design action=issues`)"
   uiAnswerNeedChoice: "The answer cannot be empty: pass `--choice=0` (option index) or the option text; if the user already authorized following your recommendation, pass `--assume`"
   uiConfirmOk: "{p1} confirmed (basis: {p2})"
-  uiConfirmDefaultBasis: "Confirmed by the user in session"
   uiConfirmMissing: "Confirmation needs a `target` (element / contract / UI item id)"
   uiConfirmNoBasis: "REFUSED: missing the **user authorizing words**. A design confirmation means the human endorses THIS design NOW, not a process step. Pass `basis=<user own words>` (the tool checks it really appears in this session user messages), or get an explicit statement via the question tool first. The tool own wording must NOT stand in for the user."
   uiConfirmQuoteMismatch: "REFUSED: the basis `{p1}` cannot be found in this session user messages — an invented quote must not mint a user confirmation. Ask the user to say it, or pass their real words."
@@ -2878,8 +2779,6 @@ uiDesign:
   uiInputBadBreakpoints: "The UI view `breakpoints` must be an array (each entry e.g. {name:...,width:...,changes:[...]})"
   uiInputBadAccessibility: "The UI view `accessibility` must be an object (e.g. {contrast:...,keyboard:true,screenReader:...})"
   uiScreensNa: "(no screens)"
-  uiErrorsHeader: "The design question ledger is empty"
-  uiNoQuestionsHint: "Ask before building: `sdo_design action=grill`"
   # Increment 2: design method and rationale / method artefacts (two new chapters; old 3-9 shift to 5-11)
   docSMethod: "Design method and rationale"
   docSProducts: "Method artefacts"

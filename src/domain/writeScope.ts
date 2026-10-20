@@ -126,6 +126,33 @@ export function pathWithinScopes(path: string, scopes: readonly string[]): boole
 }
 
 /**
+ * **命令里的"目录基准"写法**（`git -C <dir> …`，TASK-109 / REV-039 发现三②）——
+ * 把**相对 `<dir>`** 的目标合成为"从**会话 cwd** 起可解析"的路径。
+ *
+ * 为什么必须合成（不合成就是 DEF-074 同族的**幽灵路径**）：`-C <dir>` 改变的是**命令自己的**
+ * 工作目录，于是命令文本里的相对路径（`git -C src restore index.ts` 的 `index.ts`）实际指的是
+ * `<dir>/index.ts`。若把 `index.ts` 原样交给判定，它会被按**会话 cwd** 解析，落到工作区根上的
+ * `index.ts` —— 一个工作区里**并不存在**的路径：越界时点名的是错的文件，而在范围内的窄写入
+ * （卡声明 `src/index.ts`）会被**误拒**（"拦错了路径"的另一面）。
+ *
+ * 边界（方向一律保守：判不了就不猜，与 `resolveAgainst` 同一方向）：
+ *   · `<target>` 是绝对路径 ⇒ **原样返回**（它自足，不需要基准）；
+ *   · `<base>` 拿不到 ⇒ 原样返回（没有基准就无从合成）；
+ *   · 只做**文本拼接**，`..` 与分隔符归一留给判定层（`resolveAgainst` 的既有口径）——
+ *     在这里折叠会让"`../wt` 这类往上跳的基准"被二次解析，两处各算一遍就会打架。
+ */
+export function composeUnderBase(base: string | undefined, target: string): string {
+  const raw = String(target ?? '').trim()
+  if (raw === '') return ''
+  const dir = String(base ?? '').trim().replace(/\\/gu, '/')
+  if (dir === '') return raw
+  const normalized = raw.replace(/\\/gu, '/')
+  // 绝对路径自足（POSIX `/…` 与 Windows 盘符 `C:/…` 同理由）；归属交给判定层
+  if (normalized.startsWith('/') || /^[A-Za-z]:\//u.test(normalized)) return normalized
+  return `${dir.replace(/\/+$/u, '')}/${normalized}`
+}
+
+/**
  * **绝对化后再相对化**：把目标路径解析成绝对路径，再表达为"相对 `base` 的路径"。
  *
  * 为什么必须**先绝对化**（DEF-047 落点一的真缺陷，实测踩过）：

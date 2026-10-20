@@ -283,7 +283,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m83.test.ts': 24, 'test/m84.test.ts': 17, 'test/m85.test.ts': 35, 'test/m86.test.ts': 16,
   'test/m87.test.ts': 18, 'test/m88.test.ts': 60, 'test/m89.test.ts': 5, 'test/m9.test.ts': 34,
   'test/m90.test.ts': 18, 'test/m91.test.ts': 9, 'test/m92.test.ts': 13, 'test/m93.test.ts': 37,
-  'test/m94.test.ts': 12, 'test/m95.test.ts': 11, 'test/m96.test.ts': 5, 'test/m97.test.ts': 23,
+  'test/m94.test.ts': 14, 'test/m95.test.ts': 11, 'test/m96.test.ts': 5, 'test/m97.test.ts': 23,
   'test/m98.test.ts': 18, 'test/m99.test.ts': 6, 'test/office.test.ts': 46, 'test/scoring.test.ts': 7,
   'test/task001-acceptance.test.ts': 4, 'test/task001-red-baseline.test.ts': 3, 'test/yaml.test.ts': 10,
   }
