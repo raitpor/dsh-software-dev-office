@@ -20,7 +20,7 @@ import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 import { boardModelFor, renderBoard } from './board/render.js'
 import { describeExemptions } from './interface/describe.js'
 import { exemptionLines } from './domain/construction.js'
-import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewDefectError, ReviewReproError } from './domain/records.js'
+import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewDefectError, ReviewReproError, updateTestCase } from './domain/records.js'
 import type { AcceptanceVerdict, Review } from './domain/records.js'
 // **REQ-054（TASK-054）**：判定基准（oracle）—— 词表与逐类核对实现都只有一处（`evidence.ts`），
 // 工具面只负责"把参数搬到位 + 把缺口原话说出来"，**不在这里另写一份判定语义**。
@@ -2351,6 +2351,96 @@ export function apply(ctx: Context, config: SdoConfig): void {
 
     async test(call: OfficeCall, args: TestArgs): Promise<string> {
       switch (args.action) {
+        /**
+         * **`update`（`DEF-125` / TASK-157）：更正**既有**用例 —— 旧动作面缺的就是这一个出口。**
+         *
+         * 病根（DEF-125 的伤口，真机三条在册）：`plan` **永远分配新 TC 号**（`recordTestCase` 的语义），
+         * 于是用例的 `requirement` 一旦挂错就**永久与追溯图打架**（图上说 REQ-004、文件说 REQ-035），
+         * 只能手改 `.sdo/tests/TC-*.yml` —— 而那正是 D4/R1 要挡的手维真源（手改绕过事件与形状校验）。
+         *
+         * 三条纪律（DoD 逐字）：
+         *   ① 只改 `title` / `steps` / `expected` / `requirement` / `kind`（`id`/`at`/`oracle` 不在可改面内，
+         *      理由见 `records.ts` 的 `TestCaseUpdate` 注释）；
+         *   ② **`requirement` 改动必须同步追溯边**：旧的 `req-tc` 撤销、新的建立 —— 边**只走**
+         *      `office.unlinkTrace` / `office.linkTrace`（= `domain/trace.ts` 那一份实现），不在这里另写图算法；
+         *      回执**逐条列出**撤销/新建的边（不列出来等于让人猜图改没改）；
+         *   ③ 改不了要能读拒绝（空 `caseId` / 用例不存在 / 需求不存在 / 一个字段都没给 / 与现值相同）
+         *      并点名可执行修法，且**零写盘**。
+         */
+        case 'update': {
+          const caseId = (args.caseId ?? '').trim()
+          // 空 caseId：先于一切（没有对象就没有"更正"）—— 文案点名要给什么
+          if (caseId === '') return t('uiIndex.kTestUpdateCaseIdRequired')
+          const steps = jsonOr<string[]>(args.steps, 'steps')
+          if (steps.error !== undefined) return steps.error
+          if (steps.value !== undefined && (!Array.isArray(steps.value) || steps.value.some((item) => typeof item !== 'string'))) {
+            return fmt('uiIndex.kTestUpdateBadSteps', { p1: caseId })
+          }
+          // 非法 `kind` 已在工具边界拒绝（那里还看得见**原样值**：归一后非法取值会变成"没给"）
+          const { store, journal } = office.contextFor(call)
+          const outcome = updateTestCase(
+            store,
+            journal,
+            {
+              caseId,
+              ...(args.title === undefined ? {} : { title: args.title }),
+              ...(steps.value === undefined ? {} : { steps: steps.value }),
+              ...(args.expected === undefined ? {} : { expected: args.expected }),
+              ...(args.requirement === undefined ? {} : { requirement: args.requirement }),
+              ...(args.kind === undefined ? {} : { kind: args.kind }),
+            },
+            // 需求台账的 id 全集：`requirement` 打错一个字就等于把用例挂到空气上（图那边还会少一条 `req-tc`）
+            { knownRequirementIds: listRequirementIds(store), actor: call.sessionId ?? 'sdo' },
+          )
+          if (!outcome.ok) {
+            return outcome.code === 'case-not-found'
+              ? fmt('uiIndex.kTestUpdateCaseNotFound', { p1: caseId, p2: outcome.detail })
+              : outcome.code === 'unknown-requirement'
+                ? fmt('uiIndex.kTestUpdateBadRequirement', { p1: outcome.detail })
+                : outcome.code === 'no-op-update'
+                  ? fmt('uiIndex.kTestUpdateNoOp', { p1: caseId, p2: outcome.detail })
+                  : outcome.detail
+          }
+          const testCase = outcome.testCase
+          const lines = [
+            fmt('uiIndex.kTestUpdated', {
+              p1: testCase.id,
+              p2: outcome.changes.map((change) => `${change.field}: ${change.from} -> ${change.to}`).join('; '),
+            }),
+          ]
+          // —————— 追溯边同步（**唯一的图实现**：`office.linkTrace` / `office.unlinkTrace` → `domain/trace.ts`）——————
+          // 只在 `requirement` 真的改了时才动图；`outcome.previousRequirement` 是**更正前**的挂靠（`''` = 原先没挂）。
+          const requirementChange = outcome.changes.find((change) => change.field === 'requirement')
+          if (requirementChange !== undefined) {
+            const nextRequirement = (testCase.requirement ?? '').trim()
+            const previousRequirement = outcome.previousRequirement
+            const edges: string[] = []
+            try {
+              if (previousRequirement !== '') {
+                const removed = office.unlinkTrace(call, { from: previousRequirement, to: testCase.id, kind: 'req-tc' })
+                edges.push(removed.removed === 0
+                  ? fmt('uiIndex.kTestUpdateEdgeRemoveNone', { p1: previousRequirement, p2: testCase.id })
+                  : fmt('uiIndex.kTestUpdateEdgeRemoved', { p1: String(removed.removed), p2: previousRequirement, p3: testCase.id }))
+              }
+              const created = office.linkTrace(call, [{ from: nextRequirement, to: testCase.id, kind: 'req-tc' }])
+              edges.push(created.created === 0
+                ? fmt('uiIndex.kTestUpdateEdgeAddExisting', { p1: nextRequirement, p2: testCase.id })
+                : fmt('uiIndex.kTestUpdateEdgeAdded', { p1: nextRequirement, p2: testCase.id }))
+              lines.push(fmt('uiIndex.kTestUpdateEdges', { p1: edges.join('; ') }))
+            } catch (error) {
+              // **半写要如实说出来**（不许把"用例文件改了、边没建"读成成功）：真源那边
+              // `trace/linked` 的整条拒绝（悬空边不落盘）会把异常抛到这一层，此时用例文件**已经**改了。
+              // 回执给出**确切的补法**（`sdo_trace action=link`），并点名哪一条没建成。
+              lines.push(fmt('uiIndex.kTestUpdateEdgeFailed', {
+                p1: testCase.id,
+                p2: previousRequirement === '' ? t('uiIndex.kTestUpdateNoPrevious') : previousRequirement,
+                p3: nextRequirement,
+                p4: error instanceof Error ? error.message : String(error),
+              }))
+            }
+          }
+          return lines.join('\n')
+        }
         case 'plan': {
           if ((args.title ?? '') === '' || (args.expected ?? '') === '') return t('uiIndex.k38')
           const steps = jsonOr<string[]>(args.steps, 'steps')

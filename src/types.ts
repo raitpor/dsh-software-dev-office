@@ -1447,7 +1447,18 @@ export interface TestingReportSource {
  * **不可发现** —— 那等于没做（知识库 `tq_ff348198`：新增参数/动作要类型、schema、execute 同改）。
  */
 export const TASK_ACTIONS = ['list', 'claim', 'done', 'block', 'drop', 'reopen', 'restore', 'release', 'reassign', 'update', 'unblock', 'verify-review', 'errata'] as const
-export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list', 'env'] as const
+/**
+ * `sdo_test` 的动作面（**唯一**一处词表：`tools.ts` 的 `action` 描述由 `actionList(TEST_ACTIONS)` 生成）。
+ *
+ * **`update`（DEF-125 / TASK-157）**：更正**既有**用例的 `title` / `steps` / `expected` /
+ * `requirement` / `kind`。为什么它必须在这里登记（而不是只加一个 `index.ts` 分支）：
+ * 不登记的动作对调用方**不可发现**，等于没做 —— 而这次缺的正是「改既有用例」这一个出口。
+ * 病根（DEF-125 的伤口）：旧动作面只有 `plan|record|defect|list|env`，`plan` **永远分配新 TC 号**
+ * （`recordTestCase` 的语义）⇒ 用例的 `requirement` 一旦挂错就**永久与追溯图打架**，只能手改
+ * `.sdo/tests/TC-*.yml`，而那正是 D4/R1 要挡的手维真源。改 `requirement` 时**必须**同步 `req-tc`
+ * 追溯边（撤销旧的、建立新的），边由 `domain/trace.ts` 那一份实现承担（不在这里另写一套图算法）。
+ */
+export const TEST_ACTIONS = ['plan', 'record', 'defect', 'list', 'env', 'update'] as const
 /**
  * `sdo_review` 的动作面（**唯一**一处词表：`tools.ts` 的 `action` 描述由 `actionList(REVIEW_ACTIONS)` 生成）。
  *
@@ -2067,6 +2078,10 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // （真机病因见 `domain/collab.ts` 的 `appendReviewFindings`：一条评审碎成 9 条同 verdict 记录）。
   'review/appended',
   'test/recorded',
+  // **`DEF-125`（TASK-157）**：更正**既有用例**的元数据（`title` / `steps` / `expected` /
+  // `requirement` / `kind`），带**前后值**落 append-only 真源。与 `test/recorded`、`defect/updated`
+  // 同族：它是施工期台账的更正，`DESIGN.md` 的固定章节里没有它（用例文件不是设计真源）⇒ 不作废签字。
+  'test/case-updated',
   // 施工期的**交付物**记录（变异证据、契约测试）：与 `test/recorded` 同类 ——
   // `DESIGN.md` 的 11 个固定章节里没有它们（真机实测 grep：变异 / 契约测试命中 0）。
   // **`risk/logged` / `risk/updated` 不在此列**：§11 会把风险渲染进设计文档（实测 §11 列有 RISK-006），
@@ -2344,6 +2359,8 @@ export type SdoEventType =
   // 只追加、不改写：`verdict` 是原评审的结论，追加路径没有也不收这个入参。
   | 'review/appended'
   | 'test/recorded'
+  // **DEF-125**：既有用例的更正（带前后值；与 `defect/updated` 同族的 append-only 差异事件）
+  | 'test/case-updated'
   | 'defect/recorded'
   | 'defect/updated'
   | 'delivery/packaged'
@@ -2372,6 +2389,7 @@ export type SdoEventType =
   | 'iteration/updated'
   | 'review/recorded'
   | 'test/recorded'
+  | 'test/case-updated'
   | 'defect/recorded'
   | 'delivery/packaged'
   | 'cost/updated'

@@ -160,7 +160,7 @@ gates:
       # **DEF-051 / C-64（TASK-080）**：与 C-63 同族，只是换了一本台账（风险），并顺手把卡级
       # `inputs`/`outputs` 这两格"读了、也下发了、却没人核对"的声明纳进同一条判据。
       # 挂在本门（agile 的 G6）的理由与 C-63 逐字相同：与 C-51（无未关闭阻塞缺陷）同门收口。
-      - { id: C-64, check: "details.mitigates-closed", desc: "已声明消除的风险必须闭合或署名接受其仍开放，且卡级 inputs/outputs 的声明必须有证据：对每张 status ∈ {done, verified} 的卡，① `mitigates` 每条风险须 `mitigated`/`closed`，或卡上有一条 `waiveReason` 与 `waiveApprovedBy` 去空白后**都非空**的豁免（口径同 DEF-038，不新造）；② 声明的每条 `inputs`/`outputs` 必须出现在该卡自己的 `artifact` 证据里（去 `./` 与前后空白后匹配）；否则判红并**逐条点名**（卡 id + 风险 id / 声明的条目 + 现状态 + 缺什么）并给可执行修法（`sdo_risk action=update id=RISK-xxx status=mitigated`，或补免责两字段，或把产物落盘进 `artifact` 证据）。两种通过路径下回执都**单列台账里仍 open 的风险清单**（可见即约束）。未 done / 三格都没声明的卡不参与（不误伤）；一条声明都没有 ⇒ 判 N/A。**形态判别，不是「恰好为空」**（DEF-064 / REV-043）：②③ 只核对**路径形态**的 `inputs`/`outputs` 声明（去 `./` 与前后空白后匹配该卡自己的 `artifact` 证据）；**散文/描述形态**的声明**不参与判据**，但会**逐条回显未参与的理由**（不静默放过）。**存量不追溯**：两个风险豁免字段是本轮新增" }
+      - { id: C-64, check: "details.mitigates-closed", desc: "已声明消除的风险必须闭合或署名接受其仍开放，且卡级 inputs/outputs 的声明必须有证据：对每张 status ∈ {done, verified} 的卡，① `mitigates` 每条风险须 `mitigated`/`closed`，或卡上有一条 `waiveReason` 与 `waiveApprovedBy` 去空白后**都非空**的豁免（口径同 DEF-038，不新造）；② 声明的每条 `inputs`/`outputs` 必须出现在该卡自己的 `artifact` 证据里（去 `./` 与前后空白后匹配）；否则判红并**逐条点名**（卡 id + 风险 id / 声明的条目 + 现状态 + 缺什么）并给可执行修法（`sdo_risk action=update id=RISK-xxx status=mitigated`，或补免责两字段，或把产物落盘进 `artifact` 证据）。两种通过路径下回执都**单列台账里仍 open 的风险清单**（可见即约束）。未 done / 三格都没声明的卡不参与（不误伤）；一条声明都没有 ⇒ 判 N/A。**形态判别，不是「恰好为空」**（DEF-064 / REV-043）：②③ 只核对**路径形态**的 `inputs`/`outputs` 声明（去 `./` 与前后空白后匹配该卡自己的 `artifact` 证据）；**散文/描述形态**的声明**不参与判据**，但会**逐条回显未参与的理由**（不静默放过）。**存量不追溯**：两个风险豁免字段是本轮新增字段，新字段生效前建的卡读回来是空集（那不是判据没电，是那时还没有这两格）" }
   - id: G7
     name: 交付门禁
     criteria:

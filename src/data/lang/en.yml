@@ -250,7 +250,7 @@ tool:
   sdo_render: "Render the source of truth into documents (derived views, stamped with the source sequence number and a do-not-edit-by-hand notice). Currently supports the requirements specification `srs`."
   sdo_plan: "Task decomposition and dispatch. `decompose` runs both channels (the structural channel follows the trace graph, the model channel consumes suggestions) and applies six mechanical checks; `iteration` opens an iteration; `next` picks dispatchable cards within the capacity budget and emits dispatch requests."
   sdo_task: "Task cards and the collaboration protocol: claiming uses compare-and-swap (a stale revision is a conflict), only the owner may report back, **completion must carry evidence**, and blocked cards must state why. A vanished owner is **never released automatically** — only an explicit release or reassignment (both recorded)."
-  sdo_test: "Test plans, results and defects. `plan` writes test cases (binding them to requirement ids is recommended), `record` records results (even passes need evidence), `defect` files or updates a defect (severity/status). Open blocker-level defects block the verification gate."
+  sdo_test: "Test plans, results and defects. `plan` writes test cases (binding them to requirement ids is recommended), `update` **corrects an existing case** (`title` / `steps` / `expected` / `requirement` / `kind`; changing `requirement` also **syncs the `req-tc` trace edge** and the receipt lists every removed/created edge), `record` records results (even passes need evidence), `defect` files or updates a defect (severity/status). Open blocker-level defects block the verification gate."
   sdo_review: "Review records: record the verdict (pass / changes requested / reject) and the findings. **A reviewer may not be the author** — independence is checked mechanically, not left to good intentions."
   sdo_hash: "Compute the **full sha256** of one artifact (+ mtime + byte size) — a **read-only query** that writes no ledger and emits no event. Why it exists: the reviewer mask denies `bash` (so no command can run a hash reach) and also denies `sdo_test`, the only other producer of artifact hashes ⇒ without it a reviewer can only see the **truncated** fingerprint in the done receipt and cannot prove «this is the artifact I checked»."
   sdo_deliver: "Delivery package: artifact manifest (with sha256), acceptance matrix (one row per must-have requirement), rollback point, and an explicit statement that prototype content is excluded. It stops at a deployable artifact; release and operations are explicitly out of scope."
@@ -618,6 +618,10 @@ uiGates:
   kTestsUnjournaledRemedy: 're-record with `sdo_test action=record` (writes the event and binds time/environment), or re-run the case; hand-written or later-rewritten YAML never counts as evidence (D4)'
   kTestsUnknown: '{p1} test result(s) cannot be corroborated — the journal is **truncated** by a bad line (events after it are unreadable)'
   kTestsUnknownRemedy: 'fix the bad line in `.sdo/journal.jsonl` (or restore from backup), then re-run `sdo_gate action=check`; a truncated journal must not be judged green (unknown is not pass, D4)'
+  kTestsSkippedUnsettled: 'the **latest result of these cases is only `skip`** and it was not disposed of per REQ-057, so they do **NOT count as covered**: {p1}'
+  kTestsSkippedItem: '{p1} ({p2})'
+  kTestsSkippedNoDisposition: 'no disposition in `.sdo/testing/coverage.yml` settles it (no `useCase` entry points at this case)'
+  kTestsSkippedRemedy: 'two ways out (pick one): (1) **really run** it and record the verdict with `sdo_test action=record caseId=<case> status=pass evidence=<proof> executedBy=... adoptedBy=... oracle=...`; (2) if it genuinely **cannot run here** (platform-specific / external dependency), add a disposition to `uncovered` in `.sdo/testing/coverage.yml`: `{ id: UN-xxx, item: "<what is not covered>", useCase: "<that case id>", disposition: "<one of TESTING_DISPOSITIONS>", reason: "<why>" }` (the existing REQ-057 vocabulary in `types.ts`; the "unreachable" and "equivalent" entries **require a reason**, the "add a case" entry requires a real case id). **Do not** rewrite `skip` into `pass`: the gate accepts only verdicts that were really run, and `skip` itself is not a failure.'
   kTestsUnadopted: '{p1} `pass` result(s) were **not independently adopted** ({p2}) — REQ-053: executor and adopter must differ and the judgement basis must hold; a result you ran and stamped yourself is NOT counted as passing'
   kTestsUnadoptedRemedy: 'record `executedBy` (executor) and `adoptedBy` (adopter — must differ) with `sdo_test action=record`, make the judgement basis checkable (REQ-054), then record the result again — the gate only accepts adoption that can be traced back to the append-only truth'
   k1: "Scope (in) — {p1} items"
@@ -1444,6 +1448,20 @@ shapeEntity:
   budget: "Cost budget"
 uiIndex:
   kTestOrphanResults: 'WARNING: **{p1} result(s) point at a non-existent test case** (ghost cases): {p2} - they are **not counted as coverage**; the write face has rejected such records since DEF-037, history is annotated, never deleted'
+  kTestUpdated: 'OK case {p1} updated (append-only `test/case-updated` event carries before/after values): {p2}'
+  kTestUpdateEdges: '  trace edge(s) (`req-tc`, handled by the single implementation in `sdo_trace`): {p1}'
+  kTestUpdateEdgeRemoved: '**removed** {p2}->{p3} ({p1} edge(s))'
+  kTestUpdateEdgeRemoveNone: '**not removed** {p1}->{p2} (the edge never existed in the graph)'
+  kTestUpdateEdgeAdded: '**created** {p1}->{p2}'
+  kTestUpdateEdgeAddExisting: '**created** {p1}->{p2} (already existed, not duplicated)'
+  kTestUpdateNoPrevious: '(no requirement before)'
+  kTestUpdateEdgeFailed: 'WARNING: the **case file of {p1} was already written**, but the trace edge was not synced ({p2}->{p3} `req-tc`): {p4} - fix with `sdo_trace action=link from={p3} to={p1} kind=req-tc`, then check with `sdo_trace action=query` that graph and file agree (this line is NOT a success receipt).'
+  kTestUpdateCaseIdRequired: 'an update must say **which case**: `caseId` is empty, so there is nothing to update. Usage: `sdo_test action=update caseId=TC-029 title=... steps=[...] expected=... requirement=REQ-004 kind=unit` (give only the fields you change; everything else stays untouched).'
+  kTestUpdateBadSteps: '`steps` must be a **list of strings** (JSON text or a real array): case {p1} was **not written** this time.'
+  kTestUpdateBadKind: '`kind` value "{p1}" is not in the word list: only `unit` / `integration` / `e2e` (**nothing was written**) - normalisation turns an illegal value into "not given", so it is rejected readably here instead of being silently skipped.'
+  kTestUpdateCaseNotFound: 'REJECTED: case {p1} **does not exist**, **nothing was written**: {p2} Fix: use a real case id (`sdo_test action=list` prints them all), or create it with `sdo_test action=plan` first - `update` only changes existing cases, it never invents one.'
+  kTestUpdateBadRequirement: 'REJECTED: **nothing was written**: {p1} Fix: `requirement` must be an id that **really exists** in the requirement ledger (`sdo_requirement action=list` prints them all); to re-point the case at a requirement, give that real id (an empty string is not "unlink", it is rejected).'
+  kTestUpdateNoOp: 'REJECTED: the given fields of case {p1} are **byte-identical** to the current values, **nothing was written** (no fake "updated"): {p2} - to change something, give a value that really differs.'
   kSignWeak: 'NOTE: this signature does **not** freeze {p1} (statement-channel weak signature). Use `channel=question` so the tool asks you directly and you pick the option - only that channel (words returned by the host) counts for the gate'
   kSignNoChannel: "WARNING: the **question channel is unavailable** (the host did not inject the ask service, or this question never surfaced) - this is **not** a refusal: the ledger records `gate/sign-unavailable`. Three ways out: (1) retry in the Web GUI (pick the option once the card/sidebar shows up); (2) have the cockpit confirm the host injected the question service; (3) if asking is impossible, state it explicitly in the session and provide the user's own words (`channel=statement` + `quote`, recorded as `channel=command`)"
   kReviewLandedAt: 'landed at: `{p1}` (**`.yml`**, written by the tool; point `artifact` evidence at it)'
@@ -3029,6 +3047,11 @@ uiPool:
   kReuseHoldsCard: "this child session **still holds in-flight card {p1}** (the card is still in-progress) — dispatching a new card into the same session would make the two cards step on each other, so a fresh child is started"
 
 uiTest:
+  kUpdateCaseIdRequired: "updating a case must say **which case**: `caseId` is empty, so there is nothing to update (**nothing was written**). Usage: `sdo_test action=update caseId=TC-029 requirement=REQ-004`."
+  kUpdateCaseNotFound: "the case {p1} to update **does not exist in the case ledger** (ledger has: {p2}) — `update` only changes existing cases and never invents one. **Nothing is written**: use a real case id, or create it with `sdo_test action=plan` first."
+  kUpdateUnknownRequirement: "`requirement` value {p1} **is not in the requirement ledger** (existing: {p2}) — one wrong id hangs the case on nothing (and the trace graph loses a `req-tc` edge). **Nothing is written**: use a real requirement id."
+  kUpdateNoFields: "no updatable field was given for case {p1} (updatable: `title` / `steps` / `expected` / `requirement` / `kind`) - **nothing was written**; to change something, give at least one value that differs."
+  kUpdateNoOp: "the {p2} of case {p1} are **byte-identical** to the current values; **nothing was written** (no fake success receipt): to change something, give a value that really differs."
   kResultUnknownDefect: 'REJECTED: `defects` names a defect id that is not in the ledger: {p1} ({p2} defect(s) exist). A single typo would silently bind nothing, so **nothing was written**; use a real `DEF-xxx`.'
   kResultCaseIdRequired: "a test result must say **which case** it belongs to: `caseId` is empty, so this result has no owner (create the case with `sdo_test action=plan`, then record against its id)"
   kResultCaseNotFound: "the case {p1} this result points at **does not exist in the case ledger** (ledger has: {p2}) — a result is a result **of a case**: create it with `sdo_test action=plan`, or use a real case id. **Nothing is written**, so an unowned green cannot appear"

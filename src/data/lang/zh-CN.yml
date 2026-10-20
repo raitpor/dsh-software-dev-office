@@ -205,7 +205,7 @@ tool:
   sdo_render: 把真源渲染成文档（派生视图，带真源序号与"请勿手改"标注）。目前支持需求规格 `srs`。
   sdo_plan: 任务拆分与派发。`decompose` 双通道拆卡（结构通道按追溯图、模型通道吃建议）并跑六条机械校验；`iteration` 开一个迭代；`next` 按容量预算挑出可派发的卡并产出派发请求。
   sdo_task: 任务卡与协同协议：认领走比较交换（版本号对不上即冲突）、只有 owner 能回报、**完成必须带证据**、卡住要说明原因；失联的 owner **不会自动释放**，只能显式释放或改派（都留痕）。
-  sdo_test: 测试计划、结果与缺陷。`plan` 写用例（建议绑定需求 id）、`record` 记录结果（通过也要带证据）、`defect` 登记或更新缺陷（严重度/状态）。未关闭的阻塞级缺陷会拦住验证门禁。
+  sdo_test: 测试计划、结果与缺陷。`plan` 写用例（建议绑定需求 id）、`update` **更正既有用例**（标题/步骤/期望/需求/类型；改需求会**同步追溯边**并在回执里逐条列出撤销与新建）、`record` 记录结果（通过也要带证据）、`defect` 登记或更新缺陷（严重度/状态）。未关闭的阻塞级缺陷会拦住验证门禁。
   sdo_review: 评审记录：记录结论（通过/要求修改/驳回）与发现项；**评审者不得是作者**（独立性是机械校验的，不靠自觉）。
   sdo_hash: "现算一个产物的**完整 sha256**（+ mtime + 字节数）—— **只读纯查询**，不写任何台账、不落事件。为什么需要它：评审者的掩码 `deny` 里有 `bash`（跑不了任何命令），而唯一产出产物哈希的 `sdo_test` 也被 deny ⇒ 没有它，评审者只能看 done 回执里的**截断**指纹，无法自证「我核的是不是这份产物」。"
   sdo_deliver: 交付包：产物清单（含 sha256）、验收矩阵（每条必须级需求一行）、回滚点，并声明不含原型内容。只到"可部署产物"，发布与运维明确不做。
@@ -917,6 +917,20 @@ shapeEntity:
   budget: "成本预算"
 uiIndex:
   kTestOrphanResults: '⚠️ **{p1} 条结果指向不存在的用例**（幽灵用例）：{p2} —— 它们**不计入覆盖率**；写入面自 `DEF-037` 起会拒这种记录，历史记录只标注、不删'
+  kTestUpdated: '✅ 用例 {p1} 已更正（append-only 事件 `test/case-updated` 带前后值）：{p2}'
+  kTestUpdateEdges: '　追溯边（`req-tc`，由 `sdo_trace` 那一份实现承担）：{p1}'
+  kTestUpdateEdgeRemoved: '**撤销** {p2}→{p3}（{p1} 条）'
+  kTestUpdateEdgeRemoveNone: '**未撤销** {p1}→{p2}（图上原本就没有这条边）'
+  kTestUpdateEdgeAdded: '**新建** {p1}→{p2}'
+  kTestUpdateEdgeAddExisting: '**新建** {p1}→{p2}（已存在，未重复建边）'
+  kTestUpdateNoPrevious: '（原本没挂需求）'
+  kTestUpdateEdgeFailed: '⚠️ 用例 {p1} 的**文件已改**，但追溯边没同步成功（{p2}→{p3} 的 `req-tc`）：{p4} —— 补法：`sdo_trace action=link from={p3} to={p1} kind=req-tc`，再用 `sdo_trace action=query` 核对图与文件一致（这一行不是成功回执）。'
+  kTestUpdateCaseIdRequired: '更正要说明**是哪条用例**：`caseId` 为空 ⇒ 没有对象可改。用法：`sdo_test action=update caseId=TC-029 title=… steps=[…] expected=… requirement=REQ-004 kind=unit`（只给要改的那几个，没给的一律不动）。'
+  kTestUpdateBadSteps: '`steps` 必须是**字符串数组**（JSON 文本或真数组）：用例 {p1} 本次**没有写入**。'
+  kTestUpdateBadKind: '`kind` 的取值「{p1}」不在词表里：只认 `unit` / `integration` / `e2e`（**本次没有写入**）—— 归一化会把非法取值丢成「没给」，所以在这里可读拒绝，而不是静默跳过。'
+  kTestUpdateCaseNotFound: '❌ 用例 {p1} **不存在**，本次**没有写入**：{p2} 修法：改用真实存在的用例 id（`sdo_test action=list` 能列出全部），或先用 `sdo_test action=plan` 建它 —— `update` 只改既有用例，不会凭空造一条。'
+  kTestUpdateBadRequirement: '❌ **本次没有写入**：{p1} 修法：`requirement` 必须是需求台账里**真实存在**的 id（`sdo_requirement action=list` 能列出全部）；要把用例改挂到需求上，就给那个真实 id（给空串不会"解绑"，只会被拒）。'
+  kTestUpdateNoOp: '❌ 用例 {p1} 的字段与现值**逐字相同**，本次**没有写入**（不回"已更新"的假象）：{p2} —— 要改就给一个真的不同的值。'
   kSignWeak: '📌 这条签字**不冻结 {p1}**（陈述面弱签字）：请用 `channel=question` 由工具当场问、你点选项——那条通道的原话不经过模型，才会被门禁承认'
   kReviewLandedAt: '落点：`{p1}`（**`.yml`**，由工具写；`artifact` 证据指它）'
   kTaskRestored: '✅ {p1}：{p2} → **{p3}**（恢复已落事件，带 reason + approvedBy；历史正文未改写）'
@@ -1423,6 +1437,10 @@ uiGates:
   kTestsUnjournaledRemedy: '用 `sdo_test action=record` 重新记账（会写事件并绑定时点/环境），或重跑该用例；手写/事后改写的 YAML 一律不算证据（D4）'
   kTestsUnknown: '有 {p1} 条测试结果无法核验真源事件 —— journal 被坏行**截断**（坏行之后的事件读不出来）'
   kTestsUnknownRemedy: '先修好 `.sdo/journal.jsonl` 的坏行（或从备份恢复），再重跑 `sdo_gate action=check`；截断期不得判绿（无法判定 ≠ 通过，D4）'
+  kTestsSkippedUnsettled: '这些用例的**最新结果只是 `skip`**，且没有按 REQ-057 处置 ⇒ **不算「已覆盖」**：{p1}'
+  kTestsSkippedItem: '{p1}（{p2}）'
+  kTestsSkippedNoDisposition: '没有在 `.sdo/testing/coverage.yml` 的未覆盖项里处置它（缺一条 `useCase` 指向它的处置）'
+  kTestsSkippedRemedy: '两条出路（任选其一）：① **真跑**它，用 `sdo_test action=record caseId=<用例> status=pass evidence=<证据> executedBy=… adoptedBy=… oracle=…` 记下结论；② 若它在本环境**确实跑不了**（平台相关 / 依赖外部系统），在 `.sdo/testing/coverage.yml` 的 `uncovered` 里补一条处置：`{ id: UN-xxx, item: "<说明>", useCase: "<该用例 id>", disposition: 不可达|等价, reason: "<为什么>" }`（REQ-057 的既有词表；`不可达` / `等价` **必须给理由**）。**不许**把 `skip` 改写成 `pass`：判据认的是真跑过的结论，`skip` 本身也不是 fail。'
   kTestsUnadopted: '有 {p1} 条 `pass` 结果**没有被独立采纳**（{p2}）—— REQ-053：执行者与采纳者必须不同、且判定基准成立；自己跑一遍自己盖章的结果**不予计入**通过'
   kTestsUnadoptedRemedy: '用 `sdo_test action=record` 补记 `executedBy`（执行者）与 `adoptedBy`（采纳者，须与执行者不同），并按 REQ-054 让该用例的判定基准可核对后重记一条 —— 门禁只认能追溯到真源的独立采纳'
   k1: "范围（in）{p1} 条"
@@ -2990,6 +3008,11 @@ uiPool:
   kReuseHoldsCard: "该子会话**手上还有在飞卡 {p1}**（卡仍是 in-progress）—— 把新卡投进同一个会话会让两张卡互相踩，强制新起"
 
 uiTest:
+  kUpdateCaseIdRequired: "更正用例必须说明**是哪条用例**：`caseId` 为空 ⇒ 没有对象可改（本次**没有写入**）。用法：`sdo_test action=update caseId=TC-029 requirement=REQ-004`。"
+  kUpdateCaseNotFound: "要更正的用例 {p1} **在用例台账里不存在**（台账现有：{p2}）—— `update` 只改既有用例，不会凭空造一条。**拒绝不写盘**：改用真实存在的用例 id，或先用 `sdo_test action=plan` 建它。"
+  kUpdateUnknownRequirement: "`requirement` 的取值 {p1} **在需求台账里查不到**（现有：{p2}）—— 挂错一个号就等于把用例挂到空气上（追溯图那边还会少一条 `req-tc` 边）。**拒绝不写盘**：改用真实存在的需求 id。"
+  kUpdateNoFields: "用例 {p1} 一个可改字段都没给（可改：`title` / `steps` / `expected` / `requirement` / `kind`）—— 本次**没有写入**；要改就给至少一个不同的值。"
+  kUpdateNoOp: "用例 {p1} 的 {p2} 与现值**逐字相同**，本次**没有写入**（不回「已更新」的假象）：要改就给一个真的不同的值。"
   kResultUnknownDefect: '❌ `defects` 里有点不出的缺陷 id：{p1}（台账现有 {p2} 条缺陷）—— 绑定打错一个字就等于没绑，所以**本次没有写入**；请改用真实存在的 `DEF-xxx`。'
   kResultCaseIdRequired: "测试结果必须说明**是哪条用例**的结果：`caseId` 为空 ⇒ 这条结果无处归属（先用 `sdo_test action=plan` 建用例，再用它的 id 记录结果）"
   kResultCaseNotFound: "测试结果指向的用例 {p1} **在用例台账里不存在**（台账现有：{p2}）—— 结果是**用例的**结果：先用 `sdo_test action=plan` 建这条用例，或改用真实存在的用例 id。**拒绝不写盘**，避免出现「无人认领的绿」"

@@ -272,6 +272,160 @@ export function recordTestCase(
   return testCase
 }
 
+/** 按 id 取一条用例（空 id / 不存在都返回 `undefined`：调用方负责给可读拒绝）。 */
+export function findTestCase(store: SdoStore, caseId: string): TestCase | undefined {
+  const id = textOf(caseId).trim()
+  if (id === '') return undefined
+  return listTestCases(store).find((item) => item.id === id)
+}
+
+/** 一条用例字段的**前后值**（更正留痕用；差异是审计要看的东西，所以两边都登）。 */
+export interface TestCaseChange {
+  field: 'title' | 'steps' | 'expected' | 'requirement' | 'kind'
+  from: string
+  to: string
+}
+
+/**
+ * **更正既有用例的入参**（`DEF-125` / `TASK-157`）。
+ *
+ * 为什么这组字段（而不是"整个用例写回去"）：用例的 `id` / `at` / `oracle` 不是更正的对象 ——
+ * `id` 改了就成了另一条用例（追溯边、结果、卡上的 `requirements` 一起对不上），`at` 是**建案时刻**
+ * （更正要留的是**更正时刻**，记在 `test/case-updated` 事件里），`oracle` 有自己的判定语义
+ * （REQ-054：改判定基准等于改"凭什么判定"，不属于"把挂错的需求改对"这一族）。
+ */
+export interface TestCaseUpdate {
+  caseId: string
+  title?: string | undefined
+  steps?: string[] | undefined
+  expected?: string | undefined
+  requirement?: string | undefined
+  kind?: TestCase['kind'] | undefined
+}
+
+/**
+ * 更正用例的结论。
+ *
+ * **`no-op-update` 与"已更新"必须分开**（SDO-55 的同一口径）：给的字段与现值逐字相同 ⇒
+ * 回执说"没有变化"，不许回"已更新"（否则"我改了"会被读成"它变了"）。
+ */
+export type TestCaseUpdateResult =
+  | {
+    ok: true
+    testCase: TestCase
+    changes: TestCaseChange[]
+    /**
+     * **更正前的 `requirement`**（`''` = 原先没挂）：`requirement` 改动时调用方要据此
+     * **同步 `req-tc` 追溯边**（撤销旧的、建立新的）。边本身**不在本函数里动** ——
+     * 那份实现只有 `domain/trace.ts` 一处（不在这里另写一套图算法）。
+     */
+    previousRequirement: string
+  }
+  | {
+    ok: false
+    code: 'case-id-required' | 'case-not-found' | 'no-fields' | 'no-op-update' | 'unknown-requirement'
+    detail: string
+  }
+
+/**
+ * **更正一条既有用例**（`DEF-125` 的唯一写入口）。
+ *
+ * 只写 `.sdo/tests/<TC>.yml` 并落一条 `test/case-updated` 事件（带**前后值**）。两条拒绝
+ * 一律**零写盘**：`caseId` 为空 / 用例不存在 / 一个可改字段都没给 / 需求 id 在需求台账里查不到。
+ *
+ * ⚠️ **追溯边不在这里同步**：`requirement` 变了以后 `req-tc` 边的撤销与建立由调用方用
+ * `domain/trace.ts` 的 `unlink` / `link` 做（`sdo_test action=update` 的接线在 `src/index.ts`）。
+ * 本函数只把 `previousRequirement` 交出去 —— 图算法只有一份，域层不复制第二份。
+ */
+export function updateTestCase(
+  store: SdoStore,
+  journal: Journal,
+  input: TestCaseUpdate,
+  options: {
+    /** 需求台账的 id 全集：**给了才校验**（查不到不许凭空判红，与 `records.ts` 其它校验同口径）。 */
+    knownRequirementIds?: readonly string[] | undefined
+    /** 更正者（进 `test/case-updated` 的 `actor`；缺省 `sdo` = 合成调用）。 */
+    actor?: string | undefined
+  } = {},
+): TestCaseUpdateResult {
+  const caseId = textOf(input.caseId).trim()
+  if (caseId === '') {
+    return { ok: false, code: 'case-id-required', detail: fmt('uiTest.kUpdateCaseIdRequired') }
+  }
+  const current = findTestCase(store, caseId)
+  if (current === undefined) {
+    const known = listTestCases(store).map((item) => item.id)
+    return {
+      ok: false,
+      code: 'case-not-found',
+      detail: fmt('uiTest.kUpdateCaseNotFound', {
+        p1: caseId,
+        p2: known.length === 0 ? t('uiTest.kResultNoCases') : known.join(t('uiTest.kListSep')),
+      }),
+    }
+  }
+  // `requirement` 是**唯一带外部引用的字段**：id 打错一个字就等于把用例挂到空气上
+  // （追溯图那边甚至会因此少一条 `req-tc` 边 ⇒ must 需求突然"没覆盖"）。给了就必须在册。
+  const requirementWanted = input.requirement === undefined ? undefined : textOf(input.requirement).trim()
+  if (requirementWanted !== undefined) {
+    const known = options.knownRequirementIds
+    if (requirementWanted === '' || (known !== undefined && !known.includes(requirementWanted))) {
+      return {
+        ok: false,
+        code: 'unknown-requirement',
+        detail: fmt('uiTest.kUpdateUnknownRequirement', {
+          p1: requirementWanted === '' ? '（空串）' : requirementWanted,
+          p2: known === undefined || known.length === 0 ? t('uiTest.kResultNoCases') : known.join(t('uiTest.kListSep')),
+        }),
+      }
+    }
+  }
+  const given = [
+    ...(input.title === undefined ? [] : ['title']),
+    ...(input.steps === undefined ? [] : ['steps']),
+    ...(input.expected === undefined ? [] : ['expected']),
+    ...(input.requirement === undefined ? [] : ['requirement']),
+    ...(input.kind === undefined ? [] : ['kind']),
+  ]
+  if (given.length === 0) {
+    return { ok: false, code: 'no-fields', detail: fmt('uiTest.kUpdateNoFields', { p1: caseId }) }
+  }
+  const show = (value: unknown): string => (Array.isArray(value) ? JSON.stringify(value) : textOf(value))
+  const changes: TestCaseChange[] = []
+  const push = (field: TestCaseChange['field'], from: unknown, to: unknown): void => {
+    if (show(from) === show(to)) return
+    changes.push({ field, from: show(from), to: show(to) })
+  }
+  if (input.title !== undefined) push('title', current.title, input.title)
+  if (input.steps !== undefined) push('steps', current.steps, input.steps)
+  if (input.expected !== undefined) push('expected', current.expected, input.expected)
+  if (input.kind !== undefined) push('kind', current.kind, input.kind)
+  if (requirementWanted !== undefined) push('requirement', current.requirement ?? '', requirementWanted)
+  const previousRequirement = textOf(current.requirement).trim()
+  if (changes.length === 0) {
+    return {
+      ok: false,
+      code: 'no-op-update',
+      detail: fmt('uiTest.kUpdateNoOp', { p1: caseId, p2: given.join(' / ') }),
+    }
+  }
+  const next: TestCase = {
+    ...current,
+    ...(input.title === undefined ? {} : { title: input.title }),
+    ...(input.steps === undefined ? {} : { steps: input.steps }),
+    ...(input.expected === undefined ? {} : { expected: input.expected }),
+    ...(input.kind === undefined ? {} : { kind: input.kind }),
+    ...(requirementWanted === undefined ? {} : { requirement: requirementWanted }),
+  }
+  store.writeYaml(['tests', `${current.id}.yml`], { testCase: next })
+  journal.append(
+    'test/case-updated',
+    { id: current.id, changes, previousRequirement },
+    options.actor ?? 'sdo',
+  )
+  return { ok: true, testCase: next, changes, previousRequirement }
+}
+
 export function listTestResults(store: SdoStore): TestResult[] {
   return store
     .listNames('tests/results')
@@ -680,6 +834,19 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
   passed: number
   failed: number
   skipped: number
+  /**
+   * **最新结果只是 `skip` 的用例 id**（`DEF-126` / `TASK-157` —— 读数面；判定在 `gates.ts` 的 C-50）。
+   *
+   * 病根：`skipped` 只是个**计数**，而 C-50 的 `failed` 只数 `fail`、`unrun` 只数**完全没有结果**的用例
+   * ⇒ 「这条 must 用例一次都没真跑」与「跑过了」在判据眼里没有区别（真机 `TC-030`：`clampToolResult`
+   * 全仓零引用，只能记 `skip`，缺口不进判红面 = **假绿**）。这里把**是哪几条**点出来（只给计数仍然
+   * 判不动"哪条没处置"），处置的核对在门禁侧做（`.sdo/testing/coverage.yml` 的未覆盖项处置，
+   * 词表与校验器复用 REQ-057 那一份）。
+   *
+   * ⚠️ **不改 `skipped` 的口径**（既有回执按它断言）：新语义用**新字段**，与 `passed` / `passedAdopted`
+   * 的并存口径一致。
+   */
+  skippedCaseIds: string[]
   defectsOpen: number
   /**
    * **仍拦住门禁的阻塞级缺陷数**（DEF-038 / TASK-063 起）。
@@ -764,6 +931,8 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
     passedAdopted: adoptedPass.length,
     failed: failed.length,
     skipped: results.filter((result) => result.status === 'skip').length,
+    // **DEF-126**：点名"最新结果只是 skip"的用例（判红与否在 C-50，见 `gates.ts`）
+    skippedCaseIds: results.filter((result) => result.status === 'skip').map((result) => result.caseId),
     defectsOpen: defects.filter((defect) => defect.status === 'open' || defect.status === 'fixed').length,
     // **DEF-038（TASK-063，用户 2026-10-13 裁定）**：旧口径把 `wontfix` 与 `closed` 一起排除
     // ⇒ **阻塞级缺陷标一个 `wontfix` 就让计数归零**，C-51（缺陷闭合）直接判绿。

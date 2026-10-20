@@ -481,7 +481,7 @@ export interface TestArgs {
   title?: string | undefined
   kind?: 'unit' | 'integration' | 'e2e' | undefined
   requirement?: string | undefined
-  /** plan：步骤（**JSON 文本或真数组**，见 schema 的 `oneOf` —— R11/§3.2）；`append`/`record` 路径同样收 */
+  /** plan / update：步骤（**JSON 文本或真数组**，见 schema 的 `oneOf` —— R11/§3.2）；`append`/`record` 路径同样收 */
   steps?: string | unknown[] | undefined
   expected?: string | undefined
   caseId?: string | undefined
@@ -1162,7 +1162,7 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       parameters: {
         action: { type: 'string', required: true, description: actionList(TEST_ACTIONS) },
         title: { type: 'string', description: t('param.title') },
-        kind: { type: 'string', description: "plan: 'unit' | 'integration' | 'e2e'." },
+        kind: { type: 'string', description: "plan: 'unit' | 'integration' | 'e2e'. update: the new kind (omitted = unchanged; an illegal value is REJECTED, never silently dropped)." },
         requirement: { type: 'string', description: t('param.requirement') },
         // **R11 / 第六批 §3.2**：语义上是列表、却声明成纯 `string` 的**活标本** —— 改用 `listDecl`（声明处给联合）
         steps: listDecl(t('param.steps')),
@@ -1265,6 +1265,13 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       },
       output: OUTPUT,
       async execute(args, exec) {
+        // **`DEF-125`（TASK-157）**：`update` 必须能拒绝"**给了但不合法**的 `kind`"。
+        // 归一化（下面的 `parseEnum`）会把非法取值丢成 `undefined`（= "没给"）—— 域层再也分不出
+        // "没给"与"给了个非法值"，那就是一次**静默丢弃**（回执只会说"没有变化"）。所以这条拒绝
+        // 留在**还看得见原样值**的这一层：文案走语言包（本文件硬编码中文 = 0 的棘轮不放宽）。
+        if (args.action === 'update' && typeof args.kind === 'string' && parseEnum(args.kind, ['unit', 'integration', 'e2e'] as const) === undefined) {
+          return fmt('uiIndex.kTestUpdateBadKind', { p1: args.kind })
+        }
         return deps.test(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'list',
           reason: typeof args.reason === 'string' ? args.reason : undefined,

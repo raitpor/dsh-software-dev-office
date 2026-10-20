@@ -77,8 +77,12 @@ import {
   TESTING_SOURCE_FILES,
   docHandEdited,
   docSourceFingerprint,
+  readTestingSource,
   renderStale,
 } from './testingStore.js'
+// **`DEF-126`（TASK-157）**：`skip` 的处置核对**复用**未覆盖项那一套校验器（`resolveDisposition`
+// 的唯一包装），不在这里另造一份词表 —— REQ-057 的处置词汇只有 `types.ts` 的 `TESTING_DISPOSITIONS` 一份。
+import { assessCoverageItem } from './mutation.js'
 import { issueClosure } from './issues.js'
 import { methodConsistency, methodLabel, methodProducts, methodSelection } from './method.js'
 import { claimGaps, contractTestGaps, doneGaps, readConstructionProfile, scopeCovers } from './construction.js'
@@ -311,6 +315,54 @@ function journalTruncatedFailure(ctx: GateContext, criterionId: string): GateCri
     fmt('uiGates.kJournalTruncated', { p1: String(read.badLine ?? '?') }),
     t('uiGates.kJournalTruncatedRemedy'),
   )
+}
+
+/**
+ * **`DEF-126`（TASK-157）：`skip` 不算「已覆盖」—— 处置核对（唯一出处）。**
+ *
+ * 病根（真机 `TC-030`）：`tests.passed` 的 `failed` 只数 `fail`、`unrun` 只数「**完全没有结果**」的用例
+ * ⇒ 一条 must 用例**一次都没真跑**（只记了 `skip`）既不进 failed 也不进 unrun，判据照绿 = 假绿口子。
+ * 旧口径下"跑过了"与"跳过了"在门禁眼里没有区别。
+ *
+ * 修法口径（**三面都不许越界**）：
+ *   · **不把 `skip` 直接判成 fail** —— 平台相关用例要能表达「这条在我这儿跑不了」；
+ *   · **不放宽 fail 面** —— `fail` / `unrun` / 未采纳 / 未覆盖 must 那几条判红的语义一字不动；
+ *   · `skip` 必须**走 REQ-057 既有的处置词汇**（`.sdo/testing/coverage.yml` 的未覆盖项处置：
+ *     `补用例` / `不可达` / `等价`，后两档**必须给理由**）才允许不算红，否则逐条点名。
+ *
+ * 判定的**词表与校验器不在这里**：调 `mutation.ts` 的 `assessCoverageItem`（= 同一份
+ * `DISPOSITION_RULES` / `DISPOSITION_SCOPE_RULE` + 同一个 `resolveDisposition`，`coverage.ts` 也走它）。
+ * 本函数只负责两件事：**怎么把一条未覆盖项指到某条用例**（`useCase` 字段逐字相等）与**把结论收成缺口**。
+ *
+ * 匹配键有意只有**一个**（`uncovered[i].useCase` **逐字等于**用例 id）：`item` 是散文（写的是"哪条分支没覆盖"），
+ * 拿它做子串匹配等于让"名字里带 TC-030"的任意条目都算处置 —— 那才是真正会被写歪的地方。
+ */
+function skippedCaseGaps(store: SdoStore, skippedCaseIds: readonly string[]): { caseId: string; reason: string }[] {
+  const gaps: { caseId: string; reason: string }[] = []
+  const knownCaseIds = listTestCases(store).map((item) => textOf(item.id))
+  const ref = TESTING_SOURCE_FILES.coverage[0]
+  const read = ref === undefined ? undefined : readTestingSource(store, ref)
+  const rawBody = read === undefined || !read.present || read.unreadable || read.value === null || typeof read.value !== 'object'
+    ? undefined
+    : (read.value as Record<string, unknown>)['uncovered']
+  const uncovered = Array.isArray(rawBody)
+    ? rawBody.filter((item): item is Record<string, unknown> => item !== null && typeof item === 'object' && !Array.isArray(item))
+    : []
+  const fieldOf = new Map<Record<string, unknown>, string>()
+  uncovered.forEach((item, index) => fieldOf.set(item, `uncovered[${index}]`))
+  for (const caseId of skippedCaseIds) {
+    const hit = uncovered.find((item) => textOf(item['useCase']).trim() === textOf(caseId).trim())
+    if (hit === undefined) {
+      // 连处置条目都没有 ⇒ 点名并给出**怎么写**（回执里那半句在 `uiGates.kTestsSkippedRemedy`）
+      gaps.push({ caseId, reason: t('uiGates.kTestsSkippedNoDisposition') })
+      continue
+    }
+    const assessment = assessCoverageItem(fieldOf.get(hit) ?? 'uncovered[0]', hit, { knownCaseIds })
+    if (assessment.outcome === 'ok') continue
+    // 条目在、但**不成立**（缺词表取值 / 缺理由 / 理由不必要 / 补的用例查不到…）⇒ 逐条带出问题原文
+    gaps.push({ caseId, reason: assessment.issues.map((issue) => issue.message).join('; ') })
+  }
+  return gaps
 }
 
 /**
@@ -1694,6 +1746,22 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
       .filter((testCase) => !listTestResults(ctx.store).some((result) => result.caseId === testCase.id))
       .map((testCase) => testCase.id)
     if (unrun.length > 0) return fail('tests.passed', fmt('uiGates.k106', { p1: unrun.join(' ') }), t('uiGates.k107'))
+    // **`DEF-126`（TASK-157）**：**`skip` 不算「已覆盖」**。上一行只接住"完全没有结果"的用例，
+    // 而"最新结果只是 `skip`"既不进 `failed` 也不进 `unrun` ⇒ 一条 must 用例一次都没真跑也照绿（假绿）。
+    // 三面边界（DoD 逐字）：**不把 skip 判成 fail**（平台相关用例要能表达）、**不放宽 fail 面**、
+    // 只要求它走 REQ-057 既有处置（`不可达` / `等价` + 理由）—— 没处置就逐条点名。
+    const skippedGaps = skippedCaseGaps(ctx.store, stats.skippedCaseIds)
+    if (skippedGaps.length > 0) {
+      return fail(
+        'tests.passed',
+        fmt('uiGates.kTestsSkippedUnsettled', {
+          p1: skippedGaps
+            .map((gap) => fmt('uiGates.kTestsSkippedItem', { p1: gap.caseId, p2: gap.reason }))
+            .join('; '),
+        }),
+        t('uiGates.kTestsSkippedRemedy'),
+      )
+    }
     // **REQ-053（TASK-039）**：「测试全过」不能只看"台账里有几条 pass" —— 开发者自己跑一遍自己盖章
     // 也是一条 `pass`。`verificationStats` 已经把"没被独立采纳的 pass"逐条列进 `unadopted`
     // （执行者缺登记 / 采纳者缺登记 / 采纳者就是执行者 / 判定基准缺或不成立），这里按 REQ-053 的降级口径
