@@ -1741,7 +1741,14 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
         t('uiGates.kTestsUnjournaledRemedy'),
       )
     }
-    if (stats.failed > 0) return fail('tests.passed', fmt('uiGates.k104', { p1: stats.failedCaseIds.join(' ') }), t('uiGates.k105'))
+    // **DEF-143** (0.1.6): only failures of REGISTERED cases may redden this criterion.
+    // Orphan results (caseId not in the case registry) are variant-proving observations / history,
+    // not case conclusions: counting them as failures makes this criterion permanently red with no
+    // way to settle it (results are append-only and the write face rejects unknown caseIds).
+    // Do NOT widen back: the red set is derived from stats.failedRegisteredCaseIds alone.
+    if (stats.failedRegisteredCaseIds.length > 0) {
+      return fail('tests.passed', fmt('uiGates.k104', { p1: stats.failedRegisteredCaseIds.join(' ') }), t('uiGates.k105'))
+    }
     const unrun = listTestCases(ctx.store)
       .filter((testCase) => !listTestResults(ctx.store).some((result) => result.caseId === testCase.id))
       .map((testCase) => testCase.id)
@@ -1802,7 +1809,15 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     }
     // **REQ-053（TASK-039）**：走到这里 ⇒ `unadopted` 为空，`passedAdopted === passed`（都是"最新一条"口径）。
     // 报 `passedAdopted` 是把"读的是**已采纳**的通过数"写在回执上，读者不必再猜这个数字算不算独立验证过的。
-    return ok('tests.passed', fmt('uiGates.k110', { p1: stats.cases, p2: stats.passedAdopted }))
+    const passed = fmt('uiGates.k110', { p1: stats.cases, p2: stats.passedAdopted })
+    // **DEF-143**: orphan results must be NAMED on the green path too — "cannot be resolved" is never
+    // "all good". They do not redden the criterion, but swallowing them silently would be the exact
+    // failure mode this project keeps paying for.
+    if (stats.orphanResultCaseIds.length === 0) return ok('tests.passed', passed)
+    return ok('tests.passed', `${passed}\n${fmt('uiGates.kTestsOrphanResults', {
+      p1: String(stats.orphanResultCaseIds.length),
+      p2: stats.orphanResultCaseIds.join(' '),
+    })}`)
   },
 
   /**

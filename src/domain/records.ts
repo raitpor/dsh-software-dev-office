@@ -858,6 +858,26 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
   blockersOpen: number
   failedCaseIds: string[]
   /**
+   * **`DEF-143`（0.1.6 收尾）：无主结果** —— 有结果、但 `caseId` **不在用例登记表**（`listTestCases`）里的 id。
+   *
+   * 病根：`C-50` 按 caseId 取最新一条结果，凡是 `status=fail` 就记进「失败用例」。而台账里有 5 条结果是
+   * **变异自证的红侧观测**（`M95-03` / `TASK-063-RED` / `TC-076-RED` / `TC-076-RED-SUB` / `TC-103-RED`），
+   * 它们从来不是用例（`.sdo/tests/` 里没有文件），结果又不能删、也不能覆盖（写入面要求 caseId 在册）
+   * ⇒ 判据**永久红且没有收口路径**。
+   *
+   * 口径：无主结果既不是「通过」也不是「失败用例」，是**另一种东西**（变异观测 / 历史残留）——单列并点名，
+   * 既不算成失败（那会让判据永远红），也不算成通过（那是假绿）。去重后按字典序稳定排序。
+   * **既有 `failed` / `failedCaseIds` 语义一字不动**（m43/m56 等按它断言）：新语义用新字段。
+   */
+  orphanResultCaseIds: string[]
+  /**
+   * **`DEF-143`：已登记用例里最新结果是 `fail` 的 id** —— `C-50` 今后**只**按这个集合判红。
+   *
+   * 与 `failedCaseIds` 的差别只有一处：排除无主结果（`caseId` 不在用例登记表）。其余口径完全相同
+   * （都是"latest-wins 之后仍是 fail"）。
+   */
+  failedRegisteredCaseIds: string[]
+  /**
    * **D4（整仓评审 major）**：`tests/results/*.yml` 里有、但真源 journal **没有 `test/recorded`** 的结果 id。
    * 实测：手写 `TR-001.yml(status=pass, evidence='')` + journal 零事件 ⇒ `passed=1`，G6/C-50 照绿；
    * `recordTestResult(fail)` 之后把文件改成 `pass` 也查不出来（journal 里仍是 fail）。
@@ -940,6 +960,10 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
     // 过滤条件全部收在 `blockerBreakdown` 一处（判据与读数不再各抄一份，免得再次分叉）。
     blockersOpen: blockerBreakdown(defects).blocking.length,
     failedCaseIds: failed.map((result) => result.caseId),
+    // **DEF-143**：无主结果（caseId 不在登记表）单列 —— 去重 + 稳定排序，回执/判据共用这一份口径
+    orphanResultCaseIds: [...new Set(results.filter((result) => !casesById.has(result.caseId)).map((result) => result.caseId))].sort(),
+    // **DEF-143**：只有**已登记**用例的 fail 才进判红面（C-50 读这个）
+    failedRegisteredCaseIds: failed.filter((result) => casesById.has(result.caseId)).map((result) => result.caseId),
     unjournaled,
     tampered,
     unadopted,
@@ -1924,27 +1948,3 @@ export function renderDelivery(manifest: DeliveryManifest, header: string): stri
   return `${lines.join('\n')}\n`
 }
 
-/** 渲染 `docs/TESTPLAN.md`。 */
-export function renderTestPlan(input: { cases: TestCase[]; defects: Defect[]; header: string }): string {
-  const byKind: Record<string, TestCase[]> = {}
-  for (const testCase of input.cases) (byKind[testCase.kind] ??= []).push(testCase)
-  const lines = [input.header, '', '# 测试计划与用例', '']
-  for (const kind of ['unit', 'integration', 'e2e']) {
-    const cases = byKind[kind] ?? []
-    lines.push(`## ${kind}（${cases.length}）`)
-    lines.push('')
-    for (const testCase of cases) {
-      lines.push(`- ${testCase.id}　${testCase.title}${testCase.requirement === undefined ? '' : `　（覆盖 ${testCase.requirement}）`}`)
-      if (testCase.steps.length > 0) lines.push(`    - 步骤：${testCase.steps.join(' → ')}`)
-      lines.push(`    - 期望：${testCase.expected}`)
-    }
-    lines.push('')
-  }
-  lines.push(`## 缺陷（${input.defects.length}）`)
-  lines.push('')
-  if (input.defects.length === 0) lines.push('- 无')
-  for (const defect of input.defects) {
-    lines.push(`- ${defect.id}　[${defect.severity}/${defect.status}]　${defect.title}`)
-  }
-  return `${lines.join('\n')}\n`
-}

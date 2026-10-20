@@ -438,6 +438,12 @@ test('交付包：sha256 清单 + 验收矩阵 + 回滚点 + 原型排除（G7 �
   assert.match(fabricated?.detail ?? '', /AC-999/u, `必须点名那个编号：${fabricated?.detail}`)
 
   // 渲染交付与测试计划文档
+  // **`DEF-142`（0.1.6 收尾）**：`docs/TESTPLAN.md` 只从**计划真源**（`.sdo/testing/plan.yml`）渲染；
+  // 没有真源就不写并在回执里点名。本夹具要断言"两份都渲染"，所以按真实形态补一份最小计划真源
+  // （**只补夹具前置，不改任何断言**）。
+  store.writeYaml(['testing', 'plan.yml'], {
+    plan: { levels: [{ id: 'LV-001', level: '单元测试', entry: '实现完成', exit: '单测全绿', traceability: 'req-tc' }] },
+  })
   const docs = office.renderVerificationDocs(call())
   assert.deepEqual(docs, ['docs/TESTPLAN.md', 'docs/DELIVERY.md'])
   assert.match(readFileSync(join(workspace, 'docs', 'DELIVERY.md'), 'utf8'), /验收矩阵/u)

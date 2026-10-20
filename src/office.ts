@@ -91,7 +91,6 @@ import {
   recordTestCase,
   recordTestResult,
   renderDelivery,
-  renderTestPlan,
   updateDefect,
   verificationStats, listRuns, recordRun, type DefectUpdate, evidenceFreshness,
   orphanTestResults, reviewReproIssue, ReviewReproError} from './domain/records.js'
@@ -123,7 +122,8 @@ import { disposeIssue, listIssues, openIssue, openIssues } from './domain/issues
 import { exitGates, exitGatesFrom, gateDef, legalRollbackTargets, listProcessIds, loadProcess, nextPhase, pendingGate, phaseDef, phaseLabel } from './domain/process.js'
 import { renderSignReviewDoc, renderSignReviewSummary, renderTestReportSignable } from './domain/reviewDoc.js'
 // **C-59（TASK-062）**：签字时绑定报告内容指纹 ⇒ 读报告真源的两个既有入口（口径与判据同一份）
-import { TESTING_SOURCE_FILES, docSourceFingerprint } from './domain/testingStore.js'
+import { TESTING_SOURCE_FILES, docSourceFingerprint, readTestingFile } from './domain/testingStore.js'
+import { writeTestingDoc } from './domain/testingRender.js'
 import {
   diffPayloadIndex,
   payloadIndex,
@@ -4652,24 +4652,23 @@ export class SoftwareDevOffice {
     return packageDelivery(store, journal, { ...input, workspace, prototypeDir: config.prototype.dir })
   }
 
-  /** 渲染 `docs/TESTPLAN.md` 与 `docs/DELIVERY.md`。 */
+  /**
+   * 渲染 `docs/TESTPLAN.md` 与 `docs/DELIVERY.md`。
+   *
+   * **`DEF-142`（0.1.6 收尾）**：`docs/TESTPLAN.md` 此前有**两个渲染器、两套真源** —— 这里是
+   * `records.renderTestPlan`（真源 `.sdo/tests/`），而 `testingRender.writeTestingDoc`（真源
+   * `.sdo/testing/plan.yml`，REQ-047 的计划真源）**零调用点**。谁后写谁生效，且没有冲突提示。
+   * 现在只剩一个来源：计划真源。**没有真源就不写**（回执点名缺哪份），绝不退回旧渲染器写一份不同口径的文档。
+   */
   renderVerificationDocs(call: OfficeCall): string[] {
     const { store, journal, workspace } = this.contextFor(call)
     const seq = journal.read().events.length
     const written: string[] = []
-    written.push(
-      this.relativize(
-        workspace,
-        new SdoStore(workspace).writeText(
-          ['docs', 'TESTPLAN.md'],
-          renderTestPlan({
-            cases: listTestCases(store),
-            defects: listDefects(store),
-            header: renderHeader('.sdo/tests/', seq),
-          }),
-        ),
-      ),
-    )
+    if (readTestingFile(store, 'plan', 'plan').present) {
+      written.push(this.relativize(workspace, writeTestingDoc(store, 'plan', { store, seq }, journal).path))
+    } else {
+      written.push(fmt('uiIndex.kTestingPlanSkipped', { p1: '.sdo/testing/plan.yml' }))
+    }
     const manifest = readManifest(store)
     if (manifest !== undefined) {
       written.push(
