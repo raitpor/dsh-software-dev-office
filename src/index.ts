@@ -138,6 +138,9 @@ import { recordWorkspaceChanges } from './domain/workspaceChanges.js'
 // **TASK-108**：`sdo_review action=append` 的域层入口在 `collab.ts`（它已持有 `reviewAdoption` ——
 // 篡改判据只此一份，不在这里另写）；`office.storeFor` / `office.journalFor` 是 index.ts 能拿到的公开入口。
 import { appendReviewFindings } from './domain/collab.js'
+// **REQ-061（TASK-161）**：签字侧的三档作答台账 + 被签内容指纹。`office.signGate` 负责签字本身
+// （含门禁名归一与报告指纹），这里只补"这一档答的是哪一份内容"的可核凭据。
+import { recordSignAnswer, signPayloadSha256 } from './domain/signature.js'
 import { UNCLAIMED_CHILD_FACE, attributeRole, claimsBySession, dodToolGaps, filterKnownTools, maskFingerprint, roleCardPath, roleMaskDecision, toolAllowList, curatedDenyPhantoms } from './domain/roles.js'
 import { PLUGIN_PACKAGE_NAME, loadedBuild, sameBuild, worktreeBuildOf } from './domain/buildInfo.js'
 
@@ -3291,16 +3294,63 @@ export function apply(ctx: Context, config: SdoConfig): void {
           //    客户端半按**固定路径**只读取它并放进右侧边栏（顺带成为"签字时看到过什么"的审计件）。
           const review = office.signReview(call, args.gate)
           const answer = await deps.gateSignQuestion?.(call, args.gate, review.summary)
+          // **作答时刻**（REQ-061 AC-249）：宿主把所选标签交回工具的那一刻 —— 不是落盘时刻、
+          // 更不是模型愿意写的任何时间。它随签字/作答一起进台账。
+          const answeredAt = new Date().toISOString()
           if (answer === undefined) {
             // **`DEF-110`（第十三批 §2.2）**：通道不可用 ≠ 用户拒签 —— 落**独立事件**并在回执给出路
             office.noteSignUnavailable(call, args.gate, 'question', 'no-answerer-or-no-answer')
             return t('uiIndex.kSignNoChannel')
           }
-          if (answer.selectedLabel !== t('uiSign.signOption')) {
-            // **次要 2（2026-10-09 整体评审）**：question 通道的"用户拒绝"以前**不留痕** ⇒
-            // 台账上"问过、被拒"与"没问过"长得一样。与陈述式拒绝同口径记一条中性事件。
+          // **REQ-061（TASK-161）：三档作答**。归类依据只有一样东西 —— 宿主回传的**选项原文**
+          // （`uiSign.signOption` / `declineOption` / `reviseOption`）。模型给的文本进不了这里：
+          // 卡片的选项是把上面这三个标签交出去的，回来的字符串只能来自它们之一（或 free-text 的 custom）。
+          const signLabel = t('uiSign.signOption')
+          const declineLabel = t('uiSign.declineOption')
+          const reviseLabel = t('uiSign.reviseOption')
+          const decision = answer.selectedLabel === signLabel
+            ? 'approve'
+            : answer.selectedLabel === declineLabel
+              ? 'reject'
+              : answer.selectedLabel === reviseLabel
+                ? 'revise'
+                : undefined
+          // **被签的内容**（AC-249）：呈现给用户的**那一份**审核单全文 + 呈现时刻的 journal 序号。
+          // 两者都进哈希：只算正文答不出"是那一刻的哪一版"，只算序号答不出"内容是哪一份"。
+          const payloadSha256 = signPayloadSha256({ seq: review.record.seq, body: review.full })
+          // 落作答台账的公共前半（门禁名用**落盘里那个规范名**，不是入参原串）
+          const ledgerInput = {
+            gate: review.record.gate,
+            label: answer.selectedLabel,
+            payloadSha256,
+            answeredAt,
+            provenance: 'user-question',
+            channel: 'question',
+            ...(args.turn === undefined ? {} : { turn: args.turn }),
+          } as const
+          if (decision === undefined) {
+            // **AC-252**：`custom` 自由文本作答**不得**充当破坏性决策的批准 —— 它可以当备注，
+            // 但没有签字效力，因此**不落签字、也不进作答台账**（三档里没有它这一档），
+            // 只留一条中性的 `gate/sign-rejected`（"有人试图用自由文本批准"）。
             office.noteSignRejected(call, args.gate, 'question', answer.selectedLabel)
-            return fmt('uiIndex.kSignDeclined', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
+            return fmt('uiIndex.kSignCustomNoForce', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
+          }
+          if (decision !== 'approve') {
+            // **拒绝 / 要求修改**：同样**落账**（否则"用户拒绝了"与"还没问过"在读面上长得一样），
+            // 但**不写签字** —— 门禁保持未签。`recordSignAnswer` 是不可信即拒收的唯一入口。
+            const recorded = recordSignAnswer(office.storeFor(office.requireWorkspace(call)), { ...ledgerInput, decision })
+            office.noteSignRejected(call, args.gate, 'question', answer.selectedLabel)
+            const head = decision === 'reject'
+              ? fmt('uiIndex.kSignDeclined', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
+              : fmt('uiIndex.kSignRevise', { p1: gateLabel(args.gate), p2: answer.selectedLabel })
+            return `${head}\n${fmt('uiIndex.kSignAnswerBound', {
+              p1: fmt('uiSignature.answerBound', {
+                p1: recorded.decision,
+                p2: recorded.payloadSha256.slice(0, 12),
+                p3: recorded.answeredAt,
+                p4: recorded.provenance,
+              }),
+            })}`
           }
           // **审核单新鲜度**（2026-10-12）：用户从看到卡片到作答可能过了几分钟，
           // 期间真源若被改动，用户签的就是**过期审核单**。这里在落签字之前重算指纹核对，
@@ -3313,18 +3363,40 @@ export function apply(ctx: Context, config: SdoConfig): void {
               p2: drift.join('；'),
             })
           }
-          const signature = office.signGate(call, {
+          // **REQ-061（TASK-161）**：应答凭据四字段随签字一起进台账 ——
+          // 「他批准的是哪一份内容、什么时候答的、按哪一档、凭哪种来源」都成了可事后核对的机械事实。
+          // 先收进一个变量（而不是就地写字面量）：`office.signGate` 的入参类型声明还没跟上这四个字段
+          // （`office.ts` 不在本卡写范围），而运行期靠 `{ ...input }` 原样透传 —— 变量形态既让类型检查
+          // 通过，又不丢字段。等 `office.ts` 被改到时，把这四个字段补进入参类型即可删掉这层绕行。
+          const signInput = {
             gate: args.gate,
             by: args.approvedBy ?? 'human',
             // 引用 = **用户所选选项原文**（由本工具自己取回，不经过模型）
             basis: answer.selectedLabel,
-            channel: 'question',
+            channel: 'question' as const,
             // **R-27（回归修正）**：question 通道的依据是**本次当场取回**的（工具自己问的用户），
             // 选项标签逐字重复是设计使然 ⇒ 不参与重放判定（否则第二次点选会被误拒）。
             basisFresh: true,
+            decision,
+            payloadSha256,
+            answeredAt,
+            provenance: 'user-question' as const,
             ...(args.turn === undefined ? {} : { turn: args.turn }),
-          })
-          return describeSignature(signature, office.signatureState(call, signature.gate)) + signPrecheck(signature.gate)
+          }
+          const signature = office.signGate(call, signInput)
+          // 作答台账：**批准这一档也要落**（三档各自可落账）。写在签字之后 ——
+          // 签字若被判据/重放拒绝（抛错），台面上就不该留一条"他批准了"的作答。
+          recordSignAnswer(office.storeFor(office.requireWorkspace(call)), { ...ledgerInput, decision })
+          return describeSignature(signature, office.signatureState(call, signature.gate))
+            + signPrecheck(signature.gate)
+            + '\n' + fmt('uiIndex.kSignAnswerBound', {
+              p1: fmt('uiSignature.answerBound', {
+                p1: 'approve',
+                p2: payloadSha256.slice(0, 12),
+                p3: answeredAt,
+                p4: 'user-question',
+              }),
+            })
         }
         // **无审核单 ⇒ 不许盲签**（2026-10-12）：`channel=statement` 的依据是用户"以前说过的话"，
         // 他可能根本没看过审核单。要求该门禁**先有审核单**且**与当前真源一致**。
@@ -3481,6 +3553,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const questionId = 'sdo-gate-sign'
       const signLabel = t('uiSign.signOption')
       const declineLabel = t('uiSign.declineOption')
+      // **REQ-061（TASK-161）：固定三档**。第三档「要求修改」不是"再问一次的礼貌"——
+      // 它让"用户要改"这件事**可落账**（AC-249 的三档之一），而旧的两档把这种表态压成了"暂不签字"。
+      const reviseLabel = t('uiSign.reviseOption')
       const answer = await ask.call(interaction, {
         questions: [
           {
@@ -3494,6 +3569,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             options: [
               { label: signLabel, description: t('uiSign.signCost') },
               { label: declineLabel, description: t('uiSign.declineCost') },
+              { label: reviseLabel, description: t('uiSign.reviseCost') },
             ],
           },
         ],

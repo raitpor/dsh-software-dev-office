@@ -14,6 +14,8 @@
  *
  * 落盘：`.sdo/gates/signatures.yml`（追加式，同一门禁保留全部历史，取**最新一条**判定）。
  */
+import { createHash } from 'node:crypto'
+
 import type { Journal } from '../infra/journal.js'
 import { pushShapeNote, recordListOf, textOf } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
@@ -24,6 +26,91 @@ import { fmt, t } from './i18n.js'
 
 /** 签字台账文件（`.sdo/gates/signatures.yml`）。 */
 export const SIGNATURES_FILE = 'signatures.yml'
+
+/** 签字台账里**作答记录**那一栏的键（`.sdo/gates/signatures.yml` 的 `answers`）。 */
+export const SIGN_ANSWERS_KEY = 'answers'
+
+/**
+ * **三档作答**（REQ-061 / AC-249、AC-252、AC-253）。
+ *
+ * 破坏性决策的批准只有「问答通道里选了哪一档」这一种权威形态：批准 / 拒绝 / 要求修改。
+ * 三档**都要能落账**（否则"用户其实拒绝了"在读面上与"还没问过"长得一样），
+ * 但只有 `approve` 才可能变成有效签字 —— `reject` / `revise` 只入作答台账，**不写签字**。
+ */
+export type SignDecision = 'approve' | 'reject' | 'revise'
+
+/** 三档的**全部合法取值**（回执里要能原样点名，判据也不许各写一份）。 */
+export const SIGN_DECISIONS: readonly SignDecision[] = ['approve', 'reject', 'revise']
+
+/**
+ * **作答来源凭据**（REQ-061 AC-250、AC-248）。
+ *
+ * 光有"选项标签"证明不了「这是用户本人在界面上点的」：预填默认、自动作答、复用旧答
+ * 都能产出同一个标签。因此台账里必须有一项**来源凭据**，而本插件只承认一种：
+ * `user-question` —— 由**本工具自己**向宿主发问、宿主把所选标签回传（标签不经过模型）。
+ * 其余取值（预填 / 自动 / 复用 / 未知）一律**拒收**：宁可拒签，也不写一条"看着像批准"的记录。
+ */
+export type SignProvenance = 'user-question' | 'prefilled-default' | 'auto-answer' | 'reused-answer' | 'unknown'
+
+/** **唯一被承认的来源凭据**（判据只有这一处，回执与拒收都读它）。 */
+export const TRUSTED_SIGN_PROVENANCES: readonly SignProvenance[] = ['user-question']
+
+/**
+ * **被签内容的指纹**（REQ-061 AC-249）—— `sha256(seq + body)`。
+ *
+ * 两个成分都是必需的：
+ *   · `body` = **呈现给用户的那一份正文**（签字审核单全文）。只记 `seq` 证不出"他签的是哪一版内容"；
+ *   · `seq` = 呈现那一刻的 journal 序号。只记 `body` 会在"内容一字未改、但真源另有一串事件"时
+ *     判不出先后（`reviewFingerprint` 只看内容，不看时刻）。
+ *
+ * **归一化**（`\r\n → \n`、去掉尾部空白）：同一份正文既可能来自内存里的渲染结果，也可能从
+ * `.sdo/evidence/sign-reviews/<门禁>.md` 读回（`writeText` 会补一个换行）—— 两者必须算出**同一个**
+ * 指纹，否则事后审计"从盘上重算"永远对不上，等于没绑。
+ */
+export function signPayloadSha256(payload: { seq: number; body: string }): string {
+  const body = payload.body.replace(/\r\n/gu, '\n').replace(/\s+$/u, '')
+  const seq = Number.isFinite(payload.seq) ? Math.trunc(payload.seq) : 0
+  return createHash('sha256').update(`sdo-sign-payload/v1\nseq=${seq}\n${body}`, 'utf8').digest('hex')
+}
+
+/** 取值 → 三档之一（拿不准就 `undefined`：**不猜**，由调用方拒收）。 */
+export function signDecisionOf(value: unknown): SignDecision | undefined {
+  const text = textOf(value).trim()
+  return (SIGN_DECISIONS as readonly string[]).includes(text) ? (text as SignDecision) : undefined
+}
+
+/** 取值 → 来源凭据之一（拿不准就 `undefined`：**不猜**）。 */
+export function signProvenanceOf(value: unknown): SignProvenance | undefined {
+  const text = textOf(value).trim()
+  const all: readonly string[] = ['user-question', 'prefilled-default', 'auto-answer', 'reused-answer', 'unknown']
+  return all.includes(text) ? (text as SignProvenance) : undefined
+}
+
+/**
+ * **REQ-061（TASK-161）—— 签字台账的应答凭据字段**（TypeScript **声明合并**）。
+ *
+ * 为什么不直接在 `types.ts` 的 `GateSignature` 里加字段：本卡的写范围是
+ * `src/domain/signature.ts` / `src/index.ts` / 两份语言包 / `test/m203.test.ts`，`types.ts` 不在其中。
+ * 声明合并让类型面**仍然只有一份**（读写两侧同源），也不会多出"第二个签字记录类型"。
+ *
+ * 记什么：
+ *   · `payloadSha256`：被签内容的指纹（`signPayloadSha256`，含 seq 与 body）；
+ *   · `answeredAt`：**作答时刻**（问答通道里答案回到工具的那一刻，不是落盘时刻）；
+ *   · `decision`：三档作答（缺口补齐：批准/拒绝/要求修改）；
+ *   · `provenance`：来源凭据（只有 `user-question` 被承认，见 `TRUSTED_SIGN_PROVENANCES`）。
+ */
+declare module '../types.js' {
+  interface GateSignature {
+    /** 被签内容的指纹：`signPayloadSha256({ seq, body })`（REQ-061 AC-249） */
+    payloadSha256?: string | undefined
+    /** 作答时刻（ISO8601）：宿主把所选标签交回工具的那一刻 */
+    answeredAt?: string | undefined
+    /** 三档作答；缺字段 = 历史签字（旧口径只有"签了"这一种） */
+    decision?: SignDecision | undefined
+    /** 来源凭据；缺字段 = 历史签字 */
+    provenance?: SignProvenance | undefined
+  }
+}
 
 /**
  * 读签字台账并**做形状归一化**（F-21 ①）。
@@ -64,6 +151,12 @@ export function readSignaturesChecked(
     // 缺字段时**不补默认值**：`undefined` 与「记了个空串」是两件事 —— 前者是历史签字（走降级口径），
     // 后者是台账被写坏（应当能被判据看出来）。
     ...(textOf(item.reportFingerprint) === '' ? {} : { reportFingerprint: textOf(item.reportFingerprint) }),
+    // **REQ-061（TASK-161）**：应答凭据四字段 —— 同样是「缺字段 = 历史签字」，
+    // **不补默认值**（`undefined` 与空串是两件事，判据要能看出台账被写坏）。
+    ...(textOf(item.payloadSha256) === '' ? {} : { payloadSha256: textOf(item.payloadSha256) }),
+    ...(textOf(item.answeredAt) === '' ? {} : { answeredAt: textOf(item.answeredAt) }),
+    ...(signDecisionOf(item.decision) === undefined ? {} : { decision: signDecisionOf(item.decision) }),
+    ...(signProvenanceOf(item.provenance) === undefined ? {} : { provenance: signProvenanceOf(item.provenance) }),
   }))
   return { signatures, notes }
 }
@@ -76,6 +169,29 @@ export function listSignatures(store: SdoStore): GateSignature[] {
 /** 签字台账上的形状提示（回执 / 门禁详情共用）。 */
 export function signatureShapeNotes(store: SdoStore): FieldShapeNote[] {
   return readSignaturesChecked(store).notes
+}
+
+/**
+ * **签字台账文件的原样文档**（`signatures` + `answers` 两栏共处一个文件）。
+ *
+ * 为什么写之前要先读回整份：两个写入面（签字 / 作答）各写一栏，若各写各的
+ * 「只带自己那一栏」的文档，后写的那一次就会**把另一栏悄悄抹掉**。写盘一律走这里，
+ * 只覆盖自己那一栏，另一栏原样带过去。
+ */
+function gateLedgerDoc(store: SdoStore): Record<string, unknown> {
+  const doc = store.readYaml<unknown>('gates', SIGNATURES_FILE)
+  if (doc === null || typeof doc !== 'object' || Array.isArray(doc)) return {}
+  return { ...(doc as Record<string, unknown>) }
+}
+
+/** 只写 `signatures` 一栏（`answers` 原样保留）。 */
+function writeSignatureColumn(store: SdoStore, signatures: GateSignature[]): void {
+  store.writeYaml(['gates', SIGNATURES_FILE], { ...gateLedgerDoc(store), signatures })
+}
+
+/** 只写 `answers` 一栏（`signatures` 原样保留）。 */
+function writeAnswerColumn(store: SdoStore, answers: SignAnswer[]): void {
+  store.writeYaml(['gates', SIGNATURES_FILE], { ...gateLedgerDoc(store), [SIGN_ANSWERS_KEY]: answers })
 }
 
 /**
@@ -207,6 +323,153 @@ export function basisReplay(
   }
 }
 
+/**
+ * **一条作答记录**（`gates/signatures.yml` 的 `answers` 栏）—— REQ-061 口径逐字：
+ * `{decision, label, payloadSha256, answeredAt, provenance, channel: question}`（外加门禁名）。
+ *
+ * 为什么三档都落**同一个**列表：只有把"批准 / 拒绝 / 要求修改"摆在一起，
+ * 读面才分得清「用户拒绝了」与「还没问过」；而**只有 `approve` 档**会另有一条签字记录。
+ */
+export interface SignAnswer {
+  gate: string
+  decision: SignDecision
+  /** 所选选项原文（自由文本被拒，不会出现在这里） */
+  label: string
+  /** 被签内容的指纹（`signPayloadSha256`） */
+  payloadSha256: string
+  /** 作答时刻（ISO8601） */
+  answeredAt: string
+  provenance: SignProvenance
+  channel: 'question'
+  turn?: string | undefined
+}
+
+/**
+ * **记一次作答**的入参。
+ *
+ * `source` 一栏是为了 AC-252：`custom`（自由文本作答）**不能**充当破坏性决策的批准 ——
+ * 它可以被记成备注，但**不许**进作答台账、更不许变成签字。
+ */
+export interface RecordSignAnswerInput {
+  gate: string
+  /** 三档之一（字符串形态进来，由 `signDecisionOf` 归一；非法值**拒收**） */
+  decision: string
+  /** 所选选项原文（**必填**：缺引用依据不许落账） */
+  label: string
+  payloadSha256: string
+  answeredAt?: string | undefined
+  /** 来源凭据（**只有 `user-question` 被承认**） */
+  provenance: string
+  /** 来源通道：破坏性决策只认 `question` */
+  channel: string
+  /** `option` = 用户点了三档之一；`custom` = 自由文本作答（不得充当批准） */
+  source?: 'option' | 'custom' | undefined
+  turn?: string | undefined
+}
+
+/** 读作答台账并做形状归一化（与签字台账同一套容器口径：手写成标量不许把读面炸掉）。 */
+export function readSignAnswersChecked(
+  store: SdoStore,
+): { answers: SignAnswer[]; notes: FieldShapeNote[] } {
+  const notes: FieldShapeNote[] = []
+  const raw = store.readYaml<{ answers?: unknown }>('gates', SIGNATURES_FILE)?.[SIGN_ANSWERS_KEY]
+  if (raw === undefined || raw === null) return { answers: [], notes: [] }
+  const read = recordListOf<Record<string, unknown>>(raw, (text) => ({
+    gate: text,
+    decision: 'reject',
+    label: '',
+    payloadSha256: '',
+    answeredAt: '',
+    provenance: 'unknown',
+    channel: 'question',
+  }))
+  pushShapeNote(notes, 'answer', SIGNATURES_FILE, SIGN_ANSWERS_KEY, read.issue)
+  const answers: SignAnswer[] = []
+  for (const item of read.value) {
+    const decision = signDecisionOf(item['decision'])
+    const provenance = signProvenanceOf(item['provenance'])
+    // 三档都认（`reject` / `revise` 是真的作答）；认不出的决策**不进台账视图**
+    // —— 它不是作答，别拿它冒充任何一档（读取侧不许猜）。
+    if (decision === undefined) continue
+    answers.push({
+      gate: textOf(item['gate']),
+      decision,
+      label: textOf(item['label']),
+      payloadSha256: textOf(item['payloadSha256']),
+      answeredAt: textOf(item['answeredAt']),
+      provenance: provenance ?? 'unknown',
+      channel: 'question',
+      ...(textOf(item['turn']) === '' ? {} : { turn: textOf(item['turn']) }),
+    })
+  }
+  return { answers, notes }
+}
+
+/** 全部作答记录（按落账顺序）。 */
+export function listSignAnswers(store: SdoStore): SignAnswer[] {
+  return readSignAnswersChecked(store).answers
+}
+
+/**
+ * **落一次作答**（三档通用）—— 唯一入口，**不可信就拒收且一个字节都不写**。
+ *
+ * 拒收的四种情形（每一种都有自己的语言键，回执能点名缺的是什么）：
+ *   ① `channel !== 'question'`：来源不是人机关口问答通道（AC-248）。陈述面/模型自述**没有**批准效力；
+ *   ② `decision` 不是三档之一：不知道用户选了什么，不许瞎记；
+ *   ③ `label` 空：缺少引用依据（"用户选了某个标签"必须能逐字回证）；
+ *   ④ `provenance` 不是 `user-question`：只有选项标签、没有"用户本人点的"这项凭据（AC-250）；
+ *   ⑤ `source === 'custom'`：自由文本作答（AC-252，可作备注，不得充当批准）。
+ *
+ * 校验**全部**在写盘之前完成：任何一条不过就 `throw`，台账文件保持原样（不存在就继续不存在）。
+ * 这是"拒收不可信作答"的机械面 —— 工具层的友好回执另有一份，但直接调用这一层也绕不过去。
+ */
+export function recordSignAnswer(store: SdoStore, input: RecordSignAnswerInput): SignAnswer {
+  const channel = textOf(input.channel).trim()
+  if (channel !== 'question') {
+    throw new Error(
+      `${fmt('uiSignature.answerChannelRequired', { p1: channel === '' ? '?' : channel })}\n${t('uiSignature.answerRemedies')}`,
+    )
+  }
+  const decision = signDecisionOf(input.decision)
+  if (decision === undefined) {
+    throw new Error(fmt('uiSignature.answerDecisionUnknown', {
+      p1: textOf(input.decision) === '' ? '?' : textOf(input.decision),
+      p2: SIGN_DECISIONS.join(' / '),
+    }))
+  }
+  const label = textOf(input.label).trim()
+  if (label === '') throw new Error(t('uiSignature.answerLabelRequired'))
+  if (input.source === 'custom') throw new Error(fmt('uiSignature.answerFreeText', { p1: label }))
+  const payloadSha256 = textOf(input.payloadSha256).trim().toLowerCase()
+  if (!/^[0-9a-f]{64}$/u.test(payloadSha256)) {
+    throw new Error(fmt('uiSignature.answerPayloadRequired', {
+      p1: payloadSha256 === '' ? '?' : payloadSha256,
+    }))
+  }
+  const provenance = signProvenanceOf(input.provenance)
+  if (provenance === undefined || !TRUSTED_SIGN_PROVENANCES.includes(provenance)) {
+    throw new Error(
+      `${fmt('uiSignature.answerProvenanceRequired', {
+        p1: provenance === undefined ? (textOf(input.provenance) === '' ? '?' : textOf(input.provenance)) : provenance,
+        p2: TRUSTED_SIGN_PROVENANCES.join(' / '),
+      })}\n${t('uiSignature.answerRemedies')}`,
+    )
+  }
+  const answeredAt = textOf(input.answeredAt).trim() === '' ? new Date().toISOString() : textOf(input.answeredAt).trim()
+  const answer: SignAnswer = {
+    gate: textOf(input.gate),
+    decision,
+    label,
+    payloadSha256,
+    answeredAt,
+    provenance,
+    channel: 'question',
+    ...(input.turn === undefined ? {} : { turn: input.turn }),
+  }
+  writeAnswerColumn(store, [...listSignAnswers(store), answer])
+  return answer
+}
+
 export interface RecordSignatureInput {
   gate: string
   by: string
@@ -251,6 +514,16 @@ export interface RecordSignatureInput {
    * 值就是报告渲染头里那一个口径（`docSourceFingerprint(store,'report')`），不另造哈希。
    */
   reportFingerprint?: string | undefined
+  /**
+   * **REQ-061（TASK-161）—— 应答凭据四字段**（只有问答通道会带）。
+   *
+   * 缺字段 = 历史签字 / 陈述面弱签字（旧口径只有"签了"这一种形态），**不补默认值**：
+   * 补一个假的 `provenance` 就等于把"没凭据"洗成"有凭据"。
+   */
+  payloadSha256?: string | undefined
+  answeredAt?: string | undefined
+  decision?: SignDecision | undefined
+  provenance?: SignProvenance | undefined
 }
 
 /**
@@ -304,6 +577,12 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),
     // **C-59（TASK-062）**：签字绑定的报告内容指纹进真源 —— 「签的是哪一版报告」从此可事后核对
     ...(input.reportFingerprint === undefined ? {} : { reportFingerprint: input.reportFingerprint }),
+    // **REQ-061（TASK-161）**：被签内容的指纹 / 作答时刻 / 三档作答 / 来源凭据 —— 四样一起进真源，
+    // 审计才回答得了「谁、在什么时候、就哪一份内容、按哪一种凭据、作了哪一档答」。
+    ...(input.payloadSha256 === undefined ? {} : { payloadSha256: input.payloadSha256 }),
+    ...(input.answeredAt === undefined ? {} : { answeredAt: input.answeredAt }),
+    ...(input.decision === undefined ? {} : { decision: input.decision }),
+    ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
   })
   const signature: GateSignature = {
     gate: input.gate,
@@ -321,10 +600,14 @@ export function recordSignature(store: SdoStore, journal: Journal, input: Record
     ...(input.turn === undefined ? {} : { turn: input.turn }),
     ...(input.basisChecked === undefined ? {} : { basisChecked: input.basisChecked }),
     ...(input.reportFingerprint === undefined ? {} : { reportFingerprint: input.reportFingerprint }),
+    ...(input.payloadSha256 === undefined ? {} : { payloadSha256: input.payloadSha256 }),
+    ...(input.answeredAt === undefined ? {} : { answeredAt: input.answeredAt }),
+    ...(input.decision === undefined ? {} : { decision: input.decision }),
+    ...(input.provenance === undefined ? {} : { provenance: input.provenance }),
     atSeq: event.seq,
   }
-  const existing = listSignatures(store)
-  store.writeYaml(['gates', SIGNATURES_FILE], { signatures: [...existing, signature] })
+  // **两栏共处一个文件**：写签字时必须把作答栏原样带过去（否则一次签字会把三档作答抹掉）
+  writeSignatureColumn(store, [...listSignatures(store), signature])
   return signature
 }
 

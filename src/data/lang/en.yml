@@ -1784,6 +1784,9 @@ uiIndex:
   kChangeAcceptanceReplace: "Replace all acceptance criteria ({p1}): new ids {p2}"
   kSignQuoteMismatch: "The quote does not match: this passage does not appear in the user messages of this session, so it cannot serve as the basis of a signature (if the user did say it, copy that sentence verbatim; if the user answered a question (option or typed reply alike — since 0.2.1 such replies carry `user-question-reply` provenance and no longer count as the user own words), use `channel=question` so this tool fetches it on the spot)."
   kSignDeclined: "The user did not choose to sign (chosen: {p1}); {p2} stays unsigned"
+  kSignRevise: "Gate {p1}: the user chose \"{p2}\" - **changes requested**, so this attempt does **not** sign (the answer is in the ledger). Change the source of truth as requested, then regenerate the review so the user can read it again."
+  kSignCustomNoForce: "REJECTED for gate {p1}: this answer is **free text** (\"{p2}\") - **free text has no signing force**, so **no signature was written** (it may only serve as a remark). Destructive decisions accept only the three options in the question channel: approve / decline / request changes."
+  kSignAnswerBound: "This answer is now in the ledger: {p1}"
   kRollbackNoTarget: "A phase rollback must name its target phase (to=…)"
   unusedArgs: 'These arguments were NOT used: {p1} (this action does not consume them, so nothing is recorded) — switch to an action that does, or drop them'
   kRebuildForced: "- The derived projection (`project.json`) was force-rebuilt from the **current source of truth** — this happened because you asked for it explicitly; the automatic path never overwrites the projection while the source is damaged."
@@ -2039,6 +2042,14 @@ uiSignature:
   invalidatingEventsBlacklist: "; invalidation rule (gate {p1}): a **deny-list** — apart from pure read/render/metering/bookkeeping events (such as `design/rendered`, `gate/result`, `phase/*`, `task/*`, `cost/*`), any write to the source of truth makes the signature stale (compared by journal sequence). It is inverted because an allow-list leaves a hole for every source it forgets"
 
   truncated: "Cannot be determined: `journal.jsonl` line {p1} is corrupt (truncated to the last consistent prefix), so it is **impossible to confirm whether any invalidating event happened after gate {p2} was signed**; fix that line and judge again (neither `valid` nor `stale` is reported now)."
+  answerChannelRequired: "REJECTED, nothing was written to the ledger: approval of a destructive decision is only accepted from the **human-in-the-loop question channel** (`channel=question`, where the option label comes back from the host and never passes through the model). This attempt came from \"{p1}\"."
+  answerDecisionUnknown: "REJECTED, nothing was written to the ledger: `{p1}` is not one of the three answers. The only legal values are {p2} - all three tiers can be recorded, but an unrecognised value may not impersonate any of them."
+  answerLabelRequired: "REJECTED, nothing was written to the ledger: the **quoted basis** is missing (the verbatim label the user chose). Without it there is no way to re-verify what the user actually selected."
+  answerPayloadRequired: "REJECTED, nothing was written to the ledger: the **sha256 of the signed payload** is missing (received \"{p1}\"). Without it nobody can answer later which revision was approved."
+  answerProvenanceRequired: "REJECTED, nothing was written to the ledger: the **provenance credential** is missing (received \"{p1}\"; this plugin only trusts {p2}). A bare option label cannot tell a real user click from a prefilled default, an auto answer, or a reused old answer."
+  answerFreeText: "REJECTED, nothing was written to the ledger: \"{p1}\" is a **free-text** answer - **free text has no signing force** (it may serve as a remark only). Destructive decisions accept only the three options: approve / decline / request changes."
+  answerRemedies: "Three actionable ways out: (1) **retry** - let the tool ask again in the Web GUI (`sdo_gate action=sign channel=question`); (2) **present first, then sign** - put the pending content (the full gate review) in front of the user, hash it, and ask again; (3) **manual check** - have a human verify it, and still pick one of the three options in the question channel afterwards (the statement channel only yields a weak signature and never freezes the gate)."
+  answerBound: "answer **{p1}** · signed payload sha256 `{p2}` · answered at {p3} · provenance {p4}"
 uiSign:
   header: "Gate signature"
   question: "Approve gate {p1}?"
@@ -2047,6 +2058,8 @@ uiSign:
   signCost: "The gate may then pass; a later declaration or requirement change invalidates the signature"
   declineOption: "Do not sign yet"
   declineCost: "The gate stays unsigned for now and cannot pass"
+  reviseOption: "Request changes (do not sign yet)"
+  reviseCost: "The gate stays unsigned; say in the session what has to change, then read the regenerated review again"
 
 uiSignReview:
   title: "# Gate signature review · {p1}"
