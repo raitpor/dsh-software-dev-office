@@ -13,6 +13,7 @@ import type { FieldShapeNote } from '../infra/scalar.js'
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import { isEffectivelyOpen } from './dor.js'
+import { listRisks, logRisk } from './risks.js'
 import type { GrillQuestion, RedTeamIssue, RiskItem } from '../types.js'
 
 export function listIssueIds(store: SdoStore): string[] {
@@ -131,13 +132,25 @@ export function issueClosure(
   const related = questions.filter((question) => issue.questionIds.includes(question.id))
   const openQuestionIds = related.filter((question) => isEffectivelyOpen(question)).map((question) => question.id)
   const downgraded = related.filter((question) => question.status === 'assumed' && !isEffectivelyOpen(question))
-  if (issue.disposition !== 'none') {
-    return { closed: true, openQuestionIds, reason: `已处置为 ${issue.disposition}` }
-  }
-  // 「转为风险」也算闭环：风险登记里有一条 origin 指向本议题即可（设计 §5.4：回到需求或转为风险）
+  // **`DEF-134`（0.1.6 收尾 T7，2026-10-20）**：处置**必须有后果**。
+  // 病根：旧实现对任何 `disposition !== 'none'` 一律判闭环 ⇒ "转为风险"可以**没有风险**，
+  // 门禁照样认闭环（只有标签、没有后果）。
+  // 任何处置方式下，「风险登记里有 origin 指向本议题的风险」都算闭环（设计 §5.4，m3 路径 B）。
   const converted = risks.filter((risk) => risk.origin === issue.id)
   if (converted.length > 0) {
     return { closed: true, openQuestionIds, reason: `已转为风险 ${converted.map((risk) => risk.id).join(' ')}` }
+  }
+  // 但**只有标签、没有风险项**不算闭环（DEF-134）。
+  if (issue.disposition === 'risk') {
+    return {
+      closed: false,
+      openQuestionIds,
+      reason: `处置记为「转为风险」，但风险登记里没有 origin=${issue.id} 的风险项 ⇒ 未闭环（标签不等于后果；用 \`sdo_redteam action=dispose disposition=risk\` 会真的建一条风险）`,
+    }
+  }
+  // 「回到需求」是**有去向**的处置（需求/质询台账承载），按闭环算。
+  if (issue.disposition === 'requirement') {
+    return { closed: true, openQuestionIds, reason: '已处置为 requirement（回到需求）' }
   }
   if (openQuestionIds.length === 0) {
     return {
@@ -165,18 +178,52 @@ export function openIssues(
   return out
 }
 
-/** 显式处置一个议题（转为风险 / 回到需求），写 `issue/closed`。 */
+/** `dispose=risk` 可指定的风险字段（缺省时从议题**派生**，保证"有后果"且四字段齐备）。 */
+export interface DisposeRiskInput {
+  title?: string | undefined
+  level?: RiskItem['level'] | undefined
+  probability?: RiskItem['probability'] | undefined
+  impact?: string | undefined
+  mitigation?: string | undefined
+  owner?: string | undefined
+}
+
+/**
+ * 显式处置一个议题（转为风险 / 回到需求），写 `issue/closed`。
+ *
+ * **`DEF-134`（0.1.6 收尾 T7）**：`disposition='risk'` **必须真的建一条风险项**（`origin` = 议题 id，
+ * 带 `title/level/probability/impact`）—— 旧实现只把标签写进议题文件，风险登记里什么都没有，
+ * 而 `issueClosure` 认闭环 ⇒ 门禁被"标签"骗过。现在：已存在 `origin` 指向本议题的风险就复用，
+ * 否则**当场新建**。
+ */
 export function disposeIssue(
   store: SdoStore,
   journal: Journal,
   id: string,
   disposition: 'risk' | 'requirement',
   note: string,
+  risk: DisposeRiskInput = {},
 ): RedTeamIssue | undefined {
   const current = readIssue(store, id)
   if (current === undefined) return undefined
+  // **先建后果，再改标签**：不留"标签已写、后果没有"的中间态。
+  let riskId: string | undefined
+  if (disposition === 'risk') {
+    const existing = listRisks(store).find((item) => item.origin === current.id)
+    riskId = existing?.id ?? logRisk(store, journal, {
+      title: risk.title ?? `红队议题 ${current.id}（${current.target}）`,
+      level: risk.level ?? 'medium',
+      probability: risk.probability ?? 'medium',
+      impact: risk.impact ?? (textOf(note).trim() === ''
+        ? `议题 ${current.id} 的攻击角度：${current.angles.join('、')}`
+        : textOf(note)),
+      mitigation: risk.mitigation ?? '待评估（处置时创建，需后续填应对）',
+      owner: risk.owner ?? 'unassigned',
+      origin: current.id,
+    }).id
+  }
   const next: RedTeamIssue = { ...current, disposition, note, status: 'closed' }
   writeIssue(store, next)
-  journal.append('issue/closed', { id, disposition, note })
+  journal.append('issue/closed', { id, disposition, note, ...(riskId === undefined ? {} : { riskId }) })
   return next
 }
