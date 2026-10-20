@@ -21,6 +21,8 @@
 | [`2026-10-13-驾驶舱交接单.md`](2026-10-13-驾驶舱交接单.md) | 2026-10-13/14 | **现行交接（压缩或换会话后先读这篇）** | 驾驶舱的续接索引与口径：在飞卡与实况、串行链（DEF-067）、评审批、DEF-053…068 一句话索引、操作口径、下一步顺序。**不是真源** —— 细节一律以 `.sdo/` 为准 |
 | [`DECISIONS.md`](DECISIONS.md) | 2026-10-12 | **派生视图（勿手改）** | 架构决策记录（ADR）；真源 `.sdo/decisions/`，由 `sdo_render`（`target=decisions`）现渲染 —— 手改会在下次渲染时被覆盖（覆盖前留副本） |
 | [`DESIGN.md`](DESIGN.md) | 2026-10-13 | **派生视图（勿手改）** | 设计文档（可审查）：范围与关键约束、五视图、契约与不变量；真源 `.sdo/design/`，由 `sdo_design action=render` 现渲染；受 G3 的 `C-25` 内容指纹校验 |
+| [`TESTPLAN.md`](TESTPLAN.md) | 2026-10-20 | **派生视图（勿手改）** | 测试计划（Test Plan）：测试层级与每层入口/出口准则、环境与数据来源、回归范围、6 条准出准则（REQ-047 / REQ-050）；真源 `.sdo/testing/plan.yml`。⚠️ 目前**没有工具动作**渲染它，由驾驶舱调域层 `writeTestingDoc` 现渲染并登记 `doc/rendered` —— 缺工具入口这件事记在 0.1.7 的核/外壳清单里 |
+| [`TESTREPORT.md`](TESTREPORT.md) | 2026-10-20 | **派生视图（勿手改）** | 测试总结报告（Test Summary Report）：逐条准出准则的实测与结论（6 条：5 pass / 1 fail，`EC-004` 回归 61/74 不达标，如实写成 fail）、残余风险、回归范围与逐用例结果；真源 `.sdo/testing/report.yml`。签字前由人审，签字台账在 journal |
 | [`QUALITY.md`](QUALITY.md) | 2026-10-12 | **派生视图（勿手改）** | 质量属性与场景（含 ATAM 三清单）；真源 `.sdo/quality/`，由 `sdo_render`（`target=quality`）现渲染；受 G3 的 `C-2G` 校验 |
 | [`METHOD-evolutionary.md`](METHOD-evolutionary.md) | 2026-10-12 | **人审文档（随方法包生成）** | `evolutionary` 方法包的人审文档（G3 判据 `C-2F`）：技术债 / 可逆性 / 增量；文档头 `basis` 必须等于 `.sdo/design/method-debt.yml` 等产物的当前指纹，台账一变即失效、需重新生成 |
 | [`METHOD-oo.md`](METHOD-oo.md) | 2026-10-13 | **人审文档（随方法包生成）** | `oo` 方法包的人审文档（G3 判据 `C-2F`）：类/接口清单、时序、分层；文档头 `basis` = `.sdo/design/method-classes.yml` 等产物的当前指纹 |
