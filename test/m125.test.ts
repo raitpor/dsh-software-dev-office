@@ -210,3 +210,36 @@ test('M125-05 落点三：计划读数的修法文案必须给"把该路径拆�
   const index = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
   assert.match(index, /heldByScopeSection/u, '`next` 的回执必须接上"暂不可派"段')
 })
+
+test('M125-06 TC-129：认领拒签**点名重叠路径**，且**不倒出对方全量写范围**', async () => {
+  // 在飞卡写 3 条范围，只有一条与本卡重叠 —— 拒签文案只该说那一条
+  writeCard(baseCard('TASK-951', 'ready', ['src/holder/a.ts', 'src/holder/b.ts', 'src/shared/x.ts']))
+  const held = office.claimTask(call, { taskId: 'TASK-951', owner: 'subagent:developer:1', expectedRevision: 1 })
+  assert.equal(held.ok, true, `夹具前提：在飞卡必须认领成功（${JSON.stringify(held).slice(0, 120)}）`)
+
+  writeCard(baseCard('TASK-952', 'ready', ['src/shared/x.ts', 'src/mine/z.ts']))
+  const attempt = office.claimTask(call, { taskId: 'TASK-952', owner: 'subagent:developer:2', expectedRevision: 1 })
+  assert.equal(attempt.ok, false, '写范围相交的认领必须被拒（派了也是白跑）')
+  if (attempt.ok) assert.fail('应拒绝')
+  assert.equal(attempt.code, 'write-scope-conflict')
+
+  // ① **点名重叠的那条路径**（读者不必自己算哪一条撞上了）
+  assert.match(attempt.detail, /src\/shared\/x\.ts/u, `拒签必须点名重叠路径：${attempt.detail}`)
+  // ② **不倒出对方全量写范围**（这正是旧实现的病：倒一大堆让读者自己找）
+  assert.equal(attempt.detail.includes('src/holder/a.ts'), false, `不许倒出对方不相关的写范围：${attempt.detail}`)
+  assert.equal(attempt.detail.includes('src/holder/b.ts'), false, `不许倒出对方不相关的写范围：${attempt.detail}`)
+  // ③ 挡路的卡 / owner / 三条出路都要给
+  assert.match(attempt.detail, /TASK-951/u, '要点名挡路的卡')
+  assert.match(attempt.detail, /subagent:developer:1/u, '要点名 owner（便于找人让路）')
+  assert.match(attempt.detail, /release/u, '要给出"让它让路"这条可执行出路')
+
+  // ④ 零写盘 + 追加式留痕：被拒的卡状态/owner/revision 都不动，拒签事件进 journal
+  const after = office.taskById(call, 'TASK-952')
+  assert.equal(after?.status, 'ready', '被拒的认领不许改卡状态')
+  assert.equal(after?.owner ?? '', '', '被拒的认领不许占 owner')
+  assert.equal(after?.revision, 1, '被拒的认领不许推进 revision')
+  const rejected = office.journalFor(WORKSPACE).read().events.filter(
+    (event) => event.type === 'task/claim-rejected' && String(event.data['id'] ?? '') === 'TASK-952',
+  )
+  assert.equal(rejected.length, 1, '拒签必须留**追加式**留痕（task/claim-rejected）')
+})

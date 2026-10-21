@@ -16,7 +16,7 @@
  * 确保"导出函数绿了但工具面拿不到"这种空转不会发生（`tq_ff348198` 同源教训）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -156,4 +156,34 @@ test('M104-05 经工具面：sdo_adr action=record 的 alternatives 坏 JSON ⇒
   })
   assert.match(broken, /alternatives/, `工具面回执必须点名参数名：${broken}`)
   assert.match(broken, /第 \d+ 个字符/, `工具面回执必须点名位置（否则只是导出的函数绿了）：${broken}`)
+})
+
+test('M104-06 TC-128：描述面两类失败形态**齐备**（7 处英文描述 + 两包 param 同口径，且描述里不夹中文）', () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url))
+  const tools = readFileSync(join(root, 'src', 'interface', 'tools.ts'), 'utf8')
+  // ① **基数**：工具 schema 里恰好 7 处把两类失败写全的英文描述（TC-128 的基数）
+  const blocks = tools.split('Two failure shapes').slice(1).map((block) => block.split('\n')[0] ?? '')
+  assert.equal(blocks.length, 7, `工具 schema 描述里应有 **7** 处「两类失败形态」（实际 ${blocks.length}）`)
+  for (const [index, text] of blocks.entries()) {
+    assert.match(text, /wrong shape/u, `第 ${index + 1} 处必须点名**形状类**`)
+    assert.match(text, /value cut off/u, `第 ${index + 1} 处必须点名**值被打断类**`)
+    assert.match(text, /names the character position/u, `第 ${index + 1} 处必须给出"点名第 N 个字符"这条读数`)
+    assert.match(text, /CJK quotes/u, `第 ${index + 1} 处必须给可执行修法（改用中文引号）`)
+    // 描述面与语言包分工：schema 描述一律英文（中文在 lang/*.yml，两包各自维护）
+    assert.equal(/[\u4e00-\u9fff]/u.test(text), false, `第 ${index + 1} 处描述里不许夹中文：${text.slice(0, 80)}`)
+  }
+
+  // ② 两个"两形态都收"的参数字典（`param.suggestions` / `param.findings`）在**两包**里都把两类说清
+  for (const [pack, words] of [
+    ['zh-CN.yml', ['宿主校验拒', '插件解析拒']],
+    ['en.yml', ['host schema rejection', 'plugin parse rejection']],
+  ] as const) {
+    const text = readFileSync(join(root, 'src', 'data', 'lang', pack), 'utf8')
+    for (const name of ['suggestions', 'findings']) {
+      const line = text.split('\n').find((item) => item.trimStart().startsWith(`${name}:`)) ?? ''
+      assert.ok(line !== '', `${pack} 缺 param.${name}`)
+      for (const word of words) assert.ok(line.includes(word), `${pack} 的 param.${name} 必须点名「${word}」`)
+      assert.match(line, /string \| array|string \| array|array/iu, `${pack} 的 param.${name} 必须说清两种形态都收`)
+    }
+  }
 })

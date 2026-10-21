@@ -184,3 +184,37 @@ test('M170-04 结构：工具面两个参数都注册（否则模型根本传不
     assert.equal(src.includes('reviewReproIssue('), true, `${name} 必须复用唯一出口（不许另写一套）`)
   }
 })
+
+test('M170-05 TC-130：两条拒绝的**码**（不是只看文案）+ 真账 18 条存量**读侧不追溯、不抛错**', async () => {
+  const { reviewReproIssue } = await import('../src/domain/records.js')
+  // ① 码是机器可判的那一层：文案会改，码不该改（TC-130 原先只查文案）
+  assert.equal(reviewReproIssue({ verdict: 'changes-requested' })?.code, 'repro-missing', '两手空空 ⇒ repro-missing')
+  assert.equal(
+    reviewReproIssue({ verdict: 'reject', repro: 'npm test（仍失败）', unreproducible: '环境已拆' })?.code,
+    'repro-ambiguous',
+    '两条出路都给 ⇒ repro-ambiguous（读者判不出哪个作准）',
+  )
+  assert.equal(reviewReproIssue({ verdict: 'pass' }), undefined, 'pass 不受这条约束（反例）')
+  assert.equal(reviewReproIssue({ verdict: 'reject', repro: 'npm test' })?.code, undefined, '只给 repro ⇒ 通过')
+
+  // ② 真账读数：存量非 pass 评审里"两条出路都没有"的**恰 18 条**（写侧才有这条约束，读侧不得追溯、不得抛）
+  const { Config, resolveSettings } = await import('../src/config.js')
+  const { SoftwareDevOffice } = await import('../src/office.js')
+  const repo = fileURLToPath(new URL('../../', import.meta.url))
+  const real = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  real.noteSession('m170-real', repo)
+  const reviews = real.reviews({ sessionId: 'm170-real', cwd: repo })
+  const legacy = reviews.filter(
+    (review) => review.verdict !== 'pass'
+      && String(review.repro ?? '').trim() === ''
+      && String(review.unreproducible ?? '').trim() === '',
+  )
+  assert.equal(legacy.length, 18, `真账存量必须是 18 条旧格式非 pass 评审（实际 ${legacy.length}；台账变化时要重新确认这条读数）`)
+  // 读侧不抛错，且这些记录仍然是**可读的原始记录**（`repro` / `unreproducible` 都如实为空，不被补写）
+  for (const review of legacy) {
+    assert.equal(String(review.repro ?? ''), '', `${review.id} 的 repro 不许被读侧补写`)
+    assert.equal(String(review.unreproducible ?? ''), '', `${review.id} 的 unreproducible 不许被读侧补写`)
+    assert.equal(reviewReproIssue({ verdict: review.verdict, repro: review.repro, unreproducible: review.unreproducible })?.code, 'repro-missing',
+      `${review.id} 若今天重记会被拒 —— 但它**已经在册**，读侧不许因此判红或抛错`)
+  }
+})

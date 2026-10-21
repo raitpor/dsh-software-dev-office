@@ -13,7 +13,7 @@
  * ③ 流式集合（`- { id: X }`）与标量行（`don't stop`）**不误杀**（本轮实测出来的边界）。
  */
 import assert from 'node:assert/strict'
-import { readFileSync } from 'node:fs'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -138,4 +138,118 @@ test('M169-04 空键（第四批 §3.6 新增）：**写端拒绝**（可执行�
   assert.deepEqual(parseYaml("'a': ''"), { a: '' }, '空值照旧')
   assert.equal(stringifyYaml({ a: '' }), "a: ''\n", '空值照旧（写端只对键加引号）')
   assert.deepEqual(parseYaml("'a''b': 1"), { "a'b": 1 }, '含引号的键照旧（别被空键那条误伤）')
+})
+
+test('M169-05 TC-121：键形态矩阵补到 **16 类**，逐类"写得出 / 读得回 / 无坏结局"', () => {
+  // `TC-121` 原文的 16 类：空键 / 前导 / 结尾 / 两端 / 全空白 / `a#b` / `a,b` / `a\b` /
+  // `a"b` / `a'b` / `a: b` / 减号开头 / 井号开头 / 带引号形态（双）/ 带引号形态（单）/ 键内含空格（反例）
+  const matrix: { name: string; key: string; written: string | 'REJECT' }[] = [
+    { name: '空键', key: '', written: 'REJECT' },
+    { name: '前导空白', key: ' a', written: "' a': 1" },
+    { name: '结尾空白', key: 'a ', written: "'a ': 1" },
+    { name: '两端空白', key: ' a ', written: "' a ': 1" },
+    { name: '全空白', key: '   ', written: "'   ': 1" },
+    { name: '含井号', key: 'a#b', written: "'a#b': 1" },
+    { name: '含逗号', key: 'a,b', written: "'a,b': 1" },
+    { name: '含反斜杠', key: 'a\\b', written: "'a\\b': 1" },
+    { name: '含双引号', key: 'a"b', written: "'a\"b': 1" },
+    { name: '含单引号', key: "a'b", written: "'a''b': 1" },
+    { name: '含冒号空格', key: 'a: b', written: "'a: b': 1" },
+    { name: '减号开头', key: '- a', written: "'- a': 1" },
+    { name: '井号开头', key: '#a', written: "'#a': 1" },
+    { name: '带引号形态（双）', key: '"a"', written: "'\"a\"': 1" },
+    { name: '带引号形态（单）', key: "''", written: "'''''': 1" },
+    { name: '键内含空格（反例：不该加引号）', key: 'a b', written: 'a b: 1' },
+  ]
+  assert.equal(matrix.length, 16, '矩阵必须恰好 16 类（TC-121 的基数）')
+  const bad: string[] = []
+  for (const row of matrix) {
+    if (row.written === 'REJECT') {
+      // 空键：写端**直接拒**（没有能读回来的写法），提示词要可执行
+      assert.throws(() => stringifyYaml({ [row.key]: 1 }), YamlWriteError, `${row.name} 必须被写端拒绝`)
+      continue
+    }
+    let written: string
+    try {
+      written = stringifyYaml({ [row.key]: 1 })
+    } catch (error) {
+      bad.push(`${row.name} 写失败：${String(error)}`)
+      continue
+    }
+    if (written !== `${row.written}\n`) bad.push(`${row.name} 写出形态不符：${JSON.stringify(written)}`)
+    let read: unknown
+    try {
+      read = parseYaml(written)
+    } catch (error) {
+      bad.push(`${row.name} 读失败：${String(error)}`)
+      continue
+    }
+    if (JSON.stringify(read) !== JSON.stringify({ [row.key]: 1 })) bad.push(`${row.name} 读回不一致：${JSON.stringify(read)}`)
+  }
+  assert.deepEqual(bad, [], `16 类必须 16/16 无坏结局：${bad.join('；')}`)
+})
+
+test('M169-06 TC-121：**4000 抽样**随机扫地 —— 键由特殊字符随机拼成，往返 0 坏结局', () => {
+  // 确定性 LCG（不用 `Math.random`：同一份代码两次跑出同一批键，红了才能照抄复现）
+  let seed = 20261021
+  const next = (bound: number): number => {
+    seed = (seed * 1103515245 + 12345) % 2147483648
+    return seed % bound
+  }
+  const alphabet = [' ', '#', ',', '\\', '"', "'", ':', '-', '{', '}', '[', ']', '&', '*', '!', '|', '>', '%', '@', '`', 'a', 'b', '0']
+  const bad: string[] = []
+  let tested = 0
+  for (let round = 0; round < 4000; round += 1) {
+    const length = 1 + next(5)
+    let key = ''
+    for (let index = 0; index < length; index += 1) key += alphabet[next(alphabet.length)] ?? 'a'
+    // 两端随机加空白（TC-121 原文：两端随机加空白）
+    if (next(2) === 0) key = `${' '.repeat(next(3))}${key}`
+    if (next(2) === 0) key = `${key}${' '.repeat(next(3))}`
+    tested += 1
+    try {
+      const read = parseYaml(stringifyYaml({ [key]: 1 }))
+      if (JSON.stringify(read) !== JSON.stringify({ [key]: 1 })) bad.push(`读回不一致：${JSON.stringify(key)} => ${JSON.stringify(read)}`)
+    } catch (error) {
+      bad.push(`往返失败：${JSON.stringify(key)} => ${String(error)}`)
+    }
+  }
+  assert.equal(tested, 4000, '抽样必须是 4000 条')
+  assert.equal(bad.length, 0, `4000 抽样必须 0 坏结局（前 5 例：${bad.slice(0, 5).join('；')}）`)
+})
+
+test('M169-07 TC-121：`.sdo` 存量 yml **全部读回 0 失败**（存量零破坏的机械读数）', () => {
+  const root = join(ROOT, '.sdo')
+  // **自己的遍历器**（不用 `readdirSync({recursive:true})`）：`.sdo/evidence/**` 里有历史快照树，
+  // 其中带**悬空软链**（`readdirSync` 递归会跟着走 ⇒ ENOENT）。这里跳过软链、只收普通文件。
+  const files: string[] = []
+  const walk = (dir: string, prefix: string): void => {
+    let entries: import('node:fs').Dirent<string>[]
+    try {
+      entries = readdirSync(dir, { withFileTypes: true, encoding: 'utf8' })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const name = String(entry.name)
+      const rel = prefix === '' ? name : `${prefix}/${name}`
+      if (entry.isSymbolicLink()) continue
+      if (entry.isDirectory()) {
+        walk(join(dir, name), rel)
+        continue
+      }
+      if (entry.isFile() && /\.ya?ml$/u.test(name)) files.push(rel)
+    }
+  }
+  walk(root, '')
+  assert.ok(files.length > 100, `夹具前提：真台账里应有大量 yml（实际 ${files.length} 个）`)
+  const failures: string[] = []
+  for (const name of files) {
+    try {
+      parseYaml(readFileSync(join(root, name), 'utf8'))
+    } catch (error) {
+      failures.push(`${name}: ${(error as Error).message.slice(0, 80)}`)
+    }
+  }
+  assert.deepEqual(failures, [], `${files.length} 个存量 yml 必须全部读得回（0 失败）：${failures.slice(0, 5).join('；')}`)
 })

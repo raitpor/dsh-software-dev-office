@@ -864,3 +864,31 @@ test('③b：--rebuild 的回执必须说明「已强制重建」，真源残缺
   assert.match(forced, /第 \d+ 行/u, '必须点名坏行')
   void path
 })
+
+test('TC-115 判据在门禁回执与审核单里都带中文 desc（编号不再掩埋意义）', async () => {
+  const { describeGate } = await import('../src/interface/describe.js')
+  const { renderSignReviewDoc } = await import('../src/domain/reviewDoc.js')
+  const criteria: GateCriterionResult[] = [
+    { id: 'C-58', ok: true, desc: '缺陷与用例的追溯边齐备', detail: '12 条边全部命中' },
+    { id: 'C-59', ok: false, desc: '测试总结报告已由用户签字确认', detail: '报告不在盘上', remedy: '先渲染报告再签' },
+  ]
+  // ① 门禁判定回执：**判据行**必须是「中文名（C-xx）」，不是只有编号
+  const gateText = describeGate({
+    gate: 'G6', phase: 'verification', status: 'failed', criteria,
+  } as never)
+  for (const row of criteria) {
+    assert.match(gateText, new RegExp(`^- \\S+ ${row.desc}（${row.id}）`, 'mu'), `判据行必须印中文名（${row.id}）：${gateText}`)
+  }
+  // 残留①（如实记录、不计漏修）：判红的**汇总行**仍只列 id —— 这里把它钉住，改了会红、也就不会"悄悄变好/变坏"
+  assert.match(gateText, /C-59/u, `汇总行仍只列 id（已记录为未定案取舍）：${gateText}`)
+
+  // ② 审核单：判据表的「要求」列就是 desc（空 desc 才会退回编号）
+  const doc = renderSignReviewDoc({
+    gate: 'G6', gateText: '验证门禁', phaseText: '验证', statusText: '未通过', at: '2026-10-21T00:00:00.000Z',
+    criteria: criteria.map((row) => ({ id: row.id, ok: row.ok, na: false, desc: row.desc, detail: row.detail, remedy: row.remedy ?? '', warnings: [] })),
+    artifacts: [], unjudged: false, payload: [],
+  } as never)
+  for (const row of criteria) {
+    assert.match(doc, new RegExp(`\\| ${row.id} \\| ${row.desc} `, 'u'), `审核单的「要求」列必须是中文 desc（${row.id}）：${doc}`)
+  }
+})

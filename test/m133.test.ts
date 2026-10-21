@@ -28,6 +28,7 @@ import type { TaskCard } from '../src/types.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m133/', import.meta.url))
+
 const WORKSPACE = join(BASE, 'proj')
 
 let office: SoftwareDevOffice
@@ -135,4 +136,42 @@ test('M133-04 状态回执与派发回执都印这一行（工具级）', async 
   assert.ok(plan !== undefined)
   const receipt = String(await plan.execute({ action: 'next', limit: 1 }, { agent: agentStub }))
   assert.match(receipt, /🧩/u, `派发回执也必须印构建读数：${receipt.slice(0, 300)}`)
+})
+
+test('M133-05 TC-146：构建读数在**首行**且印包根 + 版本（不只指纹）；派发回执三件齐备并给三分结论', async () => {
+  const agentStub = { id: 's1', session: { header: { id: 's1', cwd: WORKSPACE, delegationDepth: 0 } } }
+  const loaded = loadedBuild()
+  assert.ok(loaded.packageRoot !== '' && loaded.version !== '' && loaded.fingerprint !== '', '夹具前提：本会话加载的构建三件齐备')
+
+  // ① 状态回执：构建读数必须是**第一行**（首屏第一眼），且包根 / 指纹 / 版本三件都在
+  const statusTool = tools.find((item) => item.name === 'sdo_status')
+  assert.ok(statusTool !== undefined)
+  const status = String(await statusTool.execute({ action: 'status' }, { agent: agentStub }))
+  const first = status.split('\n')[0] ?? ''
+  assert.match(first, /🧩/u, `构建读数必须在**首行**（不许沉到底部）：${first}`)
+  assert.ok(first.includes(loaded.packageRoot), `首行必须印**包根**：${first}`)
+  assert.ok(first.includes(loaded.version), `首行必须印**版本**：${first}`)
+  assert.ok(first.includes(loaded.fingerprint), `首行必须印**入口指纹**：${first}`)
+
+  // ② 派发回执：不只一个 🧩 标记，三件同样齐备。
+  //    要让「与工作树的三分结论」真的出现，派发 cwd 自己得是一个**同名插件包根** —— 这里在夹具工作区
+  //    造一份**内容不同**的同名包（⇒ 走"不是同一份构建"那一档，顺便验证它点名两侧指纹）。
+  mkdirSync(join(WORKSPACE, 'lib', 'src'), { recursive: true })
+  writeFileSync(join(WORKSPACE, 'package.json'), JSON.stringify({ name: PLUGIN_PACKAGE_NAME, version: '0.1.6' }), 'utf8')
+  writeFileSync(join(WORKSPACE, 'lib', 'src', 'index.js'), '// a different build in the fixture worktree\n', 'utf8')
+  office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-962.yml'], { task: card('TASK-962') })
+  const plan = tools.find((item) => item.name === 'sdo_plan')
+  assert.ok(plan !== undefined)
+  const receipt = String(await plan.execute({ action: 'next', limit: 1 }, { agent: agentStub }))
+  assert.ok(receipt.includes(loaded.packageRoot), `派发回执必须印包根：${receipt.slice(0, 400)}`)
+  assert.ok(receipt.includes(loaded.version), '派发回执必须印版本')
+  assert.ok(receipt.includes(loaded.fingerprint), '派发回执必须印指纹（不能只印一个 🧩 标记）')
+  // ③ 与工作树的**三分结论**必须给：同一份 / 分叉点名 / 不可比
+  // 三分：同一份 / 不是同一份（点名两侧指纹）/ 不可比 —— 三选一必须出现，且都要说"与工作树"
+  assert.match(receipt, /与工作树/u, `派发回执要给"本会话构建 vs 工作树"的结论：${receipt.slice(-600)}`)
+  assert.equal(
+    ['同一份构建', '不是同一份构建', '不可比'].some((word) => receipt.includes(word)),
+    true,
+    `三分结论必须落在其中一档（实际：${receipt.slice(-600)}）`,
+  )
 })

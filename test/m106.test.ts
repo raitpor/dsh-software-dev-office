@@ -550,3 +550,52 @@ test('M106-15 createTask carries both fields (the structural/model channel drops
   assert.equal(read.mitigatesWaiver?.length, 1, 'createTask dropped mitigatesWaiver')
   assert.equal(read.mitigatesWaiver?.[0]?.waiveReason, 'r', 'the waiver reason must survive createTask')
 })
+
+test('M106-03c waiver present but missing `waiveReason` => red, naming that field (TC-113)', () => {
+  seedRisk('RISK-905', 'open')
+  seedCard(card('TASK-905', {
+    mitigates: ['RISK-905'],
+    mitigatesWaiver: [{ id: 'RISK-905', waiveReason: '', waiveApprovedBy: 'a' }],
+  }))
+
+  const verdict = c64()
+  assert.equal(verdict.ok, false, 'a waiver with no reason is not a waiver (signature alone says nothing)')
+  // **两格各检一遍**：缺 reason 时点名的必须是 reason 那一格（不是"缺字段"一句糊过去）
+  assert.ok(
+    verdict.detail.includes(head('uiGates.kMitigatesWaiveFieldReason')),
+    `the red detail must name the missing field: ${verdict.detail}`,
+  )
+  assert.equal(
+    verdict.detail.includes(head('uiGates.kMitigatesWaiveFieldApprover')),
+    false,
+    `it must NOT also blame the field that is filled: ${verdict.detail}`,
+  )
+})
+
+test('M106-10b the review echo carries BOTH cells: how many findings, and the adoption state (TC-113)', () => {
+  seedCard(card('TASK-933', { status: 'in-progress', owner: OWNER }))
+  // `pass` 永远不拦 done（`blockingReview` 只看非 pass）⇒ 这里能拿到回显。
+  // 这里**不用** `seedReview`：它把 `contentHash` 记成空串 ⇒ 会被判 `tampered`（那是另一条口径）。
+  // 本格要的是"有发现、未核实"，所以按**老格式**（`review/recorded` 不带 contentHash）种。
+  const findings = ['finding one', 'finding two']
+  store().writeYaml(['reviews', 'REV-933.yml'], {
+    review: { id: 'REV-933', taskId: 'TASK-933', reviewer: 'm106-reviewer', verdict: 'pass', findings, at: '2026-10-13T00:00:00.000Z' },
+  })
+  journal().append('review/recorded', { id: 'REV-933', taskId: 'TASK-933', verdict: 'pass', findings: findings.length })
+
+  const result = reportTask(store(), journal(), {
+    taskId: 'TASK-933',
+    owner: OWNER,
+    status: 'done',
+    evidence: [evidence('command', 'npm test')],
+  })
+  assert.equal(result.ok, true, `a pass review must not block done: ${JSON.stringify(result)}`)
+  if (!result.ok) throw new Error('unreachable')
+  const echo = (result.reviewEcho ?? []).join('\n')
+  // 第①格：**条数**（不是只说"有这个评审"）
+  assert.match(echo, /2 条发现/u, `the echo must carry the finding count: ${echo}`)
+  // 第②格：**采纳状态**（模板里的 `采纳状态：…` 与状态标签都在）
+  assert.ok(echo.includes(head('uiGates.kReviewEchoRow')), `the row must come from the language pack: ${echo}`)
+  assert.match(echo, /采纳状态/u, `the echo must name the adoption state cell: ${echo}`)
+  assert.match(echo, new RegExp(head('uiReview.stateUnverified'), 'u'), `unadopted findings must read as unverified: ${echo}`)
+})

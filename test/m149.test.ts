@@ -26,7 +26,7 @@
  * 正是本批反复要消灭的"静默漏过"（处置口径与 `fixes` 的"不许落空"同款）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -199,4 +199,30 @@ test('M149-05 既有的另一条腿不许被放宽：写范围含契约面的卡
   // 写范围落在契约面（`src/interface/**`）⇒ `cardWritesContractSurface` 直接成立 ⇒ 无论如何都不 N/A
   const surface = card(['REQ-001'], ['src/interface/'])
   assert.equal(gapCodes(surface).includes('contract-test-missing'), true, `契约面的卡必须判红（防"顺手全判 N/A"）：${JSON.stringify(gapCodes(surface))}`)
+})
+
+test('M149-06 TC-135：零写盘用 `readdirSync` **逐项**比对；真账存量「`requires` 非空」仍为 0（不回填、不据此判红）', async () => {
+  requirement('REQ-001')
+  const dir = join(BASE, '.sdo', 'contracts')
+  const listing = (): string[] => {
+    try {
+      return readdirSync(dir).sort()
+    } catch {
+      return []
+    }
+  }
+  const before = listing()
+  // 两种被拒的写入（未知 id / 重复 id）之后，**目录逐项**不变（不是只看 `listContracts().length`）
+  await recordContract('["REQ-404"]')
+  await recordContract('["REQ-001","REQ-001"]')
+  assert.deepEqual(listing(), before, `被拒的契约不许在盘上留下任何文件（目录逐项比对）：${listing().join(' ')}`)
+
+  // 真账读数：存量契约里「requires 非空」必须仍是 **0**（追加式真源不回填历史；判据也不据此判红）
+  const repo = fileURLToPath(new URL('../../', import.meta.url))
+  const { SdoStore } = await import('../src/infra/store.js')
+  const realStore = new SdoStore(join(repo, '.sdo'))
+  const contracts = listContracts(realStore)
+  assert.ok(contracts.length > 0, `夹具前提：真账里有契约（实际 ${contracts.length} 条）`)
+  const withRequires = contracts.filter((contract) => (contract.requires ?? []).length > 0)
+  assert.deepEqual(withRequires.map((contract) => contract.id), [], `真账存量「requires 非空」必须仍为 0（实际 ${withRequires.map((c) => c.id).join(' ')}）`)
 })

@@ -215,3 +215,47 @@ test('M171-07 有凭据但**本次调用没有 cwd**：掩码与写范围**照�
   const planWithCwd = await h.drive('sdo_plan', {}, { sessionId: 'child-dev', cwd: BASE })
   assert.equal(planWithCwd.kind, 'deny', '两态必须同判（对照：cwd 在的时候本来就拒）')
 })
+
+test('M171-08 TC-134②：驾驶舱资格**不是写死的身份** —— 任意 id 的根会话算驾驶舱，被派发的子代理叫什么都 不算', async () => {
+  const { resolveSettings } = await import('../src/config.js')
+  const { SoftwareDevOffice } = await import('../src/office.js')
+  projectAt(BASE, ['src/index.ts'])
+  const office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+
+  // ① 名字不参与：三个**任意** id 的根会话都按驾驶舱处理
+  for (const id of ['s-arbitrary', 'cockpit', 'user-42']) {
+    office.noteSession(id, BASE)
+    assert.equal(
+      office.canAdministerTasks({ sessionId: id, cwd: BASE } as never),
+      true,
+      `${id} 是根会话 ⇒ 应当按驾驶舱处理（资格不该由名字决定）`,
+    )
+  }
+
+  // ② 关键反例：被派发出去的子代理**即使 id 就叫 `cockpit`** 也不是驾驶舱
+  office.noteSession('cockpit', BASE)
+  office.recordDispatchStarted({ sessionId: 'cockpit', cwd: BASE } as never, {
+    taskId: 'TASK-901', provider: 'spawn', childSessionId: 'cockpit', parentSessionId: 'root',
+    tools: 1, role: 'developer', mode: 'continuable', maskHash: 'H',
+  } as never)
+  assert.equal(
+    office.canAdministerTasks({ sessionId: 'cockpit', cwd: BASE } as never),
+    false,
+    '被派发的子代理不许因为 id 叫 cockpit 就获得处置权（身份不是名字）',
+  )
+
+  // ③ 结构：判据体里不许"按会话 id / 名字"认定驾驶舱 —— 只许用两个正面信号
+  const source = readFileSync(join(ROOT, 'src', 'office.ts'), 'utf8')
+  const start = source.indexOf('canAdministerTasks(call: OfficeCall): boolean {')
+  assert.ok(start > 0, '夹具前提：`canAdministerTasks` 在盘上找得到')
+  const body = source.slice(start, source.indexOf('\n  }', start))
+  assert.equal(/sessionId/u.test(body), false, `判据体不许读会话 id（那正是"写死身份"的形态）：${body}`)
+  // `'cockpit'` 只许作为**角色**（`roleOf(call)` 的返回值）被比较，绝不作为会话 id/名字出现
+  const literalLines = body.split('\n').filter((line) => line.includes("'cockpit'"))
+  assert.ok(literalLines.length > 0, '夹具前提：资格判定确实落在角色口径上（不是别的机制）')
+  for (const line of literalLines) {
+    assert.match(line, /roleOf\(call\)/u, `'cockpit' 只能是**角色**的比较对象（不是会话 id/名字）：${line}`)
+  }
+  assert.match(body, /isDispatchedChild/u, '必须用「是不是被派发的子代理」这个正面信号')
+  assert.match(body, /roleOf/u, '再加角色归属（根会话）这一条')
+})

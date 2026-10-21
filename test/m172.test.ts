@@ -21,6 +21,7 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
+import { listReviews } from '../src/domain/records.js'
 import { claimedSessionsByCard } from '../src/domain/roles.js'
 import { independenceViolations } from '../src/integration/orchestrator.js'
 import { SoftwareDevOffice } from '../src/office.js'
@@ -121,4 +122,32 @@ test('M172-03 纯函数面：材料齐时 uuid 有交集判红、无交集不判
   assert.equal(independenceViolations([{ ...review, reviewer: 'dev-a', sessionId: 'uuid-2' }], tasks, claimed).length, 0, '不同 uuid + 同名 ⇒ 仍不判（名字不参与）')
   assert.equal(independenceViolations([{ ...review, sessionId: undefined }], tasks).length, 0, '没有材料 ⇒ 不猜（默认空账 ⇒ 走名字口径，这里名字不同）')
   assert.equal(independenceViolations([{ ...review, reviewer: 'dev-a', sessionId: undefined }], tasks).length, 1, '没有材料 + 名字相同 ⇒ 旧口径判红')
+})
+
+test('M172-05 TC-125：真账评审**全部**带会话 uuid（名字不参与），C-52 判红只点名那两条', () => {
+  // 真台账（仓库自己的 `.sdo/`）——只读：这条读数的作用是"口径覆盖到存量了吗"，不是再造一个夹具
+  const repo = fileURLToPath(new URL('../../', import.meta.url))
+  const realOffice = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  realOffice.noteSession('m172-real', repo)
+  const reviews = listReviews(realOffice.storeFor(repo))
+  assert.ok(reviews.length >= 50, `夹具前提：真台账里应有成规模的评审（实际 ${reviews.length} 条）`)
+
+  // ① 覆盖率：**43/43 … 71/71** 那种全量，不是"抽样几条看看"（少一条说明还有降级路径在跑）
+  const missing = reviews.filter((item) => String(item.sessionId ?? '').trim() === '').map((item) => item.id)
+  assert.deepEqual(missing, [], `uuid 口径必须覆盖**全部** ${reviews.length} 条评审（无会话材料的：${missing.join(' ') || '（无）'}）`)
+
+  // ② 出口：真账上被判红的只有这两条（都是"同一会话自评"）——台账新增同会话评审时必须重新确认这条读数
+  const violations = realOffice.reviewViolations({ sessionId: 'm172-real', cwd: repo })
+  assert.deepEqual(
+    violations.map((item) => item.reviewId),
+    ['REV-055', 'REV-068'],
+    `真账的独立性判红必须恰好这两条（实际：${violations.map((item) => item.reviewId).join(' ') || '（无）'}）`,
+  )
+  for (const item of violations) {
+    assert.match(item.detail, /同一个会话/u, `判红必须走 uuid 口径（不是名字）：${item.detail}`)
+    assert.match(item.detail, /session-/u, '判词里要点名会话 uuid（可核对）')
+  }
+
+  // **判据面同源**不在这条里验：真账上跑 `evaluate('G6')` 要 5 秒（C-57 回归整表 + 六条准出准则），
+  // 那是集成面的活；C-52 与出口共用 `independenceViolations` 这条已由 M172-01 ③ 在夹具上钉住。
 })

@@ -335,3 +335,44 @@ test('M108-07 no self-description claims the two columns are empty ledger-wide; 
     assert.match(text, /路径形态/u, `${file} must state the path-shape discriminant`)
   }
 })
+
+test('M108-08 TC-143：真账里那些散文声明**不再判红**（判据 ok=true），且判据**只读** ⇒ 存量零迁移', async () => {
+  const { createHash } = await import('node:crypto')
+  const { readdirSync, readFileSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { listTasks } = await import('../src/domain/plan.js')
+  const { isPathShapedDeclaration } = await import('../src/domain/collab.js')
+  const repo = fileURLToPath(new URL('../../', import.meta.url))
+  const realStore = new SdoStore(join(repo, '.sdo'))
+  const realJournal = new Journal(realStore)
+
+  // ① 真账读数：带 inputs/outputs 声明的卡**全是散文形态**（这正是修前会被判红的那一族）
+  const tasks = listTasks(realStore)
+  const declared = tasks.filter((task) => (task.inputs ?? []).length > 0 || (task.outputs ?? []).length > 0)
+  assert.ok(declared.length >= 6, `夹具前提：真账里应有成规模的声明（实际 ${declared.length} 张）`)
+  const proseShaped = declared.filter((task) =>
+    [...(task.inputs ?? []), ...(task.outputs ?? [])].every((value) => !isPathShapedDeclaration(value)))
+  assert.equal(proseShaped.length, declared.length, `真账的声明必须全是散文形态（否则这条读数不成立）：${declared.length - proseShaped.length} 张含路径形态`)
+
+  // ② 判据面：在那份真账上跑**注册的** checker ⇒ ok=true（这几张不再把判据拖红；也不是 N/A 蒙过去）
+  const checker = CHECKERS[CHECK]
+  assert.ok(checker !== undefined, `${CHECK} 必须已注册`)
+  const snapshot = (): Record<string, string> => {
+    const dir = join(repo, '.sdo', 'tasks')
+    const out: Record<string, string> = {}
+    for (const name of readdirSync(dir).sort()) {
+      if (!name.endsWith('.yml')) continue
+      out[name] = createHash('sha256').update(readFileSync(join(dir, name))).digest('hex')
+    }
+    return out
+  }
+  const before = snapshot()
+  const verdict = (checker as (ctx: GateContext) => { ok: boolean; na?: boolean; detail: string })(
+    { workspace: repo, store: realStore, journal: realJournal, requirements: [] } as unknown as GateContext,
+  )
+  assert.equal(verdict.ok, true, `散文声明不许把真账判红（那 ${declared.length} 张）：${verdict.detail}`)
+  assert.notEqual(verdict.na, true, '也不能靠"不适用"蒙过去 —— 这些卡确实声明了东西')
+
+  // ③ 存量零迁移：判据跑完之后 `tasks/**` **逐字节**不变（判据只读，不回写、不归一化）
+  assert.deepEqual(snapshot(), before, '判据必须只读：跑完之后任务卡逐字节不变（存量零迁移）')
+})

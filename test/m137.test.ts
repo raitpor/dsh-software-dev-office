@@ -69,6 +69,14 @@ beforeEach(() => {
   office.updateProject(call, { scopeIn: ['x'], scopeOut: ['y'], metricsSuccess: ['z'], glossary: { a: 'b' } })
   tools = []
   const services: Record<string, unknown> = { tools: { register: (t: never) => { tools.push(t); return () => {} }, get: (n: string) => ({ n }) } }
+  // **TC-136 需要"真的派出去"**：没有 `subagents` 服务时后端降级成 inline（`continue` 直接跳过
+  // 「因 limit 留到下一轮」那段），那条明细行就永远渲不出来。
+  services['subagents'] = {
+    list: () => ['spawn'],
+    startContinuable: async () => ({ childId: 'child-m137' }),
+    start: async () => ({ id: 'child-m137' }),
+    listDescendants: async () => [],
+  }
   const makeCtx = (): Record<string, unknown> => ({
     logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
     plugin: () => {},
@@ -121,4 +129,30 @@ test('M137-03 防回退：摘要行必须接在主派发回执上（源码级）
     assert.match(lang, /kDispatchSummary:/u, `${name} 缺 kDispatchSummary`)
     assert.match(lang, /kDispatchSummaryHeld:/u, `${name} 缺 kDispatchSummaryHeld`)
   }
+})
+
+test('M137-04 TC-136：因容量留到下一轮的行在**汇总行之后**；首行卡号与同轮 `dispatch/started` **逐条一致**', async () => {
+  for (const id of ['TASK-995', 'TASK-996', 'TASK-997']) {
+    office.storeFor(WORKSPACE).writeYaml(['tasks', `${id}.yml`], { task: card(id) })
+  }
+  const journal = office.journalFor(WORKSPACE)
+  const startedBefore = journal.read().events.filter((event) => event.type === 'dispatch/started').length
+
+  const receipt = await callTool('sdo_plan', { action: 'next', limit: 1 })
+  const lines = receipt.split('\n')
+  const summaryIndex = lines.findIndex((line) => line.includes('本次派发'))
+  assert.equal(summaryIndex, 0, '摘要必须在第一行')
+
+  // ① 被 `limit=1` 挡下的那 2 张：**明细行在汇总行之后**（汇总行只给计数，明细不许跑到首屏前面）
+  assert.match(lines[0] ?? '', /另有 2 张因容量\/上限留到下一轮/u, `汇总行要点名被挡的张数：${lines[0] ?? ''}`)
+  const heldIndex = lines.findIndex((line) => line.includes('被本次 `limit=1` 挡下'))
+  assert.ok(heldIndex > summaryIndex, `留到下一轮的明细行必须在汇总行**之后**（实际 index=${heldIndex}）：${receipt.slice(0, 900)}`)
+  assert.ok(heldIndex > 0, '夹具前提：确实有被 limit 挡下的卡（否则这条没咬住）')
+
+  // ② 首行卡号与同轮 journal 的 `dispatch/started` **逐条一致**（多一个少一个都算错）
+  const started = journal.read().events.filter((event) => event.type === 'dispatch/started').slice(startedBefore)
+  const startedIds = started.map((event) => String(event.data['task'] ?? '')).filter((id) => id !== '').sort()
+  const summaryIds = [...(lines[0] ?? '').matchAll(/TASK-\d+/gu)].map((match) => match[0]).sort()
+  assert.deepEqual(summaryIds, startedIds, `首行卡号必须与真源**逐条一致**（首行 ${summaryIds.join(' ')} ／ journal ${startedIds.join(' ')}）`)
+  assert.equal(summaryIds.length, 1, '夹具前提：本轮只派 1 张')
 })

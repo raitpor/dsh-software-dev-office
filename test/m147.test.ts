@@ -240,3 +240,21 @@ test('M147-09 顺手补口：DEF-027 的 mutationExpected 在 update 面曾被�
   assert.match(rejected, /非负整数|-1/u, '非法条数要可读拒绝，不静默丢弃')
   assert.equal(office.taskById(call, 'TASK-982')?.mutationExpected, 3, '拒绝后卡面不动')
 })
+
+test('M147-12 TC-119：`impact-undeclared` **只提示不拦派发**（判据面与派发准入是两条线）', () => {
+  writeCard(card('TASK-981', 'planned', ['src/a/'], { fixes: ['DEF-036'] }))
+  // ① 判据面：这条卡确实被判红（前置，否则下面的"不拦"是废话）
+  const issues = impactIssues('TASK-981')
+  assert.equal(issues.length, 1, `夹具前提：判据必须判红：${JSON.stringify(office.planIssues(call))}`)
+  assert.equal(office.planIssues(call).find((issue) => issue.taskId === 'TASK-981')?.code, 'impact-undeclared', '拒因码必须是 impact-undeclared')
+
+  // ② 派发准入：同一张卡仍必须进 `dispatch`（判据只提示，不改派发决策）
+  const plan = office.poolPlan(call, { reuseIdle: false })
+  const dispatched = plan.dispatch.map((row) => row.task.id)
+  assert.equal(dispatched.includes('TASK-981'), true, `impact-undeclared 不许把卡挡在派发之外（实际派发集：${dispatched.join(' ') || '（空）'}）`)
+  // 也不许被"挤进队列"或"被挡下"——那两种形态同样等于拦了派发
+  assert.equal(plan.queued.map((task) => task.id).includes('TASK-981'), false, '不许把它算成"排队中"')
+  assert.equal(plan.blocked.map((row) => row.task.id).includes('TASK-981'), false, '不许报它被预算挡住（那不是真相）')
+  // ③ 反向对照（防"planIssues 恒空、所以当然不拦"）：判据确实产生了问题清单
+  assert.ok(office.planIssues(call).some((issue) => issue.code === 'impact-undeclared'), '问题清单里必须有它（这条与 ② 一起才有意义）')
+})

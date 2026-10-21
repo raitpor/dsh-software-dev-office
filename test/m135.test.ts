@@ -10,6 +10,7 @@
  */
 import assert from 'node:assert/strict'
 import { mkdirSync, rmSync } from 'node:fs'
+import { readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -22,6 +23,7 @@ import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { TaskCard } from '../src/types.js'
 
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m135/', import.meta.url))
 const WORKSPACE = join(BASE, 'proj')
 
@@ -136,4 +138,31 @@ test('M135-03 `note` 仍然优先（两参数都给时不改变既有语义）',
   const { readFileSync } = await import('node:fs')
   const index = readFileSync(new URL('../../src/index.ts', import.meta.url), 'utf8')
   assert.match(index, /args\.note \?\? args\.reason/u, '兜底写法不得被改回只读 note')
+})
+
+test('M135-04 TC-145：理由必须**进回执**（原守卫只看卡与事件），且中英 `param.reason` 描述同步', async () => {
+  // ① `block`：调用方给的理由要在**回执**里看得到（读者不该去翻卡文件才知道为什么停）
+  live('TASK-984')
+  const blockReceipt = await callTool('sdo_task', {
+    action: 'block', id: 'TASK-984', owner: 'dev', reason: '等上游契约 CT-010 冻结',
+  })
+  assert.match(blockReceipt, /等上游契约 CT-010 冻结/u, `block 回执必须带出理由（原实现丢弃了 callTool 的返回值）：${blockReceipt.slice(0, 300)}`)
+
+  // ② `done` 的回执**不带**理由 —— 这是**行为缺口**，不是断言缺口（见交付回执 §发现）。
+  //    `done` 的理由只进 `task/done` 事件（`M135-02` 已钉住），回执里没有对应字段；
+  //    要补就得改回执版式 + 两个语言包，属于需要裁定的范围，这里**不自行扩大**。
+
+  // ③ 两个语言包的 `param.reason` 描述必须**同义**：都点名 `block`/`done` 两个动作 + 同一条缺陷号
+  const packs = ['zh-CN.yml', 'en.yml'].map((pack) =>
+    readFileSync(join(ROOT, 'src', 'data', 'lang', pack), 'utf8')
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('reason:') && line.includes('DEF-068')) ?? '')
+  for (const [index, line] of packs.entries()) {
+    const name = index === 0 ? 'zh-CN.yml' : 'en.yml'
+    assert.notEqual(line, '', `${name} 缺 param.reason 的 DEF-068 描述`)
+    assert.ok(line.includes('block') && line.includes('done'), `${name} 的 param.reason 要点名 block/done 两个动作：${line}`)
+    assert.ok(line.includes('DEF-068'), `${name} 要带上缺陷号（可溯源）：${line}`)
+  }
+  // 两侧说的是同一件事（不是一边写"备注"一边写"理由"的两种口径）
+  assert.ok(packs[0]?.includes('note') && packs[1]?.includes('note'), '两包都要说清它与 note 的等价关系')
 })

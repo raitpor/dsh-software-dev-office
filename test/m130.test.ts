@@ -261,3 +261,33 @@ test('M130-06 TC-104 回执级：未复用标注 + 池内计数 + 候选原因 +
   // ⑤ 决策没被改写：卡确实派了出去（劝阻只是提示）
   assert.match(text, /本次派发 1 张/u, '劝阻不许把这次派发拦下来')
 })
+
+test('M130-07 TC-133：卡数超限的拒绝文案必须**点名上限**（原守卫只断实测值），池视图与准入同口径', () => {
+  // ① 卡数态：实测 9 / 上限 5 **两个数**都要在，且要说明"上限是项目声明的"
+  const byCards = String(reuseBlockedReason(childOf({ rounds: 1, cards: 9 }), 'H', undefined, { maxCards: 5 }))
+  assert.match(byCards, /9/u, `要点名实测卡数：${byCards}`)
+  assert.match(byCards, /5/u, `要点名**项目声明的上限**（原守卫只断实测值）：${byCards}`)
+  assert.match(byCards, /上限/u, `要说明这个 5 是"声明上限"而不是另一个实测值：${byCards}`)
+  assert.match(byCards, /张卡/u, '要说明超的是**卡数**这一维（不是轮数）')
+  // ② 轮数态同口径（两维不能一个有上限一个没有）
+  const byRounds = String(reuseBlockedReason(childOf({ rounds: 7, cards: 1 }), 'H', undefined, { maxRounds: 5 }))
+  assert.match(byRounds, /7/u, `要点名实测轮数：${byRounds}`)
+  assert.match(byRounds, /5/u, `要点名轮数上限：${byRounds}`)
+  assert.match(byRounds, /轮/u, '要说明超的是**轮数**这一维')
+  // ③ 池视图（与准入同一个 `reuseBlockedReason`）读数一致：unusable 的原因同样点名上限
+  const pools = rolePools({
+    children: [childOf({ rounds: 1, cards: 9 })],
+    roles: ['developer'],
+    caps: { developer: 4 },
+    defaultCap: 4,
+    maskHashOf: () => 'H',
+    viewerSessionId: 'me',
+    reuseBudget: { maxCards: 5 },
+  })
+  assert.equal(pools[0]?.unusable.length, 1, '池视图必须把超卡的会话列成不可复用')
+  assert.match(String(pools[0]?.unusable[0]?.reason), /9/u, '池读数要点名实测卡数')
+  assert.match(String(pools[0]?.unusable[0]?.reason), /5/u, '池读数要点名上限（与准入同一判据）')
+  // ④ 未声明阈值 ⇒ 行为逐字不变（向后兼容，不许默认拦）
+  assert.equal(reuseBlockedReason(childOf({ rounds: 1, cards: 9 }), 'H', undefined, {}), undefined, '未声明 ⇒ 不判')
+  assert.equal(reuseBlockedReason(childOf({ rounds: 99, cards: 99 }), 'H', undefined, undefined), undefined, '不传 budget ⇒ 不判')
+})

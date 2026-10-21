@@ -95,3 +95,30 @@ test('M167-03（DEF-039 ② 行为）真实路径两态：签 G3 → 登记环�
   const afterDesign = office.signatureState(call, 'G3')
   assert.equal(afterDesign.status, 'stale', `设计真源变更必须让 G3 失效（否则这条判据被放宽了）：${afterDesign.reason}`)
 })
+
+test('M167-04（TC-109 结构半）受审载荷集合名只有一个出口，`office.ts` 里没有第二处硬编码', () => {
+  const officeText = readFileSync(join(ROOT, 'src', 'office.ts'), 'utf8')
+  // **性质**（不是枚举一处）：`office.ts` 的**代码行**里不许再出现报告真源的字面量。
+  // 注释行可以（那正是"为什么不能在这里写死"的据），所以先把注释剥掉再扫。
+  const code = officeText
+    .split('\n')
+    .map((line) => line.replace(/\/\/.*$/u, ''))
+    .map((line) => line.trimStart())
+    .filter((line) => !line.startsWith('*') && !line.startsWith('/*'))
+    .filter((line) => line.includes('testing/report.yml'))
+  assert.deepEqual(code, [], `office.ts 的代码里不许硬编码报告真源：${code.join(' | ')}`)
+
+  // 注释里恰好一处（把口径写在写死的地方旁边，读者才看得到）
+  const comments = officeText.split('\n').filter((line) => line.includes('testing/report.yml') && /^\s*(\/\/|\*)/u.test(line))
+  assert.equal(comments.length, 1, `报告真源的唯一注释应恰好一处（实际 ${comments.length}）：${comments.join(' | ')}`)
+
+  // 常量统一出口：定义一次、字面量只出现在那一行
+  const reviewDoc = readFileSync(join(ROOT, 'src', 'domain', 'reviewDoc.ts'), 'utf8')
+  assert.equal((reviewDoc.match(/export const TEST_REPORT_PAYLOAD_COLLECTION/gu) ?? []).length, 1, '集合名常量必须只有一处定义')
+  assert.equal((reviewDoc.match(/'testing\/report\.yml'/gu) ?? []).length, 1, '这个字面量只许出现在常量定义那一行')
+
+  // 集合名取自**流程数据**：office.ts 至少两处从 `phase.reviewPayload` 取（① 载荷 ② 判据），且没有字面量数组
+  const fromPhase = (officeText.match(/phase\?\.reviewPayload/gu) ?? []).length
+  assert.ok(fromPhase >= 2, `集合名必须从流程数据取（现有 ${fromPhase} 处，至少两处）`)
+  assert.equal(/reviewPayload\s*:\s*\[/u.test(officeText), false, '不许把集合名写成字面量数组（那是第二处硬编码）')
+})

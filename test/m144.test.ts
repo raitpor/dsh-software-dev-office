@@ -14,10 +14,12 @@
  * **新写进来的缺一即整次拒绝**（不写盘）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { mkdirSync, readFileSync, rmSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
+import type { Context } from '@deepseek-ai/cordis'
 
 import { Journal } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
@@ -25,6 +27,7 @@ import { exemptionLines, readConstructionProfile } from '../src/domain/construct
 import { renderBoard } from '../src/board/render.js'
 import { describeExemptions } from '../src/interface/describe.js'
 import { createTask } from '../src/domain/plan.js'
+import { apply } from '../src/index.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { Config, resolveSettings } from '../src/config.js'
 import type { SdoConfig } from '../src/config.js'
@@ -106,4 +109,62 @@ test('M144-04 状态面：豁免清单带批准人/影响面；历史条目显�
   } as never)
   assert.match(board, /豁免/u, '看板必须印出豁免块')
   assert.match(board, /未署名/u, '看板要能看到"未署名"这一事实')
+})
+
+/** `profile.yml` 的**三值**快照（mtime / size / sha256）：零写盘的唯一可核对读数。 */
+function profileStamp(): { mtimeMs: number; size: number; sha: string } {
+  const file = store.path('construction', 'profile.yml')
+  const stat = statSync(file)
+  return { mtimeMs: stat.mtimeMs, size: stat.size, sha: createHash('sha256').update(readFileSync(file)).digest('hex') }
+}
+
+test('M144-05 TC-112：三次拒绝前后 `profile.yml` 的 mtime/size/sha256 三值**完全一致**（真零写盘）', () => {
+  // 先落一份合法 profile —— 文件必须**先存在**，否则"没变化"是废话（现在 m144-01/02 只断 `profile === undefined`）
+  const seeded = decide([{ task: taskId, check: 'tdd-mutation-missing', why: '先落一份', approvedBy: '用户', impact: '影响面 A' }])
+  assert.equal(seeded.ok, true, `夹具前提：先落一份合法 profile（${seeded.ok ? '' : seeded.problems.join('；')}）`)
+  const before = profileStamp()
+
+  // 三种残缺：缺批准人 / 缺影响面 / 两者都缺
+  for (const [label, payload] of [
+    ['缺批准人', [{ task: taskId, check: 'tdd-mutation-missing', why: '文档卡', impact: '跳过变异自证' }]],
+    ['缺影响面', [{ task: taskId, check: 'tdd-mutation-missing', why: '文档卡', approvedBy: '用户' }]],
+    ['两者都缺', [{ task: taskId, check: 'tdd-mutation-missing', why: '文档卡' }]],
+  ] as const) {
+    const outcome = decide(payload as unknown as unknown[])
+    assert.equal(outcome.ok, false, `${label} 必须被拒`)
+    assert.deepEqual(profileStamp(), before, `${label} 被拒后三值必须完全一致（mtime 也不许动）`)
+  }
+})
+
+test('M144-06 TC-112：写入成功时**回执**也落影响面（不只是状态面），且已署名条目在三面都能读到', async () => {
+  // 工具面（真实注册的 `sdo_plan action=profile`）：回执是"人实际看到的那一面"
+  const tools: { name: string; parameters: { properties?: Record<string, unknown> }; execute: (a: Record<string, unknown>, c: unknown) => unknown }[] = []
+  const services: Record<string, unknown> = { tools: { register: (tool: never) => { tools.push(tool); return () => {} } } }
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {}, on: () => () => {},
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => { if (names.every((name) => name in services)) cb(makeCtx()) },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
+  const plan = tools.find((item) => item.name === 'sdo_plan')
+  assert.ok(plan !== undefined, '工具面缺 sdo_plan')
+  const agent = { id: 's-dev', session: { header: { id: 's-dev', cwd: WORKSPACE, delegationDepth: 0 } } }
+  const receipt = String(await plan.execute({
+    action: 'profile', packages: '["tdd"]', derivedFrom: '["scale=critical"]', reason: '夹具',
+    exempt: JSON.stringify([{ task: taskId, check: 'tdd-mutation-missing', why: '文档卡', approvedBy: '用户（追认）', impact: '放弃变异自证，由评审覆盖' }]),
+  }, { agent }))
+
+  assert.match(receipt, /放弃变异自证，由评审覆盖/u, `回执必须落影响面（读者不该只能去看文件）：${receipt.slice(-300)}`)
+  assert.match(receipt, /用户（追认）/u, '回执同样要落批准人')
+
+  // 状态面 + 看板：已署名条目的影响面同样可见（与历史条目的「未记影响面」形成对照）
+  const lines = exemptionLines(readConstructionProfile(store).profile)
+  assert.match(lines[0] ?? '', /放弃变异自证，由评审覆盖/u, '状态面必须印影响面')
+  const board = renderBoard({
+    project: undefined, config: {} as never, counts: {} as never, gates: [], process: {} as never,
+    pendingGate: undefined, exemptions: lines,
+  } as never)
+  assert.match(board, /放弃变异自证，由评审覆盖/u, '看板首屏也要能看到影响面')
 })

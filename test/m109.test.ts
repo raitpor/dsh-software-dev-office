@@ -169,3 +169,58 @@ test('M109-06 callOf 真机形状回归（本文件依赖它，别让它在别�
   const call = callOf(execOf() as never) as { cwd?: string }
   assert.equal(call.cwd, process.cwd())
 })
+
+test('M109-07 TC-126：数组形态**端到端入库**（卡数恰好 +2、不生成结构卡、findings 入账 2 条）', async () => {
+  // 前面的用例只验"工具层把数组归一成 JSON 文本交给域层"（stub 依赖）。这里换**真实域层**：
+  // 归档到 store 的卡与评审才是"入库"，否则"没被拒"和"真入库"分不清。
+  const { mkdirSync, rmSync } = await import('node:fs')
+  const { join } = await import('node:path')
+  const { fileURLToPath } = await import('node:url')
+  const { Config, resolveSettings } = await import('../src/config.js')
+  const { SoftwareDevOffice } = await import('../src/office.js')
+  const { apply } = await import('../src/index.js')
+  const base = fileURLToPath(new URL('../../node_modules/.sdo-test/m109/', import.meta.url))
+  const workspace = join(base, 'proj')
+  rmSync(base, { recursive: true, force: true })
+  mkdirSync(workspace, { recursive: true })
+  const office = new SoftwareDevOffice(resolveSettings(Config({} as never)))
+  office.noteSession('m109', workspace)
+  const call = { sessionId: 'm109', cwd: workspace } as unknown as OfficeCall
+  office.init(call, { name: 'M109 端到端', scale: 'normal', stakeholders: ['业务方'] })
+  const tools: { name: string; parameters: { properties?: Record<string, unknown> }; execute: (a: Record<string, unknown>, c: unknown) => Promise<unknown> }[] = []
+  const services: Record<string, unknown> = { tools: { register: (tool: never) => { tools.push(tool); return () => {} } } }
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {}, on: () => () => {},
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => { if (names.every((name) => name in services)) cb(makeCtx()) },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  apply(makeCtx() as never, Config({} as never))
+  const exec = { agent: { id: 'm109', session: { header: { id: 'm109', cwd: workspace, delegationDepth: 0 } } } }
+  const tool = (name: string) => {
+    const found = tools.find((item) => item.name === name)
+    assert.ok(found !== undefined, `真实装配缺少 ${name}`)
+    return found
+  }
+
+  // ① / ② `sdo_plan action=decompose`：suggestions 以**真数组**到达 ⇒ 两张卡真的入库（恰好 +2）
+  const before = office.tasks(call).length
+  const cards = [{ title: '卡甲', dod: ['做甲'] }, { title: '卡乙', dod: ['做乙'] }]
+  await tool('sdo_plan').execute({ action: 'decompose', suggestions: cards }, exec)
+  const after = office.tasks(call)
+  assert.equal(after.length, before + 2, `数组形态必须**恰好**入库 2 张卡（实际 +${after.length - before}）`)
+  // 两侧都按同一比较器排序再比（中文标题的默认 `sort()` 是码位序，写死顺序会误红）
+  assert.deepEqual(after.map((task) => task.title).sort(), ['卡甲', '卡乙'].sort(), '入库的必须就是数组里的那两张（不多不少）')
+  // ② 同次调用不生成**结构卡**（结构卡来自需求拆分；这次一条需求都没有 ⇒ 0）
+  assert.equal(office.structuralPlan(call).created.length, 0, '没声明需求 ⇒ 同次调用不许顺手生成结构卡')
+
+  // ③ `sdo_review action=record`：findings 以**真数组**到达 ⇒ 台账里就是 2 条（不是 1 条、也不是被拼成一段）
+  await tool('sdo_review').execute({
+    action: 'record', taskId: after[0]?.id, reviewer: 'reviewer:9', verdict: 'pass', findings: ['第一条发现', '第二条发现'],
+  }, exec)
+  const reviews = office.reviews(call)
+  assert.equal(reviews.length, 1, '评审必须落进台账')
+  assert.deepEqual(reviews[0]?.findings, ['第一条发现', '第二条发现'], `findings 必须**逐条**入账：${JSON.stringify(reviews[0]?.findings)}`)
+  rmSync(base, { recursive: true, force: true })
+})

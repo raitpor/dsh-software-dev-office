@@ -25,7 +25,10 @@ import { apply } from '../src/index.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
+import { listReviews, reviewContentHash } from '../src/domain/records.js'
 import type { Review } from '../src/domain/records.js'
+import { Journal } from '../src/infra/journal.js'
+import type { SdoStore } from '../src/infra/store.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m177/', import.meta.url))
@@ -50,6 +53,11 @@ function c65(): { ok: boolean; detail: string } {
 }
 
 /** 记一条 `fixed` 缺陷（**直给 id**：夹具要能确定地点名它，别依赖自增序）。 */
+/** 读一个 store 的 journal 事件（跨夹具/真账共用的只读出口）。 */
+function journalEventsFor(store: SdoStore): { type: string; data: Record<string, unknown> }[] {
+  return new Journal(store).read().events as unknown as { type: string; data: Record<string, unknown> }[]
+}
+
 function defect(id: string): void {
   office.storeFor(WORKSPACE).writeYaml(['defects', `${id}.yml`], {
     defect: { id, title: `${id} 的现场`, severity: 'major', status: 'fixed', at: '' },
@@ -248,4 +256,78 @@ test('M177-06 结构：判据在注册表里、挂在 **G6**、四个流程文�
   }
   assert.equal(new Set(lines).size, 1, `四个流程文件的 C-66 必须逐字一致：\n${lines.join('\n')}`)
   assert.match(lines[0] as string, /defects\.fixed-reviewed/u, 'C-66 必须用同一条 `check` 键')
+})
+
+test('M177-07 TC-149：C-65 / C-66 **二分且交集恒空**（8 个分支全建全）+ 存量零破坏（指纹与 journal 逐条一致）', () => {
+  // 八个分支 = 「缺陷状态 fixed/closed」×「有没有 pass TR」×「有没有已采纳评审」
+  const reset = (): void => {
+    rmSync(BASE, { recursive: true, force: true })
+    mkdirSync(WORKSPACE, { recursive: true })
+    office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+    office.noteSession('s-impl', WORKSPACE)
+    office.noteSession('s-reviewer', WORKSPACE)
+    office.init(call, { name: 'M177 八分支', scale: 'normal', stakeholders: ['业务方'] })
+    office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-001.yml'], {
+      task: {
+        id: 'TASK-001', title: 't', goal: 'g', inputs: [], outputs: [], dod: ['d'], evidenceRequired: ['command'],
+        blockedBy: [], writeScopes: ['src/'], role: 'developer', size: 'small', revision: 1,
+        status: 'in-progress', requirements: [], evidence: [], createdAt: '', updatedAt: '',
+      },
+    })
+  }
+  const named = (detail: string): string[] => [...new Set([...detail.matchAll(/DEF-\d+/gu)].map((match) => match[0]))].sort()
+  const rows: { label: string; c65: string[]; c66: string[] }[] = []
+
+  for (const status of ['fixed', 'closed'] as const) {
+    for (const passTr of [true, false]) {
+      for (const adopted of [true, false]) {
+        reset()
+        office.storeFor(WORKSPACE).writeYaml(['defects', 'DEF-149.yml'], {
+          defect: { id: 'DEF-149', title: '现场', severity: 'major', status, at: '' },
+        })
+        if (passTr) passingResult('TC-149', ['DEF-149'])
+        if (adopted) {
+          const recorded = review(['DEF-149'])
+          office.verifyReviewFinding(call, {
+            reviewId: recorded.id, index: 0, outcome: 'reproduced', evidence: '照做能复现 ⇒ exitCode=0', by: 'subagent:developer',
+          })
+        }
+        const criteria = office.evaluate(call, 'G6').criteria
+        const c65 = criteria.find((item) => item.id === 'C-65') as { ok: boolean; detail: string }
+        const c66 = criteria.find((item) => item.id === 'C-66') as { ok: boolean; detail: string }
+        rows.push({
+          label: `${status}/${passTr ? 'pass-TR' : '无 TR'}/${adopted ? '采纳评审' : '无采纳评审'}`,
+          c65: c65.ok ? [] : named(c65.detail),
+          c66: c66.ok ? [] : named(c66.detail),
+        })
+      }
+    }
+  }
+
+  assert.equal(rows.length, 8, '八个分支必须全建全')
+  // ① **交集恒空**：同一条缺陷不许被两条判据同时点名（分工不重复）
+  for (const row of rows) {
+    const overlap = row.c65.filter((id) => row.c66.includes(id))
+    assert.deepEqual(overlap, [], `${row.label}：C-65 与 C-66 不许同时点名同一条缺陷（交集必须空）`)
+  }
+  // ② 二分本身：无 pass TR ⇒ 只有 C-65 说话；有 pass TR 无采纳评审 ⇒ 只有 C-66 说话
+  for (const row of rows) {
+    if (row.label.startsWith('fixed/无 TR')) assert.deepEqual([row.c65.length > 0, row.c66.length], [true, 0], `${row.label}：只该 C-65 点名`)
+    if (row.label === 'fixed/pass-TR/无采纳评审') assert.deepEqual([row.c65, row.c66.length > 0], [[], true], '有 TR 无评审：只该 C-66 点名')
+    if (row.label === 'fixed/pass-TR/采纳评审') assert.deepEqual([row.c65, row.c66], [[], []], '两样齐备：两条都绿')
+    if (row.label.startsWith('closed/')) assert.deepEqual([row.c65, row.c66], [[], []], `${row.label}：closed 不在两条判据范围内`)
+  }
+
+  // ③ 存量零破坏：真账每条评审的内容指纹都要与 `review/recorded` 里记的**逐条一致**
+  //    （无 `defects` 键的评审走老公式 ⇒ 历史指纹一个都不许失效）
+  const repo = fileURLToPath(new URL('../../', import.meta.url))
+  const realOffice = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  const realStore = realOffice.storeFor(repo)
+  const realReviews = listReviews(realStore)
+  const recorded = new Map(journalEventsFor(realStore)
+    .filter((event) => event.type === 'review/recorded')
+    .map((event) => [String(event.data['id'] ?? ''), String(event.data['contentHash'] ?? '')]))
+  const mismatched = realReviews.filter((item) => recorded.get(item.id) !== reviewContentHash(item)).map((item) => item.id)
+  assert.deepEqual(mismatched, [], `真账每条评审的指纹必须与 journal 一致（实际不一致：${mismatched.join(' ')}）`)
+  assert.equal(recorded.size, realReviews.length, 'journal 的 review/recorded 条数必须与评审条数一致')
 })

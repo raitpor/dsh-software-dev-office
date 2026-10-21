@@ -23,7 +23,7 @@
  * `reviewContentHash` 的覆盖范围（既有 54 条评审的指纹不受影响）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync as readFileSyncStrict, readdirSync as readdirSyncStrict, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -194,4 +194,47 @@ test('M151-06 存量口径 + 工具面：不声明照旧可追加；真实注册
   const review = listReviews(store).find((item) => item.id === 'REV-002')
   assert.ok(review !== undefined)
   assert.equal(reviewContentHash(review), reviewContentHash({ ...review, findings: review.findings.slice(0, review.sealedFindings ?? review.findings.length) }), '封印前缀之外的内容不参与指纹（既有 54 条评审的指纹口径未变）')
+})
+
+test('M151-07 TC-147：拒绝前后评审文件**逐字节**不变（不是只看条数）；历史条号矛盾文本**不回填**', async () => {
+  // ① 三种拒绝（超界 / 重号 / 跳号）各跑一次，每次都做**逐字节**快照
+  seedReview()
+  // 目录级快照：拒绝前后 `reviews/` 的文件清单不变（新文件、临时文件都不许留）
+  const listing = (): string[] => {
+    try {
+      return readdirSyncStrict(store.path('reviews')).sort()
+    } catch {
+      return []
+    }
+  }
+  const dirBefore = listing()
+  const fileOf = (id: string): string => store.path('reviews', `${id}.yml`)
+  const bytes = (id: string): string => readFileSyncStrict(fileOf(id), 'utf8')
+
+  for (const attempt of [
+    { label: '超界', findings: ['原第 5 条：e'], originalIndex: 5, originalTotal: 4 },
+    { label: '形状（只给一半）', findings: ['原第 3 条：c'], originalIndex: 3 },
+    { label: '形状（0 起）', findings: ['原第 0 条：c'], originalIndex: 0, originalTotal: 4 },
+  ] as const) {
+    const fileBefore = bytes('REV-001')
+    const eventsBefore = journal.read().events.length
+    const out = appendReviewFindings(store, journal, { reviewId: 'REV-001', ...attempt } as never)
+    assert.equal(out.ok, false, `${attempt.label} 必须被拒`)
+    assert.equal(bytes('REV-001'), fileBefore, `${attempt.label} 被拒后评审文件必须**逐字节**不变（原来只比条数）`)
+    assert.equal(journal.read().events.length, eventsBefore, `${attempt.label} 被拒后 journal 事件条数也不许变`)
+    assert.deepEqual(listing(), dirBefore, `${attempt.label} 被拒后 reviews/ 目录逐项不变（不许留临时文件）`)
+  }
+
+  // ② 真账历史：REV-047 / REV-053 的**条号矛盾文本**保持原样（新校验只挡"再生成"，不回填历史）
+  const repo = fileURLToPath(new URL('../../', import.meta.url))
+  const real = listReviews(new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig))).storeFor(repo))
+  for (const [id, marker] of [['REV-047', '原第 4 条】原第 2 条'], ['REV-053', '原第 3 条 片段 1/2']] as const) {
+    const review = real.find((item) => item.id === id)
+    assert.ok(review !== undefined, `真账里必须有 ${id}`)
+    const text = (review.findings ?? []).map(String).join('\n')
+    assert.ok(text.includes(marker), `${id} 的历史文本必须**逐字**保留（实际：${text.slice(0, 120)}）`)
+    // 读侧不许把条号"补"进结构字段（那是回填历史，等于替人改证据）
+    assert.equal((review as unknown as { originalIndex?: number }).originalIndex, undefined, `${id} 不许被读侧回填 originalIndex`)
+    assert.equal((review as unknown as { originalTotal?: number }).originalTotal, undefined, `${id} 不许被读侧回填 originalTotal`)
+  }
 })

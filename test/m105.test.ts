@@ -300,3 +300,19 @@ test('M105-06 新增/改写文案在语言包两侧都可解析（en 侧零中�
   assert.equal(/先 `sdo_task action=release`/u.test(hint), false, `不得再教"先 release 腾范围"这条老路：${hint}`)
   assert.match(hint, /blocked/u, `它仍要说明这是 blocked 卡的情形：${hint}`)
 })
+
+test('M105-07 TC-111：`task/unblocked` 事件必须带 `previousOwner`（恢复不是静默换手），无主卡要如实说"（无）"', async () => {
+  // ① 有主的 blocked 卡：事件里要留**原 owner**（审计：这张卡原先在谁手里）
+  seedTask('TASK-911', { status: 'blocked', owner: 'subagent:developer:2', blockedReason: '等评审' })
+  const out = await callTool('sdo_task', { action: 'unblock', id: 'TASK-911', reason: '评审已回' })
+  const event = contextOf('s1').journal.read().events.filter((item) => String(item.type) === 'task/unblocked').at(-1)
+  assert.equal(event?.data.previousOwner, 'subagent:developer:2', '事件里必须留原 owner（`collab.ts` 写了、原先没人断）')
+  assert.match(out, /subagent:developer:2/u, `回执也要带出原主人（可核对是谁的卡被恢复了）：${out}`)
+
+  // ② 无主卡：事件里是空串，回执如实印「（无）」——不许编一个 owner，也不许把这一格省掉
+  seedTask('TASK-912', { status: 'blocked', owner: '', blockedReason: '等外部输入' })
+  const bare = await callTool('sdo_task', { action: 'unblock', id: 'TASK-912', reason: '外部输入到了' })
+  const bareEvent = contextOf('s1').journal.read().events.filter((item) => String(item.type) === 'task/unblocked').at(-1)
+  assert.equal(bareEvent?.data.previousOwner, '', '无主卡的原 owner 必须是空串（不是 undefined、不是上一张卡的 owner）')
+  assert.match(bare, /（无）/u, `无主卡的回执要如实写「（无）」：${bare}`)
+})

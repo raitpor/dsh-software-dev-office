@@ -145,3 +145,56 @@ test('M160-04 结构：判据收敛到**唯一出口** `orderedPair`，三处调
     '三处旧谓词必须绝迹（否则就是第四份实现，下一个洞还会被继承）',
   )
 })
+
+test('M160-05 TC-127：**反事实模拟** —— 谓词改回旧式，三种有序形状各 1→0，对照组不动（证明修复承重）', () => {
+  // 旧实现（修前逐字抄在三处的那一行）：只认**直接**的 `blockedBy` 相互引用。
+  // 这里把它**内联**成反事实谓词 —— 不改 src，只证明"如果退回旧式，读数会怎么翻"。
+  const oldConflicts = (tasks: TaskCard[]): number => {
+    let count = 0
+    for (let i = 0; i < tasks.length; i += 1) {
+      for (let j = i + 1; j < tasks.length; j += 1) {
+        const a = tasks[i] as TaskCard
+        const b = tasks[j] as TaskCard
+        if (!a.writeScopes.some((scope) => b.writeScopes.includes(scope))) continue
+        if (a.blockedBy.includes(b.id) || b.blockedBy.includes(a.id)) continue
+        count += 1
+      }
+    }
+    return count
+  }
+  const shapes: { name: string; tasks: TaskCard[] }[] = [
+    // ① `'*'`（排在所有其它卡之后）—— 旧谓词看不到 `'*'`
+    { name: "'*' 排后标记", tasks: [card('TASK-A', 'ready', ['src/x/']), card('TASK-B', 'ready', ['src/x/'], ['*'])] },
+    // ② 传递依赖 A→B→C —— 旧谓词只看一对直接边，A 与 C 之间没有边
+    {
+      name: '传递依赖',
+      tasks: [
+        card('TASK-A', 'ready', ['src/y/'], ['TASK-B']),
+        card('TASK-B', 'ready', ['src/z/'], ['TASK-C']),
+        card('TASK-C', 'ready', ['src/y/']),
+      ],
+    },
+    // ③ 链尾的 `'*'`（C 排后，B 与 C 写范围重叠）—— 旧谓词同样看不到
+    {
+      name: "链尾 '*'",
+      tasks: [
+        card('TASK-A', 'ready', ['src/k/'], ['TASK-B']),
+        card('TASK-B', 'ready', ['src/m/']),
+        card('TASK-C', 'ready', ['src/m/'], ['*']),
+      ],
+    },
+  ]
+  // 对照组：真并行（无任何依赖）—— 新旧都必须报 1 条
+  const control = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/p/'])]
+
+  for (const shape of shapes) {
+    // 反事实：旧谓词下**每种形状各有 1 条假冲突**
+    assert.equal(oldConflicts(shape.tasks), 1, `${shape.name}：旧谓词必须给出 1 条假冲突（否则这条反事实没咬住）`)
+    // 现实：唯一出口 `orderedPair` 判为有序 ⇒ 三处判据都不报（1 → 0）
+    const live = readings(shape.tasks)
+    assert.deepEqual(live, { validatePlan: 0, classify: 0, scopeHeld: 0 }, `${shape.name}：现实现三处都必须 0 条`)
+  }
+  // 对照组不动：旧 1 → 新 1（validatePlan）/ 新 2（classify：双向各计一次）
+  assert.equal(oldConflicts(control), 1, '对照组：旧谓词 1 条')
+  assert.deepEqual(readings(control), { validatePlan: 1, classify: 2, scopeHeld: 0 }, '对照组：新口径下**仍然**要报（不许借反事实放宽）')
+})
