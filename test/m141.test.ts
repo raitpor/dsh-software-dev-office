@@ -149,3 +149,31 @@ test('M141-05 既有下游口径不被破坏：`verificationStats` 不再能报�
   assert.equal(stats.cases >= 1, true, `用例数必须 ≥1：${JSON.stringify(stats)}`)
   assert.equal(stats.results, 1, '结果数与用例数同量纲（不再是 0 用例 + 1 幽灵结果）')
 })
+
+test('M141-06 三路快照逐字不变（TC-099）：拒绝时 cases 名单 + journal 事件数 + results 名单都不动', () => {
+  // `TC-099` 的缺口：原来只断 `results.length`。长度相等而内容不同（例如把 old 结果覆盖成新的）
+  // 照样漏 ⇒ 这里取**三路**读数，且都是**逐字**（名单按序、事件数），不是计数。
+  newCase('真实用例')
+  const snapshot = (): { cases: string[]; events: number; results: string[] } => ({
+    cases: listTestCases(store).map((item) => item.id),
+    events: journal.read().events.length,
+    results: listTestResults(store).map((item) => item.id),
+  })
+  const before = snapshot()
+  assert.equal(before.cases.length, 1, '夹具前提：台账里恰好一条用例')
+  assert.equal(before.events > 0, true, '夹具前提：journal 里已经有事件（不然后面的 +1 断言无意义）')
+
+  for (const caseId of ['TC-999', '']) {
+    const outcome = recordTestResult(store, journal, { caseId, status: 'pass', evidence: 'x' })
+    assert.equal(outcome.ok, false, `${caseId === '' ? '(空 caseId)' : caseId} 必须被拒`)
+    assert.deepEqual(snapshot(), before, `${caseId === '' ? '(空 caseId)' : caseId} 被拒时三路读数必须逐字不变`)
+  }
+
+  // 反例对照（排除"假拒绝"）：合法 caseId ⇒ 只有 results/事件前进，用例名单一字不动
+  const ok = recordTestResult(store, journal, { caseId: 'TC-001', status: 'pass', evidence: 'node --test 全绿' })
+  assert.equal(ok.ok, true, '合法 caseId 必须照常落盘')
+  const after = snapshot()
+  assert.deepEqual(after.cases, before.cases, '合法写入只动 results，不动 cases 名单')
+  assert.equal(after.events, before.events + 1, '合法写入恰好 +1 事件（不是 0，也不是 2）')
+  assert.equal(after.results.length, before.results.length + 1, '合法写入恰好 +1 结果')
+})

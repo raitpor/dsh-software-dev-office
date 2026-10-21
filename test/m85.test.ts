@@ -386,3 +386,49 @@ test('M85-12 B-1：`runs.yml` 形状写坏时 —— 读得出来"坏"、且写�
   assert.equal(ok.ok, true, `修好后要能写：${JSON.stringify(ok)}`)
   assert.deepEqual(listRuns(store).map((run) => run.id), ['RUN-001', 'RUN-002'], '历史记录必须保留')
 })
+
+test('M85-13 TC-094：防篡改口径提示**只在**存在 content-hash 采纳项时渲染（含两种负态）', async () => {
+  // 负态①：一条评审都没有 ⇒ 列表回执只说"还没有评审"，不印口径
+  const empty = await callTool('sdo_review', { action: 'list' })
+  assert.match(empty, /还没有评审记录/u, `夹具前提：空列表回执：${empty.slice(0, 160)}`)
+  assert.equal(/防篡改口径/u.test(empty), false, '没有评审时不该印口径（那会把"没有东西"读成"有东西被保护"）')
+
+  // 负态②：有评审、但**没有内容指纹**（老格式 `review/recorded` 不带 contentHash）
+  //        ⇒ 不印口径，而是逐条印"无防篡改指纹"
+  store.writeYaml(['reviews', 'REV-900.yml'], {
+    review: { id: 'REV-900', taskId: 'TASK-001', reviewer: 'reviewer:1', verdict: 'pass', findings: ['无发现'], at: '2026-10-15T00:00:00.000Z' },
+  })
+  journal.append('review/recorded', { id: 'REV-900', taskId: 'TASK-001', verdict: 'pass', findings: 1 })
+  const legacy = await callTool('sdo_review', { action: 'list' })
+  assert.match(legacy, /REV-900/u, '夹具前提：老格式评审出现在列表里')
+  assert.equal(/防篡改口径/u.test(legacy), false, '只有老格式评审 ⇒ 不该印口径（它没有指纹可比）')
+  assert.match(legacy, /无防篡改指纹/u, '老格式必须**逐条**说清没有防篡改保护（不许静默当正常条目）')
+
+  // 正例：记一条带指纹的评审 ⇒ 口径随之出现
+  office.addReview(call, { taskId: 'TASK-001', reviewer: 'reviewer:2', verdict: 'pass', findings: ['无发现'] })
+  const hashed = await callTool('sdo_review', { action: 'list' })
+  assert.match(hashed, /防篡改口径/u, '有 content-hash 采纳项时必须印口径')
+  assert.match(hashed, /语义哈希/u)
+  assert.match(hashed, /字节级/u, '口径必须说清哪一类差异**不**判红')
+})
+
+test('M85-14 TC-094：字节级差异**不**判红、语义改动判红（同一把尺子的两态）', () => {
+  office.addReview(call, { taskId: 'TASK-001', reviewer: 'reviewer:1', verdict: 'pass', findings: ['无发现'] })
+  const path = ['reviews', 'REV-001.yml'] as const
+  const original = store.readText(...path)
+  assert.equal(typeof original, 'string', '夹具前提：评审文件在盘上')
+
+  // ① 字节级：只加一行注释（缩进/行尾空白同族），解析出的四项判定内容一字未动
+  store.writeText([...path], `${original}# 手改：只动字节，不动判定内容\n`)
+  assert.notEqual(store.readText(...path), original, '夹具前提：文件字节真的变了')
+  const afterBytes = office.reviewAdoptions(call).find((item) => item.review.id === 'REV-001')
+  assert.notEqual(afterBytes?.state, 'tampered', '缩进/空白一类的字节级差异**不许**判 tampered')
+  assert.equal(afterBytes?.tamperGuard, 'content-hash', '夹具前提：这条评审确实受指纹保护（不是老格式）')
+
+  // ② 语义级：改 verdict ⇒ 判 tampered（同一把尺子必须两头都咬）
+  const current = store.readText(...path) ?? ''
+  assert.equal(current.includes('verdict: pass'), true, '夹具前提：YAML 里能定位到 verdict')
+  store.writeText([...path], current.replace('verdict: pass', 'verdict: reject'))
+  const afterSemantics = office.reviewAdoptions(call).find((item) => item.review.id === 'REV-001')
+  assert.equal(afterSemantics?.state, 'tampered', '改 verdict 这类语义改动必须判 tampered')
+})

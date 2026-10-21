@@ -13,6 +13,7 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
+import { CHILD_REPORT_MIN_BYTES } from '../src/domain/dispatchReports.js'
 import { Journal } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
 import { SoftwareDevOffice } from '../src/office.js'
@@ -28,11 +29,12 @@ let journal: Journal
 const call = { sessionId: 's-dev', cwd: WORKSPACE } as unknown as OfficeCall
 
 /** 落一份报告正文并记一笔结算（同一张卡可以结算多次）。 */
-const settle = (name: string, bytes: number, reason: string): void => {
-  const text = 'x'.repeat(bytes)
+const settle = (name: string, bytes: number, reason: string, task = 'TASK-900'): void => {
+  // `SdoStore.writeText` 会给缺尾换行的文本补一个 `\n` ⇒ 补过之后再写才**恰好**是 `bytes` 字节
+  const text = 'x'.repeat(Math.max(0, bytes - 1)) + '\n'
   store.writeText(['evidence', 'child-reports', name], text)
   journal.append('dispatch/finished', {
-    childSessionId: 'child-1', task: 'TASK-900', role: 'developer', turn: 1, reason,
+    childSessionId: 'child-1', task, role: 'developer', turn: 1, reason,
     startedAt: '2026-10-14T00:00:00.000Z', finishedAt: '2026-10-14T00:01:00.000Z', durationMs: 60000,
     report: `evidence/child-reports/${name}`,
   })
@@ -76,4 +78,21 @@ test('M146-03 多笔残缺逐笔点名（不是只报一笔）', () => {
   const health = office.childReportHealth(call, 'TASK-900')
   assert.equal((health.fragments ?? []).length, 2, `两笔残缺都要列：${JSON.stringify(health.fragments)}`)
   assert.equal(health.state, 'short')
+})
+
+test('M146-04 阈值边界仍咬人：399 ⇒ short / 400 ⇒ ok / 401 ⇒ ok（常量没被放宽）', () => {
+  // `TC-107` 的子句③：阈值边界不许因为"修成逐笔遍历"而被顺手放宽（放宽 = 残片重新变成死判据）
+  assert.equal(CHILD_REPORT_MIN_BYTES, 400, '阈值常量必须是 400 —— 放宽它等于把残片告警关掉')
+  const cases: [string, number, 'ok' | 'short'][] = [
+    ['TASK-901', 399, 'short'],
+    ['TASK-902', 400, 'ok'],
+    ['TASK-903', 401, 'ok'],
+  ]
+  for (const [task, bytes, want] of cases) {
+    settle(`${task}.md`, bytes, 'completed', task)
+    const health = office.childReportHealth(call, task)
+    // 先自证夹具真的落在边界上：`bytes` 读数必须等于写进去的字节数（否则这条断言测的是别的东西）
+    assert.equal(health.bytes, bytes, `夹具必须恰好 ${bytes} 字节（实际 ${String(health.bytes)}）`)
+    assert.equal(health.state, want, `${bytes} 字节 ⇒ ${want}（实际 ${health.state}）`)
+  }
 })

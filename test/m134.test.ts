@@ -152,3 +152,25 @@ test('M134-04 工具面：新参数是**联合形态**（DEF-073 的归一覆盖
   const cardAfter = office.tasks(call).find((task) => task.id === 'TASK-974')
   assert.equal(cardAfter?.status, 'done', '自报合规 ⇒ 卡真的收工')
 })
+
+test('M134-05 回执逐字标注「自报，非宿主观测」（TC-100）：合规印全句声明、越界印「不是宿主观测」', async () => {
+  const evidence = '[{"kind":"command","detail":"node -e 1 → 0","at":"2026-10-14T00:00:00.000Z","exitCode":0}]'
+  // ① 合规路径（`kWorkScopeSelfReported`）：整句声明要逐字印出来 ——「执行者自报」+「这是声明，不是独立证据」+「请人工复核一次」
+  live('TASK-974', ['src/a/'])
+  const pass = await callTool('sdo_task', {
+    action: 'done', id: 'TASK-974', owner: 'dev', evidence, reportedFiles: ['src/a/impl.ts'],
+  })
+  assert.match(pass, /写范围对账/u, `合规回执必须带对账声明：${pass.slice(-260)}`)
+  assert.match(pass, /按\*\*执行者自报\*\*的 1 个文件核对/u, '要逐字说清核对依据是**自报的 1 个文件**（不是观测）')
+  assert.match(pass, /这是声明，不是独立证据/u, '「自报」必须同时说清它是声明、不是证据')
+  assert.match(pass, /请人工复核一次/u, '要给读者一条可执行的动作')
+
+  // ② 越界路径（`kScopeViolationSelfReported`）：判词必须逐字写「不是宿主观测」+「按**声明**判」
+  live('TASK-975', ['src/a/'])
+  const deny = await callTool('sdo_task', {
+    action: 'done', id: 'TASK-975', owner: 'dev', evidence, reportedFiles: ['src/b/other.ts'],
+  })
+  assert.match(deny, /越界写/u, `自报越界要被拒并点名：${deny.slice(0, 240)}`)
+  assert.match(deny, /不是宿主观测/u, '越界判词必须逐字说明来源是自报，不是宿主观测')
+  assert.match(deny, /按\*\*声明\*\*判/u, '要给出判定口径（按声明判），不是只贴一句警告')
+})

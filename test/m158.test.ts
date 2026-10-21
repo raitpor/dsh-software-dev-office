@@ -204,3 +204,24 @@ test('M158-04 真源留痕：收据必须落进 `dispatch/started`（可复算�
   assert.equal(started[0]?.data['messageReceipt'], 'id=MSG-9', '宿主回执必须进真源')
   assert.equal(typeof started[0]?.seq, 'number', '序号即"可复算锚点"（回执里要印出来）')
 })
+
+test('M158-05 TC-098 文案口径：只报观测、不替子会话下结论（两个语言包逐字）', () => {
+  // `TC-098` 的缺口：原来只断"语言包里有这个键"。键存在但写成"子会话没执行"照样过 ⇒
+  // 这里钉**措辞**：既要有「只证什么」，也要有「不证什么」，并且不许出现越界的结论性说法。
+  const read = (pack: string): string =>
+    readFileSync(join(ROOT, 'src', 'data', 'lang', pack), 'utf8')
+      .split('\n')
+      .find((line) => line.trimStart().startsWith('kReuseDeliveryNoSignal:')) ?? ''
+  const zh = read('zh-CN.yml')
+  const en = read('en.yml')
+
+  assert.match(zh, /只证\*\*宿主受理了投递\*\*/u, '中文必须说清这条回执**只证**什么')
+  assert.match(zh, /不证子会话读没读、做没做/u, '中文必须逐字说清它**不证**什么（观测不等于结论）')
+  assert.match(zh, /只说「未见消费」/u, '中文必须交代报警只说到观测为止')
+  assert.equal(/未执行|已忽略|没有执行|没读过/u.test(zh), false, `中文不许出现替子会话下结论的措辞：${zh}`)
+
+  assert.match(en, /only proves the \*\*host accepted the delivery\*\*/u, '英文必须说清"只证什么"')
+  assert.match(en, /does not prove the child read it or acted on it/u, '英文必须逐字说清"不证什么"')
+  assert.match(en, /no consumption observed/u, '英文必须交代报警的措辞是"未见消费"')
+  assert.equal(/did not act|ignored the delivery|never read/u.test(en), false, `英文不许出现替子会话下结论的措辞：${en}`)
+})

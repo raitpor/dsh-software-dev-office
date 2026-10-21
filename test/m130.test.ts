@@ -25,6 +25,7 @@ import type { Context } from '@deepseek-ai/cordis'
 
 import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { maskFingerprint } from '../src/domain/roles.js'
 import { apply } from '../src/index.js'
 import { admitDispatch, foldPoolChildren, rolePools, reuseBlockedReason } from '../src/domain/pool.js'
 import type { PoolChild } from '../src/domain/pool.js'
@@ -124,6 +125,15 @@ beforeEach(() => {
     },
   })
   services['tools'] = { register: (tool: ToolDefinition) => { tools.push(tool); return () => {} } }
+  // **TC-104 回执级断言的前提**：没有 `subagents` 服务时 `startDispatch` 只会回 `no-service`，
+  // 「新起（未复用）· 池内计数 · 候选原因 · 劝阻」那四行永远渲不出来。这里给最小桩（只造"派出去了"）。
+  services['subagents'] = {
+    list: () => ['spawn'],
+    startContinuable: async () => ({ childId: 'child-fresh-1' }),
+    start: async () => ({ id: 'child-oneshot-1' }),
+    listDescendants: async () => [],
+    getProvider: () => ({ capabilities: { toolFilter: true } }),
+  }
   apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
 })
 
@@ -220,4 +230,34 @@ test('M130-05 防回退：阈值只能走唯一判据，且候选原因不得再
   const describe = readFileSync(join(ROOT, 'src', 'interface', 'describe.ts'), 'utf8')
   assert.equal(/unusable\.slice\(0, 3\)/u.test(describe), false, '不可复用候选不得再只印前 3 个（DEF-041 要求每个都给原因）')
   assert.match(describe, /kPoolUnusableMore/u, '（保留"还有 N 个"的文案键给别的用途，但不可复用候选这一处不再用）')
+})
+
+test('M130-06 TC-104 回执级：未复用标注 + 池内计数 + 候选原因 + 劝阻文案逐字（不是只看键存在）', async () => {
+  // 池里放一个**本会话可复用**的空闲子会话：掩码指纹要对得上当前角色，且要有工具面观测
+  //（`reuseBlockedOf`：没有观测 ⇒ "无法确认它手里有工具 → 强制新起"，那样池内可复用计数恒为 0）
+  office.recordDispatchStarted(call, {
+    taskId: 'TASK-421', provider: 'spawn', childSessionId: 'pooled003', parentSessionId: 'me',
+    tools: 3, role: 'developer', mode: 'continuable', maskHash: maskFingerprint('developer'),
+  })
+  office.journalFor(WORKSPACE).append('dispatch/finished', { task: 'TASK-421', childSessionId: 'pooled003' })
+  office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-421.yml'], { task: { ...card('TASK-421'), status: 'done' } })
+  office.noteChildFace(call, { childSessionId: 'pooled003', tools: ['sdo_task', 'sdo_test'], violations: [] })
+  // 再来一张**可派**的卡：没有它，回执只会是「本次没有派发」，那四行自述根本不会渲出来
+  office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-422.yml'], { task: card('TASK-422') })
+
+  const text = await callTool('sdo_plan', { action: 'next', limit: 1, freshChild: true })
+  // ① 未复用标注：回执必须自己说"这是新起、**未复用**"，并给出子会话标识
+  assert.match(text, /新起一个子代理派 TASK-/u, `回执要自述这次是"新起"：${text.slice(0, 500)}`)
+  assert.match(text, /\*\*未复用\*\*/u, '「未复用」必须逐字出现（读者要能一眼看出没走池）')
+  // ② 池内计数：同角色、**本会话**可复用空闲数要印出来（不是只说"有候选"）
+  assert.match(text, /池内同角色空闲\*\*本会话可复用\*\* 1 个/u, `池内可复用计数必须逐字印出（夹具里恰好 1 个）：${text.slice(0, 500)}`)
+  // ③ 候选原因：每个未复用候选都要带原因；不许折成"还有 N 个"
+  assert.match(text, /未复用的候选与原因：/u, '候选原因标题必须逐字出现')
+  assert.equal(/还有 \d+ 个/u.test(text), false, '不可复用候选不许再被折成「还有 N 个」（DEF-041）')
+  // ④ 劝阻：freshChild=true 且有可复用会话 ⇒ 只提示、不改决策
+  assert.match(text, /你传了 `freshChild=true`/u, '劝阻文案要逐字点名这个参数')
+  assert.match(text, /不是错误，但请确认理由/u, '劝阻要保持"只提示"的口气（不判错、不改决策）')
+  assert.match(text, /去掉它才能回到池化口径/u, '要给出可执行动作（去掉参数）')
+  // ⑤ 决策没被改写：卡确实派了出去（劝阻只是提示）
+  assert.match(text, /本次派发 1 张/u, '劝阻不许把这次派发拦下来')
 })

@@ -199,3 +199,28 @@ test('M174-04 结构：`unfrozen` 进了读端白名单（写盘能读回），�
   const read = office.tasks(call).find((item) => item.id === 'TASK-009')
   assert.deepEqual(read?.unfrozen, ['TASK-002'], '`unfrozen` 必须在读端白名单里（否则写了也读不回来 = 静默丢弃）')
 })
+
+test('M174-05 TC-095：零写盘第三读数（`task/done` 0→0）+ 假声明与漏声明的**文案**不同', () => {
+  const journal = office.journalFor(WORKSPACE)
+  const doneEvents = (): number => journal.read().events.filter((event) => event.type === 'task/done').length
+
+  // ① 漏声明 ⇒ 被拒，且**第三个**零写盘读数也成立：`task/done` 事件 0→0
+  //    （前两个读数在 M174-01：卡状态仍 in-progress、没落 unfrozen 键）
+  card('TASK-002', 'in-progress')
+  const before = doneEvents()
+  const missing = report()
+  assert.equal(missing.ok, false, '漏声明必须被拒')
+  assert.equal(doneEvents(), before, '被拒时 `task/done` 事件必须 0→0（不许先记完成再回滚）')
+
+  // ② 假声明（点名一张不存在的卡）⇒ 码与**文案**都必须与漏声明不同
+  //    TC-095 的缺口：原来只断 `code` 不同，「假声明」与「漏声明」用同一句文案换个码也照样过
+  const fake = report(['TASK-999'])
+  assert.equal(fake.ok, false, '假声明必须被拒')
+  if (!missing.ok && !fake.ok) {
+    assert.notEqual(fake.code, missing.code, '两类拒绝必须是不同的拒因码')
+    assert.notEqual(fake.detail, missing.detail, '两类拒绝的**文案**必须不同（换码不换话 = 读者分不清该补什么）')
+    assert.match(missing.detail, /TASK-002/u, '漏声明要点名缺哪张在飞卡')
+    assert.match(fake.detail, /TASK-999/u, '假声明要点名写错的那个 id')
+    assert.equal(fake.detail.includes('TASK-002'), false, '假声明的文案不该把在飞卡清单混进来（那是漏声明的文案）')
+  }
+})

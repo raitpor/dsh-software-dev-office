@@ -18,7 +18,7 @@
  * **绝不解析 DoD 散文**里的路径 —— 那会让判据绑死在某种写法上（语言无关是长期约束）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -158,4 +158,34 @@ test('M153-05 工具面（真实注册的工具）：landing 写得进读得回�
   const tool = tools.find((item) => item.name === 'sdo_task')
   const properties = (tool?.parameters as { properties?: Record<string, Record<string, unknown>> } | undefined)?.properties ?? {}
   assert.ok(Array.isArray((properties['landing'] as { oneOf?: unknown }).oneOf), 'schema 必须接受 JSON 文本或真数组两种形状')
+})
+
+test('M153-06 TC-101：`landing` 形状不合法 ⇒ 可读拒绝 + **零写盘**（原先全仓没有这条）', async () => {
+  const id = card(['src/a/'], ['src/a/impl.ts'])
+  const path = ['tasks', `${id}.yml`]
+  const before = store.readText(...path)
+  assert.equal(typeof before, 'string', '夹具前提：卡文件在盘上')
+
+  // 形状坏（不是合法 JSON）⇒ 由 `jsonOr` 可读报，且**在写盘之前**就返回
+  const receipt = await callTool('sdo_task', { action: 'update', id, landing: 'src/domain/plan.ts' })
+  assert.match(receipt, /landing/u, `回执要点名是哪个参数：${receipt.slice(0, 240)}`)
+  assert.match(receipt, /形状不对/u, '要说清是**形状**问题（不是"值不合法"）')
+  assert.match(receipt, /没有写入任何东西/u, '要如实声明本次没有写入')
+  assert.equal(store.readText(...path), before, '形状不合法时卡文件必须逐字节不变（零写盘）')
+  assert.deepEqual(issues(id), [], '被拒的写入不许留下半条判据读数')
+})
+
+test('M153-07 TC-101：判据块内无正则/字符串解析（不靠"从散文里认路径"）', () => {
+  const root = fileURLToPath(new URL('../../', import.meta.url))
+  const source = readFileSync(join(root, 'src', 'domain', 'plan.ts'), 'utf8')
+  const start = source.indexOf('const landings = (task.landing ?? [])')
+  const end = source.indexOf("code: 'landing-outside-scope'")
+  assert.equal(start > 0 && end > start, true, '夹具前提：判据块在 `src/domain/plan.ts` 里找得到')
+  const block = source.slice(start, end)
+  for (const forbidden of ['.match(', '.replace(', '.split(', '.search(', 'new RegExp', '.exec(']) {
+    assert.equal(block.includes(forbidden), false, `判据块里不许出现 \`${forbidden}\`（那是"解析散文"的入口）`)
+  }
+  assert.match(block, /scopeOverlaps\(task\.writeScopes/u, '判据只能走写范围包含判定这台唯一出口（ADR-009）')
+  // 反向对照：块里确实在做判定（不是把整段切空了才"无正则"）
+  assert.match(block, /landings\.filter/u, '块里必须真的在逐条核落点（不是把整段切空才"无正则"）')
 })
