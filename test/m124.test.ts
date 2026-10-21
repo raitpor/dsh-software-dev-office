@@ -297,3 +297,47 @@ test('M124-12 A3（DEF-148）：设备节点**不再靠 writeScope 的单列特�
   })
   assert.equal(denied.kind, 'allow', '/dev/fd/N 同样不是工作区文件 ⇒ 不参与判定')
 })
+
+test('M124-13 A3 残留（DEF-150）：空白不许改变设备节点的结论；真越界仍按原始绝对路径点名；三类归属一处可区分', () => {
+  const WS = join(BASE, 'ws-m124-13')
+  mkdirSync(WS, { recursive: true })
+  const base = {
+    role: 'dispatched' as const, tool: 'edit', workspace: WS, workspaceRoot: WS,
+    guardedTools: ['edit'], sharedPaths: ['.sdo/'], cardScopes: ['src/a.ts'],
+  }
+
+  // ① **空白不许改变设备节点的结论**：`classifyTarget` 的 `raw` 是 trim 过的，按字符串比会漏
+  // （漏了就会被剥成 `dev/null` 这个工作区里不存在的幽灵相对路径 ⇒ DEF-074 那一族假阳性）
+  for (const path of ['/dev/null', ' /dev/null', '/dev/null ', '\t/dev/stdout']) {
+    const verdict = evaluateWriteScope({ ...base, paths: [path] })
+    assert.equal(verdict.kind, 'allow', `空白不许改变设备节点的结论：${JSON.stringify(path)} 应放行`)
+    assert.deepEqual(verdict.violations, [], `设备节点不参与判定 ⇒ 不许点名任何违反项：${JSON.stringify(path)}`)
+  }
+
+  // ② 带空白的**真越界**仍拒，且按**原始绝对路径**点名（幽灵路径面钉死，也让①有判别力）
+  const outside = evaluateWriteScope({ ...base, paths: [' /tmp/probe.txt'] })
+  assert.equal(outside.kind, 'deny', '带空白的工作区外绝对路径仍然是越界（不许因为修①把它一起放过）')
+  if (outside.kind !== 'deny') assert.fail('工作区外写入必须拒绝')
+  assert.equal(outside.code, 'write-scope-outside-workspace')
+  assert.deepEqual(outside.violations, ['/tmp/probe.txt'], '点名必须是原始绝对路径（不是剥掉前导斜杠的幽灵形态）')
+  assert.equal(/(?:^|[^/])tmp\/probe\.txt/u.test(outside.detail), false, `detail 里不许出现幽灵形态 tmp/probe.txt：${outside.detail}`)
+
+  // ③ **归属三类**在同一处可区分：设备节点 / 工作区外 / 工作区内（在卡写范围内）
+  const device = evaluateWriteScope({ ...base, paths: ['/dev/null'] })
+  const inside = evaluateWriteScope({ ...base, paths: ['src/a.ts'] })
+  const shape = (verdict: typeof device): { kind: string; code: string; violations: string[] } => ({
+    kind: verdict.kind,
+    code: verdict.kind === 'deny' ? verdict.code : '',
+    violations: verdict.kind === 'deny' ? verdict.violations : [],
+  })
+  assert.deepEqual(
+    [shape(device), shape(outside), shape(inside)],
+    [
+      { kind: 'allow', code: '', violations: [] },
+      { kind: 'deny', code: 'write-scope-outside-workspace', violations: ['/tmp/probe.txt'] },
+      { kind: 'allow', code: '', violations: [] },
+    ],
+    '三类必须一处可区分：设备节点放行 / 工作区外拒绝并点名原始绝对路径 / 工作区内（卡写范围内）放行',
+  )
+  assert.notEqual(device.kind, outside.kind, '设备节点与工作区外的结论必须不同（否则分类没起作用）')
+})

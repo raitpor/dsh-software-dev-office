@@ -200,13 +200,12 @@ export function evaluateWriteScope(input: WriteScopeInput): WriteScopeDecision {
       scope: [],
     }
   }
-  // **`DEF-148`（`TASK-167` A3，2026-10-21 裁定 a）**：这里是**单列特例过滤**，已删。
-  // 设备节点的判定只有一处（`scopePaths.classifyTarget` 的 `{ kind: 'device' }` 分支），
-  // 本文件不再按名字自己排除一遍 —— 换名字/换形态的下一个特例不会再从这里漏过去。
-  const deviceTargets = new Set(
-    classified.filter((item) => item.kind === 'device').map((item) => (item.kind === 'device' ? item.raw : '')),
-  )
-  const candidates = (input.paths ?? []).filter((path) => !deviceTargets.has(path))
+  // **`DEF-148`（`TASK-167` A3，2026-10-21 裁定 a）**：这里是**单列特例过滤**，已删 ——
+  // 设备节点的判定只有一处（`scopePaths.classifyTarget` 的 `{ kind: 'device' }` 分支）。
+  // **`DEF-150`**：按 `classified` 的**下标**对位排除，不按字符串相等 —— `raw` 是**trim 过**的，
+  // 拿它当身份键会让带前后空白的 `/dev/null` 漏回判定面（并被剥成 `dev/null` 这个幽灵相对路径，
+  // 正是 `DEF-074` 那一族假阳性）。`classified` 与 `input.paths` 同长同序，下标是唯一不会错位的身份。
+  const candidates = (input.paths ?? []).filter((_path, index) => classified[index]?.kind !== 'device')
   if (candidates.length === 0) return allow()
   // 工作区拿不到 ⇒ 绝对路径无法归一 ⇒ 不判（fail-open，与"认不出人"同一方向）
   if (workspaceRaw === '') return allow()
