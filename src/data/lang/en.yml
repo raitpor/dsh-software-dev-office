@@ -478,6 +478,8 @@ uiClamp:
   truncated: "… (truncated — original {p1} characters, showing only the first {p2}. The full content is in the `.sdo/` source of truth — or re-fetch it with more specific filter parameters)"
 
 uiGates:
+  kCoverageUnverified: '**coverage not verified** (a `req-tc` edge exists, but no test result is both pass and adopted): {p1} - an edge proves a case exists, not that it ran and was independently adopted'
+  kCoverageUnverifiedRemedy: 'For each: run the case, record `pass`, and have it adopted by another session/role (`adoptedBy` non-empty) - an unadopted pass is not verification; if the requirement is really out of scope, change its priority or go through a change request rather than leaving an empty edge'
   kTestsOrphanResults: 'Note: **{p1}** orphan result(s) (caseId not in the case registry, excluded from case conclusions): {p2} - these are variant-proving observations / history, neither passes nor failing cases; register the case and record a fresh result to settle them (DEF-143)'
   kDeliveryBoundUndeclared: 'N/A: the project has not declared a delivery-binding shape in `.sdo/config.yml` -> `delivery.bind` (`commit` = the commit message carries artifact hashes / `manifest` = the declared manifest carries them); the plugin does not guess (AC-241)'
   kDeliveryBoundOk: 'OK: delivery binding holds (shape **{p1}**): a 40/64-hex artifact hash is found at its landing spot'

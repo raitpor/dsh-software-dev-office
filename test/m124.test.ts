@@ -274,3 +274,26 @@ test('M124-10 §1.1（`DEF-119`）已落地卡（done/verified）不参与拆卡
     assert.ok(planned.includes(code), `未落地卡必须仍判 \`${code}\`（松紧两态都要有判别力）`)
   }
 })
+
+test('M124-12 A3（DEF-148）：设备节点**不再靠 writeScope 的单列特例过滤**，判定只在 classifyTarget 一处', () => {
+  const writeScope = readFileSync(join(ROOT, 'src', 'domain', 'writeScope.ts'), 'utf8')
+  // ① 特例过滤已删：这个文件里不许再出现"按名字排除设备路径"的过滤调用
+  assert.equal(/\.filter\(\(path\) => !isDevicePath\(/u.test(writeScope), false, '单列特例过滤必须已删除')
+  assert.equal(writeScope.includes('!isDevicePath('), false, '不许换一种写法把同一个特例搬回来')
+  // ② 设备判定只有一处实现（`isDeviceNode`），且归属分类的 device 分支在 scopePaths
+  const scopePaths = readFileSync(join(ROOT, 'src', 'domain', 'scopePaths.ts'), 'utf8')
+  assert.match(scopePaths, /if \(isDeviceNode\(text\)\) return \{ kind: 'device', raw: text \}/u, 'device 分支必须在 classifyTarget 里')
+  const sources = readFileSync(join(ROOT, 'src', 'domain', 'writeScope.ts'), 'utf8')
+  assert.match(sources, /isDeviceNode\(raw\)/u, 'writeScope 的别名只能委托给 scopePaths 的单一实现（不许自带判定）')
+  // ③ 行为不变（同一格断言的反面）：/dev/null 仍放行、/dev 下的工具链字面量仍拦
+  const allowed = evaluateWriteScope({
+    role: 'dispatched', tool: 'edit', paths: ['/dev/null'], workspace: '/ws', workspaceRoot: '/ws',
+    guardedTools: ['edit'], sharedPaths: ['.sdo/'], cardScopes: ['src/a.ts'],
+  })
+  assert.equal(allowed.kind, 'allow', '/dev/null 必须仍放行（行为不变）')
+  const denied = evaluateWriteScope({
+    role: 'dispatched', tool: 'edit', paths: ['/dev/fd/3'], workspace: '/ws', workspaceRoot: '/ws',
+    guardedTools: ['edit'], sharedPaths: ['.sdo/'], cardScopes: ['src/a.ts'],
+  })
+  assert.equal(denied.kind, 'allow', '/dev/fd/N 同样不是工作区文件 ⇒ 不参与判定')
+})

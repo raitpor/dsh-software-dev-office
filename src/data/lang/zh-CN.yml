@@ -1306,6 +1306,8 @@ uiClamp:
   truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"
 
 uiGates:
+  kCoverageUnverified: '**覆盖未核实**（有 `req-tc` 边，但没有一条「pass 且已采纳」的测试结果）：{p1} —— 边只证明"有用例"，不证明"跑过且被独立采纳"'
+  kCoverageUnverifiedRemedy: '逐条补：跑那条用例并记 `pass`，且由**另一个会话/角色**采纳（`adoptedBy` 非空）—— 未采纳的 pass 不算核实；确实不做的需求请改 `priority` 或走变更，别用一条空边充覆盖'
   kTestsOrphanResults: '另有 **{p1}** 条**无主结果**（`caseId` 不在用例登记表，不计入用例结论）：{p2} —— 它们是变异自证的红侧观测/历史残留，既不算通过也不算失败用例；要收口就补登记用例后重记一条结果（见 `DEF-143`）'
   kDeliveryBoundUndeclared: '不适用：项目没有在 `.sdo/config.yml` 的 `delivery.bind` 里声明交付绑定形态（`commit` = 提交信息带产物哈希 / `manifest` = 清单落点带产物哈希）；插件不猜形态（AC-241）'
   kDeliveryBoundOk: '✅ 交付绑定成立（形态 **{p1}**）：{p1} 的落点里能查到 40/64 位十六进制（关键产物哈希）'

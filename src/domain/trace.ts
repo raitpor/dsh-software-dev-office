@@ -12,7 +12,7 @@
 import { listElements } from './architecture.js'
 import { listContracts } from './contracts.js'
 import { methodTraceables } from './method.js'
-import { listDefects } from './records.js'
+import { listDefects, listTestResults } from './records.js'
 import { fmt, t } from './i18n.js'
 import { textOf } from '../infra/scalar.js'
 import { existsSync, statSync } from 'node:fs'
@@ -645,7 +645,22 @@ export function defectLinksRemedy(): string {
 }
 
 /** 生成追溯报告：覆盖率 + 三类孤儿 + must 需求的测试缺口。 */
-export function report(store: SdoStore, requirements: Requirement[]): TraceReport {
+/**
+ * **`DEF-149`（`TASK-167` A2，2026-10-21 裁定 a）**：覆盖率报告多一个"第三态"读数 ——
+ * **被 `req-tc` 边挂着、却没有一条「pass 且已采纳」结果的 must 需求**。
+ *
+ * 病根：`uncoveredMust` 只判"有没有 `req-tc` 边"，于是 `REQ-062` 一行未实现、`test/` 零命中，
+ * 只要台账里有一条边就能算"需求有用例覆盖"（覆盖率把它当已覆盖 = 假绿）。
+ *
+ * 第三态与两个既有态**互不替代**（同一个需求的三个不同结论）：没边 = 缺用例；有边没跑/没采纳 = 未核实。
+ * 类型用交叉扩展而不是改 `TraceReport`：`src/types.ts` 不在本卡写范围，且旧调用方按 `TraceReport`
+ * 读不会有任何变化（多出来的字段对它是透明的）。
+ */
+export type TraceReportWithVerification = TraceReport & {
+  registeredButUnverified: { requirementId: string; caseIds: string[] }[]
+}
+
+export function report(store: SdoStore, requirements: Requirement[]): TraceReportWithVerification {
   // **N-3**：坏行必须一路带到判据 detail 里 —— 覆盖率/孤儿是拿这份集合判的，
   // "静默变短"等于让门禁在一份不完整的图上判绿。
   const { links, badLines, totalLines } = readLinksChecked(store)
@@ -702,6 +717,27 @@ export function report(store: SdoStore, requirements: Requirement[]): TraceRepor
     .filter((requirement) => !links.some((item) => item.kind === 'req-tc' && item.from === requirement.id))
     .map((requirement) => requirement.id)
 
+  // **`DEF-149`**：第三态 —— 有边不等于核实。每张用例取**最新一条**结果（与 `verificationStats`
+  // 的 latest-wins 同口径），要求 `status === 'pass'` 且那条结果的 `adoptedBy` 非空。
+  const latestByCase = new Map<string, { status: string; adoptedBy?: string | undefined; at: string; id: string }>()
+  for (const result of listTestResults(store)) {
+    const previous = latestByCase.get(result.caseId)
+    const newer = previous === undefined
+      || result.at > previous.at
+      || (result.at === previous.at && result.id > previous.id)
+    if (newer) latestByCase.set(result.caseId, result)
+  }
+  const registeredButUnverified = perRequirement
+    .filter((item) => requirements.some((requirement) => requirement.id === item.id && requirement.priority === 'must'))
+    .filter((item) => item.tests.length > 0)
+    .filter((item) => !item.tests.some((caseId) => {
+      const result = latestByCase.get(caseId)
+      if (result === undefined) return false
+      return result.status === 'pass' && textOf(result.adoptedBy).trim() !== ''
+    }))
+    .map((item) => ({ requirementId: item.id, caseIds: [...item.tests].sort() }))
+    .sort((a, b) => a.requirementId.localeCompare(b.requirementId))
+
   const coveredCount = perRequirement.filter((item) => item.covered).length
   /**
    * **TASK-038 / REQ-058**：缺陷那一类的孤儿**不再由 `orphanOf` 现算** —— 它多了两个必须一起看的因素：
@@ -736,6 +772,8 @@ export function report(store: SdoStore, requirements: Requirement[]): TraceRepor
       defects: defectLinks.orphans,
     },
     uncoveredMust,
+    // **`DEF-149`**：第三态与 `uncoveredMust` 并列出去（判据 `C-21` 点名它）
+    registeredButUnverified,
     coverage: requirements.length === 0 ? 0 : Math.round((coveredCount / requirements.length) * 100) / 100,
     // **TASK-038 落点四**：读数随报告一起出去 —— 判据 / TRACE.md / BOARD.md 都读这一份（三处同源）。
     defectLinks,
@@ -747,7 +785,7 @@ export function report(store: SdoStore, requirements: Requirement[]): TraceRepor
    * 收窄只用于把多出来的那一位交给 `TraceReport` 的调用方 —— 判定与数据**都不在这里**，
    * 它们各自只有一份（`assessDefectLinksFrom`）。补 `types.ts` 的形状位属后续卡。
    */
-  return built as TraceReport & { defectLinks: DefectLinkAssessment }
+  return built as TraceReportWithVerification & { defectLinks: DefectLinkAssessment }
 }
 
 /** 渲染 `TRACE.md`（派生视图，设计 §10.1 的产物链）。 */

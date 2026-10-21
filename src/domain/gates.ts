@@ -1713,6 +1713,20 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     if (bad !== undefined) return bad
     if (orphans.length > 0) return fail('trace.coverage', fmt('uiGates.k95', { p1: orphans.join(' ') }), t('uiGates.k96'))
     if (data.uncoveredMust.length > 0) return fail('trace.coverage', fmt('uiGates.k97', { p1: data.uncoveredMust.join(' ') }), t('uiGates.k98'))
+    // **DEF-149** (TASK-167 A2): a req-tc edge proves a case EXISTS, not that it was verified.
+    // Third state: must requirements whose linked cases have no "pass + adopted" result. Named as
+    // `REQ-x<-TC-y` so the reader can go straight to the case. C-21 turning red here is the point.
+    if (data.registeredButUnverified.length > 0) {
+      return fail(
+        'trace.coverage',
+        fmt('uiGates.kCoverageUnverified', {
+          p1: data.registeredButUnverified
+            .map((item) => `${item.requirementId}<-${item.caseIds.join('/')}`)
+            .join(' '),
+        }),
+        t('uiGates.kCoverageUnverifiedRemedy'),
+      )
+    }
     return ok('trace.coverage', fmt('uiGates.k99', { p1: Math.round(data.coverage * 100) }))
   },
 
