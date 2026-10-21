@@ -85,13 +85,13 @@ let orphanSeq = 0
  * 必须**直接写盘 + 补 `test/recorded` 事件**：写入面自 `DEF-037` 起拒收未登记的 caseId，
  * 而这五条恰恰是"历史遗留、已经落在盘上"的形态 —— 用工具面造不出来，只能按真源形状构造。
  */
-function recordOrphan(caseId: string): void {
+function recordOrphan(caseId: string, status: 'fail' | 'skip' | 'pass' = 'fail', extra: Record<string, unknown> = {}): void {
   orphanSeq += 1
   const id = `TR-90${orphanSeq}`
   store().writeYaml(['tests', 'results', `${id}.yml`], {
-    result: { id, caseId, status: 'fail', evidence: '变异体在盘时的红侧观测', at: '2026-10-20T00:00:00.000Z' },
+    result: { id, caseId, status, evidence: '变异体在盘时的红侧观测', at: '2026-10-20T00:00:00.000Z', ...extra },
   })
-  journal().append('test/recorded', { id, caseId, status: 'fail' })
+  journal().append('test/recorded', { id, caseId, status })
 }
 
 beforeEach(() => {
@@ -159,4 +159,53 @@ test('M205-04 态 D：无主结果 + 已登记全绿 + 有已登记用例没结�
   const orphanCase = listTestCases(store()).find((item) => item.id !== caseId)
   assert.ok(orphanCase !== undefined)
   assert.match(result.detail, new RegExp(orphanCase.id, 'u'), '要点名那条没跑的用例')
+})
+
+test('M205-05 态 E：**无主结果的 skip** + 已登记用例全绿 ⇒ 判绿并点名（无主 skip 不是"没处置的用例"）', () => {
+  const caseId = seedCase()
+  recordAdoptedPass(caseId)
+  recordOrphan('M106-01', 'skip')
+  const stats = verificationStats(store(), journal())
+  assert.deepEqual(stats.skippedCaseIds, ['M106-01'], '既有 skippedCaseIds 语义不变（仍全量）')
+  assert.deepEqual(stats.skippedRegisteredCaseIds, [], '新字段只装已登记的')
+  const result = c50()
+  assert.equal(result.ok, true, `无主 skip 不该让 C-50 判红：${result.detail}`)
+  assert.match(result.detail, /M106-01/u, 'ok 话术必须点名该无主 id')
+})
+
+test('M205-06 态 F：**无主结果进了 unadopted**（没有执行者/采纳者）+ 已登记全绿 ⇒ 判绿并点名', () => {
+  const caseId = seedCase()
+  recordAdoptedPass(caseId)
+  // 无主 pass：没有 executedBy/adoptedBy ⇒ 落在 unadopted（既有口径），但它没有登记用例
+  recordOrphan('TC-017-RED', 'pass')
+  const stats = verificationStats(store(), journal())
+  assert.equal(stats.unadopted.length >= 1, true, '既有 unadopted 语义不变（仍全量）')
+  assert.deepEqual(stats.unadoptedRegistered, [], '新字段只装已登记的')
+  const result = c50()
+  assert.equal(result.ok, true, `无主 unadopted 不该让 C-50 判红：${result.detail}`)
+  assert.match(result.detail, /TC-017-RED/u, 'ok 话术必须点名该无主 id')
+})
+
+test('M205-07 反例①（不许放宽）：**已登记**用例的 skip 未处置 ⇒ 仍判红', () => {
+  const healthy = seedCase()
+  recordAdoptedPass(healthy)
+  const skipping = seedCase('只记了 skip 的用例')
+  recordTestResult(store(), journal(), { caseId: skipping, status: 'skip', evidence: '本机没有该平台' })
+  const result = c50()
+  assert.equal(result.ok, false, '已登记用例的 skip 未处置必须仍判红（这两面不许被关掉）')
+  assert.match(result.detail, new RegExp(skipping, 'u'), '必须点名那条未处置的 skip 用例')
+})
+
+test('M205-08 反例②（不许放宽）：**已登记**用例的 pass 未采纳 ⇒ 仍判红', () => {
+  const adopted = seedCase()
+  recordAdoptedPass(adopted)
+  const unadopted = seedCase('自己给自己盖章的用例')
+  recordTestResult(store(), journal(), {
+    caseId: unadopted, status: 'pass', evidence: '自己跑的',
+    executedBy: 'runner', adoptedBy: 'runner', adoptedAt: '2026-10-20T00:00:00.000Z',
+    oracle: { kind: 'acceptance', ref: 'REQ-001', criterion: 'AC-001' },
+  })
+  const result = c50()
+  assert.equal(result.ok, false, '已登记用例的 pass 未独立采纳必须仍判红')
+  assert.match(result.detail, /TR-|未采纳|采纳/u, `必须点名未采纳：${result.detail}`)
 })

@@ -878,6 +878,21 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
    */
   failedRegisteredCaseIds: string[]
   /**
+   * **`DEF-145`（`TASK-166`）：`skip` 面里**已登记**用例的 id** —— C-50 的 skip 处置核对只读这个集合。
+   *
+   * 病根与 `failedRegisteredCaseIds` 同源：`skippedCaseIds` 是**全量**（含无主结果），喂给
+   * `skippedCaseGaps` 后，一条**从未登记成用例**的历史 skip 结果会被当成"没处置的用例"判红。
+   * **不动 `skippedCaseIds` 的语义**（既有回执按它断言），新语义用新字段。
+   */
+  skippedRegisteredCaseIds: string[]
+  /**
+   * **`DEF-145`（`TASK-166`）：`unadopted` 里**已登记**用例的结果 id** —— C-50 的采纳面只读这个集合。
+   *
+   * `unadopted` 本体仍是全量口径（`pass` 但没被独立采纳的**全部**结果，既有用例按它断言）；
+   * 这一份只把"caseId 不在用例登记表"的摘出去，理由同上：无主结果不是用例结论。
+   */
+  unadoptedRegistered: string[]
+  /**
    * **D4（整仓评审 major）**：`tests/results/*.yml` 里有、但真源 journal **没有 `test/recorded`** 的结果 id。
    * 实测：手写 `TR-001.yml(status=pass, evidence='')` + journal 零事件 ⇒ `passed=1`，G6/C-50 照绿；
    * `recordTestResult(fail)` 之后把文件改成 `pass` 也查不出来（journal 里仍是 fail）。
@@ -964,6 +979,13 @@ export function verificationStats(store: SdoStore, journal?: Journal | undefined
     orphanResultCaseIds: [...new Set(results.filter((result) => !casesById.has(result.caseId)).map((result) => result.caseId))].sort(),
     // **DEF-143**：只有**已登记**用例的 fail 才进判红面（C-50 读这个）
     failedRegisteredCaseIds: failed.filter((result) => casesById.has(result.caseId)).map((result) => result.caseId),
+    // **DEF-145**：skip 面 / 采纳面也要把无主结果摘出去（判红集合只看已登记用例）
+    skippedRegisteredCaseIds: results
+      .filter((result) => result.status === 'skip' && casesById.has(result.caseId))
+      .map((result) => result.caseId),
+    unadoptedRegistered: results
+      .filter((result) => result.status === 'pass' && !adoptedPass.includes(result) && casesById.has(result.caseId))
+      .map((result) => result.id),
     unjournaled,
     tampered,
     unadopted,

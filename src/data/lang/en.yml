@@ -478,7 +478,7 @@ uiClamp:
   truncated: "… (truncated — original {p1} characters, showing only the first {p2}. The full content is in the `.sdo/` source of truth — or re-fetch it with more specific filter parameters)"
 
 uiGates:
-  kTestsOrphanResults: 'Note: **{p1}** orphan result(s) (caseId not in the case registry, excluded from case pass rate): {p2} - these are variant-proving observations / history, neither passes nor failing cases; register the case and record a fresh result to settle them (DEF-143)'
+  kTestsOrphanResults: 'Note: **{p1}** orphan result(s) (caseId not in the case registry, excluded from case conclusions): {p2} - these are variant-proving observations / history, neither passes nor failing cases; register the case and record a fresh result to settle them (DEF-143)'
   kDeliveryBoundUndeclared: 'N/A: the project has not declared a delivery-binding shape in `.sdo/config.yml` -> `delivery.bind` (`commit` = the commit message carries artifact hashes / `manifest` = the declared manifest carries them); the plugin does not guess (AC-241)'
   kDeliveryBoundOk: 'OK: delivery binding holds (shape **{p1}**): a 40/64-hex artifact hash is found at its landing spot'
   kDeliveryBoundFail: 'BLOCKED: **delivery binding does not hold** (shape **{p1}**): {p2}'
@@ -1991,7 +1991,7 @@ uiReview:
   placeholderEvidence: 'a `reproduced` verdict needs a **readable reading** (`⇒` / `=>` / `exitCode` / a 64-hex hash) - placeholder text (`x`, `reproduced it`) is not a reproduction; give the reading, or use `refuted` with counter-evidence'
   # —— Review-finding verification (2026-10-08: a review is a claim; the implementer must verify each finding before it is adopted) ——
   kReproMissing: 'REJECTED: a non-`pass` finding call ({p1}) must carry either **a command that still fails right now** (`repro`) or **an explicit declaration that it cannot be reproduced, plus why** (`unreproducible`) — otherwise "to be fixed" is just a verbal memory: a settled problem gets recorded as open and the next person goes hunting for a gap that is not there. **Nothing was written.**'
-  kDefectUnknown: 'REJECTED: the review names defect(s) that **do not exist**: {p1} — an id that names nothing cannot be tolerated, or "this defect was reviewed" degenerates into prose. Fix it: (1) resend with the real id; (2) the defect is not in the ledger yet => create it first with sdo_test action=plan with `sdo_test action=defect`. **Nothing was written** (no guessing, no auto-creating defects).'
+  kDefectUnknown: 'REJECTED: the review names defect(s) that **do not exist**: {p1} — an id that names nothing cannot be tolerated, or "this defect was reviewed" degenerates into prose. Fix it: (1) resend with the real id; (2) the defect is not in the ledger yet => create it first with `sdo_test action=defect`. **Nothing was written** (no guessing, no auto-creating defects).'
   kDefectBlankId: '(blank entry)'
   kReproAmbiguous: 'REJECTED: give **only one** of `repro` / `unreproducible` — with both, the reader cannot tell which holds ("it reproduces" and "it cannot be reproduced" are mutually exclusive). **Nothing was written.**'
   noReview: "No such review: {p1}"

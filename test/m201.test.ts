@@ -161,7 +161,9 @@ test('M201-05 结构：读数在 records.ts、判定在 gates.ts、处置词表�
   assert.equal(records.includes('skippedCaseIds'), true, '读数（哪几条只有 skip）必须在 records.ts')
   // ② 判定面：C-50 里接线，且**不自己造词表**（处置校验走 mutation.ts 的 assessCoverageItem）
   const gates = readFileSync(join(ROOT, 'src', 'domain', 'gates.ts'), 'utf8')
-  assert.equal(gates.includes('skippedCaseGaps(ctx.store, stats.skippedCaseIds)'), true, 'C-50 必须真的用这份读数')
+  // **`DEF-145`（`TASK-166`）**：C-50 的 skip 面改用**已登记**读数（`skippedRegisteredCaseIds`）——
+  // 无主结果不是用例结论。这条结构钉子的意思不变：判定必须真的读 records.ts 的那份读数。
+  assert.equal(gates.includes('skippedCaseGaps(ctx.store, stats.skippedRegisteredCaseIds)'), true, 'C-50 必须真的用这份读数')
   assert.equal(gates.includes('assessCoverageItem'), true, '处置校验必须复用既有校验器（不在这里另写一套词表）')
   // 词表只有一份：gates.ts 不许自带处置词表（`types.ts` 的 `TESTING_DISPOSITIONS` 是唯一来源；
   // 断言③的「硬编码中文 0」再机械地保证它连中文字面量都没有 —— 词表不可能藏在这里）

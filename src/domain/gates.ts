@@ -1757,7 +1757,9 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // 而"最新结果只是 `skip`"既不进 `failed` 也不进 `unrun` ⇒ 一条 must 用例一次都没真跑也照绿（假绿）。
     // 三面边界（DoD 逐字）：**不把 skip 判成 fail**（平台相关用例要能表达）、**不放宽 fail 面**、
     // 只要求它走 REQ-057 既有处置（`不可达` / `等价` + 理由）—— 没处置就逐条点名。
-    const skippedGaps = skippedCaseGaps(ctx.store, stats.skippedCaseIds)
+    // **DEF-145** (TASK-166): the skip face takes registered cases only. Orphan skip results
+    // (caseId not in the case registry) are history/observations, not "an unhandled case".
+    const skippedGaps = skippedCaseGaps(ctx.store, stats.skippedRegisteredCaseIds)
     if (skippedGaps.length > 0) {
       return fail(
         'tests.passed',
@@ -1774,10 +1776,12 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // （执行者缺登记 / 采纳者缺登记 / 采纳者就是执行者 / 判定基准缺或不成立），这里按 REQ-053 的降级口径
     // **不予计入 + 点名**：有未采纳的 pass ⇒ 判红并逐条点名（既有 `passed` 读数语义**不变**，
     // m52/m56/m85 仍按它断言；新的"已采纳"计数是 `passedAdopted`）。
-    if (stats.unadopted.length > 0) {
+    // **DEF-145** (TASK-166): same rule for the adoption face. `unadopted` stays the full reading;
+    // only registered cases may redden this criterion (orphan results are not case conclusions).
+    if (stats.unadoptedRegistered.length > 0) {
       return fail(
         'tests.passed',
-        fmt('uiGates.kTestsUnadopted', { p1: String(stats.unadopted.length), p2: stats.unadopted.join(' ') }),
+        fmt('uiGates.kTestsUnadopted', { p1: String(stats.unadoptedRegistered.length), p2: stats.unadoptedRegistered.join(' ') }),
         t('uiGates.kTestsUnadoptedRemedy'),
       )
     }

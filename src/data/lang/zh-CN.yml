@@ -1306,7 +1306,7 @@ uiClamp:
   truncated: "…（已截断：原文 {p1} 字符，仅显示前 {p2} 字符。完整内容在 `.sdo/` 真源里，或用更具体的筛选参数重取）"
 
 uiGates:
-  kTestsOrphanResults: '另有 **{p1}** 条**无主结果**（`caseId` 不在用例登记表，不计入用例通过率）：{p2} —— 它们是变异自证的红侧观测/历史残留，既不算通过也不算失败用例；要收口就补登记用例后重记一条结果（见 `DEF-143`）'
+  kTestsOrphanResults: '另有 **{p1}** 条**无主结果**（`caseId` 不在用例登记表，不计入用例结论）：{p2} —— 它们是变异自证的红侧观测/历史残留，既不算通过也不算失败用例；要收口就补登记用例后重记一条结果（见 `DEF-143`）'
   kDeliveryBoundUndeclared: '不适用：项目没有在 `.sdo/config.yml` 的 `delivery.bind` 里声明交付绑定形态（`commit` = 提交信息带产物哈希 / `manifest` = 清单落点带产物哈希）；插件不猜形态（AC-241）'
   kDeliveryBoundOk: '✅ 交付绑定成立（形态 **{p1}**）：{p1} 的落点里能查到 40/64 位十六进制（关键产物哈希）'
   kDeliveryBoundFail: '❌ **交付绑定不成立**（形态 **{p1}**）：{p2}'
