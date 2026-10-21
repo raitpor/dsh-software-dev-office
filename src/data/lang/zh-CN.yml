@@ -1534,6 +1534,7 @@ uiGates:
   kReviewUnadopted: "已完成卡的通过评审**尚未被核实采纳**：{p1} —— 评审结果是主张不是结论：**复现/反证是该卡实现会话的活**（只有他能把结论接上修复），由它逐条核实后才算数；实现会话已退役（一次性子代理跑完就没了）时由**同角色**会话代核（台账如实标注 `owner-tenure-over`/`owner-settled`）。**`reviewer` 角色不承担复现** —— 它负责文档/设计/逻辑类审阅，掩码里没有 `bash`（R-11 口径，2026-10-08 用户裁定）。"
   kReviewUnadoptedRemedy: "逐条核实评审发现（`sdo_task action=verify-review id=<卡> review=REV-… index=… outcome=reproduced|refuted proof=“…”`）；核实完这条评审才会被采纳"
   kReviewLegacyAdopted: "其中 {p1} 是**老格式评审**（记录时没有内容指纹）—— 这类条目**检出不了**「改 verdict / 改发现正文」的篡改；可控 `sdo_review action=rehash id=REV-…` 补记指纹（补记**之前**的改动仍不可校验，补记之后即可检出）"
+  kReviewSelfNoted: "另有 {p1} 条**自评只留痕、不判违规**（{p2}）：其中 `changes-requested`/`reject` 属自我否定（自己给自己挑毛病，不是放水）；`pass` 的那几条是因为该卡另有**不同会话且已采纳**的通过评审可依据 —— 独立性判据只在「自评的放行且没有独立面」时才判红（2026-10-21 收窄）"
   k118: "还没有开迭代"
   k119: "用 `sdo_plan action=iteration goal=…` 开一个迭代"
   k120: "迭代 {p1} 没有任务卡"

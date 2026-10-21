@@ -264,30 +264,105 @@ export interface ReviewRecord {
  *   · 材料不全（存量记录没带 `sessionId`，或卡没有认领会话）⇒ 退回**名字口径**（旧行为，
  *     如实降级；不假装判过 uuid）。
  */
+export interface IndependenceEntry {
+  reviewId: string
+  detail: string
+}
+
+/**
+ * 独立性审计的**两个桶**（2026-10-21 用户裁定「收窄两条」）。
+ *
+ * 为什么必须分桶：`C-52` 原来把两件性质完全不同的事判成同一件 ——
+ *   · **自评的放行**（`verdict=pass`，且这张卡没有别的独立面可依据）⇒ 真的自我放行，必须判红；
+ *   · **自评的自我否定**（`changes-requested` / `reject`）⇒ 自己给自己挑毛病，不是放水；
+ *   · **`pass` 自评但另有独立采纳评审** ⇒ 依据在别处，自评只是噪声。
+ * 后两类进 `noted`（留痕、不判红）。历史不能改，若不收窄，`C-52` 就是一条**永远修不好的红**
+ * —— 人迟早学会忽略它（本项目一直在挡的那种 Goodhart）。
+ */
+export interface IndependenceAudit {
+  /** 真违规：`pass` 自评，且这张卡**没有**「不同会话 + `verdict=pass` + 已采纳」的评审可依据。 */
+  violations: IndependenceEntry[]
+  /** 留痕（不判红）：自我否定的自评；以及已被独立评审覆盖的 `pass` 自评。 */
+  noted: IndependenceEntry[]
+}
+
+/**
+ * 独立性审计（T-M4-06 / **C-52** 的唯一判据出口）：一趟扫描、两个桶。
+ *
+ * **DEF-042（第三批 §3.15）**：判据从"只比**名字**"改成"**按会话 uuid 判**"。
+ * 病根：名字是**调用方自报**的字符串（`backend:role:序号`），改个名就能绕过独立性；
+ * 而 `DEF-066` 早就在评审记录里留了**会话 uuid**（`review.sessionId`）却没接到这条判据上。
+ *
+ * 口径（材料齐时 **uuid 说了算**，名字不参与）：
+ *   · 卡有认领会话（`claimed`，来自 `task/claimed` 事件）且评审记了 `sessionId` ⇒
+ *     两者有交集 ⇒ 命中「自评」；无交集 ⇒ 不命中（同名不同会话 = 独立）；
+ *   · 材料不全（存量记录没带 `sessionId`，或卡没有认领会话）⇒ 退回**名字口径**（旧行为，
+ *     如实降级；不假装判过 uuid）。
+ *
+ * **收窄口径（2026-10-21）**：命中「自评」之后再看两件事 ——
+ *   ① 非 `pass` 的评审 ⇒ `noted`（自我否定不是放水）；
+ *   ② `pass` 的评审 ⇒ 若该卡存在一条**不同会话**、`verdict=pass`、且**已采纳**（id 在
+ *      `adoptedReviewIds` 里）的评审 ⇒ `noted`（依据在别处）；否则 ⇒ `violations`。
+ *
+ * `adoptedReviewIds` 由调用方从 `reviewAdoptions(...)` 现算后传入（**不在这里另造一套采纳口径**：
+ * 采纳态的唯一出口在 `reviewVerification.ts`）。
+ */
+export function independenceAudit(
+  reviews: ReviewRecord[],
+  tasks: TaskCard[],
+  claimedSessions: ReadonlyMap<string, readonly string[]> = new Map(),
+  adoptedReviewIds: ReadonlySet<string> = new Set(),
+): IndependenceAudit {
+  const owners = new Map(tasks.map((task) => [task.id, task.owner]))
+  const violations: IndependenceEntry[] = []
+  const noted: IndependenceEntry[] = []
+  /** 这张卡有没有「不同会话 + pass + 已采纳」的评审可依据（`except` 排除自评那一自身）。 */
+  const coveredByIndependent = (review: ReviewRecord): boolean => {
+    const claimed = claimedSessions.get(review.taskId) ?? []
+    return reviews.some((other) => {
+      if (other.id === review.id || other.taskId !== review.taskId) return false
+      if (other.verdict !== 'pass' || !adoptedReviewIds.has(other.id)) return false
+      const session = (other.sessionId ?? '').trim()
+      // 没有会话材料 ⇒ 证不出"不同会话" ⇒ 不算独立面（保守方向）
+      if (session === '') return false
+      return !claimed.includes(session)
+    })
+  }
+  for (const review of reviews) {
+    const claimed = claimedSessions.get(review.taskId) ?? []
+    const reviewSession = (review.sessionId ?? '').trim()
+    const selfBySession = reviewSession !== '' && claimed.length > 0
+    if (selfBySession) {
+      if (!claimed.includes(reviewSession)) continue
+    } else {
+      const author = owners.get(review.taskId) ?? review.author
+      if (review.reviewer !== author) continue
+    }
+    const who = selfBySession
+      ? `${review.id} 的评审者与实现者是**同一个会话**（${reviewSession}；显示名 ${review.reviewer}，卡 ${review.taskId}）`
+      : `${review.id} 的评审者与作者同为 ${review.reviewer}（${review.taskId}）`
+    if (review.verdict !== 'pass') {
+      noted.push({ reviewId: review.id, detail: `${who} —— 自我否定（${review.verdict}），不构成放水，留痕不判红` })
+      continue
+    }
+    if (coveredByIndependent(review)) {
+      noted.push({ reviewId: review.id, detail: `${who} —— 已被该卡的独立采纳评审覆盖，留痕不判红` })
+      continue
+    }
+    violations.push({ reviewId: review.id, detail: `${who} —— 独立性按会话判，换名字也不算独立` })
+  }
+  return { violations, noted }
+}
+
+/**
+ * 兼容投影：只要**违规**那一桶（既有调用方与守卫按数组用）。
+ * 新代码请用 {@link independenceAudit}（两桶一次取，别在两处各判一遍 —— `DEF-044` 的教训）。
+ */
 export function independenceViolations(
   reviews: ReviewRecord[],
   tasks: TaskCard[],
   claimedSessions: ReadonlyMap<string, readonly string[]> = new Map(),
-): { reviewId: string; detail: string }[] {
-  const owners = new Map(tasks.map((task) => [task.id, task.owner]))
-  const out: { reviewId: string; detail: string }[] = []
-  for (const review of reviews) {
-    const claimed = claimedSessions.get(review.taskId) ?? []
-    const reviewSession = (review.sessionId ?? '').trim()
-    if (reviewSession !== '' && claimed.length > 0) {
-      if (claimed.includes(reviewSession)) {
-        out.push({
-          reviewId: review.id,
-          detail: `${review.id} 的评审者与实现者是**同一个会话**（${reviewSession}；显示名 ${review.reviewer}，卡 ${review.taskId}）`
-            + ' —— 独立性按会话判，换名字也不算独立',
-        })
-      }
-      continue
-    }
-    const author = owners.get(review.taskId) ?? review.author
-    if (review.reviewer === author) {
-      out.push({ reviewId: review.id, detail: `${review.id} 的评审者与作者同为 ${review.reviewer}（${review.taskId}）` })
-    }
-  }
-  return out
+  adoptedReviewIds: ReadonlySet<string> = new Set(),
+): IndependenceEntry[] {
+  return independenceAudit(reviews, tasks, claimedSessions, adoptedReviewIds).violations
 }

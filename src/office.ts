@@ -4618,11 +4618,23 @@ export class SoftwareDevOffice {
     return reviewAdoptions(store, journal)
   }
 
-  /** 评审独立性问题（作者 = 评审者）。 */
+  /**
+   * 评审独立性问题（作者 = 评审者）。
+   *
+   * **DEF-042**：与 `C-52` 同一份材料（`task/claimed` 事件里的会话 uuid）。
+   *
+   * **2026-10-21 收窄两条**：这里必须和 `C-52` **传同一份采纳集** —— 否则"自评 `pass` + 独立已采纳 `pass`"
+   * 那一态会分叉：判据绿、而 `sdo_review action=list` 仍把它印成「⚠️ 独立性违规」（两处口径分家，
+   * 正是 `DEF-044` 教过的那种病）。所以采纳集从同一个方法取，只算 `adopted` 且 `verdict=pass` 的。
+   */
   reviewViolations(call: OfficeCall): { reviewId: string; detail: string }[] {
-    // **DEF-042**：与 C-52 同一份材料（`task/claimed` 事件里的会话 uuid）
     const { journal } = this.contextFor(call)
-    return independenceViolations(this.reviews(call), this.tasks(call), claimedSessionsByCard(journal))
+    const adoptedPassReviewIds = new Set(
+      this.reviewAdoptions(call)
+        .filter((item) => item.state === 'adopted' && item.review.verdict === 'pass')
+        .map((item) => item.review.id),
+    )
+    return independenceViolations(this.reviews(call), this.tasks(call), claimedSessionsByCard(journal), adoptedPassReviewIds)
   }
 
   // 交付

@@ -23,6 +23,10 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Config, resolveSettings } from '../src/config.js'
 import { listReviews } from '../src/domain/records.js'
 import { claimedSessionsByCard } from '../src/domain/roles.js'
+import { independenceAudit } from '../src/integration/orchestrator.js'
+import { reviewAdoption } from '../src/domain/reviewVerification.js'
+import { listTasks } from '../src/domain/plan.js'
+import { Journal } from '../src/infra/journal.js'
 import { independenceViolations } from '../src/integration/orchestrator.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
@@ -124,30 +128,52 @@ test('M172-03 纯函数面：材料齐时 uuid 有交集判红、无交集不判
   assert.equal(independenceViolations([{ ...review, reviewer: 'dev-a', sessionId: undefined }], tasks).length, 1, '没有材料 + 名字相同 ⇒ 旧口径判红')
 })
 
-test('M172-05 TC-125：真账评审**全部**带会话 uuid（名字不参与），C-52 判红只点名那两条', () => {
+test('M172-05 TC-125：真账评审**全部**带会话 uuid；收窄后判红只点名 REV-055（REV-068 转留痕）', () => {
   // 真台账（仓库自己的 `.sdo/`）——只读：这条读数的作用是"口径覆盖到存量了吗"，不是再造一个夹具
   const repo = fileURLToPath(new URL('../../', import.meta.url))
   const realOffice = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
   realOffice.noteSession('m172-real', repo)
-  const reviews = listReviews(realOffice.storeFor(repo))
+  const realStore = realOffice.storeFor(repo)
+  const reviews = listReviews(realStore)
   assert.ok(reviews.length >= 50, `夹具前提：真台账里应有成规模的评审（实际 ${reviews.length} 条）`)
 
-  // ① 覆盖率：**43/43 … 71/71** 那种全量，不是"抽样几条看看"（少一条说明还有降级路径在跑）
+  // ① 覆盖率：**71/71** 那种全量，不是"抽样几条看看"（少一条说明还有降级路径在跑）
   const missing = reviews.filter((item) => String(item.sessionId ?? '').trim() === '').map((item) => item.id)
   assert.deepEqual(missing, [], `uuid 口径必须覆盖**全部** ${reviews.length} 条评审（无会话材料的：${missing.join(' ') || '（无）'}）`)
 
-  // ② 出口：真账上被判红的只有这两条（都是"同一会话自评"）——台账新增同会话评审时必须重新确认这条读数
-  const violations = realOffice.reviewViolations({ sessionId: 'm172-real', cwd: repo })
-  assert.deepEqual(
-    violations.map((item) => item.reviewId),
-    ['REV-055', 'REV-068'],
-    `真账的独立性判红必须恰好这两条（实际：${violations.map((item) => item.reviewId).join(' ') || '（无）'}）`,
+  // ② 判据面（2026-10-21 收窄两条之后）：真账上**只有 REV-055** 构成违规。
+  //    **REV-068 不再点名**，因为它是一条 `changes-requested` 的**自我否定**（自己给自己挑毛病，
+  //    不构成放水）⇒ 落 `noted` 桶、只留痕。这条差别正是本轮裁定的内容，写在这里免得下一个人重新怀疑。
+  const journal = new Journal(realStore)
+  const claimed = claimedSessionsByCard(journal)
+  // 只对"有自评的卡"算采纳态：真账 70+ 条评审全量算采纳要 4 秒，而判据只关心这几张卡上的评审
+  const selfCards = new Set(
+    reviews
+      .filter((item) => {
+        const session = String(item.sessionId ?? '').trim()
+        return session !== '' && (claimed.get(item.taskId) ?? []).includes(session)
+      })
+      .map((item) => item.taskId),
   )
-  for (const item of violations) {
-    assert.match(item.detail, /同一个会话/u, `判红必须走 uuid 口径（不是名字）：${item.detail}`)
+  const adoptedPass = new Set(
+    reviews
+      .filter((item) => selfCards.has(item.taskId) && item.verdict === 'pass')
+      .filter((item) => reviewAdoption(realStore, journal, item).state === 'adopted')
+      .map((item) => item.id),
+  )
+  const audit = independenceAudit(reviews, listTasks(realStore), claimed, adoptedPass)
+  assert.deepEqual(
+    audit.violations.map((item) => item.reviewId),
+    ['REV-055'],
+    `真账的独立性**违规**必须只剩 REV-055（实际：${audit.violations.map((item) => item.reviewId).join(' ') || '（无）'}）`,
+  )
+  assert.deepEqual(
+    audit.noted.map((item) => item.reviewId),
+    ['REV-068'],
+    `REV-068 必须落"留痕"桶（自我否定）：${audit.noted.map((item) => item.reviewId).join(' ') || '（无）'}`,
+  )
+  for (const item of [...audit.violations, ...audit.noted]) {
+    assert.match(item.detail, /同一个会话/u, `两个桶都必须走 uuid 口径（不是名字）：${item.detail}`)
     assert.match(item.detail, /session-/u, '判词里要点名会话 uuid（可核对）')
   }
-
-  // **判据面同源**不在这条里验：真账上跑 `evaluate('G6')` 要 5 秒（C-57 回归整表 + 六条准出准则），
-  // 那是集成面的活；C-52 与出口共用 `independenceViolations` 这条已由 M172-01 ③ 在夹具上钉住。
 })

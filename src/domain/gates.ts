@@ -97,7 +97,7 @@ import { assessDefectLinks, defectLinksExemptionLines, defectLinksRemedy, descri
 import { iterationTasks, listTasks, planStats, readIteration, textPathsOf, validatePlan } from './plan.js'
 import { declaredItemVerdict, fixesRemedy, fixStatusRows, mitigatesRemedy, mitigatesRows } from './collab.js'
 import { claimedSessionsByCard } from './roles.js'
-import { independenceViolations } from '../integration/orchestrator.js'
+import { independenceAudit } from '../integration/orchestrator.js'
 import {
   blockerBreakdown,
   deliveryCompleteness,
@@ -2131,8 +2131,17 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   'review.independent': (ctx) => {
     const reviews = listReviews(ctx.store)
     const tasks = listTasks(ctx.store)
-    // **DEF-042**：判据按**会话 uuid** —— 材料是 `task/claimed` 事件里的会话（不看卡当前状态）
-    const violations = independenceViolations(reviews, tasks, claimedSessionsByCard(ctx.journal))
+    // **DEF-042**：判据按**会话 uuid** —— 材料是 `task/claimed` 事件里的会话（不看卡当前状态）。
+    // **2026-10-21 收窄两条**（用户裁定）：只有「`pass` 自评 + 这张卡没有可依据的独立面」才判红；
+    // 自我否定与"已被独立采纳评审覆盖"的自评进 `noted`（留痕、不判红）—— 判据**只在这里判一次**，
+    // 两个桶一起拿（`DEF-044` 的教训：同一概念两处判据必然分叉）。
+    const adoptedPassReviewIds = new Set(
+      reviewAdoptions(ctx.store, ctx.journal)
+        .filter((item) => item.state === 'adopted' && item.review.verdict === 'pass')
+        .map((item) => item.review.id),
+    )
+    const audit = independenceAudit(reviews, tasks, claimedSessionsByCard(ctx.journal), adoptedPassReviewIds)
+    const violations = audit.violations
     if (violations.length > 0) {
       return fail('review.independent', violations.map((item) => item.detail).join('；'), t('uiGates.k114'))
     }
@@ -2183,7 +2192,12 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     return ok(
       'review.independent',
       fmt('uiGates.k117', { p1: reviews.length })
-        + (legacy.length === 0 ? '' : '；' + fmt('uiGates.kReviewLegacyAdopted', { p1: legacy.join(' ') })),
+        + (legacy.length === 0 ? '' : '；' + fmt('uiGates.kReviewLegacyAdopted', { p1: legacy.join(' ') }))
+        // **收窄两条**：被判绿时也要说清"另有几条自评只留痕"（否则读者会以为一条自评都没有）
+        + (audit.noted.length === 0 ? '' : '；' + fmt('uiGates.kReviewSelfNoted', {
+          p1: String(audit.noted.length),
+          p2: audit.noted.map((item) => item.reviewId).join(' '),
+        })),
     )
   },
 
