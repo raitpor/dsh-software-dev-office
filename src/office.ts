@@ -1787,7 +1787,9 @@ export class SoftwareDevOffice {
         // （指纹取同一个 `docSourceFingerprint` 口径，故签字仍绑定报告真源，真源一改即拒签）。
         // 只在**验证阶段**追加：报告是那个阶段的产物，别的阶段签的多半还没有报告，追加空段只会增加噪声。
         if (evaluation.phase === 'verification' || evaluation.phase === 'delivery') {
-          const signable = renderTestReportSignable({ store })
+          // **`DEF-151`**：与 `renderVerificationDocs` 共用同一份页眉元信息（只修一处 ⇒
+          // `C-59` 签字对上的仍是一份页眉被削的投影）
+          const signable = renderTestReportSignable({ store, ...this.testingRenderMeta(call) })
           payload = [...payload, {
             collection: signable.payload.collection,
             items: signable.payload.items.map((item) => renderedDocReviewItem({
@@ -4653,6 +4655,46 @@ export class SoftwareDevOffice {
   }
 
   /**
+   * 渲染页眉的项目元信息（**`DEF-151`**）：项目 / 流程 / 阶段三格。
+   *
+   * **只有这一处实现，两个渲染入口共用**（`renderVerificationDocs` 与 `signReview` 的报告投影）。
+   * 这是 `DEF-142` 的教训：同一件事两份实现 ⇒ 两套口径，谁后写谁生效。
+   *
+   * **读台账是 `office` 的职责，渲染层仍是纯函数**：`testingRender` 只按入参定文本、自己不碰
+   * `.sdo/` —— 否则「同一入参两次渲染逐字节一致」（`REQ-035`）这条不变量就失效了。
+   *
+   * **空值一律不传**（不是传空串）：`metaBlock` 的缺省文案「（无）」只在**真没读到**时出现；
+   * 传 `''` 会渲染出一个没有任何字的格子，把"台账缺名字"藏成空白 —— 比「（无）」更难发现。
+   * 台账读不出来（或根本没有台账）⇒ 返回 `{}`，**fail-open，不抛**：渲染照常进行，页眉写「（无）」。
+   *
+   * 口径（与 `src/infra/render.ts:94` 的**公共页眉**同一条规则）：项目 = `${id} ${name}`；流程 = 原始 id
+   * （`waterfall`，不是展示名）；阶段 = 展示名（`开发`，不是 `construction`）。
+   *
+   * 项目为什么带 id（2026-10-21 驾驶舱裁定 ①）：`DESIGN` / `DECISIONS` / `QUALITY` 三份盘上值与运行时
+   * 横幅都是 `PRJ-001 SDO 研发办公室插件本体（dsh-software-dev-office）`；只有 TESTPLAN/TESTREPORT
+   * 两份是"有 id、但名字被截断"的异常值（一次性渲染的产物，无规则可推）⇒ 以公共页眉为基准，不迁就异常值。
+   */
+  private testingRenderMeta(call: OfficeCall): { projectName?: string; process?: string; phase?: string } {
+    let project: SdoProject | undefined
+    try {
+      project = this.contextFor(call).project
+    } catch {
+      return {}
+    }
+    if (project === undefined) return {}
+    const def = processOfProject(project)
+    const name = String(project.name ?? '').trim()
+    const id = String(project.id ?? '').trim()
+    const process = String(project.process ?? '').trim()
+    const phase = phaseLabel(def, String(project.phase ?? '').trim()).trim()
+    return {
+      ...(name === '' ? {} : { projectName: `${id} ${name}`.trim() }),
+      ...(process === '' ? {} : { process }),
+      ...(phase === '' ? {} : { phase }),
+    }
+  }
+
+  /**
    * 渲染 `docs/TESTPLAN.md` 与 `docs/DELIVERY.md`。
    *
    * **`DEF-142`（0.1.6 收尾）**：`docs/TESTPLAN.md` 此前有**两个渲染器、两套真源** —— 这里是
@@ -4665,7 +4707,8 @@ export class SoftwareDevOffice {
     const seq = journal.read().events.length
     const written: string[] = []
     if (readTestingFile(store, 'plan', 'plan').present) {
-      written.push(this.relativize(workspace, writeTestingDoc(store, 'plan', { store, seq }, journal).path))
+      // **`DEF-151`**：页眉三格由 `testingRenderMeta` 统一供给（此前两处入口都不传 ⇒ 好文档被渲成「（无）」）
+      written.push(this.relativize(workspace, writeTestingDoc(store, 'plan', { store, seq, ...this.testingRenderMeta(call) }, journal).path))
     } else {
       written.push(fmt('uiIndex.kTestingPlanSkipped', { p1: '.sdo/testing/plan.yml' }))
     }

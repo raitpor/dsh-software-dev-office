@@ -81,6 +81,8 @@ test('M140-03 源码级防回退：`signReview` 那条链必须仍调用投影�
   const text = readFileSync(new URL('../../src/office.ts', import.meta.url), 'utf8')
   assert.match(text, /import \{[^}]*renderTestReportSignable[^}]*\} from '\.\/domain\/reviewDoc\.js'/u, 'TASK-007 的 import 不得再丢')
   assert.match(text, /import \{[\s\S]{0,200}renderedDocReviewItem[\s\S]{0,200}\} from '\.\/domain\/reviewPayload\.js'/u, 'TASK-007 的另一个 import 不得再丢')
-  assert.match(text, /renderTestReportSignable\(\{ store \}\)/u, '签字链里的调用不得再丢')
+  // **`DEF-151`**：调用口径升级为「`store` + 同一份页眉元信息」。这里仍按源码锚点守
+  // （这条缝本来就是源码级守卫）：只丢掉调用、或只把元信息摘掉，都会在这里红。
+  assert.match(text, /renderTestReportSignable\(\{ store, \.\.\.this\.testingRenderMeta\(call\) \}\)/u, '签字链里的调用不得再丢（且必须带上同一份页眉元信息）')
   assert.match(text, /evaluation\.phase === 'verification' \|\| evaluation\.phase === 'delivery'/u, '只在验证/交付阶段追加的条件不得丢')
 })
