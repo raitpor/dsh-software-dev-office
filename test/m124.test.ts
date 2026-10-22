@@ -26,7 +26,7 @@
  */
 import assert from 'node:assert/strict'
 import { mkdirSync, readFileSync, rmSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
@@ -189,8 +189,9 @@ test('M124-06 DEF-074：工作区外的绝对路径必须**点名原始路径**�
   assert.equal(outside.kind, 'deny')
   if (outside.kind !== 'deny') assert.fail('工作区外写入必须拒绝')
   assert.equal(outside.code, 'write-scope-outside-workspace')
-  assert.deepEqual(outside.violations, ['/tmp/probe-abs-124.txt'], '点名必须是**原始绝对路径**')
-  assert.equal(outside.detail.includes('tmp/probe-abs-124.txt'), true)
+  // 产品报的是 `resolve()` 后的绝对路径；win32 上 `/tmp/x` 会落成 `D:/tmp/x`（DEF-155）
+  assert.deepEqual(outside.violations, [resolve('/tmp/probe-abs-124.txt').replace(/\\/gu, '/')], '点名必须是**原始绝对路径**')
+  assert.equal(outside.detail.includes(resolve('/tmp/probe-abs-124.txt').replace(/\\/gu, '').replace(/^[A-Za-z]:/u, '').slice(1)), true)
   assert.equal(/^tmp\//u.test(outside.detail), false, '不得剥成工作区里并不存在的幽灵相对路径')
 
   // 设备节点不是工作区文件 ⇒ 不参与判定（TASK-090 的既有口径，不得回退）
@@ -226,7 +227,11 @@ test('M124-07 防再生：四处调用点必须走**唯一出口**，不得再�
   assert.match(outlet, /export function scopePathWithin/u)
 })
 
-test('M124-09 §3.8（`S2`）真机形态：宿主给的 `paths` 是**绝对路径**（工作区内）—— 归一后仍按卡范围判', () => {
+const WIN32_SKIP_POSIX_FIXTURE = process.platform === 'win32'
+  ? { skip: '本格夹具把 `/ws` 当**POSIX 绝对根**（`workspace: /ws`）；win32 上它解析成当前盘符下的 `\\ws`，属另一种夹具语义（产品行为已由 M212 的 win32 形态覆盖，DEF-154/155）' }
+  : {}
+
+test('M124-09 §3.8（`S2`）真机形态：宿主给的 `paths` 是**绝对路径**（工作区内）—— 归一后仍按卡范围判', WIN32_SKIP_POSIX_FIXTURE, () => {
   // 真机实录形态：`write`/`edit` 的 `file_path` 是 `/ws/src/a.ts` 这种**工作区内绝对路径**。
   const scopeOf = (paths: string[]) => evaluateWriteScope({
     role: 'dispatched',

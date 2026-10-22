@@ -91,7 +91,7 @@ test('M133-01 读出"实际加载的那份构建"：包根 + 入口指纹 + 版�
   assert.equal(loaded.source, 'import-meta', '入口读得到 ⇒ 不许降级')
   assert.match(loaded.entryPath, /index\.(js|ts)$/u, `入口必须是插件的入口文件：${loaded.entryPath}`)
   assert.match(loaded.fingerprint, /^[0-9a-f]{12}$/u, '指纹必须是内容 sha256 的前 12 位')
-  assert.equal(loaded.packageRoot, ROOT.replace(/\/$/u, ''), '包根必须是本插件包根')
+  assert.equal(loaded.packageRoot, ROOT.replace(/[\\/]+$/u, ''), '包根必须是本插件包根（两端分隔符都剥：win32 的 ROOT 以 `\\` 结尾）')
 
   // 测试进程就在本仓上跑 ⇒ 与"工作树"是同一份
   const tree = worktreeBuildOf(ROOT)

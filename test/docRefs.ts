@@ -234,7 +234,7 @@ export function repoDocFaces(root: string): { citations: string[]; witnesses: st
     for (const entry of readdirSync(dir, { withFileTypes: true })) {
       const full = join(dir, entry.name)
       if (entry.isDirectory()) walk(full, ext, out)
-      else if (entry.name.endsWith(ext)) out.push(full)
+      else if (entry.name.endsWith(ext)) out.push(full.replace(/\\/gu, '/'))  // **DEF-155**：引用匹配按 `/` 比较，win32 的 `\\` 会让 endsWith 永远落空
     }
   }
   const citations: string[] = []

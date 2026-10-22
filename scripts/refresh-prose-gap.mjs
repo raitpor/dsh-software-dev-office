@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url'
 
 import { classifySite, extractProseSites, loadLangPack } from '../lib/test/proseInventory.js'
 
-const ROOT = fileURLToPath(new URL('../', import.meta.url)).replace(/\/+$/u, '')
+const ROOT = fileURLToPath(new URL('../', import.meta.url)).replace(/[\\/]+$/u, '')  // DEF-155：win32 上 ROOT 以 `\\` 结尾
 const M189 = join(ROOT, 'test', 'm189.test.ts')
 const HEAD = 'const KNOWN_PROSE_GAP: Record<string, number> = {'
 
