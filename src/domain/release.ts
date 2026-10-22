@@ -19,13 +19,34 @@
  *   次数上限与"静默顺延"是 `C-73` 的活（后续卡），这里不抢。
  * · **fail-closed（规格 R8/R9）**：既不在 scope、也不在**当前** release 的 `nonScope` ⇒ 缺省归入**当前**
  *   release。缺省归入不是"没规划过所以不用管"，而是"没规划过 ⇒ 本版就得管"。
+ *   注意这一条**只覆盖"从没规划过"**：「只在旧版 `nonScope` 里、且顺延目标已到账」是另一类，
+ *   另给独立标记（见下文『`failClosed` 只表「没规划过」』）。
  *
- * ## 一个必须说清的派生细节：`deferredTo` 到底指向哪一版
+ * ## 一个必须说清的派生细节：`deferredTo` 只在目标版本**在册**时才有值
  *
  * `nonScope` 条目的语义是「**明确不进本版**」，因此它顺延**到**的是**紧接着的下一版**：
  * 按包版本序取比登记它的那一版更新的**最近**一份 release。集合里**还没有**下一版时，
- * 只能落到**登记这次顺延的那一版**（同时给出 `deferredFrom`，两者相等即表示目标版本尚未在册）——
- * 理由是**不凭空造出版本号**：派生件写一个台账里不存在的版本，等于把猜测固化成事实。
+ * `deferredTo` **留空**，另给 `deferredTargetKnown: false`（`REV-076` findingIndex 第 2 条）。
+ *
+ * 旧实现把 `deferredTo` 落回**登记它的那一版**，靠 `deferredTo === deferredFrom` 暗示"目标还未在册" ——
+ * 那是把**三态**压成两态：下游读到 `deferredTo: 0.1.7` 时分不清「顺延到 0.1.7」（＝顺延到**本版**，
+ * 与 `nonScope` 的「明确不进本版」直接矛盾）与「目标版本尚未在册」。现在三态各自可读：
+ * · `deferredTo` 有值 ⇒ 目标版本**在册**（值就是目标版）；
+ * · `deferredTo` 留空 + `deferredTargetKnown: false` ⇒ **目标版本尚未在册**（`deferredFrom` 仍点名登记版）；
+ * · 两个键都没有 ⇒ 这个实体不涉及顺延。
+ *
+ * 仍然**不凭空造出版本号**：派生件不写台账里不存在的版本（那等于把猜测固化成事实），只是改成
+ * **显式说"不知道"**，让判据能据此 fail-closed。
+ *
+ * ## 另一个必须说清的：`failClosed` 只表「没规划过」，不兼表「顺延到账」
+ *
+ * `failClosed: true`（`REV-076` findingIndex 第 3 条）只表示「**当前** release 的集合没点名它」：
+ * 既不在任何 scope、也不在当前版的 `nonScope`，且没有**已到账**的旧顺延。
+ * 「只在**旧版** `nonScope` 里、且顺延目标已到账」是**另一类**：它**规划过**，顺延目标也到账了
+ * ⇒ 同样归入当前版参与判定，但另给 `landedFrom`（登记那次顺延的那一版的包版本）。
+ *
+ * 两类**不许**共用一个标记：把"顺延到账"混进"未规划"，`C-71` 的点名就失去了意义
+ * （规格 §3.1：作用域内＝当前版 scope ∪ 缺省归入者 ∪ 顺延到账者，回执里后两类要能**分开点名**）。
  *
  * ## 另一个必须说清的：谁是"当前 release"
  *
@@ -52,6 +73,28 @@ export const RELEASE_DIR = 'releases'
 
 /** 顺延批准人只认这个值（`ADR-022` 裁决①：驾驶舱不得代批）。 */
 export const HUMAN_APPROVER = 'human'
+
+/**
+ * `deriveFor` 的返回形状＝`DerivedVersion`（`src/types.ts` 的通用面）**加上**两处显式区分标记。
+ *
+ * 为什么这两处必须分开（`REV-076` findingIndex 第 2 / 3 条）：
+ * · `deferredTargetKnown` —— `deferredTo` 由"有下一版"与"目标未在册"共用会出**双义**（见文件头）；
+ * · `landedFrom` —— `failClosed` 兼表"从没规划过"与"只在旧版 nonScope 里且顺延已到账"会出**双义**。
+ * 于是派生结果里三类实体各带各的键，判据回执（`C-71`，后续卡）据此**分开点名**，不必再猜。
+ *
+ * 为什么本接口落在本文件、而不是直接把字段加进 `types.ts` 的 `DerivedVersion`：这张卡的写范围只到
+ * `src/domain/release.ts` 与 `test/m213.test.ts`（`TASK-181`）。`DerivedVersion` 仍是有意义的**基形状**
+ * （结构上是本接口的子集），本接口只是在派生这一侧把它收细。类型基座与派生契约要不要合一，属后续卡。
+ */
+export interface DerivedVersionDetail extends DerivedVersion {
+  /** 顺延目标版本是否**已在册**：与 `deferredTo` 配对，`false` ⇒ `deferredTo` 留空（目标未在册）。 */
+  deferredTargetKnown?: boolean | undefined
+  /**
+   * 顺延**到账**：这条实体只在**旧版** `nonScope` 里、且顺延目标已到账（登记它的那一版严格早于当前版），
+   * 值＝登记那次顺延的那一版的包版本。与 `failClosed` **互斥**（后者只表"从没规划过"）。
+   */
+  landedFrom?: string | undefined
+}
 
 /**
  * `r-x.y.z` 形态（`AC-278`）。允许一个**可选**后缀（`r-0.1.7-hotfix`）—— 那是"一个包版本含多个 release"
@@ -332,7 +375,8 @@ export function currentRelease(releases: readonly Release[]): Release | undefine
  * 比 `release` **更新的最近一版**（没有则 `undefined`）。
  *
  * 用途：`nonScope` 说的是「明确不进本版」⇒ 顺延**到**的是紧接着的下一版。集合里还没有下一版时
- * 不许凭空造版本号，由调用方落到"登记它那一版"并说清（见文件头的派生细节）。
+ * 不许凭空造版本号 ⇒ 调用方让 `deferredTo` **留空**并给 `deferredTargetKnown: false`
+ * 说清"目标未在册"（见文件头的派生细节）。
  */
 function nextVersionAfter(ordered: readonly Release[], release: Release): Release | undefined {
   const at = packageVersionOf(release)
@@ -342,6 +386,29 @@ function nextVersionAfter(ordered: readonly Release[], release: Release): Releas
     else break
   }
   return found
+}
+
+/**
+ * 「只在**旧版** `nonScope` 里、且顺延目标已到账」时，点名**登记那次顺延的是哪一版**（`REV-076` #3 的第②类）。
+ *
+ * 为什么"已到账"不需要再查一次台账：登记它的那一版**严格早于**当前版 ⇒ 它顺延到的"紧后下一版"必然
+ * 已在册（当前版本身或更早的那一版就落在那个位置），目标版本不会落空。于是这一类的判据只有一条：
+ * **登记版 < 当前版**。
+ *
+ * 两处边界（都不算"已到账"，落回未规划的 fail-closed）：
+ * · 登记在**同版本的另一份 release** 里（`r-0.1.7-hotfix` 与当前版 `r-0.1.7`）—— 它既不是旧版、
+ *   也不是当前版；只有当前版的那一份集合在说话（与"草案不算数"同一条理由）；
+ * · 登记在**更新但未冻结的草案**里 —— 草稿的顺延还没到账（`AC-276`：没签字的集合不改写当前版判定）。
+ */
+function landedRegistration(ordered: readonly Release[], current: Release, entityId: string): string | undefined {
+  const at = packageVersionOf(current)
+  for (const candidate of ordered) {
+    if (compareVersion(packageVersionOf(candidate), at) >= 0) continue
+    if ((candidate.nonScope ?? []).some((item) => textOf(item.id).trim() === entityId)) {
+      return packageVersionOf(candidate)
+    }
+  }
+  return undefined
 }
 
 function inScope(release: Release, entityId: string): boolean {
@@ -356,17 +423,21 @@ function inScope(release: Release, entityId: string): boolean {
  * 顺序即优先级：
  *  ① 任一 release 的 `scope` 里有它 ⇒ `targetVersion` = 那一版的包版本（**新的优先**：同一实体被带进
  *    更晚那一版的 scope，说明它还欠着那一版；旧的 scope 是历史声明，历史不重写、也不该覆盖新的）；
- *  ② **当前** release 的 `nonScope` 里有它 ⇒ 顺延：`deferredTo` = 顺延到的那一版（紧接着的下一版；
- *    集合里还没有下一版时落到登记它的那一版），并带 `deferredFrom` / 理由 / 批准人；
- *  ③ 其余（含"只在**旧** release 的 nonScope 里"）⇒ `targetVersion` = **当前** release，标 `failClosed`
- *    （规格 R8/R9）。旧顺延**不许**长期把实体挡在判定之外：它的目标版本就是当前版，到账了就该进判定。
- *  ④ 一份 release 都没有 ⇒ `unknown`（**显式说不知道**，让判据 fail-closed，而不是当它属于本版）。
+ *  ② **当前** release 的 `nonScope` 里有它 ⇒ 顺延：`deferredTo` = 紧接着的下一版，**没有下一版时留空**
+ *    并给 `deferredTargetKnown: false`（`REV-076` #2），同时带 `deferredFrom` / 理由 / 批准人；
+ *  ③ **只在旧版** `nonScope` 里（登记版严格早于当前版，其顺延目标必然已到账）⇒ `targetVersion` = **当前**
+ *    release，并给 `landedFrom`＝登记那次顺延的包版本（`REV-076` #3 的第②类：规划过且到账）；
+ *  ④ 其余 ⇒ `targetVersion` = **当前** release，标 `failClosed`（规格 R8/R9）——**这一支才是"从没规划过"**；
+ *  ⑤ 一份 release 都没有 ⇒ `unknown`（**显式说不知道**，让判据 fail-closed，而不是当它属于本版）。
+ *
+ * ③ 与 ④ **不许**并成一个标记：前者"规划过且顺延已到账"，后者"从没规划过"，`C-71` 的点名要能分开
+ * （规格 §3.1：作用域内＝scope ∪ 缺省归入者 ∪ 顺延到账者）。
  *
  * 为什么 `nonScope` 只认**当前**那一版：`nonScope` 的语义是「明确不进本版」，而 `C-72` 要求它与
  * **本版**的缺口清单恰好相等 ⇒ 判定"本版要不要管它"只能由本版的集合说话。若认所有历来的顺延，
  * 一条旧记录就能把实体永久挡在判定之外 —— 那正是 `C-73` 要判红的"静默顺延"。
  */
-export function deriveFor(releases: readonly Release[], entityId: string): DerivedVersion {
+export function deriveFor(releases: readonly Release[], entityId: string): DerivedVersionDetail {
   const id = textOf(entityId).trim()
   const ordered = newestFirst(releases)
   const current = currentRelease(releases)
@@ -376,19 +447,25 @@ export function deriveFor(releases: readonly Release[], entityId: string): Deriv
     if (inScope(release, id)) return { targetVersion: packageVersionOf(release) }
   }
 
+  const currentVersion = packageVersionOf(current)
   const currentNotes = current.nonScope ?? []
   const note = currentNotes.find((item) => textOf(item.id).trim() === id)
   if (note !== undefined) {
     const next = nextVersionAfter(ordered, current)
     return {
-      deferredTo: packageVersionOf(next ?? current),
-      deferredFrom: packageVersionOf(current),
+      // 还没有下一版 ⇒ **留空**：不许把"目标未在册"写成"顺延到本版"（`REV-076` #2 的双义）
+      ...(next === undefined ? {} : { deferredTo: packageVersionOf(next) }),
+      deferredTargetKnown: next !== undefined,
+      deferredFrom: currentVersion,
       deferReason: textOf(note.reason).trim(),
       deferApprovedBy: textOf(note.approvedBy).trim(),
     }
   }
 
-  return { targetVersion: packageVersionOf(current), failClosed: true }
+  const landedFrom = landedRegistration(ordered, current, id)
+  if (landedFrom !== undefined) return { targetVersion: currentVersion, landedFrom }
+
+  return { targetVersion: currentVersion, failClosed: true }
 }
 
 /** 当前 release 的顺延集合（`C-72` 的对账面：`nonScope` 的 id 集合）。 */

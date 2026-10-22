@@ -8,6 +8,14 @@
  *   · fail-closed（规格 R8/R9）：既不在 scope、也不在当前版的 `nonScope` 里 ⇒ 归入**当前** release，
  *     不许靠"没规划过"逃出判定。
  *
+ * `TASK-181` 按 `REV-076` 把派生契约里的两处**双义**拆开（规格 §2.2 第 3/4 条、§3.1）：
+ *   · findingIndex **第 2 条**：`deferredTo` 只在目标版本**在册**时才有值；目标未在册 ⇒ 留空 +
+ *     `deferredTargetKnown: false`（不再用 `deferredTo === deferredFrom` 暗示"未知"）；
+ *   · findingIndex **第 3 条**：`failClosed` 只表「**从没规划过**」；只在旧版 `nonScope` 里、且顺延
+ *     目标已到账的另一类给独立标识 `landedFrom`（＝登记那次顺延的那一版的包版本），两者**互斥**。
+ * 于是"顺延到下一版"这条断言只出现在**有下一版**的夹具上（`RELEASE_018` 在册那一格），
+ * "无下一版"那一格断言的是"留空 + 目标未在册"。
+ *
  * 为什么先写这一格：`C-71`（作用域闭合）与 `C-72`（缺口清单对账）读的是**同一份派生结果** ——
  * 派生口径错一次，后面两条判据会一起错，而且错得"看起来绿"。本文件只守形状与派生，**不判**那两条
  * （它们是后续卡的事）。
@@ -111,16 +119,23 @@ test('M213-02 派生正确：scope 里的实体派生 targetVersion，nonScope �
 
   const deferred = deriveFor(releases, 'DEF-999')
   assert.equal(deferred.targetVersion, undefined, '在 nonScope 里不该派生 targetVersion')
-  assert.equal(deferred.deferredTo, '0.1.7', '集合里还没有下一版 ⇒ 落到登记它的那一版（不许凭空造出版本号）')
+  // `REV-076` findingIndex 第 2 条：集合里还没有下一版 ⇒ `deferredTo` **留空**，
+  // 另用 `deferredTargetKnown: false` 说"目标版本尚未在册"。不许再落回登记版（那会让下游分不清
+  // "顺延到本版"与"目标未在册"，而前者与 nonScope 的「明确不进本版」直接矛盾）。
+  assert.equal(deferred.deferredTo, undefined, '还没有下一版 ⇒ deferredTo 留空（不许用「顺延到本版」冒充「目标未在册」）')
+  assert.equal(deferred.deferredTargetKnown, false, '目标版本尚未在册必须**显式**说：deferredTargetKnown=false')
   assert.equal(deferred.deferredFrom, '0.1.7', 'deferredFrom 点名登记这次顺延的那一版')
+  assert.notEqual(deferred.deferredTo, deferred.deferredFrom, '目标未在册时不许把两个版本号写成同一个值（双义编码）')
   assert.equal(deferred.deferReason, 'out-of-0.1.7-scope', '理由必须一路派生出来（C-72 对账要用）')
-  assert.equal(deferred.deferApprovedBy, 'human', '批准人也必须派生')
+  assert.equal(deferred.deferApprovedBy, 'human', '批准人也必须派生（字段名 deferApprovedBy，规格 §2.2）')
   assert.deepEqual(deferredIdsOf(RELEASE_017), ['DEF-999'], 'C-72 的对账面＝当前版 nonScope 的 id 集合')
 
-  // 下一版在册 ⇒ 顺延到的是**紧接着的下一版**（不是登记它的那一版）
+  // 下一版在册 ⇒ 顺延到的是**紧接着的下一版**（这里才是"顺延到 X"该被断言的地方）
   const withNext = deriveFor([...releases, RELEASE_018], 'DEF-999')
-  assert.equal(withNext.deferredTo, '0.1.8', '顺延到下一版')
-  assert.equal(withNext.deferredFrom, '0.1.7')
+  assert.equal(withNext.deferredTo, '0.1.8', '顺延到下一版（目标在册 ⇒ deferredTo 才有值）')
+  assert.equal(withNext.deferredTargetKnown, true, '目标在册 ⇒ 显式 true，与"目标未在册"用同一字段分开')
+  assert.equal(withNext.deferredFrom, '0.1.7', '登记这次顺延的那一版')
+  assert.notEqual(withNext.deferredTo, withNext.deferredFrom, '顺延到下一版时两个版本号必须不同')
   assert.equal(
     deriveFor([...releases, RELEASE_018], 'REQ-063').targetVersion,
     '0.1.8',
@@ -155,11 +170,29 @@ test('M213-03 fail-closed：既不在 scope 也不在 nonScope 的实体归入�
   assert.equal(stray.targetVersion, '0.1.7', '没规划过的实体默认属于当前版本')
   assert.equal(stray.deferredTo, undefined, '缺省归入不代表它被顺延了')
   assert.equal(stray.failClosed, true, '缺省归入要**说出来**：下游据此区分"规划过"与"靠缺省被拉进来"')
+  // `REV-076` findingIndex 第 3 条：`failClosed` 只表「从没规划过」这一义，不许兼表"顺延到账"
+  assert.equal(stray.landedFrom, undefined, '从没规划过 ⇒ 没有 landedFrom（规划过且到账是另一类）')
 
   // 旧顺延不许长期挡路：上一版把 DEF-777 顺延到本版、本版没再点名 ⇒ 目标就是本版
   const landed = deriveFor(releases, 'DEF-777')
   assert.equal(landed.targetVersion, '0.1.7', '顺延目标已经到账 ⇒ 它属于当前版（旧 nonScope 不再享受豁免）')
   assert.equal(landed.deferredTo, undefined, '它没有被当前版顺延')
+  assert.equal(landed.landedFrom, '0.1.6', '顺延**到账**另给独立标识：landedFrom＝登记那次顺延的那一版')
+  assert.equal(landed.failClosed, undefined, '它规划过且已到账 ⇒ 不许再标 failClosed（那正是两义合一）')
+  // 两类必须**能分开点名**：同一组 release 上，两类各带各的键，判据回执读一个键就能分
+  assert.notDeepEqual(stray, landed, '未规划与顺延到账的派生结果不许同形')
+  assert.notEqual(stray.failClosed, landed.failClosed, '两类各占一个标记位：failClosed 只在"从没规划过"上')
+  assert.notEqual(stray.landedFrom, landed.landedFrom, 'landedFrom 只在"顺延到账"上')
+
+  // 只在**草稿**（未冻结的更新版）的 nonScope 里：草稿的顺延还没到账 ⇒ 仍按未规划 fail-closed
+  const draft: Release = {
+    ...RELEASE_018,
+    nonScope: [{ id: 'DEF-4242', reason: 'deferred-at-0.1.8-draft', deferCount: 1, approvedBy: 'human' }],
+  }
+  const notYet = deriveFor([...releases, draft], 'DEF-4242')
+  assert.equal(notYet.targetVersion, '0.1.7', '草稿的集合不改写当前版判定（AC-276）')
+  assert.equal(notYet.failClosed, true, '当前版没点名它、顺延也还没到账 ⇒ 仍是未规划')
+  assert.equal(notYet.landedFrom, undefined, '草稿里的顺延没到账 ⇒ 不许标顺延到账')
 
   // 一份 release 都没有 ⇒ 显式说"不知道"，别当它属于本版
   const none = deriveFor([], 'DEF-12345')
