@@ -389,7 +389,7 @@ export function pathFingerprint(workspace: string, rawPath: string): string {
   const target = rawPath.trim()
   if (target === '') return 'missing'
   const absolute = isAbsolute(target) ? target : resolve(workspace, target)
-  const within = relative(workspace, absolute)
+  const within = relative(workspace, absolute).replace(/\\/gu, '/')
   if (within.startsWith('..') || isAbsolute(within)) return 'outside'
   if (!existsSync(absolute)) return 'missing'
   try {

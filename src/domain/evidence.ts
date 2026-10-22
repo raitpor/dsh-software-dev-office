@@ -527,7 +527,7 @@ export function auditDoneEvidence(
       return { ok: false, code: 'evidence-artifact-hash', detail: `artifact 的哈希不是 64 位十六进制：${invalidHash}（写 sha256=<hex> 或 #<hex>；不打算给哈希就干脆不写）` }
     }
     const absolute = isAbsolute(path) ? path : resolve(workspace, path)
-    const rel = relative(workspace, absolute)
+    const rel = relative(workspace, absolute).replace(/\\/gu, '/')
     if (rel.startsWith('..')) {
       return { ok: false, code: 'evidence-artifact-outside', detail: `artifact 路径 ${path} 在工作区之外（证据必须指向本工作区里的产物）` }
     }

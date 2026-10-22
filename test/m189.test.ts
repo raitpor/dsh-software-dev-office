@@ -35,7 +35,11 @@ function walkTs(dir: string, out: string[] = []): string[] {
 }
 
 /** 相对仓库根的路径（`ROOT` 自带尾斜杠，别用字符串拼）。 */
-const relPath = (path: string): string => (path.startsWith(ROOT) ? path.slice(ROOT.length).replace(/^\//u, '') : path)
+const relPath = (path: string): string => (path.startsWith(ROOT) ? path.slice(ROOT.length) : path)
+  // **DEF-155**：先折成 `/` 再剥前导分隔符 —— win32 上 slice 出来的是 `test\\m108.test.ts`，
+  // 旧的 `/^\//` 只去**正**斜杠 ⇒ 站点键与登记表（`test/m108.test.ts`）永远对不上（Windows CI 实测）。
+  .replace(/\\/gu, '/')
+  .replace(/^\/+/u, '')
 
 /** 测试文件遍历（本用例要现算"清单面"）。 */
 function walkTests(dir: string, out: string[] = []): string[] {
@@ -429,7 +433,7 @@ test('M189-13 §3.3（DEF-093 第十一批）：**枚举补全** —— 「行�
     `${'test/m1'}08.test.ts:246`, // 中文绑在 `PROSE_RESPONSIBILITY` 常量上，断言那一行只有常量名（DEF-153 补 import 后整体 +1 行）
     `${'test/m1'}3.test.ts:639`,  // 中文绑在 `why` 变量上，断言那一行只有 `new RegExp(why)`
     `${'test/m1'}3.test.ts:649`,  // 同上（第二处）
-    'test/m189.test.ts:102',      // 中文绑在 `body` 变量上，断言那一行只有 `carrier('r17', body)`
+    'test/m189.test.ts:106',      // 中文绑在 `body` 变量上，断言那一行只有 `carrier('r17', body)`
     'test/m29.test.ts:42',        // 中文绑在 `current` 上，断言那一行是 `line.startsWith('## ')`
     'test/m81.test.ts:275',       // 「变量再读」的字面量命中：行里 `'no-basis'` 含标识符 `basis`（已知代价）
   ]

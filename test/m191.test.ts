@@ -186,7 +186,7 @@ export const KNOWN_DANGLING: readonly KnownDangling[] = [
   // 旧结构名（改结构后已移除，仅注释记述）
   { file: 'test/m139.test.ts', line: 108, head: 'list', tail: 'Schema', why: '旧结构名（`DEF-077` 改结构后已移除，注释只在记述旧形态）' },
   // 夹具标识符的**片段**（被引用的整名是它的超串）
-  { file: 'test/m189.test.ts', line: 398, head: 'Ed', tail: 'ge', why: '夹具标识符的片段（整名是它的超串，注释在讲"子串喂饱"那一格）' },
+  { file: 'test/m189.test.ts', line: 402, head: 'Ed', tail: 'ge', why: '夹具标识符的片段（整名是它的超串，注释在讲"子串喂饱"那一格；DEF-155 补 4 行注释后 398 → 402）' },
   // 第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号
   { file: 'test/m88.test.ts', line: 544, head: 'no', tail: 'Answerer', why: '第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号（其 .d.ts 未收录）' },
   { file: 'test/m88.test.ts', line: 544, head: 'NO_', tail: 'PROVIDER', why: '同上（该包的运行时错误码）' },
