@@ -55,18 +55,45 @@
  * 于是 `r-0.1.7` 已冻、`r-0.1.8` 刚起草时：当前版仍是 `0.1.7`，而 `0.1.7` 的顺延目标可以是 `0.1.8`
  * （台账里已经排了下一版 ⇒ 顺延目标写得出来）。
  *
+ * ## 顺延留痕 / 次数上限 / 冻结人签：**判定核心**在本模块（`TASK-176`）
+ *
+ * 形状关（`releaseShapeProblems`）只管"字段在不在、形态对不对"；**留痕与签字的判定**是另一层，
+ * 也放在本模块：`deferTraceFindings`（顺延是否有留痕、次数有没有超上限）与 `freezeTraceFindings`
+ * （集合有没有人签、冻结后有没有被绕过 `change` 改过）。理由只有一条 —— 这两层判定的输入
+ * **恰好就是本模块的派生结果与真源事件**（`currentRelease` / `deriveFor` / `journal` 里的
+ * `release/written`、`question/answered`、`change/decided`）。把它们塞进门禁模块，等于让门禁
+ * 自己再抄一份"谁是当前版、谁在旧版 scope 里"的口径 —— 两份口径迟早分叉，而分叉时没有任何判据会报。
+ *
+ * **不在本模块的**：判据身份（`C-7x` 的 id、`check` 键、中文 desc 该写进流程数据）与门禁挂载 ——
+ * 那属于流程数据与 `gates.ts`（另一张卡）。本模块只交出**读数**：`kind`（机器面）+ 点名（人读面）。
+ *
+ * 四条硬口径与各自的边界：
+ * · **次数上限**（`AC-277`）：只判**当前版**的顺延登记 —— 历史版本里的次数是既成事实，重判它
+ *   只会让台账永久红（历史不重写）；
+ * · **静默顺延**（`AC-277` 反例）：某实体曾被**已冻结**的旧版 `scope` 点名，而当前版集合一个字都
+ *   没提它 ⇒ 判红。三路豁免都必须显式给：已终结（做完了，不是顺延）、真源里有点名的顺延记录
+ *   （`release/deferred` 一类事件）、或它其实还在当前版集合里；
+ * · **冻结是人签**（`AC-276`）：当前版的集合必须带 `frozenBy: human` + `frozenAtSeq`；而
+ *   `frozenAtSeq` 是一句**可核对**的声明 —— 那一刻在真源里必须是一次人签（带签字的落盘，
+ *   或用户答的那道签字题）。手填一个签字过不了这一关；
+ * · **冻结后改集合**（`AC-276` 后半）：现盘条数与"最后一次带签字的落盘"不一致、且冻结之后没有
+ *   已决策的变更 ⇒ 判红。**已知边界**（写下来，免得下一个人以为它无所不包）：`release/written`
+ *   事件只带**条数**不带 id 集合（事件字段面被 `test/m213.test.ts` 的 `M213-09` 钉死），所以
+ *   "删一条、加一条、条数不变"这一种改法**核不到**。要收紧得先扩事件字段面，那会动到那份守卫。
+ *
  * ## 三条纪律（与本仓同类模块同规）
  *
  * ① **读写两侧都过形状关**：写出前不过关 ⇒ **整次拒绝**（不落半成品让别人读到）；
  *   读进来不过关 ⇒ **可读报错并点名文件与字段**（`.sdo/**\/*.yml` 是手可编辑真源，静默跳过就是让它烂在盘上）。
- * ② **只做形状，不做判据**：`C-71`（作用域闭合）/ `C-72`（缺口对账）/ `C-73`（次数上限）/ `C-75`（冻结后改集合）
- *   都不是本模块的事 —— 它们读这里的派生结果，而不是把判定塞在这里。
+ * ② **形状与判定分开写，但都在本模块**：`C-71`（作用域闭合）/ `C-72`（缺口对账）读这里的派生结果
+ *   而**不在**这里判定（它们各有落点）；`C-73`（次数上限）/ `C-75`（冻结后改集合）的**判定核心**
+ *   在下方两个 `*TraceFindings` 里，门禁只负责把读数挂上去。
  * ③ **不碰工作区之外**：所有路径都经 `SdoStore` 解析（NFR-007 的路径沙箱），本模块不自己拼绝对路径。
  */
 import type { Journal } from '../infra/journal.js'
 import { typeNameOf, textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
-import type { DerivedVersionDetail, Release, ReleaseNote, ReleaseScope } from '../types.js'
+import type { DerivedVersionDetail, JournalEvent, Release, ReleaseNote, ReleaseScope } from '../types.js'
 
 /** release 文件所在子目录（相对 `.sdo/`）。 */
 export const RELEASE_DIR = 'releases'
@@ -466,4 +493,316 @@ export function deriveFor(releases: readonly Release[], entityId: string): Deriv
 /** 当前 release 的顺延集合（`C-72` 的对账面：`nonScope` 的 id 集合）。 */
 export function deferredIdsOf(release: Release): string[] {
   return [...new Set((release.nonScope ?? []).map((note) => textOf(note.id).trim()).filter((item) => item !== ''))]
+}
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * 顺延留痕与次数上限（`AC-277`）、冻结人签与冻结后改集合（`AC-276`）：**判定核心**。
+ *
+ * 两个函数都只**读**（不改台账、不写盘、不改入参），输出是`读数`而不是"抛错"：
+ * 判红要一次把**所有**红的项点名出来（一次只报第一条，用户就得来回跑 N 遍）。
+ * 抛错那条路留给**形状**（`releaseShapeProblems` / `readRelease`）：形状坏掉的集合连判都不该判。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+/**
+ * 顺延次数上限的**缺省值**（`AC-277`：次数有上限，超过即判红并要求用户裁决）。
+ *
+ * 为什么缺省是 2 而不是"不限"：没有上限的顺延等于"无限期拖"，而拖期自己不会报警；第 3 次顺延
+ * 已经不是"再等一版"的容忍范围 —— 那时该由人重新决定它到底进不进本版（进本版 / 明确放弃 /
+ * 改上限本身），模型不得自行放宽。项目可在 `.sdo/config.yml` 的 `release.deferLimit` 里声明自己的上限。
+ */
+export const DEFAULT_DEFER_LIMIT = 2
+
+/**
+ * 一条判红读数。
+ *
+ * `kind` 是**机器面**（判据只读它 ⇒ 语言无关），`detail` 是**人读面**（点名到实体 id 与条数）。
+ * 为什么不是一个布尔：判红要能回答"红在哪、该找谁"，把六种截然不同的红压成一个 `false`
+ * 会让回执失去可操作性（`C-63` / `C-64` 的点名口径同此）。
+ */
+export interface ReleaseTraceFinding {
+  kind:
+    /** 顺延次数超上限（`AC-277`）：必须由用户裁决，不是模型能自己放宽的事。 */
+    | 'defer-count-over-limit'
+    /** 静默顺延（`AC-277` 反例）：只从范围里消失，没有任何顺延记录。 */
+    | 'defer-silent'
+    /** 当前版的集合没有任何人签（`AC-276`）：模型自己写的集合不算权威。 */
+    | 'collections-unsigned'
+    /** 有人签字，但签字人不是 human（`AC-276`）：驾驶舱/模型不得代批。 */
+    | 'signature-not-human'
+    /** 冻结序号在真源里核不到那一次人签（`AC-276`）：`frozenAtSeq` 是声明，不是装饰。 */
+    | 'freeze-unwitnessed'
+    /** 冻结之后集合被改过，且没有走已决策的变更（`AC-276` 后半）。 */
+    | 'collections-rewritten-after-freeze'
+  /** 点名对象：顺延面是**实体 id**，冻结面是 **release id**。 */
+  subjectId: string
+  /** 人读的一句话（点名到 id 与条数；**不含**判据 id —— 判据身份属于流程数据）。 */
+  detail: string
+  /** 超上限的那次顺延 ⇒ **必须由用户裁决**。 */
+  needsUserDecision?: boolean | undefined
+  /** 已顺延次数（只在次数面上给）。 */
+  deferCount?: number | undefined
+  /** 判定时用的上限（只在次数面上给：回执要说清"按哪个上限判的"）。 */
+  limit?: number | undefined
+  /** 登记那次顺延的包版本（只在静默顺延面上给：它是从哪一版消失的）。 */
+  fromVersion?: string | undefined
+}
+
+/** 事件负载（`journal` 的 `data` 是 `Record<string, unknown>`；直接点取会到处是 `unknown`）。 */
+function eventData(event: JournalEvent): Record<string, unknown> {
+  const data = event.data
+  return data === null || typeof data !== 'object' || Array.isArray(data) ? {} : data
+}
+
+/** 事件里记的条数（缺字段给 -1：与"记了 0 条"区分开，别让漏写冒充成空集）。 */
+function recordedCount(value: unknown): number {
+  return typeof value === 'number' && Number.isFinite(value) ? value : -1
+}
+
+/** 上限规范化：非整数/负数/未给 ⇒ 退回 `DEFAULT_DEFER_LIMIT`（坏值一律往**严格**那一侧退）。 */
+function normalizeLimit(limit: number | undefined): number {
+  return typeof limit === 'number' && Number.isInteger(limit) && limit >= 0 ? limit : DEFAULT_DEFER_LIMIT
+}
+
+/**
+ * `.sdo/config.yml` 里的 `release.deferLimit`（**项目声明**，`AC-241` 口径：判据与项目无关，
+ * 阈值由项目声明）。没声明、不是整数、或写了负数 ⇒ 退回 `DEFAULT_DEFER_LIMIT`。
+ *
+ * 为什么不读插件设置：`.sdo/config.yml` 是**项目**真源，同一插件在不同项目里的容忍度本来就该不同；
+ * 而且它随台账入库，回执里"按哪个上限判的"能对得上历史。
+ */
+export function deferLimitOf(store: SdoStore): number {
+  const config = store.readYaml<{ release?: { deferLimit?: unknown } }>('config.yml')
+  const declared = config?.release?.deferLimit
+  return normalizeLimit(typeof declared === 'number' ? declared : undefined)
+}
+
+/** `deferTraceFindings` 的输入。 */
+export interface DeferTraceInput {
+  /** 台账里的全部 release（顺序随意：内部按版本语义序重排）。 */
+  releases: readonly Release[]
+  /**
+   * **已终结**的实体 id（缺陷 `fixed`/`closed`、卡 `done`/`dropped` 之类）。
+   *
+   * 为什么要调用方给：终结状态在缺陷/卡台账里，不在 release 文件里 —— 派生层不 import 那些模块
+   * （依赖方向是「判据 → 派生层」，反向那条被 `test/m213.test.ts` 的静态守卫钉死）。
+   * **不给**等于"全都还在飞"（保守：漏了豁免只会多报，不会少报）。
+   */
+  settled?: readonly string[] | undefined
+  /**
+   * 真源里点名了的那几次顺延（`release/deferred` 一类事件，按实体 id）。
+   *
+   * 为什么不自己扫事件：本模块不定义事件类型面（`SdoEventType` 在 `src/types.ts`）；调用方把
+   * "哪几次顺延在真源里留过痕"整理成 id 集合交进来即可。文件可手改，真源在 journal。
+   */
+  deferredRecords?: readonly string[] | undefined
+  /** 次数上限；缺省 `DEFAULT_DEFER_LIMIT`。 */
+  limit?: number | undefined
+}
+
+/**
+ * **顺延留痕与次数上限**（`AC-277`）的读数：空数组＝绿。
+ *
+ * 两条红面：
+ * ① `defer-count-over-limit` —— 当前版 `nonScope` 里某条的 `deferCount` **超过上限**：
+ *    带 `needsUserDecision: true`（这次顺延该由人裁决）。只判**当前版**：历史版本里的次数是既成
+ *    事实，重判它只会让台账永久红（历史不重写，规格 §5.1）；
+ * ② `defer-silent` —— 某实体曾在**已冻结**的旧版 `scope` 里，而当前版集合一个字都没提它
+ *    （既不在 `scope` 也不在 `nonScope`），且没有顺延留痕 ⇒ **静默顺延**。三路豁免：`settled`
+ *    （做完了，不算顺延）、`deferredRecords`（真源里有那一次顺延的留痕）、它其实还在当前版集合里。
+ *
+ * 为什么"只在旧版 `scope` 里"才是静默顺延：签字冻结过的集合是一次**承诺**（`AC-276`），
+ * 当前版对它闭口不谈，等于用"没写在任何地方"把承诺悄悄作废 —— 这正是 `AC-277` 要判红的形态。
+ */
+export function deferTraceFindings(input: DeferTraceInput): ReleaseTraceFinding[] {
+  const releases = [...input.releases]
+  const out: ReleaseTraceFinding[] = []
+  const current = currentRelease(releases)
+  if (current === undefined) return out // 一份 release 都没有：发布层还没被采纳，这里不判（别把缺账当绿）
+  const limit = normalizeLimit(input.limit)
+
+  // ① 次数上限（只看当前版：本版登记的 `deferCount` 才是"已经顺延了几次"的权威读数）
+  for (const note of current.nonScope ?? []) {
+    const entityId = textOf(note.id).trim()
+    if (entityId === '') continue
+    const count = Number(note.deferCount)
+    if (!Number.isInteger(count) || count <= limit) continue
+    out.push({
+      kind: 'defer-count-over-limit',
+      subjectId: entityId,
+      deferCount: count,
+      limit,
+      needsUserDecision: true,
+      detail:
+        `${current.id} 的 nonScope 里 ${entityId} 已顺延 ${count} 次，超过上限 ${limit} 次：`
+        + `再往下拖已经不是"再等一版"，必须由用户裁决（进本版 / 明确放弃 / 改上限本身），模型不得自行放宽`,
+    })
+  }
+
+  // ② 静默顺延：旧版（已冻结）承诺过、当前版一个字都没提
+  const settled = new Set((input.settled ?? []).map((item) => textOf(item).trim()))
+  const recorded = new Set((input.deferredRecords ?? []).map((item) => textOf(item).trim()))
+  const committed = new Set<string>()
+  for (const release of releases) {
+    if (!isFrozen(release) || release.id === current.id) continue
+    for (const entityId of [...release.scope.requirements, ...release.scope.acceptance]) {
+      const id = textOf(entityId).trim()
+      if (id !== '') committed.add(id)
+    }
+  }
+  for (const entityId of [...committed].sort()) {
+    if (settled.has(entityId) || recorded.has(entityId)) continue
+    if (inScope(current, entityId)) continue
+    if ((current.nonScope ?? []).some((note) => textOf(note.id).trim() === entityId)) continue
+    // 派生结果把它钉在**旧版**（历史声明）才算"从当前版消失"：被更新一版显式带进 scope 的实体，
+    // `deriveFor` 会给出那一版，那是**写在台账里**的顺延，不是静默。
+    const detail = deriveFor(releases, entityId)
+    const version = textOf(detail.targetVersion).trim()
+    const home = releases.find((release) => packageVersionOf(release) === version && isFrozen(release))
+    if (home === undefined || home.id === current.id) continue
+    out.push({
+      kind: 'defer-silent',
+      subjectId: entityId,
+      fromVersion: packageVersionOf(home),
+      detail:
+        `${entityId} 在已冻结的 ${home.id} 里是 scope 的一部分，而当前版 ${current.id} 的 scope / nonScope `
+        + `都没有它 —— 这不是顺延，是"没写在任何地方"：请显式登记进 ${current.id} 的 nonScope`
+        + `（reason / deferCount / approvedBy: ${HUMAN_APPROVER}），或把它放回 scope`,
+    })
+  }
+  return out
+}
+
+/**
+ * 冻结序号指向的那一刻在真源里是不是一次**人签**（`AC-276`：冻结走问答通道，`channel=question`）。
+ *
+ * 两种合法形态（都在本仓既有真源里）：
+ * · `release/written` 且那一刻 `frozen === true` 且事件点名的是**这一份** release —— 用
+ *   `writeRelease` 落盘（工具在写的同时留痕）；
+ * · `question/answered` 且 `by === human` —— 用户答了那道签字题。
+ * 找不到那一刻、或那一刻不是人签 ⇒ `undefined`（判红：`frozenAtSeq` 是一句**可核对**的声明）。
+ */
+function signatureFaceAt(events: readonly JournalEvent[], seq: number, releaseId: string): 'write' | 'answer' | undefined {
+  const event = events.find((item) => item.seq === seq)
+  if (event === undefined) return undefined
+  const data = eventData(event)
+  if (String(event.type) === 'release/written' && data.frozen === true && textOf(data.id).trim() === releaseId) return 'write'
+  if (event.type === 'question/answered' && textOf(data.by).trim() === HUMAN_APPROVER) return 'answer'
+  return undefined
+}
+
+/** `freezeTraceFindings` 的输入。 */
+export interface FreezeTraceInput {
+  /** 台账里的全部 release（顺序随意）。 */
+  releases: readonly Release[]
+  /**
+   * 真源事件（`journal.read().events`）。
+   *
+   * 为什么要它：`frozenAtSeq` 与"冻结之后有没有被改过"都是**对真源的断言**，光看文件核不了 ——
+   * 文件是手可编辑的（`.sdo/**\/*.yml`），真源才是不可篡改的那一份。
+   * 不给 ⇒ 只做得了"当前版有没有人签"这一半（另一半核不到，**不许**当成通过）。
+   */
+  events?: readonly JournalEvent[] | undefined
+}
+
+/**
+ * **冻结人签与冻结后改集合**（`AC-276`）的读数：空数组＝绿。
+ *
+ * 四条红面：
+ * ① `collections-unsigned` —— **当前版**没冻（`frozenBy` 不是 `human` 或缺 `frozenAtSeq`）：
+ *    模型自己写进文件的集合不算权威（反例 R12）。一份 release 都没有 ⇒ **不判**（这套机制还没被采纳）；
+ *    而"旧版已冻、新版刚起草"⇒ **不判红**（草稿不是当前版，`AC-275` 的场景）；
+ * ② `signature-not-human` —— 有人签字，但签字人不是 `human`（驾驶舱不得代批，`ADR-022` 裁决①）；
+ * ③ `freeze-unwitnessed` —— 冻结过，但真源里核不到那一次人签：要么从来没有"带签字的落盘"，
+ *    要么 `frozenAtSeq` 指着的那一刻什么都不是 ⇒ `frozenBy` 很可能是**手填**的；
+ * ④ `collections-rewritten-after-freeze` —— 现盘条数与**最后一次带签字的落盘**不一致，且冻结之后
+ *    没有任何已决策的变更 ⇒ 冻结后绕过 `change` 直接改了集合（反例 R13）。
+ *
+ * **已知边界**（与文件头同一处口径）：`release/written` 事件只带条数不带 id 集合 ⇒ "删一条、
+ * 加一条、条数不变"这一种改法**核不到**；手改文件时若把条数也改回冻结时的数字，同样核不到。
+ * 这两处要收紧必须先扩事件字段面（那会动 `test/m213.test.ts` 的 `M213-09`）。
+ */
+export function freezeTraceFindings(input: FreezeTraceInput): ReleaseTraceFinding[] {
+  const releases = [...input.releases]
+  const events = [...(input.events ?? [])].sort((left, right) => left.seq - right.seq)
+  const out: ReleaseTraceFinding[] = []
+  const current = currentRelease(releases)
+  if (current === undefined) return out // 没有 release 文件：发布层未采纳，不在这里判
+
+  const signature = textOf(current.frozenBy).trim()
+  if (signature !== '' && signature !== HUMAN_APPROVER) {
+    out.push({
+      kind: 'signature-not-human',
+      subjectId: current.id,
+      detail:
+        `当前版 ${current.id} 的 frozenBy 是「${signature}」：冻结只认 ${HUMAN_APPROVER} —— `
+        + `允许本版范围遗留/冻结的决定权在用户，驾驶舱与模型都不得代签`,
+    })
+  }
+  if (!isFrozen(current)) {
+    const counts = `${current.scope.requirements.length} 条需求 / ${current.scope.acceptance.length} 条 AC`
+    out.push({
+      kind: 'collections-unsigned',
+      subjectId: current.id,
+      detail:
+        `当前版 ${current.id} 的集合（scope ${counts}、nonScope ${(current.nonScope ?? []).length} 条）`
+        + `没有任何人签：frozenBy 只认 ${HUMAN_APPROVER}，并要落 frozenAtSeq。集合的权威来自冻结那次人签，`
+        + `模型自己写进文件的范围不算数 —— 请走问答通道让用户签，或别让这份草稿充当"当前版"`,
+    })
+  }
+
+  for (const release of releases) {
+    if (!isFrozen(release)) continue
+    const writes = events.filter(
+      (event) => String(event.type) === 'release/written' && textOf(eventData(event).id).trim() === release.id,
+    )
+    const signedWrites = writes.filter((event) => eventData(event).frozen === true)
+    const seq = typeof release.frozenAtSeq === 'number' ? release.frozenAtSeq : 0
+    const face = signatureFaceAt(events, seq, release.id)
+    // **基线＝冻结那一刻的那次落盘**：`frozenAtSeq` 指向它就用它，否则退到**最早**那次带签字的落盘
+    // （"之后落的每一盘都是冻结之后"—— 取最后一次会把"冻结后自己再落一盘"当成基线，漂移就被洗掉了）
+    const baseline = signedWrites.find((event) => event.seq === seq) ?? signedWrites[0]
+    if (baseline === undefined) {
+      // 没有带签字的落盘：只有"问答通道签字"能当凭据（`AC-276` 的人签形态之一）；
+      // 两种凭据都没有 ⇒ `frozenBy` 只能是手填的。没有落盘基线时也就没有条数基线 ⇒ 漂移这一面核不到。
+      if (face !== 'answer') {
+        out.push({
+          kind: 'freeze-unwitnessed',
+          subjectId: release.id,
+          detail:
+            `${release.id} 写着 frozenBy: ${HUMAN_APPROVER}，但真源里既没有一次"带签字的落盘"`
+            + `（release/written 且 frozen=true）、也没有 by: ${HUMAN_APPROVER} 的问答答复 `
+            + `⇒ 那行签字很可能是手填的。用 writeRelease 落盘会把这一刻记进真源`,
+        })
+      }
+      continue
+    }
+    if (face === undefined) {
+      out.push({
+        kind: 'freeze-unwitnessed',
+        subjectId: release.id,
+        detail:
+          `${release.id} 的 frozenAtSeq=${seq} 在真源里不是一次人签（既不是带签字的落盘，也不是 by: ${HUMAN_APPROVER} `
+          + `的问答答复）⇒ 冻结序号必须指向真实发生过的那一次签字；落盘时把它回执里的 seq 填进 frozenAtSeq`,
+      })
+    }
+    const recorded = eventData(baseline)
+    const frozenRequirements = recordedCount(recorded.requirements)
+    const frozenAcceptance = recordedCount(recorded.acceptance)
+    const diskRequirements = release.scope.requirements.length
+    const diskAcceptance = release.scope.acceptance.length
+    if (frozenRequirements !== diskRequirements || frozenAcceptance !== diskAcceptance) {
+      const changed = events.some((event) => event.type === 'change/decided' && event.seq > baseline.seq)
+      if (!changed) {
+        out.push({
+          kind: 'collections-rewritten-after-freeze',
+          subjectId: release.id,
+          detail:
+            `${release.id} 冻结时 scope 是 ${frozenRequirements} 条需求 / ${frozenAcceptance} 条 AC，现盘是 `
+            + `${diskRequirements} 条需求 / ${diskAcceptance} 条 AC，而冻结之后没有任何已决策的变更 ⇒ 冻结后直接改了集合。`
+            + `要往已冻的 scope 加东西，先走变更控制（带影响分析与决策），再重新落盘`,
+        })
+      }
+    }
+  }
+  return out
 }
