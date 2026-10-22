@@ -25,6 +25,7 @@ import {
 } from '../types.js'
 import type {
   FeasibilityAssessment,
+  GateCriterionDef,
   GateCriterionResult,
   GateDef,
   GateEvaluation,
@@ -32,10 +33,16 @@ import type {
   JournalEvent,
   ProcessDef,
   RedTeamIssue,
+  Release,
   Requirement,
   RiskItem,
   SdoProject,
 } from '../types.js'
+// **`REQ-063` / `C-71`（TASK-174）**：作用域判定读的是发布计划层的**派生结果**（`deriveFor`），
+// 不是实体上的手填字段（`AC-287`：字段一律派生，权威是 release 文件的集合）。
+// 依赖方向是「判据 → 派生层」；反向那条被 `test/m213.test.ts` 的静态守卫钉死
+// （`release.ts` 不许 import gates、也不许出现判据字面量）。
+import { currentRelease, deriveFor, listReleases, packageVersionOf } from './release.js'
 import { adrCompleteness } from './adr.js'
 import {
   absentArtifacts,
@@ -148,6 +155,15 @@ export interface GateContext {
    * 而不是让检查器去猜。直接调 `CHECKERS[...]`（单测/审计脚本）时不填，检查器按惯例退回 `G6`。
    */
   gate?: string | undefined
+  /**
+   * **本版作用域**（`REQ-063` / `C-71`，TASK-174）：只在实现/验证/交付类门禁（`G4`/`G6`/`G7`）上注入。
+   *
+   * 为什么不给所有门禁都填：`AC-267` / `AC-275` 的另一半是"需求/设计类门禁（G2/G3）**不按版本切片**" ——
+   * 全基线的判据（重号、跨版本矛盾、`coverage.uncovered`）必须看见**每一条**需求，否则切片切掉的
+   * 恰恰是"这条需求没人管"。不填 ⇒ 全基线口径（`undefined` 与"全在作用域内"在行为上**不等价**：
+   * 前者连作用域都不算，后者算了但全部归入 —— 见 `versionScopeOf` 的 fail-closed 口径）。
+   */
+  versionScope?: VersionScopeView | undefined
 }
 
 function ok(id: string, detail: string, warnings?: string[] | undefined): GateCriterionResult {
@@ -512,7 +528,307 @@ function deliveryBound(ctx: GateContext): GateCriterionResult {
   )
 }
 
+/* ———————————————————— 本版作用域（`C-71`，`REQ-063` / `TASK-174`） ———————————————————— */
+
+/**
+ * **发布计划层的作用域判定**（`REQ-063`：`AC-266` / `AC-267` / `AC-269` / `AC-275` / `AC-287`，判据 `C-71`）。
+ *
+ * 一句话：**实现/验证/交付类门禁（G4/G6/G7）只对「本版 scope」判定；需求/设计类门禁（G2/G3）仍对全基线。**
+ * 为什么必须按类分工（`AC-266` 的原话）：台账一旦跨版本累积，全量判据只剩两条路 —— 永久红，或被迫放宽；
+ * 0.1.6 走的是第三条（手写「已知缺口」糊过去），于是那条"清单必须与台账一致"的 ADR 条款**不可机械核对**。
+ *
+ * **作用域 = 当前 release 的 `scope` ∪ 缺省归入者（未规划）∪ 顺延到账者（只在旧版 `nonScope` 里、目标已到账）**
+ * （规格 §3.1）。三个分量都参与判定，但回执里**后两个分量必须分开点名** —— 把"顺延到账"混进"未规划"，
+ * 点名就失去意义（`REV-076` findingIndex 第 3 条；派生侧已按 `failClosed` / `landedFrom` 拆成两态）。
+ *
+ * 四条硬口径：
+ *   · **没有 release 文件＝fail-closed**（规格 R8/R9）：一切实体都视为属于当前版本。不许把"没有集合"
+ *     当成"集合为空"放过 —— 那样老台账会在门禁下面整片漏过去（`R8` / `R9` 就是这两条反例）。
+ *   · **`nonScope` 只认当前版**（派生侧口径，本模块不重算）：本版明确不进 ⇒ 本版不判它；只在**旧版**
+ *     `nonScope` 里的**不构成永久豁免** —— 那是 `C-73` 要判红的"静默顺延"。
+ *   · **只做作用域过滤，不改既有判据语义**（规格 §7 的边界）：`C-51` / `C-65` / `C-66` / `C-50` 的判定逻辑
+ *     一字不动，它们看到的**实体集合**被这一层收窄（`inScopeByVersion`）。
+ *   · **读不动不静默缩小判定面**：release 文件存在但形状不合法 ⇒ `deriveFor` 侧报错（点名文件与字段），
+ *     这里把错误原样带进 `C-71` 的判红详情，其余实体**照常参与**判定。
+ *
+ * **为什么 `C-71` 由引擎补充挂载**（`versionScopeCriteria`）：判据的"挂点"本来写在流程数据
+ * （`src/data/processes/*.yml`）里，而那份数据**不在本卡写范围**。若只在注册表里登记检查器而不挂上去，
+ * 条文上"判据存在"、实际上没有任何门禁会跑它（本仓 `test/m32.test.ts` 的原话："判据没挂上 = 这条约束不存在"）。
+ * 因此：**项目一旦有 release 文件**（＝采纳了发布计划层），引擎就在 `G4`/`G6`/`G7` 上补充这条判据；
+ * 项目完全没有 release 文件时**不补充**（老项目的判定面保持不变 —— 那不是"放过作用域"，而是这套机制
+ * 尚未被采纳：`REQ-063` 的回填是另一张卡的事）。流程数据将来自己声明了同名 `check` 时不再重复补充。
+ */
+
+/** `C-71` 的判据 id（与规格 §3.1 同名）与检查器键。 */
+export const VERSION_SCOPE_CRITERION_ID = 'C-71'
+export const VERSION_SCOPE_CHECK = 'release.scope-closure'
+
+/**
+ * 「实现/验证/交付类」门禁：**只有这些门禁按本版作用域判定**（`AC-266` / `AC-275`，规格 §3.4）。
+ *
+ * 需求/设计类门禁（`G2`/`G3`）**不在这里** —— 它们对整条基线判定（`AC-267`：跨版本的需求不许矛盾、
+ * AC 编号不许重号），把那两条也切片等于把"这条需求没人管"切出判定面。
+ */
+export const VERSION_SCOPED_GATE_IDS: readonly string[] = ['G4', 'G6', 'G7']
+
+/**
+ * 补充挂载时用的判据说明（**只用于流程数据尚未声明它的过渡期**）。
+ *
+ * 为什么是英文：本文件被 i18n 棘轮钉在「零硬编码中文」（`test/m7.test.ts` 的基线
+ * `src/domain/gates.ts: 0`），而流程数据的 `desc` 是中文。正式的中文说明应当写进流程数据
+ * （那是"判据由什么构成"的真源，见 `versionScopeCriteria`），本串只是过渡期的占位说明。
+ */
+export const VERSION_SCOPE_DESC = 'C-71 release-scope closure: only entities inside the current release scope '
+  + '(scope + fail-closed members + landed deferrals) are judged: defects fixed/closed (wontfix needs both waiver fields), '
+  + 'tasks done/verified/dropped, must requirements with an adopted pass, contracts with a contractTest record. '
+  + 'G4/G6/G7 only; G2/G3 stay full-baseline.'
+
+/** 归属细分：回执要把「缺省归入」与「顺延到账」**分开点名**（`REV-076` 第 3 条）。 */
+export type VersionMembershipKind = 'scope' | 'failClosed' | 'landed' | 'deferred' | 'otherVersion'
+
+/** 本版作用域视图（由 `versionScopeOf` 现算；`evaluateGate` 在 G4/G6/G7 上注入到 `ctx.versionScope`）。 */
+export interface VersionScopeView {
+  /** 台账里有没有 release 文件：`false` ⇒ 一切实体都归入当前版本（fail-closed，规格 R8/R9）。 */
+  hasReleases: boolean
+  /** 当前 release 的 id（`r-0.1.7`）；没有 release 文件时为空串。 */
+  releaseId: string
+  /** 当前 release 的包版本（`0.1.7`）；没有 release 文件时为空串。 */
+  packageVersion: string
+  /** 算作用域时读盘失败的原因。有值 ⇒ 判据必须判红（读不动 ≠ "没有作用域"）。 */
+  error: string | undefined
+  /** 归属细分（`scope` / `failClosed` / `landed` / `deferred` / `otherVersion`）。 */
+  classify: (entityId: string) => VersionMembershipKind
+  /** 这个实体**本版要不要判**：`deferred`（本版明确不进）与 `otherVersion`（属于更晚的版本）为 `false`。 */
+  includes: (entityId: string) => boolean
+}
+
+/** 读作用域失败时的视图：**不静默缩小判定面**（一切照常参与），把错误交给 `C-71` 判红。 */
+function scopeViewError(message: string): VersionScopeView {
+  return {
+    hasReleases: true,
+    releaseId: '',
+    packageVersion: '',
+    error: message,
+    classify: () => 'failClosed',
+    includes: () => true,
+  }
+}
+
+/**
+ * 现算本版作用域（**只读**，不写盘）。
+ *
+ * 归属判定**全部**来自派生层（`deriveFor`），本函数只做一件事：把派生结果翻成"本版判不判它"：
+ * | 派生结果 | 本版 |
+ * |---|---|
+ * | `deferredFrom` 有值（当前版 `nonScope` 点了名） | **不判**（本版明确不进，`R2`） |
+ * | `targetVersion === 当前版` | **判**（`scope` / `failClosed` 缺省归入 / `landed` 顺延到账） |
+ * | `targetVersion === 更晚的版本` | **不判**（属于那一版；`AC-275` 的那一侧） |
+ * | 一份 release 都没有（`unknown`） | **判**（fail-closed：一切都属于当前版本，规格 R8/R9） |
+ *
+ * 注意最后一行与"作用域为空集"是**两件相反的事**：前者把全部实体拉进判定，后者把它们全放过去。
+ */
+export function versionScopeOf(store: SdoStore): VersionScopeView {
+  let releases: Release[]
+  try {
+    releases = listReleases(store)
+  } catch (error) {
+    return scopeViewError(error instanceof Error ? error.message : String(error))
+  }
+  const current = currentRelease(releases)
+  const currentVersion = current === undefined ? '' : packageVersionOf(current)
+  const cache = new Map<string, VersionMembershipKind>()
+  const resolve = (entityId: string): VersionMembershipKind => {
+    // **fail-closed**（规格 R8/R9）：没有 release 文件 ⇒ 没有集合可对，一切属于当前版本。
+    if (releases.length === 0) return 'failClosed'
+    const detail = deriveFor(releases, entityId)
+    if (detail.deferredFrom !== undefined) return 'deferred'
+    if (detail.targetVersion !== undefined && detail.targetVersion === currentVersion) {
+      if (detail.landedFrom !== undefined) return 'landed'
+      return detail.failClosed === true ? 'failClosed' : 'scope'
+    }
+    return 'otherVersion'
+  }
+  const classify = (entityId: string): VersionMembershipKind => {
+    const id = textOf(entityId).trim()
+    const known = cache.get(id)
+    if (known !== undefined) return known
+    const kind = resolve(id)
+    cache.set(id, kind)
+    return kind
+  }
+  return {
+    hasReleases: releases.length > 0,
+    releaseId: current === undefined ? '' : current.id,
+    packageVersion: currentVersion,
+    error: undefined,
+    classify,
+    includes: (entityId) => {
+      const kind = classify(entityId)
+      return kind !== 'deferred' && kind !== 'otherVersion'
+    },
+  }
+}
+
+/** 这个门禁是否属于「实现/验证/交付类」（只有它们按本版作用域判定）。 */
+export function isVersionScopedGate(gateId: string | undefined): boolean {
+  return gateId !== undefined && VERSION_SCOPED_GATE_IDS.includes(gateId)
+}
+
+/**
+ * `C-71` 的**挂载**：流程数据已经声明了 `check: release.scope-closure` 就用它；没有则补充一条。
+ *
+ * 三个边界（都是"不许悄悄改变老项目判定面"的同一件事）：
+ *   · 不是作用域门禁 ⇒ 原样返回（G2/G3 不切片，`AC-267`）；
+ *   · 项目没有 release 文件且读得动 ⇒ 原样返回（发布计划层尚未被采纳；见本节抬头的说明）；
+ *   · release 文件读不动 ⇒ **照样补充**：读不动要判红并点名，不许当成"没有作用域"。
+ */
+function versionScopeCriteria(definition: GateDef, view: VersionScopeView | undefined): GateCriterionDef[] {
+  if (view === undefined) return definition.criteria
+  if (!view.hasReleases && view.error === undefined) return definition.criteria
+  if (definition.criteria.some((criterion) => criterion.check === VERSION_SCOPE_CHECK)) return definition.criteria
+  return [...definition.criteria, { id: VERSION_SCOPE_CRITERION_ID, check: VERSION_SCOPE_CHECK, desc: VERSION_SCOPE_DESC }]
+}
+
+/**
+ * 外层作用域过滤：`ctx.versionScope` 存在时（＝正在判 G4/G6/G7）只留下本版要判的实体。
+ *
+ * 这是"**只在外层过滤**"的落点：既有判据（`C-51` / `C-65` / `C-66`）的判定逻辑一字不动，
+ * 它们拿到的**名单**被收窄。`ctx.versionScope` 不存在（G2/G3/G5/直接调检查器）⇒ 原样返回。
+ */
+function inScopeByVersion<T>(ctx: GateContext, list: readonly T[], idOf: (item: T) => string): T[] {
+  const view = ctx.versionScope
+  if (view === undefined) return [...list]
+  return list.filter((item) => view.includes(idOf(item)))
+}
+
+/** 本版在册的契约 id（`dropped` 的不算；没有需求来源的缺省归入本版 —— 证不出它属于别版）。 */
+function contractIdsInScope(ctx: GateContext, view: VersionScopeView): string[] {
+  return listContracts(ctx.store)
+    .filter((contract) => contract.dropped !== true)
+    .filter((contract) => {
+      const requires = (contract.requires ?? []).map((id) => textOf(id).trim()).filter((id) => id !== '')
+      if (requires.length === 0) return true
+      return requires.some((id) => view.includes(id))
+    })
+    .map((contract) => contract.id)
+}
+
+/** 契约面的启用声明（与 `contractsTested` 同一条口径：项目在 `config.yml` 里声明才启用）。 */
+function contractTestsDeclared(ctx: GateContext): boolean {
+  try {
+    const raw = ctx.store.readYaml<{ contractTests?: { enforce?: unknown } }>('config.yml')
+    return raw?.contractTests?.enforce === true
+  } catch {
+    return false
+  }
+}
+
+/**
+ * **`C-71 作用域闭合`**（规格 §3.1）：作用域内**逐类闭合**，作用域外**不判红**。
+ *
+ * | 对象 | 闭合条件（口径全部沿用既有判据，不另造） |
+ * |---|---|
+ * | 缺陷 | `fixed` / `closed`；`wontfix` 须带 `waiveReason` + `waiveApprovedBy`（`DEF-038`，走 `fixStatusRows`） |
+ * | 卡 | `done` / `verified` / `dropped`（`dropped` 是显式放弃的终态，不是"未完成"） |
+ * | `must` 需求 | 至少一条 `pass` **且已采纳**的用例（`report` 的两态：没有 `req-tc` 边 / 有边但没核实） |
+ * | 契约 | 有 `contractTest` 记录（`contractTestGaps`，项目声明 `contractTests.enforce` 才启用） |
+ *
+ * 回执分两侧点名：**缺省归入者**（`failClosed`）与**顺延到账者**（`landedFrom`）各自列出 id ——
+ * 两类都参与判定，但把它们并成一堆会让"这条红是为什么进来的"不可回答（`REV-076` 第 3 条）。
+ */
+function versionScopeClosure(ctx: GateContext): GateCriterionResult {
+  const criterionId = VERSION_SCOPE_CRITERION_ID
+  const view = ctx.versionScope ?? versionScopeOf(ctx.store)
+  // ① **读不动判红**（口径同 `gate.internal`：查不动不许当"没问题"）
+  if (view.error !== undefined) {
+    return fail(criterionId, fmt('uiGates.kCheckerThrew', { p1: view.error }), t('uiGates.kCheckerThrewRemedy'))
+  }
+  const badLines = traceBadLinesFailure(ctx, criterionId)
+  if (badLines !== undefined) return badLines
+
+  // ② 四类对象各自取"本版要判"的那一份。
+  // **必须用本函数自己的 `view` 过滤**（不是 `inScopeByVersion`）：本判据既可能由引擎在作用域门禁上
+  // 调（此时 `ctx.versionScope` 已注入），也可能被直接调用（单测 / 审计脚本 / 将来别的门禁）——
+  // 只靠注入的上下文过滤，会让"直接调用"这一侧读到**全量**名单，而回执里的 `failClosed` / `landedFrom`
+  // 又按 `view` 算 ⇒ 回执与判定不一致（`M214-02` 就是这么逮到它的：nonScope 里的缺陷被判了）。
+  const defects = listDefects(ctx.store).filter((defect) => view.includes(defect.id))
+  const tasks = listTasks(ctx.store).filter((task) => view.includes(task.id))
+  const requirements = ctx.requirements.filter((requirement) => view.includes(textOf(requirement.id)))
+  const contractIds = contractIdsInScope(ctx, view)
+  const musts = requirements.filter((requirement) => textOf(requirement.priority) === 'must')
+
+  // ③ 逐类求缺口（口径全部复用既有出口）
+  const defectRows = fixStatusRows(defects.map((defect) => defect.id), defects).filter((row) => !row.closable)
+  const taskGaps = tasks
+    .filter((task) => task.status !== 'done' && task.status !== 'verified' && task.status !== 'dropped')
+    .map((task) => `${task.id}(${textOf(task.status)})`)
+  const trace = report(ctx.store, requirements)
+  const uncovered = trace.uncoveredMust
+  const unverified = trace.registeredButUnverified
+  const contractsEnabled = contractTestsDeclared(ctx)
+  const contractGaps = ((): { id: string; reason: string }[] => {
+    if (!contractsEnabled) return []
+    const declared = new Set([...contractIds])
+    return contractTestGaps(ctx.store).gaps.filter((gap) => declared.has(gap.id))
+  })()
+
+  // ④ 两个"参与判定但不许混同"的分量：分开点名（`REV-076` 第 3 条 / 规格 §3.1）
+  const judged = [
+    ...defects.map((defect) => defect.id),
+    ...tasks.map((task) => task.id),
+    ...requirements.map((requirement) => textOf(requirement.id)),
+    ...contractIds,
+  ]
+  const failClosed = judged.filter((entityId) => view.classify(entityId) === 'failClosed')
+  const landed = judged.filter((entityId) => view.classify(entityId) === 'landed')
+  const label = view.hasReleases ? `${view.releaseId}@${view.packageVersion}` : 'no-release-files'
+  const scopeLine = `${criterionId} scope=${label} defects=${String(defects.length)} tasks=${String(tasks.length)} `
+    + `must=${String(musts.length)} contracts=${String(contractIds.length)} `
+    + `failClosed=[${failClosed.join(' ')}] landedFrom=[${landed.join(' ')}]`
+
+  // ⑤ 回执
+  const lines: string[] = []
+  if (defectRows.length > 0) {
+    const rows = defectRows
+      .map((row) => {
+        const missing = row.missing
+        return fmt('uiGates.kFixRowOpen', { p1: row.id, p2: row.status, p3: missing })
+      })
+      .join(' ')
+    lines.push(fmt('uiGates.kFixUnclosed', { p1: rows }))
+  }
+  if (taskGaps.length > 0) {
+    const list = taskGaps.join(' ')
+    lines.push(fmt('gate.tasksIncomplete', { list: list }))
+  }
+  if (uncovered.length > 0) {
+    const list = uncovered.join(' ')
+    lines.push(fmt('uiGates.k108', { p1: list }))
+  }
+  if (unverified.length > 0) {
+    const list = unverified.map((item) => `${item.requirementId}<-${item.caseIds.join('/')}`).join(' ')
+    lines.push(fmt('uiGates.kCoverageUnverified', { p1: list }))
+  }
+  if (contractGaps.length > 0) {
+    const gaps = contractGaps.map((gap) => `${gap.id}(${gap.reason})`).join(' / ')
+    const missing = String(contractGaps.length)
+    const total = String(contractIds.length)
+    lines.push(fmt('uiGates.kContractsTestedGaps', { p1: gaps, p2: missing, p3: total }))
+  }
+  if (lines.length > 0) {
+    const remedies: string[] = []
+    if (defectRows.length > 0) remedies.push(t('uiGates.kFixedTestedRemedy'))
+    if (taskGaps.length > 0) remedies.push(t('gate.tasksAllDoneRemedy'))
+    if (uncovered.length > 0 || unverified.length > 0) remedies.push(t('uiGates.k109'))
+    if (contractGaps.length > 0) remedies.push(t('uiGates.kContractsTestedRemedy'))
+    return fail(criterionId, [...lines, scopeLine].join('\n'), remedies.join('\n'))
+  }
+  return ok(criterionId, scopeLine)
+}
+
 export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult> = {
+  // **`C-71`（TASK-174）**：作用域闭合（G4/G6/G7 只对本版 scope 判定；见上文的四条硬口径）
+  [VERSION_SCOPE_CHECK]: (ctx) => versionScopeClosure(ctx),
   // **`DEF-105` ③**：未覆盖的 must 需求 ⇒ 红并点名（`REQ-060` 就是它的第一个实例）
   'coverage.uncovered': (ctx) => mustCoverage(ctx),
   // **`DEF-106`**：契约的契约测试覆盖（记录或项目豁免；缺一份即红并点名契约 id）
@@ -1901,7 +2217,9 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   // 归属 G6（用户裁决/驾驶舱建议）：测试结论是**验证阶段**的产物，与 `tests.passed` / `trace.coverage` /
   // `review.independent` 同属一族；不塞进 G7 —— 那会让 73 条历史缺陷一次性变成交付阻塞。
   'defects.fixed-tested': (ctx) => {
-    const missing = fixedDefectsWithoutTestResult(ctx.store)
+    // **`C-71` 外层作用域过滤（TASK-174）**：判定逻辑一字不动，只把**名单**收窄到本版作用域。
+    // 本判据在 G6 上被判（作用域门禁），故 `ctx.versionScope` 有值；直接调检查器/非作用域门禁 ⇒ 原样全量。
+    const missing = inScopeByVersion(ctx, fixedDefectsWithoutTestResult(ctx.store), (item) => item.id)
     if (missing.length === 0) return ok('defects.fixed-tested', t('uiGates.kFixedTestedOk'))
     const named = missing
       .map((item) => (item.failingResults.length === 0
@@ -1918,7 +2236,8 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   // 归属同样在 G6（验证面）：它是**验证阶段**的产物序列问题，与 `defects.fixed-tested` 同族；
   // 不塞 G7 —— 那会与 `DEF-075` 一样把历史缺陷一次性变成交付阻塞（历史缺陷的补评审是**驾驶舱的活**）。
   'defects.fixed-reviewed': (ctx) => {
-    const missing = fixedDefectsWithoutAdoptedReview(ctx.store, ctx.journal)
+    // 作用域过滤同 `C-65`：口径不变，只收窄名单（`C-71` 的外层过滤）。
+    const missing = inScopeByVersion(ctx, fixedDefectsWithoutAdoptedReview(ctx.store, ctx.journal), (id) => id)
     if (missing.length === 0) return ok('defects.fixed-reviewed', t('uiGates.kFixedReviewedOk'))
     return fail(
       'defects.fixed-reviewed',
@@ -1953,7 +2272,11 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
 
   'defects.closed': (ctx) => {
     const stats = verificationStats(ctx.store)
-    const breakdown = blockerBreakdown(listDefects(ctx.store))
+    // **`C-71` 外层作用域过滤（TASK-174）**：判定口径（`blockerBreakdown` / `isBlockerWaived`）一字不动，
+    // 只是**名单**收窄到本版作用域 —— 本版明确不进（`nonScope`）或属于更晚版本的缺陷不在本版判红。
+    // 绿侧那句"未关闭总计 {p1}"仍读全台账读数（`stats.defectsOpen`）：它是**信息性**计数，
+    // 不是判定依据；作用域内的闭合情况由 `C-71` 逐类点名（本卡的落点二）。
+    const breakdown = blockerBreakdown(inScopeByVersion(ctx, listDefects(ctx.store), (defect) => defect.id))
     if (breakdown.blocking.length > 0) {
       // 判红**必然点名**：缺哪一条依据要在名单里看得见，否则"补依据"这个动作无从下手。
       const named = breakdown.blocking
@@ -2796,7 +3119,18 @@ function evaluateGateInner(process: ProcessDef, gateId: string, ctx: GateContext
   // **C-59（TASK-062）**：把**正在判定的门禁 id** 如实注入 —— 本判据同时挂在四个流程的多个门禁上
   // （waterfall/prototype/spiral 的 G6、agile 的 GI），"签哪个门禁"只能由引擎告诉它，不能靠猜。
   const checkerContext: GateContext = { ...ctx, gate: gateId }
-  const criteria: GateCriterionResult[] = definition.criteria.map((criterion) => {
+  // **`C-71`（`REQ-063` / TASK-174）**：只有实现/验证/交付类门禁（`G4`/`G6`/`G7`）按**本版作用域**判定。
+  // 两处动作都在"外层"，既有判据的语义一字不动：
+  //   ① 注入 `versionScope`，让逐类判据把自己的**实体名单**收窄（`inScopeByVersion`）；
+  //   ② 收窄 `requirements`，于是「must 需求必须有通过用例」这类判据只问**本版**的 must（`AC-266`）——
+  //      而 G2 的 `coverage.uncovered` 仍然看见全基线（`AC-267` / `AC-275` 的另一侧，反例 `R11`）。
+  const versionScope = isVersionScopedGate(gateId) ? versionScopeOf(ctx.store) : undefined
+  if (versionScope !== undefined) {
+    checkerContext.versionScope = versionScope
+    checkerContext.requirements = ctx.requirements.filter((requirement) => versionScope.includes(textOf(requirement.id)))
+  }
+  const versionScopeDefs = versionScopeCriteria(definition, versionScope)
+  const criteria: GateCriterionResult[] = versionScopeDefs.map((criterion) => {
     const checker = CHECKERS[criterion.check]
     if (checker === undefined) {
       return fail(
@@ -2830,7 +3164,9 @@ function evaluateGateInner(process: ProcessDef, gateId: string, ctx: GateContext
   let shapeNoteError: string | undefined
   const shapeNotesByCheck = new Map<string, FieldShapeNote[]>()
   for (const criterion of criteria) {
-    const defined = definition.criteria.find((candidate) => candidate.id === criterion.id)
+    // 用 `versionScopeDefs`（而不是 `definition.criteria`）：`C-71` 可能是引擎补充挂上去的，
+    // 它在流程数据里没有对应条目 —— 按 `definition.criteria` 找会让这条判据丢掉 `desc`。
+    const defined = versionScopeDefs.find((candidate) => candidate.id === criterion.id)
     if (criterion.desc === undefined && defined?.desc !== undefined) criterion.desc = defined.desc
     const check = defined?.check ?? ''
     if (!checkWantsShapeNotes(check)) continue
