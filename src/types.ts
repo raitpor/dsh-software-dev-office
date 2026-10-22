@@ -2369,6 +2369,8 @@ export type SdoEventType =
   | 'budget/decision'
   | 'gate/result'
   | 'evidence/recorded'
+  // **REQ-063 / TASK-170**：发布计划落盘（哪一份集合、映射到哪个包版本、冻没冻）
+  | 'release/written'
   | 'cost/sample'
   | 'budget/decision'
   | 'plan/review-blocked'
@@ -2409,4 +2411,72 @@ export interface JournalReadResult {
   events: JournalEvent[]
   truncated: boolean
   badLine?: number | undefined
+}
+
+/**
+ * 发布计划里的一条**顺延登记**（`REQ-063` / `AC-277` / `AC-288`）：某个实体**明确不进本版**。
+ *
+ * 四个字段都是判据要读的：`C-72` 拿 id 集合与 `CHANGELOG` 的缺口清单对账，`C-73` 看 reason 与次数上限。
+ * 批准人只认 human（`ADR-022` 裁决①：允许本版遗留的决定权全在用户，驾驶舱不得代批）。
+ */
+export interface ReleaseNote {
+  /** 被顺延的实体 id（`REQ-…` / `DEF-…` / `TASK-…`）。 */
+  id: string
+  /** 为什么顺延（对账与人工复核都要它）。 */
+  reason: string
+  /** 已顺延次数（`AC-277` 的次数上限判定要用；是次数就是整数）。 */
+  deferCount: number
+  /** 批准人：只认 human。 */
+  approvedBy: string
+}
+
+/** 本版范围：需求与验收准则两个集合（`AC-278` 的"一次范围声明"就声明在这里）。 */
+export interface ReleaseScope {
+  requirements: string[]
+  acceptance: string[]
+}
+
+/**
+ * 发布计划（`.sdo/releases/<id>.yml`，`REQ-063`）。
+ *
+ * **权威是这两份集合，不是实体上的版本字段**（`AC-287`）：实体上的 `targetVersion` / `deferredTo`
+ * 一律由集合**派生**（见 `DerivedVersion`）。标识用 `r-x.y.z`（`AC-278`），不得把包版本号当主键。
+ */
+export interface Release {
+  /** `r-x.y.z` 形态（如 `r-0.1.7`）；可选后缀用于"一个包版本含多个 release"。 */
+  id: string
+  /** 与包版本号的显式映射（缺省时从 id 的 `x.y.z` 段取）。 */
+  packageVersion?: string | undefined
+  /** 本版范围。 */
+  scope: ReleaseScope
+  /** 明确不进本版（每条＝一次顺延登记）。 */
+  nonScope?: ReleaseNote[] | undefined
+  /** 冻结那一刻的 journal 序号（冻结后才有）。 */
+  frozenAtSeq?: number | undefined
+  /** 冻结签字人：只认 human（`AC-276`：冻结是一次人签）。 */
+  frozenBy?: string | undefined
+}
+
+/**
+ * 某个实体在发布计划里的版本归属（**派生**，`AC-287`）：不许手填，由 release 的集合算出。
+ *
+ * 三种输出来源互斥：进了某版的范围（`targetVersion`）/ 被当前版明确顺延（`deferredTo` 一族）/
+ * 一份 release 都没有（`unknown`）。`failClosed` 标的是"没有任何集合点名它，靠缺省归入当前版"
+ * （规格 R8/R9：没规划过就得管）。
+ */
+export interface DerivedVersion {
+  /** 目标版本（＝它所在 release 的包版本）。 */
+  targetVersion?: string | undefined
+  /** 顺延到的版本（`AC-277` 的留痕面）。 */
+  deferredTo?: string | undefined
+  /** 顺延理由。 */
+  deferReason?: string | undefined
+  /** 顺延批准人（只认 human）。 */
+  deferApprovedBy?: string | undefined
+  /** 登记这次顺延的那一版；与 `deferredTo` 相等即"顺延目标版本尚未在册"。 */
+  deferredFrom?: string | undefined
+  /** 缺省归入当前版本（既不在 scope、也不在当前版的 nonScope 里）。 */
+  failClosed?: boolean | undefined
+  /** 一份 release 都没有 ⇒ 派生不出（**显式说不知道**，别当它属于本版）。 */
+  unknown?: boolean | undefined
 }
