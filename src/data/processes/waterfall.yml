@@ -130,6 +130,11 @@ gates:
       - { id: C-31, check: "plan.tasks", desc: "任务卡齐备（DoD/依赖/写范围）" }
       - { id: C-32, check: "plan.testplan", desc: "测试计划覆盖全部 must REQ" }
       - { id: C-33, check: "construction.profile-decided", desc: "实现阶段方法包已决定（模型自选、依据可核对；显式不选包时 N/A + 理由）" }
+      # **`TASK-171`（0.1.7 批 2 · `TASK-176` 交接）**：`C-73` 的挂点**写在这里**（数据才是"这个门禁由哪些
+      # 准则构成"的真源）。判定核心在 `src/domain/release.ts` 的 `deferTraceFindings`（`TASK-176` 交付），
+      # 本数据只声明"它在 G4 判"。为什么挂 G4：顺延登记是**计划面**的动作（"这一版做哪些"在详细设计门禁里定），
+      # 等到验证/交付才发现"这条从没规划过"就已经晚了。
+      - { id: C-73, check: "release.defer-trace", desc: "顺延留痕与次数上限（`AC-277`）：当前版 `nonScope` 每条的 `deferCount` 超过上限（默认 2，`.sdo/config.yml` 的 `release.deferLimit` 可声明）⇒ 判红并要求用户裁决（模型不得自行放宽）；曾在**已冻结旧版** `scope` 里被承诺过、而当前版集合一个字都没提、且真源里没有 `release/deferred` 留痕 ⇒ **静默顺延**判红。三路豁免：已终结（缺陷 fixed/closed、卡 done/verified/dropped）、真源里有点名的顺延记录、它仍在当前版集合里。台账里没有 release 文件 ⇒ N/A（发布计划层尚未被采纳）" }
   - id: G5
     name: 开发完成门禁
     criteria:
@@ -151,6 +156,16 @@ gates:
       # `inputs`/`outputs` 这两格"读了、也下发了、却没人核对"的声明纳进同一条判据。
       # 挂 G5 的理由与 C-63 逐字相同：施工收口时逮住，不拖到发布前。
       - { id: C-64, check: "details.mitigates-closed", desc: "已声明消除的风险必须闭合或署名接受其仍开放，且卡级 inputs/outputs 的声明必须有证据：对每张 status ∈ {done, verified} 的卡，① `mitigates` 每条风险须 `mitigated`/`closed`，或卡上有一条 `waiveReason` 与 `waiveApprovedBy` 去空白后**都非空**的豁免（口径同 DEF-038，不新造）；② 声明的每条 `inputs`/`outputs` 必须出现在该卡自己的 `artifact` 证据里（去 `./` 与前后空白后匹配）；否则判红并**逐条点名**（卡 id + 风险 id / 声明的条目 + 现状态 + 缺什么）并给可执行修法（`sdo_risk action=update id=RISK-xxx status=mitigated`，或补免责两字段，或把产物落盘进 `artifact` 证据）。两种通过路径下回执都**单列台账里仍 open 的风险清单**（可见即约束）。未 done / 三格都没声明的卡不参与（不误伤）；一条声明都没有 ⇒ 判 N/A。**形态判别，不是「恰好为空」**（DEF-064 / REV-043）：②③ 只核对**路径形态**的 `inputs`/`outputs` 声明（去 `./` 与前后空白后匹配该卡自己的 `artifact` 证据）；**散文/描述形态**的声明**不参与判据**，但会**逐条回显未参与的理由**（不静默放过）。**存量不追溯**：两个风险豁免字段是本轮新增字段，新字段生效前建的卡读回来是空集（那不是判据没电，是那时还没有这两格）" }
+      # **`TASK-171`（0.1.7 批 2 · `U1`「被写 = 被遵守」）**：`C-70` 是**元判据** —— 它判的不是某个实体，
+      # 而是"台账里每条必须成立的声明有没有判据守着"。挂 G5 的理由：G5 是**施工收口**门（"全部任务卡完成"
+      # 就是它的 C-40），而"这条声明没人守"正是施工结束时该结清的账；放 G2/G3 会把"有没有人守"与
+      # "需求/设计写没写对"两件事混在一个时刻。棘轮（`claimCoverage.baseline`）让它在收口时**只减不增**。
+      - { id: C-70, check: "claims.gate-coverage", desc: "声明—判据覆盖（元判据）：台账里每条必须成立的声明（must 需求的每条 AC、设计元素、契约、`roles.yml` 的纪律条目）必须有**机判器**或**署名豁免**（`.sdo/config.yml` 的 `claimCoverage.exempt` 四条 `{ id, criterion, reason, approvedBy }`，其中 `criterion` 必须是流程数据里真实声明、且 `CHECKERS` 里真实注册的判据键 —— 引一个不存在的键就是散文），否则进「未设防清单」并**计数 + 逐条点名**。判红面三条：① 豁免四字段不齐（含引用不存在的判据键）；② 不在基线（`claimCoverage.baseline`）里的**新增**未设防（棘轮只减不增）；③ ghost trace 端点（`req-tc` 指向**未登记**的用例，它抬高不了覆盖也守不住需求）。台账里一条声明都没有 ⇒ N/A（空台账证明不了任何事）" }
+      # **`DEF-162` 第③条（`TASK-171`）**：`C-76` 是「流程官只记账、实现派给该角色的执行者」这条分工的
+      # **兜底判据** —— 认领面（`office.ts` 的 `claimTask`）按 fail-open 放行认不出形态的 owner，
+      # 收口面（这里）fail-closed 点名。为什么挂 G5 而不是别处：分工是"施工怎么分工"，
+      # 与 C-40/C-63/C-64 同一时刻结账；挂 G6 会把它变成"能不能发布"的问题，而它其实是"活是谁干的"。
+      - { id: C-76, check: "tasks.owner-role", desc: "收口时的 owner 角色（`DEF-162` 第③条）：已收口（`done` / `verified`）的每张卡，`owner` 认出的角色必须**等于**卡上的 `role`；`owner` 为空、形态认不出角色（合法形态 `subagent:<角色>:<标识>` / `<角色>-<标识>` / `cockpit`）、或角色对不上 ⇒ 判红并**逐条点名**（卡 id / 卡 role / owner / 认出的角色）。与认领面分工：认领面只拦「驾驶舱/流程官认领实现与测试卡」（fail-open 放行认不出的 owner），收口面才把历史卡一并摆在台账上（fail-closed）" }
   - id: G6
     name: 验证门禁
     criteria:
@@ -180,6 +195,17 @@ gates:
       # 正是 C-53 的输入 —— 让**用户为这份输入背书**，才谈得上"据它放行"；
       # ③ 与 C-57（回归纪律）同挂 G6：三者都在回答"这次到底验过没有、验的结论是什么、谁认了"。
       - { id: C-59, check: "testing.report-signed", desc: "测试总结报告已由用户签字确认（四态）：① 报告不在盘 / 不是当前真源的渲染 ⇒ 判红，先 `sdo_render target=report`；② 报告在、但签字台账（.sdo/gates/signatures.yml）里没有本门签字 ⇒ 判红并给可执行修法（`sdo_gate action=sign gate=\"验证门禁（G6）\"`，channel=question 走宿主问答通道弹审核单，或 channel=statement + 用户原话）；③ 有签字但报告内容指纹在签字之后变了（真源被改 / 渲染稿被手改）⇒ 判红并点名「签字已失效，需重签」；④ 报告在 + 存在当前指纹的签字 ⇒ 绿，回执给出报告路径 / 内容指纹 / 签字时刻" }
+      # **`TASK-171` / `TASK-174` 交接：`C-71` 的挂点与激活条件都在**数据**里（旧实现是引擎
+      # 「release 文件存在就补一条」，已删）。为什么挂 G6：验证门禁是"本版做了什么"的**结账口**，
+      # 作用域闭合在这一刻最有用；`G4`/`G7` 的判定面同样按本版作用域收窄（那是引擎的外层过滤，
+      # `isVersionScopedGate`），只是**这条读数**挂在结账口说一次，不重复声明同一个 id
+      # （`test/m32.test.ts` 的 M32-15 要求同流程内判据 id 跨门禁唯一）。
+      # `when: releases` = 发布计划层已被采纳（台账里有 release 文件）才参与判定；release 文件读不动时
+      # **照样参与**（读不动必须判红）。老项目没有 release 文件 ⇒ 这条判据不出现在判定里，判定面不变。
+      - { id: C-71, check: "release.scope-closure", when: releases, desc: "版本作用域闭合（`REQ-063`）：`G4`/`G6`/`G7` 只对**本版作用域**判定（当前 release 的 `scope` ∪ 缺省归入者 ∪ 顺延到账者），作用域外不判红 —— 缺陷 `fixed`/`closed`（`wontfix` 须两免责字段齐备）、卡 `done`/`verified`/`dropped`、must 需求至少一条已采纳的 `pass` 用例、契约有 `contractTest` 记录；回执把**缺省归入者**（谁都没点名 ⇒ 按 fail-closed 必须管）与**顺延到账者**（旧版 `nonScope` 登记、目标已到版）**分开点名**；一份 release 都没有时按 fail-closed 视为全部属于当前版本（不许当空集放过）。需求/设计类门禁（G2/G3）**不切片**，仍对全基线判定" }
+      # **`TASK-171`（`TASK-176` 交接）**：`C-75` 的挂点在 G6（验证门禁）："这一版可以被验证"的前提是
+      # **集合本身是人签冻结过的**（`AC-276`）—— 拿一份没签字的草稿当验收范围，验的就不是承诺过的东西。
+      - { id: C-75, check: "release.freeze-trace", desc: "冻结人签与冻结后改集合（`AC-276`）：当前版集合必须带 `frozenBy: human` + `frozenAtSeq`（模型自己写进文件的集合不算权威）；`frozenAtSeq` 必须指向真源里**真实发生过**的那一次人签（`frozen=true` 的 `release/written` 落盘，或 `by: human` 的问答答复），手填序号 ⇒ `freeze-unwitnessed` 判红；冻结人不是 `human` ⇒ 判红（驾驶舱不得代批）；冻结之后现盘条数与最后一次带签字的落盘不一致、且冻结之后没有任何已决策的变更 ⇒ 判红（绕过 change 直接改集合）。台账里没有 release 文件 ⇒ N/A" }
   - id: G7
     name: 交付门禁
     criteria:
@@ -191,3 +217,7 @@ gates:
       # 故**不在 G6 重复声明**（同一概念两处判据是 `DEF-044` 的教训）。四流程措辞逐字一致。
       - { id: C-67, check: "defects.unfrozen-full-green", desc: "有 `unfrozen` 非空的卡（某次完成是**局部绿**）⇒ **交付前必须有一次全量绿**：存在一条 `status=pass` 且声明覆盖全量（`fullSuite=true`）的测试结论，且其时刻**晚于**最后一次未冻结完成的 `done` 时刻；否则判红并**逐条点名**是哪几张卡的未冻结完成把这条要求引出来的。「全量」由**项目/调用方声明**，插件不硬编码任何跑法（它不认识某条命令、也不认识某个路径，只认「这条结论自称覆盖全量」这个结构化声明）—— 补法是跑一次全量并记一条 `status=pass` + `fullSuite=true` 的结论。**没有** `unfrozen` 非空的卡 ⇒ 判 N/A（不是判红）。" }
       - { id: C-delivery-bound, check: "delivery.bound", desc: "交付绑定成立：项目声明的形态（`commit` = 提交信息含 40/64 位产物哈希 / `manifest` = `delivery.manifestPath` 的清单里含哈希）查得到；未声明 ⇒ N/A（AC-241）" }
+      # **`TASK-171`（0.1.7 批 2 · `TASK-175` 交接）**：`C-72` 的挂点在 G7（交付门禁）——
+      # "本版有哪些已知缺口"是**交付时对用户说的话**，与交付清单同属一个时刻。对账面只有一份：
+      # `deferredIdsOf(currentRelease)`（派生字段不算），渲染入口是 `scripts/gen-changelog.mjs`。
+      - { id: C-72, check: "release.gap-reconciled", desc: "缺口清单与台账集合**恰好相等**（`AC-288`）：`CHANGELOG.md` 本版「已知缺口」小节点到的 id 集合必须与当前 release 的 `nonScope` 集合恰好相等 —— 少写＝**隐瞒项**、多写＝**粉饰项**；小节标记属于别的版本、标记不配对、条目点不出 id（散话）也判红；只有两边都空时才允许没有该小节。对账面只有一份：`deferredIdsOf(当前 release)`，不读实体上的派生字段。台账里没有 release 文件 ⇒ N/A（发布计划层尚未被采纳）" }

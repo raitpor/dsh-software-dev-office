@@ -42,7 +42,29 @@ import type {
 // 不是实体上的手填字段（`AC-287`：字段一律派生，权威是 release 文件的集合）。
 // 依赖方向是「判据 → 派生层」；反向那条被 `test/m213.test.ts` 的静态守卫钉死
 // （`release.ts` 不许 import gates、也不许出现判据字面量）。
-import { currentRelease, deriveFor, listReleases, packageVersionOf } from './release.js'
+//
+// **`TASK-171`（0.1.7 批 2）**：`C-73` / `C-75` 的**判定核心**在 `release.ts`（`deferTraceFindings` /
+// `freezeTraceFindings`，`TASK-176` 交付），本模块只把它们挂上门禁并渲染回执 —— 判定口径不在这里重写。
+import {
+  currentRelease,
+  deferLimitOf,
+  deferTraceFindings,
+  deferredIdsOf,
+  deriveFor,
+  freezeTraceFindings,
+  listReleases,
+  packageVersionOf,
+} from './release.js'
+// **`TASK-171`**：`C-70` 的判定核心（声明—判据覆盖）在 `claimCoverage.ts`；`owner` 的角色解析与
+// `C-76` 的读数也在那里（认领面 / 建卡面 / 收口判据三处共用一份口径，见该模块文件头）。
+import {
+  CLAIM_COVERAGE_CHECK,
+  CLAIM_COVERAGE_CRITERION_ID,
+  CLAIM_KINDS,
+  assessClaimCoverage,
+  ownerRoleFindings,
+} from './claimCoverage.js'
+import type { ClaimKind, ClaimRow } from './claimCoverage.js'
 import { adrCompleteness } from './adr.js'
 import {
   absentArtifacts,
@@ -96,7 +118,7 @@ import { claimGaps, contractTestGaps, doneGaps, readConstructionProfile, scopeCo
 import { deliveryBinding } from './records.js'
 import { readProjectConfig } from '../config.js'
 import { methodDocHeader, methodDocStatus } from './methodDocs.js'
-import { gateDef, gatePhase, legalRollbackTargets } from './process.js'
+import { gateDef, gatePhase, legalRollbackTargets, loadAllProcesses } from './process.js'
 import { listRisks, riskStats } from './risks.js'
 import { channelLabel, signoffInput, signatureInvalidatingEventLine, signatureState } from './signature.js'
 import { checkWantsShapeNotes, collectShapeNotes, shapeNoteLines, shapeNotesForCheck } from './shapeNotes.js'
@@ -551,12 +573,14 @@ function deliveryBound(ctx: GateContext): GateCriterionResult {
  *   · **读不动不静默缩小判定面**：release 文件存在但形状不合法 ⇒ `deriveFor` 侧报错（点名文件与字段），
  *     这里把错误原样带进 `C-71` 的判红详情，其余实体**照常参与**判定。
  *
- * **为什么 `C-71` 由引擎补充挂载**（`versionScopeCriteria`）：判据的"挂点"本来写在流程数据
- * （`src/data/processes/*.yml`）里，而那份数据**不在本卡写范围**。若只在注册表里登记检查器而不挂上去，
- * 条文上"判据存在"、实际上没有任何门禁会跑它（本仓 `test/m32.test.ts` 的原话："判据没挂上 = 这条约束不存在"）。
- * 因此：**项目一旦有 release 文件**（＝采纳了发布计划层），引擎就在 `G4`/`G6`/`G7` 上补充这条判据；
- * 项目完全没有 release 文件时**不补充**（老项目的判定面保持不变 —— 那不是"放过作用域"，而是这套机制
- * 尚未被采纳：`REQ-063` 的回填是另一张卡的事）。流程数据将来自己声明了同名 `check` 时不再重复补充。
+ * **`C-71` 的挂点写在流程数据里**（`TASK-171` / `TASK-174` 交接；旧实现是引擎补充挂载，已删）：
+ * 判据的"挂点"是**数据**（`src/data/processes/*.yml` 的 `criteria[]`），引擎不替数据决定"有哪条判据"。
+ * 旧实现在 `release` 文件存在时由 `versionScopeCriteria()` 往 `G4`/`G6`/`G7` 上**补一条** —— 那让
+ * "流程数据说这个门禁由哪些准则构成"变成半真半假（`m32` 的原话：判据没挂上 = 这条约束不存在）。
+ * 现在两个面都归数据：
+ *   · **判据本身**（`id` / `check` / 中文 `desc`）写在 `waterfall.yml` 的 `G6`；
+ *   · **激活条件**（`when: releases` = 发布计划层已被采纳才参与）也写在那个条目上，
+ *     本模块只解释这个条件（`criterionActive`，对任何判据一视同仁，不认判据身份）。
  */
 
 /** `C-71` 的判据 id（与规格 §3.1 同名）与检查器键。 */
@@ -572,11 +596,11 @@ export const VERSION_SCOPE_CHECK = 'release.scope-closure'
 export const VERSION_SCOPED_GATE_IDS: readonly string[] = ['G4', 'G6', 'G7']
 
 /**
- * 补充挂载时用的判据说明（**只用于流程数据尚未声明它的过渡期**）。
+ * 旧实现「补充挂载」时用的英文占位说明。
  *
- * 为什么是英文：本文件被 i18n 棘轮钉在「零硬编码中文」（`test/m7.test.ts` 的基线
- * `src/domain/gates.ts: 0`），而流程数据的 `desc` 是中文。正式的中文说明应当写进流程数据
- * （那是"判据由什么构成"的真源，见 `versionScopeCriteria`），本串只是过渡期的占位说明。
+ * **`TASK-171` 起不再是判据的说明来源**：`C-71` 的中文 `desc` 已写进 `waterfall.yml`（数据才是
+ * "判据由什么构成"的真源）。这个常量只为兼容既有的导出面而保留（`VERSION_SCOPE_DESC` 有过外部引用），
+ * 内容保持原文，**不再参与任何判定或渲染**。
  */
 export const VERSION_SCOPE_DESC = 'C-71 release-scope closure: only entities inside the current release scope '
   + '(scope + fail-closed members + landed deferrals) are judged: defects fixed/closed (wontfix needs both waiver fields), '
@@ -675,18 +699,33 @@ export function isVersionScopedGate(gateId: string | undefined): boolean {
 }
 
 /**
- * `C-71` 的**挂载**：流程数据已经声明了 `check: release.scope-closure` 就用它；没有则补充一条。
+ * 判据的**激活条件**（数据声明；本引擎只解释条件，不认判据身份）。
  *
- * 三个边界（都是"不许悄悄改变老项目判定面"的同一件事）：
- *   · 不是作用域门禁 ⇒ 原样返回（G2/G3 不切片，`AC-267`）；
- *   · 项目没有 release 文件且读得动 ⇒ 原样返回（发布计划层尚未被采纳；见本节抬头的说明）；
- *   · release 文件读不动 ⇒ **照样补充**：读不动要判红并点名，不许当成"没有作用域"。
+ * `when` 的语义见 `GateCriterionDef.when`：`releases` = 台账里有至少一份 release（发布计划层已被采纳），
+ * 或 release 文件**读不动**（读不动必须照样判红 —— 那是最需要判据说话的一态）。
+ *
+ * 为什么未声明 / 未知取值一律"恒参与"：宁可按老口径判，也**不许**因为条件写错把一条判据静默关掉
+ * （判据消失比判红更贵：它不会有人发现）。
  */
-function versionScopeCriteria(definition: GateDef, view: VersionScopeView | undefined): GateCriterionDef[] {
-  if (view === undefined) return definition.criteria
-  if (!view.hasReleases && view.error === undefined) return definition.criteria
-  if (definition.criteria.some((criterion) => criterion.check === VERSION_SCOPE_CHECK)) return definition.criteria
-  return [...definition.criteria, { id: VERSION_SCOPE_CRITERION_ID, check: VERSION_SCOPE_CHECK, desc: VERSION_SCOPE_DESC }]
+function criterionActive(criterion: GateCriterionDef, presence: ReleasePresence): boolean {
+  if (criterion.when === undefined) return true
+  if (criterion.when === 'releases') return presence.adopted
+  return true
+}
+
+/** 发布计划层"在不在场"的读数（只算一次，供所有带 `when` 的判据共用）。 */
+interface ReleasePresence {
+  /** 有 release 文件，或读不动（读不动也算"在"：不然错误就没人报了）。 */
+  adopted: boolean
+}
+
+function releasePresenceOf(store: SdoStore): ReleasePresence {
+  try {
+    return { adopted: listReleases(store).length > 0 }
+  } catch {
+    // 读不动 ⇒ 视为"发布计划层在场"：让判据跑起来判红并点名文件，而不是当成"没这套机制"
+    return { adopted: true }
+  }
 }
 
 /**
@@ -781,10 +820,47 @@ function versionScopeClosure(ctx: GateContext): GateCriterionResult {
   ]
   const failClosed = judged.filter((entityId) => view.classify(entityId) === 'failClosed')
   const landed = judged.filter((entityId) => view.classify(entityId) === 'landed')
-  const label = view.hasReleases ? `${view.releaseId}@${view.packageVersion}` : 'no-release-files'
-  const scopeLine = `${criterionId} scope=${label} defects=${String(defects.length)} tasks=${String(tasks.length)} `
-    + `must=${String(musts.length)} contracts=${String(contractIds.length)} `
-    + `failClosed=[${failClosed.join(' ')}] landedFrom=[${landed.join(' ')}]`
+  /**
+   * 回执的**两行**（`TASK-171` / `TASK-174` 交接：C-71 的回执文案进语言包）：
+   *
+   * · `headline` —— 人读的一行：判的是哪一版、四类各多少、两个"参与判定但必须分开点名"的分量；
+   * · `tokens` —— **机器读的一行**（`scope=… failClosed=[…] landedFrom=[…]`）。
+   *
+   * 为什么机器串留着（而不是"换掉"）：`test/m214.test.ts` 的 M214-01/03/04/05/06 **逐字断言**
+   * 那几个 token（`scope=r-0.1.7@0.1.7` / `failClosed=[DEF-002 TASK-002]` / `landedFrom=[DEF-009]` /
+   * `defects=1`）—— 改 token 等于改一份**契约**，必须与守卫一起改。本轮的边界是"文案一字不出本文件"，
+   * 所以两行都从语言包来：token 的**拼法**（`scope=` 这些 ASCII 前缀）也在语言包里，
+   * 翻译时只翻译前后的人话，机器串保持可解析（回执被脚本与人工同时读，两件事都要成立）。
+   */
+  const label = view.hasReleases
+    ? fmt('uiGates.kScopeLabel', { p1: view.releaseId, p2: view.packageVersion })
+    : t('uiGates.kScopeNoRelease')
+  const none = t('uiGates.kScopeNone')
+  const headline = fmt('uiGates.kScopeHeadline', {
+    p1: label,
+    p2: String(defects.length),
+    p3: String(tasks.length),
+    p4: String(musts.length),
+    p5: String(contractIds.length),
+  })
+  const failClosedLine = fmt('uiGates.kScopeFailClosed', {
+    p1: String(failClosed.length),
+    p2: failClosed.length === 0 ? none : failClosed.join(' '),
+  })
+  const landedLine = fmt('uiGates.kScopeLanded', {
+    p1: String(landed.length),
+    p2: landed.length === 0 ? none : landed.join(' '),
+  })
+  const scopeLine = fmt('uiGates.kScopeTokens', {
+    p1: label,
+    p2: String(defects.length),
+    p3: String(tasks.length),
+    p4: String(musts.length),
+    p5: String(contractIds.length),
+    p6: failClosed.join(' '),
+    p7: landed.join(' '),
+  })
+  const scopeBlock = [headline, failClosedLine, landedLine, scopeLine].join('\n')
 
   // ⑤ 回执
   const lines: string[] = []
@@ -821,13 +897,412 @@ function versionScopeClosure(ctx: GateContext): GateCriterionResult {
     if (taskGaps.length > 0) remedies.push(t('gate.tasksAllDoneRemedy'))
     if (uncovered.length > 0 || unverified.length > 0) remedies.push(t('uiGates.k109'))
     if (contractGaps.length > 0) remedies.push(t('uiGates.kContractsTestedRemedy'))
-    return fail(criterionId, [...lines, scopeLine].join('\n'), remedies.join('\n'))
+    return fail(criterionId, [...lines, scopeBlock].join('\n'), remedies.join('\n'))
   }
-  return ok(criterionId, scopeLine)
+  return ok(criterionId, scopeBlock)
+}
+
+/* ———————————————————————— 声明—判据覆盖（`C-70`，`TASK-171` / `REQ-060`） ———————————————————————— */
+
+/**
+ * **`C-70 声明—判据覆盖`（元判据）**：每条"必须成立"的声明都要有**机判器**，或一条能机械核对的
+ * **署名豁免**（理由 + 批准人 + **真实存在的判据键**）；两样都没有的进「未设防清单」，被计数、被点名。
+ *
+ * 判定核心在 `claimCoverage.ts`（五类声明怎么算"被守"，口径只有那一份）；本函数只做三件事：
+ * 把"哪些判据键算真实存在"喂给它（流程数据 ∪ `CHECKERS` —— 豁免引用一个不存在的键就是散文）、
+ * 把读数按语言包渲染成回执、按**棘轮**（`claimCoverage.baseline`：只减不增）决定红/绿。
+ *
+ * 三条边界：
+ *   · 台账里**一条声明都没有** ⇒ N/A（不是绿：空台账证明不了任何事）；
+ *   · `config.yml` 读不动 ⇒ **判红**（判不动不许判绿）；
+ *   · 追溯图有坏行 ⇒ 走既有的坏行判红口径（在一份不完整的图上判"都有守"就是假绿）。
+ */
+export const CLAIM_KIND_LABELS: Readonly<Record<ClaimKind, string>> = {
+  requirement: 'uiGates.kClaimKindRequirement',
+  acceptance: 'uiGates.kClaimKindAcceptance',
+  designElement: 'uiGates.kClaimKindDesignElement',
+  contract: 'uiGates.kClaimKindContract',
+  discipline: 'uiGates.kClaimKindDiscipline',
+}
+
+/** 逐类点名时最多写几个 id（验收准则动辄上百条 —— 其余的交给"完整清单"读数，不靠回执逞能）。 */
+const CLAIM_NAMES_LIMIT: Readonly<Record<ClaimKind, number>> = {
+  requirement: Number.POSITIVE_INFINITY,
+  acceptance: 20,
+  designElement: Number.POSITIVE_INFINITY,
+  contract: Number.POSITIVE_INFINITY,
+  discipline: Number.POSITIVE_INFINITY,
+}
+
+/** 真实存在的判据键：**流程数据里声明了的** ∪ `CHECKERS` 里注册了的（两处都要在，见 `m32`）。 */
+function knownCriterionChecks(process: ProcessDef | undefined): string[] {
+  const out = new Set<string>(Object.keys(CHECKERS))
+  for (const candidate of [process, ...loadAllProcesses()]) {
+    for (const gate of candidate?.gates ?? []) {
+      for (const criterion of gate.criteria) if (criterion.check.trim() !== '') out.add(criterion.check)
+    }
+  }
+  return [...out]
+}
+
+/** 点名一串 id（超过上限时明说还剩多少 —— 截断本身不许静默）。 */
+function claimNames(rows: readonly ClaimRow[], kind: ClaimKind): string {
+  const limit = CLAIM_NAMES_LIMIT[kind]
+  const ids = rows.map((row) => row.id)
+  if (ids.length <= limit) return ids.join(' ')
+  return `${ids.slice(0, limit).join(' ')} ${fmt('uiGates.kClaimNamesOmitted', { p1: String(ids.length - limit) })}`
+}
+
+function claimCoverageCriterion(ctx: GateContext): GateCriterionResult {
+  const criterionId = CLAIM_COVERAGE_CRITERION_ID
+  const broken = traceBadLinesFailure(ctx, criterionId)
+  if (broken !== undefined) return broken
+  const assessment = assessClaimCoverage({
+    store: ctx.store,
+    requirements: ctx.requirements,
+    knownChecks: knownCriterionChecks(ctx.process),
+  })
+  if (!assessment.configReadable) {
+    return fail(criterionId, t('uiGates.kClaimConfigUnreadable'), t('uiGates.kClaimRemedy'))
+  }
+  if (!assessment.declared) return na(criterionId, t('uiGates.kClaimNa'))
+
+  // ① 逐类一行（`claimCoverage` 的顺序 = 需求在前，`REQ-060` 必须一眼可读）
+  const lines: string[] = [fmt('uiGates.kClaimHead', {
+    p1: String(assessment.totals.declared),
+    p2: String(assessment.totals.gated),
+    p3: String(assessment.totals.exempted),
+    p4: String(assessment.totals.unguarded),
+  })]
+  for (const kind of CLAIM_KINDS) {
+    const count = assessment.counts[kind]
+    if (count.declared === 0) continue
+    const rows = assessment.unguarded.filter((row) => row.kind === kind)
+    lines.push(fmt('uiGates.kClaimKindLine', {
+      p1: t(CLAIM_KIND_LABELS[kind]),
+      p2: String(count.declared),
+      p3: String(count.gated),
+      p4: String(count.exempted),
+      p5: String(count.unguarded),
+      p6: rows.length === 0 ? t('uiGates.kClaimNone') : claimNames(rows, kind),
+    }))
+  }
+  // ② 判红面：豁免不成立 / 不在基线里的新增未设防 / 幽灵 trace 端点
+  const problems: string[] = []
+  for (const issue of assessment.issues) {
+    const key = issue.code === 'exemption-no-id' ? 'uiGates.kClaimIssueNoId'
+      : issue.code === 'exemption-no-reason' ? 'uiGates.kClaimIssueNoReason'
+        : issue.code === 'exemption-no-approver' ? 'uiGates.kClaimIssueNoApprover'
+          : issue.code === 'exemption-unknown-criterion' ? 'uiGates.kClaimIssueUnknownCriterion'
+            : issue.code === 'exemption-no-target' ? 'uiGates.kClaimIssueNoTarget'
+              : 'uiGates.kClaimConfigUnreadable'
+    problems.push(fmt(key, { p1: issue.id === '' ? t('uiGates.kClaimBlankId') : issue.id, p2: issue.criterion }))
+  }
+  if (assessment.ghostEdges.length > 0) {
+    const pairs = assessment.ghostEdges.map((ghost) => `${ghost.requirement}->${ghost.caseId}`).join(' ')
+    problems.push(fmt('uiGates.kClaimGhostEdge', { p1: pairs, p2: String(assessment.ghostEdges.length) }))
+  }
+  // 棘轮只在"有东西要棘"的时候说话：未设防为 0 ⇒ 没有基线也是绿的（不然新项目一进门就红）
+  if (assessment.unguarded.length > 0 && assessment.baseline.length === 0) {
+    problems.push(t('uiGates.kClaimNoBaseline'))
+  } else if (assessment.newUnguarded.length > 0) {
+    problems.push(fmt('uiGates.kClaimNewUnguarded', {
+      p1: assessment.newUnguarded.map((row) => row.id).join(' '),
+      p2: String(assessment.newUnguarded.length),
+    }))
+  }
+  if (assessment.retirableBaseline.length > 0) {
+    lines.push(fmt('uiGates.kClaimRetirable', { p1: assessment.retirableBaseline.join(' ') }))
+  }
+  const body = [...lines, ...problems].join('\n')
+  if (problems.length === 0) {
+    return ok(criterionId, body)
+  }
+  return fail(criterionId, body, t('uiGates.kClaimRemedy'))
+}
+
+/* ———————————————————————— 收口判据：owner 的角色（`C-76`，`DEF-162` 第③条） ———————————————————————— */
+
+/**
+ * **`C-76 收口时的 owner 角色`**：已 `done` / `verified` 的卡，`owner` 的角色必须**等于**卡的 `role`。
+ *
+ * 这是 `C-70` 的第一个**真实**反例：`DEF-162` 的原话是「流程官只记账、实现派给该角色的执行者」
+ * 这条分工**只写在文档里，没有任何机械判据守着**。认领面（`C-70` 之外，`office.ts`）按 fail-open 放行
+ * 认不出形态的 owner；**收口**这一面 fail-closed：写完、验完、证据落盘之后，"谁做的"就是台账事实。
+ */
+export const OWNER_ROLE_CRITERION_ID = 'C-76'
+export const OWNER_ROLE_CHECK = 'tasks.owner-role'
+
+function ownerRoleCriterion(ctx: GateContext): GateCriterionResult {
+  const criterionId = OWNER_ROLE_CRITERION_ID
+  const tasks = listTasks(ctx.store).map((task) => ({
+    id: task.id,
+    status: String(task.status),
+    role: textOf(task.role),
+    ...(task.owner === undefined ? {} : { owner: task.owner }),
+  }))
+  const settled = tasks.filter((task) => task.status === 'done' || task.status === 'verified')
+  if (settled.length === 0) return na(criterionId, t('uiGates.kOwnerRoleNa'))
+  const findings = ownerRoleFindings(tasks)
+  if (findings.length === 0) {
+    return ok(criterionId, fmt('uiGates.kOwnerRoleOk', { p1: String(settled.length) }))
+  }
+  const rows = findings.map((finding) => {
+    const reason = finding.reason === 'owner-empty'
+      ? t('uiGates.kOwnerRoleNoOwner')
+      : finding.reason === 'owner-role-unknown'
+        ? t('uiGates.kOwnerRoleUnknown')
+        : t('uiGates.kOwnerRoleMismatch')
+    return fmt('uiGates.kOwnerRoleRow', {
+      p1: finding.taskId,
+      p2: finding.status,
+      p3: finding.cardRole,
+      p4: finding.owner === '' ? t('uiGates.kOwnerRoleNoOwner') : finding.owner,
+      p5: finding.ownerRole ?? t('uiGates.kOwnerRoleUnknownRole'),
+      p6: reason,
+    })
+  })
+  return fail(
+    criterionId,
+    fmt('uiGates.kOwnerRoleGaps', {
+      p1: rows.join(' '),
+      p2: String(findings.length),
+      p3: String(settled.length),
+    }),
+    t('uiGates.kOwnerRoleRemedy'),
+  )
+}
+
+/* ———————————————————————— 发布计划层：C-73 / C-75 / C-72 的挂载面（`TASK-171`） ———————————————————————— */
+
+/**
+ * **`C-73 顺延留痕与次数上限`**：判定核心是 `release.ts` 的 `deferTraceFindings`（`TASK-176` 交付）。
+ *
+ * 本函数只做三件事：取**读数**（台账里的 release、已终结实体、真源里的 `release/deferred` 记录、上限）、
+ * 把 findings 渲染成回执、以及**没有 release 文件时给 N/A**（发布计划层尚未被采纳 ——
+ * 那不是"没有缺口"，而是这套机制还没上线，判它红只会训练读者忽略判据）。
+ *
+ * 「真源留痕」这一路豁免（`AC-277` 的"不许静默顺延"）读的是 `journal` 里的 `release/deferred` 事件
+ * （`TASK-171` 补的事件类型 + `office.ts` 的写入面）—— 不再是调用方凭空的集合。
+ */
+export const DEFER_TRACE_CRITERION_ID = 'C-73'
+export const DEFER_TRACE_CHECK = 'release.defer-trace'
+
+/** 已**终结**的实体 id（顺延面的三路豁免之一：做完了就不算顺延）。口径：缺陷 `fixed`/`closed`、卡 `done`/`verified`/`dropped`。 */
+function settledEntityIdsOf(store: SdoStore): string[] {
+  const out: string[] = []
+  for (const defect of listDefects(store)) {
+    const status = String(defect.status)
+    if (status === 'fixed' || status === 'closed') out.push(defect.id)
+  }
+  for (const task of listTasks(store)) {
+    const status = String(task.status)
+    if (status === 'done' || status === 'verified' || status === 'dropped') out.push(task.id)
+  }
+  return [...new Set(out)]
+}
+
+/** 真源里**点名过顺延**的实体 id（`release/deferred` 事件；`id` 单条与 `ids` 批量两种形态都认）。 */
+function deferredRecordIdsOf(journal: Journal): string[] {
+  const out = new Set<string>()
+  for (const event of journal.read().events) {
+    if (event.type !== 'release/deferred') continue
+    const data = event.data
+    const single = textOf(data['id']).trim()
+    if (single !== '') out.add(single)
+    const many = data['ids']
+    if (Array.isArray(many)) {
+      for (const item of many) {
+        const id = textOf(item).trim()
+        if (id !== '') out.add(id)
+      }
+    }
+  }
+  return [...out]
+}
+
+/** 台账里的 release 清单（读不动 ⇒ 交给调用方判红：读不动不等于没有）。 */
+function releasesOf(ctx: GateContext): { ok: true; releases: Release[] } | { ok: false; error: string } {
+  try {
+    return { ok: true, releases: listReleases(ctx.store) }
+  } catch (error) {
+    return { ok: false, error: error instanceof Error ? error.message : String(error) }
+  }
+}
+
+function deferTraceCriterion(ctx: GateContext): GateCriterionResult {
+  const criterionId = DEFER_TRACE_CRITERION_ID
+  const read = releasesOf(ctx)
+  if (!read.ok) {
+    return fail(criterionId, fmt('uiGates.kReleaseUnreadable', { p1: read.error }), t('uiGates.kReleaseUnreadableRemedy'))
+  }
+  if (read.releases.length === 0) return na(criterionId, t('uiGates.kReleaseLayerNotAdopted'))
+  const truncated = journalTruncatedFailure(ctx, criterionId)
+  if (truncated !== undefined) return truncated
+  const findings = deferTraceFindings({
+    releases: read.releases,
+    settled: settledEntityIdsOf(ctx.store),
+    deferredRecords: deferredRecordIdsOf(ctx.journal),
+    limit: deferLimitOf(ctx.store),
+  })
+  if (findings.length === 0) {
+    return ok(criterionId, fmt('uiGates.kDeferTraceOk', { p1: String(read.releases.length) }))
+  }
+  const rows = findings.map((finding) => fmt('uiGates.kDeferTraceRow', {
+    p1: finding.subjectId,
+    p2: finding.kind,
+    p3: finding.detail,
+  }))
+  return fail(
+    criterionId,
+    fmt('uiGates.kDeferTraceGaps', { p1: rows.join(' '), p2: String(findings.length) }),
+    t('uiGates.kDeferTraceRemedy'),
+  )
+}
+
+/**
+ * **`C-75 冻结人签与冻结后改集合`**：判定核心是 `release.ts` 的 `freezeTraceFindings`（`TASK-176`）。
+ *
+ * 为什么需要 `journal` 的事件：`frozenAtSeq` 与"冻结之后有没有被绕过 `change` 改过"都是**对真源的断言**，
+ * 光看文件核不了（`.sdo/**\/*.yml` 是手可编辑的）。
+ */
+export const FREEZE_TRACE_CRITERION_ID = 'C-75'
+export const FREEZE_TRACE_CHECK = 'release.freeze-trace'
+
+function freezeTraceCriterion(ctx: GateContext): GateCriterionResult {
+  const criterionId = FREEZE_TRACE_CRITERION_ID
+  const read = releasesOf(ctx)
+  if (!read.ok) {
+    return fail(criterionId, fmt('uiGates.kReleaseUnreadable', { p1: read.error }), t('uiGates.kReleaseUnreadableRemedy'))
+  }
+  if (read.releases.length === 0) return na(criterionId, t('uiGates.kReleaseLayerNotAdopted'))
+  const truncated = journalTruncatedFailure(ctx, criterionId)
+  if (truncated !== undefined) return truncated
+  const findings = freezeTraceFindings({ releases: read.releases, events: ctx.journal.read().events })
+  if (findings.length === 0) {
+    return ok(criterionId, fmt('uiGates.kFreezeTraceOk', { p1: String(read.releases.length) }))
+  }
+  const rows = findings.map((finding) => fmt('uiGates.kFreezeTraceRow', {
+    p1: finding.subjectId,
+    p2: finding.kind,
+    p3: finding.detail,
+  }))
+  return fail(
+    criterionId,
+    fmt('uiGates.kFreezeTraceGaps', { p1: rows.join(' '), p2: String(findings.length) }),
+    t('uiGates.kFreezeTraceRemedy'),
+  )
+}
+
+/**
+ * **`C-72 缺口清单与台账集合恰好相等`**：`CHANGELOG.md` 本版「已知缺口」点到的 id 集合
+ * 必须与当前 release 的 `nonScope` **恰好相等**（多写＝粉饰、少写＝隐瞒）。
+ *
+ * 两条口径（与 `scripts/gen-changelog.mjs` 的判定**同源**）：
+ *   · **对账面**只有一份：`deferredIdsOf(currentRelease(...))`（派生字段不算）；
+ *   · 清单条目必须写成 `` - `<id>` ``（id 在行首的反引号里）—— 理由文字里顺带提到的 id 不算点名。
+ *
+ * 为什么这里也有一份解析器（而不是调那个脚本）：门禁必须是**纯函数**（不 spawn 子进程、不依赖编译产物），
+ * 而脚本是给人在 CI 里跑的入口。两处**不许分叉**，由 `test/m219.test.ts` 拿同一份夹具
+ * 交叉核对（脚本的 `checkGapParity` 与本判据必须给同一个结论）。
+ */
+export const GAP_PARITY_CRITERION_ID = 'C-72'
+export const GAP_PARITY_CHECK = 'release.gap-reconciled'
+
+const GAP_BEGIN_PREFIX = '<!-- sdo:gap:begin release='
+const GAP_END_MARK = '<!-- sdo:gap:end -->'
+const GAP_ITEM_ID = /^[-*]\s+`([A-Za-z][A-Za-z0-9]*-\d+)`/u
+const GAP_LIST_ITEM = /^[-*]\s+/u
+
+interface GapBlock {
+  present: boolean
+  malformed: boolean
+  release: string
+  ids: string[]
+  unparsable: string[]
+}
+
+function parseGapBlock(text: string): GapBlock {
+  const beginAt = text.indexOf(GAP_BEGIN_PREFIX)
+  if (beginAt === -1) return { present: false, malformed: false, release: '', ids: [], unparsable: [] }
+  const lineEnd = text.indexOf('\n', beginAt)
+  const headEnd = lineEnd === -1 ? text.length : lineEnd
+  const head = text.slice(beginAt, headEnd)
+  const closeAt = head.indexOf(' -->')
+  const release = (closeAt === -1 ? head.slice(GAP_BEGIN_PREFIX.length) : head.slice(GAP_BEGIN_PREFIX.length, closeAt)).trim()
+  const endAt = text.indexOf(GAP_END_MARK, headEnd)
+  const malformed = closeAt === -1 || endAt === -1
+  const body = endAt === -1 ? text.slice(headEnd) : text.slice(headEnd, endAt)
+  const ids: string[] = []
+  const unparsable: string[] = []
+  for (const raw of body.split('\n')) {
+    const line = raw.trim()
+    if (line === '') continue
+    const matched = GAP_ITEM_ID.exec(line)
+    if (matched !== null) {
+      const id = (matched[1] ?? '').trim()
+      if (id !== '' && !ids.includes(id)) ids.push(id)
+      continue
+    }
+    if (GAP_LIST_ITEM.test(line)) unparsable.push(line)
+  }
+  return { present: true, malformed, release, ids, unparsable }
+}
+
+function gapParityCriterion(ctx: GateContext): GateCriterionResult {
+  const criterionId = GAP_PARITY_CRITERION_ID
+  const read = releasesOf(ctx)
+  if (!read.ok) {
+    return fail(criterionId, fmt('uiGates.kReleaseUnreadable', { p1: read.error }), t('uiGates.kReleaseUnreadableRemedy'))
+  }
+  if (read.releases.length === 0) return na(criterionId, t('uiGates.kReleaseLayerNotAdopted'))
+  const current = currentRelease(read.releases)
+  if (current === undefined) return na(criterionId, t('uiGates.kReleaseLayerNotAdopted'))
+  const declared = deferredIdsOf(current)
+  const text = readFileSyncSafe(join(ctx.workspace, 'CHANGELOG.md'))
+  if (text === undefined) {
+    return fail(criterionId, fmt('uiGates.kGapNoChangelog', { p1: current.id }), t('uiGates.kGapRemedy'))
+  }
+  const block = parseGapBlock(text)
+  const problems: string[] = []
+  if (!block.present) {
+    if (declared.length > 0) {
+      problems.push(fmt('uiGates.kGapMissingBlock', { p1: declared.join(' '), p2: String(declared.length) }))
+    }
+  } else {
+    if (block.malformed) problems.push(t('uiGates.kGapMalformed'))
+    if (block.release !== current.id) {
+      problems.push(fmt('uiGates.kGapMarkerMismatch', {
+        p1: block.release === '' ? t('uiGates.kGapMarkerBlank') : block.release,
+        p2: current.id,
+      }))
+    }
+    const padding = block.ids.filter((id) => !declared.includes(id))
+    const hidden = declared.filter((id) => !block.ids.includes(id))
+    if (padding.length > 0) problems.push(fmt('uiGates.kGapPadding', { p1: padding.join(' '), p2: String(padding.length) }))
+    if (hidden.length > 0) problems.push(fmt('uiGates.kGapHidden', { p1: hidden.join(' '), p2: String(hidden.length) }))
+    if (block.unparsable.length > 0) {
+      problems.push(fmt('uiGates.kGapUnparsable', { p1: block.unparsable.join(' / '), p2: String(block.unparsable.length) }))
+    }
+  }
+  if (problems.length === 0) {
+    return ok(criterionId, declared.length === 0
+      ? fmt('uiGates.kGapOkEmpty', { p1: current.id })
+      : fmt('uiGates.kGapOk', { p1: current.id, p2: String(declared.length), p3: declared.join(' ') }))
+  }
+  return fail(criterionId, fmt('uiGates.kGapGaps', { p1: problems.join('；'), p2: current.id }), t('uiGates.kGapRemedy'))
 }
 
 export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult> = {
-  // **`C-71`（TASK-174）**：作用域闭合（G4/G6/G7 只对本版 scope 判定；见上文的四条硬口径）
+  // **`C-70`（TASK-171）**：声明—判据覆盖（元判据）—— 没机判器也没署名豁免的声明进「未设防清单」
+  [CLAIM_COVERAGE_CHECK]: (ctx) => claimCoverageCriterion(ctx),
+  // **`C-76`（TASK-171 / DEF-162 ③）**：已收口的卡，owner 的角色必须等于卡的 role
+  [OWNER_ROLE_CHECK]: (ctx) => ownerRoleCriterion(ctx),
+  // **`C-73` / `C-75` / `C-72`（TASK-171 接线；判定核心在 release.ts / CHANGELOG 对账面）**
+  [DEFER_TRACE_CHECK]: (ctx) => deferTraceCriterion(ctx),
+  [FREEZE_TRACE_CHECK]: (ctx) => freezeTraceCriterion(ctx),
+  [GAP_PARITY_CHECK]: (ctx) => gapParityCriterion(ctx),
+  // **`C-71`（TASK-174）**：作用域闭合（挂点与激活条件都在流程数据里，见 `waterfall.yml` 的 G6）
   [VERSION_SCOPE_CHECK]: (ctx) => versionScopeClosure(ctx),
   // **`DEF-105` ③**：未覆盖的 must 需求 ⇒ 红并点名（`REQ-060` 就是它的第一个实例）
   'coverage.uncovered': (ctx) => mustCoverage(ctx),
@@ -3129,8 +3604,14 @@ function evaluateGateInner(process: ProcessDef, gateId: string, ctx: GateContext
     checkerContext.versionScope = versionScope
     checkerContext.requirements = ctx.requirements.filter((requirement) => versionScope.includes(textOf(requirement.id)))
   }
-  const versionScopeDefs = versionScopeCriteria(definition, versionScope)
-  const criteria: GateCriterionResult[] = versionScopeDefs.map((criterion) => {
+  // **`TASK-171`（原 `versionScopeCriteria` 已删）**：门禁判哪些判据**完全由流程数据决定** ——
+  // 判据条目上的 `when` 是数据声明的激活条件（例如 `C-71` 的 `when: releases`），引擎只按它过滤，
+  // 不认判据身份、也不再往数据之外**补**任何一条判据。
+  // 为什么必须改成这样（`m32` 的原话）：判据只活在代码里、流程数据里没有它 ⇒
+  // "这个门禁由哪些准则构成"这份数据是假的，而**判据没挂上就等于这条约束不存在**。
+  const presence = releasePresenceOf(ctx.store)
+  const activeDefs = definition.criteria.filter((criterion) => criterionActive(criterion, presence))
+  const criteria: GateCriterionResult[] = activeDefs.map((criterion) => {
     const checker = CHECKERS[criterion.check]
     if (checker === undefined) {
       return fail(
@@ -3164,9 +3645,10 @@ function evaluateGateInner(process: ProcessDef, gateId: string, ctx: GateContext
   let shapeNoteError: string | undefined
   const shapeNotesByCheck = new Map<string, FieldShapeNote[]>()
   for (const criterion of criteria) {
-    // 用 `versionScopeDefs`（而不是 `definition.criteria`）：`C-71` 可能是引擎补充挂上去的，
-    // 它在流程数据里没有对应条目 —— 按 `definition.criteria` 找会让这条判据丢掉 `desc`。
-    const defined = versionScopeDefs.find((candidate) => candidate.id === criterion.id)
+    // 用 `activeDefs`（而不是 `definition.criteria`）：被 `when` 过滤掉的判据不在判定里，
+    // 而参与判定的每一条都**必须在数据里**（`TASK-171` 起引擎不再补充任何判据条目）。
+    // 按 `activeDefs` 找才不会丢掉 `desc`/`check`（缺 `check` 会让形状提示静默跳过）。
+    const defined = activeDefs.find((candidate) => candidate.id === criterion.id)
     if (criterion.desc === undefined && defined?.desc !== undefined) criterion.desc = defined.desc
     const check = defined?.check ?? ''
     if (!checkWantsShapeNotes(check)) continue

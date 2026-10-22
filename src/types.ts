@@ -307,6 +307,19 @@ export interface GateCriterionDef {
   /** 代码里的检查器键（src/domain/gates.ts 的 CHECKERS） */
   check: string
   desc?: string | undefined
+  /**
+   * **激活条件**（`TASK-171` / `TASK-174` 交接）：这条判据在什么前提下才参与判定。
+   *
+   * 为什么要把它做成**数据**而不是引擎里的特例：`C-71`（版本作用域闭合）此前是引擎在
+   * `release` 文件存在时**补充挂**上去的 —— 判据只活在代码里、流程数据里根本没有它，
+   * 于是"判据由哪些准则构成"这份数据说不清 G4/G6/G7 到底判什么（`m32` 的原话：
+   * 判据没挂上 = 这条约束不存在）。现在：判据写在流程数据里，**前提也写在流程数据里**，
+   * 引擎只按声明的条件决定它这一轮参不参与。
+   *
+   * 取值：`releases` = 台账里存在至少一份 release（发布计划层已被采纳）或 release 文件读不动
+   * （读不动必须判红，不许当成"没有条件"）。未声明 ⇒ 恒参与（与旧行为一致）。
+   */
+  when?: 'releases' | undefined
 }
 
 /** 门禁定义。 */
@@ -2371,6 +2384,14 @@ export type SdoEventType =
   | 'evidence/recorded'
   // **REQ-063 / TASK-170**：发布计划落盘（哪一份集合、映射到哪个包版本、冻没冻）
   | 'release/written'
+  /**
+   * **顺延留痕**（`REQ-063` / `AC-277` / `TASK-176` 交接）：某个实体**被明确顺延**这件事本身。
+   *
+   * 为什么要与 `release/written` 分开：落盘是"这一份集合被写下来了"，顺延是"这几条这一版不做、
+   * 有几条记录、谁批的"。`AC-277` 的字面要求就是「不许出现**没有任何 `release/deferred` 记录**的
+   * 静默顺延」—— 没有这个事件类型，`C-73` 的"真源留痕"豁免只能靠调用方传集合进来（那是声明，不是真源）。
+   */
+  | 'release/deferred'
   | 'cost/sample'
   | 'budget/decision'
   | 'plan/review-blocked'
@@ -2428,6 +2449,31 @@ export interface ReleaseNote {
   deferCount: number
   /** 批准人：只认 human。 */
   approvedBy: string
+}
+
+/**
+ * 一次**顺延动作**的真源负载（`release/deferred` 事件的 `data`，`REQ-063` / `AC-277`）。
+ *
+ * 为什么这五个字段：`C-73` 要回答"这几条是不是**有留痕**的顺延"（`ids`）、
+ * "从哪一版顺延到哪一版"（`fromVersion` / `toVersion`）、"顺延了几次"（`deferCount`，与上限比）、
+ * "谁批的"（`approvedBy`，只认 human —— `ADR-022` 裁决①）。理由（`reason`）供人复核，
+ * 判据不解析它（`REQ-060`：判据只认 id 与记录）。
+ */
+export interface ReleaseDeferral {
+  /** 被顺延的实体 id（同一事件里可以有多条：一次裁决顺延一批）。 */
+  ids: string[]
+  /** 登记这次顺延的包版本（"从哪一版"）。 */
+  fromVersion: string
+  /** 顺延目标的包版本（"到哪一版"）；目标版本尚未在册时留空（不许凭空造版本号）。 */
+  toVersion?: string | undefined
+  /** 这些 id 各自的累计顺延次数（与上限比；同一事件内一致）。 */
+  deferCount: number
+  /** 批准人：只认 human（驾驶舱不得代批）。 */
+  approvedBy: string
+  /** 为什么顺延（可读理由，不参与判定）。 */
+  reason: string
+  /** 这些条目登记在哪一份 release 里（可缺省：老事件或手工事件可能不带）。 */
+  releaseId?: string | undefined
 }
 
 /** 本版范围：需求与验收准则两个集合（`AC-278` 的"一次范围声明"就声明在这里）。 */

@@ -477,32 +477,58 @@ test('M214-11 C-65 / C-66 只收窄名单：作用域外的不判红，口径与
   })
 })
 
-test('M214-12 C-71 的挂载面：只有 G4/G6/G7 有它；流程数据自己声明时不重复挂', () => {
+test('M214-12 C-71 的挂载面：判据与激活条件都在流程数据里，引擎不再补充挂载', () => {
+  // **`TASK-171` 改口径（原用例守的是"引擎补挂"，那条过渡实现已删）**：
+  //   · 判据本身（`id` / `check` / 中文 `desc`）必须在**流程数据**里 —— 只活在代码里的判据等于不存在；
+  //   · 激活条件（`when: releases`）也必须在数据里 —— 引擎只解释这个字段，**不认判据身份**；
+  //   · 逐门逐条判定的 id 必须**全部**来自数据（引擎一条都不许补）。
   withStore(({ store, journal, dir }) => {
-    writeRelease(store, journal, frozen(releaseOf('r-0.1.7', ['REQ-001'])))
-    const ctx = ctxOf(store, journal, dir, requirementsOf({ id: 'REQ-001', priority: 'should' }))
     const process = waterfall()
     assert.deepEqual([...VERSION_SCOPED_GATE_IDS], ['G4', 'G6', 'G7'], '作用域门禁就是这三道（规格 §3.4）')
 
+    // ① 数据声明：**恰好一条**，挂在 G6，带中文 desc 与 `when: releases`
+    const declared = process.gates.flatMap((gate) => gate.criteria
+      .filter((criterion) => criterion.check === VERSION_SCOPE_CHECK)
+      .map((criterion) => ({ gate: gate.id, criterion })))
+    assert.equal(declared.length, 1, `C-71 必须在流程数据里恰好声明一次：${declared.map((row) => row.gate).join(' ')}`)
+    assert.equal(declared[0]?.gate, 'G6', 'C-71 的挂点是 G6（验证结账口；G4/G7 的判定面照样按作用域收窄）')
+    assert.equal(declared[0]?.criterion.id, VERSION_SCOPE_CRITERION_ID, 'id 必须是 C-71')
+    assert.equal(declared[0]?.criterion.when, 'releases', '激活条件必须由数据声明（旧实现是引擎"有 release 就补挂"）')
+    assert.equal(
+      /\p{Script=Han}/u.test(String(declared[0]?.criterion.desc ?? '')),
+      true,
+      '判据说明必须是中文（数据是"这条判据由什么构成"的真源）',
+    )
+
+    // ② 引擎一条都不补：每一门的逐条判定 id 必须全部出现在流程数据里
+    writeRelease(store, journal, releaseOf('r-0.1.7', ['REQ-001']))
+    const ctx = ctxOf(store, journal, dir, requirementsOf({ id: 'REQ-001', priority: 'should' }))
+    const dataIds = new Set(process.gates.flatMap((gate) => gate.criteria.map((criterion) => criterion.id)))
     const idsOf = (gateId: string): string[] => evaluateGate(process, gateId, ctx).criteria.map((item) => item.id)
-    for (const gateId of ['G4', 'G6', 'G7']) {
-      assert.equal(idsOf(gateId).includes(VERSION_SCOPE_CRITERION_ID), true, `${gateId} 必须挂上 C-71：${idsOf(gateId).join(' ')}`)
-    }
-    for (const gateId of ['G2', 'G3', 'G5']) {
-      assert.equal(idsOf(gateId).includes(VERSION_SCOPE_CRITERION_ID), false, `${gateId} 不许切片（对整条基线判定）：${idsOf(gateId).join(' ')}`)
+    for (const gateId of ['G2', 'G3', 'G4', 'G5', 'G6', 'G7']) {
+      for (const id of idsOf(gateId)) {
+        assert.equal(dataIds.has(id), true, `${gateId} 判定了数据里没有的判据 ${id}（引擎又在补充挂载）`)
+      }
     }
 
-    // 流程数据将来自己声明了同一个 check ⇒ 引擎不再补充（逐条判定里只能有一条 C-71）
-    const declared: GateCriterionDef = { id: 'C-71', check: VERSION_SCOPE_CHECK, desc: 'declared-by-data' }
+    // ③ 有 release 文件时 C-71 参与且**只出现一次**；没声明它的门禁里没有它
+    assert.equal(idsOf('G6').filter((id) => id === VERSION_SCOPE_CRITERION_ID).length, 1, `C-71 只许出现一次：${idsOf('G6').join(' ')}`)
+    for (const gateId of ['G4', 'G7', 'G2', 'G3', 'G5']) {
+      assert.equal(idsOf(gateId).includes(VERSION_SCOPE_CRITERION_ID), false, `${gateId} 不挂 C-71（数据没声明它）：${idsOf(gateId).join(' ')}`)
+    }
+  })
+
+  // ④ 反空转：过滤依据是**数据字段**而不是判据身份 —— 把 `when` 拿掉，同一份没有 release 的台账里它就参与
+  withStore(({ store, journal, dir }) => {
+    const process = waterfall()
+    const ctx = ctxOf(store, journal, dir, requirementsOf({ id: 'REQ-001', priority: 'should' }))
     const g6 = process.gates.find((gate) => gate.id === 'G6')
-    assert.ok(
-      g6 !== undefined,
-      '基准：waterfall 必须有 G6',
-    )
-    const synthetic: GateDef = { id: 'G6', name: g6.name, criteria: [...g6.criteria, declared] }
+    assert.equal(g6 !== undefined, true, '基准：waterfall 必须有 G6')
+    const declaredNoWhen: GateCriterionDef = { id: VERSION_SCOPE_CRITERION_ID, check: VERSION_SCOPE_CHECK, desc: 'declared-by-data' }
+    const synthetic: GateDef = { id: 'G6', name: String(g6?.name ?? 'G6'), criteria: [declaredNoWhen] }
     const rewritten: ProcessDef = { ...process, gates: [...process.gates.filter((gate) => gate.id !== 'G6'), synthetic] }
     const criteria = evaluateGate(rewritten, 'G6', ctx).criteria.map((item) => item.id)
-    assert.equal(criteria.filter((id) => id === VERSION_SCOPE_CRITERION_ID).length, 1, `C-71 只许出现一次：${criteria.join(' ')}`)
+    assert.equal(criteria.includes(VERSION_SCOPE_CRITERION_ID), true, `没有 when ⇒ 恒参与（引擎不认判据身份）：${criteria.join(' ')}`)
   })
 })
 

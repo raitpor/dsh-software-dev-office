@@ -873,6 +873,69 @@ uiGates:
   kExitReasonNoMeasurement: "this criterion has no measurement source: no coverage reading carries the same criterion and the test report has none either — undecidable fails closed"
   kExitWeightIgnored: "Note: the weights / scores you wrote are **not used** (this criterion judges one by one and forbids weighted merging) — reported verbatim, never fed into the verdict: {p1}"
   kExitRemedy: "Supply the **measurement** for every declared exit criterion and re-run: record one reading per criterion in `readings[]` of `.sdo/testing/coverage.yml` (criterion / threshold / measured / command / report / reportHash / artifact / artifactHash, all eight present), or give measured + verdict per criterion in `exitCriteria[]` of `.sdo/testing/report.yml`. Any criterion that fails or has **no measurement** turns this criterion red, and the receipt **names each one** with its measured value and source. Do not collapse several criteria into one weighted total — that merged form is exactly what this criterion forbids."
+  # **TASK-171 (0.1.7 batch 2)**: receipt text for `C-70` (declaration-gate coverage, the meta criterion)
+  # and `C-76` (owner role at close-out). Every human sentence comes from here (gates.ts stays CJK-free).
+  kClaimHead: "Declaration-gate coverage (meta criterion): {p1} declarations that must hold - guarded {p2} / signed exemptions {p3} / **unguarded {p4}**"
+  kClaimKindRequirement: "requirements (must)"
+  kClaimKindAcceptance: "acceptance criteria (AC)"
+  kClaimKindDesignElement: "design elements"
+  kClaimKindContract: "contracts"
+  kClaimKindDiscipline: "discipline entries (roles.yml deny rows)"
+  kClaimKindLine: "  - {p1}: declared {p2} / guarded {p3} / exempted {p4} / unguarded {p5} => {p6}"
+  kClaimNamesOmitted: "({p1} more not listed here: the complete list is computed by assessClaimCoverage - never read not-listed as none)"
+  kClaimNone: "(none)"
+  kClaimBlankId: "(no id written)"
+  kClaimIssueNoId: "Exemption does not hold: {p1} - an exemption must name the declaration it covers"
+  kClaimIssueNoReason: "Exemption does not hold: {p1} has no reason (reason is blank after trimming)"
+  kClaimIssueNoApprover: "Exemption does not hold: {p1} has no approver (approvedBy is blank after trimming)"
+  kClaimIssueUnknownCriterion: "Exemption does not hold: {p1} cites criterion key {p2}, which **does not exist** (neither declared in process data nor registered in CHECKERS) - citing a missing key is prose, not a gate"
+  kClaimIssueNoTarget: "Exemption points at a declaration that **does not exist**: {p1} (a wrong id means the exemption lands on air)"
+  kClaimConfigUnreadable: "`.sdo/config.yml` **cannot be read** => fails closed (undecidable never passes): make it valid YAML first"
+  kClaimGhostEdge: "Ghost trace endpoint (`req-tc` pointing at an **unregistered** case): {p1} - {p2} in total; such an edge cannot raise coverage and guards no requirement (DEF-115)"
+  kClaimNoBaseline: "No baseline declared (`.sdo/config.yml` key `claimCoverage.baseline`): this is the **first measurement** => fails and names the list. Once the current unguarded list is recorded as the baseline, this criterion may only **shrink** (a new unguarded entry fails)"
+  kClaimNewUnguarded: "**Newly unguarded** entries outside the baseline: {p1} ({p2} in total) - the ratchet may only shrink (`claimCoverage.baseline`)"
+  kClaimRetirable: "Baseline ids that can be retired (no longer unguarded): {p1} (shrinking is good - drop those baseline rows)"
+  kClaimNa: "Not applicable: the ledger holds no declaration that must hold (no must requirement, no design element, no contract, no discipline entry) - an empty ledger proves nothing, so this is neither green nor red"
+  kClaimRemedy: "Pick one of three exits, and leave a trace a machine can check: (1) **add a machined judge** - give the requirement a registered test case that actually ran (`sdo_test action=plan` + `action=record`; registered-but-never-run or skip-only does not count), give the contract a `contractTest` record, give the design element a `des-task` trace edge; (2) **signed exemption** - write `{ id, criterion, reason, approvedBy }` under `claimCoverage.exempt` in `.sdo/config.yml`; `criterion` must be a check key that is really declared in process data and really registered in `CHECKERS` (acceptance criteria have no ledger channel today, so this is their only exit); (3) **record the baseline** - put the current unguarded list into `claimCoverage.baseline` (that records a known gap, it does not fix it; afterwards the list may only shrink)"
+  kOwnerRoleNa: "Not applicable: no card has closed yet (done / verified) - the division-of-labour criterion speaks only once who-did-it is a ledger fact"
+  kOwnerRoleOk: "All {p1} closed cards have an owner whose role equals the card role (the division of labour is guarded)"
+  kOwnerRoleNoOwner: "(no owner)"
+  kOwnerRoleUnknownRole: "(role not recognisable)"
+  kOwnerRoleUnknown: "the owner form yields no recognisable role"
+  kOwnerRoleMismatch: "the owner role differs from the card role"
+  kOwnerRoleRow: "{p1} ({p2}): card role={p3}, owner={p4} => recognised role={p5}; {p6}"
+  kOwnerRoleGaps: "{p2} of {p3} closed cards have a mismatched owner role: {p1}"
+  kOwnerRoleRemedy: "The rule (the process officer only keeps books, implementation goes to that role) now has a machined face: (1) **write a recognisable owner** - `subagent:<role>:<id>` (e.g. `subagent:developer:1`, `tester-1`, `cockpit`); unrecognisable owners pass the claim face fail-open and are named here fail-closed; (2) **the cockpit / process officer must not claim implementation or test cards** (`role in {developer, tester}`) - the claim face (DEF-162 item 1) blocks new ones, this is the backstop for history; (3) history is a fact: either add an errata recording the authorisation (`sdo_task action=errata`) or record it as a known gap for the next version (it is named here, not hidden)"
+  kScopeLabel: "{p1}@{p2}"
+  kScopeNoRelease: "no-release-files"
+  kScopeNone: "(none)"
+  kScopeHeadline: "Reviewed scope: {p1} (defects {p2} / tasks {p3} / must requirements {p4} / contracts {p5})"
+  kScopeFailClosed: "  - assumed into this version (nobody named them => fail-closed, they must be handled): {p1} {p2}"
+  kScopeLanded: "  - landed deferrals (registered in an older nonScope, target version reached): {p1} {p2}"
+  kScopeTokens: "scope={p1} defects={p2} tasks={p3} must={p4} contracts={p5} failClosed=[{p6}] landedFrom=[{p7}]"
+  kReleaseUnreadable: "The release file **cannot be read** (undecidable never passes): {p1}"
+  kReleaseUnreadableRemedy: "Fix the shape of the release file named in the error (`id` as r-x.y.z, `scope` with both sets, every `nonScope` row carrying reason / deferCount / approvedBy: human), or delete it and write it again"
+  kReleaseLayerNotAdopted: "Not applicable: the ledger has no release file yet (the release-plan layer is not adopted) - that is not no-gaps, it means the mechanism is not live"
+  kDeferTraceOk: "Deferral records and the count limit both hold ({p1} release files in the ledger)"
+  kDeferTraceRow: "  - {p1} [{p2}] {p3}"
+  kDeferTraceGaps: "{p2} deferral findings fail: {p1}"
+  kDeferTraceRemedy: "Two exits: (1) **record it** - a deferral must land a `release/deferred` event (the write face `office.releaseDeferred`: ids / fromVersion / toVersion / deferCount / approvedBy=human / reason); only a named record in the journal counts as deferred; (2) **never defer silently** - either put it back into the current `scope`, or register it in `nonScope` (reason / deferCount / approvedBy: human); exceeding the limit (default 2, declare `release.deferLimit` in `.sdo/config.yml`) must be decided by the user, the model may not widen it"
+  kFreezeTraceOk: "The freeze signature and the post-freeze collection both hold ({p1} release files in the ledger)"
+  kFreezeTraceRow: "  - {p1} [{p2}] {p3}"
+  kFreezeTraceGaps: "{p2} freeze findings fail: {p1}"
+  kFreezeTraceRemedy: "Four exits: (1) **the collection must be human-signed** - the current release needs `frozenBy: human` + `frozenAtSeq`, and that moment must really be a human signature in the journal (a `release/written` write with `frozen=true`, or a `by: human` answer); (2) **go through the write face** - use `writeRelease` (`office.releaseWrite`), which records the moment; put the returned seq into `frozenAtSeq`; (3) **adding after the freeze goes through change control** - `sdo_requirement action=change` with impact analysis and a decision, then write the release again; (4) the cockpit and the model must not sign on the user's behalf (ADR-022 ruling 1)"
+  kGapNoChangelog: "The current release {p1} has a recorded gap set, but there is no `CHANGELOG.md` at the workspace root => nothing to reconcile against"
+  kGapMissingBlock: "`CHANGELOG.md` has no known-gaps section for this release - not one registered deferral is named (hidden: {p1}, {p2} in total)"
+  kGapMalformed: "The gap section markers are not paired (`<!-- sdo:gap:begin release=... -->` or `<!-- sdo:gap:end -->` is missing): the block extent is unclear, so it cannot be reconciled"
+  kGapMarkerMismatch: "The gap section is marked for {p1}, but the current release is {p2} - the previous list was not swapped, or that release no longer exists"
+  kGapMarkerBlank: "(unmarked)"
+  kGapPadding: "The list names ids the ledger set does not have (**padding**): {p1} ({p2} in total) - those rows are not in nonScope, writing them turns untold into told"
+  kGapHidden: "The ledger set has ids the list does not name (**hidden**): {p1} ({p2} in total) - a registered deferral must be named in the list"
+  kGapUnparsable: "Some list rows name no id (the shape of hiding): {p1} ({p2} in total) - each gap must read `- `<id>` - reason`; prose rows do not count"
+  kGapOkEmpty: "The known-gaps section and the nonScope set of {p1} are exactly equal (both empty)"
+  kGapOk: "The known-gaps section and the nonScope set of {p1} are exactly equal ({p2} items: {p3})"
+  kGapGaps: "The gap list does not reconcile with the ledger (current release {p2}): {p1}"
+  kGapRemedy: "Regenerate that section from the ledger set with `node scripts/gen-changelog.mjs` (write mode): it renders rows from `nonScope`, writes the release marker and is idempotent; do not hand-write this section (hand-writing is exactly where padding and hiding come from)"
 # Defect traceability reading (TASK-038 / REQ-058): orphan defects, dangling edges, exemptions, coverage.
 # The gate receipt, docs/TRACE.md and docs/BOARD.md all take **one** wording from here (never re-worded per site).
 uiTrace:
@@ -910,7 +973,24 @@ uiCollab:
   unblockNotAuthorized: "resuming {p1} (unblock) is limited to the **cockpit** or the card's **original owner** (current owner: {p2}) — a resume puts the card back into the dispatch queue, which is a plan artefact, so no arbitrary session may change it (same separation-of-duties rule as drop / reassign)"
   unblockReasonMissing: "resuming {p1} requires `reason`: state how the blocking condition was resolved — a silent resume hides a plan change (both the receipt and the `task/unblocked` event keep it)"
   unblockNotBlocked: "{p1} is currently {p2}, **not blocked** — there is nothing to resume (unblock only handles blocked cards; to change a ready / planned card use `sdo_task action=update`, and if you really will not do it use `sdo_task action=drop`)"
+# Receipts for the **write face** of the release-plan layer (`TASK-171` / `TASK-178`): one group for writing a release, one for deferral records.
+# The criteria (C-72/C-73/C-75) read journal events; this text only reports written / rejected.
+  kOwnerClaimRejected: "Refusing to claim {p1}: the card role is {p2} while owner {p3} yields role {p4} - the cockpit / process officer must **not** claim implementation or test cards (`role in {developer, tester}`); legal owner forms: {p5} (e.g. `subagent:developer:1`)"
+uiRelease:
+  kReleaseWritten: "Release written: {p1} (journal seq {p2}; frozen={p3})"
+  kReleaseWriteRejected: "Release write rejected: {p1}"
+  kDeferWritten: "Deferral recorded: {p1} (from {p2} to {p3}, attempt {p4}, approver {p5}; journal seq {p6})"
+  kDeferRejected: "Deferral record rejected: {p1}"
+  kDeferIdsEmpty: "ids must not be empty - a deferral has to name the entities (`REQ-...` / `DEF-...` / `TASK-...`)"
+  kDeferApprover: "The approver must be human (ADR-022 ruling 1: only the user may allow a version to leave something behind; the cockpit and the model may not sign for them)"
+  kDeferCountInvalid: "deferCount must be an integer >= 1 (it is the reading of how many times it was deferred, not a note)"
+  kDeferNoRelease: "The ledger has no release file yet: write a release first (`office.releaseWrite`), then a deferral has somewhere to be recorded"
+  kDeferNotRegistered: "{p1} is not in the nonScope set of the current release {p2} - a deferral record may only cover entries this version explicitly leaves out; register it in nonScope first (reason / deferCount / approvedBy: human), then record the trace"
+  kDeferToUnknown: "(target version not registered yet)"
 uiPlan:
+  # **TASK-171 (DEF-162 item 2 / the other half of DEF-160)**: the role whitelist at card creation (rejected at creation time).
+  kRoleNotARole: "Card role {p1} is not a legal role: the legal set is {p2} - a wrong role can only be fixed by dropping and recreating the card (`sdo_task action=update` has no role input), so it is rejected here, at creation time"
+  kRoleNotARoleRemedy: "Change the role of that suggestion to one of the legal roles ({p1}): those eight come from `ROLES` in `src/domain/plan.ts`, the same list the role cards and the mask table use"
   kDropNotFound: 'card {p1} not found (drop / reopen / restore all need a real card)'
   kDropSettled: '**{p1} is already {p2}: cannot drop** - history is not rewritten. Two ways out: (1) `reopen` first (with reason + approvedBy); (2) to fill fields only, use `update` (do not erase the completed state)'
   kReopenBadStatus: '{p1} is currently {p2}: only `done` / `verified` need reopen (unfinished cards stay editable)'
@@ -930,6 +1010,7 @@ uiPlan:
   kUiTextScopeRemedy: 'two ways out: ① **let the project declare the text surface** — add a `plan.textPaths` list to `.sdo/config.yml`, one entry per directory that holds user-visible text (fill in **the project own** directory names; the plugin hardcodes no path and assumes no project layout); ② **bring that surface into this card scope**: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (the append channel keeps in-progress and owner). If the card does not actually produce user-visible text, withdraw the declaration with `sdo_task action=update id=<card> uiText=false`.'
   kBlockedHolderNote: ' (that card is blocked: it may resume writing the same scope, so it still holds it exclusively)'
   kScopeReleaseHint: '  (DEF-049) when a **blocked** card holds it: first decide whether that card is still needed — if yes, `sdo_task action=unblock id=<holding card> reason=...` (blocking condition gone, back to ready); only if you really will not do it, use `sdo_task action=drop` (abandon) or `release` (hand it back). Do **not** use `release` as a way to "clear a block" any more. To widen a write scope while the card is in progress: `sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` (append; keeps in-progress and owner); full replacement still requires releasing first.'
+  # **TASK-171 (DEF-162 item 1)**: role rejection on the claim face (the cockpit / process officer must not claim implementation or test cards).
   k1: "The change has artifact evidence (path + hash)"
   k2: "Caller implementation"
   k3: "Tests for failure semantics (timeout/retry/idempotency)"

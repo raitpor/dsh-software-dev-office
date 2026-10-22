@@ -105,6 +105,13 @@ import type {
 } from './domain/records.js'
 import { createChange, listChanges, markChangeNoop, undigestedChanges as listUndigestedChanges } from './domain/change.js'
 import { isDesignDocTruthPath } from './types.js'
+import type { Release } from './types.js'
+// **`TASK-171`（`DEF-162` 第①条）**：认领面的角色判定与合法形态文案 —— 与收口判据 `C-76` 共用**同一份**
+// owner→角色口径（`claimCoverage.ts` 的 `ownerRoleOf`）：两份口径分叉正是 `DEF-044` 的教训。
+import { OWNER_ROLE_FORMS, ownerClaimVerdict } from './domain/claimCoverage.js'
+// **`TASK-171`（`TASK-176` 交接）**：发布计划层的写入口 —— 落盘与顺延留痕都必须在真源留痕
+// （`release/written` / `release/deferred`），手写 YAML 的 `frozenBy: human` 核不到任何东西。
+import { HUMAN_APPROVER, currentRelease, deferredIdsOf, listReleases, packageVersionOf, writeRelease } from './domain/release.js'
 import { textOf } from './infra/scalar.js'
 import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
 import type { PoolAdmission, PoolChild, RolePool } from './domain/pool.js'
@@ -450,6 +457,24 @@ export interface StatusSnapshot {
 }
 
 /** 一次工具/命令调用携带的上下文。 */
+/**
+ * **顺延留痕的入参**（`TASK-171` / `AC-277`）。
+ *
+ * 五个字段都是判据要读的：`ids`（哪些条目被顺延）、`fromVersion` / `toVersion`（从哪版到哪版）、
+ * `deferCount`（第几次：与上限比）、`approvedBy`（只认 human）。`reason` 供人复核，判据不解析它。
+ */
+export interface ReleaseDeferInput {
+  ids: string[]
+  /** 登记这次顺延的那一版；留空 ⇒ 取当前 release 的包版本。 */
+  fromVersion?: string | undefined
+  /** 顺延目标版本；目标未在册时留空（不许凭空造版本号）。 */
+  toVersion?: string | undefined
+  deferCount: number
+  /** 批准人：只认 `human`（`ADR-022` 裁决①）。 */
+  approvedBy: string
+  reason: string
+}
+
 export interface OfficeCall {
   sessionId?: string | undefined
   /**
@@ -3503,9 +3528,147 @@ export class SoftwareDevOffice {
     const { store, journal } = this.contextFor(call)
     // A2：认领时记下"发生在哪个会话"，`done` 据此取本会话的真实改动做写范围对账
     const sessionId = input.sessionId ?? call.sessionId
+    /**
+     * **`DEF-162` 第①条（`TASK-171`）：认领面的角色校验** —— 「流程官只记账、实现派给该角色的执行者」
+     * 这条分工过去**只写在文档里**（真机样本：驾驶舱以 `owner=cockpit` 认领了 `role=developer` 的卡，
+     * 并且真的开工了）。现在它在两个面上有机械对手方，本处是**认领面**：
+     *
+     * · **驾驶舱 / 流程官**认领 `role ∈ {developer, tester}` 的卡 ⇒ **拒绝**，回执点名卡的 role、
+     *   owner 认出的角色、以及合法形态；
+     * · owner 形态**认不出角色**（`dev-a` / `张三`…）⇒ **放行**（fail-open）：认不出人不该变成干不了活，
+     *   这一面由**收口判据** `C-76` 兜底（那时"谁做的"是台账事实，认不出即点名）；
+     * · 角色对得上 ⇒ 照旧走 `claim()` 的 CAS / 写范围 / 门禁陈旧等全部既有判定（一字不改）。
+     *
+     * 拒绝要**留痕**（`task/claim-rejected`，与 `DEF-059` 同口径）：不带事件就数不出"争用了几次"。
+     * `code` 沿用既有的 `not-claimable`（拒绝码集合在 `collab.ts`，不在本卡写范围），另带
+     * `cause: 'owner-role'` 让这一类能单独聚合 —— 不标注就等于没分类。
+     */
+    const card = listTasks(store).find((task) => task.id === input.taskId)
+    if (card !== undefined) {
+      const verdict = ownerClaimVerdict(input.owner, textOf(card.role))
+      if (!verdict.ok) {
+        const detail = fmt('uiCollab.kOwnerClaimRejected', {
+          p1: card.id,
+          p2: textOf(card.role),
+          p3: input.owner,
+          p4: verdict.role,
+          p5: OWNER_ROLE_FORMS,
+        })
+        journal.append('task/claim-rejected', {
+          id: card.id,
+          by: input.owner,
+          code: 'not-claimable',
+          cause: 'owner-role',
+          detail,
+          ...(sessionId === undefined ? {} : { sessionId }),
+        })
+        this.roleCacheVersion += 1
+        return { ok: false, code: 'not-claimable', detail, current: card }
+      }
+    }
     const outcome = claim(store, journal, sessionId === undefined ? input : { ...input, sessionId })
     this.roleCacheVersion += 1
     return outcome
+  }
+
+  /**
+   * **发布计划落盘**（`TASK-176` / `TASK-178` 的写入口）。
+   *
+   * 为什么必须走这里而不是手写 YAML：`writeRelease` 在落盘的同时写一条 `release/written`
+   * （带 `frozen` 与条数）—— `C-75` 的 `frozenAtSeq` 要能核到"那一刻真的一次人签"；
+   * 手写的 `frozenBy: human` 核不到任何东西（`freeze-unwitnessed`）。
+   * 形状不合法 ⇒ 整次拒绝（`writeRelease` 抛错），不许落半成品让别人读到。
+   */
+  releaseWrite(call: OfficeCall, release: Release): {
+    ok: boolean
+    detail: string
+    release?: Release | undefined
+    seq?: number | undefined
+  } {
+    const { store, journal } = this.contextFor(call)
+    try {
+      const written = writeRelease(store, journal, release)
+      const seq = journal.read().events.filter((event) => event.type === 'release/written').at(-1)?.seq
+      return {
+        ok: true,
+        release: written,
+        ...(seq === undefined ? {} : { seq }),
+        detail: fmt('uiRelease.kReleaseWritten', {
+          p1: written.id,
+          p2: String(seq ?? '?'),
+          p3: textOf(written.frozenBy) === HUMAN_APPROVER ? 'true' : 'false',
+        }),
+      }
+    } catch (error) {
+      return {
+        ok: false,
+        detail: fmt('uiRelease.kReleaseWriteRejected', { p1: error instanceof Error ? error.message : String(error) }),
+      }
+    }
+  }
+
+  /**
+   * **顺延留痕的写入面**（`TASK-176` 交接 / `AC-277`）：把"这几条这一版不做"写成 `release/deferred`。
+   *
+   * 必须交代的三件事实（缺一个这条留痕就核不了）：**哪些 id**、**从哪一版到哪一版**、**第几次**；
+   * 外加**批准人只认 human**（`ADR-022` 裁决①）。
+   *
+   * 为什么还要求"这些 id 必须已经在当前版 `nonScope` 里登记"：留痕与登记是两件事，但只认**成对**的
+   * —— 否则谁都能凭空落一条"顺延留痕"去豁免 `C-73` 的静默顺延判定（那等于给假绿开一条通道）。
+   * 反过来说，登记了却没留痕，正是 `C-73` 要判红的形态（`AC-277`）。
+   */
+  releaseDefer(call: OfficeCall, input: ReleaseDeferInput): {
+    ok: boolean
+    detail: string
+    ids?: string[] | undefined
+    seq?: number | undefined
+  } {
+    const { store, journal } = this.contextFor(call)
+    const ids = [...new Set((input.ids ?? []).map((id) => textOf(id).trim()).filter((id) => id !== ''))]
+    if (ids.length === 0) return { ok: false, detail: t('uiRelease.kDeferIdsEmpty') }
+    if (textOf(input.approvedBy).trim() !== HUMAN_APPROVER) return { ok: false, detail: t('uiRelease.kDeferApprover') }
+    if (!Number.isInteger(input.deferCount) || input.deferCount < 1) return { ok: false, detail: t('uiRelease.kDeferCountInvalid') }
+    let releases: Release[]
+    try {
+      releases = listReleases(store)
+    } catch (error) {
+      return {
+        ok: false,
+        detail: fmt('uiRelease.kDeferRejected', { p1: error instanceof Error ? error.message : String(error) }),
+      }
+    }
+    const current = currentRelease(releases)
+    if (current === undefined) return { ok: false, detail: t('uiRelease.kDeferNoRelease') }
+    const fromVersion = textOf(input.fromVersion).trim() === '' ? packageVersionOf(current) : textOf(input.fromVersion).trim()
+    const registered = new Set(deferredIdsOf(current))
+    const unregistered = ids.filter((id) => !registered.has(id))
+    if (unregistered.length > 0) {
+      return { ok: false, detail: fmt('uiRelease.kDeferNotRegistered', { p1: unregistered.join(' '), p2: current.id }) }
+    }
+    const data: Record<string, unknown> = {
+      ids,
+      fromVersion,
+      deferCount: input.deferCount,
+      approvedBy: HUMAN_APPROVER,
+      reason: textOf(input.reason).trim(),
+      releaseId: current.id,
+    }
+    const toVersion = textOf(input.toVersion).trim()
+    if (toVersion !== '') data['toVersion'] = toVersion
+    const event = journal.append('release/deferred', data)
+    return {
+      ok: true,
+      ids,
+      seq: event.seq,
+      detail: fmt('uiRelease.kDeferWritten', {
+        p1: ids.join(' '),
+        p2: fromVersion,
+        p3: toVersion === '' ? t('uiRelease.kDeferToUnknown') : toVersion,
+        p4: String(input.deferCount),
+        p5: HUMAN_APPROVER,
+        p6: String(event.seq),
+      }),
+    }
   }
 
   /** 回报（done 必须带证据）。 */

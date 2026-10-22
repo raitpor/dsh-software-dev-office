@@ -244,6 +244,18 @@ export interface TaskDraft {
 }
 
 export function createTask(store: SdoStore, journal: Journal, draft: TaskDraft): TaskCard {
+  /**
+   * **`DEF-162` 第②条 / `DEF-160` 的另一半（`TASK-171`）**：建卡那一刻就校验 `role`。
+   *
+   * 病根：`decompose` 接受任意 `role` 字符串（真机：`role: cockpit` 建卡成功），要到 `C-31`
+   * （"每张卡只有一个角色"）才发现 —— 而那时卡已经占着编号与写范围，`update` 又没有 `role` 入参
+   * （只能 drop 重建，丢 revision 历史）。白名单在这里，是因为 `createTask` 是**唯一**建卡入口：
+   * 结构化通道与模型建议都从这里过，漏一层就等于留一个后门。
+   */
+  if (!isRole(textOf(draft.role).trim())) {
+    const legal = ROLES.join(' / ')
+    throw new Error(`${fmt('uiPlan.kRoleNotARole', { p1: textOf(draft.role), p2: legal })}\n${fmt('uiPlan.kRoleNotARoleRemedy', { p1: legal })}`)
+  }
   const now = new Date().toISOString()
   const task: TaskCard = {
     id: nextId('TASK', listTaskIds(store)),
@@ -305,6 +317,9 @@ export interface PlanIssue {
     | 'ui-text-scope'
     // **DEF-018 / §3E 族 9**：卡自己声明的落点落在自己的写范围之外
     | 'landing-outside-scope'
+    // **`TASK-171`（`DEF-162` 第②条 / `DEF-160` 另一半）**：suggestion 的 `role` 不在 `ROLES` 白名单里
+    // （`cockpit` 这类非法值过去能建卡成功，要到 `C-31` 才暴露）。**建卡那一刻**就拒：这张卡不会被建出来。
+    | 'role-not-a-role'
   taskId: string
   detail: string
   remedy: string
@@ -975,7 +990,32 @@ export function decompose(
   // 结构卡的明细对上（`D3-1` 的批内去重可能吃掉一张，那时它不该出现在回执里）
   const planByTitle = new Map(structural.plan.created.map((row) => [row.title, row]))
   const structuralCreated: StructuralCardPlan[] = []
+  /**
+   * **`DEF-162` 第②条（`TASK-171`）**：非法 `role` 的 suggestion **一张卡都不建**，当场回一条 issue
+   * （`role-not-a-role`），点名非法值与合法集。
+   *
+   * 为什么在循环**外**先筛：`createTask` 里也会拒（防御纵深），但那里抛错会**中断整批**
+   * （已建好的卡留在盘上、后面的卡全不建），读者只看到一条异常、看不到"哪条 suggestion 是坏的"。
+   * 先筛成 issue 的结果是：好卡照建、坏卡逐条点名、批处理可继续 —— 且**行为可预期**。
+   */
+  const roleIssues: PlanIssue[] = []
+  const legalRoles = ROLES.join(' / ')
+  const validDrafts: TaskDraft[] = []
   for (const draft of drafts) {
+    const role = textOf(draft.role).trim()
+    if (isRole(role)) {
+      validDrafts.push(draft)
+      continue
+    }
+    roleIssues.push({
+      code: 'role-not-a-role',
+      // 卡还没建出来：用标题点名（这是这条 suggestion 唯一的标识）
+      taskId: textOf(draft.title),
+      detail: fmt('uiPlan.kRoleNotARole', { p1: textOf(draft.role), p2: legalRoles }),
+      remedy: fmt('uiPlan.kRoleNotARoleRemedy', { p1: legalRoles }),
+    })
+  }
+  for (const draft of validDrafts) {
     const key = `${draft.title}|${draft.role}`
     if (seen.has(key)) continue
     seen.add(key)
@@ -1003,7 +1043,8 @@ export function decompose(
   }
   return {
     tasks,
-    issues: validatePlan(tasks, { textPaths: textPathsOf(store) }),
+    // 先报"根本没建出来的卡"（角色非法），再报已建卡的校验问题 —— 两类不许互相掩盖
+    issues: [...roleIssues, ...validatePlan(tasks, { textPaths: textPathsOf(store) })],
     notes: derived,
     structuralCount,
     structural: structuralResult,

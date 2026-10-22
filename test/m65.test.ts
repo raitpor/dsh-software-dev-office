@@ -104,8 +104,12 @@ async function toolVerdict(pre: Hook, tool: string, sessionId: string, filePath 
 /** 认领/回报会 +1 角色缓存版本号；`drop` 不会 —— 用它强制重算归属（= 等过 TTL 的等价物，快且确定）。 */
 async function bumpRoleCacheVersion(callTool: (name: string, args: Record<string, unknown>, sessionId: string, depth?: number) => Promise<string>): Promise<void> {
   card('TASK-900', 'developer')
-  const out = await callTool('sdo_task', { action: 'claim', id: 'TASK-900', owner: 'cockpit', expectedRevision: 1 }, 'cockpit', 0)
-  assert.match(out, /in-progress/u, `前置：驾驶舱认领要成功（用于强制重算角色缓存）：${out}`)
+  // **`TASK-171`（`DEF-162` 第①条）**：这里原本用 `owner: 'cockpit'` 认领 `role: developer` 的卡
+  // —— 那正是 `DEF-162` 的真机形态（流程官认领实现卡），认领面现在会**拒绝**它。
+  // 本辅助函数的意图只是「让角色缓存版本 +1」（认领成功就会 +1），与"谁来认领"无关
+  // ⇒ 换成合法形态 `subagent:developer:1`，四处用例的断言一字不动。
+  const out = await callTool('sdo_task', { action: 'claim', id: 'TASK-900', owner: 'subagent:developer:1', expectedRevision: 1 }, 'cockpit', 0)
+  assert.match(out, /in-progress/u, `前置：认领要成功（用于强制重算角色缓存）：${out}`)
 }
 
 beforeEach(() => {

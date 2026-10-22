@@ -179,8 +179,9 @@ export const KNOWN_DANGLING: readonly KnownDangling[] = [
   // 举例性函数名（描述"属性节点可以带哪些键"），仓内无此定义
   { file: 'src/interface/tools.ts', line: 1015, head: 'compile', tail: 'PropertyMap', why: '举例性函数名（注释在描述联合声明口径）' },
   // 被**否决**的候选名（"而不是新造它"）⇒ 按定义不存在
-  { file: 'src/types.ts', line: 872, head: 'introduces', tail: 'Semantics', why: '被否决的候选名（原句是"而不是新造它"）⇒ 按定义不存在' },
-  { file: 'src/types.ts', line: 872, head: 'impact', tail: 'Surface', why: '同上（被否决的候选名）' },
+  // 行号随 `TASK-171`（判据激活条件 `when` 进 `GateCriterionDef`）之后 +13：**只有行号变，身份一字未动**
+  { file: 'src/types.ts', line: 885, head: 'introduces', tail: 'Semantics', why: '被否决的候选名（原句是"而不是新造它"）⇒ 按定义不存在' },
+  { file: 'src/types.ts', line: 885, head: 'impact', tail: 'Surface', why: '同上（被否决的候选名）' },
   // 第三方包（留档副本模块）的导出名，本仓未安装其面
   { file: 'test/m100-hooks.mjs', line: 21, head: 'declared', tail: 'ItemGaps', why: '第三方包（留档副本模块）的导出名；本仓未安装它的类型面' },
   // 旧结构名（改结构后已移除，仅注释记述）

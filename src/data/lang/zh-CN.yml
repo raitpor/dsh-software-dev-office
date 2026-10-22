@@ -1704,6 +1704,70 @@ uiGates:
   kExitReasonNoMeasurement: "准则没有实测来源：覆盖读数里没有同名准则、测试报告里也查不到 —— 判不动一律判红（fail-closed）"
   kExitWeightIgnored: "注意：你写的权重 / 得分**未被采用**（本判据逐条判定、禁止加权合并）——原样报出、不进判定：{p1}"
   kExitRemedy: "按项目声明的准出准则逐条补齐**实测**并重跑：在 `.sdo/testing/coverage.yml` 的 `readings[]` 里给每条准则记一条读数（criterion / threshold / measured / command / report / reportHash / artifact / artifactHash 八项齐备），或在 `.sdo/testing/report.yml` 的 `exitCriteria[]` 里逐条给出 measured + verdict。任一条不达标或**找不到实测**都会让整条判据判红，判据会**逐条点名**是哪一条、实测多少、来源何处；不许把多条准则折算成一个加权总分（那正是本判据要禁止的合并形式）"
+  # **TASK-171（0.1.7 批 2）**：`C-70 声明—判据覆盖`（元判据）与 `C-76 owner 角色` 的回执文案。
+  # 为什么整块集中在这里：`src/domain/gates.ts` 被 i18n 棘轮钉在「零硬编码中文」（`test/m7.test.ts` 基线 0），
+  # 判据的每一句人话都必须来自语言包 —— 判据 id 与 owner 形态是标识，可以留在代码里。
+  kClaimHead: "声明—判据覆盖（元判据）：{p1} 条必须成立的声明 —— 有守 {p2} / 署名豁免 {p3} / **未设防 {p4}**"
+  kClaimKindRequirement: "需求（must）"
+  kClaimKindAcceptance: "验收准则（AC）"
+  kClaimKindDesignElement: "设计元素"
+  kClaimKindContract: "契约"
+  kClaimKindDiscipline: "纪律条目（roles.yml 的 deny）"
+  kClaimKindLine: "　· {p1}：声明 {p2} / 有守 {p3} / 豁免 {p4} / 未设防 {p5} ⇒ {p6}"
+  kClaimNamesOmitted: "（另 {p1} 条未在回执里逐条列出：完整清单由 `assessClaimCoverage` 现算 —— 不许拿「没列出来」当「没有」）"
+  kClaimNone: "（无）"
+  kClaimBlankId: "（没写 id）"
+  kClaimIssueNoId: "豁免不成立：{p1} —— 豁免必须点名它覆盖哪条声明"
+  kClaimIssueNoReason: "豁免不成立：{p1} 没写理由（`reason` 去空白后为空）"
+  kClaimIssueNoApprover: "豁免不成立：{p1} 没写批准人（`approvedBy` 去空白后为空）"
+  kClaimIssueUnknownCriterion: "豁免不成立：{p1} 引用的判据键「{p2}」**不存在**（流程数据没声明、`CHECKERS` 也没注册）—— 引一个不存在的键就是散文，不是判据"
+  kClaimIssueNoTarget: "豁免指向一条**不存在**的声明：{p1}（写错号 = 豁免落在空气上）"
+  kClaimConfigUnreadable: "`.sdo/config.yml` **读不动** ⇒ 判红（判不动不许判绿）：先把它写回合法 YAML"
+  kClaimGhostEdge: "幽灵 trace 端点（`req-tc` 指向**未登记**的用例）：{p1} —— 共 {p2} 条；这类边抬高不了覆盖、也守不住任何需求（`DEF-115`）"
+  kClaimNoBaseline: "未声明基线（`.sdo/config.yml` 的 `claimCoverage.baseline`）：本次是**第一次测量** ⇒ 判红并点名。把当前这份未设防清单登记成基线之后，这条判据只许**减**（新增未设防即红）"
+  kClaimNewUnguarded: "不在基线里的**新增未设防**：{p1}（共 {p2} 条）—— 棘轮只许减少（`claimCoverage.baseline`）"
+  kClaimRetirable: "基线里可以退役的 id（已经不再未设防）：{p1}（减少是对的，把这些基线项删掉即可）"
+  kClaimNa: "不适用：台账里没有任何必须成立的声明（没有 must 需求、没有设计元素、没有契约、也没有纪律条目）—— 空台账证明不了任何事，所以既不判绿也不判红"
+  kClaimRemedy: "三条出路任选其一，且都要留下能机械核对的痕迹：① **补机判器** —— 需求补登记的用例并真跑出结果（`sdo_test action=plan` + `action=record`；只登记不跑、或只记 `skip` 都不算）、契约补 `contractTest` 记录、设计元素补 `des-task` 追溯边；② **署名豁免** —— 在 `.sdo/config.yml` 的 `claimCoverage.exempt` 里写 `{ id, criterion, reason, approvedBy }` 四项，`criterion` 必须是流程数据里真实声明、且 `CHECKERS` 里真实注册的判据键（验收准则 AC 今天没有台账通道，只能走这条）；③ **登记基线** —— 把现有未设防清单写进 `claimCoverage.baseline`（这是「已知缺口」的登记，不是修好；之后只许减少）"
+  kOwnerRoleNa: "不适用：还没有任何已收口（done / verified）的卡 —— 分工判据只在「谁做完了」成为台账事实之后才有话可说"
+  kOwnerRoleOk: "已收口的 {p1} 张卡，owner 的角色都等于卡上的 role（分工声明有判据守着）"
+  kOwnerRoleNoOwner: "（没有 owner）"
+  kOwnerRoleUnknownRole: "（认不出角色）"
+  kOwnerRoleUnknown: "owner 形态认不出角色"
+  kOwnerRoleMismatch: "owner 的角色与卡的 role 不一致"
+  kOwnerRoleRow: "{p1}（{p2}）：卡的 role＝{p3}，owner＝{p4} ⇒ 认出的角色＝{p5}；{p6}"
+  kOwnerRoleGaps: "已收口的卡里有 {p2} / {p3} 张的 owner 角色对不上：{p1}"
+  kOwnerRoleRemedy: "「流程官只记账、实现派给该角色的执行者」这条分工现在有机械面了：① **owner 写成认得出的形态** —— `subagent:<角色>:<标识>`（如 `subagent:developer:1`、`tester-1`、`cockpit`）；认不出形态的 owner 在认领面 fail-open 放行、在这里 fail-closed 点名；② **驾驶舱 / 流程官不得认领实现与测试卡**（`role ∈ {developer, tester}`）—— 认领面（`DEF-162` 第①条）已拦住新的，这里是历史卡的兜底；③ 历史卡是既成事实：要么补一条勘误说明当时的授权（`sdo_task action=errata`），要么在下一版把它记成已知缺口（它在这里点名，不是看不见）"
+  kScopeLabel: "{p1}@{p2}"
+  kScopeNoRelease: "no-release-files"
+  kScopeNone: "（无）"
+  kScopeHeadline: "本次判定的作用域：{p1}（缺陷 {p2} 条 / 卡 {p3} 张 / must 需求 {p4} 条 / 契约 {p5} 份）"
+  kScopeFailClosed: "　· 缺省归入本版（谁都没点名 ⇒ 按 fail-closed 必须管）：{p1} 条 {p2}"
+  kScopeLanded: "　· 顺延到账（旧版 nonScope 登记过、目标已到版）：{p1} 条 {p2}"
+  kScopeTokens: "scope={p1} defects={p2} tasks={p3} must={p4} contracts={p5} failClosed=[{p6}] landedFrom=[{p7}]"
+  kReleaseUnreadable: "发布计划文件**读不动**（判不动不许判绿）：{p1}"
+  kReleaseUnreadableRemedy: "按报错点名的那份 release 文件与字段修好形状（`id` 用 r-x.y.z、`scope` 两个集合、`nonScope` 每条带 reason / deferCount / approvedBy: human），或删掉重落一份"
+  kReleaseLayerNotAdopted: "不适用：台账里还没有任何 release 文件（发布计划层尚未被采纳）—— 这不是「没有缺口」，而是这套机制还没上线"
+  kDeferTraceOk: "顺延留痕与次数上限都合规（台账里有 {p1} 份 release）"
+  kDeferTraceRow: "　· {p1}［{p2}］{p3}"
+  kDeferTraceGaps: "顺延面有 {p2} 条不合格：{p1}"
+  kDeferTraceRemedy: "两条出路：① **补留痕** —— 顺延要落一条 `release/deferred` 记录（`office.releaseDeferred` 的写入面：ids / fromVersion / toVersion / deferCount / approvedBy=human / reason），真源里点了名才算「顺延过」；② **别静默顺延** —— 要么把它放回当前版 `scope`，要么在 `nonScope` 里登记（reason / deferCount / approvedBy: human）；次数超过上限（默认 2，可在 `.sdo/config.yml` 的 `release.deferLimit` 声明）必须由用户裁决，模型不得自行放宽"
+  kFreezeTraceOk: "冻结人签与冻结后改集合都合规（台账里有 {p1} 份 release）"
+  kFreezeTraceRow: "　· {p1}［{p2}］{p3}"
+  kFreezeTraceGaps: "冻结面有 {p2} 条不合格：{p1}"
+  kFreezeTraceRemedy: "四条出路：① **集合必须人签** —— 当前版要写 `frozenBy: human` + `frozenAtSeq`，且那一刻在真源里真的是一次人签（`frozen=true` 的 `release/written` 落盘，或 `by: human` 的问答答复）；② **走落盘** —— 用 `writeRelease`（`office.releaseWrite`）落盘，它同时留痕，把回执里的 seq 填进 `frozenAtSeq`；③ **冻结后加东西走变更** —— 先 `sdo_requirement action=change` 带影响分析与决策，再重新落盘；④ 驾驶舱 / 模型不得代签（`ADR-022` 裁决①）"
+  kGapNoChangelog: "当前版 {p1} 已登记缺口集合，但工作区根没有 `CHANGELOG.md` ⇒ 清单与台账无从对账"
+  kGapMissingBlock: "`CHANGELOG.md` 没有本版「已知缺口」小节 —— 已登记的顺延项一个都没点名（隐瞒项：{p1}，共 {p2} 条）"
+  kGapMalformed: "缺口小节的标记不配对（`<!-- sdo:gap:begin release=… -->` 或 `<!-- sdo:gap:end -->` 缺一个）：块的范围说不清，等于对不了账"
+  kGapMarkerMismatch: "缺口小节标的是「{p1}」，而当前 release 是「{p2}」—— 上一版的清单没跟着换，或台账里这一版已不存在"
+  kGapMarkerBlank: "未标注"
+  kGapPadding: "清单里有集合没有的 id（**粉饰项**）：{p1}（共 {p2} 条）—— 台账 nonScope 里没有这些条目，写进清单就是把没交代的说成有交代"
+  kGapHidden: "集合里有清单没写的 id（**隐瞒项**）：{p1}（共 {p2} 条）—— 已登记的顺延必须在清单里点名"
+  kGapUnparsable: "清单里有条目点不出 id（隐瞒的形状）：{p1}（共 {p2} 条）—— 每条缺口要写成 `- `<id>` —— 理由`，散话不算点名"
+  kGapOkEmpty: "本版「已知缺口」与「{p1}」的 nonScope 恰好相等（两边都空）"
+  kGapOk: "本版「已知缺口」与「{p1}」的 nonScope 恰好相等（{p2} 项：{p3}）"
+  kGapGaps: "缺口清单与台账对不上（当前版 {p2}）：{p1}"
+  kGapRemedy: "用 `node scripts/gen-changelog.mjs`（写模式）从台账集合重生成该小节：它按 `nonScope` 渲染条目、写进版本标记，并且幂等；不要手写这一节（手写就是粉饰／隐瞒的来源）"
 # 缺陷追溯读数（TASK-038 / REQ-058）：孤儿缺陷、悬空边、显式豁免与覆盖率。
 # 门禁回执、docs/TRACE.md、docs/BOARD.md 三处**同一份措辞**都取自这里（不得各处再写一套）。
 uiTrace:
@@ -1741,7 +1805,24 @@ uiCollab:
   unblockNotAuthorized: "{p1} 的恢复（unblock）只允许**驾驶舱**或**该卡原 owner**（当前 owner：{p2}）—— 恢复会把它放回派发队列，属计划产物，不能让任意会话改（与 drop / reassign 同一条职责分离口径）"
   unblockReasonMissing: "{p1} 的恢复必须带 reason：写明\"阻塞条件怎么解除的\"—— 静默恢复等于把一次计划变更藏起来（回执与 task/unblocked 事件都要留它）"
   unblockNotBlocked: "{p1} 现在的状态是 {p2}，**不是 blocked** —— 无需恢复（unblock 只处理 blocked 卡；ready / planned 卡要改范围请走 `sdo_task action=update`，确实不做请走 `sdo_task action=drop`）"
+# 发布计划层的**写入面**回执（`TASK-171` / `TASK-178`）：落盘与顺延留痕各一组。
+# 判据（C-72/C-73/C-75）读的是真源事件，这里的文案只负责把"写成功/被拒"说清楚。
+  kOwnerClaimRejected: "拒绝认领 {p1}：卡的 role 是 {p2}，而 owner「{p3}」认出的角色是 {p4} —— 驾驶舱 / 流程官**不得**认领实现与测试卡（`role ∈ {developer, tester}`）；合法 owner 形态：{p5}（例如 `subagent:developer:1`）"
+uiRelease:
+  kReleaseWritten: "发布计划已落盘：{p1}（真源序号 {p2}；frozen={p3}）"
+  kReleaseWriteRejected: "发布计划落盘被拒：{p1}"
+  kDeferWritten: "已登记顺延：{p1}（从 {p2} 到 {p3}，第 {p4} 次，批准人 {p5}；真源序号 {p6}）"
+  kDeferRejected: "顺延登记被拒：{p1}"
+  kDeferIdsEmpty: "ids 不能为空 —— 顺延必须点名具体条目（`REQ-…` / `DEF-…` / `TASK-…`）"
+  kDeferApprover: "批准人只认 human（`ADR-022` 裁决①：允许本版遗留的决定权在用户，驾驶舱与模型不得代批）"
+  kDeferCountInvalid: "deferCount 必须是 ≥1 的整数（它是「已经顺延了几次」的读数，不是备注）"
+  kDeferNoRelease: "台账里还没有任何 release 文件：先落一份发布计划（`office.releaseWrite`），顺延才有地方登记"
+  kDeferNotRegistered: "{p1} 不在当前版 {p2} 的 nonScope 里 —— 顺延留痕只能登记「本版明确不进本版」的条目；先在 nonScope 里登记（reason / deferCount / approvedBy: human），再来落留痕"
+  kDeferToUnknown: "（目标版本未在册）"
 uiPlan:
+  # **TASK-171（`DEF-162` 第②条 / `DEF-160` 另一半）**：拆卡建卡时的角色白名单（建卡那一刻就拒）。
+  kRoleNotARole: "卡的 role「{p1}」不是合法角色：合法集是 {p2} —— 角色建错只能 drop 重建（`sdo_task action=update` 没有 role 入参），所以在这里、在建卡那一刻就拒"
+  kRoleNotARoleRemedy: "把这条 suggestion 的 role 改成合法角色之一（{p1}）：这八条来自 `src/domain/plan.ts` 的 `ROLES`，与角色卡、掩码表同一份清单"
   kDropNotFound: '找不到卡 {p1}（drop / reopen / restore 都需要一张真实存在的卡）'
   kDropSettled: '**{p1} 已完成（{p2}）：不能 drop** —— 历史不重写。两条出路：① 先 `reopen`（带 reason + approvedBy）再处理；② 只是想补字段 ⇒ 用 `update`（不要抹掉完成态）'
   kReopenBadStatus: '{p1} 当前是 {p2}：只有 `done` / `verified` 需要 reopen（未落地的卡本来就能改）'
@@ -1761,6 +1842,7 @@ uiPlan:
   kUiTextScopeRemedy: '两条出路：① **让项目声明文案面** —— 在 `.sdo/config.yml` 里加 `plan.textPaths` 列表，每行一条「用户可见文案所在的目录」（填**项目自己**的目录名；插件不内置任何路径，也不假设任何项目布局）；② **把文案面并入本卡写范围**：`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…`（追加通道，不丢 in-progress 与 owner）。若本卡其实不产出用户可见文案，就撤回声明：`sdo_task action=update id=<卡> uiText=false`。'
   kBlockedHolderNote: '（该卡处于 blocked：它随时可能继续写同一范围，故仍排他）'
   kScopeReleaseHint: '　（DEF-049）被 **blocked** 卡挡住时：先判断它还做不做 —— 还要做就 `sdo_task action=unblock id=<挡住的卡> reason=…`（阻塞解除、回到 ready），确实不做才 `sdo_task action=drop`（放弃）或 `release`（让回池子）；**不要**再拿 `release` 当"解除阻塞"用。在飞卡要扩写范围：`sdo_task action=update id=<卡> addWriteScopes=<JSON 文本> reason=…`（**追加**，不丢 in-progress 与 owner）；整份替换仍要求先释放。'
+  # **TASK-171（`DEF-162` 第①条）**：认领面的角色拒绝（驾驶舱 / 流程官不得认领实现与测试卡）。
   k1: "改动有产物证据（路径 + 哈希）"
   k2: "调用方实现"
   k3: "失败语义（超时/重试/幂等）的测试"
