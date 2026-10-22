@@ -198,6 +198,48 @@ export type TargetClass =
  * `base`（会话工作目录）负责"相对路径往哪解析"，`root`（工作区根）负责"算不算在工作区内"——
  * 两个基准的分工与 `evaluateWriteScope` 一致（DEF-047 落点一）。
  */
+/** 跨平台比较的**唯一基准**：一切路径先折成正斜杠。 */
+function toPosixPath(path: string): string {
+  return String(path ?? '').replace(/\\/gu, '/')
+}
+
+export interface WorkspaceRelation {
+  kind: 'same' | 'inside' | 'outside'
+  /** `inside` 时是相对根的路径（正斜杠） */
+  relative: string
+}
+
+/**
+ * **绝对路径 ⇄ 工作区根**的归属关系（`DEF-154`，Windows 实测：CI 红 39 格）。
+ *
+ * 病：`resolve()` 在 win32 返回**反斜杠**，而旧实现拼前缀用的是硬编码 `/`
+ * （`` `${root.replace(/\/+$/u, '')}/` ``）⇒ `'D:\\a\\p\\src\\x.ts'.startsWith('D:\\a\\p/')` **恒 false**
+ * ⇒ Windows 上**工作区内的一切写入都被判「工作区之外」**（误拒，直接让人没法干活）。
+ * POSIX 上 `resolve()` 本来就返回 `/`，所以 Linux 全绿、只有 Windows 红 —— 这正是它长期没被发现的原因。
+ *
+ * 口径三条（都写进 `test/m212`）：
+ *   ① **分隔符归一**：比较前两边都折成正斜杠（与 `normalizeWorkspacePath` 的既有口径一致）；
+ *   ② **大小写**：只有显式 `caseInsensitive`（win32 的调用方默认传 true）才忽略 ——
+ *      **不许**泄漏到 POSIX（Linux 上 `src/A.ts` 与 `src/a.ts` 是两个文件）；
+ *   ③ **目录边界**：判 `inside` 必须差一个 `/`（`/a/p2` 不算 `/a/p` 的子路径）。
+ */
+export function workspaceRelation(
+  absolute: string,
+  root: string,
+  options: { caseInsensitive?: boolean } = {},
+): WorkspaceRelation {
+  const slashedTarget = toPosixPath(absolute).trim().replace(/\/+$/u, '')
+  const slashedRoot = toPosixPath(root).trim().replace(/\/+$/u, '')
+  if (slashedRoot === '') return { kind: 'outside', relative: '' }
+  const fold = (value: string): string => (options.caseInsensitive === true ? value.toLowerCase() : value)
+  const target = fold(slashedTarget)
+  const base = fold(slashedRoot)
+  if (target === base) return { kind: 'same', relative: '' }
+  if (!target.startsWith(`${base}/`)) return { kind: 'outside', relative: '' }
+  const relative = normalizeScopePath(slashedTarget.slice(slashedRoot.length + 1))
+  return { kind: 'inside', relative }
+}
+
 export function classifyTarget(raw: string, base: string | undefined, root: string | undefined): TargetClass {
   const text = String(raw ?? '').trim()
   // 设备节点先归类：它们永远不是工作区文件（不参与判定，而不是"当成越界写"）
@@ -208,11 +250,12 @@ export function classifyTarget(raw: string, base: string | undefined, root: stri
   const absolute = resolve(anchor, text)
   const boundary = String(root ?? '').trim() === '' ? anchor : String(root).trim()
   const normalizedRoot = resolve(boundary)
-  const withSlash = `${normalizedRoot.replace(/\/+$/u, '')}/`
-  if (absolute === normalizedRoot) return { kind: 'inside', relative: '.' }
-  if (absolute.startsWith(withSlash)) {
-    const relative = normalizeScopePath(absolute.slice(withSlash.length))
-    return relative === '' ? { kind: 'unresolved', raw: text } : { kind: 'inside', relative }
+  // **DEF-154**：比较走 `workspaceRelation`（分隔符归一 + 目录边界；win32 才忽略大小写），
+  // 不再在这里拼 `${root}/` —— 那个硬编码的 `/` 在 Windows 上让前缀判定恒 false。
+  const relation = workspaceRelation(absolute, normalizedRoot, { caseInsensitive: process.platform === 'win32' })
+  if (relation.kind === 'same') return { kind: 'inside', relative: '.' }
+  if (relation.kind === 'inside') {
+    return relation.relative === '' ? { kind: 'unresolved', raw: text } : { kind: 'inside', relative: relation.relative }
   }
-  return { kind: 'outside', absolute: absolute.replace(/\\/gu, '/') }
+  return { kind: 'outside', absolute: toPosixPath(absolute) }
 }
