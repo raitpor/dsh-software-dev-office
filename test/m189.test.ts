@@ -345,7 +345,7 @@ test('M189-09 §3.1（DEF-096）：符号支路也"引用自己那一行不算" 
 test('M189-10 §3.2（DEF-095）：交付注释里的符号引用自己必须可解析（注释与实现同源）+ 反例', () => {
   // 引用面 = `test/docRefs.ts` 自己；见证面 = src + test（含 helper）+ docs
   const faces = repoDocFaces(ROOT)
-  const witnesses = [...faces.witnesses, ...walkTs(join(ROOT, 'test'))]
+  const witnesses = [...faces.witnesses, ...walkTs(join(ROOT, 'test')).map((path) => path.replace(/\\/gu, '/'))]
   // **DEF-155**：引用面同样折 `/`（见证面已归一，未归一时 citation 永远对不上）
   const issues = checkDocFiles([join(ROOT, 'test', 'docRefs.ts').replace(/\\/gu, '/')], witnesses)
   const dangling = issues.filter((issue) => issue.kind === 'dangling-id')

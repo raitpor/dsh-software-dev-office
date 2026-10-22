@@ -176,7 +176,9 @@ export function checkDocs(docs: readonly DocText[], witnesses: readonly DocText[
         // **候选口径（`DEF-091` 起）**：只认**结构上最近的那一个**标识符 token（`citation.candidates`
         // 由 `symbolAfter` 按"无第二个路径 token + 间隔 ≤ `CITATION_GAP_MAX`"选出，**只向右、至多 1 个**），
         // 不再是"引用行里所有反引号词" —— 后者会让行里别处一个真词把真悬空喂饱（S2 绿 / S3 红，同形不同判）。
-        const target = witnesses.find((other) => other.path.endsWith(citation.path as string))
+        // **DEF-155**：按 `/` 归一后比较 —— win32 上见证面是 `\\`、引用面是 `/`，直接 endsWith 永远落空。
+        const asPosix = (value: string): string => value.replace(/\\/gu, '/')
+        const target = witnesses.find((other) => asPosix(other.path).endsWith(asPosix(citation.path as string)))
         const candidates = citation.candidates ?? [citation.symbol as string]
         // **`DEF-096`（第十批 §3.1）**：`DEF-` 号支路早有"引用自己那一行不算"，符号支路此前没有 ⇒
         // 把引用写在**被指文件自己**里时**恒可解析**（自解析）。现在同口径：引用那一行**不算数**，
