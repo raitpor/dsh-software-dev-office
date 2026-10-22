@@ -56,6 +56,7 @@ import { loadPackagedYaml } from '../src/infra/data.js'
 import { SdoStore } from '../src/infra/store.js'
 import { apply } from '../src/index.js'
 import type { EvidenceItem, TaskCard } from '../src/types.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm108')
@@ -336,7 +337,7 @@ test('M108-07 no self-description claims the two columns are empty ledger-wide; 
   }
 })
 
-test('M108-08 TC-143：真账里那些散文声明**不再判红**（判据 ok=true），且判据**只读** ⇒ 存量零迁移', async () => {
+test('M108-08 TC-143：真账里那些散文声明**不再判红**（判据 ok=true），且判据**只读** ⇒ 存量零迁移', realLedgerSkip() ?? {}, async () => {
   const { createHash } = await import('node:crypto')
   const { readdirSync, readFileSync } = await import('node:fs')
   const { join } = await import('node:path')

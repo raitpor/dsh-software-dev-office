@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import { parseYaml, stringifyYaml, YamlSubsetError, YamlWriteError } from '../src/infra/yaml.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
@@ -218,7 +219,7 @@ test('M169-06 TC-121：**4000 抽样**随机扫地 —— 键由特殊字符随�
   assert.equal(bad.length, 0, `4000 抽样必须 0 坏结局（前 5 例：${bad.slice(0, 5).join('；')}）`)
 })
 
-test('M169-07 TC-121：`.sdo` 存量 yml **全部读回 0 失败**（存量零破坏的机械读数）', () => {
+test('M169-07 TC-121：`.sdo` 存量 yml **全部读回 0 失败**（存量零破坏的机械读数）', realLedgerSkip() ?? {}, () => {
   const root = join(ROOT, '.sdo')
   // **自己的遍历器**（不用 `readdirSync({recursive:true})`）：`.sdo/evidence/**` 里有历史快照树，
   // 其中带**悬空软链**（`readdirSync` 递归会跟着走 ⇒ ENOENT）。这里跳过软链、只收普通文件。

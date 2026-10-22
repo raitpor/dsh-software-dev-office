@@ -265,7 +265,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m19.test.ts': 48, 'test/m190.test.ts': 20, 'test/m192.test.ts': 7, 'test/m193.test.ts': 9,
   'test/m195.test.ts': 3, 'test/m196.test.ts': 9, 'test/m197.test.ts': 5, 'test/m198.test.ts': 1,
   'test/m199.test.ts': 14, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m204.test.ts': 5,
-  'test/m205.test.ts': 1, 'test/m206.test.ts': 2, 'test/m207.test.ts': 1, 'test/m208.test.ts': 1, 'test/m209.test.ts': 7, 'test/m21.test.ts': 16, 'test/m210.test.ts': 9,
+  'test/m205.test.ts': 1, 'test/m206.test.ts': 2, 'test/m207.test.ts': 1, 'test/m208.test.ts': 1, 'test/m209.test.ts': 7, 'test/m21.test.ts': 16, 'test/m210.test.ts': 9, 'test/m211.test.ts': 2,
   'test/m22.test.ts': 21, 'test/m23.test.ts': 64, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20,
   'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6,
   'test/m3.test.ts': 27, 'test/m30.test.ts': 13, 'test/m31.test.ts': 15, 'test/m32.test.ts': 45,
@@ -410,7 +410,7 @@ test('M189-12 §3.2（DEF-096）：符号存在性判定不许被**超串**喂�
 })
 
 test('M189-13 §3.3（DEF-093 第十一批）：**枚举补全** —— 「行内没有该中文但被登记」的 6 个站点逐个点名 + 反例', () => {
-  // V24 实测：§8.6 修法③只点名 **3** 个新站点（`test/m108.test.ts:245`、`test/m29.test.ts:42`、`test/m81.test.ts:275`），
+  // V24 实测：§8.6 修法③只点名 **3** 个新站点（`test/m108.test.ts:246`、`test/m29.test.ts:42`、`test/m81.test.ts:275`），
   // 而现算共 **6** 个 ⇒ **少报**（不是错报）。本格把枚举**钉住**：这 6 个（且只有这 6 个）允许"行内没有该中文"，
   // 其余 **2247** 个候选站点（**2253 − 6 = 2247**）**必须**在那一行里真出现该中文。多一个、少一个、换位置都红。
   // **第十二批的现算账**：`2253 = label 67 + 读散文 2186`；相对第十一批的 `2263`（读散文 2196）**−10** ——
@@ -426,7 +426,7 @@ test('M189-13 §3.3（DEF-093 第十一批）：**枚举补全** —— 「行�
     .filter((site) => !((rawLines.get(site.path) ?? [])[site.line - 1] ?? '').includes(site.literal))
     .map(siteKey)
   const KNOWN = [
-    `${'test/m1'}08.test.ts:245`, // 中文绑在 `PROSE_RESPONSIBILITY` 常量上，断言那一行只有常量名
+    `${'test/m1'}08.test.ts:246`, // 中文绑在 `PROSE_RESPONSIBILITY` 常量上，断言那一行只有常量名（DEF-153 补 import 后整体 +1 行）
     `${'test/m1'}3.test.ts:639`,  // 中文绑在 `why` 变量上，断言那一行只有 `new RegExp(why)`
     `${'test/m1'}3.test.ts:649`,  // 同上（第二处）
     'test/m189.test.ts:102',      // 中文绑在 `body` 变量上，断言那一行只有 `carrier('r17', body)`

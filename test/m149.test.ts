@@ -43,6 +43,7 @@ import type { ConstructionProfile } from '../src/domain/construction.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { SdoStore } from '../src/infra/store.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m149/', import.meta.url))
 const WORKSPACE = join(BASE, 'proj')
@@ -201,7 +202,7 @@ test('M149-05 既有的另一条腿不许被放宽：写范围含契约面的卡
   assert.equal(gapCodes(surface).includes('contract-test-missing'), true, `契约面的卡必须判红（防"顺手全判 N/A"）：${JSON.stringify(gapCodes(surface))}`)
 })
 
-test('M149-06 TC-135：零写盘用 `readdirSync` **逐项**比对；真账存量「`requires` 非空」仍为 0（不回填、不据此判红）', async () => {
+test('M149-06 TC-135：零写盘用 `readdirSync` **逐项**比对；真账存量「`requires` 非空」仍为 0（不回填、不据此判红）', realLedgerSkip() ?? {}, async () => {
   requirement('REQ-001')
   const dir = join(BASE, '.sdo', 'contracts')
   const listing = (): string[] => {

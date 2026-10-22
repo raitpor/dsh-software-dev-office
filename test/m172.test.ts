@@ -32,6 +32,7 @@ import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { TaskCard } from '../src/types.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m172/', import.meta.url))
 const WORKSPACE = join(BASE, 'proj')
@@ -128,7 +129,7 @@ test('M172-03 纯函数面：材料齐时 uuid 有交集判红、无交集不判
   assert.equal(independenceViolations([{ ...review, reviewer: 'dev-a', sessionId: undefined }], tasks).length, 1, '没有材料 + 名字相同 ⇒ 旧口径判红')
 })
 
-test('M172-05 TC-125：真账评审**全部**带会话 uuid；收窄后判红只点名 REV-055（REV-068 转留痕）', () => {
+test('M172-05 TC-125：真账评审**全部**带会话 uuid；收窄后判红只点名 REV-055（REV-068 转留痕）', realLedgerSkip() ?? {}, () => {
   // 真台账（仓库自己的 `.sdo/`）——只读：这条读数的作用是"口径覆盖到存量了吗"，不是再造一个夹具
   const repo = fileURLToPath(new URL('../../', import.meta.url))
   const realOffice = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))

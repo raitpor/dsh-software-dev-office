@@ -20,6 +20,7 @@ import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const TEST_DIR = join(ROOT, 'test')
@@ -162,7 +163,7 @@ test('M207-01 静态（性质断言）：任何用例的 store/journal 根都不
   assert.deepEqual(leaks, [], `这些用例把夹具根指向了项目台账（DEF-029 的形态）：\n${leaks.join('\n')}`)
 })
 
-test('M207-02 动态（性质断言）：真跑一次缺陷追溯判据，项目台账三路读数逐字不变', () => {
+test('M207-02 动态（性质断言）：真跑一次缺陷追溯判据，项目台账三路读数逐字不变', realLedgerSkip() ?? {}, () => {
   const before = ledgerReadings()
   // 夹具：一条已基线 must 需求 + 一条**没有任何 req-defect 边**的缺陷 ⇒ C-58 会判红（真的跑起来，不是空跑）
   office.storeFor(WORKSPACE).writeYaml(['requirements', 'REQ-001.yml'], {

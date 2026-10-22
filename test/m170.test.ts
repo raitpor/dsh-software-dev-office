@@ -26,6 +26,7 @@ import { Journal } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
 import type { SdoConfig } from '../src/config.js'
 import type { TaskCard } from '../src/types.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m170/', import.meta.url))
 
@@ -185,7 +186,7 @@ test('M170-04 结构：工具面两个参数都注册（否则模型根本传不
   }
 })
 
-test('M170-05 TC-130：两条拒绝的**码**（不是只看文案）+ 真账 18 条存量**读侧不追溯、不抛错**', async () => {
+test('M170-05 TC-130：两条拒绝的**码**（不是只看文案）+ 真账 18 条存量**读侧不追溯、不抛错**', realLedgerSkip() ?? {}, async () => {
   const { reviewReproIssue } = await import('../src/domain/records.js')
   // ① 码是机器可判的那一层：文案会改，码不该改（TC-130 原先只查文案）
   assert.equal(reviewReproIssue({ verdict: 'changes-requested' })?.code, 'repro-missing', '两手空空 ⇒ repro-missing')

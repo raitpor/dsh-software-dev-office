@@ -38,6 +38,7 @@ import { listReviews, reviewContentHash } from '../src/domain/records.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { SdoStore } from '../src/infra/store.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m151/', import.meta.url))
 const WORKSPACE = join(BASE, 'proj')
@@ -196,7 +197,7 @@ test('M151-06 存量口径 + 工具面：不声明照旧可追加；真实注册
   assert.equal(reviewContentHash(review), reviewContentHash({ ...review, findings: review.findings.slice(0, review.sealedFindings ?? review.findings.length) }), '封印前缀之外的内容不参与指纹（既有 54 条评审的指纹口径未变）')
 })
 
-test('M151-07 TC-147：拒绝前后评审文件**逐字节**不变（不是只看条数）；历史条号矛盾文本**不回填**', async () => {
+test('M151-07 TC-147：拒绝前后评审文件**逐字节**不变（不是只看条数）；历史条号矛盾文本**不回填**', realLedgerSkip() ?? {}, async () => {
   // ① 三种拒绝（超界 / 重号 / 跳号）各跑一次，每次都做**逐字节**快照
   seedReview()
   // 目录级快照：拒绝前后 `reviews/` 的文件清单不变（新文件、临时文件都不许留）

@@ -29,6 +29,7 @@ import { listReviews, reviewContentHash } from '../src/domain/records.js'
 import type { Review } from '../src/domain/records.js'
 import { Journal } from '../src/infra/journal.js'
 import type { SdoStore } from '../src/infra/store.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m177/', import.meta.url))
@@ -258,7 +259,7 @@ test('M177-06 结构：判据在注册表里、挂在 **G6**、四个流程文�
   assert.match(lines[0] as string, /defects\.fixed-reviewed/u, 'C-66 必须用同一条 `check` 键')
 })
 
-test('M177-07 TC-149：C-65 / C-66 **二分且交集恒空**（8 个分支全建全）+ 存量零破坏（指纹与 journal 逐条一致）', () => {
+test('M177-07 TC-149：C-65 / C-66 **二分且交集恒空**（8 个分支全建全）+ 存量零破坏（指纹与 journal 逐条一致）', realLedgerSkip() ?? {}, () => {
   // 八个分支 = 「缺陷状态 fixed/closed」×「有没有 pass TR」×「有没有已采纳评审」
   const reset = (): void => {
     rmSync(BASE, { recursive: true, force: true })
