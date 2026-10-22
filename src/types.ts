@@ -2463,20 +2463,48 @@ export interface Release {
  * 三种输出来源互斥：进了某版的范围（`targetVersion`）/ 被当前版明确顺延（`deferredTo` 一族）/
  * 一份 release 都没有（`unknown`）。`failClosed` 标的是"没有任何集合点名它，靠缺省归入当前版"
  * （规格 R8/R9：没规划过就得管）。
+ *
+ * 本接口是**基形状**；派生侧真正返回的是细分面 `DerivedVersionDetail`（多两处区分标记，见其注释）。
  */
 export interface DerivedVersion {
   /** 目标版本（＝它所在 release 的包版本）。 */
   targetVersion?: string | undefined
-  /** 顺延到的版本（`AC-277` 的留痕面）。 */
+  /** 顺延到的版本（`AC-277` 的留痕面）；集合里**还没有**下一版时留空，见 `deferredTargetKnown`。 */
   deferredTo?: string | undefined
   /** 顺延理由。 */
   deferReason?: string | undefined
   /** 顺延批准人（只认 human）。 */
   deferApprovedBy?: string | undefined
-  /** 登记这次顺延的那一版；与 `deferredTo` 相等即"顺延目标版本尚未在册"。 */
+  /**
+   * 登记这次顺延的那一版。**注意它只点名"谁登记的"**：目标版本在不在册由 `deferredTargetKnown`
+   * 说话，不再用它与 `deferredTo` 相等来暗示（那会把两态压成一种编码）。
+   */
   deferredFrom?: string | undefined
   /** 缺省归入当前版本（既不在 scope、也不在当前版的 nonScope 里）。 */
   failClosed?: boolean | undefined
   /** 一份 release 都没有 ⇒ 派生不出（**显式说不知道**，别当它属于本版）。 */
   unknown?: boolean | undefined
+}
+
+/**
+ * 派生结果的**细分面**：`DerivedVersion` 之上再加两处显式区分标记（`REV-076` findingIndex 第 2 / 3 条）。
+ *
+ * 为什么这两处必须分开（两处双义，混用会让下游误判）：
+ * · `deferredTargetKnown` —— 顺延目标"在册"与"未在册"若共用 `deferredTo` 一个键，下游读到
+ *   `deferredTo` 与 `deferredFrom` 相等时分不清「顺延到本版」（与 `nonScope` 的「明确不进本版」直接矛盾）
+ *   与「目标版本尚未在册」。现在：有值 ⇒ 目标在册；留空 + `false` ⇒ 目标未在册；两个键都没有 ⇒ 不涉及顺延。
+ * · `landedFrom` —— `failClosed` 只表「从没规划过」；「只在**旧版** `nonScope` 里、且顺延目标已到账」
+ *   是**另一类**（规划过且到账），归入当前版参与判定，但用这个键单独点名，两类不共用一个标记。
+ *
+ * 放在这里（而不是派生实现所在的域模块）：只按 `DerivedVersion` 标注的消费方也要能看见这两个字段，
+ * 否则消费方拿到派生结果时类型面是残缺的。
+ */
+export interface DerivedVersionDetail extends DerivedVersion {
+  /** 顺延目标版本是否**已在册**：与 `deferredTo` 配对，`false` ⇒ `deferredTo` 留空（目标未在册）。 */
+  deferredTargetKnown?: boolean | undefined
+  /**
+   * 顺延**到账**：这条实体只在**旧版** `nonScope` 里、且顺延目标已到账（登记它的那一版严格早于当前版），
+   * 值＝登记那次顺延的那一版的包版本。与 `failClosed` **互斥**（后者只表"从没规划过"）。
+   */
+  landedFrom?: string | undefined
 }

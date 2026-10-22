@@ -66,7 +66,7 @@
 import type { Journal } from '../infra/journal.js'
 import { typeNameOf, textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
-import type { DerivedVersion, Release, ReleaseNote, ReleaseScope } from '../types.js'
+import type { DerivedVersionDetail, Release, ReleaseNote, ReleaseScope } from '../types.js'
 
 /** release 文件所在子目录（相对 `.sdo/`）。 */
 export const RELEASE_DIR = 'releases'
@@ -75,26 +75,12 @@ export const RELEASE_DIR = 'releases'
 export const HUMAN_APPROVER = 'human'
 
 /**
- * `deriveFor` 的返回形状＝`DerivedVersion`（`src/types.ts` 的通用面）**加上**两处显式区分标记。
+ * `deriveFor` 的返回形状＝`src/types.ts` 的 `DerivedVersionDetail`（基形状 `DerivedVersion` 加上两处
+ * 显式区分标记 `deferredTargetKnown` / `landedFrom`；为什么必须分开写在那个接口上，这里不重述）。
  *
- * 为什么这两处必须分开（`REV-076` findingIndex 第 2 / 3 条）：
- * · `deferredTargetKnown` —— `deferredTo` 由"有下一版"与"目标未在册"共用会出**双义**（见文件头）；
- * · `landedFrom` —— `failClosed` 兼表"从没规划过"与"只在旧版 nonScope 里且顺延已到账"会出**双义**。
- * 于是派生结果里三类实体各带各的键，判据回执（`C-71`，后续卡）据此**分开点名**，不必再猜。
- *
- * 为什么本接口落在本文件、而不是直接把字段加进 `types.ts` 的 `DerivedVersion`：这张卡的写范围只到
- * `src/domain/release.ts` 与 `test/m213.test.ts`（`TASK-181`）。`DerivedVersion` 仍是有意义的**基形状**
- * （结构上是本接口的子集），本接口只是在派生这一侧把它收细。类型基座与派生契约要不要合一，属后续卡。
+ * 为什么类型落在 `types.ts` 而不是本文件：只按基形状标注的消费方也要看见这两个字段 —— 类型留在实现模块里，
+ * 消费方拿到派生结果时类型面就是残缺的（本卡把上一轮临时挂在这里的接口收进了通用面）。
  */
-export interface DerivedVersionDetail extends DerivedVersion {
-  /** 顺延目标版本是否**已在册**：与 `deferredTo` 配对，`false` ⇒ `deferredTo` 留空（目标未在册）。 */
-  deferredTargetKnown?: boolean | undefined
-  /**
-   * 顺延**到账**：这条实体只在**旧版** `nonScope` 里、且顺延目标已到账（登记它的那一版严格早于当前版），
-   * 值＝登记那次顺延的那一版的包版本。与 `failClosed` **互斥**（后者只表"从没规划过"）。
-   */
-  landedFrom?: string | undefined
-}
 
 /**
  * `r-x.y.z` 形态（`AC-278`）。允许一个**可选**后缀（`r-0.1.7-hotfix`）—— 那是"一个包版本含多个 release"
@@ -312,8 +298,12 @@ export function readRelease(store: SdoStore, id: string): Release | undefined {
   return release
 }
 
-/** 目录里的 release id（按文件名，字典序）。 */
-export function listReleaseIds(store: SdoStore): string[] {
+/**
+ * 目录里的 release id，顺序＝**文件名序**（字典序），**不是版本语义序**（`r-0.1.10` 会排在 `r-0.1.9`
+ * 前面）。名字把口径写进签名，因为下游拿到一个"看起来像按版本排好"的数组最容易踩的坑就是这个；
+ * 要版本语义序请走 `currentRelease` / `deriveFor`（它们内部用 `compareVersion` 重排，不依赖入参顺序）。
+ */
+export function listReleaseIdsByName(store: SdoStore): string[] {
   return store
     .listNames(RELEASE_DIR)
     .filter((name) => name.endsWith('.yml'))
@@ -321,10 +311,15 @@ export function listReleaseIds(store: SdoStore): string[] {
     .sort()
 }
 
-/** 目录里的全部 release（按 id 字典序；读不动的那份会**报错**，不会被静默跳过）。 */
+/**
+ * 目录里的全部 release，顺序同样＝**文件名序**（沿用 `listReleaseIdsByName`），**不表示版本先后**。
+ *
+ * 读不动的那份会**报错**（点名文件与字段），不会被静默跳过：`.sdo/**\/*.yml` 是手可编辑真源，
+ * 静默跳过等于让它永远不参与判定。
+ */
 export function listReleases(store: SdoStore): Release[] {
   const out: Release[] = []
-  for (const id of listReleaseIds(store)) {
+  for (const id of listReleaseIdsByName(store)) {
     const release = readRelease(store, id)
     if (release !== undefined) out.push(release)
   }
