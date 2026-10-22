@@ -1,4 +1,4 @@
-<!-- method-doc: package=oo; basis=fd8159ed15af -->
+<!-- method-doc: package=oo; basis=dd91f36f8490 -->
 # 面向对象方法产物 · 人审文档
 
 > 本文是 **`oo` 方法包的人审文档**（G3 判据 C-2F）。文档头的 `basis` 是本包方法产物在台账里的**内容指纹**：
@@ -10,7 +10,7 @@
 | 问题 | 对应产物 | 本文章节 |
 |---|---|---|
 | 系统里有哪些类型、各自负责什么、跟谁协作、属于哪一层 | 类/接口清单（43 条） | §2 |
-| 关键用例怎么在类型之间跑完（消息的发送者、接收者、触发条件） | 关键用例时序（17 条） | §3 |
+| 关键用例怎么在类型之间跑完（消息的发送者、接收者、触发条件） | 关键用例时序（22 条） | §3 |
 | 层与层之间允许谁依赖谁，现状与规则差在哪 | 分层/包依赖规则 | §4 |
 
 **已验证的机械口径**：每个类型必须给出协作方（显式声明 `leaf: true` 的叶子类型豁免）；每条时序的参与者必须已登记为类型；每条功能/界面类 must 需求必须有对应时序（约束/质量类需求豁免）。
@@ -95,7 +95,7 @@
 |---|---|---|
 | TYPE-043 | `使用者` | STK-01；人类关口的唯一签字人：门禁签字、计划评审、报告与验收签字 |
 
-## 3. 关键用例时序（17 条）
+## 3. 关键用例时序（22 条）
 
 每条时序都列出**参与者**与**覆盖的需求**；消息三要素（发送者 / 接收者 / 触发条件）在 `.sdo/design/method-sequences.yml` 里逐条可见。
 
@@ -119,8 +119,12 @@
 | SEQ-021 | 测试域记录 | ToolSurface / TestLedger / SdoStore | REQ-017 |
 | SEQ-022 | 缺陷追溯（孤儿缺陷拦 G5） | 使用者 / ToolSurface / TestLedger / SdoStore / GateEvaluator | REQ-058 |
 | SEQ-023 | 测试报告签署与验证门禁放行 | ToolSurface / GateEvaluator / ReviewPayload / SignatureLedger / SdoStore / 使用者 | REQ-059, REQ-051 |
+| SEQ-024 | 发布计划层的冻结与门禁分工 | 使用者 / ToolSurface / RequirementLedger / GateEvaluator / SignatureLedger / ChangeControl | REQ-063 |
+| SEQ-025 | 子代理并行写：相交可见、副本写、自行合并 | 使用者 / PlanDecomposer / WriteScope / HostSubagents | REQ-066 |
+| SEQ-026 | 过程证据随版本周期归档 | 使用者 / Evidence / SdoStore / SdoJournal / TestLedger | REQ-067 |
+| SEQ-027 | 评审独立性五项判定 | 使用者 / ReviewPayload / ReviewView / GateEvaluator / HostSubagents | REQ-062 |
 
-**覆盖口径**：全部功能／界面类 must 需求（42 条）都至少出现在一条时序的 `requires` 里；约束与质量类 must 需求（REQ-035…REQ-043）按设计豁免——它们没有可画的关键用例流程，改由质量场景（QS-001…QS-006）与不变量（INV-001…INV-011）承载。
+**覆盖口径**：全部功能／界面类 must 需求（48 条）都至少出现在一条时序的 `requires` 里；约束与质量类 must 需求（REQ-035…REQ-043）按设计豁免——它们没有可画的关键用例流程，改由质量场景（QS-001…QS-006）与不变量（INV-001…INV-011）承载。
 
 ## 4. 分层与包依赖规则
 

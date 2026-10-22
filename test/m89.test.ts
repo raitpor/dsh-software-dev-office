@@ -71,6 +71,56 @@ test('M89-01 文档里不许出现指向某台机器的本地绝对路径', () =
   assert.ok(docFiles().length >= 30, `文档清单可疑（只扫到 ${docFiles().length} 篇）`)
 })
 
+/**
+ * **本机运行痕迹**（不是"绑机器"，但也不该无节制增长）：会话 uuid、本地端口、`$HOME` 下写死的实例版本。
+ *
+ * 与 `M89-01` 的分工：`M89-01` 判**红**的是"换台机器就失效"的绝对路径（含用户名）；这里判的是
+ * **一次运行的标识**——它可移植（用 `$HOME`/变量写法），但会让文档带上"当时那台机器/那次会话"的痕迹。
+ * 历史文档不改（历史不重写），所以口径是**只许减不许增**的棘轮：新增一处就要在这里加数并说明理由。
+ */
+const RUNTIME_TRACE_PATTERNS: readonly RegExp[] = [
+  /session-[0-9a-f]{8}/u,                  // 会话 uuid 片段
+  /127\.0\.0\.1:\d+/u,                     // 本地端口
+  /\$HOME\/\.local\/share\/hdsl\/instances\//u, // 把本地实例布局+版本写进文档
+]
+
+/** 现值（2026-10-22 现算）。**只许减不许增**：减了就改成更小的数，增了必须写清为什么。 */
+const KNOWN_RUNTIME_TRACES: Readonly<Record<string, number>> = {
+  使用者文档: 25, // README/CHANGELOG/docs/skills 共 71 篇里，25 行带运行痕迹
+  评审档案: 51,   // .review 历史归档 50 篇里，51 行带运行痕迹（归档不改，只计数）
+}
+
+function runtimeTraceCount(files: string[]): { total: number; offenders: string[] } {
+  const offenders: string[] = []
+  let total = 0
+  for (const rel of files) {
+    readFileSync(join(ROOT, rel), 'utf8')
+      .split('\n')
+      .forEach((line, index) => {
+        if (!RUNTIME_TRACE_PATTERNS.some((pattern) => pattern.test(line))) return
+        total += 1
+        offenders.push(`${rel}:${index + 1}`)
+      })
+  }
+  return { total, offenders }
+}
+
+test('M89-04 本机运行痕迹（会话 id / 本地端口 / 写死的实例版本）只许减不许增', () => {
+  const scopes: [string, string[]][] = [
+    ['使用者文档', ['README.md', 'CHANGELOG.md', ...markdownUnder('docs'), ...markdownUnder('skills')]],
+    ['评审档案', markdownUnder('.review')],
+  ]
+  for (const [label, files] of scopes) {
+    const { total, offenders } = runtimeTraceCount(files)
+    const known = KNOWN_RUNTIME_TRACES[label] ?? 0
+    assert.ok(
+      total <= known,
+      `${label}里本机运行痕迹从 ${known} 处涨到 ${total} 处（新增处：${offenders.slice(-8).join('、')}）`
+        + '——新文档请用占位符（`<会话id>` / `<GUI 地址>` / `<实例目录>`）；若确有必要保留实例标识，请同步调高 KNOWN_RUNTIME_TRACES 并在此写明理由',
+    )
+  }
+})
+
 test('M89-02 docs/README.md 必须收录 docs/ 下每一篇文档，且不许有死链', () => {
   const indexRel = 'docs/README.md'
   const index = readFileSync(join(ROOT, indexRel), 'utf8')
