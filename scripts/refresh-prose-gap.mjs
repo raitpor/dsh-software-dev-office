@@ -42,7 +42,10 @@ export function computeGap() {
   const sites = extractProseSites(docs)
   const gap = {}
   for (const site of sites) {
-    const relative = site.path.replace(`${ROOT}/`, '')
+    // **DEF-155**：两边都折成正斜杠再剥仓库根 —— win32 上 ROOT 与文件路径都是 `\\`，
+    // 旧的 `` `${ROOT}/` `` 前缀永远不匹配，键就退化成绝对路径（棘轮比对必然不等）。
+    const posix = (value) => value.replace(/\\/gu, '/')
+    const relative = posix(site.path).replace(`${posix(ROOT)}/`, '')
     const verdict = classifySite(site, pack)
     if (verdict.cls !== 'prose') continue
     gap[relative] = (gap[relative] ?? 0) + 1

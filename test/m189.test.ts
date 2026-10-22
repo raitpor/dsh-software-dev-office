@@ -346,7 +346,8 @@ test('M189-10 §3.2（DEF-095）：交付注释里的符号引用自己必须可
   // 引用面 = `test/docRefs.ts` 自己；见证面 = src + test（含 helper）+ docs
   const faces = repoDocFaces(ROOT)
   const witnesses = [...faces.witnesses, ...walkTs(join(ROOT, 'test'))]
-  const issues = checkDocFiles([join(ROOT, 'test', 'docRefs.ts')], witnesses)
+  // **DEF-155**：引用面同样折 `/`（见证面已归一，未归一时 citation 永远对不上）
+  const issues = checkDocFiles([join(ROOT, 'test', 'docRefs.ts').replace(/\\/gu, '/')], witnesses)
   const dangling = issues.filter((issue) => issue.kind === 'dangling-id')
   assert.deepEqual(dangling, [], `docRefs.ts 注释里的符号引用必须都能解析（真名）：${JSON.stringify(dangling).slice(0, 400)}`)
   // ② 方向与数量必须与实现逐字相符（**措辞级**判据；行为面由 `M189-06`/`M189-07` 各自钉住：

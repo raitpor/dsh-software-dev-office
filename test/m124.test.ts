@@ -191,7 +191,7 @@ test('M124-06 DEF-074：工作区外的绝对路径必须**点名原始路径**�
   assert.equal(outside.code, 'write-scope-outside-workspace')
   // 产品报的是 `resolve()` 后的绝对路径；win32 上 `/tmp/x` 会落成 `D:/tmp/x`（DEF-155）
   assert.deepEqual(outside.violations, [resolve('/tmp/probe-abs-124.txt').replace(/\\/gu, '/')], '点名必须是**原始绝对路径**')
-  assert.equal(outside.detail.includes(resolve('/tmp/probe-abs-124.txt').replace(/\\/gu, '').replace(/^[A-Za-z]:/u, '').slice(1)), true)
+  assert.equal(outside.detail.includes('tmp/probe-abs-124.txt'), true)
   assert.equal(/^tmp\//u.test(outside.detail), false, '不得剥成工作区里并不存在的幽灵相对路径')
 
   // 设备节点不是工作区文件 ⇒ 不参与判定（TASK-090 的既有口径，不得回退）
@@ -324,7 +324,7 @@ test('M124-13 A3 残留（DEF-150）：空白不许改变设备节点的结论�
   assert.equal(outside.kind, 'deny', '带空白的工作区外绝对路径仍然是越界（不许因为修①把它一起放过）')
   if (outside.kind !== 'deny') assert.fail('工作区外写入必须拒绝')
   assert.equal(outside.code, 'write-scope-outside-workspace')
-  assert.deepEqual(outside.violations, ['/tmp/probe.txt'], '点名必须是原始绝对路径（不是剥掉前导斜杠的幽灵形态）')
+  assert.deepEqual(outside.violations, [resolve('/tmp/probe.txt').replace(/\\/gu, '/')], '点名必须是原始绝对路径（不是剥掉前导斜杠的幽灵形态；win32 下即 resolve 后的 D:/tmp/…，DEF-155）')
   assert.equal(/(?:^|[^/])tmp\/probe\.txt/u.test(outside.detail), false, `detail 里不许出现幽灵形态 tmp/probe.txt：${outside.detail}`)
 
   // ③ **归属三类**在同一处可区分：设备节点 / 工作区外 / 工作区内（在卡写范围内）
@@ -339,7 +339,7 @@ test('M124-13 A3 残留（DEF-150）：空白不许改变设备节点的结论�
     [shape(device), shape(outside), shape(inside)],
     [
       { kind: 'allow', code: '', violations: [] },
-      { kind: 'deny', code: 'write-scope-outside-workspace', violations: ['/tmp/probe.txt'] },
+      { kind: 'deny', code: 'write-scope-outside-workspace', violations: [resolve('/tmp/probe.txt').replace(/\\/gu, '/')] },
       { kind: 'allow', code: '', violations: [] },
     ],
     '三类必须一处可区分：设备节点放行 / 工作区外拒绝并点名原始绝对路径 / 工作区内（卡写范围内）放行',
