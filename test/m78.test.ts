@@ -137,10 +137,21 @@ test('M78-04 R-12：判据按"是否产出产品工件"筛，而不是只排 rol
   }
   // 混合 ⇒ 是产品卡
   assert.equal(producesProductArtifacts({ writeScopes: ['docs/', 'lib/core.js'] }), true)
-  // 接线：两条评审判据都要用它（C-42 与 C-45 同源）
+  // 接线：两条评审判据都要按「是否产出产品工件」筛（C-42 与 C-45 同源）
+  //
+  // **`TASK-195`（谓词搬家，语义不放宽）**：`C-42`（`review.required`）的考虑集搬进了
+  // `collab.ts` 的 `bigCardReviewVerdict` / `pendingReviewBigCards`（完成点硬拦截与状态块
+  // 共用同一个函数 —— `DEF-044`：同一概念两处判据必然分叉）。因此接线断言改成**两条判据各指到
+  // 各自的落点**，而不是数同一个文件里的字面量：
+  //   · `C-45`（`review.independent`）在本文件里直接调 `producesProductArtifacts(task)`；
+  //   · `C-42` 走共享函数，而共享函数里必须真的用同一个谓词（`producesProductArtifacts(card)`）。
   const gates = readFileSync(join(ROOT, 'src', 'domain', 'gates.ts'), 'utf8')
+  const collab = readFileSync(join(ROOT, 'src', 'domain', 'collab.ts'), 'utf8')
   const uses = gates.match(/producesProductArtifacts\(task\)/gu) ?? []
-  assert.ok(uses.length >= 2, `review.independent 与 review.required 都要用它（实际 ${uses.length} 处）`)
+  assert.ok(uses.length >= 1, `C-45（review.independent）必须自己按产品工件筛（实际 ${uses.length} 处）`)
+  const shared = collab.match(/producesProductArtifacts\(card\)/gu) ?? []
+  assert.ok(shared.length >= 1, `共享判据（bigCardReviewVerdict）必须用同一个谓词（实际 ${shared.length} 处）`)
+  assert.match(gates, /pendingReviewBigCards\(ctx\.store, ctx\.journal\)/u, 'C-42 必须消费共享判据，不许另写一份过滤')
 })
 
 // ————————————————————————— R-13 —————————————————————————

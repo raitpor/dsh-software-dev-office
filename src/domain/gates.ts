@@ -124,7 +124,14 @@ import { channelLabel, signoffInput, signatureInvalidatingEventLine, signatureSt
 import { checkWantsShapeNotes, collectShapeNotes, shapeNoteLines, shapeNotesForCheck } from './shapeNotes.js'
 import { assessDefectLinks, defectLinksExemptionLines, defectLinksRemedy, describeDefectLinks, readLinksChecked, report } from './trace.js'
 import { iterationTasks, listTasks, planStats, readIteration, textPathsOf, validatePlan } from './plan.js'
-import { declaredItemVerdict, fixesRemedy, fixStatusRows, mitigatesRemedy, mitigatesRows } from './collab.js'
+import {
+  declaredItemVerdict,
+  fixesRemedy,
+  fixStatusRows,
+  mitigatesRemedy,
+  mitigatesRows,
+  pendingReviewBigCards,
+} from './collab.js'
 import { claimedSessionsByCard } from './roles.js'
 import { independenceAudit } from '../integration/orchestrator.js'
 import {
@@ -3007,35 +3014,23 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
    * 两条的口径不冲突：G5 更早、更窄；G6 更晚、更全。
    */
   'review.required': (ctx) => {
-    const tasks = listTasks(ctx.store)
-    // **SDO-35（真机）**：**评审卡不参与这条判据**，否则每批评审卡又要被评审（自我递归：TASK-142/147 先后被点名）；
-    // 而"再评一次"在池子里不成立（可复用的 reviewer 只有一个，派发器无法保证评审者 ≠ 卡 owner）。
-    // **R-12**：同一条机械判据（不产出产品工件的卡不进这个集合）
-    const big = tasks.filter(
-      (task) => task.status === 'done' && (task.size === 'medium' || task.size === 'large')
-        && task.role !== 'reviewer'
-        && producesProductArtifacts(task),
-    )
-    if (big.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
-    // 与 G6/C-52 **同一份采纳口径**（2026-10-08）：`pass` 评审必须**已核实采纳**才算数 ——
-    // 否则"有通过评审"的账在那里、发现却没人核实过，G5 就先放行了（两条判据不许各写一份）。
+    /**
+     * **口径不在这里**（`TASK-195`）：考虑集（`size ≥ medium` / 非 `reviewer` / 产出产品工件）与
+     * 采纳口径（`pass` 必须已被核实采纳）都搬进了 `collab.ts` 的 `pendingReviewBigCards` ——
+     * 同一个函数**三处共用**：本判据、`sdo_task action=done` 的完成点硬拦截、状态块的「待评审中大卡」那一行。
+     *
+     * 为什么必须共用一个出口：`DEF-044` 的教训（同一概念两处判据必然分叉）在这里后果翻倍 ——
+     * 完成点拦了、门禁却绿（或反之），真机上就会演变成"按哪条算"的争论。
+     * 本文件只负责**渲染**（i18n 棘轮基线 0，一个中文字面量都不许加）。
+     */
+    const set = pendingReviewBigCards(ctx.store, ctx.journal)
+    if (set.considered.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
     const reviews = listReviews(ctx.store)
     const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal).map((item) => [item.review.id, item]))
-    const missing: string[] = []
-    const unadopted: string[] = []
-    for (const task of big) {
-      const pass = reviews.filter((review) => review.taskId === task.id && review.verdict === 'pass')
-      if (pass.some((review) => adoptions.get(review.id)?.state === 'adopted')) continue
-      if (pass.length === 0) {
-        missing.push(task.id)
-        continue
-      }
-      unadopted.push(
-        `${task.id}（${pass
-          .map((review) => `${review.id}：${reviewAdoptionLabel(adoptions.get(review.id)?.state ?? 'unverified')}`)
-          .join('，')}）`,
-      )
-    }
+    const missing = set.missing
+    const unadopted = set.unadopted.map(
+      (row) => `${row.id}（${row.reviews.map((item) => `${item.id}：${reviewAdoptionLabel(item.state as never)}`).join('，')}）`,
+    )
     if (missing.length > 0 || unadopted.length > 0) {
       const parts: string[] = []
       const remedies: string[] = []
@@ -3049,10 +3044,10 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
       }
       return fail('review.required', parts.join('；'), remedies.join('；'))
     }
-    const legacy = adoptedPassIds(big.map((task) => task.id), reviews, adoptions)
+    const legacy = adoptedPassIds(set.considered, reviews, adoptions)
     return ok(
       'review.required',
-      fmt('uiGates.kWorkReviewOk', { p1: String(big.length) })
+      fmt('uiGates.kWorkReviewOk', { p1: String(set.considered.length) })
         + (legacy.length === 0 ? '' : '；' + fmt('uiGates.kReviewLegacyAdopted', { p1: legacy.join(' ') })),
     )
   },

@@ -37,6 +37,11 @@ beforeEach(() => {
   office.init(call(), { name: 'M4 测试', scale: 'normal', stakeholders: ['业务方'] })
   office.updateProject(call(), { scopeIn: ['对账'], scopeOut: ['自动调账'], metricsSuccess: ['识别率 ≥ 99%'], glossary: { 差异: '不一致记录' } })
   createEvidenceArtifact()
+  // **`TASK-195`**：本文件测协同协议 / 派发容量 / 迭代门禁，**不是**"完成点评审拦截"。
+  // 夹具里的卡来自结构通道（`size: medium` + 产品写范围），而那条拦截**默认开** ⇒
+  // 不显式关掉的话，这里的 `done` 会先被新闸门拦住（协同协议、容量、迭代三条用例会连带变红）。
+  // 关掉只是"本夹具不启用该开关"；判定逻辑与"关掉时回执明说"由 `test/m230.test.ts` 覆盖。
+  office.storeFor(workspace).writeYaml(['config.yml'], { process: 'waterfall', scale: 'normal', review: { requireOnDone: false } })
 })
 
 afterEach(() => {

@@ -70,14 +70,14 @@ import { linkMany, renderTraceReport, report, unlink } from './domain/trace.js'
 import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
-import { addErrata, claim, reassign, release, report as reportTask, staleClaims, unblock, updateTask } from './domain/collab.js'
+import { addErrata, claim, pendingReviewBigCards, reassign, release, report as reportTask, staleClaims, unblock, updateTask } from './domain/collab.js'
 import { staleEntryGateOf } from './domain/entryGate.js'
 import type { UnblockResult } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan  } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
 import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
 import type { DecomposeInput, DirtyRead, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
@@ -468,6 +468,24 @@ export interface StatusSnapshot {
    * **不声称**它们未被处置（插件判不出来），只提醒处置要落到改动或明确不修。
    */
   reproducedFindings?: { count: number; items: string[] } | undefined
+  /**
+   * **「待评审中大卡」（`TASK-195` 落点二）**：每轮可见，防「忘评审」的**副措施**。
+   *
+   * 读数与判据 `C-42`（`review.required`）、完成点硬拦截**走同一个现算函数**
+   * （`collab.ts` 的 `pendingReviewBigCards`）—— 不许另写一份口径（`DEF-044`）。
+   * 渲染放在本模块（`inject.ts` 被 i18n 棘轮钉在硬编码中文 0）：字段给**现算读数**，
+   * `line` 给**已经排好版的那一行**，注入块只负责 push。
+   */
+  reviewPendingBig?:
+    | {
+        /** 待评审中大卡张数（= `ids.length`，与 `C-42` 的点名集同源） */
+        count: number
+        /** 全部待评审卡 id（保序；渲染时最多列 5 个） */
+        ids: string[]
+        /** 已排好版的状态块行（`inject.ts` 原样 push） */
+        line: string
+      }
+    | undefined
   /** 当前阶段是否已进入"架构/设计"语境（按流程阶段 id 判断，不看项目类型） */
   designPhase?: boolean | undefined
   /**
@@ -556,6 +574,42 @@ const REJECT_KEY: Record<string, string> = {
  * 20 份足够覆盖"发现改坏了、回头找上一版"的实际窗口；同一个真源更早的旧稿按时间从最旧删起。
  */
 export const FILE_HISTORY_KEEP = 20
+
+/**
+ * 状态块里「待评审中大卡」最多**列出**几张卡 id（`TASK-195` 落点二）。
+ *
+ * 为什么设上限：状态块有字符硬上限（`statusChars`，默认 1500）。这条行是**每轮可见**的提醒，
+ * 不是台账导出 —— 真账上一旦累积几十张，逐张列会把整块挤爆（其余状态全被截断），
+ * 而"还有几张没列"用一句话说清就够（`等 N 张`），全量清单在 `sdo_status` / G5 判据里。
+ */
+export const REVIEW_PENDING_BIG_SHOWN = 5
+
+/**
+ * 拆卡时注入的那条 DoD（`TASK-195` 落点三）。措辞就是需求原文，**不要**在这里加编号或前缀：
+ * `hasIndependentReviewDod` 靠它做去重判据，改一句话就等于换一个判据（历史卡里已有的写法也认）。
+ */
+export const INDEPENDENT_REVIEW_DOD = '已通过独立评审（评审者≠作者）'
+
+/** 这张卡是否需要「独立评审」这条 DoD（= `C-42` 考虑集里与 DoD 相关的那两个谓词）。 */
+export function needsIndependentReviewDod(card: Pick<TaskCard, 'size' | 'role' | 'writeScopes'>): boolean {
+  return (card.size === 'medium' || card.size === 'large')
+    && card.role !== 'reviewer'
+    && producesProductArtifacts(card)
+}
+
+/**
+ * DoD 里**已经有同义条目**了吗（`TASK-195` 落点三的"不重复注入"）。
+ *
+ * 同义的判定刻意放宽：认得「独立评审」这个短语，也认得「评审者≠作者」这条口径
+ * （`≠` 与 `!=` 两种写法都算），因为人手写的卡面通常就是这两种形式。
+ * 判不出来的会再注入一条 —— 代价是卡面多一行，不会漏判。
+ */
+export function hasIndependentReviewDod(dod: readonly unknown[]): boolean {
+  return dod.some((item) => {
+    const text = textOf(item)
+    return /独立评审/u.test(text) || /评审者\s*(?:≠|!=)\s*作者/u.test(text)
+  })
+}
 
 export class SoftwareDevOffice {
   /** 会话 → 工作目录。多会话并存在不同目录时也不会串。 */
@@ -1151,6 +1205,23 @@ export class SoftwareDevOffice {
           .filter((item) => item.outcome === 'reproduced')
           .map((item) => `${item.reviewId}#${item.index + 1}`)
         return { count: [...new Set(items)].length, items: [...new Set(items)] }
+      })(),
+      // **`TASK-195` 落点二**：待评审的中大卡每轮都要看得见（副措施）。
+      // 现算**不在这里**：`pendingReviewBigCards` 是 `C-42` 与完成点硬拦截共用的那一个函数
+      // （三处一份口径）；本处只把它渲染成一行 —— 注入块（`inject.ts`）被 i18n 棘轮钉在 0 个中文，
+      // 所以排版留在本模块（本文件本来就有用户可见文案），注入块只 push 这一行。
+      reviewPendingBig: (() => {
+        const set = pendingReviewBigCards(store, new Journal(store))
+        if (set.pending.length === 0) return undefined
+        const shown = set.pending.slice(0, REVIEW_PENDING_BIG_SHOWN)
+        const more = set.pending.length > shown.length ? ` 等 ${set.pending.length} 张` : ''
+        return {
+          count: set.pending.length,
+          ids: set.pending,
+          line: `待评审中大卡 ${set.pending.length} 张：${shown.join(' ')}${more}`
+            + ` —— 与大卡评审判据（\`C-42\`）**同一现算**：已完成、但没有「\`pass\` 且已核实采纳」的评审。`
+            + `修法：派一张 \`reviewer\` 卡评审它（作者 ≠ 评审者），或把卡拆小（size 降到 small/trivial）。`,
+        }
       })(),
       // **§7.1 不得静默（注入块那一处）**：声明的内容必须每轮都出现在状态块里，
       // 用户才能在模型动手之前看到"哪些视图做、哪些不做及理由"。
@@ -3369,11 +3440,47 @@ export class SoftwareDevOffice {
   planDecompose(call: OfficeCall, input: DecomposeInput = {}): { tasks: TaskCard[]; issues: PlanIssue[]; notes?: string[] | undefined; structuralCount?: number | undefined; structural?: StructuralPlan | undefined } {
     const { store, journal } = this.contextFor(call)
     const current = readIteration(store)
+    const before = new Set(listTasks(store).map((task) => task.id))
     // 已经有进行中的迭代时，拆出来的卡自动归入该迭代（否则迭代门禁无从判定）
-    return decompose(store, journal, listRequirements(store), {
+    const result = decompose(store, journal, listRequirements(store), {
       ...input,
       ...(input.iteration === undefined && current !== undefined ? { iteration: current.number } : {}),
     })
+    /**
+     * **落点三：拆卡时就往 DoD 注入「已通过独立评审」**（`TASK-195`，防「忘评审」的第一道）。
+     *
+     * 为什么在**建卡之后**补写而不是在建卡时塞进 `draft.dod`：`decompose` 是域层唯一入口，
+     * 结构通道的 DoD 由模板定、模型通道的 DoD 由建议给 —— 在**建卡那一刻**插一条会改两个通道的
+     * 既有形状（模板卡的 DoD 会被动到，判据与夹具都读它）。这里按"建完再补写"处理，语义等价、
+     * 影响面只在**新建的**卡（`before` 差集），而且补写是可去重的（见下）。
+     *
+     * 三条口径：
+     *   · 只补**中大卡**且**产出产品工件**且非 `reviewer` 的卡 —— 与 `C-42` 的考虑集同一个谓词
+     *     （`bigCardReviewVerdict` 里的那三行，这里只复用其中两个纯谓词）；
+     *   · **已有同义条目就不重复注入**（同义 = 含「独立评审」或「评审者≠作者」的写法）；
+     *   · 注入只加一条 DoD，**不改**卡的其他字段（`revision` 递增并记 `task/updated`，留痕可查）。
+     */
+    let injected = 0
+    for (const task of result.tasks) {
+      if (before.has(task.id)) continue
+      if (!needsIndependentReviewDod(task)) continue
+      if (hasIndependentReviewDod(task.dod)) continue
+      /**
+       * **`revision` 不递增**（真机抓出来的：`m4` 的协同协议用例按 `r1` 认领刚拆出来的卡，
+       * 递增会让每一次"刚拆完就认领"都撞 `revision-mismatch`）。
+       * 理由是 `revision` 是**认领 CAS 的令牌**，而这次注入发生在**建卡的同一个同步动作**里 ——
+       * 对外不存在"注入前的卡面"，所以它属于**建卡**而不是一次独立的改卡。
+       * 可审计性不因此丢失：下面仍然落一条 `task/updated`（`fields: ['dod']`），
+       * 真源里"这条 DoD 是拆卡时注入的"逐字可查。
+       */
+      const next: TaskCard = { ...task, dod: [...task.dod, INDEPENDENT_REVIEW_DOD] }
+      writeTask(store, next)
+      journal.append('task/updated', { id: next.id, by: 'sdo', fields: ['dod'], note: '拆卡时注入「已通过独立评审」' })
+      injected += 1
+    }
+    // 注入过就必须**重读**卡面再交回：`decompose` 交回的 `tasks` 是注入**之前**的内存快照，
+    // 直接返回会让回执打印"没注入过"的旧 DoD（真机探针抓到的就是这个：盘上已注入、回执里看不见）。
+    return injected === 0 ? result : { ...result, tasks: listTasks(store) }
   }
 
   /**

@@ -12,7 +12,7 @@ import type { Journal } from '../infra/journal.js'
 import { textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
 import type { EvidenceItem, MitigatesWaiver, TaskCard } from '../types.js'
-import { listTasks, scopeIntersections, writeTask } from './plan.js'
+import { listTasks, producesProductArtifacts, scopeIntersections, writeTask } from './plan.js'
 import { orphanLocks } from './dispatchHealth.js'
 import { normalizeScopePath, scopeOverlaps } from './scopePaths.js'
 
@@ -26,7 +26,8 @@ import type { Review } from './records.js'
 import { auditDoneEvidence } from './evidence.js'
 import { changedFilesSince } from './workspaceChanges.js'
 import { describeTestFirstGaps, testFirstGaps } from './testFirst.js'
-import { blockingReview, reviewAdoption, reviewAdoptionLabel, reviewsOfCard } from './reviewVerification.js'
+import { blockingReview, reviewAdoption, reviewAdoptionLabel, reviewAdoptions, reviewsOfCard } from './reviewVerification.js'
+import type { ReviewAdoption } from './reviewVerification.js'
 import { describeUndigestedChanges, undigestedChanges } from './change.js'
 import { loadProcess } from './process.js'
 import { staleEntryGateOf } from './entryGate.js'
@@ -672,12 +673,147 @@ export type ReportResult =
         // **DEF-033 返工（第四批 §3.4）**：漏声明是**另一种**拒绝（"你写的这条不成立" vs "你还有几条没写"）
         | 'unfrozen-undeclared'
         | 'review-open-findings'
+        /**
+         * **完成点评审硬拦截**（`TASK-195` 落点一）：中大卡（`size ≥ medium`）且产出产品工件、
+         * 且不是 `reviewer` 角色的卡，没有「`pass` 且已核实采纳」的评审 ⇒ 拒绝 `done`。
+         *
+         * 为什么单列一个 code 而不是复用 `review-open-findings`：那条说的是「评审要求改动，发现没核实」
+         * （`blockingReview`），这条说的是「**根本没有可用的通过评审**」—— 两条的修法完全不同
+         * （一条去核实/去修，一条去**派评审卡**），混用 code 会让调用方与读者各猜一半。
+         */
+        | 'review-required'
         | 'tdd-result-untraceable'
         | 'tdd-mutation-missing'
         | 'contract-test-missing'
         | EvidenceAuditCode
       detail: string
     }
+
+/**
+ * **「中大卡必须已被评审」的唯一现算出口**（`TASK-195`）。
+ *
+ * 一处判据，三个消费点 —— 这是本卡的全部设计约束（`DEF-044` 的教训：同一概念两处判据必然分叉）：
+ *   ① `gates.ts` 的 `review.required`（判据 `C-42`，门禁 G5 那一侧）；
+ *   ② `report()` 的**完成点硬拦截**（`sdo_task action=done` 当场拒）；
+ *   ③ `office.ts` 的**状态块那一行**（每轮可见，`inject.ts` 只负责排版）。
+ *
+ * 三处**不得**各写一份过滤/采纳口径：`producesProductArtifacts`（是否产出产品工件）、
+ * `reviewAdoption`（`pass` 是否已被核实采纳）都必须走这里的两个函数。
+ * 本模块不含任何用户可见文案（返回结构化读数），渲染由各消费点按自己的语言面负责 ——
+ * `gates.ts` 走语言包（那条棘轮基线是 0），`collab.ts`/`office.ts` 走各自既有形态。
+ */
+export interface BigCardReviewVerdict {
+  /** 是否落在判据的**考虑集**里：`size ≥ medium` 且非 `reviewer` 且产出产品工件 */
+  considered: boolean
+  /** `adopted`=有已采纳的 pass 评审；`unadopted`=有 pass 但没被核实采纳；`missing`=一条 pass 都没有 */
+  state: 'adopted' | 'unadopted' | 'missing'
+  /** `unadopted` 时逐条点名这次参与判定的 `pass` 评审（id + 采纳态）—— 回执与门禁共用 */
+  reviews: { id: string; state: string }[]
+}
+
+/**
+ * 单卡的评审满足状态（判据的最小单位）。
+ *
+ * `reviews` / `adoptions` 由调用方**读一次**再传进来：状态块与门禁都要批量判，
+ * 让每张卡各自去读台账会把 O(n) 的现算变成 O(n²)（真账上 199 张卡 × 全部评审）。
+ */
+export function bigCardReviewVerdict(
+  card: Pick<TaskCard, 'id' | 'size' | 'role' | 'writeScopes'>,
+  reviews: readonly Review[],
+  adoptions: ReadonlyMap<string, ReviewAdoption>,
+): BigCardReviewVerdict {
+  // **考虑集与 `C-42` 逐字同一口径**：`size ≥ medium`、非 `reviewer`（评审卡自我递归没有意义，
+  // SDO-35）、且**产出产品工件**（R-12：复核/代核/文书类卡不参与 —— 否则它一 done 就要求自己被评审）。
+  const big = (card.size === 'medium' || card.size === 'large')
+    && card.role !== 'reviewer'
+    && producesProductArtifacts(card)
+  if (!big) return { considered: false, state: 'adopted', reviews: [] }
+  const pass = reviews.filter((review) => review.verdict === 'pass' && review.taskId === card.id)
+  return { considered: true, ...verdictOfPass(pass, adoptions) }
+}
+
+/** `pass` 评审集合 → 三态（`adopted` 优先，其次 `unadopted`，否则 `missing`）。 */
+function verdictOfPass(
+  pass: readonly Review[],
+  adoptions: ReadonlyMap<string, ReviewAdoption>,
+): Pick<BigCardReviewVerdict, 'state' | 'reviews'> {
+  const rows = pass.map((review) => ({ id: review.id, state: adoptions.get(review.id)?.state ?? 'unverified' }))
+  if (rows.some((row) => row.state === 'adopted')) return { state: 'adopted', reviews: rows }
+  if (rows.length > 0) return { state: 'unadopted', reviews: rows }
+  return { state: 'missing', reviews: [] }
+}
+
+/**
+ * 「已完成但仍待评审」的中大卡集合 —— **`C-42` 与状态块用的是同一个函数**（本卡落点二）。
+ *
+ * 口径与 `review.required` 修前逐字相同（`status === 'done'`，**不含** `verified`：改口径会翻出历史卡重判），
+ * 差别只有一个：**过滤与采纳判定搬到了这里**，`gates.ts` 只剩渲染。
+ */
+export interface PendingReviewBigCards {
+  /** 参与判据的全集（已 done 的中大卡） */
+  considered: string[]
+  /** 一条 `pass` 评审都没有 */
+  missing: string[]
+  /** 有 `pass` 但**没被核实采纳**（逐条点名 id + 采纳态） */
+  unadopted: { id: string; reviews: { id: string; state: string }[] }[]
+  /** 点名集（`missing` 在前、`unadopted` 在后，各自保序）—— 门禁与状态块都念这一份 */
+  pending: string[]
+}
+
+export function pendingReviewBigCards(store: SdoStore, journal: Journal): PendingReviewBigCards {
+  // 读一次台账：评审与采纳态都按整本读，别在循环里现读（真账：199 张卡）
+  const reviews = listReviews(store)
+  const adoptions = new Map(reviewAdoptions(store, journal).map((item) => [item.review.id, item]))
+  const considered: string[] = []
+  const missing: string[] = []
+  const unadopted: { id: string; reviews: { id: string; state: string }[] }[] = []
+  for (const task of listTasks(store)) {
+    if (task.status !== 'done') continue
+    const verdict = bigCardReviewVerdict(task, reviews, adoptions)
+    if (!verdict.considered) continue
+    considered.push(task.id)
+    if (verdict.state === 'adopted') continue
+    if (verdict.state === 'missing') {
+      missing.push(task.id)
+      continue
+    }
+    unadopted.push({ id: task.id, reviews: verdict.reviews })
+  }
+  return { considered, missing, unadopted, pending: [...missing, ...unadopted.map((row) => row.id)] }
+}
+
+/**
+ * 完成点评审拦截的**拒绝文案**（`TASK-195` 落点一）。三个要素缺一不可：
+ *   ① **点名卡 id**（"哪张卡被拦"）；② **可执行修法**（先派一张 `reviewer` 卡评审，再回来 done）；
+ *   ③ **两条出路**（把卡拆小 / 项目显式关开关）—— 没有出路的拒绝等于把卡永久钉死（`DEF-049` 的教训）。
+ *
+ * 文案落在本模块而不是语言包：本卡的写范围不含 `src/data/lang/*.yml`，而 `gates.ts` 被 i18n 棘轮
+ * 钉在「零硬编码中文」。本文件本来就有同类用户可见文案（`not-owner` / `no-evidence` / 写范围越界），
+ * 口径与它们一致；后续要做 i18n 时这三句话与它们一起迁（见交付说明里的跟卡建议）。
+ */
+function describeReviewGateRefusal(task: TaskCard, verdict: BigCardReviewVerdict): string {
+  const gate = '完成点评审硬拦截（`.sdo/config.yml` 的 `review.requireOnDone` 默认开）'
+  if (verdict.state === 'missing') {
+    return `${gate}：${task.id} 是**中大卡**（size=${task.size}）且产出产品工件，但**没有任何 verdict=pass 的评审** ⇒ 拒绝完成。`
+      + `\n修法（先派 reviewer 卡评审）：① 拆一张评审卡 —— \`sdo_plan action=decompose suggestions=[{"title":"评审 ${task.id}","role":"reviewer","size":"small"}]\`；`
+      + `② 由**非作者**的评审会话记结论 —— \`sdo_review action=record taskId=${task.id} reviewer=<非作者> verdict=pass findings=["<一条可核实的发现>"]\`；`
+      + `③ 发现逐条核实（\`sdo_task action=verify-review review=REV-… index=1 outcome=reproduced|refuted proof=…\`）—— 评审被**采纳**后本拦截即解除，再回来 done。`
+      + `\n两条出路：确实不该被评审 ⇒ 把卡拆小（size 降到 small/trivial，用 \`sdo_task action=update\` 改 size）；`
+      + `项目整体不做完成点拦截 ⇒ 在 \`.sdo/config.yml\` 写 \`review.requireOnDone: false\`（此后回执会**明说已关闭**）。`
+  }
+  const rows = verdict.reviews.map((row) => `${row.id}：${reviewAdoptionLabel(row.state as never)}`).join('，')
+  return `${gate}：${task.id} 的通过评审**待核实采纳** —— ${rows} ⇒ 拒绝完成（有 pass 评审 ≠ 评审已算数）。`
+    + `\n修法：由该卡的实现会话逐条核实评审发现 —— \`sdo_task action=verify-review review=<REV-id> index=<第几条，从 1 起> outcome=reproduced|refuted proof=<复现命令与结果 / 反证>\`；`
+    + '每条发现都核实过（或被明确驳回）之后评审才被采纳，届时本拦截解除。'
+    + `\n说明：\`reviewer\` 角色不承担复现（掩码里没有 \`bash\`）；实现会话已退役时由**同角色**会话代核。`
+}
+
+/** 开关**显式关闭**时的那一行（放行但明说 —— 不许静默放行）。 */
+function describeReviewGateOff(task: TaskCard): string {
+  return `**完成点评审拦截已关闭**（\`.sdo/config.yml\` 的 \`review.requireOnDone: false\`）：`
+    + `${task.id} 是中大卡（size=${task.size}）且产出产品工件，本次 done **没有**校验「已采纳的通过评审」。`
+    + '中大卡仍要在验证门禁（G5 `C-42` / G6 `C-52`）前拿到已采纳的通过评审 —— 那两条判据不受本开关影响。'
+}
 
 /** 回报：done 必须有证据；blocked 必须说明原因。 */
 export function report(store: SdoStore, journal: Journal, input: ReportInput): ReportResult {
@@ -838,6 +974,26 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       }
       // **TASK-056 落点三**：没判红不等于"什么都没发生" —— 该判 N/A 的条目要把**为什么**带进回执
       naNotes = constructionDoneNaNotes(store, task, profileRead.profile, { scale: readProjectConfig(store).config.scale })
+    }
+    /**
+     * **完成点评审硬拦截**（`TASK-195` 落点一，主措施）。
+     *
+     * 位置刻意放在**所有既有拒绝之后、任何写盘之前**：
+     *   · 在既有拒绝之后 ⇒ 既有判据的优先级与文案一字不变（不让新闸门遮住"缺证据/缺用例"那些更根本的拒绝）；
+     *   · 在任何 `journal.append` / `save` 之前 ⇒ 拒绝是**零写盘**的（卡不会留下"半个 done"）。
+     *
+     * 判据只有一处：`bigCardReviewVerdict`（与 `C-42`、状态块同一个函数）。开关是项目级的
+     * `review.requireOnDone`（默认开；显式 `false` 才关闭，关闭时在本回执的 N/A 行里明说）。
+     */
+    const requireOnDone = readProjectConfig(store).config.review.requireOnDone
+    const cardAdoptions = new Map(reviewAdoptions(store, journal).map((item) => [item.review.id, item]))
+    const reviewVerdict = bigCardReviewVerdict(task, listReviews(store), cardAdoptions)
+    if (reviewVerdict.considered && reviewVerdict.state !== 'adopted') {
+      if (requireOnDone) {
+        return { ok: false, code: 'review-required', detail: describeReviewGateRefusal(task, reviewVerdict) }
+      }
+      // **开关显式关闭**：放行，但**必须在回执里明说**（不许静默放行 —— 那正是"忘评审"的温床）
+      naNotes = [...naNotes, describeReviewGateOff(task)]
     }
     const next: TaskCard = {
       ...task,

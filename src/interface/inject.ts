@@ -112,6 +112,12 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
       ids: (reproduced?.items ?? []).slice(0, 6).join(' '),
     }))
   }
+  // **`TASK-195` 落点二**：**待评审中大卡**每轮可见（防「忘评审」的副措施）。
+  // 现算**不在这里**：`pendingReviewBigCards`（`collab.ts`）是判据 `C-42`、完成点硬拦截与本行
+  // 三处共用的同一个函数；本模块只把 `office.ts` 排好版的那一行 push 进来 ——
+  // 本文件被 i18n 棘轮钉在「零硬编码中文」（`test/m7.test.ts` 基线 0），不在这里新增文案。
+  const pendingBig = status.reviewPendingBig
+  if (pendingBig !== undefined && pendingBig.line !== '') lines.push(pendingBig.line)
   // **§7.1「不得静默」（注入块那一处）**：设计适用性声明必须每轮出现在状态块里 ——
   // 用户要在模型动手之前就看到"哪些视图做、哪些不做及理由"，以及"还差用户签字"。
   // 只在**设计语境**（已进架构阶段或已起草声明）出现，避免在需求早期变成噪声。

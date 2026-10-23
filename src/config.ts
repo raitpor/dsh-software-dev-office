@@ -212,6 +212,22 @@ export interface ProjectConfig {
     dir: string
     throwaway: boolean
   }
+  /**
+   * **评审强制机制的项目开关**（`TASK-195`）。
+   *
+   * `requireOnDone`（默认 **true**）：中大卡（`size ≥ medium`）且产出产品工件、且不是 `reviewer` 角色的卡，
+   * 在 `sdo_task action=done` 那一刻**必须有「`pass` 且已核实采纳」的评审**，否则**拒绝完成**，并点名卡 id
+   * 与可执行修法（先派一张 `reviewer` 卡评审这张卡）。
+   *
+   * 为什么默认开：`C-42`（`review.required`）只在**门禁**（G5）判，而门禁是"事后"的 ——
+   * 真机上的形态是"一批中大卡 done 完才在 G5 一次性变红"，评审要求于是永远晚一步（"忘评审"的成因）。
+   * 为什么给开关：**先评审还是后评审是项目决策**（本仓的流程是「先 done、再派 reviewer 卡」，
+   * 见 `C-42` 与 `.sdo/config.yml` 的注），插件不替项目定；关掉时**回执必须明说已关闭**
+   * （见 `report()` 的 N/A 行：`review.requireOnDone` 显式关闭时那一条命中 N/A 并印出理由）。
+   */
+  review: {
+    requireOnDone: boolean
+  }
 }
 
 /** 默认项目配置。 */
@@ -222,6 +238,8 @@ export function defaultProjectConfig(): ProjectConfig {
     redTeam: 'auto',
     board: { window: 10 },
     prototype: { dir: 'prototype', throwaway: false },
+    // **`TASK-195`**：完成点评审拦截**默认开**（关掉要显式写 `review.requireOnDone: false`）
+    review: { requireOnDone: true },
   }
 }
 
@@ -247,6 +265,8 @@ export function readProjectConfig(store: SdoStore): { config: ProjectConfig; sou
           : defaults.prototype.dir,
       throwaway: raw.prototype?.throwaway === true,
     },
+    // **`TASK-195`**：只有**显式写 false** 才算关闭 —— 缺失/非布尔一律按默认（true）判。
+    review: { requireOnDone: raw.review?.requireOnDone !== false },
   }
   return { config, source: 'file' }
 }

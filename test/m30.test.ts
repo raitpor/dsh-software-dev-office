@@ -36,6 +36,11 @@ beforeEach(() => {
   mkdirSync(join(workspace, '.sdo', 'tasks'), { recursive: true })
   store = new SdoStore(join(workspace, '.sdo'))
   journal = new Journal(store)
+  // **`TASK-195`**：本文件测的是 **A1 证据对账 / A2 写范围对账 / C7 用例先行**，不是"完成点评审拦截"。
+  // 夹具卡是 `size: medium` 的产品卡（`writeScopes: ['src/det/']`），而那条拦截**默认开** ⇒
+  // 不显式关掉的话，这里的每一次 `done` 都会被新闸门先拦住（测的就不再是原判据）。
+  // 关掉只是"本夹具不启用该开关"，判定逻辑另外由 `test/m230.test.ts` 用真夹具覆盖（含关掉那一侧的明文回执）。
+  store.writeYaml(['config.yml'], { process: 'waterfall', scale: 'normal', review: { requireOnDone: false } })
 })
 
 afterEach(() => {
