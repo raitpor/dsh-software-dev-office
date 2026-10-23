@@ -2072,6 +2072,9 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
    * `M213-09` 的教训是"字段面被钉死之后再加东西只能改事件类型"，那会让历史读数失去可比性。
    */
   'dispatch/observed',
+  // **`TASK-163` 落点二**：派发那一刻「谁没被复用、为什么」的追加式留痕（逐条三字段，不聚合）。
+  // 与 `dispatch/*` 同族、纯记账（不改任何真源）⇒ 不得作废 G3 签字。
+  'dispatch/reuse-skipped',
   /**
    * **工作副本的轻量 git 事件族**（`REQ-066` / `AC-304` / `AC-305` / `TASK-172`）。
    *
@@ -2419,6 +2422,8 @@ export type SdoEventType =
   | 'release/deferred'
   // **DEF-165 ① / TASK-172**：子代理工具面的观测落事件（复用判据 R-1 的证据来源）
   | 'dispatch/observed'
+  // **TASK-163 落点二**：派发时「谁没被复用、为什么」逐条落事件（回执与读侧共用同一份读数）
+  | 'dispatch/reuse-skipped'
   // **REQ-066 / TASK-172**：工作副本的轻量 git 事件族（建副本 / 合并 / 冲突 / 清场）
   | 'worktree/created'
   | 'worktree/merged'

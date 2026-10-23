@@ -369,8 +369,10 @@ test('M206-06 ③ 被闸门拒的孩子：`reason` 逐条（三字段）落进 `
     task: 'TASK-16304', role: 'developer', childSessionId: 'cccc1630-3333', reused: false,
     ...fields, reuseSkipped: skippedFields,
   })
-  const back = reuseSkippedOf(journal).filter((row) => row.childSessionId === childSessionId)
-  assert.equal(back.length, 1, '读侧必须能回读"没被复用"的留痕')
+  const back = reuseSkippedOf(journal).filter((row) => row.childSessionId === childSessionId && row.task === 'TASK-16304')
+  // **按卡过滤**（不是按孩子）：同一个孩子会被**多次派发**各留一次痕（接线之后真派发那笔也留了，
+  // 见 `M206-09`）—— 读侧**不去重**是刻意的（历史读数照实回放），聚合是渲染层的事。
+  assert.equal(back.length, 1, `读侧必须能回读"没被复用"的留痕（按卡过滤后只该有手工那一条）：${JSON.stringify(back)}`)
   assert.equal(back[0]?.via, 'dispatch/started', '承载①：挂在派发事件上（今天就能落地，不需要新事件类型）')
   assert.equal(back[0]?.task, 'TASK-16304', '要能反查是哪张卡的那一笔')
   assert.ok((back[0]?.seq ?? 0) > 0, '要带可引用的序号')
@@ -384,10 +386,10 @@ test('M206-06 ③ 被闸门拒的孩子：`reason` 逐条（三字段）落进 `
   journal.append('dispatch/started', { task: 'TASK-16308', role: 'developer', childSessionId: 'ffff1630', ...dispatchReadingFields(reading) })
   const legacy = readDispatchReadings(journal).find((row) => row.task === 'TASK-16308')
   assert.equal(legacy?.reuseIdle, undefined, '没记就是没记（不许读成"没试过"）')
-  // 承载②：独立事件（**需先在 `src/types.ts` 的闭合联合里登记**，那不在本卡写范围 ⇒ 这里用形状自证读侧已就绪）
+  // 承载②：独立事件（`src/types.ts` 的闭合联合里已登记，接线之后真派发那笔也会落一条，见 `M206-09`）
   journal.append(REUSE_SKIPPED_EVENT as unknown as Parameters<typeof journal.append>[0], reuseSkippedEventData(rows[0] ?? { childSessionId, role: 'developer', reason: '' }, { task: 'TASK-16305' }))
-  const viaEvent = reuseSkippedOf(journal).filter((row) => row.via === REUSE_SKIPPED_EVENT)
-  assert.equal(viaEvent.length, 1, '承载②（独立事件）读侧同样认（登记事件类型之后零改动就能用）')
+  const viaEvent = reuseSkippedOf(journal).filter((row) => row.via === REUSE_SKIPPED_EVENT && row.task === 'TASK-16305')
+  assert.equal(viaEvent.length, 1, '承载②（独立事件）读侧同样认（两种承载同一份读数）')
   assert.equal(viaEvent[0]?.task, 'TASK-16305', '独立事件自身要带所属卡（读者不必再拼上下文）')
 })
 
@@ -436,4 +438,127 @@ test('M206-07 ④ 同一台账两次调用逐字节相同（`REQ-035` / `REQ-037
   const forcedNew = admitDispatch({ ready: [TASK163.card('TASK-16309')], pools: gate, globalRoom: 4, reuseIdle: true, forceNew: true, maskHashOf: () => 'NEW' })
   assert.equal(forcedNew.forceNew, true, '本轮换人 ⇒ 回显 forceNew')
   assert.equal(forcedNew.reuseSkipped.length, 0, '强制新起 ≠ 复用被拒（两种"不复用"必须在读数上分得开）')
+})
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **增量 206 续②：`DEF-139` 落点一/二** —— 读数与「没复用」必须**落进事件**（`TASK-163`）
+ *
+ * 为什么要这三条：上四条守的是**纯函数**（`poolReading` / `admitDispatch`），
+ * 而真机上的问题恰恰在**接线**：函数算得再对，只要派发那一刻没把读数并进 `dispatch/started`、
+ * 没把 `reuseSkipped` 落成事件、回执只打数量，驾驶舱仍然只能拿掩码哈希反推（并反推错过两次）。
+ * 因此这三条一律走**真派发路径**（`sdo_plan action=next` + 宿主桩），断言台账与回执。
+ *
+ * 红侧就在这：现盘 `dispatch/started` 里没有 `childrenSource` / `buckets` / `reuseIdle` / `forceNew`
+ * 任何一个字，`dispatch/reuse-skipped` 事件类型不存在，`why=true` 回执对 `reuseSkipped` 一字不提。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+test('M206-08 ①b 真派发路径：`dispatch/started` 必须带上现场读数（来源 + 总数 + 八桶 + cap/freeSlots + 两个定案键）', async () => {
+  const childSessionId = 'aaaa1630-6666-4bbb-8ccc-dddddddddd06'
+  TASK163.seedChild(childSessionId, 'TASK-16310', maskFingerprint('developer'))
+  TASK163.observe(childSessionId)
+  writeYamlTask(TASK163.card('TASK-16311'))
+
+  const pools = office.poolView(call)
+  const expected = poolReading({
+    role: 'developer',
+    childrenSource: 'journal',
+    children: [...foldPoolChildren(office.journalFor(WORKSPACE).read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values()],
+    pools,
+  })
+
+  const tools = TASK163.mount()
+  await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1, why: false })
+
+  const journal = office.journalFor(WORKSPACE)
+  const started = journal.read().events.filter((event) => event.type === 'dispatch/started').at(-1)
+  assert.ok(started !== undefined, '必须真的派发出去（否则下面全是空断言）')
+  assert.equal(started.data['task'], 'TASK-16311', '最后一条 `dispatch/started` 就是这一轮派的那张卡')
+  // **落点一**：来源口径 + 总数 + 八桶 + cap/freeSlots
+  assert.equal(started.data['childrenSource'], 'journal', '口径名必须写进事件（三种口径各自能读，读者不必猜）')
+  assert.equal(started.data['childrenTotal'], expected.childrenTotal, `孩子总数必须与折叠结果一致（现算 ${String(expected.childrenTotal)}）`)
+  const buckets = started.data['buckets'] as Record<string, number> | undefined
+  assert.ok(buckets !== undefined && typeof buckets === 'object', `八桶必须进事件（实际：${JSON.stringify(started.data['buckets'])}）`)
+  assert.deepEqual(Object.keys(buckets).sort(), ['busy', 'idle', 'idleForeign', 'idleSameParent', 'idleUnknownParent', 'retired', 'stale', 'unusable'], '八个桶一个都不许少（少一个就是又一次"靠反推"）')
+  assert.deepEqual(buckets, expected.buckets, '桶必须与同一份池快照算出来的逐项相同（两套口径必然分叉）')
+  assert.equal(started.data['cap'], expected.cap, '该角色的并行上限要进事件')
+  assert.equal(started.data['freeSlots'], expected.freeSlots, '还能新建几个要进事件')
+  // **定案键**：为什么没复用 —— 先要知道这一轮到底试没试
+  assert.equal(started.data['reuseIdle'], true, '`reuseIdle` 必须进事件（不试与试过被拒必须分得开）')
+  assert.equal(started.data['forceNew'], false, '`forceNew` 必须进事件（本轮换人 ≠ 复用被拒）')
+
+  // 读侧闭环：以后问"为什么没复用"，读这一行就够（不必再反推掩码哈希）
+  const back = readDispatchReadings(journal).filter((row) => row.task === 'TASK-16311')
+  assert.equal(back.length, 1, '这条读数必须能被读侧回读（否则事件写了也白写）')
+  assert.equal(back[0]?.childrenSource, 'journal')
+  assert.deepEqual(back[0]?.buckets, expected.buckets, '回读的桶与写进去的一致')
+  assert.equal(back[0]?.reuseIdle, true, '定案键回读')
+})
+
+test('M206-09 ②b 被闸门拒的孩子 ⇒ `dispatch/reuse-skipped` **事件**逐条落盘（三字段 + 所属卡），读侧可回读', async () => {
+  const childSessionId = 'bbbb1630-7777-4bbb-8ccc-dddddddddd07'
+  TASK163.seedChild(childSessionId, 'TASK-16312', 'stale-mask-9999')
+  TASK163.observe(childSessionId)
+  writeYamlTask(TASK163.card('TASK-16313'))
+
+  const tools = TASK163.mount()
+  await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1, why: false })
+
+  const journal = office.journalFor(WORKSPACE)
+  const events = journal.read().events.filter((event) => event.type === REUSE_SKIPPED_EVENT)
+  assert.equal(events.length, 1, `被闸门拒的孩子必须**落一条事件**（不落事件 = 读数只活在这一轮的内存里）：${JSON.stringify(events.map((event) => event.data))}`)
+  assert.equal(events[0]?.data['childSessionId'], childSessionId, '三条字段之一：孩子 id')
+  assert.equal(events[0]?.data['role'], 'developer', '三条字段之一：角色')
+  assert.match(String(events[0]?.data['reason'] ?? ''), /掩码/u, `三条字段之一：理由（要读得出是哪道闸门）：${String(events[0]?.data['reason'] ?? '')}`)
+  assert.equal(events[0]?.data['task'], 'TASK-16313', '要能反查是哪张卡的那一笔派发')
+  assert.equal(typeof events[0]?.data['decidedAt'], 'string', '判定时刻要落盘（否则"那一刻"无从复现）')
+  // 读侧：事件承载同样认得（两种承载同一份读数）
+  const viaEvent = reuseSkippedOf(journal).filter((row) => row.via === REUSE_SKIPPED_EVENT)
+  assert.equal(viaEvent.length, 1, '读侧必须回读得到这条留痕')
+  assert.equal(viaEvent[0]?.task, 'TASK-16313', '独立事件自身带所属卡')
+})
+
+test('M206-10 ③b `why=true` 回执与正常回执都**逐条三字段**打出「谁没被复用、为什么」', async () => {
+  const childSessionId = 'cccc1630-8888-4bbb-8ccc-dddddddddd08'
+  TASK163.seedChild(childSessionId, 'TASK-16314', 'stale-mask-7777')
+  TASK163.observe(childSessionId)
+  writeYamlTask(TASK163.card('TASK-16315'))
+
+  const tools = TASK163.mount()
+  // ① 诊断面（`why=true` 不派发）：三条字段必须逐条在回执里
+  const why = await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1, why: true })
+  assert.match(why, new RegExp(`childSessionId=${childSessionId}`, 'u'), `诊断面必须点名那个孩子（不许只打数量）：${why.slice(0, 600)}`)
+  assert.match(why, /role=developer/u, `诊断面必须带角色（跨角色混在一起正是看不清的主因）：${why.slice(0, 600)}`)
+  assert.match(why, /reason=.*掩码/u, `诊断面必须带理由：${why.slice(0, 600)}`)
+
+  // ② 主路径（真派发）：回执同样逐条，不许退化成"有 N 个没被复用"
+  const receipt = await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1, why: false })
+  assert.match(receipt, new RegExp(`childSessionId=${childSessionId}`, 'u'), `主路径回执必须逐条列出：${receipt.slice(0, 700)}`)
+  assert.match(receipt, /role=developer/u, `主路径回执必须带角色：${receipt.slice(0, 700)}`)
+  assert.match(receipt, /reason=.*掩码/u, `主路径回执必须带理由：${receipt.slice(0, 700)}`)
+})
+
+test('M206-11 ③c `freshChild=true` 跳过复用 ⇒ 主路径回执**必须点名**并给出可复用孩子的读数（不许静默跳过）', async () => {
+  const childSessionId = 'eeee1630-9999-4bbb-8ccc-dddddddddd09'
+  // 这个孩子**五条判据全过**（否则"跳过"与"被拒"又混在一起了）
+  TASK163.seedChild(childSessionId, 'TASK-16316', maskFingerprint('developer'))
+  TASK163.observe(childSessionId)
+  writeYamlTask(TASK163.card('TASK-16317'))
+
+  const tools = TASK163.mount()
+  // `freshChild=true` 是**调用期参数**（本轮就换人）——插件不能替调用方决定，但也**不许让它静默**：
+  // 真机事故（`DEF-139`）就是这条参数把复用分支整个跳过，而台账与回执一个字都没有。
+  const receipt = await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1, freshChild: true })
+  assert.match(receipt, /forceNew=true/u, `回执必须点名"本轮强制新起"（否则池里有空闲却新起又成了无解之谜）：${receipt.slice(0, 800)}`)
+  // 两个键的口径（`reuseIdle` = **本轮允不允许复用**，`freshChild` 会把它按成 false）：
+  // `forceNew=true` ⇒ 被**调用参数**跳过；`reuseIdle=false && forceNew=false` ⇒ 宿主没有续聊入口。
+  assert.match(receipt, /reuseIdle=false/u, `两个键必须同屏（本次是"被参数跳过"而不是"宿主没入口"）：${receipt.slice(0, 800)}`)
+  assert.match(receipt, /reusableIdle=1/u, `回执必须给出"其实躺着几个可复用孩子"（现算 1 个）：${receipt.slice(0, 800)}`)
+  assert.match(receipt, /childrenSource=journal/u, '读数行必须带上 children 来源（来源与结论要同屏）')
+  // **不许把"没打算复用"说成"R-1 没有观测证据"**：那个孩子明明被观测过，R-1 那句在这里是假话
+  assert.doesNotMatch(receipt, /没有任何可引用/u, '本轮根本没试复用 ⇒ 不许把原因归到 R-1 观测缺失上（用推断替换事实）')
+  // 并且真的没复用它（参数被尊重：不许因为"有可复用"就自作主张复用）
+  const started = office.journalFor(WORKSPACE).read().events.filter((event) => event.type === 'dispatch/started').at(-1)
+  assert.equal(started?.data['reused'], false, '`freshChild=true` ⇒ 本轮必须新起（复用是优化，不许覆盖调用方的决定）')
+  assert.notEqual(started?.data['childSessionId'], childSessionId, '新起的子会话与那个可复用孩子不是同一个')
+  assert.equal(started?.data['forceNew'], true, '定案键必须落进事件（回执只是同屏投影）')
 })

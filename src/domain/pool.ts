@@ -346,6 +346,16 @@ export interface PoolAdmission {
   dispatch: { task: TaskCard; reuseChildId?: string | undefined }[]
   /** **被闸门拒的空闲子代理**（掩码/观测/持卡/余量四类，判据只有 `rolePools` 那一处）：回执与事件靠它答"为什么没复用" */
   reuseSkipped: { childSessionId: string; role: string; reason: string }[]
+  /* ———————————————————— 定案面（`DEF-139` 落点一/二） ———————————————————— */
+  /**
+   * **本轮各角色的现场读数**（`TASK-163` 落点一）：由 `office.poolPlan` 用**准入前**的池快照填
+   * （`rolePoolReadings`）。为什么用准入前那一份：读数要回答的是"**做决定时**池里长什么样"
+   * —— 准入过程会把复用的孩子从 `idle` 挪进 `busy`、把 `freeSlots` 减掉，那是**决定的结果**，
+   * 拿结果当原因就永远答不了「为什么没复用」（真机反推错过两次的病根）。
+   *
+   * 派发路径把它按卡的角色取一条并进 `dispatch/started`（{@link PoolReading} 五件 + 八桶）。
+   */
+  readings?: PoolReading[] | undefined
   /** 排队但**没被任何预算挡住**的（等下一轮空位） */
   queued: TaskCard[]
   /** 被挡下的卡及原因（池满 / 全局预算满） */
@@ -653,7 +663,36 @@ export function poolReading(input: {
 }
 
 /**
- * 读数的**逐字节可比指纹**（`REQ-035` / `REQ-037` 的可复现性口径）。
+ * **一次派发要记的那几条读数**（`TASK-163` 落点一）：逐角色摊平成一份清单（**按角色名排序**，
+ * 键序由 `poolReading` 的字面量固定 ⇒ 同一台账两次调用逐字节相同）。
+ *
+ * 口径纪律：桶与 `freeSlots` 全部取自**同一份** `rolePools()` 结果，本函数只做"选角色 + 排序"，
+ * 不另立判定 —— 否则回执里的数会与准入用的数分叉（`R-6` 的真机教训）。
+ *
+ * @param input.pools **准入之前**的池快照（不传准入后的那一份，理由见 `PoolAdmission.readings`）
+ */
+export function rolePoolReadings(input: {
+  roles: readonly string[]
+  childrenSource: ChildrenSource
+  children: Iterable<PoolChild>
+  pools: readonly RolePool[]
+}): PoolReading[] {
+  const roles = [...new Set(input.roles)].filter((role) => role !== '').sort()
+  return roles.map((role) => poolReading({
+    role,
+    childrenSource: input.childrenSource,
+    children: input.children,
+    pools: input.pools,
+  }))
+}
+
+/** 从读数列里取**某个角色**那条（没有 ⇒ `undefined`：**"没记"与"记了 0"必须可区分**）。 */
+export function readingOfRole(readings: readonly PoolReading[] | undefined, role: string): PoolReading | undefined {
+  return (readings ?? []).find((reading) => reading.role === role)
+}
+
+/**
+ * **读数的逐字节可比指纹**（`REQ-035` / `REQ-037` 的可复现性口径）。
  *
  * 为什么要有它：`AC-254` 那条（同一门禁同真源两次 criteria 逐条相同）被降级到待重开卡，
  * 但同类口径必须在本卡**真的可判**：同一台账、同一角色，两次独立读数要给出**同一个字节序列**。

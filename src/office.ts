@@ -121,8 +121,8 @@ import {
 // （`release/written` / `release/deferred`），手写 YAML 的 `frozenBy: human` 核不到任何东西。
 import { HUMAN_APPROVER, currentRelease, deferredIdsOf, listReleases, packageVersionOf, writeRelease } from './domain/release.js'
 import { textOf } from './infra/scalar.js'
-import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
-import type { PoolAdmission, PoolChild, RolePool } from './domain/pool.js'
+import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePoolReadings, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
+import type { PoolAdmission, PoolChild, PoolReading, RolePool } from './domain/pool.js'
 import type { UndigestedChange } from './domain/change.js'
 import { renderHeader } from './infra/render.js'
 import type { CreateChangeInput } from './domain/change.js'
@@ -229,11 +229,14 @@ import { methodDocStatus } from './domain/methodDocs.js'
 import type { MethodDocStatus } from './domain/methodDocs.js'
 import { recordWorkspaceChanges, unresolvedSeqs, readWorkspaceChanges} from './domain/workspaceChanges.js'
 import {
+  dispatchReadingFields,
   observationOf,
   readChildFaces,
   readChildObservations,
   recordChildFace,
   recordChildObserved,
+  reuseSkippedEventData,
+  reuseSkippedFields,
 } from './domain/dispatchFace.js'
 import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
@@ -3955,6 +3958,24 @@ export class SoftwareDevOffice {
      * 认领时 `ownerOf(卡的角色, 会话 id)` 现算，两者一致 ⇒ 一个 owner 串只对应一个会话。
      */
     owner?: string | undefined
+    /**
+     * **派发那一刻的现场读数**（`DEF-139` 落点一 / `TASK-163`）：`childrenSource` / `childrenTotal` /
+     * 八桶 / `cap` / `freeSlots` 一次带进来，由 `dispatchReadingFields` 投影成事件字段。
+     *
+     * 为什么必须在**派发这一笔**上记：漏了它，回执就只能说"池里有空闲却新起了"，
+     * 读者于是拿掩码哈希反推根因（真机反推错两次）。`undefined` ⇒ 不写这些字段（老调用方零改动，
+     * 读侧因此能区分「没记」与「记了 0」）。
+     */
+    reading?: PoolReading | undefined
+    /** 这一轮**到底试没试复用**（`undefined` ⇒ 不写：没记 ≠ 记了 false） */
+    reuseIdle?: boolean | undefined
+    /** 这一轮是否**强制新起**（`sdo_plan freshChild=true`）—— 与"复用被拒"必须在读数上分得开 */
+    forceNew?: boolean | undefined
+    /**
+     * **被闸门拒的空闲子代理**（落点二）：每条 `{childSessionId, role, reason}` 原样落一条
+     * `dispatch/reuse-skipped` 事件（**不聚合**）。空/未给 ⇒ 不落事件（不是"全都没被拒"的声明）。
+     */
+    reuseSkipped?: { childSessionId: string; role: string; reason: string }[] | undefined
   }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/started', {
@@ -3973,7 +3994,26 @@ export class SoftwareDevOffice {
       ...(input.reused === undefined ? {} : { reused: input.reused }),
       // **DEF-014**：复用投递的宿主回执进真源（旧实现把它丢了 ⇒「投出去没有」无从查证）
       ...(input.messageReceipt === undefined ? {} : { messageReceipt: input.messageReceipt }),
+      // **`DEF-139` 落点一**：读数（来源 + 总数 + 八桶 + cap/freeSlots）与两个**定案键**
+      // （`reuseIdle` / `forceNew`）并进这一笔 —— 「为什么没复用」从此有台账可查，不必再反推。
+      ...(input.reading === undefined
+        ? {}
+        : dispatchReadingFields(input.reading, { reuseIdle: input.reuseIdle, forceNew: input.forceNew })),
+      // 同一条事件上也留一份逐条清单（承载①：历史构建没有独立事件类型时照样读得回来）
+      ...(input.reuseSkipped === undefined || input.reuseSkipped.length === 0
+        ? {}
+        : { reuseSkipped: reuseSkippedFields(input.reuseSkipped) }),
     })
+    // **`DEF-139` 落点二**：同一次派发另落 `dispatch/reuse-skipped`（**承载②**，一行一条、三字段不聚合）。
+    // 为什么两种承载都写：挂在 `dispatch/started` 上的是"这一笔的现场"，独立事件才**数得清、引得到**
+    // （回执引用序号、按子会话反查都靠它）；两者由同一份 `reuseSkippedFields` 投影 ⇒ 不会各说一套。
+    if (input.reuseSkipped !== undefined && input.reuseSkipped.length > 0) {
+      // 同一次派发共用一个判定时刻（逐条各取一次 `now` 会让"同一次决定"在台账上散成 N 个时刻）
+      const decidedAt = new Date().toISOString()
+      for (const row of reuseSkippedFields(input.reuseSkipped)) {
+        journal.append('dispatch/reuse-skipped', reuseSkippedEventData(row, { task: input.taskId, decidedAt }))
+      }
+    }
     // **§2 第 1 条**：派发（尤其**复用**同一子会话换角色）会改变这个会话的血缘角色 ⇒ 让角色缓存立刻失效，
     // 否则新掩码最多滞后一个 TTL（旧实现只认领/回报时 +1）。
     this.roleCacheVersion += 1
@@ -4377,6 +4417,18 @@ export class SoftwareDevOffice {
       .filter((row, index, all) => all.findIndex((item) => item.taskId === row.taskId) === index)
     return {
       ...admission,
+      // **`DEF-139` 落点一（`TASK-163`）**：把「做决定时池里长什么样」摊成逐角色读数（`childrenSource` /
+      // `childrenTotal` / 八桶 / `cap` / `freeSlots`），派发路径据此并进 `dispatch/started`。
+      // 取**准入之前**的那份快照（`snapshot.pools` 未被 `admitDispatch` 改动：它先克隆再改），
+      // 因为读数要回答的是"为什么这样决定"；拿准入后的池当原因就是循环论证。
+      readings: rolePoolReadings({
+        roles: snapshot.pools.map((pool) => pool.role),
+        // **诚实口径**：今天的孩子只从 append-only 台账折叠（`poolSnapshot`）⇒ `journal`。
+        // 等宿主实时列表（`listDescendants`）接进来时，这里改成 `journal+host` 并同时写清合并口径。
+        childrenSource: 'journal',
+        children: snapshot.children,
+        pools: snapshot.pools,
+      }),
       heldByDispatch,
       infeasible,
       ...(heldByScope.length === 0 ? {} : { heldByScope }),

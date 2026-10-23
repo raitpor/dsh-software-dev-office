@@ -175,6 +175,7 @@ function buildReadout(cwd: string): string {
 import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
+import { poolReadingLine, readingOfRole, reuseSkippedLines } from './domain/pool.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
 import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
@@ -1970,6 +1971,30 @@ export function apply(ctx: Context, config: SdoConfig): void {
           describeNonDispatchable(nonDispatchable),
         ]
         if (held.length > 0) lines.push(fmt('uiIndex.kWhyQueued', { p1: String(held.length), p2: held.join(' ') }))
+        /**
+         * **`DEF-139` 落点二（`TASK-163`）**：`why=true` 是"为什么这一轮派不出去"的诊断面 ——
+         * 「谁没被复用、为什么」必须在场，且**逐条三字段**（`childSessionId` / `role` / `reason`）。
+         *
+         * 修前这一支对 `reuseSkipped` 一字不提（只在主路径的回执行里出现一次，还缺 `role`）⇒
+         * 驾驶舱连问两轮都只能在"池里有空闲却新起"这个现象上打转，最后靠掩码哈希反推根因
+         * （并**反推错过两次**）。诊断面答不了这个问题，`why` 就名不副实。
+         */
+        if (plan.reuseSkipped.length > 0) {
+          lines.push(fmt('uiIndex.kReuseSkipped', {
+            p1: String(plan.reuseSkipped.length),
+            p2: reuseSkippedLines(plan.reuseSkipped).join('\n'),
+          }))
+        }
+        // **定案键**：这一轮**到底试没试**复用 / 是不是强制新起 —— 与"复用被拒"必须分得开。
+        // 行文用 ASCII 投影（`poolReadingLine` 同口径）：语言包键不在本卡写范围内，
+        // 而这一行是给复验者的读数，不是给终端用户的散文。
+        for (const role of [...new Set(plan.dispatch.map((entry) => entry.task.role))].sort()) {
+          const reading = readingOfRole(plan.readings, role)
+          if (reading !== undefined) lines.push(poolReadingLine(reading))
+        }
+        if (!plan.reuseIdle || plan.forceNew) {
+          lines.push(`reuseIdle=${String(plan.reuseIdle)} forceNew=${String(plan.forceNew)}`)
+        }
         if (plan.dispatch.length > take) {
           lines.push(fmt('uiIndex.kWhyHeldByLimit', {
             p1: String(plan.dispatch.length - take),
@@ -1991,13 +2016,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
       let denyPhantoms: string[] = []
       const reuseSkipSummary = plan.reuseSkipped.length === 0
         ? t('uiDescribe.kFreshNoSkip')
-        : plan.reuseSkipped.map((row) => `${row.childSessionId.slice(0, 8)}（${row.reason}）`).join('；')
+        // **`DEF-139` 落点二**：逐条三字段（id / 角色 / 理由），不许退化成只打数量
+        : reuseSkippedLines(plan.reuseSkipped).join('；')
       // **R-5C（sdo-test-new 2026-10-08）**：被 `limit` 截掉的卡**既不在"已派发"也不在"排队"**里
       // （它们已通过容量准入，只是这一轮没派）⇒ 回执里凭空消失。如实点名，并说明下次还会再挑。
       const held = plan.dispatch.slice(take)
       const out: string[] = []
       for (const entry of picked) {
         const task = entry.task
+        // **`DEF-139` 落点一**：这张卡的角色的现场读数（准入前快照；见 `poolPlan` 里 `readings` 的口径）
+        const reading = readingOfRole(plan.readings, task.role)
         // P-1：真的把请求交给宿主的 subagents 服务起一次运行；失败如实说明原因（不假装派出去了）
         // **工具面必须先按宿主注册表过滤**：宿主 `tools.restrict()` 对未注册的名字**直接抛错**
         // （`names unknown global tool "pdf"`）⇒ 整份工具面失效、子代理连 `read_image` 都拿不到。
@@ -2094,10 +2122,27 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }))
         }
         if (plan.reuseSkipped.length > 0) {
+          // **`DEF-139` 落点二**：三字段逐条（`childSessionId` / `role` / `reason`）——
+          // 修前这里只有 `id（理由）`，跨角色混在一起时读不出"是哪个角色的谁、被哪道闸门拒"
           out.push(fmt('uiIndex.kReuseSkipped', {
             p1: String(plan.reuseSkipped.length),
-            p2: plan.reuseSkipped.map((item) => `${item.childSessionId}（${item.reason}）`).join('；'),
+            p2: reuseSkippedLines(plan.reuseSkipped).join('\n'),
           }))
+        }
+        /**
+         * **`DEF-139` 落点三的「修触发条件」半**（`TASK-163`）：**跳过复用这件事不许再静默**。
+         *
+         * 复用的触发条件里有两个**调用期参数**（`reuseIdle` = 宿主有没有续聊入口、`forceNew` =
+         * `sdo_plan freshChild=true`），插件不能替调用方决定该不该换人；但只要这一轮**没试复用**，
+         * 主路径回执就必须点名，并附上"池里其实躺着几个可复用孩子"的读数 —— 否则真机现象
+         * （池里有空闲却每次都新起）与"判据不过"在回执上长得一模一样 —— 这正是 `DEF-139` 的同族病根
+         * 「只记结果、不记决策输入」：两种"没复用"在台账与回执上不可分辨。
+         *
+         * 行文用 ASCII 投影：语言包键不在本卡写范围内，而这是给复验者的读数，不是给终端用户的散文。
+         */
+        if (!plan.reuseIdle || plan.forceNew) {
+          out.push(`reuseIdle=${String(plan.reuseIdle)} forceNew=${String(plan.forceNew)} role=${task.role} reusableIdle=${String(plan.pools.find((pool) => pool.role === task.role)?.idleSameParent.length ?? 0)}`)
+          if (reading !== undefined) out.push(poolReadingLine(reading))
         }
         if (probeBlind) {
           // 盲态时**原样下发**（对 deny 面来说，丢掉一条 deny = 给子代理多开一项权限 ⇒ 必须原名单发出）
@@ -2128,6 +2173,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(isRole(task.role) ? { owner: ownerOf(task.role, outcome.childSessionId) } : {}),
             // **DEF-014**：复用投递的宿主回执进真源（旧实现把 `sendMessage` 的返回值丢了）
             ...(outcome.messageReceipt === undefined ? {} : { messageReceipt: outcome.messageReceipt }),
+            /**
+             * **`DEF-139` 落点一/二（`TASK-163`）**：派发这一笔必须留下"做决定时的现场"——
+             * 读数（来源 / 总数 / 八桶 / `cap` / `freeSlots`）+ 两个**定案键**（`reuseIdle` / `forceNew`）
+             * + 逐条「谁没被复用、为什么」。
+             *
+             * 为什么三个都要：`reuseSkipped` 为空有两种完全不同的原因（**没打算复用** vs **没有孩子不合格**），
+             * 不给 `reuseIdle` / `forceNew` 就分不开；不给读数就答不了"孩子是不是根本没取到"。
+             * 修前这三样一个都不在台账里 ⇒ 真机上只能靠掩码哈希反推根因，并反推错过两次。
+             */
+            ...(reading === undefined ? {} : { reading }),
+            reuseIdle: plan.reuseIdle,
+            forceNew: plan.forceNew,
+            ...(plan.reuseSkipped.length === 0 ? {} : { reuseSkipped: plan.reuseSkipped }),
           })
           /**
            * **`REQ-066` / `AC-304`：派发时建工作副本**（子代理在**自己的** worktree 里写 `src`/`test`，
@@ -2142,6 +2200,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
               : ''
           // **`DEF-165` ①（验收面）**：复用/不复用都要写清**依据哪条观测**
           const reusedEvidence = outcome.reused ? office.reuseEvidence(call, outcome.childSessionId) : undefined
+          /**
+           * **`DEF-139` 落点三（`TASK-163`）**：这一行**只在真的试过复用**时才说"没有观测证据"。
+           *
+           * 修前它对每一笔"未复用"都印 R-1 那句（「没有任何可引用的 `dispatch/observed` 观测证据」）——
+           * 而 `freshChild=true` / 宿主没有续聊入口这两种情形**根本没试过复用**，把原因归到 R-1 上
+           * 就是**用自己的推断替换掉事实**（真机：驾驶舱据此去查观测落盘，查错了方向）。
+           * 现在：没试过 ⇒ 不印 R-1 那句（由上面的定案键行 `reuseIdle=… forceNew=…` 说明）。
+           */
+          const triedReuse = plan.reuseIdle && !plan.forceNew
           const evidenceLine = outcome.reused
             ? fmt('uiIndex.kReuseEvidence', {
                 p1: reusedEvidence === undefined ? '?' : String(reusedEvidence.seq),
@@ -2150,7 +2217,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 p4: reusedEvidence?.observedAt ?? t('uiIndex.kReuseEvidenceAbsent'),
                 p5: outcome.childSessionId.slice(0, 8),
               })
-            : fmt('uiIndex.kReuseEvidenceMissing', { p1: outcome.childSessionId.slice(0, 8), p2: task.role })
+            : triedReuse
+              ? fmt('uiIndex.kReuseEvidenceMissing', { p1: outcome.childSessionId.slice(0, 8), p2: task.role })
+              : ''
           // 复用/降级**如实写出来**：静默复用与静默降级都会让"池"变成看不见的行为
           const childRows = office.dispatchedChildren(call).filter((child) => child.childSessionId === outcome.childSessionId)
           const rounds = childRows.length
