@@ -15,12 +15,16 @@
  * （没有可机械判定的约定，硬编会变成逼人编造）。
  */
 import { createHash } from 'node:crypto'
-import { existsSync, readFileSync, statSync } from 'node:fs'
-import { isAbsolute, relative, resolve } from 'node:path'
+import { existsSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs'
+import { isAbsolute, relative, resolve, sep } from 'node:path'
 
 import type { SdoStore } from '../infra/store.js'
 import { textOf } from '../infra/scalar.js'
 import { readContract } from './contracts.js'
+// **TASK-173**：证据随版本归档（`ADR-022` 裁决③）—— 批准人/事件面/错误面与台账脱敏**共用一套**
+// （`scrub.ts` 的 `ScrubError` 与 `EventSink`），不另造第二份"批准"，也不写第二个审计事件形状。
+import { SCRUB_TOOL, ScrubError } from './scrub.js'
+import type { EventSink } from './scrub.js'
 // **TASK-056 落点二**：证据面改读方法产物台账 —— 台账读法只此一处（`construction.ts`），
 // 这里直接复用，不另造第二份读法（`evidence.ts` 不反向被 `construction.ts` 依赖，无环）。
 import {
@@ -589,4 +593,331 @@ export function auditDoneEvidence(
   }
 
   return { ok: true }
+}
+
+/* ——————————————————————— 证据随版本归档（`ADR-022` 裁决③ / `TASK-173`） ——————————————————————— */
+
+/** 证据目录（相对 `.sdo` 根）。 */
+export const EVIDENCE_DIR = 'evidence'
+
+/**
+ * 归档事件名。
+ *
+ * 登记进 `src/types.ts` 的 `SdoEventType`（闭合联合）的那半**不在本卡写范围** —— 与 `scrub.ts`
+ * 同一处置：写侧走 `EventSink`（结构化最小接口，`Journal` 天然满足），读侧按**字形**比字符串。
+ */
+export const EVIDENCE_ARCHIVED_EVENT = 'evidence/archived'
+
+/**
+ * 归档的**保留口径**（数据即口径：测试、CLI、回执读同一份，不许各写一套）。
+ *
+ * `ADR-022` 的语义是「归档即删除大体积部分，保留 `report.md` 与必要摘要」：
+ * 台账对证据的引用指向 `report.md`（所以它**任意深度**都留），摘要按"包根 + 体积上限"认
+ * —— 上限不是拍出来的：超过它的多半是整棵编译产物副本，不是摘要。
+ */
+export interface EvidenceArchiveRules {
+  /** 任意深度都保留的文件名（`report.md` 是台账引用的落点） */
+  keepNames: readonly string[]
+  /** 包根（深度 ≤ 2）按扩展名保留的摘要 */
+  summaryExtensions: readonly string[]
+  /** 摘要的体积上限（超过它就不是"摘要"） */
+  summaryMaxBytes: number
+  /** 归档后的目标体积（超出就在报告里标 `withinTarget: false`，不静默放过） */
+  targetBytes: number
+}
+
+export const EVIDENCE_ARCHIVE_RULES: EvidenceArchiveRules = {
+  keepNames: ['report.md'],
+  summaryExtensions: ['md', 'txt', 'json', 'jsonl', 'yml', 'log', 'tap', 'png', 'out'],
+  summaryMaxBytes: 512 * 1024,
+  targetBytes: 50 * 1024 * 1024,
+}
+
+/**
+ * **产品代码要读的证据原件 —— 永不被归档删除。**
+ *
+ * 这一条是本模块的"别删功能"：
+ *   · `child-tools.jsonl` 是派发工具面的观测原件（`CHILD_FACE_SEGMENTS` 读它）；
+ *   · `file-history/` 是手可编辑真源的快照史（保留策略在 `office` 层，不归归档管）；
+ *   · `child-reports/` 是子代理回报原件（`CHILD_REPORT_SUBDIR` 读它）。
+ * 它们也是"证据"，但**不是**任务的过程产物副本 —— 删掉等于删掉功能，不是减重。
+ */
+export const EVIDENCE_PROTECTED: readonly { path: string; why: string }[] = [
+  { path: 'child-tools.jsonl', why: 'dispatch tool-face observation source (product reads it)' },
+  { path: 'file-history', why: 'snapshot history of hand-editable truth files (product retention policy owns it)' },
+  { path: 'child-reports', why: 'child agent report source (product reads it)' },
+]
+
+/** 一条保留/删除项（`why` 是**机器码**：界面层按码渲染人话，产品层不写死文案）。 */
+export interface ArchiveRow {
+  path: string
+  bytes: number
+  /** `protected` / `report` / `summary` / `in-flight-task` / `bulk` */
+  why: string
+}
+
+/** 归档演练报告（批准人看这一份）。 */
+export interface EvidenceArchivePlan {
+  tool: string
+  kind: 'evidence'
+  generatedAt: string
+  rules: EvidenceArchiveRules
+  deleteRows: ArchiveRow[]
+  keepRows: ArchiveRow[]
+  refusals: { path: string; code: 'symlink' | 'unreadable' }[]
+  totals: {
+    beforeBytes: number
+    keptBytes: number
+    deletedBytes: number
+    keepFiles: number
+    deleteFiles: number
+    targetBytes: number
+    withinTarget: boolean
+  }
+  /** 演练语义：**没有删任何东西** */
+  dryRun: true
+}
+
+/** 归档执行回执。 */
+export interface EvidenceArchiveReceipt {
+  tool: string
+  appliedAt: string
+  approvedBy: string
+  deletedBytes: number
+  deletedFiles: number
+  keptBytes: number
+  keptFiles: number
+  eventSeq?: number
+}
+
+function evidenceWalk(
+  dir: string,
+  base: string,
+  out: { path: string; bytes: number }[],
+  refusals: { path: string; code: 'symlink' | 'unreadable' }[],
+): void {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    refusals.push({ path: base === '' ? EVIDENCE_DIR : base, code: 'unreadable' })
+    return
+  }
+  for (const entry of entries.sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))) {
+    const rel = base === '' ? entry.name : `${base}/${entry.name}`
+    if (entry.isSymbolicLink()) {
+      refusals.push({ path: rel, code: 'symlink' })
+      continue
+    }
+    if (entry.isDirectory()) {
+      evidenceWalk(resolve(dir, entry.name), rel, out, refusals)
+      continue
+    }
+    try {
+      out.push({ path: rel, bytes: statSync(resolve(dir, entry.name)).size })
+    } catch {
+      refusals.push({ path: rel, code: 'unreadable' })
+    }
+  }
+}
+
+/** 顶层 `task<N>` 目录对应的卡（**在飞**的那些不许归档 —— 它这一版还要用）。 */
+function inFlightTaskOf(path: string, keepTasks: readonly string[]): string | undefined {
+  const top = path.split('/')[0] ?? ''
+  const hit = /^task-?(\d+)$/iu.exec(top)
+  if (hit === null) return undefined
+  const id = `TASK-${hit[1]}`
+  return keepTasks.some((item) => item.trim().toUpperCase() === id.toUpperCase()) ? id : undefined
+}
+
+/**
+ * **归档演练**：算出"哪些留、为什么留；哪些删、删多少字节"，**一个文件都不删**。
+ *
+ * 分类顺序（先判后不改，顺序即优先级）：
+ *   ① **产品读取的原件**（{@link EVIDENCE_PROTECTED}）⇒ 留（`protected`）；
+ *   ② **在飞任务**的证据目录（`keepTasks` 点名）⇒ 留（`in-flight-task`）；
+ *   ③ `report.md`（任意深度）⇒ 留（`report`）；
+ *   ④ 包根（深度 ≤ 2）里体积不超上限的摘要扩展名 ⇒ 留（`summary`）；
+ *   ⑤ 其余 ⇒ 删（`bulk`）：`scratch/`、编译产物副本（`.ts`/`.js`/`.map`）与深拷贝整棵树的现场。
+ */
+export function planEvidenceArchive(
+  store: SdoStore,
+  options: { keepTasks?: readonly string[]; targetBytes?: number; now?: string } = {},
+): EvidenceArchivePlan {
+  const rules: EvidenceArchiveRules = {
+    ...EVIDENCE_ARCHIVE_RULES,
+    ...(options.targetBytes === undefined ? {} : { targetBytes: options.targetBytes }),
+  }
+  const keepTasks = options.keepTasks ?? []
+  const files: { path: string; bytes: number }[] = []
+  const refusals: { path: string; code: 'symlink' | 'unreadable' }[] = []
+  const root = resolve(store.root, EVIDENCE_DIR)
+  if (existsSync(root)) evidenceWalk(root, '', files, refusals)
+  const keepRows: ArchiveRow[] = []
+  const deleteRows: ArchiveRow[] = []
+  for (const file of files) {
+    const protectedHit = EVIDENCE_PROTECTED.find((item) => file.path === item.path || file.path.startsWith(`${item.path}/`))
+    if (protectedHit !== undefined) {
+      keepRows.push({ ...file, why: 'protected' })
+      continue
+    }
+    if (inFlightTaskOf(file.path, keepTasks) !== undefined) {
+      keepRows.push({ ...file, why: 'in-flight-task' })
+      continue
+    }
+    const name = file.path.split('/').pop() ?? file.path
+    if (rules.keepNames.includes(name)) {
+      keepRows.push({ ...file, why: 'report' })
+      continue
+    }
+    const depth = file.path.split('/').length
+    const ext = name.includes('.') ? (name.split('.').pop() ?? '').toLowerCase() : ''
+    if (depth <= 2 && file.bytes <= rules.summaryMaxBytes && rules.summaryExtensions.includes(ext)) {
+      keepRows.push({ ...file, why: 'summary' })
+      continue
+    }
+    deleteRows.push({ ...file, why: 'bulk' })
+  }
+  const keptBytes = keepRows.reduce((total, row) => total + row.bytes, 0)
+  const deletedBytes = deleteRows.reduce((total, row) => total + row.bytes, 0)
+  return {
+    tool: SCRUB_TOOL,
+    kind: 'evidence',
+    generatedAt: options.now ?? new Date().toISOString(),
+    rules,
+    deleteRows,
+    keepRows,
+    refusals,
+    totals: {
+      beforeBytes: keptBytes + deletedBytes,
+      keptBytes,
+      deletedBytes,
+      keepFiles: keepRows.length,
+      deleteFiles: deleteRows.length,
+      targetBytes: rules.targetBytes,
+      withinTarget: keptBytes <= rules.targetBytes,
+    },
+    dryRun: true,
+  }
+}
+
+function assertInsideEvidence(store: SdoStore, path: string): string {
+  const root = resolve(store.root, EVIDENCE_DIR)
+  const target = resolve(store.root, path)
+  const rel = relative(root, target)
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) {
+    throw new ScrubError('path-outside', `archive target is outside ${EVIDENCE_DIR}/`, { path })
+  }
+  return target
+}
+
+function pruneEmptyDir(dir: string): void {
+  let entries
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return
+  }
+  for (const entry of entries) if (entry.isDirectory()) pruneEmptyDir(resolve(dir, entry.name))
+  try {
+    if (readdirSync(dir).length === 0) rmSync(dir, { recursive: true, force: true })
+  } catch {
+    // 空目录清不掉不影响归档结果（不算失败，也不改判定）
+  }
+}
+
+/**
+ * **执行归档**：删掉演练里点名的 `bulk` 部分，并留一条 `evidence/archived` 审计事件。
+ *
+ * 三道闸与脱敏同档（缺一条就整体拒绝、一个文件都不删）：
+ *   ① 批准人必须是 `human`（`approval-missing`）；
+ *   ② 每个待删文件的**体积**必须与演练时一致（`hash-drift`：演练之后有人往里写，批准的不是这一版）；
+ *   ③ 路径必须落在 `evidence/` 之内（`path-outside`：不跟随、也不越界删东西）。
+ *
+ * 事件里记**删除字节数**与**保留清单**（`ADR-022` 裁决③ 的字面要求）—— 保留清单是完整的，
+ * 因为"当时留了什么"是事后审计唯一可核的对象（删掉的那些只剩这条事件能证明它存在过）。
+ */
+export function applyEvidenceArchive(
+  store: SdoStore,
+  plan: EvidenceArchivePlan,
+  input: { approvedBy: string; actor?: string | undefined; journal: EventSink; now?: string | undefined },
+): EvidenceArchiveReceipt {
+  const approvedBy = input.approvedBy.trim()
+  if (approvedBy !== 'human') {
+    throw new ScrubError('approval-missing', 'user approval is required (approvedBy must be human)', { approvedBy })
+  }
+  const drifted: string[] = []
+  for (const row of plan.deleteRows) {
+    const target = assertInsideEvidence(store, `${EVIDENCE_DIR}/${row.path}`)
+    if (!existsSync(target)) {
+      drifted.push(row.path)
+      continue
+    }
+    try {
+      if (statSync(target).size !== row.bytes) drifted.push(row.path)
+    } catch {
+      drifted.push(row.path)
+    }
+  }
+  if (drifted.length > 0) {
+    throw new ScrubError('hash-drift', 'evidence changed since rehearsal; re-run the rehearsal', { paths: drifted })
+  }
+  let deletedBytes = 0
+  const deleted: string[] = []
+  for (const row of plan.deleteRows) {
+    const target = assertInsideEvidence(store, `${EVIDENCE_DIR}/${row.path}`)
+    rmSync(target, { force: true })
+    deletedBytes += row.bytes
+    deleted.push(row.path)
+  }
+  const root = resolve(store.root, EVIDENCE_DIR)
+  if (existsSync(root)) {
+    for (const entry of readdirSync(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) pruneEmptyDir(resolve(root, entry.name))
+    }
+  }
+  const kept = plan.keepRows.map((row) => row.path)
+  const keptBytes = plan.keepRows.reduce((total, row) => total + row.bytes, 0)
+  const event = input.journal.append(
+    EVIDENCE_ARCHIVED_EVENT,
+    {
+      tool: SCRUB_TOOL,
+      approvedBy,
+      deletedBytes,
+      deletedFiles: deleted.length,
+      keptBytes,
+      keptFiles: kept.length,
+      beforeBytes: plan.totals.beforeBytes,
+      targetBytes: plan.totals.targetBytes,
+      withinTarget: plan.totals.beforeBytes - deletedBytes <= plan.totals.targetBytes,
+      rules: plan.rules,
+      kept,
+    },
+    input.actor ?? SCRUB_TOOL,
+  )
+  const seq = event !== null && typeof event === 'object' && 'seq' in event ? (event as { seq: unknown }).seq : undefined
+  return {
+    tool: SCRUB_TOOL,
+    appliedAt: input.now ?? new Date().toISOString(),
+    approvedBy,
+    deletedBytes,
+    deletedFiles: deleted.length,
+    keptBytes,
+    keptFiles: kept.length,
+    ...(typeof seq === 'number' ? { eventSeq: seq } : {}),
+  }
+}
+
+/** 证据目录的现算体积（字节；`sdo_scrub` 的读数与 DoD 证据都用它，不许各数一遍）。 */
+export function evidenceBytes(store: SdoStore): number {
+  const files: { path: string; bytes: number }[] = []
+  const refusals: { path: string; code: 'symlink' | 'unreadable' }[] = []
+  const root = resolve(store.root, EVIDENCE_DIR)
+  if (existsSync(root)) evidenceWalk(root, '', files, refusals)
+  return files.reduce((total, row) => total + row.bytes, 0)
+}
+
+/** 路径分隔符归一（`evidence/` 之内的相对路径一律 `\` → `/`，与台账口径一致）。 */
+export function evidencePathOf(path: string): string {
+  return path.split(sep).join('/')
 }
