@@ -41,11 +41,23 @@ roles:
     allow: [skill, read, grep, glob, write, edit, sdo_design, sdo_adr, sdo_quality, sdo_trace, sdo_task]
     deny: [bash, ask_user_question, sdo_requirement, sdo_deliver]
     rationale: 设计写入受计划评审约束；不改需求、不打包。**开放 `edit`**（且现已有路径级写范围纪律兜底）（SDO-23：此前无 `edit` 只能「read 全文 → 整篇 write」，真机上直接导致登记簿被覆盖、23 条 DEV 正文永久丢失）
+  # **`sdo_release` 只登记在 office 这一行**（`TASK-199` 处置 `REV-082#3`）：
+  #   · `sdo_release` —— `sign` 只走问答通道（`channel=question`），问答只在**使用者会话**里成立
+  #     （ADR-033：「签只在使用者会话」）⇒ 只给 office，**七个派发角色一条都不写**。本表的 `sdo_*` 是
+  #     **白名单**语义（见文件头第 4 行）：不写就是默认拒，`toolDenyList` 会把白名单的补集下发成 deny 面。
+  # **守卫（缺口不再靠人发现）**：`test/m222.test.ts` 的 `M222-14` 从**工具注册表现算**，任何**已注册**的
+  # `sdo_*` 只要在本表里没有任何角色的 `allow` 命中就判红并**点名**。若某个工具**有意**哪个角色都不给
+  # （只在驾驶舱用），必须在本文件的 `cockpitOnly:` 一节里显式写豁免与理由 —— 形状：
+  #   cockpitOnly:
+  #     - tool: sdo_<工具名>
+  #       reason: <为什么刻意不登记给任何角色；空理由会被判红>
+  # 豁免条目本身也受检查：工具必须**已注册**（不许给不存在的工具挂豁免）、理由不得为空、已被某个角色
+  # `allow` 登记的工具不许再挂豁免（多余豁免会遮蔽真正的回归）。
   - code: office
     name: 流程官/PM
-    allow: [skill, read, grep, glob, write, edit, sdo_init, sdo_status, sdo_feasibility, sdo_project, sdo_gate, sdo_plan, sdo_task, sdo_risk, sdo_cost, sdo_render, sdo_trace, sdo_deliver, sdo_redteam]
+    allow: [skill, read, grep, glob, write, edit, sdo_init, sdo_status, sdo_feasibility, sdo_project, sdo_gate, sdo_plan, sdo_task, sdo_risk, sdo_cost, sdo_render, sdo_trace, sdo_deliver, sdo_redteam, sdo_release]
     deny: [bash, ask_user_question]
-    rationale: 只有流程官能推门禁与派发；**手维 `.sdo/` 手可编辑真源需要 `edit`**（整篇 write 会丢内容，SDO-23 同类）；不碰实现由写范围纪律保证
+    rationale: 只有流程官能推门禁与派发；**手维 `.sdo/` 手可编辑真源需要 `edit`**（整篇 write 会丢内容，SDO-23 同类）；不碰实现由写范围纪律保证；**`sdo_release` 只在这里登记**（签字只在使用者会话，派发角色默认拒）
   - code: developer
     name: 实现工程师
     allow: [skill, read, grep, glob, write, edit, bash, sdo_task, sdo_trace, sdo_test]
@@ -66,6 +78,15 @@ roles:
     allow: [skill, read, grep, glob, write, edit, bash, sdo_deliver, sdo_trace, sdo_render, sdo_task]
     deny: [ask_user_question, sdo_review, sdo_requirement, sdo_design]
     rationale: 不得发布/上线（非目标）；不得改需求与设计（`sdo_*` 白名单）；交付清单要能外科手术式修改
+
+# **只在驾驶舱可调的工具**（豁免「已注册 ⇒ 至少一个角色可调」这条守卫）
+#
+# 形状：`tool` 必须是**已注册**的 `sdo_*`，`reason` 不得为空（空理由不算豁免 —— 那会把"缺口"洗成"决策"）。
+# 已被某个角色 `allow` 登记的工具**不许**再挂豁免：多余豁免会遮蔽真正的回归（下次它从 allow 里掉了也照样绿）。
+# 守卫在 `test/m222.test.ts` 的 `M222-14` 里现算（工具注册表 × 本文件的 `roles[].allow` × 这一节）。
+cockpitOnly:
+  - tool: sdo_lang
+    reason: 显示语言是会话/用户层的配置面而不是流程职责：只有使用者会话（驾驶舱）才该改它，派给任何子代理等于把用户偏好交出去；test/m75.test.ts 的 M75-02 末行早已钉住「所有角色都拿不到 sdo_lang」。
 
 # **未认领子会话的最小面**（DEF-078 / 第五批 §3.1）—— 由**声明**给出，插件里不写任何工具名。
 #

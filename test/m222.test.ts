@@ -17,6 +17,10 @@
  * | `M222-09` | `change` 反例格①：改了集合却没有 change 事件 ⇒ 红（核心判据同判） |
  * | `M222-10` | `change` 反例格③：事件说改 A、实际改 B ⇒ 红（差集对不上） |
  * | `M222-11` | i18n：`sdo.release` 在两份语言包里都有，`en` 侧不残留中文 |
+ * | `M222-12` | 只读自证：`show` / `propose` 前后真源逐字节不变 |
+ * | `M222-13` | 落盘幂等：同一份集合再签一次再落一次，文件字节相同 |
+ * | `M222-14` | **已注册 ⇒ 至少一个角色可调**（`REV-082#3`）：从注册表与 `roles.yml` 现算，零命中点名判红；豁免必须有理由 |
+ * | `M222-15` | `sdo_release` 的授权面：只登记给 office、7 个派发角色一条都不写，且调用面确实认得到 |
  *
  * **读散文棘轮的口径**（`test/m189.test.ts` 的 `KNOWN_PROSE_GAP`）：本文件**不登记** —— 所有断言的
  * **取值/模式实参**都是 ASCII（id / 事件名 / 机器面 `kind` / 计数），中文只出现在**第三个实参之后**的
@@ -51,8 +55,12 @@ import {
 } from '../src/domain/releaseTool.js'
 import type { ReleaseLedger } from '../src/domain/releaseTool.js'
 import { loadPackagedYaml } from '../src/infra/data.js'
+import { sdoAllowList, listRoleCards, maskAllows, toolDenyList, unclaimedFace } from '../src/domain/roles.js'
+import { createOfficeTools } from '../src/interface/tools.js'
 
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m222/', import.meta.url))
+/** 包根（编译产物在 `lib/test/`，`../../` 就是包根 —— 与 `test/m189.test.ts` 同一取法）。 */
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const CJK = /[\u4e00-\u9fff]/u
 
 beforeEach(() => { rmSync(BASE, { recursive: true, force: true }); mkdirSync(BASE, { recursive: true }) })
@@ -660,4 +668,117 @@ test('M222-13 落盘幂等：同一份集合再签一次再落一次，文件字
   assert.deepEqual(diskSecond?.scope, diskFirst?.scope, '同一份集合落两次：集合逐字相同（漂移的只有冻结序号）')
   assert.deepEqual(diskSecond?.nonScope, diskFirst?.nonScope, '顺延名单同样逐字相同')
   assert.equal((second.ok ? second.frozenSeq : 0) > (first.ok ? first.frozenSeq : 0), true, '重签一次 ⇒ 冻结序号前移（基线跟着走）')
+})
+
+/* ————————————————— M222-14 / M222-15：授权面与「已注册 ⇒ 至少驾驶舱可调」 ————————————————— */
+
+/**
+ * **现算**：本插件真正注册出去的 `sdo_*` 工具名（`REV-082#3` 落点二）。
+ *
+ * 只认**两个注册出口**（`src/index.ts` 的装配处逐字是 `[...createOfficeTools(deps), releaseTool]`）：
+ * 名字从工厂**返回值**读出来，**没有一份手抄的工具名单** —— 手抄名单必然随新工具漂，漂了就是
+ * "注册了却谁都调不到"这类缺口（`REV-082#3` 说的正是 `sdo_release` 当年在 `roles.yml` 里零命中）。
+ */
+function registeredSdoTools(): string[] {
+  const officeTools = createOfficeTools({} as never) as unknown as { name: string }[]
+  const release = createReleaseTool({
+    workspace: () => '',
+    store: (root) => new SdoStore(root),
+    journal: (root) => new Journal(new SdoStore(root)),
+  })
+  return [...officeTools.map((tool) => tool.name), release.name]
+}
+
+/** `roles.yml` 的 `cockpitOnly:` 豁免声明（形状见该文件的注释节；没写这一节 = 没有豁免）。 */
+function cockpitOnlyExemptions(): { tool: string; reason: string }[] {
+  const raw = loadPackagedYaml<{ cockpitOnly?: { tool?: string; reason?: string }[] }>('src/data/roles.yml')
+  const declared: unknown = raw.cockpitOnly
+  if (declared === undefined) return []
+  assert.equal(Array.isArray(declared), true, 'roles.yml 的 cockpitOnly 必须是列表（写成映射就分不清"没有豁免"与"读不懂豁免"）')
+  if (!Array.isArray(declared)) return []
+  return (declared as { tool?: unknown; reason?: unknown }[]).map((entry) => ({
+    tool: String(entry?.tool ?? '').trim(),
+    reason: String(entry?.reason ?? '').trim(),
+  }))
+}
+
+/**
+ * **「已注册 ⇒ 至少有一个角色可调」的现算器**（`REV-082#3` 落点二/三）。入参全是**数据**，不是名单：
+ * ① 工具注册表（现算的名字）；② 角色面（`roles.yml` 的 8 张卡的 `allow`）；③ `cockpitOnly:` 豁免声明。
+ *
+ * 三档判定（各自可判红，且都**点名**到具体工具）：
+ *   · `gaps` —— 已注册、**没有**任何角色的 `allow` 命中、也没有合规豁免 ⇒ 一只谁都调不到的死工具。
+ *     本表的 `sdo_*` 是白名单语义（`roles.yml` 文件头）："没登记"= 默认拒，只剩认不出人的驾驶舱还能碰它
+ *     ⇒ 缺口只能靠人发现（`REV-082#3` 的原样症状）。
+ *   · `badExemptions` —— 豁免条目本身不合规：工具**没注册**（幻影豁免）/ `reason` 为空（"豁免"变成了
+ *     不写理由的通行证）/ 工具**已被某角色登记**（多余豁免会遮蔽真正的回归：下次它从 allow 里掉了也照样绿）。
+ *   · `allowed` —— 每个工具**现算**的"哪些角色可调"，回执点名要用，不另算第二遍。
+ */
+function unmaskableTools(
+  registered: readonly string[],
+  faces: readonly { code: string; allow: readonly string[] }[],
+  exemptions: readonly { tool: string; reason: string }[],
+): { allowed: Record<string, string[]>; exempt: string[]; badExemptions: string[]; gaps: string[] } {
+  const allowed: Record<string, string[]> = {}
+  for (const tool of registered) {
+    allowed[tool] = faces.filter((face) => face.allow.includes(tool)).map((face) => face.code)
+  }
+  const exempt: string[] = []
+  const badExemptions: string[] = []
+  for (const entry of exemptions) {
+    const hit = allowed[entry.tool] ?? []
+    // 机器面一律 ASCII（原因码 + 点名的角色/工具），中文只进断言消息：读散文棘轮（`test/m189.test.ts`）
+    // 把"断言取值里有中文"当读散文站点，这里不该为一句诊断语去改棘轮基线。
+    if (!registered.includes(entry.tool)) badExemptions.push(`${entry.tool}:unregistered`)
+    else if (entry.reason === '') badExemptions.push(`${entry.tool}:no-reason`)
+    else if (hit.length > 0) badExemptions.push(`${entry.tool}:already-allowed:${hit.join('/')}`)
+    else exempt.push(entry.tool)
+  }
+  const gaps = registered.filter((tool) => (allowed[tool] ?? []).length === 0 && !exempt.includes(tool))
+  return { allowed, exempt, badExemptions, gaps }
+}
+
+test('M222-14 已注册 ⇒ 至少一个角色可调：任一注册了的 sdo_* 在 roles.yml 零命中就判红点名', () => {
+  const registered = registeredSdoTools()
+  const faces = listRoleCards().map((card) => ({ code: String(card.code), allow: card.allow }))
+  const live = unmaskableTools(registered, faces, cockpitOnlyExemptions())
+  assert.deepEqual(live.gaps, [], `已注册却没有任何角色可调（roles.yml 零命中且未写豁免）：${live.gaps.join(' / ')}`)
+  assert.deepEqual(live.badExemptions, [], `roles.yml 的 cockpitOnly 豁免声明不合规：${live.badExemptions.join(' / ')}`)
+  // 豁免说的是"**只**在驾驶舱可调"⇒ 未认领子会话的最小面也不许含它（否则它不只驾驶舱能碰）
+  const unclaimed = unclaimedFace()
+  for (const tool of live.exempt) {
+    assert.equal(unclaimed?.allow.includes(tool) ?? false, false, `豁免了 ${tool} ⇒ 未认领子会话的最小面也不得含它`)
+  }
+  // **注册面只有这两个来源**，且发布工具只注册一次、名字不重复。
+  // 基数对账用**算式**而不是抄一个数：注册面 = createOfficeTools 的条数 + 发布工具那一只。
+  assert.equal(registered.length, (createOfficeTools({} as never) as unknown as { name: string }[]).length + 1, '注册面只许「createOfficeTools 的产物 + 发布工具」两处（多一处本守卫就看不见它）')
+  assert.equal(new Set(registered).size, registered.length, '注册名不得重复（宿主侧重复注册是"首个胜出 + 告警"）')
+  assert.match(readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8'), /for \(const tool of \[\.\.\.createOfficeTools\(deps\), releaseTool\]\)/u, 'src/index.ts 的注册循环必须仍是这两处 —— 多一路注册就要把它的名字并进本守卫')
+  // **反例格（证明上面那两行不是恒真）**：合成的注册表里放一只哪个面都没登记的工具 ⇒ 必须被点名
+  const orphan = unmaskableTools(['sdo_fixture_orphan', 'sdo_fixture_known'], [{ code: 'office', allow: ['sdo_fixture_known'] }], [])
+  assert.deepEqual(orphan.gaps, ['sdo_fixture_orphan'], '检测器必须点名那只谁都没登记的工具（否则这一格是恒真断言）')
+  // **豁免的语义**：写了理由才算豁免；空理由 / 幻影工具 / 已被登记又挂豁免 ⇒ 三种都判红并各自点名
+  const blank = unmaskableTools(['sdo_fixture_orphan'], [{ code: 'office', allow: [] }], [{ tool: 'sdo_fixture_orphan', reason: '' }])
+  assert.deepEqual(blank.gaps, ['sdo_fixture_orphan'], '空理由不算豁免（缺口照旧判红）')
+  assert.deepEqual(blank.badExemptions, ['sdo_fixture_orphan:no-reason'], '空理由本身要单独点名')
+  const declared = unmaskableTools(['sdo_fixture_orphan'], [{ code: 'office', allow: [] }], [{ tool: 'sdo_fixture_orphan', reason: 'fixture' }])
+  assert.deepEqual(declared.gaps, [], '合规豁免（有工具、有理由）必须真的把它从 gaps 里拿掉')
+  const stale = unmaskableTools(['sdo_fixture_orphan'], [{ code: 'office', allow: ['sdo_fixture_orphan'] }], [{ tool: 'sdo_fixture_orphan', reason: 'fixture' }, { tool: 'sdo_fixture_ghost', reason: 'fixture' }])
+  assert.deepEqual(stale.badExemptions, ['sdo_fixture_orphan:already-allowed:office', 'sdo_fixture_ghost:unregistered'], '多余豁免与幻影豁免都必须点名')
+})
+
+test('M222-15 sdo_release 的授权面：只登记给 office、派发角色一条都不写、调用面确实认得到', () => {
+  const registered = registeredSdoTools()
+  const cards = listRoleCards()
+  const allowedFaces = cards.filter((card) => card.allow.includes('sdo_release')).map((card) => String(card.code))
+  assert.deepEqual(allowedFaces, ['office'], `sdo_release 只许登记在 office（ADR-033：签字只在使用者会话），实际：${allowedFaces.join(' / ')}`)
+  // **调用面认得到**（白名单语义下"登记了却认不到"与没登记同效）：走生产代码的两条出口，不另算一遍
+  assert.equal(sdoAllowList('office', registered).includes('sdo_release'), true, 'office 的流程面白名单必须现算出 sdo_release')
+  assert.equal(maskAllows('office', 'sdo_release'), true, 'office 面的掩码判定必须放行 sdo_release')
+  for (const card of cards.filter((item) => String(item.code) !== 'office')) {
+    const code = String(card.code)
+    assert.equal(card.allow.includes('sdo_release'), false, `${code} 的 allow 里不许出现 sdo_release`)
+    assert.equal(maskAllows(code, 'sdo_release'), false, `${code} 是派发角色，掩码必须拒 sdo_release`)
+    assert.equal(toolDenyList(code, registered).includes('sdo_release'), true, `${code} 下发的 deny 面必须含 sdo_release`)
+  }
 })
