@@ -179,6 +179,25 @@ test('M157-04 结构：判据的唯一出口是 claimsBySession，且池视图�
   assert.equal(helper.includes('claimsBySession(store, journal)'), true, '会话持卡必须取自唯一出口 claimsBySession（不得自己重fold task/claimed）')
   assert.equal(helper.includes("fmt('uiPool.kReuseHoldsCard'"), true, '原因必须走语言包（两包同步）')
   // 两处消费点拿的是**同一个**闭包：池视图 + 准入（少一处就会"读数与行为分叉"）
-  const used = (source.match(/reuseBlockedOf: this\.reuseBlockedOf\(call\)/gu) ?? []).length
-  assert.equal(used, 2, `池视图与准入都要接同一个闭包，实际 ${used} 处`)
+  //
+  // **`TASK-196` / `DEF-185` 落点一**：判据从「两处各叫一次 `this.reuseBlockedOf(call)`」改成
+  // 「`poolPlan` 只建**一次**、作为**同一个实例**（`gate`）传下去」—— 旧形状虽然两个消费点同源，
+  // 但每次构造都会各自重读观测事件与在飞卡归属，同一次派发里仍是**判了两遍**。
+  assert.equal(
+    (source.match(/const gate = this\.reuseBlockedOf\(call\)/gu) ?? []).length,
+    1,
+    '`poolPlan` 必须把判据闭包建成**一个**局部量（同一个实例），不许两处各建一次',
+  )
+  assert.match(source, /this\.poolSnapshot\(call, options\.orphanTtlMinutes, gate\)/u, '池视图必须拿这同一个 `gate`（读数面）')
+  assert.match(source, /reuseBlockedOf: gate,/u, '准入必须拿这同一个 `gate`（决策面）')
+  assert.equal(
+    (source.match(/reuseBlockedOf: this\.reuseBlockedOf\(call\)/gu) ?? []).length,
+    0,
+    '不许再有"消费点自己现取一份"的写法（旧形状两处都是这样）',
+  )
+  assert.match(
+    source,
+    /reuseBlockedOf: reuseBlockedOf \?\? this\.reuseBlockedOf\(call\)/u,
+    '缺省自取只许留在 `poolSnapshot` 的入参兜底里（给 `poolView()` 这类只读调用方）',
+  )
 })

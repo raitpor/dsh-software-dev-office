@@ -2130,6 +2130,36 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }))
         }
         /**
+         * **`DEF-185` / `DEF-186` 落点二（`TASK-196`）：投递被拒**不许静默**。**
+         *
+         * 准入挑中了一个"闸门全过"的空闲孩子（`reuseSkipped` 于是为空），但**投递**这一步
+         * 宿主拒了（`startDispatch` 的 `sendMessage` 抛错 ⇒ `reuseFailed` ⇒ 退化成新起一个）。
+         * 修前这条原因只活在**回执里**（`kReuseFailed` 那一行），台账上则完全消失 ——
+         * 于是 `dispatch/started` 长成「`idle=68 / unusable=0 / reused=false` + 零条 skip」，
+         * 与"判据全过却不复用"在台账上**一模一样**（`DEF-185` 的形状，真机 seq 4982 / 4998）。
+         *
+         * 现在：投递被拒 ⇒ 补一条**带原因**的 `reuseSkipped`（子会话 id / 角色 / 宿主原话），
+         * 与闸门那批同形同面 —— 这才是「`idle>0` 且 `unusable=0` 且 `reused=false` ⇒ 必须解释」的答案来源。
+         */
+        const attemptedReuse = entry.reuseChildId !== undefined && entry.reuseChildId !== ''
+        const deliverySkipped = attemptedReuse && outcome.started && outcome.reused === false
+          ? [{
+              childSessionId: entry.reuseChildId as string,
+              role: task.role,
+              // 语言包键**不在本卡写范围内** ⇒ 走已有的 `uiDescribe.kReuseFailed`（与回执那一行同源），
+              // 没给原因那一格用 ASCII 投影（同上，不新增硬编码中文 —— `m7` 的棘轮守着这一条）。
+              reason: outcome.reuseFailed === undefined
+                ? 'reuse delivery failed (host gave no reason) -> forced new child'
+                : fmt('uiDescribe.kReuseFailed', { p1: outcome.reuseFailed }),
+            }]
+          : []
+        if (deliverySkipped.length > 0) {
+          out.push(fmt('uiIndex.kReuseSkipped', {
+            p1: String(deliverySkipped.length),
+            p2: reuseSkippedLines(deliverySkipped).join('\n'),
+          }))
+        }
+        /**
          * **`DEF-139` 落点三的「修触发条件」半**（`TASK-163`）：**跳过复用这件事不许再静默**。
          *
          * 复用的触发条件里有两个**调用期参数**（`reuseIdle` = 宿主有没有续聊入口、`forceNew` =
@@ -2185,7 +2215,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(reading === undefined ? {} : { reading }),
             reuseIdle: plan.reuseIdle,
             forceNew: plan.forceNew,
-            ...(plan.reuseSkipped.length === 0 ? {} : { reuseSkipped: plan.reuseSkipped }),
+            // **`TASK-196` 落点二**：闸门那批 ∪ **投递被拒**那批 —— 同一份三字段形状，同一处落盘
+            ...(plan.reuseSkipped.length + deliverySkipped.length === 0
+              ? {}
+              : { reuseSkipped: [...plan.reuseSkipped, ...deliverySkipped] }),
           })
           /**
            * **`REQ-066` / `AC-304`：派发时建工作副本**（子代理在**自己的** worktree 里写 `src`/`test`，

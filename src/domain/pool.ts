@@ -410,6 +410,25 @@ export interface PoolAdmission {
 }
 
 /**
+ * **复用候选的挑选顺序**（`TASK-196` / `DEF-139`）：**同父会话优先**，其余保持台账折叠顺序。
+ *
+ * 判据取自 `rolePools` 已经算好的那一栏（{@link PoolBuckets.idleSameParent}：「`idle` 里父会话 =
+ * 观察者的（**派发器真的能投**）」）—— 决策与读数**同源**，不另立一套判定。
+ *
+ * 不传观察者（`rolePools` 的 `viewerSessionId` 为空）时 `idleSameParent` 就是整个 `idle`，
+ * 本函数退化为恒等 ⇒ 老调用方的顺序与行为一字不变。
+ *
+ * 返回的是**新数组**：调用方按 `childSessionId` 从 `pool.idle` 里摘，不改本数组。
+ */
+export function reuseCandidateOrder(pool: RolePool): PoolChild[] {
+  const deliverable = new Set(pool.idleSameParent.map((child) => child.childSessionId))
+  return [
+    ...pool.idle.filter((child) => deliverable.has(child.childSessionId)),
+    ...pool.idle.filter((child) => !deliverable.has(child.childSessionId)),
+  ]
+}
+
+/**
  * 派发准入：**先全局预算、再逐角色池**（两者都是上限，取更严的那个）。
  *
  * @param ready 待派卡（已有顺序，通常来自 `readyTasks`）
@@ -500,16 +519,6 @@ export function admitDispatch(input: {
     // **R-6**：与 `rolePools` 共用同一个判据函数（口径只有一处，回执不可能自相矛盾）
     const blockedReasonOf = (child: PoolChild): string | undefined =>
       reuseBlockedReason(child, wanted, input.reuseBlockedOf, input.reuseBudget)
-    if (input.reuseIdle && input.forceNew !== true && pool.idle.length > 0) {
-      const index = pool.idle.findIndex((child) => blockedReasonOf(child) === undefined)
-      if (index >= 0) {
-        const taken = pool.idle.splice(index, 1)[0] as PoolChild
-        pool.busy.push({ ...taken, state: 'busy', task: task.id })
-        dispatch.push({ task, reuseChildId: taken.childSessionId })
-        room -= 1
-        continue
-      }
-    }
     /**
      * **`DEF-139` 落点二（`TASK-163`）：`reuseSkipped` 从这一版起**真的会有内容**。**
      *
@@ -536,6 +545,50 @@ export function admitDispatch(input: {
         const reason = blockedReasonOf(child) ?? ''
         if (reason === '') continue
         reuseSkipped.push({ childSessionId: child.childSessionId, role: pool.role, reason })
+      }
+      /**
+       * ③ **跨父会话**（`DEF-066` 的分栏 ÷ `DEF-185` 的落点二）：宿主的 `sendMessage` 只对**自己起的直接
+       * 子代理**生效，`idleForeign` 里的会话投进去必被拒 —— 它过得了闸门，却到不了终点。
+       *
+       * 为什么必须在**这条**记账面里点名：修前它们被算作"空闲可复用"（占着 `freeSlots`），
+       * 回执于是印出「池里有空闲可复用却新起」，而台账里**一个字都不解释**（`DEF-185` 的真机形状：
+       * `idleForeign=0` 那一档看不出来，但同样"读数是可复用、决策是不复用"的坑在跨父会话上照旧存在）。
+       */
+      for (const child of pool.idleForeign) {
+        reuseSkipped.push({
+          childSessionId: child.childSessionId,
+          role: pool.role,
+          reason: '跨父会话（宿主只允许父会话复用自己起的子代理）→ 不复用',
+        })
+      }
+    }
+    /**
+     * **`DEF-139` 落点二（`TASK-196`）**：候选**顺序**也是决策的一部分 ——
+     * **同父会话优先**，其余（父会话未知的老事件）排后。
+     *
+     * 病根（真机 seq 4982 / 4998 的同一形状：`idle=68 / idleSameParent=29 / idleUnknownParent=39 /
+     * unusable=0` 却 `reused=false` 且零条 `reuse-skipped`）：旧实现取 `pool.idle.findIndex(...)`，
+     * 而 `pool.idle` 的顺序**是台账折叠顺序**（最老的在前）⇒ 挑中的几乎总是最老的那个老会话。
+     * 那个会话投进去被宿主拒（`startDispatch` 的 `sendMessage` 抛错 ⇒ `reuseFailed` ⇒ 退化成新起），
+     * 于是**每一轮 developer 派发都挑同一个投不进去的候选、每一次都新起**，
+     * 而"复用被拒"只活在回执里、不进台账 ⇒ 驾驶舱只能靠掩码哈希反推（并反推错过两次）。
+     *
+     * 池视图自己已经把这一桶分出来了：`idleSameParent` 的定义就是「`idle` 里父会话 = 观察者的
+     * （**派发器真的能投**）」（见 {@link PoolBuckets.idleSameParent}）。决策不读它 = 读数与决策不同源。
+     *
+     * **诚实边界**：父会话未知的老会话**不是**一律不可投 —— 台账里 60 笔成功复用中有 41 笔复用的正是
+     * 这种老会话（`parentSessionId` 字段是后来才加上的）。所以这里只做**排序**、不做排除：
+     * 同父的挑完了，仍然可以落到它们身上。
+     */
+    if (input.reuseIdle && input.forceNew !== true && pool.idle.length > 0) {
+      const taken = reuseCandidateOrder(pool).find((child) => blockedReasonOf(child) === undefined)
+      if (taken !== undefined) {
+        const index = pool.idle.findIndex((child) => child.childSessionId === taken.childSessionId)
+        if (index >= 0) pool.idle.splice(index, 1)
+        pool.busy.push({ ...taken, state: 'busy', task: task.id })
+        dispatch.push({ task, reuseChildId: taken.childSessionId })
+        room -= 1
+        continue
       }
     }
     // **R-13**：`forceNew` 时容量不含"可复用空闲"（本轮不许用它们，它们也就不该挡新起）

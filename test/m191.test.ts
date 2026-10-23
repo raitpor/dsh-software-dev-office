@@ -191,7 +191,7 @@ export const KNOWN_DANGLING: readonly KnownDangling[] = [
   // （登记 `test/m223.test.ts` 的 26 个读散文站点）时，**重排了整张表并吃掉表内 3 行历史注释** ⇒
   // 本行行号净减 1：406 → 405。只有行号变，身份（下面那条拆段登记）一字未动。
   // 注：本条注释**刻意不写出整名**（判据的见证面含本文件，会把整名喂饱成"可解析"）。
-  { file: 'test/m189.test.ts', line: 405, head: 'Ed', tail: 'ge', why: '夹具标识符的片段（整名是它的超串，注释在讲"子串喂饱"那一格；DEF-155 补 4 行注释后 398 → 402；TASK-172 给 m218 补一行登记后 403 → 404；TASK-163 给 m74/m206 补三条登记注释后 404 → 406；TASK-184 重生成散文棘轮表后 406 → 405）' },
+  { file: 'test/m189.test.ts', line: 406, head: 'Ed', tail: 'ge', why: '夹具标识符的片段（整名是它的超串，注释在讲"子串喂饱"那一格；DEF-155 补 4 行注释后 398 → 402；TASK-172 给 m218 补一行登记后 403 → 404；TASK-163 给 m74/m206 补三条登记注释后 404 → 406；TASK-184 重生成散文棘轮表后 406 → 405；TASK-196 重生成散文棘轮表（新增 m231 一行登记）后 405 → 406）' },
   // 第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号
   { file: 'test/m88.test.ts', line: 544, head: 'no', tail: 'Answerer', why: '第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号（其 .d.ts 未收录）' },
   { file: 'test/m88.test.ts', line: 544, head: 'NO_', tail: 'PROVIDER', why: '同上（该包的运行时错误码）' },

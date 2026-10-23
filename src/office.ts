@@ -4190,8 +4190,22 @@ export class SoftwareDevOffice {
     return this.poolSnapshot(call).pools
   }
 
-  /** 池快照（**只读一次 journal**）：孩子状态 + 每个角色的池 + 待派卡。 */
-  private poolSnapshot(call: OfficeCall, orphanTtlMinutes?: number): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[] } {
+  /**
+   * 池快照（**只读一次 journal**）：孩子状态 + 每个角色的池 + 待派卡。
+   *
+   * @param reuseBlockedOf **该空闲子代理为什么不能复用**（R-1）。
+   *
+   * `TASK-196` / `DEF-185` 落点一：**判据闭包由调用方给**（同一份）—— 以前这里自己叫一次
+   * `this.reuseBlockedOf(call)`、`poolPlan` 给准入再叫一次 ⇒ 同一次派发里**判了两遍**
+   * （每次各自重读观测事件与在飞卡归属）。两次读数在并发/追加写入下可以不等，
+   * 于是"池视图说可以复用、准入却拒绝"（或反过来：准入挑中的候选池视图根本没算过）。
+   * 缺省仍自取一份 ⇒ `poolView()` 这类只读调用方零改动。
+   */
+  private poolSnapshot(
+    call: OfficeCall,
+    orphanTtlMinutes?: number,
+    reuseBlockedOf?: ((child: PoolChild) => string | undefined) | undefined,
+  ): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[] } {
     const { journal } = this.contextFor(call)
     const children = [
       ...foldPoolChildren(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values(),
@@ -4213,7 +4227,7 @@ export class SoftwareDevOffice {
         // **R-9**：TTL 覆盖也要进池快照（否则状态行说"在飞"、派发路径却按覆盖后的 TTL 放行 —— 又是两套口径）
         orphanTtlMs: (orphanTtlMinutes ?? this.settings.dispatchOrphanTtlMinutes) * 60_000,
         nowMs: Date.now(),
-        reuseBlockedOf: this.reuseBlockedOf(call),
+        reuseBlockedOf: reuseBlockedOf ?? this.reuseBlockedOf(call),
         // **R-6**：掩码指纹判据**就在这里**（纯函数，从 `roles.yml` 现算）—— 以前只有
         // `admitDispatch` 内部判，于是池视图把"掩码过期的空闲会话"算成可复用、`freeSlots` 被占掉，
         // 真机上 developer 的有效并发从 4 掉到 2 且回执自相矛盾（池满 + 空闲可复用 N）。
@@ -4299,7 +4313,16 @@ export class SoftwareDevOffice {
     /** **孤儿 TTL 覆盖**（R-9 的逃生口）：`sdo_plan action=next orphanTtlMinutes=N` —— 卡被未结算派发冻住时不必改 preset 重启 */
     orphanTtlMinutes?: number | undefined
   } = {}): PoolAdmission {
-    const snapshot = this.poolSnapshot(call, options.orphanTtlMinutes)
+    /**
+     * **`DEF-185` / `DEF-186` 落点一（`TASK-196`）：判据闭包**只建一次**。
+     *
+     * 同一次派发里它会被两处用到 —— 池视图（`rolePools` 的 `unusable`，读数/`freeSlots` 的来源）
+     * 与准入（`admitDispatch` 的候选挑选）。修前两处各自 `this.reuseBlockedOf(call)`：
+     * 每次都要重读观测事件（`dispatch/observed`）与"会话 ↔ 在飞卡"（`claimsBySession`），
+     * 于是同一次决定里可能出现两份**不同**的判据 —— 而"读数与决策必须同源"正是本卡要守的东西。
+     */
+    const gate = this.reuseBlockedOf(call)
+    const snapshot = this.poolSnapshot(call, options.orphanTtlMinutes, gate)
     const { journal } = this.contextFor(call)
     const tasks = this.tasks(call)
     const inProgress = tasks.filter((task) => task.status === 'in-progress').length
@@ -4406,7 +4429,8 @@ export class SoftwareDevOffice {
       // 与 `poolSnapshot` **同一个**纯函数（`rolePools` 的 `unusable` 也用它）⇒ 池视图与准入永不分叉
       maskHashOf: (role: string) => (isRole(role) ? maskFingerprint(role) : ''),
       // **R-1**：复用还要**证据**（该子会话被观测到手里有工具），不只是掩码指纹一致
-      reuseBlockedOf: this.reuseBlockedOf(call),
+      // 与上面 `poolSnapshot` 拿的是**同一个闭包实例**（落点一：不许各自各判一次）
+      reuseBlockedOf: gate,
     })
     // **R-14**：派发前的静态可行性（只看机械可判的两条；文案在界面层）
     const infeasible = [...fairReady, ...snapshot.ready]
