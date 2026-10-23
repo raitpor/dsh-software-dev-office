@@ -650,17 +650,61 @@ export function describeStructuralPlan(plan: StructuralPlan | undefined): string
   return lines.join('\n')
 }
 
+/**
+ * **摘要行（一行一张）**：`id` / `role` / `size` / `status` / `owner` / **标题**。
+ *
+ * **DEF-169（列举面两档化）**：这个形状只有**一处实现** —— `sdo_task action=list` 的看板
+ * （{@link describeTaskBoard}）与 `sdo_plan` 的看板（{@link describePlan}）共用它；各写一份就会
+ * 让"摘要长什么样"分成两种口径。
+ *
+ * 为什么**不含** DoD / 写范围 / 证据要求 / 追溯：那四项是**逐卡线性成本**（本仓 187 张卡时
+ * `describePlan` 实测 188715 字符），而列举面随卡数增长 ⇒ 必然撞宿主 8000 字符截断，读回执的人
+ * 只看到前几张卡，其余只能进 `.sdo/tasks/` 自己找。所以列举面只留"这张卡是谁、谁的角色、多大、
+ * 到哪一步、谁在做、叫什么"，全文走**详情档**（`describePlan` 的 `detail: true` 与
+ * {@link describeTask}）。
+ *
+ * 只用**全角空格 / 全角括号**（不是汉字）⇒ `src/interface/describe.ts` 的 i18n 棘轮基线仍是 0
+ * （文案仍全部来自语言包；这一行是**排版**，不是句子）。
+ */
+function taskSummaryLine(task: TaskCard): string {
+  return `- ${task.id}　[${task.role}/${task.size}]　${task.status}${task.owner === undefined ? '' : `（${task.owner}）`}　${task.title}`
+}
+
+/**
+ * `describePlan` 的档位开关（**DEF-169**）。
+ *
+ * - 缺省 = **摘要档**：逐卡一行（{@link taskSummaryLine}）+ 只补「受阻 / 依赖未满足」两件事；
+ *   逐卡 DoD / 写范围 / 证据要求**不进看板**（它们让看板随卡数线性膨胀）。
+ * - `detail: true` = **详情档**：与 DEF-169 之前**逐字一致**的全文（`k245` / `k89` / `k90` 三行）。
+ *   既有消费方（回执示例、人工核对"这张卡的 DoD 到底写了什么"）依赖这个形状 ⇒ 渲染代码一行没动，
+ *   只**新增加**一个开关把它显式要回来。
+ */
+export interface DescribePlanOptions {
+  /** `true` = 详情档（逐卡 DoD / 写范围 / 证据要求全文）。缺省 = 摘要档。 */
+  detail?: boolean | undefined
+}
+
 /** 拆分结果：卡片 + 六条机械校验结果 + 结构通道的逐条明细（TASK-074）。 */
 export function describePlan(
   tasks: TaskCard[],
   issues: PlanIssue[],
   shapeNotes: FieldShapeNote[] = [],
   structural: StructuralPlan | undefined = undefined,
+  options: DescribePlanOptions = {},
 ): string {
+  const detail = options.detail === true
   const stats = planStats(tasks)
   const lines: string[] = [fmt('uiDescribe.k194', { p1: stats.total, p2: Object.entries(stats.byStatus).map(([status, count]) => `${status} ${count}`).join('，') || t('uiDescribe.k193') })]
   for (const task of tasks) {
-    lines.push(`- ${task.id}　[${task.role}/${task.size}]　${task.status}${task.owner === undefined ? '' : `（${task.owner}）`}　${task.title}`)
+    // **摘要档**：一行一张 + 「受阻 / 依赖未满足」——这两件事决定"这一轮能不能派到它"，
+    // 所以留在看板上；DoD / 写范围 / 证据要求按 id 单取才给（DEF-169 落点三）。
+    if (!detail) {
+      const dependency = task.blockedBy.length === 0 ? '' : fmt('uiDescribe.k165', { p1: task.blockedBy.join(' ') })
+      lines.push(taskSummaryLine(task) + dependency)
+      if (task.status === 'blocked' && task.blockedReason !== undefined) lines.push(fmt('uiDescribe.k96', { p1: task.blockedReason }))
+      continue
+    }
+    lines.push(taskSummaryLine(task))
     lines.push(fmt('uiDescribe.k245', { p1: task.dod.join('；') || t('uiDescribe.k244') }))
     lines.push(fmt('uiDescribe.k89', { p1: task.writeScopes.join('、') || t('uiDescribe.k164'), p2: task.blockedBy.length === 0 ? '' : fmt('uiDescribe.k165', { p1: task.blockedBy.join(' ') }) }))
     lines.push(fmt('uiDescribe.k90', { p1: task.evidenceRequired.join('/'), p2: task.requirements.join(' ') || t('uiDescribe.k166') }))
@@ -771,7 +815,21 @@ export function describeTaskConflict(detail: string, current: TaskCard | undefin
   return lines.join('\n')
 }
 
-/** 任务看板（文本）。 */
+/**
+ * 任务看板（文本）= `sdo_task action=list` 的**摘要档**。
+ *
+ * **DEF-169**：这张看板本来就是一行一张（不含 DoD），所以它天然就是摘要档；本卡只做两件事 ——
+ * ① 行格式收敛到 {@link taskSummaryLine}（与 `sdo_plan` 看板同一处实现，防止两份摘要漂移）；
+ * ② 在类型面把「这里是列举面」写清楚：本看板**没有**逐卡全文这一档，逐卡全文只有
+ * {@link describeTask} 一个渲染面。
+ *
+ * **尚未接线的入口**（如实说明，不假装已做）：`sdo_task action=list id=<卡>` 走详情档、
+ * `list` 的 `status`/`owner`/`role`/`limit` 过滤 + 超限尾部提示 —— 路由在 `src/index.ts` 的
+ * `case 'list'`、参数声明在 `src/interface/tools.ts`、尾部文案要进两份语言包；这三处当时都被
+ * 在飞卡 `TASK-183` 的写范围占着，所以本卡**没有**改它们（守卫见 `test/m223.test.ts` 的 M223-08 skip）。
+ *
+ * 计数行（`k196`）数的是**全部**卡（将来接上筛选后，筛选只影响逐卡行，不改变这一行的总数口径）。
+ */
 export function describeTaskBoard(input: {
   tasks: TaskCard[]
   ready: TaskCard[]
@@ -791,7 +849,7 @@ export function describeTaskBoard(input: {
   if (iteration !== undefined) lines.push(fmt('uiDescribe.k100', { p1: iteration.number, p2: iteration.status, p3: iteration.goal }))
   lines.push(fmt('uiDescribe.k101', { p1: ready.length, p2: ready.map((task) => task.id).join(' ') || t('uiDescribe.k168') }))
   for (const task of tasks) {
-    lines.push(`- ${task.id}　[${task.role}/${task.size}]　${task.status}${task.owner === undefined ? '' : `（${task.owner}）`}　${task.title}`)
+    lines.push(taskSummaryLine(task))
   }
   if (stale.length > 0) {
     lines.push(fmt('uiDescribe.k102', { p1: stale.length, p2: stale.map((task) => task.id).join(' ') }))
