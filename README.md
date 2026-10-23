@@ -196,7 +196,7 @@ README 以前写成"已受约束"是**不准确**的（D12）。要用它们做�
 （报 `"<参数名>" must be a string`），**不是**插件在拒绝 —— 真机上为此浪费过 6 次调用。
 字符串内部要引号时用「」或反引号，别用 ASCII 单引号当 JSON 引号。
 
-## 8. 模型工具速查（20 个）
+## 8. 模型工具速查（22 个）
 
 | 分组 | 工具（动作） |
 |---|---|
@@ -208,6 +208,7 @@ README 以前写成"已受约束"是**不准确**的（D12）。要用它们做�
 | 验证与评审 | `sdo_test`（plan / record / defect / list / env / update）、`sdo_review`（record / append / rehash / list）—— `rehash` = 给**老格式评审**补记内容指纹（补记之后改 verdict/正文可检出）；`append` = 向**既有**评审**追加**发现项（只增不改：verdict 是原评审的结论，追加路径改不了它；每次追加写一条 `review/appended` 留痕，条目多/分次补录不再另起一条同 verdict 的记录）—— 评审核实在 `sdo_task`（list / … / **verify-review**）：实现方逐条核实评审发现（复现 / 反证），核实过的评审才会被门禁采纳 |
 | 追溯与文档 | `sdo_trace`（link / unlink / query / report）、`sdo_render`、`sdo_hash`（**只读**现算一个产物的完整 sha256 + mtime + 字节数；给评审者的窄入口 —— 评审者掩码里 `deny` 有 `bash`、唯一的其它哈希入口 `sdo_test` 也被 deny，这条**不是**开 bash） |
 | 门禁与成本 | `sdo_gate`（check / advance / sign / waive / unwaive / rollback）、`sdo_cost`（report） |
+| 发布计划 | `sdo_release`（show / propose / sign / write / change）—— 把「本版做哪些」写成可签字的集合（`.sdo/releases/`）：`show` 只读回报当前版与三条判据读数；`propose` 按台账现算一份提案并预演 freeze / defer，**不落盘**；`sign` 走问答通道让用户签字（冻结是一次人签，驾驶舱与模型不得代签）；`write` **仅当已有待用人签**时落盘，`frozenAtSeq` 由工具取真实事件序号（**不接受调用方填**）；`change` 改**已冻结**的集合（必须带 `reason` + `approvedBy=human` + 被改动的 id 列表），落 `release/changed` 事件并重新落盘 —— 绕过它直接改集合就是 `C-75` 判红的形态 |
 | 交付 | `sdo_deliver`（run / package / show） |
 
 ### 设计方法包（`sdo_design action=grill` 的 `design:method` 题）

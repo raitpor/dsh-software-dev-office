@@ -563,7 +563,22 @@ interface ModuleView {
  */
 const SHARED_HANDLER_MODULES: Record<string, string[]> = {
   'designReceipt.js': ['sdo_design'],
+  // **`sdo_release`（TASK-183）**：那张卡的写范围不含 `src/interface/tools.ts`，工具定义与它的行为一起
+  // 落在 `src/domain/releaseTool.ts`（编译产物 `lib/src/domain/releaseTool.js`）。归属写在这里是**唯一**维护点。
+  'releaseTool.js': ['sdo_release'],
 }
+
+/**
+ * **handler 落在 `src/interface/` 之外**的模块（`TASK-183` / `sdo_release`）。
+ *
+ * 为什么要有这张表：本守卫原先只扫 `lib/src/interface/*.js`，于是"工具定义搬到别的目录"会**静默**
+ * 让那只工具的 schema↔行为对账失效（`coveredTools` 少了它，而 `withParams` 还有它 ⇒ 覆盖面断言直接红）。
+ * 覆盖面**不许缩水**：新增这类模块必须同时补这里与 {@link SHARED_HANDLER_MODULES}，
+ * 少补一处就会在 `report.coveredTools` 上点名。
+ */
+const EXTRA_HANDLER_MODULES: readonly { dir: string; file: string }[] = [
+  { dir: 'domain', file: 'releaseTool.js' },
+]
 
 /**
  * 不需要对模型暴露的**内部参数** allowlist（按 `工具名: 参数名`）。
@@ -677,10 +692,17 @@ function findSchemaGaps(
 
 function compiledInterfaceModules(): ModuleView[] {
   const dir = join(ROOT, 'lib/src/interface')
-  return readdirSync(dir)
+  const out = readdirSync(dir)
     .filter((name) => name.endsWith('.js') && !name.endsWith('.map.js'))
     .sort()
     .map((name) => ({ file: name, source: readFileSync(join(dir, name), 'utf8') }))
+  // interface 之外的 handler 模块（见 `EXTRA_HANDLER_MODULES`）：文件缺席时**不静默**跳过，
+  // 而是交给 `findSchemaGaps` 的 `unknownTools` 判红（登记了却没有这个模块 = 陈旧归属）。
+  for (const extra of EXTRA_HANDLER_MODULES) {
+    const full = join(ROOT, 'lib/src', extra.dir, extra.file)
+    if (existsSync(full)) out.push({ file: extra.file, source: readFileSync(full, 'utf8') })
+  }
+  return out
 }
 
 test('F-7 守卫：编译产物里 handler 读的每个 args.X 都必须在工具 JSON schema 的 properties 里', () => {

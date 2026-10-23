@@ -93,6 +93,7 @@ import {
 import { decideBudgetReceipt, setBudgetReceipt } from './interface/budgetReceipt.js'
 import { createOfficeCommands } from './interface/commands.js'
 import { callOf, compositeArg, createOfficeTools, parseList } from './interface/tools.js'
+import { createReleaseTool } from './domain/releaseTool.js'
 import type { GateSignAnswer, LangArgs } from './interface/tools.js'
 import { clampToolResult } from './interface/clamp.js'
 import { resolveScopeCall } from './interface/scope.js'
@@ -4892,7 +4893,72 @@ export function apply(ctx: Context, config: SdoConfig): void {
         return () => off()
       }, 'sdo:truth-write-observer')
 
-      for (const tool of createOfficeTools(deps)) {
+      /**
+       * **发布计划工具面**（`TASK-183` / `REQ-063` 的落账面）：`sdo_release`。
+       *
+       * 为什么在**这里**装配、定义在 `src/domain/releaseTool.ts`：那张卡的写范围就是这两处 ——
+       * 域层拿行为与文案，入口只负责把「工作区 / 台账 / 问答通通」注入进去（分工与
+       * `createOfficeTools` 完全一致：`deps` 里没有一个方法自己拼绝对路径）。
+       *
+       * 签字通道复用 `gateSignQuestion` 的**同一套宿主能力**（`userQuestions.ask`）：
+       * 冻结是一次人签（`AC-276`），而"防代签"的关键在于**选项原文由宿主交回**、不经过模型 ——
+       * 这条链路只能在这里接（域层不许知道宿主有哪个服务）。
+       */
+      const releaseTool = createReleaseTool({
+        workspace: (call) => {
+          try {
+            return office.workspaceRootFor(call as never) ?? ''
+          } catch {
+            return ''
+          }
+        },
+        store: (root) => office.storeFor(root),
+        journal: (root) => office.journalFor(root),
+        ask: async (call, request) => {
+          const interaction = (ctx as unknown as {
+            get?: (name: string) => {
+              ask?: (askRequest: {
+                questions: {
+                  id: string
+                  header?: string
+                  question: string
+                  detail?: string
+                  options?: { label: string; description?: string }[]
+                }[]
+                agent?: unknown
+              }) => Promise<{ answers?: { id?: string; selected?: string[]; custom?: string }[] }>
+            } | undefined
+          }).get?.('userQuestions')
+          const ask = interaction?.ask
+          if (ask === undefined) return undefined
+          const questionId = 'sdo-release-sign'
+          const answer = await ask.call(interaction, {
+            questions: [{
+              id: questionId,
+              header: request.header,
+              question: request.question,
+              detail: request.detail,
+              // `exactOptionalPropertyTypes`：宿主那份形状里的 `description?: string` 不收显式的 undefined
+              options: request.options.map((option) => (
+                option.description === undefined
+                  ? { label: option.label }
+                  : { label: option.label, description: option.description }
+              )),
+            }],
+            ...(call.agent === undefined ? {} : { agent: call.agent }),
+          })
+          const item = (answer.answers ?? []).find((entry) => entry.id === questionId)
+          if (item === undefined) return undefined
+          const selected = (item.selected ?? [])[0]
+          if (selected === undefined || selected === '') {
+            const custom = (item.custom ?? '').trim()
+            return custom === '' ? undefined : { selectedLabel: custom, custom }
+          }
+          return { selectedLabel: selected, ...(item.custom === undefined ? {} : { custom: item.custom }) }
+        },
+      })
+
+      for (const tool of [...createOfficeTools(deps), releaseTool]) {
         // 记下**真实注册名**：派发时用它算 deny 面（SDO 流程面白名单的补集）
         officeToolNames.push(tool.name)
         // 工具输出统一截断（防上下文膨胀）：完整内容在 .sdo/ 真源，回执里会说明如何重取

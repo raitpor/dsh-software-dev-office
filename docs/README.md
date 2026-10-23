@@ -94,6 +94,11 @@
 ## 2. 怎么发现"文档又漂了"
 
 - **工具/动作/配置键**：README §8/§9 与 `src/types.ts`、`src/data/roles.yml`、`src/config.ts` 对齐，且已有守卫（`test/m25` 配置键/语言包、`test/m29` 角色卡↔掩码、`test/m30-19` CHANGELOG 不许写死计数）。
+- **发布计划工具面（`TASK-183`，项目侧）**：`sdo_release` 的五个动作（show / propose / sign / write / change）词表
+  `RELEASE_ACTIONS` 跟着**实现模块**放，不在 `src/types.ts` —— 那张卡的写范围不含后者，所以"动作词表一律在 types.ts"
+  这条旧口径对它不成立；要再改它就改实现模块那一处。它的**真源**是 journal 里的 `release/signed` 与 `release/changed`：
+  前者尚未登记进 `SdoEventType`（闭合联合在 `src/types.ts`），读写两侧都按字形比字符串 —— 登记这一步留给后续卡；
+  在那之前，**不要**假设 `release/signed` 会出现在类型面上，也不要为它另写一份常量。
 - **判据**：真源是 `src/data/processes/*.yml`；角色卡只许引用其中真实存在的判据 id（`test/m29` 守）。
 - **历史文档里的表**：**不要直接抄**。需要引用时，从代码/数据重新提一遍（本次偏移核实的做法可复用）。
 - 本轮核实的方法与计数都在 [`verification/2026-10-03-设计与实现偏移核实.md`](verification/2026-10-03-设计与实现偏移核实.md) 里，可照着复跑。
