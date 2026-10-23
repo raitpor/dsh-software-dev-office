@@ -243,6 +243,9 @@ param:
   note: Note / explanation
   notes: Notes
   limit: Maximum number of rows
+  listStatus: "`sdo_task action=list`: narrow by status (`ready` / `in-progress` / `blocked` / `done` / `dropped`, **exact match**). Omit = no filter. With `id` the detail tier wins"
+  listRole: "`sdo_task action=list`: narrow by role (`developer` / `tester` / `reviewer` / `office`, **exact match**). Omit = no filter"
+  listLimit: "`sdo_task action=list`: display cap (default 50; `0` = explicitly ask for everything). When truncated the **last line** says \"N more not shown\" — nothing is dropped silently"
   decision: Decision
   decidedBy: Decision maker
   requirements: Requirement ids (JSON text)
@@ -1382,6 +1385,10 @@ uiDescribe:
   k247: "DoD: {p1}"
   k248: "Undecided"
   k249: "{p1}　[{p2}/{p3}]　{p4}"
+  k250: "- Narrowed by: {p1}　({p2} cards in total, {p3} matched, {p4} shown this time)"
+  k251: "- {p1} more not shown: narrow with `status` / `owner` / `role`, or use `id=<card>` for the detail tier (`limit=0` to ask for everything explicitly)"
+  k252: "- No card matches this set of narrowing conditions ({p1} matched; {p2} cards in total). Active conditions: {p3} — loosen them, or call without filters to see everything"
+  k253: "- {p1} more cards are done / dropped and are not expanded on this board ({p2} done, {p3} dropped): they say nothing about \"what can be dispatched this round\"; to see them use `sdo_task action=list status=done` (or `status=dropped`), and `id=<card>` for one card in full"
   k1: "No fields were written this time (this tool only writes fields given explicitly)."
   k2: "Quality scenario {p1} recorded ({p2}/{p3})"
   k3: "Rendered {p1} → `{p2}`"

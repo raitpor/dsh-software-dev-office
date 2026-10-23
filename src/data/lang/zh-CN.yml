@@ -206,6 +206,9 @@ param:
   note: 备注 / 说明
   notes: 备注
   limit: 条数上限
+  listStatus: "`sdo_task action=list`：按状态收窄（`ready` / `in-progress` / `blocked` / `done` / `dropped`，**精确匹配**）。不给 = 不筛。与 `id` 同给时 `id` 优先走详情档"
+  listRole: "`sdo_task action=list`：按角色收窄（`developer` / `tester` / `reviewer` / `office`，**精确匹配**）。不给 = 不筛"
+  listLimit: "`sdo_task action=list`：显示上限（缺省 50；`0` = 显式要全量）。被截断时回执**最后一行**印「另有 N 张未显示」——不会静默省略"
   decision: 决策
   decidedBy: 决策人
   requirements: 需求 id（JSON 文本）
@@ -711,6 +714,10 @@ uiDescribe:
   k247: "- DoD：{p1}"
   k248: "未定"
   k249: "- {p1}　[{p2}/{p3}]　{p4}"
+  k250: "- 收窄条件：{p1}　（全库 {p2} 张，命中 {p3} 张，本次显示 {p4} 张）"
+  k251: "- 另有 {p1} 张未显示：用 `status` / `owner` / `role` 收窄，或 `id=<卡号>` 看详情（`limit=0` 可显式要全量）"
+  k252: "- 没有卡命中这组收窄条件（命中 {p1} 张；全库 {p2} 张）。生效条件：{p3} —— 放宽条件重试，或不带筛选看全部"
+  k253: "- 另有 {p1} 张已完成 / 已作废的卡不在本板展开（完成 {p2} ／ 已作废 {p3}）：它们对「这一轮派得到什么」零信息量；要看走 `sdo_task action=list status=done`（或 `status=dropped`），单卡全文用 `id=<卡号>`"
   k1: "本次没有写入任何字段（本工具只写显式给出的字段）。"
   k2: "已记录质量场景 {p1}（{p2}／{p3}）"
   k3: "已渲染 {p1} → `{p2}`"

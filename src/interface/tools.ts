@@ -386,6 +386,20 @@ export interface TaskArgs {
   action: string
   id?: string | undefined
   owner?: string | undefined
+  /**
+   * **`list` 的收窄条件**（**DEF-169** 落点二）：精确匹配卡状态（`ready` / `in-progress` /
+   * `blocked` / `done` / `dropped`）。**其它 action 读它也无害** —— 只有 `list` 分支读这个字段。
+   */
+  status?: string | undefined
+  /** `list`：精确匹配角色（`developer` / `tester` / `reviewer` / `office`…）。 */
+  role?: string | undefined
+  /**
+   * `list`：显示上限。缺省 = **50**（`describe.ts` 里 `TASK_BOARD_DEFAULT_LIMIT` 那**一个**数）；`0` = **显式**要全量。
+   *
+   * 为什么缺省不是"全部"：摘要行实测约 130 字符/行，205 张就是 2 万多字符，而宿主把单次回执截在
+   * 8000 ⇒ "默认全量"的结果是**后面的卡静默看不见**。截断时会印「另有 N 张」并把可用的两条路点名。
+   */
+  limit?: number | undefined
   expectedRevision?: number | undefined
   /** done 的证据（JSON 数组：[{"kind":"artifact","detail":"…"}]） */
   evidence?: string | undefined
@@ -1097,6 +1111,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         mitigatesWaiver: listDecl('update: JSON **text** (a string) of the waivers for risks that must stay open, e.g. \'[{"id":"RISK-001","waiveReason":"why it stays open","waiveApprovedBy":"who approved"}]\' — not an array of arguments. Replaces the whole declaration. The two keys are reused verbatim from the defect-waiver basis (DEF-038): both must be non-blank after trimming, otherwise criterion C-64 is red and names the missing field. Use CJK quotes (or escape per JSON rules) inside values, never bare ASCII quotes.'),
         id: { type: 'string', description: t('param.id') },
         owner: { type: 'string', description: t('param.owner') },
+        // **DEF-169 落点二**：`list` 的收窄三键（+ `limit`）。三处同改的第一处（schema）——
+        // 少这一处宿主会在校验阶段直接**拒掉**这个参数（插件根本收不到），与"静默丢弃"同效。
+        status: { type: 'string', description: t('param.listStatus') },
+        role: { type: 'string', description: t('param.listRole') },
+        limit: { type: 'number', description: t('param.listLimit') },
         expectedRevision: { type: 'number', description: t('param.expectedRevision') },
         evidence: { type: 'string', description: t('param.evidence') },
         note: { type: 'string', description: t('param.note') },
@@ -1114,6 +1133,10 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         return deps.task(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'list',
           title: typeof args.title === 'string' ? args.title : undefined,
+          // **DEF-169 落点二**：`list` 的收窄三键必须过 execute 映射（第三处；缺它参数被静默丢掉）
+          status: typeof args.status === 'string' ? args.status : undefined,
+          role: typeof args.role === 'string' ? args.role : undefined,
+          limit: typeof args.limit === 'number' ? args.limit : undefined,
           dod: compositeArg(args.dod),
           writeScopes: compositeArg(args.writeScopes),
           // **DEF-012**：追加通道也要过这里（execute 映射是与 schema/类型并列的第三处，缺它参数会被静默丢掉 —— tq_ff348198）

@@ -695,7 +695,15 @@ export function describePlan(
   const detail = options.detail === true
   const stats = planStats(tasks)
   const lines: string[] = [fmt('uiDescribe.k194', { p1: stats.total, p2: Object.entries(stats.byStatus).map(([status, count]) => `${status} ${count}`).join('，') || t('uiDescribe.k193') })]
-  for (const task of tasks) {
+  /**
+   * 摘要档只展开**这一轮还要管的卡**（`DEF-169` 落点三：「只保留本次派发 / 受阻 / 依赖未满足的关键信息」）。
+   *
+   * 为什么 `done` / `dropped` 不上板：两张终态卡对"这一轮派得到什么"零信息量，却各占一行 ——
+   * 真账 205 张里 127 done + 一堆 dropped，光它们就 200 行（实测摘要档 21537 字符，超 20000 阈值）。
+   * 藏起来**不是静默**：下面用 `uiDescribe.k253` 把"另有 N 张已完成/已作废"现算出来并给两条出路。
+   */
+  const live = detail ? tasks : tasks.filter((task) => task.status !== 'done' && task.status !== 'dropped')
+  for (const task of live) {
     // **摘要档**：一行一张 + 「受阻 / 依赖未满足」——这两件事决定"这一轮能不能派到它"，
     // 所以留在看板上；DoD / 写范围 / 证据要求按 id 单取才给（DEF-169 落点三）。
     if (!detail) {
@@ -708,6 +716,15 @@ export function describePlan(
     lines.push(fmt('uiDescribe.k245', { p1: task.dod.join('；') || t('uiDescribe.k244') }))
     lines.push(fmt('uiDescribe.k89', { p1: task.writeScopes.join('、') || t('uiDescribe.k164'), p2: task.blockedBy.length === 0 ? '' : fmt('uiDescribe.k165', { p1: task.blockedBy.join(' ') }) }))
     lines.push(fmt('uiDescribe.k90', { p1: task.evidenceRequired.join('/'), p2: task.requirements.join(' ') || t('uiDescribe.k166') }))
+  }
+  // 「没上板的有多少」必须现算着说出来（`retired` = 总数 − 本次展开数；不是写死的句子）
+  const retired = tasks.length - live.length
+  if (!detail && retired > 0) {
+    lines.push(fmt('uiDescribe.k253', {
+      p1: String(retired),
+      p2: String((stats.byStatus['done'] ?? 0) + (stats.byStatus['verified'] ?? 0)),
+      p3: String(stats.byStatus['dropped'] ?? 0),
+    }))
   }
   if (issues.length === 0) {
     lines.push(t('uiDescribe.k91'))
@@ -816,19 +833,83 @@ export function describeTaskConflict(detail: string, current: TaskCard | undefin
 }
 
 /**
+ * **列举面的收窄参数**（**DEF-169** 落点二）：`sdo_task action=list` 的四个过滤条件。
+ *
+ * 为什么必须有：卡数随时间线性长（本仓已 205 张），而宿主把单次回执截在 8000 字符
+ * （`clampToolResult`）⇒ **"默认全量"= 把后面的卡静默丢掉**。收窄不是可选项，是让回执能读全的
+ * 唯一办法；而收窄本身**也必须说出来**（见 {@link selectTaskBoard} 的 `filters` 与尾部提示）。
+ */
+export interface TaskBoardFilter {
+  /** 精确匹配卡状态（`ready` / `in-progress` / `blocked` / `done` / `dropped`…）。 */
+  status?: string | undefined
+  /** 精确匹配 owner 串（`developer-0aff6e4b` 这类；不再做前缀/模糊匹配 —— 猜错的过滤比不过滤更坏）。 */
+  owner?: string | undefined
+  /** 精确匹配角色（`developer` / `tester` / `reviewer`…）。 */
+  role?: string | undefined
+  /** 显示上限；缺省 {@link TASK_BOARD_DEFAULT_LIMIT}，`0` = 显式要全量（回执里看得见 `limit=0`）。 */
+  limit?: number | undefined
+}
+
+/**
+ * 缺省显示张数（`sdo_task action=list` 与 `sdo_plan` 看板共用**这一个数**）。
+ *
+ * 依据：摘要行实测约 130 字符/行 ⇒ 50 行 ≈ 6500 字符，仍在宿主 8000 上限之内；定 50 而不是"全部"，
+ * 是因为"全部"在卡数超过 ~60 张时就必然被截断，而截断点由宿主决定、插件看不见（读者只会以为卡就那么多）。
+ */
+export const TASK_BOARD_DEFAULT_LIMIT = 50
+
+/** 一次筛选的读数：显示哪些、命中多少、截掉多少、哪些条件生效了。 */
+export interface TaskBoardSelection {
+  /** 实际要渲染的卡（已按 `limit` 截断；顺序与入参一致 —— 排序是调用方的事）。 */
+  shown: TaskCard[]
+  /** 命中条件的卡数（**未**截断）。 */
+  matched: number
+  /** 命中但没显示的张数（= `matched - shown.length`）。 */
+  hidden: number
+  /** 生效条件的可读串（如 `status=done` / `limit=50`）；**空数组** = 一个字都没筛（全量缺省）。 */
+  filters: string[]
+}
+
+/**
+ * 按 {@link TaskBoardFilter} 选卡 —— 列举面的**唯一**筛选实现。
+ *
+ * 三条口径（都是 DEF-169 的验收面，写成注释是因为它们不写在类型里）：
+ *   ① **精确匹配**：`status`/`owner`/`role` 都只认全等；给空串 = 没给（不许"空串等于筛空"）。
+ *   ② **`limit` 只截断、不排序**：先过滤后截断 —— 反过来会得到"筛到的卡不在前 N 张里"的假空。
+ *   ③ **截断必须可数**：`hidden` 是现算的差，尾部提示直接印它（守卫按这个差核对，不许写死）。
+ */
+export function selectTaskBoard(tasks: TaskCard[], filter: TaskBoardFilter = {}): TaskBoardSelection {
+  const filters: string[] = []
+  const wanted = { status: filter.status, owner: filter.owner, role: filter.role }
+  for (const [key, value] of Object.entries(wanted)) {
+    if (value !== undefined && value !== '') filters.push(`${key}=${value}`)
+  }
+  const matchedTasks = tasks.filter((task) =>
+    (wanted.status === undefined || wanted.status === '' || task.status === wanted.status)
+    && (wanted.owner === undefined || wanted.owner === '' || task.owner === wanted.owner)
+    && (wanted.role === undefined || wanted.role === '' || task.role === wanted.role))
+  const limit = filter.limit ?? TASK_BOARD_DEFAULT_LIMIT
+  if (filter.limit !== undefined) filters.push(`limit=${limit}`)
+  // `limit=0` = 显式要全量（调用方写明了，就不是"静默省略"）；负数按 0 处理，不静默变成"显示一张"。
+  const shown = limit > 0 ? matchedTasks.slice(0, limit) : matchedTasks
+  return { shown, matched: matchedTasks.length, hidden: matchedTasks.length - shown.length, filters }
+}
+
+/**
  * 任务看板（文本）= `sdo_task action=list` 的**摘要档**。
  *
- * **DEF-169**：这张看板本来就是一行一张（不含 DoD），所以它天然就是摘要档；本卡只做两件事 ——
+ * **DEF-169**：这张看板本来就是一行一张（不含 DoD），所以它天然就是摘要档；它做三件事 ——
  * ① 行格式收敛到 {@link taskSummaryLine}（与 `sdo_plan` 看板同一处实现，防止两份摘要漂移）；
  * ② 在类型面把「这里是列举面」写清楚：本看板**没有**逐卡全文这一档，逐卡全文只有
- * {@link describeTask} 一个渲染面。
+ * {@link describeTask} 一个渲染面（`sdo_task action=list id=<卡>` 就走它）；
+ * ③ 收窄与截断**都说出来**：生效条件一行（`uiDescribe.k250`）+ 截断一行（`uiDescribe.k251`）。
+ *   「另有 N 张未显示」是**现算的差**（{@link selectTaskBoard} 的 `hidden`），不是写死的句子。
  *
- * **尚未接线的入口**（如实说明，不假装已做）：`sdo_task action=list id=<卡>` 走详情档、
- * `list` 的 `status`/`owner`/`role`/`limit` 过滤 + 超限尾部提示 —— 路由在 `src/index.ts` 的
- * `case 'list'`、参数声明在 `src/interface/tools.ts`、尾部文案要进两份语言包；这三处当时都被
- * 在飞卡 `TASK-183` 的写范围占着，所以本卡**没有**改它们（守卫见 `test/m223.test.ts` 的 M223-08 skip）。
+ * 计数行（`k196`）数的是**全部**卡 —— 筛选只影响逐卡行，不改变这一行的总数口径
+ * （"全库 205 张、这次筛出 12 张"必须同时可读，否则筛选会伪装成"库里就这么点卡"）。
  *
- * 计数行（`k196`）数的是**全部**卡（将来接上筛选后，筛选只影响逐卡行，不改变这一行的总数口径）。
+ * `extraLines` 是**调用方**要在尾部提示**之前**补的段（本仓的用法是 `index.ts` 的 `fixes` 逐卡声明）——
+ * 放在这里是因为尾部提示必须是**最后一行**（读者按"最后一行"找它），而这一段不能跑到它后面去。
  */
 export function describeTaskBoard(input: {
   tasks: TaskCard[]
@@ -837,25 +918,55 @@ export function describeTaskBoard(input: {
   issues: PlanIssue[]
   iteration?: { number: number; goal: string; status: string } | undefined
   shapeNotes?: FieldShapeNote[] | undefined
+  filter?: TaskBoardFilter | undefined
+  extraLines?: string[] | undefined
 }): string {
   const { tasks, ready, stale, issues, iteration } = input
   const shapeNotes = input.shapeNotes ?? []
+  const extraLines = input.extraLines ?? []
   if (tasks.length === 0) {
     // 任务为空时形状提示同样要出现（F-21 的"不静默"，与 describeDesign 同口径）
     return [t('uiDescribe.k99'), ...shapeNoteBlock(shapeNotes)].join('\n')
   }
+  const selection = selectTaskBoard(tasks, input.filter)
+  // 筛选后为空 ≠ 库里没有卡：两张回执必须读得不一样（否则"筛错了"会被读成"卡没了"）。
+  if (selection.shown.length === 0) {
+    return [
+      fmt('uiDescribe.k252', { p1: String(selection.matched), p2: String(tasks.length), p3: selection.filters.join('、') || t('uiDescribe.k193') }),
+      ...shapeNoteBlock(shapeNotes),
+      ...extraLines,
+    ].join('\n')
+  }
+  const shownIds = new Set(selection.shown.map((task) => task.id))
+  // 可派发 / 失联两行跟着**筛选**走（不跟 `limit`）：它们是"这一轮派不派得到"的判断面，
+  // 被筛掉的卡本来就不是这次问的对象；但 `limit` 只是显示上限，不该改变这条读数。
+  const byFilter = (task: TaskCard): boolean => (selection.filters.length === 0 ? true : shownIds.has(task.id))
+  const shownReady = ready.filter(byFilter)
+  const shownStale = stale.filter(byFilter)
   const stats = planStats(tasks)
   const lines = [fmt('uiDescribe.k196', { p1: stats.total, p2: stats.done, p3: stats.byStatus['in-progress'] ?? 0, p4: stats.byStatus['blocked'] ?? 0 })]
   if (iteration !== undefined) lines.push(fmt('uiDescribe.k100', { p1: iteration.number, p2: iteration.status, p3: iteration.goal }))
-  lines.push(fmt('uiDescribe.k101', { p1: ready.length, p2: ready.map((task) => task.id).join(' ') || t('uiDescribe.k168') }))
-  for (const task of tasks) {
+  lines.push(fmt('uiDescribe.k101', { p1: shownReady.length, p2: shownReady.map((task) => task.id).join(' ') || t('uiDescribe.k168') }))
+  // 生效条件：一条都不筛时**一个字都不印**（否则每份回执都多一行固定噪音，读者会当它没信息）
+  if (selection.filters.length > 0) {
+    lines.push(fmt('uiDescribe.k250', {
+      p1: selection.filters.join('、'),
+      p2: String(stats.total),
+      p3: String(selection.matched),
+      p4: String(selection.shown.length),
+    }))
+  }
+  for (const task of selection.shown) {
     lines.push(taskSummaryLine(task))
   }
-  if (stale.length > 0) {
-    lines.push(fmt('uiDescribe.k102', { p1: stale.length, p2: stale.map((task) => task.id).join(' ') }))
+  if (shownStale.length > 0) {
+    lines.push(fmt('uiDescribe.k102', { p1: shownStale.length, p2: shownStale.map((task) => task.id).join(' ') }))
   }
   if (issues.length > 0) lines.push(fmt('uiDescribe.k103', { p1: issues.length }))
   lines.push(...shapeNoteBlock(shapeNotes))
+  lines.push(...extraLines)
+  // **尾部提示必须是最后一行**：读者按"最后一行"找它，中间夹别的东西就等于没提示。
+  if (selection.hidden > 0) lines.push(fmt('uiDescribe.k251', { p1: String(selection.hidden) }))
   return lines.join('\n')
 }
 

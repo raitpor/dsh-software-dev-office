@@ -77,6 +77,7 @@ import {
   describeTask,
   describeTaskBoard,
   describeTaskConflict,
+  selectTaskBoard,
   describeTrace,
   describeDispatchStarted,
   childFaceLines,
@@ -2773,23 +2774,42 @@ export function apply(ctx: Context, config: SdoConfig): void {
         }
         case 'list':
         default: {
+          /**
+           * **`DEF-169` 落点一：两档渲染。**
+           *
+           * - 带 `id` ⇒ **详情档**：只有 `describeTask` 一个渲染面（全文：目标 / DoD / 写范围 / 证据）。
+           *   这就是"列举面按 id 取详情"的入口 —— 摘要把 DoD 从回执里拿掉了，就必须有个地方能拿回来。
+           * - 不带 `id` ⇒ **摘要档**：一行一张（{@link describeTaskBoard}），并支持 `status` / `owner` /
+           *   `role` / `limit` 四个收窄参数（落点二）。缺省 `limit` = `TASK_BOARD_DEFAULT_LIMIT`：
+           *   全量列举在本仓 205 张时必然撞宿主 8000 截断 ⇒ "默认全量"等于静默丢卡。
+           */
+          const all = office.tasks(call)
+          if (args.id !== undefined) {
+            const one = all.find((task) => task.id === args.id)
+            if (one === undefined) return fmt('uiIndex.k49', { p1: args.id })
+            return describeTask(one, office.shapeNotes(call))
+          }
           // **DEF-050 / TASK-072**：`fixes` 必须在 **`list` 的回执**里可见（可见即约束）——
           // 一条只存在于 YAML 里的声明，读回执的人（流程官/用户）看不到就等于没有。
-          // 这里不重写看板本体（`describeTaskBoard` 的行格式是别的卡的判据面），只在其后**补一段**
-          // 逐卡列出声明：`TASK-xxx → DEF-1, DEF-2`；没有任何卡声明时一个字都不加。
-          const declared = office.tasks(call).filter((task) => (task.fixes ?? []).length > 0)
-          const fixBoard = declared.length === 0
-            ? ''
-            : '\n' + t('uiIndex.kFixCards') + '\n'
-              + declared.map((task) => `- ${task.id}（${task.status}）→ ${(task.fixes ?? []).join('、')}`).join('\n')
+          // 这里不重写看板本体（`describeTaskBoard` 的行格式是别的卡的判据面），只把这段交给它，
+          // 由它排在**尾部提示之前**（尾部提示必须是最后一行）。没有任何卡声明时一个字都不加。
+          const filter = { status: args.status, owner: args.owner, role: args.role, limit: args.limit }
+          // `fixes` 段跟着**本次筛出来的那批卡**走：筛了 owner 还把别人的声明印出来，读者会以为筛没生效；
+          // 而且它是逐卡线性成本，不过滤就等于绕开 `limit`（`selectTaskBoard` 是筛卡的唯一实现）。
+          const declared = selectTaskBoard(all, filter).shown.filter((task) => (task.fixes ?? []).length > 0)
+          const fixLines = declared.length === 0
+            ? []
+            : ['', t('uiIndex.kFixCards'), ...declared.map((task) => `- ${task.id}（${task.status}）→ ${(task.fixes ?? []).join('、')}`)]
           return describeTaskBoard({
-            tasks: office.tasks(call),
+            tasks: all,
             ready: office.readyForDispatch(call, 64),
             stale: office.staleTasks(call),
             issues: office.planIssues(call),
             iteration: office.iteration(call),
             shapeNotes: office.shapeNotes(call),
-          }) + fixBoard
+            filter,
+            extraLines: fixLines,
+          })
         }
       }
     },
