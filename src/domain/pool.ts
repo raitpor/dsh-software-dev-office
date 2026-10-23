@@ -331,9 +331,20 @@ export function unresolvedBlock(events: readonly PoolEvent[], taskId: string): {
 
 /** 本轮派发计划：谁上、谁排队（含排队原因）。 */
 export interface PoolAdmission {
+  /**
+   * **这一轮到底试没试复用**（`DEF-139` 定案用）。
+   *
+   * 为什么必须把它回显出来：`reuseSkipped` 只在"试过复用"时才有意义 ——
+   * 调用方传了 `reuseIdle=false`（宿主没有续聊入口）或 `forceNew=true`（本轮就换人）时，
+   * 清单为空是**正确**的，不是"判据全过却不复用"那个毛病。两种情况在旧台账上**长得一模一样**，
+   * 驾驶舱因此只能靠掩码哈希反推（并反推错过两次）。回显它，回执与事件就能直接分流。
+   */
+  reuseIdle: boolean
+  /** 本轮是否**强制新起**（`sdo_plan freshChild=true`）—— 同上，是"没打算复用"而不是"复用被拒" */
+  forceNew: boolean
   /** 本轮可派的卡；`reuseChildId` 给了就是「投给这个**已有**子代理」（真复用），没给就是新起一个 */
   dispatch: { task: TaskCard; reuseChildId?: string | undefined }[]
-  /** **因为掩码指纹不符/未知而放弃复用**的空闲子代理（SDO-52：不能静默少复用，也不能静默复用旧面） */
+  /** **被闸门拒的空闲子代理**（掩码/观测/持卡/余量四类，判据只有 `rolePools` 那一处）：回执与事件靠它答"为什么没复用" */
   reuseSkipped: { childSessionId: string; role: string; reason: string }[]
   /** 排队但**没被任何预算挡住**的（等下一轮空位） */
   queued: TaskCard[]
@@ -488,13 +499,33 @@ export function admitDispatch(input: {
         room -= 1
         continue
       }
-      // 有闲置但不可复用：**如实记账**并强制新起（下面走 freeSlots 分支）
+    }
+    /**
+     * **`DEF-139` 落点二（`TASK-163`）：`reuseSkipped` 从这一版起**真的会有内容**。**
+     *
+     * 修前的形状（旧代码：在 `pool.idle` 上再判一遍 `blockedReasonOf`）是**结构性空转**：
+     *   · `rolePools` 用的是**同一个** `reuseBlockedReason`（`R-6` 的修法），过不了闸门的空闲孩子
+     *     **早就被它从 `idle` 摘到 `unusable`** 了 ⇒ `pool.idle` 里剩下的全是**能复用**的
+     *     ⇒「`pool.idle.length > 0` 且 `findIndex(...) === -1`」**永远不可能同时成立**；
+     *   · 于是 `reuseSkipped` 恒为空 —— 不是"没落事件"，而是**这条读数在本进程里根本不存在**
+     *     （现盘证据：`reuseSkipped=[]` 与 `unusable=N` 并存 ⇒ 回执永远说不出"为什么没复用"）。
+     *
+     * 现在：原因**只算一次**（`rolePools` 的 `unusable`，判据唯一，这里只做**投影 + 补上角色**），
+     * 条件与上面那次"复用之试"**同一口径**：`reuseIdle=false`（宿主没有续聊入口）或 `forceNew=true`
+     *（本轮就打算换人）都不算"这些孩子不合格"，不许把它们记成"被闸门拒"。
+     */
+    if (input.reuseIdle && input.forceNew !== true) {
+      // ① **唯一口径**的那一份：`rolePools` 已经判过（真实路径里这不是"重复判一次"，而是唯一来源）。
+      for (const row of pool.unusable) {
+        reuseSkipped.push({ childSessionId: row.childSessionId, role: pool.role, reason: row.reason })
+      }
+      // ② **调用方给的 pools 比准入判得松**的那一格（例如池视图只判掩码、观测判据只有准入这一层知道）：
+      // 这一层由准入自己再判一次并如实记账 —— 否则"池里看着可复用、实际被拒"这件事在回执上会消失
+      //（`M77-03` 守的就是它）。两条都进同一个清单，末尾按 `childSessionId` 去重（`R-5B`）。
       for (const child of pool.idle) {
-        reuseSkipped.push({
-          childSessionId: child.childSessionId,
-          role: pool.role,
-          reason: blockedReasonOf(child) ?? '',
-        })
+        const reason = blockedReasonOf(child) ?? ''
+        if (reason === '') continue
+        reuseSkipped.push({ childSessionId: child.childSessionId, role: pool.role, reason })
       }
     }
     // **R-13**：`forceNew` 时容量不含"可复用空闲"（本轮不许用它们，它们也就不该挡新起）
@@ -530,7 +561,146 @@ export function admitDispatch(input: {
     seenSkipped.add(item.childSessionId)
     return true
   })
-  return { dispatch, reuseSkipped: dedupedSkipped, queued, blocked, pools }
+  return { reuseIdle: input.reuseIdle, forceNew: input.forceNew === true, dispatch, reuseSkipped: dedupedSkipped, queued, blocked, pools }
+}
+
+/* —————————————————————— 派发现场的**可读读数**（`TASK-163` / `DEF-139`） —————————————————————— */
+
+/**
+ * **children 从哪来**（`DEF-139` 落点一）：这个口径名必须**写进事件**。
+ *
+ * 病根（真机两次反推错过的事故）：驾驶舱只能看到「池里明明有空闲可复用、却没复用」，
+ * 于是拿掩码哈希反推"是不是判据没过"—— 而真相可能是**孩子根本没被取到**（折叠/来源不含）
+ * 或者**复用分支压根没跑到**（`reuseIdle=false` / `freshChild=true`）。两者与"判据说不行"
+ * 在台账上长得一模一样。名字固定三种，读侧不必猜：
+ *
+ *   · `journal`    —— 只从 append-only 台账折叠（`foldPoolChildren`；**今天实现就是这一种**）；
+ *   · `host-live`  —— 只用宿主实时列表（`subagents.listDescendants()` 一类）；
+ *   · `journal+host` —— 两者合并（各自的 id 并集）。
+ *
+ * **诚实边界**：本字段只陈述"这一轮读数的来源"，不陈述"来源里应该有而没有的"。
+ * 后者要么靠宿主实时列表（第三种），要么在池视图里如实标"不在实时列表"。
+ */
+export type ChildrenSource = 'journal' | 'host-live' | 'journal+host'
+
+/** 一个角色池的**各桶计数**（`DEF-139` 落点一：定案靠它，不靠掩码哈希反推）。 */
+export interface PoolBuckets {
+  /** 在飞（已派发未结算；不含 `stale`） */
+  busy: number
+  /** 空闲且可复用（continuable + 已结算 + 过闸门） */
+  idle: number
+  /** `idle` 里父会话 = 观察者的（**派发器真的能投**） */
+  idleSameParent: number
+  /** `idle` 里跨父会话的（宿主会拒） */
+  idleForeign: number
+  /** `idle` 里父会话未知的（老事件） */
+  idleUnknownParent: number
+  /** 超时未结算（不占池位、不进 `idle`） */
+  stale: number
+  /** 已结算但 one-shot（不可复用） */
+  retired: number
+  /** 空闲但过不了闸门（掩码/观测/持卡/余量）—— `reuseSkipped` 说的就是这些 */
+  unusable: number
+}
+
+/** 一次派发的**现场读数**：`children 从哪来 + 一共几个 + 各桶几条 + 该角色 cap/freeSlots`。 */
+export interface PoolReading {
+  role: string
+  childrenSource: ChildrenSource
+  /** **折叠出来的孩子总数**（全角色；`buckets` 才是该角色的桶） */
+  childrenTotal: number
+  buckets: PoolBuckets
+  /** 该角色的并行上限 */
+  cap: number
+  /** 还能**新建**几个子代理 */
+  freeSlots: number
+}
+
+/**
+ * 算**一个角色**的现场读数（纯函数，`nowMs` 由调用方经 `rolePools` 注入 ⇒ 同一台账两次调用逐字节相同）。
+ *
+ * 口径纪律：**不另立一套判定** —— 桶全部取自 `rolePools()` 的结果（`freeSlots` 也一样），
+ * 所以"回执里的数"与"准入用的数"是**同一份**。`childrenTotal` 是喂进池的折叠结果大小（全角色）。
+ *
+ * 该角色在 `pools` 里没有条目（没出现在 roles、也没有孩子）⇒ 各桶为 0、`cap`/`freeSlots` 为 0
+ * ——**不是**"不限量"：调用方要么先把角色放进 `rolePools({roles})`，要么在回执里说"这个角色今天没有池"。
+ */
+export function poolReading(input: {
+  role: string
+  childrenSource: ChildrenSource
+  children: Iterable<PoolChild>
+  pools: readonly RolePool[]
+}): PoolReading {
+  const children = [...input.children]
+  const pool = input.pools.find((item) => item.role === input.role)
+  return {
+    role: input.role,
+    childrenSource: input.childrenSource,
+    childrenTotal: children.length,
+    buckets: {
+      busy: pool?.busy.length ?? 0,
+      idle: pool?.idle.length ?? 0,
+      idleSameParent: pool?.idleSameParent.length ?? 0,
+      idleForeign: pool?.idleForeign.length ?? 0,
+      idleUnknownParent: pool?.idleUnknownParent ?? 0,
+      stale: pool?.stale.length ?? 0,
+      retired: pool?.retired ?? 0,
+      unusable: pool?.unusable.length ?? 0,
+    },
+    cap: pool?.cap ?? 0,
+    freeSlots: pool?.freeSlots ?? 0,
+  }
+}
+
+/**
+ * 读数的**逐字节可比指纹**（`REQ-035` / `REQ-037` 的可复现性口径）。
+ *
+ * 为什么要有它：`AC-254` 那条（同一门禁同真源两次 criteria 逐条相同）被降级到待重开卡，
+ * 但同类口径必须在本卡**真的可判**：同一台账、同一角色，两次独立读数要给出**同一个字节序列**。
+ * 因此这里不做"看起来相等的对象比较"，而是取 **JSON 文本**（键序由 {@link poolReading} 的字面量固定）。
+ */
+export function poolReadingsFingerprint(readings: readonly PoolReading[]): string {
+  return JSON.stringify(readings.map((reading) => ({
+    role: reading.role,
+    childrenSource: reading.childrenSource,
+    childrenTotal: reading.childrenTotal,
+    buckets: {
+      busy: reading.buckets.busy,
+      idle: reading.buckets.idle,
+      idleSameParent: reading.buckets.idleSameParent,
+      idleForeign: reading.buckets.idleForeign,
+      idleUnknownParent: reading.buckets.idleUnknownParent,
+      stale: reading.buckets.stale,
+      retired: reading.buckets.retired,
+      unusable: reading.buckets.unusable,
+    },
+    cap: reading.cap,
+    freeSlots: reading.freeSlots,
+  })))
+}
+
+/**
+ * 读数的一行投影（回执/诊断用）。**字段名用 ASCII**：本行会被写进事件与回执，
+ * 而语言包键不在本卡的写范围内（见 `dispatchFace.reuseSkippedLines` 的同类说明）。
+ */
+export function poolReadingLine(reading: PoolReading): string {
+  const b = reading.buckets
+  return `role=${reading.role} childrenSource=${reading.childrenSource} childrenTotal=${reading.childrenTotal}`
+    + ` idle=${b.idle} idleSameParent=${b.idleSameParent} idleForeign=${b.idleForeign} idleUnknownParent=${b.idleUnknownParent}`
+    + ` stale=${b.stale} retired=${b.retired} unusable=${b.unusable} busy=${b.busy}`
+    + ` cap=${reading.cap} freeSlots=${reading.freeSlots}`
+}
+
+/**
+ * **被闸门拒的空闲孩子逐条摊开**（`DEF-139` 落点二）：`childSessionId` / `role` / `reason` **三个字段
+ * 每条都列**，不许只打一个数量。
+ *
+ * 为什么必须逐条：真机回执只印「有 12 个空闲子代理没有被复用」—— 那个数还是**笛卡尔积去重前**的
+ * （`R-5B`），于是"为什么没复用"在回执上永远答不了；回执里现在也缺了 `role` 这一列，
+ * 而跨角色混在一起正是看不清的主因。
+ */
+export function reuseSkippedLines(rows: readonly { childSessionId: string; role: string; reason: string }[]): string[] {
+  return rows.map((row) => `childSessionId=${row.childSessionId} role=${row.role} reason=${row.reason}`)
 }
 
 /** 满池排队的人读说明（回执用；点名角色与上限，并指向"等谁结算"）。 */

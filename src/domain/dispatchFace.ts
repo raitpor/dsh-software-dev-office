@@ -12,6 +12,7 @@ import { existsSync } from 'node:fs'
 
 import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
+import type { PoolReading } from './pool.js'
 
 export const CHILD_FACE_SEGMENTS = ['evidence', 'child-tools.jsonl'] as const
 
@@ -147,6 +148,186 @@ export function observationOf(journal: Journal, childSessionId: string): ChildOb
 /** 事件字段的字符串投影（结构容错：非字符串/空串一律当没有）。 */
 function textOfValue(value: unknown): string {
   return typeof value === 'string' ? value.trim() : ''
+}
+
+/* —————————————————————— 派发现场读数与「没复用」的留痕（`TASK-163` / `DEF-139`） —————————————————————— */
+
+/**
+ * **`dispatch/started` 要带上的现场读数**（落点一：把「children 从哪来」变成可读的读数）。
+ *
+ * 这里只做**投影**：字段的**取值**全部来自 `pool.poolReading()`（桶取自 `rolePools()`），本模块不另立口径
+ * —— 真机教训 `R-6` / `DEF-044`：同一概念两处判据必然分叉，回执就会自相矛盾。
+ *
+ * 形状（`childrenSource` 三种口径名见 `pool.ChildrenSource`）：
+ * `{ childrenSource, childrenTotal, buckets:{…8 桶…}, cap, freeSlots }`
+ *
+ * **接线点（不在本文件）**：`office.recordDispatchStarted`（`src/office.ts`）把本函数的返回值并进
+ * `dispatch/started` 的 data；本卡写范围不含 `src/office.ts`，见任务卡回报里的范围申请。
+ */
+export function dispatchReadingFields(reading: PoolReading, admitted?: { reuseIdle?: boolean | undefined; forceNew?: boolean | undefined }): Record<string, unknown> {
+  return {
+    childrenSource: reading.childrenSource,
+    childrenTotal: reading.childrenTotal,
+    buckets: {
+      idle: reading.buckets.idle,
+      idleSameParent: reading.buckets.idleSameParent,
+      idleForeign: reading.buckets.idleForeign,
+      idleUnknownParent: reading.buckets.idleUnknownParent,
+      stale: reading.buckets.stale,
+      retired: reading.buckets.retired,
+      unusable: reading.buckets.unusable,
+      busy: reading.buckets.busy,
+    },
+    cap: reading.cap,
+    freeSlots: reading.freeSlots,
+    // **`DEF-139` 定案键**：`reuseIdle=false`（宿主没有续聊入口）/ `forceNew=true`（本轮换人）时
+    // `reuseSkipped` 为空是**正确**的 —— 这两个键不在，两种"不复用"就又长得一模一样。
+    ...(admitted?.reuseIdle === undefined ? {} : { reuseIdle: admitted.reuseIdle }),
+    ...(admitted?.forceNew === undefined ? {} : { forceNew: admitted.forceNew }),
+  }
+}
+
+/**
+ * **`reuseSkipped` 的事件形状**（落点二）：每条 `{childSessionId, role, reason}` 原样落盘，**不做聚合**。
+ *
+ * 读侧（{@link reuseSkippedOf}）两种承载都认：
+ *   ① 挂在 `dispatch/started.reuseSkipped` 上（今天就能落地，**不需要新事件类型**）；
+ *   ② 独立事件 {@link REUSE_SKIPPED_EVENT}（`dispatch/reuse-skipped`）—— **需先在 `src/types.ts` 的
+ *      `SdoEventType` 里登记**（那是闭合联合类型，本卡写范围不含它）；登记之后把
+ *      {@link reuseSkippedEventData} 交给 `journal.append(REUSE_SKIPPED_EVENT, …)` 即可。
+ *
+ * 为什么两种都认：真源是 append-only 的，历史读数不会因为今天选了哪条承载而变；
+ * 读侧认两种，回执就能在任何一侧先落地时**立刻**说得清"谁没被复用、为什么"。
+ */
+export const REUSE_SKIPPED_EVENT = 'dispatch/reuse-skipped'
+
+/** 一行的三条字段（缺字段照实投影成空串，**不编造**）。 */
+export function reuseSkippedFields(rows: readonly { childSessionId: string; role: string; reason: string }[]): { childSessionId: string; role: string; reason: string }[] {
+  return rows.map((row) => ({ childSessionId: row.childSessionId, role: row.role, reason: row.reason }))
+}
+
+/** 独立事件的数据面（含判定时刻与所属卡：读者不必再去别处拼装上下文）。 */
+export function reuseSkippedEventData(
+  row: { childSessionId: string; role: string; reason: string },
+  extra?: { task?: string | undefined; decidedAt?: string | undefined },
+): Record<string, unknown> {
+  return {
+    childSessionId: row.childSessionId,
+    role: row.role,
+    reason: row.reason,
+    ...(extra?.task === undefined ? {} : { task: extra.task }),
+    decidedAt: extra?.decidedAt ?? new Date().toISOString(),
+  }
+}
+
+/** 一次 `reuseSkipped` 留痕的读侧投影。 */
+export interface ReuseSkippedRecord {
+  childSessionId: string
+  role: string
+  reason: string
+  /** 所属卡（挂在 `dispatch/started` 上时取自该事件；独立事件时取自事件数据） */
+  task: string
+  /** 承载那条事件在台账里的序号（回执引用"依据哪条"就用它） */
+  seq: number
+  /** 承载事件的类型：`dispatch/started` 或 `dispatch/reuse-skipped` */
+  via: string
+}
+
+/**
+ * 读回**没被复用**的留痕（两种承载都认，见 {@link REUSE_SKIPPED_EVENT}）。
+ *
+ * 记录顺序 = 台账顺序；同一 `childSessionId` 出现多次时**不去重**（历史读数照实回放，去重是渲染层的事）。
+ */
+export function reuseSkippedOf(journal: Journal): ReuseSkippedRecord[] {
+  const out: ReuseSkippedRecord[] = []
+  for (const event of journal.read().events) {
+    // **读侧按字符串比**（不是漏了类型）：`SdoEventType` 是**闭合联合**，`dispatch/reuse-skipped`
+    // 还没登记进去（登记点在 `src/types.ts`，不在本卡写范围）；而台账是 append-only 的跨版本真源 ——
+    // 别的构建写过的事件，本构建**照样要读得回来**，读侧因此只认**字形**，不认类型声明。
+    const type: string = event.type
+    if (type === REUSE_SKIPPED_EVENT) {
+      const childSessionId = textOfValue(event.data.childSessionId)
+      if (childSessionId === '') continue
+      out.push({
+        childSessionId,
+        role: textOfValue(event.data.role),
+        reason: textOfValue(event.data.reason),
+        task: textOfValue(event.data.task),
+        seq: event.seq,
+        via: event.type,
+      })
+      continue
+    }
+    if (event.type !== 'dispatch/started') continue
+    const rows = event.data.reuseSkipped
+    if (!Array.isArray(rows)) continue
+    for (const item of rows) {
+      const row = item as { childSessionId?: unknown; role?: unknown; reason?: unknown }
+      const childSessionId = textOfValue(row.childSessionId)
+      if (childSessionId === '') continue
+      out.push({
+        childSessionId,
+        role: textOfValue(row.role),
+        reason: textOfValue(row.reason),
+        task: textOfValue(event.data.task),
+        seq: event.seq,
+        via: event.type,
+      })
+    }
+  }
+  return out
+}
+
+/** 一次派发的现场读数（读侧：`dispatch/started` 里带的那一份）。 */
+export interface DispatchReadingRecord {
+  task: string
+  role: string
+  childrenSource: string
+  childrenTotal: number
+  buckets: Record<string, number>
+  cap: number
+  freeSlots: number
+  /** 这一轮试没试复用（老事件没有这个键 ⇒ `undefined`：**"没记"与"记了 false"必须可区分**） */
+  reuseIdle?: boolean | undefined
+  /** 这一轮是否强制新起 */
+  forceNew?: boolean | undefined
+  seq: number
+}
+
+/**
+ * 读回**派发时记下的现场读数**（缺字段的事件 ⇒ 不返回；**"没记"与"记了 0"必须可区分**）。
+ *
+ * 这条读侧就是 `DEF-139` 的定案入口：以后再问「为什么这个角色没被复用」，
+ * 先看这一行 —— `childrenTotal=0` ⇒ 取不到孩子；`buckets.idle>0` 却没复用时，再看 `reuseSkipped`。
+ */
+export function readDispatchReadings(journal: Journal): DispatchReadingRecord[] {
+  const out: DispatchReadingRecord[] = []
+  for (const event of journal.read().events) {
+    if (event.type !== 'dispatch/started') continue
+    const source = textOfValue(event.data.childrenSource)
+    if (source === '') continue
+    const rawBuckets = event.data.buckets
+    const buckets: Record<string, number> = {}
+    if (rawBuckets !== null && typeof rawBuckets === 'object') {
+      for (const [key, value] of Object.entries(rawBuckets as Record<string, unknown>)) {
+        const num = Number(value)
+        if (Number.isFinite(num)) buckets[key] = num
+      }
+    }
+    out.push({
+      task: textOfValue(event.data.task),
+      role: textOfValue(event.data.role),
+      childrenSource: source,
+      childrenTotal: Number(event.data.childrenTotal ?? 0),
+      buckets,
+      cap: Number(event.data.cap ?? 0),
+      freeSlots: Number(event.data.freeSlots ?? 0),
+      ...(typeof event.data.reuseIdle === 'boolean' ? { reuseIdle: event.data.reuseIdle } : {}),
+      ...(typeof event.data.forceNew === 'boolean' ? { forceNew: event.data.forceNew } : {}),
+      seq: event.seq,
+    })
+  }
+  return out
 }
 
 /** 读回观测（坏行跳过并计数；同一子会话保留**最后**一条）。 */

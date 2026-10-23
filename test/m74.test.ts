@@ -99,8 +99,20 @@ test('M74-01 R-1：不能复用的空闲子代理进 `unusable` 且**不占池�
   })
   assert.equal(admission.dispatch.length, 1, '卡必须派得出去（旧实现会在这里永久排队）')
   assert.equal(admission.dispatch[0]?.reuseChildId, undefined, '零工具会话不许被复用 ⇒ 新起一个')
-  // 这一层（工具面证据）由 `rolePools` 的 `unusable` 记账（回执里的池视图），不重复算进 `reuseSkipped`
-  assert.equal(admission.reuseSkipped.filter((item) => item.childSessionId === 'child-zero').length, 0)
+  // **口径变更（`TASK-163` / `DEF-139` 落点二）**：修前这里断言 0 —— 那时的口径是
+  //「工具面证据只由 `rolePools.unusable` 记账，不进 `reuseSkipped`」。真机读数证明那条口径让
+  // `reuseSkipped` **结构性恒空**（`rolePools` 与准入共用同一个 `reuseBlockedReason`，
+  // 过不了闸门的孩子早被从 `idle` 摘走了）⇒ 回执永远说不出"为什么没复用"。
+  // 现在：`reuseSkipped` 就是**回执面**的那份清单（逐条 `childSessionId / role / reason`），
+  // 由 `rolePools.unusable` 投影而来 + 准入自己补判的那一层；**判据仍然只有一处**，不是重复计算。
+  // 本条守卫的**原意**（零工具会话不许被复用、不占池位、卡必须派得出去）三条断言都还在上面。
+  assert.equal(
+    admission.reuseSkipped.filter((item) => item.childSessionId === 'child-zero').length,
+    1,
+    `零工具会话必须**逐条**出现在"没被复用"的清单里（回执要能点名原因）：${JSON.stringify(admission.reuseSkipped)}`,
+  )
+  assert.equal(admission.reuseSkipped.find((item) => item.childSessionId === 'child-zero')?.role, 'developer', '清单要带角色（跨角色混在一起正是看不清的主因）')
+  assert.match(admission.reuseSkipped.find((item) => item.childSessionId === 'child-zero')?.reason ?? '', /0 个工具/u, '理由要能照着读')
   // **R-6**：掩码指纹那一层也收敛进 `unusable`（`rolePools` 与准入共用 `reuseBlockedReason`）——
   // 旧实现只在准入里判，于是池视图把它算成"空闲可复用"、`freeSlots` 被占掉，真机并发 4→2。
   const stalePools = rolePools({ children: [idleChild('child-stale', 'OLD')], roles: ['developer'], caps: { developer: 2 }, defaultCap: 2, maskHashOf: () => 'NEW' })
@@ -115,8 +127,11 @@ test('M74-01 R-1：不能复用的空闲子代理进 `unusable` 且**不占池�
   })
   assert.equal(maskMismatch.dispatch[0]?.reuseChildId, undefined, '掩码指纹不一致同样不许复用')
   assert.equal(maskMismatch.dispatch[0]?.reuseChildId, undefined, '掩码过期不得复用')
-  // 不再走 `reuseSkipped`：它已经在池视图的 `unusable` 里如实露面（判据只有一处，回执不会自相矛盾）
-  assert.equal(maskMismatch.reuseSkipped.length, 0)
+  // **同一口径变更**（见上）：掩码那一层也**必须**逐条落进 `reuseSkipped` —— 它正是"为什么没复用"
+  // 这句问话的答案面。判据仍只有一处（`rolePools.unusable`），这里只做投影。
+  assert.equal(maskMismatch.reuseSkipped.length, 1, `掩码过期的空闲会话要逐条露面：${JSON.stringify(maskMismatch.reuseSkipped)}`)
+  assert.equal(maskMismatch.reuseSkipped[0]?.childSessionId, 'child-stale')
+  assert.match(maskMismatch.reuseSkipped[0]?.reason ?? '', /掩码已变更/u, '理由要与池视图逐字同源')
 
   // ② 有"证据可用"的空闲会话时：cap=1 的位子归它（复用它，不再新建）
   const withUsable = rolePools({

@@ -269,7 +269,9 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m19.test.ts': 48, 'test/m190.test.ts': 20, 'test/m192.test.ts': 7, 'test/m193.test.ts': 9,
   'test/m195.test.ts': 3, 'test/m196.test.ts': 9, 'test/m197.test.ts': 5, 'test/m198.test.ts': 1,
   'test/m199.test.ts': 14, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m204.test.ts': 5,
-  'test/m205.test.ts': 1, 'test/m206.test.ts': 2, 'test/m207.test.ts': 1, 'test/m208.test.ts': 1, 'test/m209.test.ts': 7, 'test/m21.test.ts': 16, 'test/m210.test.ts': 9, 'test/m211.test.ts': 2,
+  // **`TASK-163` 登记同步**：m206 新增四条派发面守卫（① 复用 ② 桶计数 ③ 三条字段 ④ 逐字节复现），
+  // 新增站点 9-2=7 个（现算 2447 站点 / 215 文件那一行可复算）。只改登记值，未动抽取器。
+  'test/m205.test.ts': 1, 'test/m206.test.ts': 9, 'test/m207.test.ts': 1, 'test/m208.test.ts': 1, 'test/m209.test.ts': 7, 'test/m21.test.ts': 16, 'test/m210.test.ts': 9, 'test/m211.test.ts': 2,
   'test/m218.test.ts': 10,
   'test/m22.test.ts': 21, 'test/m23.test.ts': 64, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20,
   'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6,
@@ -283,7 +285,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m56.test.ts': 3, 'test/m60.test.ts': 1, 'test/m62.test.ts': 2, 'test/m63.test.ts': 3,
   'test/m64.test.ts': 4, 'test/m65.test.ts': 2, 'test/m66.test.ts': 2, 'test/m67.test.ts': 2,
   'test/m68.test.ts': 10, 'test/m69.test.ts': 1, 'test/m7.test.ts': 29, 'test/m71.test.ts': 2,
-  'test/m72.test.ts': 5, 'test/m73.test.ts': 27, 'test/m74.test.ts': 24, 'test/m75.test.ts': 18,
+  'test/m72.test.ts': 5, 'test/m73.test.ts': 27, 'test/m74.test.ts': 26, 'test/m75.test.ts': 18,
   'test/m76.test.ts': 7, 'test/m77.test.ts': 15, 'test/m78.test.ts': 9, 'test/m79.test.ts': 4,
   'test/m8.test.ts': 29, 'test/m80.test.ts': 25, 'test/m81.test.ts': 15, 'test/m82.test.ts': 5,
   'test/m83.test.ts': 24, 'test/m84.test.ts': 17, 'test/m85.test.ts': 42, 'test/m86.test.ts': 16,
