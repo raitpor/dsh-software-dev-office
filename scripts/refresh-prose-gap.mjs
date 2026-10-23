@@ -13,6 +13,13 @@
  * **口径不变**：表仍然要求"登记与现算**恰好相等**"（`M189-13` 的 `deepEqual` 不动）；本脚本只是把
  * "手工数数"换成"现算 + 打印差集"，不放松任何判定。
  *
+ * **`DEF-179`（`--write` 的两条产物契约，`test/m224.test.ts` 守）**：
+ *   ① **产物必须可编译**：表尾闭合括号只由原文沿用（修前 `formatTable` 自带 `  }`，调用方又接
+ *      `source.slice(end + 1)`（以 `  }` 开头）⇒ 产物 `  }  }` 多一个括号，`tsc` 直接 `TS1005`）；
+ *   ② **表内历史注释逐字保留**：重排整表只动数据行，作者写在表里的登记说明（如 `TASK-163` 那条）
+ *      必须原样搬回 —— 修前只输出它认识的行，注释被静默丢弃。
+ *   写盘前 `assertWritable` 会当场自证这两条（花括号净数 / 回读登记 / 注释逐字），坏产物写不出去。
+ *
  * 依赖已编译的 `lib/test/proseInventory.js`（与测试同一份抽取逻辑 —— 不许另写一套）。
  */
 import { readdirSync, readFileSync, writeFileSync } from 'node:fs'
@@ -53,17 +60,28 @@ export function computeGap() {
   return { gap, files: docs.length, sites: sites.length }
 }
 
+/** 表尾闭合括号（**带**前导换行；表之外的同形 `  }` 不在 `indexOf` 的搜索起点之前出现，见 `readRegistered`）。 */
+const CLOSE = '\n  }'
+
+/**
+ * 表体内的**历史注释**行（`//` 开头）—— 作者在表内写的登记说明（如 `TASK-163` 那条）不是数据，
+ * 但它们**必须逐字活着**：重排整表只许动数据行，不许把说明静默吃掉（`DEF-179` ②）。
+ */
+export function tableComments(body) {
+  return body.split('\n').filter((line) => line.trimStart().startsWith('//'))
+}
+
 /** 从 `m189.test.ts` 里读**现有**登记表（只认本文件的字面量，不执行它）。 */
 export function readRegistered(source = readFileSync(M189, 'utf8')) {
   const start = source.indexOf(HEAD)
   if (start === -1) throw new Error('test/m189.test.ts 里找不到 KNOWN_PROSE_GAP 表头')
   // 表以**缩进 2 的** `  }` 收尾（写成 `\n}` 会匹配到后面别的对象，把断言一起吞掉）
-  const end = source.indexOf('\n  }', start)
+  const end = source.indexOf(CLOSE, start)
   if (end === -1) throw new Error('KNOWN_PROSE_GAP 表没有结束括号')
   const body = source.slice(start + HEAD.length, end)
   const registered = {}
   for (const match of body.matchAll(/'([^']+)':\s*(\d+)/gu)) registered[match[1]] = Number(match[2])
-  return { registered, start, end, source }
+  return { registered, start, end, body, source }
 }
 
 function delta(registered, actual) {
@@ -78,19 +96,60 @@ function delta(registered, actual) {
   return { added, removed, changed }
 }
 
-function formatTable(gap) {
+/**
+ * 渲染**表头 + 历史注释 + 数据行** —— **不含**表尾闭合括号。
+ *
+ * `DEF-179` ① 的病根就在这一行：修前它返回 `` `${HEAD}\n${rows}\n  }` ``（自带 `  }`），而调用方又接上
+ * `source.slice(end + 1)`（`end` 指向闭合行的换行符 ⇒ 切片**以 `  }` 开头**）⇒ 产物里出现 `  }  }`，
+ * 多写的一个闭合括号让整份 `test/m189.test.ts` 直接 `TS1005`。现在表尾只由 `rewriteSource` 沿用原文。
+ */
+export function formatTable(gap, comments = []) {
   const keys = Object.keys(gap).sort()
   const lines = []
   for (let index = 0; index < keys.length; index += 4) {
     lines.push('  ' + keys.slice(index, index + 4).map((key) => `'${key}': ${gap[key]}`).join(', ') + ',')
   }
-  return `${HEAD}\n${lines.join('\n')}\n  }`
+  return [HEAD, ...comments, ...lines].join('\n')
+}
+
+/** 把现算出的 `gap` 写回 `source`：**只替换表体**，表尾闭合括号与表外代码原样沿用（`DEF-179` ① 的修法）。 */
+export function rewriteSource(source, gap) {
+  const { start, end, body } = readRegistered(source)
+  return `${source.slice(0, start)}${formatTable(gap, tableComments(body))}${source.slice(end)}`
+}
+
+/**
+ * **写盘前的产物自证**（`DEF-179`）：坏产物宁可写前就炸，也不要等人撞到编译错、或等注释丢了才发现。
+ *   ① 花括号净数必须与原文一致 —— 多写/漏写一个 `}` 就是 `TS1005`，这一条当场抓；
+ *   ② 产物回读出来的登记必须**恰好等于**现算结果；
+ *   ③ 表内历史注释必须**逐字**相等（顺序与文字都不许变）。
+ */
+function assertWritable(source, next, body, gap) {
+  const balance = (text) => {
+    let net = 0
+    for (const ch of text) {
+      if (ch === '{') net += 1
+      else if (ch === '}') net -= 1
+    }
+    return net
+  }
+  if (balance(next) !== balance(source)) {
+    throw new Error(`产物花括号净数 ${balance(next)} ≠ 原文 ${balance(source)}：表体/表尾拼装多写或漏写了一个括号（DEF-179 ①）`)
+  }
+  const sorted = (record) => Object.fromEntries(Object.entries(record).sort(([a], [b]) => (a < b ? -1 : 1)))
+  const reparsed = readRegistered(next)
+  if (JSON.stringify(sorted(reparsed.registered)) !== JSON.stringify(sorted(gap))) {
+    throw new Error('产物回读的登记与现算不等：表体结构被改坏（DEF-179 ①）')
+  }
+  if (JSON.stringify(tableComments(reparsed.body)) !== JSON.stringify(tableComments(body))) {
+    throw new Error('产物丢了表内历史注释：重排整表必须**逐字**保留它们（DEF-179 ②）')
+  }
 }
 
 function main() {
   const write = process.argv.includes('--write')
   const { gap, files, sites } = computeGap()
-  const { registered, start, end, source } = readRegistered()
+  const { registered, body, source } = readRegistered()
   const { added, removed, changed } = delta(registered, gap)
   const total = Object.values(gap).reduce((sum, count) => sum + count, 0)
   const registeredTotal = Object.values(registered).reduce((sum, count) => sum + count, 0)
@@ -107,7 +166,8 @@ function main() {
     console.log('✗ 不同步：跑 `node scripts/refresh-prose-gap.mjs --write` 重生成（明细见上）')
     return 1
   }
-  const next = `${source.slice(0, start)}${formatTable(gap)}${source.slice(end + 1)}`
+  const next = rewriteSource(source, gap)
+  assertWritable(source, next, body, gap)
   writeFileSync(M189, next, 'utf8')
   console.log('✓ 已重写 `test/m189.test.ts` 的 KNOWN_PROSE_GAP（明细见上）')
   return 0
