@@ -13,7 +13,9 @@
  *   ③ `M230-03` `pass` 且**已采纳** ⇒ 放行（不误伤）；
  *   ④ `M230-04` 开关 `review.requireOnDone: false` ⇒ 放行**且回执明说已关闭**（不许静默放行）；
  *   ⑤ `M230-05` 状态块那一行与 `C-42` 的**点名集逐字一致**（同一个现算函数，不许两套口径）；
- *   ⑥ `M230-06` 拆卡时往 DoD 注入「已通过独立评审（评审者≠作者）」，**已有同义条目则不重复注入**。
+ *   ⑥ `M230-06` 拆卡时往 DoD 注入「已通过独立评审（评审者≠作者）」，**已有同义条目则不重复注入**；
+ *   ⑦ `M230-07` 待评审中大卡**超过列示上限 5** ⇒ 行里明写「等 N 张」（不静默截断），且行里点名集是
+ *      `C-42` 点名集的**真子集**、张数与 `considered` 对账（`REV-089#1`：修前夹具只造 2 张，截断分支从未被执行）。
  *
  * 夹具口径：真写卡 → 真认领 → 真 `reportTask`（`done` 是执行者唯一必经的关口，测内部函数没有意义）。
  */
@@ -24,7 +26,8 @@ import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
-import { SoftwareDevOffice, INDEPENDENT_REVIEW_DOD } from '../src/office.js'
+import { SoftwareDevOffice, INDEPENDENT_REVIEW_DOD, REVIEW_PENDING_BIG_SHOWN } from '../src/office.js'
+import { pendingReviewBigCards } from '../src/domain/collab.js'
 import { renderStatusBlock } from '../src/interface/inject.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
@@ -262,4 +265,68 @@ test('M230-06 落点三：拆卡时注入「已通过独立评审」，已有同
     1,
     '重复拆卡不得把同一条 DoD 注入第二遍',
   )
+})
+
+test('M230-07 落点二：待评审中大卡 > 上限 5 ⇒ 行里明写「等 N 张」，且行里点名集是 C-42 点名集的**真子集**', () => {
+  // `REV-089#1`：修前夹具（M230-05）只造 2 张 done 卡，而 `REVIEW_PENDING_BIG_SHOWN` 是 5 ——
+  // 「超过上限就说等 N 张」这条分支**从未被执行过**，静默截断也照样全绿。本格把它钉住。
+  // 开关关掉：done 不看评审，才能把「待评审中大卡」堆到上限之上。
+  setSwitch(false)
+  const namedOf = (text: string): string[] => [...new Set(text.match(/TASK-\d+/gu) ?? [])].sort()
+  /** 造第 n 张 done 的中大卡（写范围逐张不同 ⇒ 认领时的写范围相交兜底不会误拦）。 */
+  const doneCard = (n: number): string => {
+    const id = `TASK-${String(n).padStart(3, '0')}`
+    const owner = `dev-${n}`
+    writeCard({ id, writeScopes: [`src/m230/t${n}/`] })
+    claimIt(id, owner)
+    assert.equal(done(id, owner).ok, true, `夹具前提：开关关掉时 ${id} 的 done 放行`)
+    return id
+  }
+
+  // ——阶段一：夹具 **< 上限（2 张）**—— 先证明这条守卫**不冤枉人**：不该红的不会红。
+  // 未超上限时必须**列全**、**不得**出现「等 N 张」，行里点名集与 C-42 逐个一致（相等，不是真子集）。
+  const first2 = [doneCard(1), doneCard(2)]
+  const line2 = statusLine()
+  assert.match(line2, /待评审中大卡 2 张/u, `未超上限时行里要报准张数：${line2}`)
+  assert.doesNotMatch(line2, /等 \d+ 张/u, `未超上限时**不得**出现截断提示（出现就是上限口径算错）：${line2}`)
+  assert.deepEqual(namedOf(line2), first2, `未超上限时 2 张都要被点名：${line2}`)
+  assert.deepEqual(namedOf(line2), namedOf(c42().detail), `未超上限时行里与 C-42 点名集必须一致：行=${line2}`)
+
+  // ——阶段二：**≥ 6 张**（严格大于上限 5）—— 修前从未被测到的形态 ——
+  const six = [...first2]
+  for (let n = 3; n <= 6; n += 1) six.push(doneCard(n))
+  const line = statusLine()
+  const red = c42()
+  const c42Named = namedOf(red.detail)
+  assert.equal(red.ok, false, `六张都没有已采纳的通过评审 ⇒ C-42 判红：${red.detail}`)
+  assert.equal(c42Named.length, 6, `C-42 要点名**全部** 6 张（它不受状态块列示上限约束）：${red.detail}`)
+  assert.deepEqual(c42Named, [...six].sort(), 'C-42 点名集就是这 6 张')
+
+  // ① 截断必须**说出来**：行里明写「等 6 张」（静默列 5 张会让读者以为只有 5 张欠评审）
+  assert.match(line, /待评审中大卡 6 张/u, `行里要报全量张数：${line}`)
+  assert.match(line, /等 6 张/u, `超上限时必须明写「等 N 张」，不许静默截断：${line}`)
+
+  // ② 行里 named 集是 C-42 named 集的**真子集**（严格小于 ⇒ 上限 5 真的生效，不是两处各算一遍侥幸相同）
+  const shown = namedOf(line)
+  assert.equal(shown.length, REVIEW_PENDING_BIG_SHOWN, `超上限时行里只列 ${REVIEW_PENDING_BIG_SHOWN} 张：${line}`)
+  for (const id of shown) {
+    assert.ok(c42Named.includes(id), `${id} 必须属于 C-42 的点名集：行=${line} ／ C-42=${red.detail}`)
+  }
+  assert.ok(shown.length < c42Named.length, '真子集：必须**严格小于**（相等就说明上限没生效，或两处口径分叉）')
+  // **故意不照抄 M230-05 的 `deepEqual`**：> 上限时按设计必然不等，照抄会写出一条必红的守卫。
+
+  // ③ 数量与 `considered` 对账（走 `C-42` 的同一个现算函数，不另数一遍台账）
+  const set = pendingReviewBigCards(office.storeFor(WORKSPACE), office.journalFor(WORKSPACE))
+  assert.equal(set.considered.length, 6, `considered 是全部已 done 的中大卡 ⇒ 6 张：${JSON.stringify(set.considered)}`)
+  assert.equal(set.pending.length, 6, '六张都缺评审 ⇒ 点名集等于全集（本夹具里 pending == considered）')
+  assert.deepEqual([...set.pending].sort(), c42Named, '状态块与 C-42 的点名来源必须是同一份读数')
+  const snapshot = office.status(impl()).reviewPendingBig
+  if (snapshot === undefined) assert.fail('状态块必须有「待评审中大卡」字段')
+  assert.equal(
+    snapshot.count,
+    set.considered.length,
+    `行里报的张数要与 considered 对账：count=${snapshot.count} ／ considered=${set.considered.length}`,
+  )
+  assert.deepEqual(snapshot.ids, set.pending, '字段里的 ids 是**全量**（列示上限只影响 line 的排版，不改读数）')
+  assert.equal(namedOf(snapshot.line).length, REVIEW_PENDING_BIG_SHOWN, '已排版的那一行同样只列上限张数')
 })

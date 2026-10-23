@@ -272,7 +272,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m204.test.ts': 5, 'test/m205.test.ts': 1,
   'test/m206.test.ts': 15, 'test/m207.test.ts': 1, 'test/m208.test.ts': 1, 'test/m209.test.ts': 7,
   'test/m21.test.ts': 16, 'test/m210.test.ts': 9, 'test/m211.test.ts': 2, 'test/m218.test.ts': 10,
-  'test/m22.test.ts': 21, 'test/m223.test.ts': 43, 'test/m23.test.ts': 64, 'test/m230.test.ts': 15,
+  'test/m22.test.ts': 21, 'test/m223.test.ts': 43, 'test/m23.test.ts': 64, 'test/m230.test.ts': 22,
   'test/m231.test.ts': 16, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20, 'test/m26.test.ts': 4,
   'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6, 'test/m3.test.ts': 27,
   'test/m30.test.ts': 13, 'test/m31.test.ts': 15, 'test/m32.test.ts': 45, 'test/m33.test.ts': 49,

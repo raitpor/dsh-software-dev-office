@@ -3458,7 +3458,9 @@ export class SoftwareDevOffice {
      *   · 只补**中大卡**且**产出产品工件**且非 `reviewer` 的卡 —— 与 `C-42` 的考虑集同一个谓词
      *     （`bigCardReviewVerdict` 里的那三行，这里只复用其中两个纯谓词）；
      *   · **已有同义条目就不重复注入**（同义 = 含「独立评审」或「评审者≠作者」的写法）；
-     *   · 注入只加一条 DoD，**不改**卡的其他字段（`revision` 递增并记 `task/updated`，留痕可查）。
+     *   · 注入只加一条 DoD，**不改**卡的其他字段，也**不递增** `revision`（它是认领 CAS 的令牌；
+     *     注入发生在建卡的同一个同步动作里 ⇒ 属于**建卡**而非一次改卡，递增会让"刚拆完即认领"全撞
+     *     `revision-mismatch`，见下面那段逐字口径）；审计不丢：仍然记一条 `task/updated`，留痕可查。
      */
     let injected = 0
     for (const task of result.tasks) {
