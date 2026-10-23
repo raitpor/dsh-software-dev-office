@@ -3615,10 +3615,20 @@ export class SoftwareDevOffice {
      * 反例格（真机）：`subagent:developer:1` 同时指过 `e4d9fbaf` 与 `ebcd8a06` —— 那时投递会**同时唤醒
      * 两个会话**。新形态由会话 uuid 现算，正常不会撞；所以这里判的是**撞了就不许落账**（8 位前缀
      * 真撞上、或调用方手塞了一个已被别的会话用过的串）。判据只认 `task/claimed` 事件（工具写的，改不动）。
+     *
+     * **门槛必须是 `minSessions: 1`**（`TASK-172` 修）：修前用的是回执那份 `minSessions: 2` 的读数
+     * （只列"已经被两个会话共用过"的 owner）⇒ 第二次认领时台账里还只有**一个**会话用过它 ⇒ 判不出来，
+     * 要等两个会话都把卡占下来才"看得见" —— 而那时"一个 owner 指向两个会话"已经落账了。
+     * 认领面要问的是**将来会不会撞**，所以这里读"这个串被哪些会话用过（≥1）"。
+     *
+     * **只对"认得出角色的 owner 形态"判**（`claimedRole !== undefined`）：这条守据治的是**可投递的地址**
+     * 被两个会话共用（`subagent:developer:1` 那种槽位名，拿它投递会同时唤醒两个人）。认不出角色的名字
+     * （`dev` / `张三`）**不是地址**，跟 `ownerClaimVerdict` 一样 fail-open —— 它们在**收口**由 `C-76`
+     * 点名（"谁做的"必须说得出来）。把匿名名也拦下只会让同一个人的不同会话互相打架，治不了本缺陷。
      */
-    if (canonicalOwner !== '' && sessionText !== '') {
-      const collisions = this.ownerCollisions(call).filter((row) => row.owner === canonicalOwner)
-      const clash = collisions.find((row) => row.sessions.some((id) => id !== sessionText))
+    if (canonicalOwner !== '' && sessionText !== '' && claimedRole !== undefined) {
+      const users = this.ownerCollisions(call, 1).filter((row) => row.owner === canonicalOwner)
+      const clash = users.find((row) => row.sessions.some((id) => id !== sessionText))
       if (clash !== undefined) {
         const detail = fmt('uiCollab.kOwnerCollision', {
           p1: canonicalOwner,
@@ -3647,11 +3657,13 @@ export class SoftwareDevOffice {
   /**
    * **同一个 owner 串被几个会话用过**（`DEF-165` ② / `DEF-133` 的可定位性读数）。
    *
-   * 只读 `task/claimed`（`owner` 与 `sessionId` 都是工具写的）；一条 owner 对应一个会话时不出行 ——
-   * 所以"有行"本身就是缺陷形态：那个 owner 拿来投递会指向不确定的人。
+   * 只读 `task/claimed`（`owner` 与 `sessionId` 都是工具写的）；`minSessions` 缺省 2 ⇒
+   * 一条 owner 对应一个会话时不出行，"有行"本身就是缺陷形态：那个 owner 拿来投递会指向不确定的人。
    * 现盘的历史记录（`subagent:developer:1` 指过两个会话）就靠这一行**可见**，而不是靠记忆。
+   *
+   * @param minSessions 认领面传 **1**（问"将来会不会撞"）；回执/诊断用缺省 2（只报已经脏了的）
    */
-  ownerCollisions(call: OfficeCall): { owner: string; sessions: string[]; taskIds: string[] }[] {
+  ownerCollisions(call: OfficeCall, minSessions = 2): { owner: string; sessions: string[]; taskIds: string[] }[] {
     const { journal } = this.contextFor(call)
     return ownerSessionCollisions(
       journal.read().events
@@ -3661,6 +3673,7 @@ export class SoftwareDevOffice {
           sessionId: textOf(event.data['sessionId']),
           taskId: textOf(event.data['id']),
         })),
+      minSessions,
     )
   }
 

@@ -132,7 +132,9 @@ test('M129-01 每条拒绝路径都落一条带**拒绝码**的事件（不再�
   writeCard(card('TASK-302', 'done'))
   office.claimTask(call, { taskId: 'TASK-302', owner: 'x', expectedRevision: 1 })
   // ④ write-scope-conflict（真机 TASK-106 的形状：同范围被在飞卡占着）
-  writeCard(card('TASK-303', 'ready', { writeScopes: ['src/shared/'] }))
+  //    **0.1.7 批3（`ADR-025`）**：相交默认照派/照认领 ⇒ 只有**声明独占窗口**这一类仍会拒签，
+  //    夹具因此显式声明 `exclusive`（本条验的是「拒签必须入账」，不是「相交该不该拒」）。
+  writeCard(card('TASK-303', 'ready', { writeScopes: ['src/shared/'], exclusive: 'full-suite' }))
   writeCard(card('TASK-304', 'in-progress', { writeScopes: ['src/shared/'], owner: 'other' }))
   office.claimTask(call, { taskId: 'TASK-303', owner: 'victim', expectedRevision: 1 })
   // ⑤ 第二次同型拒绝（真机是"连拒两次"，争用次数要能数出 2）
@@ -150,7 +152,7 @@ test('M129-01 每条拒绝路径都落一条带**拒绝码**的事件（不再�
 })
 
 test('M129-02 审计可分性：不得复用 `task/claim-blocked`', () => {
-  writeCard(card('TASK-311', 'ready', { writeScopes: ['src/s/'] }))
+  writeCard(card('TASK-311', 'ready', { writeScopes: ['src/s/'], exclusive: 'full-suite' }))
   writeCard(card('TASK-312', 'in-progress', { writeScopes: ['src/s/'], owner: 'other' }))
   office.claimTask(call, { taskId: 'TASK-311', owner: 'blocked-session', expectedRevision: 1 })
 
@@ -166,7 +168,7 @@ test('M129-03 新事件必须否掉 G3 失效（拒签不改真源，不该作�
 })
 
 test('M129-04 可数读数 + 回执提示：就绪卡被拒过几次要看得见', async () => {
-  writeCard(card('TASK-321', 'ready', { writeScopes: ['src/z/'] }))
+  writeCard(card('TASK-321', 'ready', { writeScopes: ['src/z/'], exclusive: 'full-suite' }))
   writeCard(card('TASK-322', 'in-progress', { writeScopes: ['src/z/'], owner: 'other' }))
   office.claimTask(call, { taskId: 'TASK-321', owner: 'victim', expectedRevision: 1 })
   office.claimTask(call, { taskId: 'TASK-321', owner: 'victim', expectedRevision: 1 })

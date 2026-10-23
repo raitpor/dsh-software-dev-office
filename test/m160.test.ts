@@ -10,6 +10,13 @@
  * 修法：抽成**唯一出口** `orderedPair(a, b, tasks)`（与 ADR-009 的 `scopeOverlaps` 同款做法），
  * 三处调用点全部改走它。**验收是行为**：三种有序形状（`'*'` / 传递 / 直接）在**三处**结论一致（无冲突），
  * 且**真并行**（无依赖 + 写范围重叠）**仍然**报冲突（不许借修缺陷之名放宽）。
+ *
+ * **0.1.7 批3 改口径（`REQ-066` / `ADR-025` / `TASK-172`）**：派发面把"相交"拆成**两种处置** ——
+ *   · `merge`（默认）⇒ **照派**、只**点名**（git 对同一文件的不同区域本来就能干净合并）；
+ *   · `exclusive-window` / `unknown-scope` ⇒ 真**串行**（`scopeHeldTasks` 才返回它）。
+ * 于是"不许放宽"这条守据在派发面换了读数：真并行**必须仍被看见**（`scopeIntersections` 一条，
+ * 点名两张卡与路径）；一旦任一方声明独占窗口 ⇒ **必须仍被挡住**（`scopeHeldTasks` 一条）。
+ * 三处判据的**静态面**（`validatePlan` / `classifyNonDispatchable`）口径一字未动。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -17,12 +24,12 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
-import { classifyNonDispatchable, orderedPair, scopeHeldTasks, validatePlan } from '../src/domain/plan.js'
+import { classifyNonDispatchable, orderedPair, scopeHeldTasks, scopeIntersections, validatePlan } from '../src/domain/plan.js'
 import type { TaskCard } from '../src/types.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
-function card(id: string, status: TaskCard['status'], writeScopes: string[], blockedBy: string[] = []): TaskCard {
+function card(id: string, status: TaskCard['status'], writeScopes: string[], blockedBy: string[] = [], exclusive?: string): TaskCard {
   return {
     id,
     title: id,
@@ -44,6 +51,7 @@ function card(id: string, status: TaskCard['status'], writeScopes: string[], blo
     impact: [],
     landing: [],
     evidence: [],
+    ...(exclusive === undefined ? {} : { exclusive }),
     createdAt: '2026-10-15T00:00:00.000Z',
     updatedAt: '2026-10-15T00:00:00.000Z',
   } as unknown as TaskCard
@@ -56,6 +64,11 @@ function readings(tasks: TaskCard[], holder?: TaskCard): { validatePlan: number;
     classify: (classifyNonDispatchable(tasks).scope ?? []).length,
     scopeHeld: holder === undefined ? 0 : scopeHeldTasks([...tasks, holder]).length,
   }
+}
+
+/** 派发面的**点名**读数（`ADR-025`：相交默认照派 ⇒ 它必须仍然看得见）。 */
+function named(tasks: TaskCard[]): { task: string; holder: string; kind: string; overlap: string[] }[] {
+  return scopeIntersections(tasks).map((row) => ({ task: row.task.id, holder: row.holder.id, kind: row.kind, overlap: row.overlap }))
 }
 
 test('M160-01 三种**有序**形状在三处判据里都不算冲突；真并行对照组三处**仍然**报冲突（不许放宽）', () => {
@@ -78,7 +91,8 @@ test('M160-01 三种**有序**形状在三处判据里都不算冲突；真并�
   assert.deepEqual(
     readings(parallel),
     { validatePlan: 1, classify: 2, scopeHeld: 0 },
-    '④真并行：validatePlan / classify **必须**继续报冲突（修缺陷不等于放宽判据）',
+    '④真并行：validatePlan / classify **必须**继续报冲突（修缺陷不等于放宽判据）；'
+      + '派发面 `scopeHeld` 为 0 是**新口径**（`ADR-025`：相交默认照派），它的"不许放宽"读数见下一条',
   )
 
   // `scopeHeldTasks` 那一面用"在飞持有者"造同一形状（三条都要 0）
@@ -92,11 +106,24 @@ test('M160-01 三种**有序**形状在三处判据里都不算冲突；真并�
   assert.deepEqual(readings(heldStar), { validatePlan: 0, classify: 0, scopeHeld: 0 }, "scopeHeld × '*'：不得报写锁挡住")
   assert.deepEqual(readings(heldChain), { validatePlan: 0, classify: 0, scopeHeld: 0 }, 'scopeHeld × 传递依赖：不得报写锁挡住')
   assert.deepEqual(readings(heldDirect), { validatePlan: 0, classify: 0, scopeHeld: 0 }, 'scopeHeld × 直接依赖：回归基线')
-  // 反例（这一面也不许放宽）：在飞持有者与就绪卡**真并行**时照样要报
+  // 三种有序形状在**派发面**也不许出现"相交"（显式声明过先后不是争用）
+  assert.deepEqual(named(heldStar), [], "scopeIntersections × '*'：不算意外相交")
+  assert.deepEqual(named(heldChain), [], 'scopeIntersections × 传递依赖：不算意外相交')
+  assert.deepEqual(named(heldDirect), [], 'scopeIntersections × 直接依赖：不算意外相交')
+
+  // 反例（这一面也不许放宽）①：在飞持有者与就绪卡**真并行** ⇒ 派发面必须**点名**（照派但可见）
+  const parallelHeld = [card('TASK-H', 'in-progress', ['src/h5/']), card('TASK-N', 'ready', ['src/h5/'])]
+  assert.deepEqual(
+    named(parallelHeld),
+    [{ task: 'TASK-N', holder: 'TASK-H', kind: 'merge', overlap: ['src/h5'] }],
+    'scopeHeld × 真并行：`merge` 照派，但**必须**在读数里点名两张卡与相交路径（可见即约束）',
+  )
+  assert.equal(scopeHeldTasks(parallelHeld).length, 0, '`merge` 不挡（挡住 = 过度保守，反向守卫会红）')
+  // 反例（这一面也不许放宽）②：真并行 + 任一方声明**独占窗口** ⇒ 必须继续**挡**
   assert.equal(
-    scopeHeldTasks([card('TASK-H', 'in-progress', ['src/h5/']), card('TASK-N', 'ready', ['src/h5/'])]).length,
+    scopeHeldTasks([card('TASK-H', 'in-progress', ['src/h5/'], [], 'full-suite'), card('TASK-N', 'ready', ['src/h5/'])]).length,
     1,
-    'scopeHeld × 真并行：必须继续报（否则等于把写锁静默拆了）',
+    'scopeHeld × 真并行 + 独占窗口：必须继续报（否则等于把写锁静默拆了）',
   )
 })
 

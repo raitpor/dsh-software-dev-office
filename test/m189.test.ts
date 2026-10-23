@@ -270,6 +270,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
   'test/m195.test.ts': 3, 'test/m196.test.ts': 9, 'test/m197.test.ts': 5, 'test/m198.test.ts': 1,
   'test/m199.test.ts': 14, 'test/m2.test.ts': 2, 'test/m20.test.ts': 20, 'test/m204.test.ts': 5,
   'test/m205.test.ts': 1, 'test/m206.test.ts': 2, 'test/m207.test.ts': 1, 'test/m208.test.ts': 1, 'test/m209.test.ts': 7, 'test/m21.test.ts': 16, 'test/m210.test.ts': 9, 'test/m211.test.ts': 2,
+  'test/m218.test.ts': 10,
   'test/m22.test.ts': 21, 'test/m23.test.ts': 64, 'test/m24.test.ts': 4, 'test/m25.test.ts': 20,
   'test/m26.test.ts': 4, 'test/m27.test.ts': 21, 'test/m28.test.ts': 11, 'test/m29.test.ts': 6,
   'test/m3.test.ts': 27, 'test/m30.test.ts': 13, 'test/m31.test.ts': 15, 'test/m32.test.ts': 45,
@@ -299,7 +300,7 @@ test('M189-08 §3.6（DEF-093）②③④⑤：灌水理由红 / 自证格可证
     '读散文的站点必须**按身份**登记（文件 + 条数）：新增/挪位置 ⇒ 登记它、改成语言包 label、或加一份成对自证',
   )
   // ⑤ 两类豁免**逐条重判**：类 1 收窄到 label 子集（回执整段散文不在内），类 2 撤销（反例读自由文本）
-  for (const spec of ['test/m19.test.ts:906', 'test/m3.test.ts:608', 'test/m125.test.ts:189']) {
+  for (const spec of ['test/m19.test.ts:906', 'test/m3.test.ts:608', 'test/m125.test.ts:267']) {
     const site = sites.find((item) => siteKey(item) === spec)
     assert.ok(site !== undefined, `${spec} 必须在候选集里（否则就是抽取器的漏洞被当成"没读散文"）`)
     assert.equal(classifySite(site as ProseSite, pack).cls, 'prose', `${spec} 是自由文本/整段散文的读取 ⇒ 不许再被豁免`)

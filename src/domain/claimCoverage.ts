@@ -457,11 +457,19 @@ export function ownerFormOf(owner: string): OwnerForm {
  * **同一个 owner 串被几个会话用过**（`DEF-165` ② 的反例格 / `DEF-133` 的可定位性）。
  *
  * 数据源只有一处：`task/claimed` 事件（`owner` + `sessionId` 都由工具写，调用方改不动）。
- * 返回值只含**真的被两个以上会话共用**的 owner —— 一条 owner 对应一个会话时不出行。
+ * 缺省（`minSessions: 2`）只返回**真的被两个以上会话共用**的 owner —— 一条 owner 对应一个会话时不出行，
+ * 这是**回执/诊断**的读数（"台账里哪条 owner 已经脏了"）。
+ *
+ * **`minSessions: 1` 是认领面的判据形态**（`TASK-172` / `DEF-165` ②）：它要问的是**将来**会不会撞，
+ * 而不是"已经撞了几次"。修前认领面用的是 `minSessions: 2` 的读数 ⇒ 第一次撞不会拦，要等**两个会话
+ * 都已经把卡占下来**才看得见 —— 那时"一个 owner 串指向两个会话"已经落账了（真机 `subagent:developer:1`
+ * 同时指过 `e4d9fbaf` 与 `ebcd8a06`，就是这么来的）。所以这里把门槛做成参数，两个面**同一份实现**。
  */
 export function ownerSessionCollisions(
   claims: readonly { owner: string; sessionId?: string | undefined; taskId?: string | undefined }[],
+  minSessions = 2,
 ): { owner: string; sessions: string[]; taskIds: string[] }[] {
+  const threshold = Number.isFinite(minSessions) && minSessions >= 1 ? Math.floor(minSessions) : 2
   const byOwner = new Map<string, { sessions: Set<string>; taskIds: Set<string> }>()
   for (const claim of claims) {
     const owner = textOf(claim.owner).trim()
@@ -473,7 +481,7 @@ export function ownerSessionCollisions(
     byOwner.set(owner, row)
   }
   return [...byOwner.entries()]
-    .filter(([, row]) => row.sessions.size > 1)
+    .filter(([, row]) => row.sessions.size >= threshold)
     .map(([owner, row]) => ({ owner, sessions: [...row.sessions].sort(), taskIds: [...row.taskIds].sort() }))
 }
 

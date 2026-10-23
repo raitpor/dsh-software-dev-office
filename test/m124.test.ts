@@ -125,7 +125,7 @@ test('M124-03 计划期：互为前缀的两个文件不再报"可能重叠"，�
   assert.equal(real.length, 1, '目录范围与其下文件**必须**仍报重叠（这是真冲突）')
 })
 
-test('M124-04 认领期：认领拒签回执点名**重叠的那个路径**，且不误伤互不冲突的卡', async () => {
+test('M124-04 认领期：拒签回执点名**重叠的那个路径**，且不误伤互不冲突的卡（0.1.7 批3：只有两类串行才拒）', async () => {
   const store = office.storeFor(WORKSPACE)
   const holder = card('TASK-911', ['src/a.ts'])
   store.writeYaml(['tasks', 'TASK-911.yml'], { task: holder })
@@ -138,12 +138,19 @@ test('M124-04 认领期：认领拒签回执点名**重叠的那个路径**，�
   const okClaim = office.claimTask(call, { taskId: 'TASK-912', owner: 'subagent:developer:2', expectedRevision: 1 })
   assert.equal(okClaim.ok, true, 'src/a.ts × src/a.tsx 不是冲突，必须放行认领')
 
-  // ② 同一路径 ⇒ 拒，且**点名重叠路径**（不是倒出对方全量写范围）
+  // ② 同一路径但**没有**独占声明 ⇒ 按 `ADR-025` 照常认领（相交 ≠ 真冲突：两边各写各的工作副本、
+  //    完成时由插件做真三路合并）。把这一支拦住就是 `DEF-067` 的原病：派得出来、认领不了 ⇒ 白烧一轮会话。
   const same = card('TASK-913', ['src/a.ts', 'src/other/'])
   store.writeYaml(['tasks', 'TASK-913.yml'], { task: same })
-  const denied = office.claimTask(call, { taskId: 'TASK-913', owner: 'subagent:developer:3', expectedRevision: 1 })
+  const mergeClaim = office.claimTask(call, { taskId: 'TASK-913', owner: 'subagent:developer:3', expectedRevision: 1 })
+  assert.equal(mergeClaim.ok, true, '同一路径但无独占声明 ⇒ 认领放行（相交只点名，不阻断）')
+
+  // ③ 反向格：同一路径 + **独占窗口**声明 ⇒ 拒，且**点名重叠路径**（不是倒出对方全量写范围）
+  const exclusive = card('TASK-914', ['src/a.ts', 'src/other/'], { exclusive: 'full-suite' })
+  store.writeYaml(['tasks', 'TASK-914.yml'], { task: exclusive })
+  const denied = office.claimTask(call, { taskId: 'TASK-914', owner: 'subagent:developer:4', expectedRevision: 1 })
   assert.equal(denied.ok, false)
-  if (denied.ok) assert.fail('同名路径必须拒绝')
+  if (denied.ok) assert.fail('声明独占窗口的卡必须拒绝认领')
   assert.equal(denied.code, 'write-scope-conflict')
   assert.match(denied.detail, /src\/a\.ts/u, '回执必须点名重叠的那个路径')
   assert.equal(denied.detail.includes('src/other/'), false, '不得把对方**全量**写范围倒出来（读者还得自己算）')

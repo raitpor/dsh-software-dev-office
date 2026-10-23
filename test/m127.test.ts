@@ -160,17 +160,26 @@ test('M127-01 孤儿锁：卡在 in-progress 而 owner 会话已结算 ⇒ 点�
   assert.equal(after.some((row) => row.taskId === 'TASK-104'), false, 'release 之后锁就没了')
 })
 
-test('M127-02 认领被孤儿锁挡住 ⇒ 回执就地说明并给 release 命令', async () => {
+test('M127-02 孤儿锁：merge 相交**不再**挡认领（0.1.7 批3），串行那一支仍就地说明并给 release 命令', async () => {
   writeCard(card('TASK-111', 'in-progress', ['.sdo/reviews/'], { owner: 'subagent:reviewer:4' }))
   const journal = office.journalFor(WORKSPACE)
   journal.append('task/claimed', { id: 'TASK-111', by: 'dead-session' })
   journal.append('dispatch/started', { task: 'TASK-111', childSessionId: 'dead-session', role: 'reviewer' })
   journal.append('dispatch/finished', { task: 'TASK-111', childSessionId: 'dead-session', reason: 'completed' })
 
+  // ① **merge 相交**（`.sdo/reviews/` × `.sdo/reviews/`，无独占声明）⇒ 按 `ADR-025` 认领放行：
+  //    孤儿锁不再靠"撞锁"暴露（它由 `dispatchHealth` 主动提示，见 M127-01/05）。
+  //    修前这一支必拒 ⇒ 派得出来、认领不了，白烧一轮会话（`DEF-067` 的原病）。
   writeCard(card('TASK-112', 'ready', ['.sdo/reviews/']))
-  const denied = office.claimTask(call, { taskId: 'TASK-112', owner: 'subagent:reviewer:9', expectedRevision: 1 })
-  assert.equal(denied.ok, false)
-  if (denied.ok) assert.fail('写范围冲突必须拒绝')
+  const allowed = office.claimTask(call, { taskId: 'TASK-112', owner: 'subagent:reviewer:9', expectedRevision: 1 })
+  assert.equal(allowed.ok, true, 'merge 相交必须放行（相交 ≠ 真冲突）')
+
+  // ② 反向格：**独占窗口**声明 ⇒ 仍要走拒签那一路，且拒签回执**就地说明这是孤儿锁**
+  //    （给可执行的 release 命令 + owner 会话的终态原因），不许让执行者自己排查"拦我的是不是活会话"。
+  writeCard(card('TASK-113', 'ready', ['.sdo/reviews/'], { exclusive: 'full-suite' }))
+  const denied = office.claimTask(call, { taskId: 'TASK-113', owner: 'subagent:reviewer:10', expectedRevision: 1 })
+  assert.equal(denied.ok, false, '声明独占窗口 ⇒ 串行，认领必须被拒')
+  if (denied.ok) assert.fail('写范围串行必须拒绝')
   assert.equal(denied.code, 'write-scope-conflict')
   assert.match(denied.detail, /孤儿锁/u, `要点明这是孤儿锁：${denied.detail}`)
   assert.match(denied.detail, /sdo_task action=release id=TASK-111/u, '要给可执行的释放命令')

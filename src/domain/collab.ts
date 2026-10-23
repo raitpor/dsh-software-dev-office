@@ -12,7 +12,7 @@ import type { Journal } from '../infra/journal.js'
 import { textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
 import type { EvidenceItem, MitigatesWaiver, TaskCard } from '../types.js'
-import { listTasks, writeTask } from './plan.js'
+import { listTasks, scopeIntersections, writeTask } from './plan.js'
 import { orphanLocks } from './dispatchHealth.js'
 import { normalizeScopePath, scopeOverlaps } from './scopePaths.js'
 
@@ -445,34 +445,41 @@ export function claim(store: SdoStore, journal: Journal, input: ClaimInput): Cla
       task,
     )
   }
-  // 写范围互斥的运行时兜底：同一时刻只有一张卡能写同一范围
-  // **ADR-009 / DEF-057**：相交判定收敛到**唯一出口**（归一 + 目录边界前缀）。
-  // 旧实现是双向 `startsWith`：`src/a.ts` × `src/a.tsx` 会被判互斥（文件名前缀假阳性），
-  // 而"目录 × 其下文件"那种**真冲突**必须继续拦住。
-  const clash = listTasks(store).find(
-    (other) =>
-      other.id !== task.id &&
-      other.status === 'in-progress' &&
-      scopeOverlaps(task.writeScopes, other.writeScopes).length > 0,
-  )
-  if (clash !== undefined) {
-    // **DEF-067 落点二**：拒签回执**点名重叠的那个路径**（旧实现倒出对方**全量**写范围，
-    // 读者还得自己算哪一条撞上了），并给出三条出路。
-    const overlap = scopeOverlaps(task.writeScopes, clash.writeScopes)
+  // 写范围相交的运行时兜底（`REQ-066` / `ADR-025`）。
+  //
+  // 修前（`DEF-067` 时代）：相交**一律拒签**。`ADR-025` 之后口径变了：相交默认**照派**，
+  // 两边各自在**自己的工作副本**（主仓库的 git worktree）里写，完成时靠**真三路合并**接回主干
+  // ——「同一文件的不同区域」git 本来就能干净合并，用"文件级锁"把它拦下反而是缺陷。
+  //
+  // 两个面**必须同时改**（只改派发面 ⇒ 派得出来、认领不了 = 白烧一轮会话，正是 `DEF-067` 的病）：
+  // 判定走**唯一出口** `scopeIntersections` / `scopeSerialKindOf`，与派发面 `scopeHeldTasks`
+  // 是**同一份实现**；显式声明过先后的（`blockedBy` 任一方向、含 `'*'`）不算意外相交。
+  //
+  // **认领面只拦「声明了独占窗口」这一支**（`exclusive-window`）—— 它出自**声明**，不是猜测，
+  // 拦下没有假阳性（两边都明说要独占同一段时间，同时开工正是 `DEF-127` 那类假红的来源）。
+  // `unknown-scope`（写范围为空/缺失）**不在这里拦**：任务书 §2.1.4 把那条 fail-closed 写在
+  // **派发**面上（"这两类情形下**不派发**"），因为能在那一层**补救**（补写范围 / 拆卡）；
+  // 而在认领面拦它只会把「本来就不该由派发流程处理的卡」（驾驶舱 inline / 人工直接开工、
+  // 以及 `writeScopes` 为空的文书/复核卡）一起钉死 —— 那是认领面的假阳性，且修不了计划缺陷。
+  const serial = scopeIntersections(listTasks(store)).find((row) => row.task.id === task.id && row.kind === 'exclusive-window')
+  if (serial !== undefined) {
+    const clash = serial.holder
     // **DEF-053 落点②**：挡路的若是**孤儿锁**（卡在 in-progress，而拥有它的子会话早已结算），
     // 就地说明并给出**唯一安全出路** —— 不再让执行者自己排查"拦我的到底是不是活会话"。
     const orphan = orphanLocks(listTasks(store), journal.read().events).find((row) => row.taskId === clash.id)
+    // **DEF-067 落点二**：拒签回执**点名重叠的那个路径**（旧实现倒出对方**全量**写范围，
+    // 读者还得自己算哪一条撞上了），并给出三条出路。
     const detail = orphan === undefined
       ? fmt('uiCollab.kScopeConflict', {
           p1: clash.id,
           p2: clash.owner ?? t('uiCollab.unblockNoOwner'),
-          p3: overlap.join(t('uiCollab.kListSep')),
+          p3: serial.overlap.join(t('uiCollab.kListSep')),
           p4: clash.status,
         })
       : fmt('uiCollab.kScopeConflictOrphan', {
           p1: clash.id,
           p2: clash.owner ?? t('uiCollab.unblockNoOwner'),
-          p3: overlap.join(t('uiCollab.kListSep')),
+          p3: serial.overlap.join(t('uiCollab.kListSep')),
           p4: orphan.reason === '' ? t('uiCollab.kOrphanReasonUnknown') : orphan.reason,
           p5: orphan.command,
           p6: String(orphan.atSeq),
