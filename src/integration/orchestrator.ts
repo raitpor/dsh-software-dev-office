@@ -11,6 +11,9 @@
 import { sdoAllowList, toolAllowList, toolDenyList } from '../domain/roles.js'
 import type { TaskCard } from '../types.js'
 import { scopePathWithin } from '../domain/scopePaths.js'
+// **`C-52` 的名字回退口径**（`ADR-022` 裁决③ 连带 / 口径 A1）：按**角色前缀**比较 owner 名 ——
+// 与认领期/收口期的 owner→角色口径**同一份实现**（`claimCoverage.ts`），不在这里另写一套。
+import { ownerRolesEqual } from '../domain/claimCoverage.js'
 
 /**
  * 取某角色的**声明工具面**：优先随包掩码表，读不到就退回内置兜底（绝不静默给全量工具）。
@@ -336,7 +339,16 @@ export function independenceAudit(
       if (!claimed.includes(reviewSession)) continue
     } else {
       const author = owners.get(review.taskId) ?? review.author
-      if (review.reviewer !== author) continue
+      /**
+       * **`C-52` 的名字回退口径（`ADR-022` 裁决③ 连带 / 口径 A1 / `TASK-172`）**：
+       * 按**角色前缀**比较 —— `developer-20af1d60` 与 `developer-yyyy` 是同一角色 ⇒ 判自评。
+       *
+       * 修前是逐字比较 `review.reviewer === author`。owner 改成「角色-8位uuid」之后，同一个人
+       * 换个会话就是另一个名字 ⇒ 历史/存量评审会被判成"独立"（**该红的反而不红**，方向是危险的那一边）。
+       * 反过来"同角色不同会话"在这条**材料不全**的回退路上也判自评 —— 保守方向是对的
+       * （材料齐时先走上面的 uuid 分支，名字根本不参与）。
+       */
+      if (!ownerRolesEqual(review.reviewer, author ?? '')) continue
     }
     const who = selfBySession
       ? `${review.id} 的评审者与实现者是**同一个会话**（${reviewSession}；显示名 ${review.reviewer}，卡 ${review.taskId}）`

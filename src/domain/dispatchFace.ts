@@ -10,6 +10,7 @@
  */
 import { existsSync } from 'node:fs'
 
+import type { Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 
 export const CHILD_FACE_SEGMENTS = ['evidence', 'child-tools.jsonl'] as const
@@ -62,6 +63,90 @@ export function recordChildFace(store: SdoStore, entry: Omit<ChildFaceEntry, 'at
   const full: ChildFaceEntry = { ...entry, at: entry.at ?? new Date().toISOString() }
   store.appendLine([...CHILD_FACE_SEGMENTS], JSON.stringify(full) + '\n')
   return full
+}
+
+/* —————————————————————— 观测**落事件**（DEF-165 ① / TASK-172） —————————————————————— */
+
+/**
+ * **一次观测在台账里的形状**（`dispatch/observed` 的读侧投影）。
+ *
+ * 为什么除了文件还要一条事件：R-1「该子会话被**观测到**手里有工具才允许复用」的证据如果只活在
+ * `evidence/child-tools.jsonl` 里，那它就是**台账外的一份文件** —— 数不出"哪一次派发被观测到什么面"，
+ * 也无法在回执里**引用**（`DEF-165` ① 的真机读数：journal 里含 `observ` 的事件类型计数＝0，
+ * 于是复用判据对每个新子会话都只能说"没有证据"，每张卡都新起）。
+ *
+ * **字段面（先定窄、留扩展位）**：`childSessionId` / `toolCount` / `deniedOutsideCount` / `observedAt`
+ * 四件是判定与回执共用的最小集；扩展只许**新增可选字段**，不许改这四个的语义（`M213-09` 的教训）。
+ */
+export interface ChildObservation {
+  childSessionId: string
+  /** **被公告的工具数**（`request/header` 里那份清单的长度；`tool/call` 观测记 0） */
+  toolCount: number
+  /** **掩码外的调用次数**（`tool/call` 判成越界时累加；观测面事件记 0） */
+  deniedOutsideCount: number
+  observedAt: string
+  /** 该子会话**最近一条**观测事件的序号 —— 回执引用"依据哪条观测"就用它 */
+  seq: number
+}
+
+/**
+ * 记一条观测**事件**（append-only）。与 {@link recordChildFace} 是同一件事的两个落点：
+ * 文件那份是**证据原件**（`evidence/child-tools.jsonl`，历史读数与 `faceMismatches` 还读它），
+ * 事件这份是**可引用、可统计**的台账记录。两者都由 `office.noteChildFace` 一处触发（口径唯一）。
+ */
+export function recordChildObserved(
+  journal: Journal,
+  entry: { childSessionId: string; toolCount: number; deniedOutsideCount: number; observedAt?: string | undefined },
+): ChildObservation {
+  const observedAt = entry.observedAt ?? new Date().toISOString()
+  const event = journal.append('dispatch/observed', {
+    childSessionId: entry.childSessionId,
+    toolCount: entry.toolCount,
+    deniedOutsideCount: entry.deniedOutsideCount,
+    observedAt,
+  })
+  return {
+    childSessionId: entry.childSessionId,
+    toolCount: entry.toolCount,
+    deniedOutsideCount: entry.deniedOutsideCount,
+    observedAt,
+    seq: event.seq,
+  }
+}
+
+/**
+ * 读回**全部**观测事件（按子会话折叠：`toolCount` 取**最近一条带公告面**的，
+ * `deniedOutsideCount` **累加** —— 与 `readChildFaces` 的合并口径逐字相同，读侧不会两套口径）。
+ */
+export function readChildObservations(journal: Journal): ChildObservation[] {
+  const folded = new Map<string, ChildObservation>()
+  for (const event of journal.read().events) {
+    if (event.type !== 'dispatch/observed') continue
+    const childSessionId = textOfValue(event.data.childSessionId)
+    if (childSessionId === '') continue
+    const toolCount = Number(event.data.toolCount ?? 0)
+    const deniedOutsideCount = Number(event.data.deniedOutsideCount ?? 0)
+    const observedAt = textOfValue(event.data.observedAt) || event.at
+    const previous = folded.get(childSessionId)
+    folded.set(childSessionId, {
+      childSessionId,
+      toolCount: Number.isFinite(toolCount) && toolCount > 0 ? toolCount : (previous?.toolCount ?? 0),
+      deniedOutsideCount: (previous?.deniedOutsideCount ?? 0) + (Number.isFinite(deniedOutsideCount) ? Math.max(0, deniedOutsideCount) : 0),
+      observedAt,
+      seq: event.seq,
+    })
+  }
+  return [...folded.values()]
+}
+
+/** 某个子会话的观测（没有 ⇒ `undefined` —— **没有证据**与"零工具"是两件事，别合并）。 */
+export function observationOf(journal: Journal, childSessionId: string): ChildObservation | undefined {
+  return readChildObservations(journal).find((row) => row.childSessionId === childSessionId)
+}
+
+/** 事件字段的字符串投影（结构容错：非字符串/空串一律当没有）。 */
+function textOfValue(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : ''
 }
 
 /** 读回观测（坏行跳过并计数；同一子会话保留**最后**一条）。 */

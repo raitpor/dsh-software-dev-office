@@ -77,7 +77,7 @@ import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domai
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan  } from './domain/plan.js'
+import { closeIteration, classifyNonDispatchable, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan  } from './domain/plan.js'
 import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
 import type { DecomposeInput, DirtyRead, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
@@ -108,7 +108,15 @@ import { isDesignDocTruthPath } from './types.js'
 import type { Release } from './types.js'
 // **`TASK-171`（`DEF-162` 第①条）**：认领面的角色判定与合法形态文案 —— 与收口判据 `C-76` 共用**同一份**
 // owner→角色口径（`claimCoverage.ts` 的 `ownerRoleOf`）：两份口径分叉正是 `DEF-044` 的教训。
-import { OWNER_ROLE_FORMS, ownerClaimVerdict } from './domain/claimCoverage.js'
+import {
+  COCKPIT_OWNER,
+  OWNER_ROLE_FORMS,
+  OWNER_SESSION_LENGTH,
+  ownerClaimVerdict,
+  ownerOf,
+  ownerRoleOf,
+  ownerSessionCollisions,
+} from './domain/claimCoverage.js'
 // **`TASK-171`（`TASK-176` 交接）**：发布计划层的写入口 —— 落盘与顺延留痕都必须在真源留痕
 // （`release/written` / `release/deferred`），手写 YAML 的 `frozenBy: human` 核不到任何东西。
 import { HUMAN_APPROVER, currentRelease, deferredIdsOf, listReleases, packageVersionOf, writeRelease } from './domain/release.js'
@@ -173,6 +181,15 @@ import { Journal } from './infra/journal.js'
 import { nextId } from './infra/ids.js'
 import { renderSrs } from './infra/render.js'
 import { readDirtyWorktree } from './infra/git.js'
+import {
+  commitWorktree,
+  createWorktree as createGitWorktree,
+  listWorktrees,
+  mergeWorktree as mergeGitWorktree,
+  pendingWorkOf,
+  removeWorktree as removeGitWorktree,
+  repoTopOf,
+} from './integration/worktree.js'
 import { SdoStore } from './infra/store.js'
 import type {
   Adr,
@@ -211,7 +228,13 @@ import type { SignatureState } from './domain/signature.js'
 import { methodDocStatus } from './domain/methodDocs.js'
 import type { MethodDocStatus } from './domain/methodDocs.js'
 import { recordWorkspaceChanges, unresolvedSeqs, readWorkspaceChanges} from './domain/workspaceChanges.js'
-import { readChildFaces, recordChildFace } from './domain/dispatchFace.js'
+import {
+  observationOf,
+  readChildFaces,
+  readChildObservations,
+  recordChildFace,
+  recordChildObserved,
+} from './domain/dispatchFace.js'
 import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
 import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
@@ -3566,9 +3589,79 @@ export class SoftwareDevOffice {
         return { ok: false, code: 'not-claimable', detail, current: card }
       }
     }
-    const outcome = claim(store, journal, sessionId === undefined ? input : { ...input, sessionId })
+    /**
+     * **owner 的新形态**（`ADR-022` 裁决③ / `DEF-133` / `DEF-165` ②）：有会话 uuid 就**现算**
+     * `<角色>-<uuid 前 8 位>`，不再采信调用方自报的槽位名。
+     *
+     * 为什么在这里算而不是在 `claim()` 里：`claim()` 是**通用**入口（不知道调用方是谁的会话），
+     * 而"身份"的唯一可靠来源是宿主给的 `call.sessionId` —— 它在这一层。三类**不折算**：
+     *   · 驾驶舱 / 流程官（`cockpit`）—— `inline` 后端就是它，`ADR-022` 明写保留；
+     *   · 认不出角色的 owner —— 不猜（认不出人不该变成干不了活，收口 `C-76` 再点名）；
+     *   · 拿不到会话 id（历史调用面 / 测试夹具）—— 保持原样，**不改写历史**（`ADR-022`：老卡不迁移）。
+     */
+    const declaredOwner = textOf(input.owner).trim()
+    const claimedRole = ownerRoleOf(declaredOwner)
+    const sessionText = textOf(sessionId).trim()
+    const canonicalOwner = card === undefined
+      || sessionText.length < OWNER_SESSION_LENGTH
+      || claimedRole === undefined
+      || claimedRole === COCKPIT_OWNER
+      || claimedRole === 'office'
+      ? declaredOwner
+      : ownerOf(textOf(card.role), sessionText)
+    /**
+     * **一个 owner 串只对应一个会话**（`DEF-165` ② 的判据面）。
+     *
+     * 反例格（真机）：`subagent:developer:1` 同时指过 `e4d9fbaf` 与 `ebcd8a06` —— 那时投递会**同时唤醒
+     * 两个会话**。新形态由会话 uuid 现算，正常不会撞；所以这里判的是**撞了就不许落账**（8 位前缀
+     * 真撞上、或调用方手塞了一个已被别的会话用过的串）。判据只认 `task/claimed` 事件（工具写的，改不动）。
+     */
+    if (canonicalOwner !== '' && sessionText !== '') {
+      const collisions = this.ownerCollisions(call).filter((row) => row.owner === canonicalOwner)
+      const clash = collisions.find((row) => row.sessions.some((id) => id !== sessionText))
+      if (clash !== undefined) {
+        const detail = fmt('uiCollab.kOwnerCollision', {
+          p1: canonicalOwner,
+          p2: sessionText,
+          p3: clash.sessions.filter((id) => id !== sessionText).join(' / '),
+          p4: clash.taskIds.join(' ') || (card?.id ?? input.taskId),
+        })
+        journal.append('task/claim-rejected', {
+          id: input.taskId,
+          by: canonicalOwner,
+          code: 'not-claimable',
+          cause: 'owner-collision',
+          detail,
+          sessionId: sessionText,
+        })
+        this.roleCacheVersion += 1
+        return { ok: false, code: 'not-claimable', detail, ...(card === undefined ? {} : { current: card }) }
+      }
+    }
+    const claimInput = { ...input, ...(canonicalOwner === declaredOwner ? {} : { owner: canonicalOwner }) }
+    const outcome = claim(store, journal, sessionId === undefined ? claimInput : { ...claimInput, sessionId })
     this.roleCacheVersion += 1
     return outcome
+  }
+
+  /**
+   * **同一个 owner 串被几个会话用过**（`DEF-165` ② / `DEF-133` 的可定位性读数）。
+   *
+   * 只读 `task/claimed`（`owner` 与 `sessionId` 都是工具写的）；一条 owner 对应一个会话时不出行 ——
+   * 所以"有行"本身就是缺陷形态：那个 owner 拿来投递会指向不确定的人。
+   * 现盘的历史记录（`subagent:developer:1` 指过两个会话）就靠这一行**可见**，而不是靠记忆。
+   */
+  ownerCollisions(call: OfficeCall): { owner: string; sessions: string[]; taskIds: string[] }[] {
+    const { journal } = this.contextFor(call)
+    return ownerSessionCollisions(
+      journal.read().events
+        .filter((event) => event.type === 'task/claimed')
+        .map((event) => ({
+          owner: textOf(event.data['owner']),
+          sessionId: textOf(event.data['sessionId']),
+          taskId: textOf(event.data['id']),
+        })),
+    )
   }
 
   /**
@@ -3841,12 +3934,21 @@ export class SoftwareDevOffice {
      * 不记它，「指令投出去没有」就无从查证（旧实现直接丢弃返回值）。
      */
     messageReceipt?: string | undefined
+    /**
+     * **这次派发的 owner 身份**（`ADR-022` 裁决③ = `<角色>-<会话 uuid 前 8 位>`）。
+     *
+     * 为什么在**派发之后**才写：派发之前拿不到子会话 id（它就是派发的产物），所以
+     * `dispatch/decided.owner` 记的是**声明的角色面**，这里记的是**可定位的身份**。
+     * 认领时 `ownerOf(卡的角色, 会话 id)` 现算，两者一致 ⇒ 一个 owner 串只对应一个会话。
+     */
+    owner?: string | undefined
   }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/started', {
       task: input.taskId,
       provider: input.provider,
       childSessionId: input.childSessionId,
+      ...(input.owner === undefined ? {} : { owner: input.owner }),
       ...(input.parentSessionId === undefined ? {} : { parentSessionId: input.parentSessionId }),
       tools: input.tools,
       ...(input.denyTools === undefined ? {} : { denyTools: input.denyTools }),
@@ -3862,6 +3964,169 @@ export class SoftwareDevOffice {
     // **§2 第 1 条**：派发（尤其**复用**同一子会话换角色）会改变这个会话的血缘角色 ⇒ 让角色缓存立刻失效，
     // 否则新掩码最多滞后一个 TTL（旧实现只认领/回报时 +1）。
     this.roleCacheVersion += 1
+  }
+
+  /* ———————————— 工作副本（主仓库 worktree）与合并：`REQ-066` / `AC-304` / `AC-305` ———————————— */
+
+  /**
+   * 仓库 top level（**副本建在它与它的索引之外**）。不是 git 仓库 ⇒ `undefined`：
+   * 判不了就不做副本（**不阻断派发** —— 副本是隔离手段，不是派发的前置承诺）。
+   */
+  private repoTopFor(call: OfficeCall): string | undefined {
+    const root = this.workspaceRootFor(call) ?? call.cwd
+    if (root === undefined || root === '') return undefined
+    const top = repoTopOf(root)
+    return top === '' ? undefined : top
+  }
+
+  /**
+   * **这张卡的工作副本**（`worktree/created` 里记的现场；被 `worktree/removed` 抹掉后为 `undefined`）。
+   * 读的是**追加式事件**而不是目录存在性：目录在不在是派生事实，台账才是真源。
+   */
+  worktreeFor(call: OfficeCall, taskId: string): { path: string; branch: string; base: string } | undefined {
+    const { journal } = this.contextFor(call)
+    const events = journal.read().events.filter(
+      (event) => (event.type === 'worktree/created' || event.type === 'worktree/removed')
+        && String(event.data['task'] ?? '') === taskId,
+    )
+    const last = events.at(-1)
+    if (last === undefined || last.type === 'worktree/removed') return undefined
+    const path = String(last.data['path'] ?? '')
+    if (path === '') return undefined
+    return { path, branch: String(last.data['branch'] ?? ''), base: String(last.data['base'] ?? '') }
+  }
+
+  /**
+   * **派发时建工作副本**（`AC-304` 的前半：子代理在**自己的副本**里写，不写别人的树）。
+   *
+   * 三种结果如实回报：`created` / `exists`（上一轮建的还在，不重复建）/ `skipped`
+   * （不是 git 仓库、或 `git worktree add` 失败 —— 原因带出去，**不假装有副本**）。
+   */
+  prepareWorktree(call: OfficeCall, taskId: string): {
+    state: 'created' | 'exists' | 'skipped'
+    path: string
+    branch: string
+    base: string
+    detail: string
+  } {
+    const existing = this.worktreeFor(call, taskId)
+    if (existing !== undefined) return { state: 'exists', ...existing, detail: '' }
+    const top = this.repoTopFor(call)
+    if (top === undefined) return { state: 'skipped', path: '', branch: '', base: '', detail: 'not-a-repo' }
+    const { journal } = this.contextFor(call)
+    const created = createGitWorktree({ repoRoot: top, taskId })
+    if (!created.ok) {
+      return { state: 'skipped', path: '', branch: '', base: '', detail: `${created.code}: ${created.detail}` }
+    }
+    journal.append('worktree/created', {
+      task: taskId,
+      path: created.ref.path,
+      branch: created.ref.branch,
+      base: created.ref.base,
+      head: created.ref.head,
+    })
+    return { state: 'created', ...created.ref, detail: '' }
+  }
+
+  /**
+   * **完成时：把副本里的工作提交、合并回主干、清场**（`AC-304` 的后半 / `AC-305`）。
+   *
+   * 四态（**不许混**，混了就没法给人可执行的下一步）：
+   *   · `none` —— 这张卡没有副本（非 git 仓库 / 已清场）⇒ 什么都不做（旧路径照旧）；
+   *   · `merged` —— 提交 + 合并完成（`changedFiles` 就是回执要报的那份清单），**随后清场**；
+   *   · `conflict` —— 两边真改了同一处：**主工作树已还原、副本现场保留**，`conflictFiles` 点名；
+   *     调用方**不得**把这样的卡当"完成"（合并被阻断，见 `AC-305` 第三档）；
+   *   · `failed` —— 压根没开始合并（主工作树脏 / 分支不在 / git 不可用），原因带出去。
+   *
+   * **不自动解决冲突**：本方法不传 `-X ours/theirs`、不跳过、不 `--continue`（见 `worktree.ts`）。
+   */
+  finishWorktree(call: OfficeCall, input: { taskId: string; message?: string | undefined }):
+    | { state: 'none' }
+    | { state: 'merged'; path: string; branch: string; base: string; changedFiles: string[]; commit: string; committed: boolean }
+    | { state: 'conflict'; path: string; branch: string; conflictFiles: string[] }
+    | { state: 'failed'; path: string; detail: string } {
+    const site = this.worktreeFor(call, input.taskId)
+    if (site === undefined) return { state: 'none' }
+    const top = this.repoTopFor(call)
+    if (top === undefined) return { state: 'failed', path: site.path, detail: 'not-a-repo' }
+    const { journal } = this.contextFor(call)
+    // ① 副本里**未提交**的工作必须先收进分支（`git merge` 只搬提交 —— 不提交就是"零变更"假绿）
+    const commit = commitWorktree({ path: site.path, ...(input.message === undefined ? {} : { message: input.message }) })
+    if (!commit.ok) return { state: 'failed', path: site.path, detail: `${commit.code}: ${commit.detail}` }
+    // ② 真三路合并（`worktree.ts` 里没有任何 `-X ours/theirs`）
+    const merged = mergeGitWorktree({
+      repoRoot: top,
+      taskId: input.taskId,
+      ...(input.message === undefined ? {} : { message: input.message }),
+    })
+    if (merged.ok) {
+      journal.append('worktree/merged', {
+        task: input.taskId,
+        path: site.path,
+        branch: merged.branch,
+        base: merged.base,
+        changedFiles: merged.changedFiles,
+        commit: merged.commit,
+        committed: commit.committed,
+      })
+      // ③ 合并成功 ⇒ 清场（`AC-304` 的"建 → 写 → 合并 → 移除"闭环）
+      const removed = removeGitWorktree({ repoRoot: top, taskId: input.taskId, base: merged.base })
+      if (removed.ok) journal.append('worktree/removed', { task: input.taskId, path: removed.path, branch: site.branch, reason: 'merged' })
+      return {
+        state: 'merged',
+        path: site.path,
+        branch: merged.branch,
+        base: merged.base,
+        changedFiles: merged.changedFiles,
+        commit: merged.commit,
+        committed: commit.committed,
+      }
+    }
+    if (merged.kind === 'conflict') {
+      journal.append('worktree/conflict', {
+        task: input.taskId,
+        path: site.path,
+        branch: merged.branch,
+        conflictFiles: merged.conflictFiles,
+      })
+      return { state: 'conflict', path: site.path, branch: merged.branch, conflictFiles: merged.conflictFiles }
+    }
+    return { state: 'failed', path: site.path, detail: merged.detail }
+  }
+
+  /**
+   * **清场**（合并成功之后，或卡被 `drop`）：`git worktree remove` + 删分支，并留 `worktree/removed`。
+   *
+   * `force: true` 给 `drop` 那一路（`AC-305` 的口径：冲突现场**不许**被默认行为抹掉 ——
+   * 只有显式的强制清场才可能删掉未合并的副本）。
+   */
+  dropWorktree(call: OfficeCall, taskId: string, force = false): { state: 'removed' | 'kept' | 'none'; detail: string } {
+    const site = this.worktreeFor(call, taskId)
+    if (site === undefined) return { state: 'none', detail: '' }
+    const top = this.repoTopFor(call)
+    if (top === undefined) return { state: 'kept', detail: 'not-a-repo' }
+    const removed = removeGitWorktree({ repoRoot: top, taskId, force })
+    if (!removed.ok) return { state: 'kept', detail: `${removed.code}: ${removed.detail}` }
+    this.contextFor(call).journal.append('worktree/removed', {
+      task: taskId,
+      path: removed.path,
+      branch: site.branch,
+      reason: force ? 'dropped' : 'merged',
+    })
+    return { state: 'removed', detail: removed.detail }
+  }
+
+  /** 副本里**还没提交**的工作（诊断面：完成时先看它，别让合并变成"零变更"）。 */
+  worktreePending(call: OfficeCall, taskId: string): { ok: boolean; files: string[]; detail: string } {
+    const site = this.worktreeFor(call, taskId)
+    if (site === undefined) return { ok: true, files: [], detail: 'none' }
+    return pendingWorkOf(site.path)
+  }
+
+  /** 现盘**全部**副本（诊断/守卫用：`git worktree list` 的投影，含主工作树）。 */
+  worktrees(call: OfficeCall): ReturnType<typeof listWorktrees> {
+    const top = this.repoTopFor(call)
+    return top === undefined ? [] : listWorktrees(top)
   }
 
   /**
@@ -3932,6 +4197,14 @@ export class SoftwareDevOffice {
       faces = undefined // 读不到观测 ⇒ 一律"没有证据"（下面按没有观测处理）
     }
     const byId = new Map((faces ?? []).map((face) => [face.childSessionId, face]))
+    // **`DEF-165` ①（`TASK-172`）**：**观测事件**是 R-1 的**第一证据**（可引用、带序号）；
+    // `child-tools.jsonl` 那份退为**兼容面**（本卡之前的历史会话只有文件、没有事件）。
+    let observed = new Map<string, ReturnType<typeof readChildObservations>[number]>()
+    try {
+      observed = new Map(readChildObservations(this.contextFor(call).journal).map((row) => [row.childSessionId, row]))
+    } catch {
+      observed = new Map()
+    }
     // **DEF-021**：会话 ↔ 在飞卡 的唯一出口（同一份真源 `task/claimed` × 卡状态现算）
     const { store, journal } = this.contextFor(call)
     const heldBySession = new Map(claimsBySession(store, journal).map((claim) => [claim.sessionId, claim.cardId]))
@@ -3940,8 +4213,11 @@ export class SoftwareDevOffice {
       const held = heldBySession.get(child.childSessionId)
       if (held !== undefined) return fmt('uiPool.kReuseHoldsCard', { p1: held })
       const face = byId.get(child.childSessionId)
-      if (face === undefined) return '没有该子会话的工具面观测（无法确认它手里有工具）→ 强制新起'
-      if (face.tools.length === 0) return '该会话创建时拿到 0 个工具（历史零工具派发）→ 强制新起'
+      const event = observed.get(child.childSessionId)
+      if (event === undefined && face === undefined) return '没有该子会话的工具面观测（无法确认它手里有工具）→ 强制新起'
+      // 两条证据任一为"零工具"就判不可复用；工具数取两者里**更宽**的那一份（证据不互相遮掩）
+      const toolCount = Math.max(event?.toolCount ?? 0, face?.tools.length ?? 0)
+      if (toolCount === 0) return '该会话创建时拿到 0 个工具（历史零工具派发）→ 强制新起'
       return undefined
     }
   }
@@ -4024,13 +4300,18 @@ export class SoftwareDevOffice {
     const fairReady = [...snapshot.ready].sort((a, b) =>
       (lastDispatched.get(a.id) ?? '').localeCompare(lastDispatched.get(b.id) ?? '') || a.id.localeCompare(b.id),
     )
-    const heldByScope = scopeHeldTasks(tasks).map((row) => ({
+    // **`REQ-066` / `ADR-025` · `AC-303`（`TASK-172`）**：相交**默认照派**、只点名；只有两类串行。
+    // 所以这里要**两份读数**：`scopeIntersections` 全量（回执点名用）与 `serialScopeIds`（真挡用）。
+    // 修前只有一份 —— 于是"挡住"与"点名"被绑死：想不挡就只能丢掉可见性（m32 那类"约束不存在"）。
+    const intersections = scopeIntersections(tasks)
+    const heldByScope = intersections.map((row) => ({
       taskId: row.task.id,
       holderId: row.holder.id,
       holderOwner: row.holder.owner ?? '',
       overlap: row.overlap,
+      kind: row.kind,
     }))
-    const heldByScopeIds = new Set(heldByScope.map((row) => row.taskId))
+    const serialScopeIds = new Set(intersections.filter((row) => row.kind !== 'merge').map((row) => row.task.id))
     // **DEF-080（第七批 §3.1 F1/F2）—— 真拦**：写范围压在**未提交的被跟踪改动**上的卡**本轮不派**。
     // 为什么必须在这一层拦：这一层（`admission`）是**两条派发路径共用的候选筛选**（`plan.dispatch`），
     // 而上一批只把 `dirty` 接进 `describeNonDispatchable` ⇒ 它只出现在 `why=true` / 队列满 / 无卡三支，
@@ -4055,11 +4336,11 @@ export class SoftwareDevOffice {
     }))
     const dirtyScopeIds = new Set(dirtyByScope.map((row) => row.taskId))
     const admission = admitDispatch({
-      // **DEF-067 落点一（ADR-009 的不变量「派发可认领」）**：写范围与**任一在飞卡**相交的卡**不派**
-      // —— 旧实现这里只排"已在飞"与 `blockedBy`，于是派出注定认领失败的卡
-      //（真机：三张核实卡写同一个 `.sdo/reviews/`，两张白烧一轮会话）。判定走唯一出口。
+      // **`REQ-066` 收窄（`ADR-025`）**：只有**真需要串行**的两类才拦（任一方声明独占窗口 /
+      // 写范围无法判定 fail-closed）；其余相交只点名、照派。`DEF-067` 原来的"相交即不派"已按用户
+      // 2026-10-22 的裁定收窄 —— 拦截本身也会让合法卡白等（`AC-303` 的反向守卫：拦住 `merge` 也红）。
       ready: fairReady.filter((task) =>
-        !inFlight.has(task.id) && !heldByScopeIds.has(task.id) && !dirtyScopeIds.has(task.id)),
+        !inFlight.has(task.id) && !serialScopeIds.has(task.id) && !dirtyScopeIds.has(task.id)),
       pools: snapshot.pools,
       globalRoom: Math.max(0, this.settings.maxParallelDispatch - inProgress),
       // **R-5 症状 D**：全局预算拒收回执要报**真实**的"进行中"张数（旧实现硬编码 0）
@@ -4448,15 +4729,50 @@ export class SoftwareDevOffice {
     }
   }
 
-  /** 记一条"子代理工具面观测"（评审 §4.2：把"是否收窄"变成可核对的事实）。 */
+  /**
+   * 记一条"子代理工具面观测"（评审 §4.2：把"是否收窄"变成可核对的事实）。
+   *
+   * **`DEF-165` ①（`TASK-172`）：一次观测要落**两个**地方** ——
+   *   · `evidence/child-tools.jsonl`：**证据原件**（历史读数、`faceMismatches` 还读它）；
+   *   · `dispatch/observed` **事件**：可引用、可统计的台账记录。
+   * 修前只有前者 ⇒ journal 里含 `observ` 的事件计数为 0 ⇒ 复用判据 R-1「该子会话被**观测到**手里有工具」
+   * 对**新起的**子会话**结构性无法满足**（它不可能有历史证据），于是每张卡都新起、复用形同不存在。
+   * 两个落点由**这一处**触发（口径唯一）；写失败一律 fail-open（观测是记账，不该挡住子代理干活）。
+   */
   noteChildFace(call: OfficeCall, input: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }): void {
-    const { store } = this.contextFor(call)
+    const { store, journal } = this.contextFor(call)
     recordChildFace(store, input)
+    try {
+      recordChildObserved(journal, {
+        childSessionId: input.childSessionId,
+        // **被公告的工具数**（`request/header` 那份清单的长度；`tool/call` 观测记 0）
+        toolCount: input.tools.length,
+        // **掩码外的调用次数**（观测面事件记 0）—— 与 `readChildFaces` 的合并口径同量纲
+        deniedOutsideCount: input.callCount ?? input.calls?.length ?? 0,
+      })
+    } catch {
+      /* fail-open：观测落事件失败不该挡住任何东西（文件那份仍在） */
+    }
   }
 
   /** 读回观测（供回执里如实展示）。 */
   childFaces(call: OfficeCall): ChildFaceEntry[] {
     return readChildFaces(this.storeFor(this.requireWorkspace(call))).faces
+  }
+
+  /** **观测事件**的读侧投影（`dispatch/observed`；按子会话折叠，见 `readChildObservations`）。 */
+  childObservations(call: OfficeCall): ReturnType<typeof readChildObservations> {
+    return readChildObservations(this.contextFor(call).journal)
+  }
+
+  /**
+   * **复用的依据**（`DEF-165` ① 的验收面）：该子会话最近一条 `dispatch/observed`。
+   *
+   * 回执照这个引用"依据哪条观测"（事件序号 + 公告面工具数 + 掩码外调用次数 + 观测时刻）——
+   * 没有它，回执里的"复用"就只是一句声明（正是这条缺陷的成因）。
+   */
+  reuseEvidence(call: OfficeCall, childSessionId: string): ReturnType<typeof observationOf> {
+    return observationOf(this.contextFor(call).journal, childSessionId)
   }
 
   /**

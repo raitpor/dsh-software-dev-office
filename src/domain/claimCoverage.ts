@@ -402,7 +402,9 @@ export const COCKPIT_OWNER = 'cockpit'
 /**
  * owner 的**合法形态**（写进拒绝回执，让下一棒知道该写什么）：
  *
- * · `subagent:<角色>:<标识>`（真机主流形态，如 `subagent:developer:1`）；
+ * · **`<角色>-<会话uuid 前 8 位>`（新形态，如 `developer-20af1d60`）** —— `ADR-022` 裁决③：
+ *   它**可定位**（拿这 8 位能反查会话），而且**一个 owner 串只对应一个会话**（`DEF-165` ②）；
+ * · `subagent:<角色>:<标识>`（历史主流形态，如 `subagent:developer:1`）—— **读侧兼容、不迁移**；
  * · `<角色>:<标识>` / `<角色>-<标识>`（如 `developer-1`）；
  * · `cockpit`（驾驶舱）；
  * · 八个角色码之一（`tester` 等）。
@@ -410,7 +412,93 @@ export const COCKPIT_OWNER = 'cockpit'
  * 认不出的 owner（`dev-a` / `张三` / `x`…）**不猜**：认领面 fail-open 放行（认不出人不该变成干不了活），
  * 收口判据（`C-76`）再 fail-closed 点名 —— 两个面都写在这里，口径只有这一份。
  */
-export const OWNER_ROLE_FORMS = 'subagent:<role>:<id> | <role>:<id> | <role>-<id> | cockpit | <role>'
+export const OWNER_ROLE_FORMS = '<role>-<session-id 8> (new form) | subagent:<role>:<id> | <role>:<id> | <role>-<id> | cockpit | <role>'
+
+/** `ADR-022` 裁决③：owner 取会话 uuid 的**前 8 位**。 */
+export const OWNER_SESSION_LENGTH = 8
+
+/**
+ * **owner 的新形态**：`<角色>-<会话 uuid 前 8 位>`（`ADR-022` 裁决③ / `DEF-133` / `DEF-165`）。
+ *
+ * 为什么必须是**会话 id**而不是"第几个并发槽"：槽位名与 Task 绑定时，新 Task 会复用同一槽位，
+ * 于是同一个 `subagent:developer:1` 先后指向两个真会话（真机：`e4d9fbaf` 与 `ebcd8a06`），
+ * 拿它投递会**同时唤醒两个人**。会话 id 前 8 位**可反查、不可复用** ⇒ 一个 owner 串只对应一个会话。
+ */
+export function ownerOf(role: string, sessionId: string): string {
+  const code = textOf(role).trim()
+  const id = textOf(sessionId).trim()
+  return `${code}-${id.slice(0, OWNER_SESSION_LENGTH)}`
+}
+
+/** owner 的**形态**（只作读数/诊断，不参与任何判据的放宽）。 */
+export type OwnerForm = 'role-session' | 'subagent-slot' | 'role-slot' | 'cockpit' | 'bare-role' | 'unknown'
+
+/** 认 owner 的形态：`role-<8位>` 是新形态；历史三种形态照旧认得出（读侧兼容）。 */
+export function ownerFormOf(owner: string): OwnerForm {
+  const raw = textOf(owner).trim()
+  if (raw === '') return 'unknown'
+  const head = (raw.split(/[\s（(]/u)[0] ?? '').trim()
+  const segments = head.split(/[:：]/u).map((item) => item.trim()).filter((item) => item !== '')
+  if (segments[0] === 'subagent') return 'subagent-slot'
+  if (segments[0] === COCKPIT_OWNER) return 'cockpit'
+  const first = segments[0] ?? ''
+  if (isRole(first)) return 'bare-role'
+  const dash = first.indexOf('-')
+  if (dash > 0 && isRole(first.slice(0, dash))) {
+    const tail = first.slice(dash + 1)
+    if (tail === '') return 'unknown'
+    // 新形态的判据是"尾巴是可定位的短 id"（8 位；历史 `developer-1` 这类序号形态仍算 `role-slot`）
+    return /^[0-9a-f]{8}$/u.test(tail.toLowerCase()) ? 'role-session' : 'role-slot'
+  }
+  return segments.length >= 2 ? 'role-slot' : 'unknown'
+}
+
+/**
+ * **同一个 owner 串被几个会话用过**（`DEF-165` ② 的反例格 / `DEF-133` 的可定位性）。
+ *
+ * 数据源只有一处：`task/claimed` 事件（`owner` + `sessionId` 都由工具写，调用方改不动）。
+ * 返回值只含**真的被两个以上会话共用**的 owner —— 一条 owner 对应一个会话时不出行。
+ */
+export function ownerSessionCollisions(
+  claims: readonly { owner: string; sessionId?: string | undefined; taskId?: string | undefined }[],
+): { owner: string; sessions: string[]; taskIds: string[] }[] {
+  const byOwner = new Map<string, { sessions: Set<string>; taskIds: Set<string> }>()
+  for (const claim of claims) {
+    const owner = textOf(claim.owner).trim()
+    const sessionId = textOf(claim.sessionId).trim()
+    if (owner === '' || sessionId === '') continue
+    const row = byOwner.get(owner) ?? { sessions: new Set<string>(), taskIds: new Set<string>() }
+    row.sessions.add(sessionId)
+    if (textOf(claim.taskId).trim() !== '') row.taskIds.add(textOf(claim.taskId).trim())
+    byOwner.set(owner, row)
+  }
+  return [...byOwner.entries()]
+    .filter(([, row]) => row.sessions.size > 1)
+    .map(([owner, row]) => ({ owner, sessions: [...row.sessions].sort(), taskIds: [...row.taskIds].sort() }))
+}
+
+/**
+ * **两个 owner 是不是同一个角色**（`C-52` 的**名字回退**口径，`ADR-022` 裁决③ 连带项 / 口径 A1）。
+ *
+ * 病根：`C-52` 在**材料不全**（评审没记会话 uuid，或卡没有认领会话）时退回**名字比较**
+ * `review.reviewer === task.owner`。而 owner 换成新形态（`developer-20af1d60`）之后，
+ * 同一个人的评审者名与卡 owner 名**永不相等** ⇒ 历史评审会被判成"独立"（该红的反而不红了）。
+ *
+ * 口径 A1（任务书 §6）：**按角色前缀比较** —— `developer-xxxx` 与 `developer-yyyy` 视为**同一角色**
+ * （⇒ 判自评）。代价是"同角色的不同会话"在这条回退路上也判自评 —— 那正是**保守方向**：
+ * 材料不全时宁可判"不独立"，也不能因为换了个名字就放过自评。
+ *
+ * 认不出角色（`dev-a` / `张三`…）⇒ 退回**逐字比较**（`不猜`：认不出就不该替它编一个角色）。
+ */
+export function ownerRolesEqual(a: string, b: string): boolean {
+  const left = textOf(a).trim()
+  const right = textOf(b).trim()
+  if (left === right) return true
+  const leftRole = ownerRoleOf(left)
+  const rightRole = ownerRoleOf(right)
+  if (leftRole === undefined || rightRole === undefined) return false
+  return leftRole === rightRole
+}
 
 /** 从 owner 串里认出角色；认不出返回 `undefined`（**不猜**，见 {@link OWNER_ROLE_FORMS}）。 */
 export function ownerRoleOf(owner: string): Role | typeof COCKPIT_OWNER | undefined {

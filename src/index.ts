@@ -175,6 +175,7 @@ import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
+import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
 import type { MitigatesWaiver } from './types.js'
 import { sessionIdOf } from './interface/scope.js'
@@ -1069,6 +1070,27 @@ function describeCommandWriteRisks(shapes: readonly string[]): string {
   return shapes.length === 0 ? '' : shapes.join('/')
 }
 
+/**
+ * **把"工作副本里的写入"折回工作区坐标**（`REQ-066` / `AC-304`，`TASK-172`）。
+ *
+ * 副本是**同一棵树的另一个工作树**（`<仓库父目录>/.sdo-worktrees/<卡>`），而卡的写范围是
+ * **工作区相对**的声明（`src/domain/plan.ts`）。不折算 ⇒ 执行者在自己的副本里写一条**本来允许**的路径，
+ * 会被判「工作区之外 ⇒ 判不了归属 ⇒ 拒写」（`write-scope-outside-workspace`）—— 那正好废掉本批的意义。
+ *
+ * 只做**前缀剥离**（`<副本>/x` ⇒ `x`），不新增任何判定语义：判不判、判什么，仍由
+ * `evaluateWriteScope` **一处**决定（`DEF-044` 的教训：同一概念两处判据必然分叉）。
+ * 拿不到副本路径（没派发 / 不是 git 仓库）⇒ **原样**返回（行为与修前逐字相同）。
+ */
+export function rebaseWorktreeWrites(paths: readonly string[], worktreePath: string | undefined): string[] {
+  const base = String(worktreePath ?? '').replace(/\\/gu, '/').replace(/\/+$/u, '')
+  if (base === '') return [...paths]
+  return paths.map((path) => {
+    const posix = String(path ?? '').replace(/\\/gu, '/')
+    if (posix === base) return ''
+    return posix.startsWith(`${base}/`) ? posix.slice(base.length + 1) : path
+  })
+}
+
 export function apply(ctx: Context, config: SdoConfig): void {
   // **客户端半的投递锚点**（`clientHalfOnly: true`）：这一行只用于把本包带进浏览器的模块图，
   // 由 bundle patch 里那条 **profile 顶层行**（裸包名）设置。这里必须**立刻返回、什么都不注册** ——
@@ -1789,13 +1811,37 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **DEF-067 落点一**：写范围被在飞卡挡住的卡**不派**，但必须在回执里**单列一行**点名
       // （卡 id、挡路的卡与其 owner、**重叠的那个路径**）—— 否则复现 DEF-058 的误判：
       // 首屏看不到派发行就以为"没派"。（判定与两条派发路径共用 `scopeHeldTasks`，不另写一套。）
+      /**
+       * **写范围相交的两条回执线**（`REQ-066` / `AC-303`，`TASK-172`）：
+       *   · **串行**（任一方声明独占窗口 / 写范围无法判定 fail-closed）⇒ 沿用既有的「暂不可派」行；
+       *   · **照派但要可见**（默认）⇒ 新增一行点名两张卡与**具体路径**，并说清"靠合并流程处理"。
+       * 修前只有第一条线，且相交**一律**走它 ⇒ 用户 2026-10-22 的裁定（相交不等于真冲突）无法落地。
+       * 两行都从**同一份读数**（`heldByScope` 的 `kind`）渲染：拦与不拦不会各说一套。
+       */
       const heldRows = plan.heldByScope ?? []
-      const heldByScopeSection = heldRows.length === 0 ? '' : '\n' + heldRows.map((row) => fmt('uiIndex.kDispatchHeldByScopeLine', {
+      const serialRows = heldRows.filter((row) => row.kind !== 'merge')
+      const mergeRows = heldRows.filter((row) => row.kind === 'merge')
+      const serialLines = serialRows.map((row) => (row.kind === 'unknown-scope'
+        ? fmt('uiIndex.kDispatchUnknownScopeLine', {
+            p1: row.taskId,
+            p2: row.holderId,
+            p3: row.holderOwner === '' ? t('uiCollab.unblockNoOwner') : row.holderOwner,
+          })
+        : fmt('uiIndex.kDispatchHeldByScopeLine', {
+            p1: row.taskId,
+            p2: row.holderId,
+            p3: row.holderOwner === '' ? t('uiCollab.unblockNoOwner') : row.holderOwner,
+            p4: row.overlap.join(t('uiCollab.kListSep')),
+          })))
+      const mergeLines = mergeRows.map((row) => fmt('uiIndex.kDispatchScopeMergeLine', {
         p1: row.taskId,
         p2: row.holderId,
         p3: row.holderOwner === '' ? t('uiCollab.unblockNoOwner') : row.holderOwner,
         p4: row.overlap.join(t('uiCollab.kListSep')),
-      })).join('\n') + '\n'
+      }))
+      const heldByScopeSection = serialLines.length + mergeLines.length === 0
+        ? ''
+        : '\n' + [...serialLines, ...mergeLines].join('\n') + '\n'
       // **DEF-080 F1（第七批 §3.1）**：因**未提交改动**压在写范围上而**本轮不派**的卡 —— 与
       // `heldByScopeSection` 同一形状、同一位置。上一批这一类只在诊断面可见 ⇒ 派发主路径
       // （`sdo_plan action=next`）既不停卡也不提示（F1 的真机读数）。
@@ -1949,7 +1995,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // （它们已通过容量准入，只是这一轮没派）⇒ 回执里凭空消失。如实点名，并说明下次还会再挑。
       const held = plan.dispatch.slice(take)
       const out: string[] = []
-      for (const [index, entry] of picked.entries()) {
+      for (const entry of picked) {
         const task = entry.task
         // P-1：真的把请求交给宿主的 subagents 服务起一次运行；失败如实说明原因（不假装派出去了）
         // **工具面必须先按宿主注册表过滤**：宿主 `tools.restrict()` 对未注册的名字**直接抛错**
@@ -1989,7 +2035,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
         }
 
 
-        const owner = decision.backend === 'inline' ? 'cockpit' : `${decision.backend}:${task.role}:${index + 1}`
+        /**
+         * **派发时还拿不到子会话 id**（它就是这次派发的产物）⇒ 提示词里的 `owner` 只能是**声明面**：
+         * 裸角色码（`developer`，`OWNER_ROLE_FORMS` 里的合法形态）。真正的**身份**在派发成功之后
+         * 由 `ownerOf(角色, 子会话 id)` 现算（`ADR-022` 裁决③：`<角色>-<uuid 前 8 位>`），
+         * 认领时同一口径再算一次 ⇒ 一个 owner 串只对应一个会话（`DEF-165` ②）。
+         * 修前这里写的是 `backend:role:序号`（槽位名）—— 序号重号会让同一个 owner 指向两个真会话。
+         */
+        const owner = decision.backend === 'inline' ? 'cockpit' : task.role
         const request = buildDispatch({
           task,
           backend: decision.backend,
@@ -2070,9 +2123,33 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(isRole(task.role) ? { role: task.role } : {}),
             mode: outcome.mode,
             reused: outcome.reused,
+            // **`ADR-022` 裁决③ / `DEF-133`**：这次派发的**身份**（可定位：反查得到是哪个会话）
+            ...(isRole(task.role) ? { owner: ownerOf(task.role, outcome.childSessionId) } : {}),
             // **DEF-014**：复用投递的宿主回执进真源（旧实现把 `sendMessage` 的返回值丢了）
             ...(outcome.messageReceipt === undefined ? {} : { messageReceipt: outcome.messageReceipt }),
           })
+          /**
+           * **`REQ-066` / `AC-304`：派发时建工作副本**（子代理在**自己的** worktree 里写 `src`/`test`，
+           * 不写别人的树）。非 git 仓库 / `git worktree add` 失败 ⇒ `skipped` 并**如实说**（不假装有副本）。
+           * 副本路径在**主仓库之外**（`<仓库父目录>/.sdo-worktrees/<卡>`），插不进主仓库索引。
+           */
+          const worktree = office.prepareWorktree(call, task.id)
+          const worktreeLine = worktree.state === 'created'
+            ? fmt('uiIndex.kWorktreeCreated', { p1: worktree.path, p2: task.id, p3: worktree.branch, p4: worktree.base })
+            : worktree.state === 'exists'
+              ? fmt('uiIndex.kWorktreeExists', { p1: worktree.path, p2: task.id })
+              : ''
+          // **`DEF-165` ①（验收面）**：复用/不复用都要写清**依据哪条观测**
+          const reusedEvidence = outcome.reused ? office.reuseEvidence(call, outcome.childSessionId) : undefined
+          const evidenceLine = outcome.reused
+            ? fmt('uiIndex.kReuseEvidence', {
+                p1: reusedEvidence === undefined ? '?' : String(reusedEvidence.seq),
+                p2: String(reusedEvidence?.toolCount ?? 0),
+                p3: String(reusedEvidence?.deniedOutsideCount ?? 0),
+                p4: reusedEvidence?.observedAt ?? t('uiIndex.kReuseEvidenceAbsent'),
+                p5: outcome.childSessionId.slice(0, 8),
+              })
+            : fmt('uiIndex.kReuseEvidenceMissing', { p1: outcome.childSessionId.slice(0, 8), p2: task.role })
           // 复用/降级**如实写出来**：静默复用与静默降级都会让"池"变成看不见的行为
           const childRows = office.dispatchedChildren(call).filter((child) => child.childSessionId === outcome.childSessionId)
           const rounds = childRows.length
@@ -2095,6 +2172,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
                   p3: String(idleSameParentTotal),
                   p4: reuseSkipSummary,
                 }),
+            evidenceLine,
+            isRole(task.role) ? fmt('uiIndex.kDispatchOwnerLine', { p1: ownerOf(task.role, outcome.childSessionId), p2: outcome.childSessionId.slice(0, 8) }) : '',
+            worktreeLine,
             outcome.reuseFailed === undefined ? '' : fmt('uiDescribe.kReuseFailed', { p1: outcome.reuseFailed }),
             outcome.continuableFailed === undefined ? '' : fmt('uiDescribe.kContinuableFailed', { p1: outcome.continuableFailed }),
           ].filter((line) => line !== '')
@@ -2246,7 +2326,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // **`DEF-118`（第十三批 §1.2）**：已完成卡不许 drop —— 旧实现零守卫，真机把 8 张 done 卡抹成 dropped。
           const dropped = office.dropTaskChecked(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
           if (!dropped.ok) return `${dropped.detail}`
-          return describeTask(dropped.card, office.shapeNotes(call))
+          // **`AC-304`**：卡被 `drop` ⇒ 副本清场（显式作废，现场不再需要；冲突现场那一路走 `force`）
+          const droppedSite = office.dropWorktree(call, args.id, true)
+          const droppedNote = droppedSite.state === 'removed'
+            ? '\n' + fmt('uiIndex.kWorktreeRemoved', { p1: args.id, p2: droppedSite.detail })
+            : droppedSite.state === 'kept'
+              ? '\n' + fmt('uiIndex.kWorktreeKept', { p1: args.id, p2: droppedSite.detail })
+              : ''
+          return describeTask(dropped.card, office.shapeNotes(call)) + droppedNote
         }
         case 'reopen':
         case 'restore': {
@@ -2323,7 +2410,36 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // 增量 3：构造阶段才检查实现阶段方法包（阶段从投影现读，避免"测试专用参数"）
             phase: office.status(call).project?.phase,
           })
-          return result.ok ? describeTask(result.task, office.shapeNotes(call)) : describeTaskConflict(result.detail, result.current, result.code)
+          if (!result.ok) return describeTaskConflict(result.detail, result.current, result.code)
+          /**
+           * **认领回执里的两件事**（`TASK-172`）：
+           *   · **owner 的身份**（`ADR-022` 裁决③）：`<角色>-<uuid 前 8 位>`，并说明形态 ——
+           *     认领时由**本会话 uuid 现算**（不采信自报的槽位名），历史形态标注为 `slot`（读侧兼容、不迁移）；
+           *   · **工作副本在哪**（`REQ-066` / `AC-304`）：派发时建好、路径与分支在这里交给执行者，
+           *     它才知道该往哪里写（写进副本才能被合并流程接住）。
+           */
+          const claimLines: string[] = []
+          const claimedOwner = String(result.task.owner ?? '').trim()
+          if (claimedOwner !== '') {
+            claimLines.push(fmt('uiIndex.kClaimOwnerLine', { p1: claimedOwner, p2: ownerFormOf(claimedOwner) }))
+          }
+          const claimWorktree = office.worktreeFor(call, result.task.id)
+          if (claimWorktree !== undefined) {
+            claimLines.push(fmt('uiIndex.kWorktreeReady', {
+              p1: claimWorktree.path,
+              p2: claimWorktree.branch,
+              p3: claimWorktree.base,
+              p4: result.task.id,
+            }))
+          }
+          const ownerClashes = office.ownerCollisions(call)
+          if (ownerClashes.length > 0) {
+            claimLines.push(fmt('uiIndex.kOwnerCollisionEcho', {
+              p1: String(ownerClashes.length),
+              p2: ownerClashes.slice(0, 3).map((row) => `${row.owner}（${row.sessions.map((id) => id.slice(0, 8)).join(' / ')}）`).join('；'),
+            }))
+          }
+          return describeTask(result.task, office.shapeNotes(call)) + (claimLines.length === 0 ? '' : '\n' + claimLines.join('\n'))
         }
         case 'done':
         case 'block': {
@@ -2354,6 +2470,39 @@ export function apply(ctx: Context, config: SdoConfig): void {
               }
             } catch {
               /* fail-open：补不到就照旧"未对账"，绝不因此拦下 done */
+            }
+          }
+          /**
+           * **`REQ-066` / `AC-304` / `AC-305`：完成时由执行者自己合并工作副本**。
+           *
+           * 顺序有讲究：**先合并、后结算** —— 合并被冲突挡住时，这张卡就**不该**落 `done`
+           * （`AC-305` 第三档：合并被阻断、现场保留、且不许静默覆盖）。冲突时**零写盘**并给三步处置。
+           * 没有副本（非 git 仓库 / 没派发过）⇒ `none`，旧路径一字不改。
+           */
+          let worktreeBlock = ''
+          if (args.action === 'done') {
+            const merge = office.finishWorktree(call, { taskId: args.id, message: `sdo: merge ${args.id} work` })
+            if (merge.state === 'conflict') {
+              return fmt('uiIndex.kWorktreeMergeConflict', {
+                p1: args.id,
+                p2: String(merge.conflictFiles.length),
+                p3: merge.conflictFiles.join(t('uiCollab.kListSep')),
+                p4: merge.path,
+                p5: merge.branch,
+              })
+            }
+            if (merge.state === 'failed') {
+              worktreeBlock = '\n' + fmt('uiIndex.kWorktreeMergeFailed', { p1: args.id, p2: merge.detail, p3: merge.path })
+            }
+            if (merge.state === 'merged' && (merge.changedFiles.length > 0 || merge.committed)) {
+              worktreeBlock = '\n' + fmt('uiIndex.kWorktreeMerged', {
+                p1: args.id,
+                p2: merge.branch,
+                p3: merge.base,
+                p4: String(merge.changedFiles.length),
+                p5: merge.changedFiles.slice(0, 8).join(t('uiCollab.kListSep')) || t('uiIndex.kNone'),
+                p6: merge.commit === '' ? t('uiIndex.kNone') : merge.commit.slice(0, 8),
+              })
             }
           }
           const result = office.reportTask(call, {
@@ -2459,7 +2608,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               + '\n' + t('uiIndex.kImpactGapsRemedy')
           return (result.workspaceAudit !== undefined && !result.workspaceAudit.checked
             ? taskText + '\n' + t('uiIndex.kWorkScopeNotAudited')
-            : taskText + selfReportNote) + fixBlock + artifactBlock + naBlock + impactBlock + unfrozenBlock + reportWarning + fragmentWarning
+            : taskText + selfReportNote) + fixBlock + artifactBlock + naBlock + impactBlock + unfrozenBlock + worktreeBlock + reportWarning + fragmentWarning
         }
         case 'errata': {
           // **DEF-071**：done 卡的**追加式**勘误通道 —— 历史不重写，但"本卡不做的说明"必须能补。
@@ -4578,7 +4727,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 ? office.taskById(rootCall, attributed.cardId)
                 : undefined
               const commandWrites = detectCommandWrites(commandTextOf(exec.arguments))
-              const guardedPaths = [...rawPaths, ...commandWrites.targets]
+              /**
+               * **工作副本里的写入要折回工作区坐标**（`REQ-066` / `AC-304`，`TASK-172`）。
+               *
+               * 副本是同一棵树的另一个工作树（`<仓库父目录>/.sdo-worktrees/<卡>`），卡写范围却都是
+               * **工作区相对**的声明（`src/domain/plan.ts`）。不折算 ⇒ 执行者在**自己的**副本里写
+               * 一样命中的路径会被判「工作区之外 ⇒ 判不了归属 ⇒ 拒写」—— 那正好废掉本批的全部意义。
+               * 折算只做**前缀剥离**（`<副本>/x` ⇒ `x`），判定语义仍由 `evaluateWriteScope` 那**一处**决定；
+               * 拿不到本会话的副本（没派发 / 非 git 仓库）⇒ 原样交下去（行为与修前逐字相同）。
+               */
+              const ownWorktree = attributed.kind === 'dispatched' && attributed.cardId !== undefined
+                ? office.worktreeFor(rootCall, attributed.cardId)
+                : undefined
+              const guardedPaths = rebaseWorktreeWrites([...rawPaths, ...commandWrites.targets], ownWorktree?.path)
               // **DEF-047 落点一**：把**两个基准分别**交给闸门（`exactOptionalPropertyTypes` ⇒ 不可用时
               // 整键省略，而不是塞 `undefined`）：
               //   · `workspace` = **会话 cwd**（`call.cwd`；本次调用没带 cwd 时用已解析的工作区根兜底，

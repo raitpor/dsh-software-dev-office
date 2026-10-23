@@ -1326,12 +1326,46 @@ export function blockedTasks(tasks: TaskCard[]): { task: TaskCard; waitingOn: st
  *   ② `scope` —— 状态上本可派，但 1:1 独占写范围与另一张未结束的卡重叠（`write-scope-disjoint`）；
  *   ③ `dependencies` —— `blockedBy` 里还有未完成的卡。
  */
+/**
+ * **两张卡写范围相交之后该怎么处置**（`REQ-066` / `AC-303` / `TASK-172`，口径 `ADR-025`）。
+ *
+ * 修前（`DEF-128` 之后、`ADR-025` 之前）只有一个结论：**挡住不派**。用户 2026-10-22 指出这过度保守 ——
+ * git 对**同一文件的不同区域**本来就能干净合并，"范围相交"≠"真冲突"，一律拦下只会让人白拆卡。
+ * 所以现在相交**默认照派**，只有两类**真需要串行**：
+ *
+ *   · `exclusive-window` —— **任一方声明要独占窗口**（`exclusive` 非空，典型是跑全量测试：
+ *     两边同时跑会互删夹具，那是 `DEF-127` 那类假红的来源）；
+ *   · `unknown-scope` —— **写范围缺失或为空，无法判定**（fail-closed）：按"**整仓**"处理，
+ *     于是它与任何在飞卡都算相交。判不了就不并行，这一条不许被"空集 ⇒ 不相交"吃掉。
+ *
+ * 其余一律 `merge`：**可见即约束** —— 回执点名两张卡与**具体路径**，两边各自在副本里写，
+ * 靠合并流程处理；冲突时留现场交人工。反向守卫也成立：把 `merge` 的卡**拦住不派**同样是错的。
+ */
+export type ScopeIntersectionKind = 'merge' | 'exclusive-window' | 'unknown-scope'
+
+/** 派生自 {@link ScopeIntersectionKind} 的**串行**那一支（`merge` 不是串行）。 */
+export type ScopeSerialKind = Exclude<ScopeIntersectionKind, 'merge'>
+
+/** 一张计划卡与一张在飞卡的写范围相交（**点名**用；`kind` 决定派不派）。 */
+export interface ScopeIntersection {
+  task: TaskCard
+  holder: TaskCard
+  /**
+   * 相交的路径（**点名**，不是倒出对方的全量写范围）。
+   * `unknown-scope` 时是 `[]` —— 无法判定就不编造路径，回执改说"写范围为空/缺失"。
+   */
+  overlap: string[]
+  kind: ScopeIntersectionKind
+}
+
 /** 一张计划卡被**在飞卡**的写范围挡住（DEF-067 派发前置检查的读数）。 */
 export interface ScopeHold {
   task: TaskCard
   holder: TaskCard
   /** 重叠的路径（**点名**，不是倒出对方的全量写范围） */
   overlap: string[]
+  /** **凭什么处置**（`REQ-066`）：串行两支 or 只点名。字段是**加**上去的，既有读者不受影响。 */
+  kind: ScopeIntersectionKind
 }
 
 /**
@@ -1374,35 +1408,72 @@ export function orderedPair(a: TaskCard, b: TaskCard, tasks: readonly TaskCard[]
 }
 
 /**
- * **派发前置检查**（DEF-067 / ADR-009 的不变量「派发可认领」，2026-10-14 机制缺陷批）。
+ * **两张卡的写范围相交该不该串行**（`REQ-066` / `AC-303` 的**唯一出口**：认领面与派发面共用）。
  *
- * 不变量：一张卡被派出时它必须**能够认领成功** —— 即「可派发」= 依赖已满足 ∧
- * **写范围不与任何在飞卡相交**。旧实现只查 `blockedBy`，于是派出注定认领失败的卡
- * （真机：三张核实卡写同一个 `.sdo/reviews/`，两张认领失败、各白烧一轮会话）。
+ * 修前两个面各判一套（认领面 `collab.claim`：相交即拒；派发面 `scopeHeldTasks`：相交即不派）——
+ * 结论虽然一致，但都停在"相交 = 硬阻断"这一档。`ADR-025` 改成"默认照派、只点名"之后，
+ * **两面必须同时改**：只改派发面 ⇒ 派出去的卡在认领那一刻被拒（白烧一轮会话，正是 `DEF-067` 的病）。
+ *
+ * 只有两类**真**需要串行（其余一律 `merge`）：
+ *   · 任一方声明了**独占窗口**（`exclusive` 非空，典型是跑全量测试 —— 两边同跑会互删夹具）；
+ *   · 任一方**写范围为空/缺失** ⇒ 无法判定 ⇒ 按整仓处理（fail-closed）。
+ */
+export function scopeSerialKindOf(task: TaskCard, other: TaskCard): ScopeIntersectionKind {
+  if (task.writeScopes.length === 0 || other.writeScopes.length === 0) return 'unknown-scope'
+  const exclusive = (task.exclusive ?? '').trim() !== '' || (other.exclusive ?? '').trim() !== ''
+  return exclusive ? 'exclusive-window' : 'merge'
+}
+
+/**
+ * **派发时的写范围相交分类**（`REQ-066` / `AC-303`；`DEF-067` 与 `DEF-128` 的合流点）。
+ *
+ * 两个不变量在这里同时成立，缺一即错：
+ *   · **可派发**：派出注定认领失败的卡是白烧一轮会话（`DEF-067`）⇒ 串行的那两类必须先挡；
+ *   · **可见即约束**，而不是**一律拦下**：相交默认照派（`ADR-025`），但回执必须点名
+ *     两张卡与**具体路径** —— 旧实现（`DEF-128`）的回执里根本看不出有相交。
  *
  * 判定走**唯一出口** `scopeOverlaps`（归一 + 目录边界前缀，与认领期/计划期同一套语义）；
- * 不含任何语言/格式假设（REQ-060）—— 它只用到插件已有的两个事实：依赖图与路径集合。
+ * 不含任何语言/格式假设（`REQ-060`）—— 它只用到插件已有的两个事实：依赖图与路径集合。
  *
- * 显式声明过先后的（`blockedBy` 任一方向）不算"意外挡路"：那是人的裁决，不是争用。
+ * 显式声明过先后的（`blockedBy` 任一方向，含 `'*'`）不算"意外相交"：那是人的裁决，不是争用。
+ * 每张卡只报**第一个**相交的在飞持有者（与既有口径一致：够判断"被谁挡/与谁并行"）。
  */
-export function scopeHeldTasks(tasks: readonly TaskCard[]): ScopeHold[] {
+export function scopeIntersections(tasks: readonly TaskCard[]): ScopeIntersection[] {
   const inFlight = tasks.filter((task) => task.status === 'in-progress')
   if (inFlight.length === 0) return []
-  const out: ScopeHold[] = []
+  const out: ScopeIntersection[] = []
   for (const task of tasks) {
     if (task.status !== 'planned' && task.status !== 'ready') continue
     for (const holder of inFlight) {
       if (holder.id === task.id) continue
       // **DEF-044**：与 `validatePlan` / `classifyNonDispatchable` **同一个出口**（认 `'*'` 与传递依赖）
       if (orderedPair(task, holder, tasks)) continue
-      const overlap = scopeOverlaps(task.writeScopes, holder.writeScopes)
-      if (overlap.length > 0) {
-        out.push({ task, holder, overlap })
-        break
-      }
+      // **无法判定（fail-closed）**：任一方写范围为空/缺失 ⇒ 按"整仓"处理。旧实现拿
+      // `scopeOverlaps([], …)` 得空集 ⇒ 空范围卡**永远**判不相交（"判不了"被静默当成"没事"）。
+      const unknown = task.writeScopes.length === 0 || holder.writeScopes.length === 0
+      const overlap = unknown ? [] : scopeOverlaps(task.writeScopes, holder.writeScopes)
+      if (!unknown && overlap.length === 0) continue
+      // **唯一出口**：认领面（`collab.claim`）与这里共用 `scopeSerialKindOf` —— 两面分叉就会出现
+      // "派得出去、认领不了"（白烧一轮会话，`DEF-067` 的病）。
+      out.push({ task, holder, overlap, kind: scopeSerialKindOf(task, holder) })
+      break
     }
   }
   return out
+}
+
+/**
+ * **派发前置检查**（DEF-067 / ADR-009 的不变量「派发可认领」，2026-10-14 机制缺陷批）。
+ *
+ * 不变量：一张卡被派出时它必须**能够认领成功** —— 即「可派发」= 依赖已满足 ∧
+ * **写范围不与任何在飞卡相交**。
+ *
+ * **`REQ-066` 收窄（2026-10-22，`ADR-025`）**：只有**真需要串行**的两类才算"挡住"——
+ * 任一方声明独占窗口、或写范围无法判定（fail-closed）；其余相交只**点名**、照派。
+ * 本函数保留"挡住"这一支（调用点据此决定派不派），完整读数见 {@link scopeIntersections}。
+ */
+export function scopeHeldTasks(tasks: readonly TaskCard[]): ScopeHold[] {
+  return scopeIntersections(tasks).filter((row) => row.kind !== 'merge')
 }
 
 /**

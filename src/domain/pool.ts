@@ -351,7 +351,21 @@ export interface PoolAdmission {
    * 回执必须**单列一行**点名（卡 id、挡路的卡与其 owner、**重叠的那个路径**），
    * 否则会复现 DEF-058 的误判：首屏看不到就以为"没派"。
    */
-  heldByScope?: { taskId: string; holderId: string; holderOwner: string; overlap: string[] }[] | undefined
+  heldByScope?: {
+    taskId: string
+    holderId: string
+    holderOwner: string
+    overlap: string[]
+    /**
+     * **凭什么处置**（`REQ-066` / `AC-303`）：`merge` = **照派**、只点名（两边靠合并流程处理）；
+     * `exclusive-window` / `unknown-scope` = **串行**（本轮不派）。
+     *
+     * 为什么必须有这个字段：`heldByScope` 修前只有"挡住了"一种含义，回执也就只有一句"暂不可派"。
+     * 相交从"硬阻断"降为"可见不阻断"之后，**同一条读数承载两种处置** —— 不带这个字段，
+     * 界面层就只能靠"卡是否在 dispatch 里"反推，两处口径一旦分叉，回执会把照派的卡写成"暂不可派"。
+     */
+    kind: string
+  }[] | undefined
   /**
    * **R-14**：这些卡的**要求**与该角色的**掩码能力**矛盾（`evidenceRequired` 要命令却没有 `bash`、
    * 有写范围却没有 `write/edit`）—— 派发前就要说出来，别等子会话动手失败（真机赔了一整轮）。

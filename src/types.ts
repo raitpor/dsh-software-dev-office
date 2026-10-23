@@ -2060,6 +2060,31 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'dispatch/reported',
   // 采集失败留痕（真机曾整段静默吞异常）：同样是台账记账，与 `DESIGN.md` 无关。
   'dispatch/observe-failed',
+  /**
+   * **工具面观测落事件**（`DEF-165` ① / `TASK-172`）。
+   *
+   * 修前观测只写进 `evidence/child-tools.jsonl`（一个文件），journal 里**零观测事件** ⇒
+   * R-1「该子会话被**观测到**手里有工具才允许复用」对新起的子会话**结构性无法满足**（它不可能有历史观测），
+   * 于是每张卡都新起、复用形同不存在。落成事件之后，复用判据读得到"哪一次派发被观测到什么面"。
+   *
+   * **字段面（先定窄、留扩展位）**：`childSessionId` / `toolCount` / `deniedOutsideCount` / `observedAt`
+   * 是判定与回执共用的最小集；要加东西一律**新增可选字段**，不许改这四个的语义 ——
+   * `M213-09` 的教训是"字段面被钉死之后再加东西只能改事件类型"，那会让历史读数失去可比性。
+   */
+  'dispatch/observed',
+  /**
+   * **工作副本的轻量 git 事件族**（`REQ-066` / `AC-304` / `AC-305` / `TASK-172`）。
+   *
+   * `AC-304` 要求"合并**由子代理自己**调用插件的轻量 git 能力完成，并留事件含卡 id、副本标识、
+   * 变更文件清单"；`AC-305` 第三档要求"冲突被点名、合并被阻断、现场保留，且不产生静默覆盖"。
+   * 三件事各一条事件（建了 / 合成了 / 卡在哪），不塞进一条：它们回答的是不同问题，
+   * 合成一条之后，回执要么说不出"冲突文件"，要么得为"没冲突"编一个空字段。
+   * 四条都不改设计真源 ⇒ 与 `dispatch/*` 同族，属记账。
+   */
+  'worktree/created',
+  'worktree/merged',
+  'worktree/conflict',
+  'worktree/removed',
   // 实现阶段**方法包**的选择（tdd / contract-first）：`DESIGN.md` 的「设计方法与采用理由」讲的是
   // **设计**方法（结构化 / OO），不含实现包（真机实测 grep 命中 0），故属记账。
   'plan/profile-decided',
@@ -2392,6 +2417,13 @@ export type SdoEventType =
    * 静默顺延」—— 没有这个事件类型，`C-73` 的"真源留痕"豁免只能靠调用方传集合进来（那是声明，不是真源）。
    */
   | 'release/deferred'
+  // **DEF-165 ① / TASK-172**：子代理工具面的观测落事件（复用判据 R-1 的证据来源）
+  | 'dispatch/observed'
+  // **REQ-066 / TASK-172**：工作副本的轻量 git 事件族（建副本 / 合并 / 冲突 / 清场）
+  | 'worktree/created'
+  | 'worktree/merged'
+  | 'worktree/conflict'
+  | 'worktree/removed'
   | 'cost/sample'
   | 'budget/decision'
   | 'plan/review-blocked'
