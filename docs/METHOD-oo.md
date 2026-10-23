@@ -1,4 +1,4 @@
-<!-- method-doc: package=oo; basis=dd91f36f8490 -->
+<!-- method-doc: package=oo; basis=5fae7d1f6dc7 -->
 # 面向对象方法产物 · 人审文档
 
 > 本文是 **`oo` 方法包的人审文档**（G3 判据 C-2F）。文档头的 `basis` 是本包方法产物在台账里的**内容指纹**：
