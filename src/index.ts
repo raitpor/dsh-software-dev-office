@@ -196,6 +196,7 @@ import { composeUnderBase, evaluateWriteScope, isDevicePath, normalizeWorkspaceP
  * ⇒ 文案与排版全在 `domain/snapshot.ts`，这里只负责把**同一份读数**贴进回执（不另拼一套）。
  */
 import { ORDER_BASIS_LABEL, orderKeyLabel, renderQueueTable, renderStatusSnapshot, selectedWhyLabel } from './domain/snapshot.js'
+import { renderChangeFeed } from './domain/changeFeed.js'
 import type { ProposedQuestion } from './domain/grill.js'
 
 export const name = 'dsh-software-dev-office'
@@ -1598,6 +1599,25 @@ export function apply(ctx: Context, config: SdoConfig): void {
         : t('uiIndex.kRebuildForced')
       // **DEF-070**：构建读数放在最前面（第一眼就该知道这份回执出自哪份构建）
       return buildLine + '\n' + `${note}\n${text}` + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
+    },
+
+    /**
+     * **变更增量推送**（`TASK-186`：可观测性②）—— 驾驶舱问「自上次我读到以来，变了什么？」
+     *
+     * 回执是一份**增量**（不是整本台账的状态）：给 `since`（journal 序号或 ISO 时间）就只报那之后的
+     * 卡状态迁移，外加「本轮未结算的派发」与「证据缺失的 done」两类提示；内容修改单列一栏。
+     *
+     * **起点必须由调用方给**：没给、或给了认不出的形态 ⇒ 原样返回可读拒绝（不猜起点 —— 猜出来的
+     * 增量是假的）。未来指针 ⇒ 空的增量 + 明说"无变化"，**不是**错误。
+     *
+     * 落点状态如实说明：域层与门面（`office.changeFeed`）已就位、可被任何调用方复用；工具面把它接出来
+     * 还需要在 `src/interface/tools.ts` 的 `sdo_status` 上多声明一个 `since` 参数并转进这里 ——
+     * **那个文件不在本卡写范围**（`TASK-186` 的 writeScopes），所以本方法现在由 `office.changeFeed`
+     * 的调用方（含守卫用例）驱动，参数面接线见交付说明的跟卡建议。
+     */
+    async changes(call: OfficeCall, args: { since?: string | undefined }): Promise<string> {
+      const result = office.changeFeed(call, args.since)
+      return result.ok ? renderChangeFeed(result.feed) : result.detail
     },
 
     async board(

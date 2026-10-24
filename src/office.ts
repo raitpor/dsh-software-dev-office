@@ -80,6 +80,8 @@ import type { ScopeHold } from './domain/plan.js'
 import { blockedTasks, candidateQueue, classifyNonDispatchable, closeIteration, compareDispatchOrder, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
 import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
 import { queueEntriesOf } from './domain/snapshot.js'
+import { changeFeedOf } from './domain/changeFeed.js'
+import type { ChangeFeedResult } from './domain/changeFeed.js'
 import type {
   QueueEntry,
   SnapshotBlockedTask,
@@ -4821,6 +4823,24 @@ export class SoftwareDevOffice {
         blocked: taskBlocked.length,
       },
     }
+  }
+
+  /**
+   * **变更增量推送**（`TASK-186`：可观测性②）—— 「自上次读到以来，变了什么？」
+   *
+   * 取数口径（三条都是**机械可核**的，落在 `domain/changeFeed.ts` 里）：
+   *   ① 真源是 `journal.jsonl` 的事件流（**不读** `project.json` 投影、也不读 `.sdo/tasks/*.yml`）；
+   *   ② 起点 `since` **由调用方给**（journal 序号或 ISO 时间），不给就**可读拒绝** —— 工具不猜；
+   *   ③ 状态迁移与内容修改**分两栏**报（`task/updated` / `task/errata` 绝不进状态迁移那一栏）。
+   *
+   * 这个门面只做"取数 + 交给域层折叠"：格式化在 `renderChangeFeed`（界面层调），
+   * 于是同一个读数既能被工具面渲染，也能被别的消费者（看板/注入块）复用。
+   */
+  changeFeed(call: OfficeCall, since: string | undefined): ChangeFeedResult {
+    const { journal } = this.contextFor(call)
+    // **一次性读**：截断标记与事件流必须来自**同一次**读取（两次读之间可能又有追加，
+    // 那样"截断到第 N 行"与"扫过 M 条"就会互相矛盾 —— 一份自相矛盾的读数比没有读数更坏）。
+    return changeFeedOf(journal.read(), since)
   }
 
   /**
