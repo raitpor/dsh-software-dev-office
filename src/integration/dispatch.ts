@@ -79,6 +79,17 @@ export type DispatchOutcome =
       /** 想复用但没成的原因（如实回报，不静默降级成"新起一个"） */
       reuseFailed?: string | undefined
       /**
+       * **每一次投递被拒**的原话（`DEF-185` / `TASK-208` 落点一）：按候选顺序逐条记，不去重、不聚合。
+       *
+       * 为什么是数组而不是一个字符串：准入给的是一条**候选队列**，投递层逐条试；「第一个不可投、
+       * 第二个可用」与「全部不可投」是两种完全不同的结局，只有逐条留痕才分得开（且每一条都要带
+       * **宿主原话** —— 修前那句话只活在回执里，台账上零条，于是 `idle>0 / unusable=0 / reused=false`
+       * 无从解释）。
+       *
+       * **成功的那一次不算失败**：它体现在 `reused=true` + `childSessionId` 上。
+       */
+      reuseAttempts?: { childSessionId: string; reason: string }[] | undefined
+      /**
        * **复用投递的宿主回执**（DEF-014 / §3E 族 8）。
        *
        * 旧实现 `await runtime.sendMessage(...)` 把返回值**丢掉** ⇒「指令投出去没有、宿主受理没有」
@@ -149,6 +160,12 @@ export async function startDispatch(input: {
   maxDepth: number
   /** 角色池挑好的**空闲可复用**子代理（给了就优先投给它，而不是新起一个） */
   reuseChildId?: string | undefined
+  /**
+   * **有序候选队列**（`TASK-208` 落点一）：按池给的顺序**逐条试**，成功即采用。
+   *
+   * 不给 ⇒ 退化成"只试 `reuseChildId` 那一个"（与加它之前一字不差，老调用方不受影响）。
+   */
+  reuseCandidates?: readonly string[] | undefined
 }): Promise<DispatchOutcome> {
   const runtime = input.runtime
   if (runtime === undefined || typeof runtime.start !== 'function') {
@@ -168,25 +185,47 @@ export async function startDispatch(input: {
   let reuseFailed: string | undefined
   let continuableFailed: string | undefined
   // ① 真复用：把这张卡投给一个**已有且空闲**的子代理（宿主注释：空闲则起一轮）
-  if (input.reuseChildId !== undefined && input.reuseChildId !== '' && typeof runtime.sendMessage === 'function') {
-    try {
-      // **DEF-014**：返回值**不再丢弃** —— 归一成一行收据带回去（`dispatch/started.messageReceipt`）。
-      // 只做投影、不猜语义：认几个已知标识字段，认不出就记 `accepted`（= 宿主受理了，无标识）。
-      const returned = await runtime.sendMessage(input.agent, input.reuseChildId, blocks, { signal: dispatchSignal() })
-      return {
-        started: true,
-        provider: input.provider,
-        childSessionId: input.reuseChildId,
-        toolFilterDeclared,
-        reuseSupported,
-        reused: true,
-        mode: 'continuable',
-        messageReceipt: receiptOf(returned),
+  //
+  // **`TASK-208` 落点一（修 `DEF-185`）**：候选是**一条队列**，逐条试 ——
+  //   修前只投 `reuseChildId` 一次，失败即 `reuseFailed` 然后**降级新起**；池里的第 2..N 个候选
+  //   一次都没被投过。真机后果（seq 5251 / 5277 / 5299）：同一个投不进去的 `b5e60eac` 连撞三轮、
+  //   三轮新起，而这一轮另外 76 个空闲会话从未被尝试。
+  //   现在：成功即采用（`reused=true` + 那个 id），**每一条失败都进 `reuseAttempts`**（带宿主原话），
+  //   全部失败才往下走"新起一个"。
+  const candidates = [...new Set<string>([
+    ...(input.reuseCandidates ?? []),
+    ...(input.reuseChildId === undefined || input.reuseChildId === '' ? [] : [input.reuseChildId]),
+  ])]
+  const reuseAttempts: { childSessionId: string; reason: string }[] = []
+  if (candidates.length > 0 && typeof runtime.sendMessage === 'function') {
+    for (const candidate of candidates) {
+      try {
+        // **DEF-014**：返回值**不再丢弃** —— 归一成一行收据带回去（`dispatch/started.messageReceipt`）。
+        // 只做投影、不猜语义：认几个已知标识字段，认不出就记 `accepted`（= 宿主受理了，无标识）。
+        const returned = await runtime.sendMessage(input.agent, candidate, blocks, { signal: dispatchSignal() })
+        return {
+          started: true,
+          provider: input.provider,
+          childSessionId: candidate,
+          toolFilterDeclared,
+          reuseSupported,
+          reused: true,
+          mode: 'continuable',
+          messageReceipt: receiptOf(returned),
+          ...(reuseAttempts.length === 0 ? {} : { reuseAttempts }),
+        }
+      } catch (error) {
+        // 复用失败**不静默**：逐条如实记下宿主原话，然后**接着试下一个候选**
+        reuseAttempts.push({ childSessionId: candidate, reason: error instanceof Error ? error.message : String(error) })
       }
-    } catch (error) {
-      // 复用失败**不静默**：如实带回去，然后按"新起一个"继续（拒绝复用不该让这张卡派不出去）
-      reuseFailed = error instanceof Error ? error.message : String(error)
     }
+    // 全部候选都被拒 ⇒ 把原话带回去（回执与台账都不静默）。
+    // 只有一个候选时**逐字**保留宿主原话（`reuseFailed` 的既有语义，回执那一行照旧）——
+    // 多候选才带 id 前缀，否则读者分不清"哪一句话说的是哪个会话"。
+    const only = reuseAttempts[0]
+    reuseFailed = reuseAttempts.length === 1 && only !== undefined
+      ? only.reason
+      : reuseAttempts.map((row) => `${row.childSessionId}: ${row.reason}`).join('; ')
   }
   // ② 建可续聊子代理（只有它结算后还能再收卡；one-shot 结算即消失）
   if (typeof runtime.startContinuable === 'function') {
@@ -215,6 +254,7 @@ export async function startDispatch(input: {
           reused: false,
           mode: 'continuable',
           ...(reuseFailed === undefined ? {} : { reuseFailed }),
+          ...(reuseAttempts.length === 0 ? {} : { reuseAttempts }),
         }
       }
       continuableFailed = '宿主 startContinuable 没返回可用的 childId'
@@ -247,6 +287,7 @@ export async function startDispatch(input: {
       reused: false,
       mode: 'one-shot',
       ...(reuseFailed === undefined ? {} : { reuseFailed }),
+      ...(reuseAttempts.length === 0 ? {} : { reuseAttempts }),
       ...(continuableFailed === undefined ? {} : { continuableFailed }),
     }
   } catch (error) {

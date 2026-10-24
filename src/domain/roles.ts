@@ -308,23 +308,154 @@ export function dodToolGaps(dod: readonly string[], role: string): DodToolGap[] 
  * 返回 `dropped` 是为了**如实报告**：被剔掉的名字要出现在回执里，绝不静默改小工具面。
  */
 /**
- * 角色掩码的**指纹**（SDO-52）：把「allow ∪ deny ∪ 基础面」排序后取哈希。
+ * 掩码指纹的**口径版本**（`DEF-194` / `TASK-208`）。
+ *
+ * 为什么要版本号：指纹进的是 append-only 台账（`dispatch/started.maskHash`），**换口径之后旧值仍然在**。
+ * 没有版本号，新旧两种口径算出来的字符串会被直接比较 —— 要么把旧会话误判成"面变了"（整池作废），
+ * 要么更糟：为了让旧会话过关而放宽判据（R-7 的口子重新打开）。带版本 ⇒ 两种口径**永远可比**：
+ * 同版本比哈希，异版本走 {@link maskBacktrack} 的面比对（见那里的诚实边界）。
+ */
+export const MASK_FINGERPRINT_VERSION = 2
+
+/** v2 起指纹写成 `2:<12 hex>`；没有这个前缀的旧值一律按**版本未知**（v1）读。 */
+export function maskHashVersion(recorded: string): number {
+  const matched = /^(\d+):/u.exec(recorded)
+  return matched === null ? 0 : Number(matched[1])
+}
+
+/**
+ * **逐角色段** `face(role) = (只读检视面 ∪ allow) − deny`（`TASK-208` 落点三）。
+ *
+ * 为什么是"减 deny"而不是"加 deny"（`DEF-194` 的真正病根）：旧口径把 `deny` 里的名字**当成项加进**
+ * 哈希，而那批名字里很多**根本不在** allow 里（例如 reviewer 的 `sdo_test`）—— 它们对有效面是**空操作**，
+ * 却照样改指纹。改一处空操作就作废整池，正是 `DEF-194` 说的"每注册一个工具就重建一次池"。
+ * 现在按集合语义算**有效面**：冗余 deny 减掉一个本来就不在面上的名字，面不变 ⇒ 指纹不变。
+ *
+ * ⚠️ **指纹相同 ≠ 角色相同**（`REV-092` #5）：指纹只描述**工具面**，从这一版起它**不再承担角色隔离**
+ * —— 现盘 `developer` 与 `tester` 的 `allow` 逐项相同、`deny` 又全在 allow 之外，两者的有效面与指纹
+ * **完全一样**（现算都是 `2:85621912d7f8`）。角色隔离**只**靠池按角色分桶（`pool.ts` 的 `byRole`：
+ * 准入 `byRole.get(task.role)`，即 developer 的卡只看 developer 池）。因此**任何**"只按 `maskHash` 找
+ * 可复用会话、不先按角色分桶"的新写法都会立刻造成**跨角色复用** —— 必须**先按角色分桶、再比指纹**。
+ */
+export function maskFaceOf(card: { allow: readonly string[]; deny: readonly string[] }): string[] {
+  const denied = new Set<string>(card.deny)
+  return [...new Set<string>([...READ_ONLY_INSPECTION_TOOLS, ...card.allow])]
+    .filter((name) => !denied.has(name))
+    .sort()
+}
+
+/** 某角色的有效面（认不出角色 ⇒ 空面，调用方按 fail-closed 走）。 */
+export function maskFace(code: Role | string): string[] {
+  const card = faceCard(String(code))
+  return card === undefined ? [] : maskFaceOf(card)
+}
+
+/**
+ * **全局段** = `hash(禁令集 ∪ 只读检视面)`，作为**整体项**哈希进每个角色的指纹（`TASK-208` 落点三）。
+ *
+ * 为什么必须是整体项、而不是"逐条减进 face"（卡面点名的**不许用减法公式**）：`EXECUTOR_DENIED_TOOLS`
+ * 里的名字**大多不在**任何角色 allow 里 ⇒ 用 `(面 − 禁令)` 去算，从空集里减掉是**空操作** ⇒ 禁令变化时
+ * 指纹不变 ⇒ 旧会话仍握着被禁工具却被判可复用（**R-7 回归**）。整体项没这个问题：禁令集变一个字节，
+ * 8 个角色的指纹一起变。
+ */
+export function maskGlobalSegment(
+  forbidden: readonly string[] = EXECUTOR_DENIED_TOOLS,
+  inspection: readonly string[] = READ_ONLY_INSPECTION_TOOLS,
+): string {
+  const names = [...new Set<string>([...forbidden, ...inspection])].sort()
+  return createHash('sha1').update(names.join('|')).digest('hex')
+}
+
+/** 由**面**现算 v2 指纹：`hash(版本号 ‖ face(role) ‖ hash(禁令集 ∪ 只读检视面))`。 */
+export function maskFingerprintOf(face: readonly string[], globalSegment: string = maskGlobalSegment()): string {
+  const digest = createHash('sha1')
+    .update([`v${String(MASK_FINGERPRINT_VERSION)}`, [...face].sort().join('|'), globalSegment].join('‖'))
+    .digest('hex')
+    .slice(0, 12)
+  return `${String(MASK_FINGERPRINT_VERSION)}:${digest}`
+}
+
+/**
+ * 角色掩码的**指纹**（SDO-52）：**两段式**（`DEF-194` / `TASK-208`）。
  *
  * 用途：派发时把指纹记进 `dispatch/started`；**复用一个空闲子代理之前先比对**——
  * 工具面是**创建会话时**定下的，掩码改过之后旧会话拿到的还是旧面（真机上同一子会话被复用约 137 张卡，
  * 后补的 `read_image` 始终拿不到）。指纹不一致或缺失 ⇒ **强制新起**，并如实回报。
+ *
+ * 两段的分工（修 `DEF-194` 而不回归 `R-7`）：
+ *   · **逐角色段**（{@link maskFaceOf}）：只覆盖该角色**真实**的工具面 ⇒ 给 office 登记一个新工具
+ *     **不动** developer/reviewer/tester 的指纹；
+ *   · **全局段**（{@link maskGlobalSegment}）：禁令集与只读检视面作为**整体项**进每个角色的指纹
+ *     ⇒ 禁令一变 8 个角色一起变（R-7 的守据保留）。
  */
 export function maskFingerprint(code: Role): string {
   const card = roleCard(code)
   if (card === undefined) return ''
-  // **R-7（sdo-test-new 2026-10-08，major）**：指纹必须覆盖**有效的 deny 面** —— 执行者禁用面
-  // （`EXECUTOR_DENIED_TOOLS`）是**代码层**的常量，`roles.yml` 里没有这些名字，所以旧实现算出的指纹
-  // 在"禁令上线"前后**完全一样** ⇒ 上线前创建的旧会话被判"指纹一致 ⇒ 可复用"，而它公告面里
-  // 仍握着 `exit_plan_mode`/`memory_forget`/`technique_forget`/`failure_forgive`（真机 `4e7ea6d8`）
-  // —— 复用判据把禁令绕过去了。
-  // 连同"白名单补集"一起算进指纹（`sdo_*` 的收窄历史也是复用必须失效的理由）。
-  const names = [...new Set<string>([...toolAllowList(code), ...card.deny, ...EXECUTOR_DENIED_TOOLS])].sort()
-  return createHash('sha1').update(names.join('|')).digest('hex').slice(0, 12)
+  return maskFingerprintOf(maskFaceOf(card))
+}
+
+/** 旧口径（无版本号）指纹的**回溯判定**结果（`TASK-208` 落点五）。 */
+export interface MaskBacktrack {
+  /** 能不能把旧会话判成「面与当前一致 ⇒ 可复用」（`false` = 版本不可比 ⇒ 保守不复用） */
+  reusable: boolean
+  /** 判定依据：**逐字**进 `unusable.reason` / 回执，读者据此判读 */
+  detail: string
+  /** 由已存事件**现算**的 v2 面（只含可回溯的那部分：只读检视面 ∪ 已存 `sdoAllow`，减去已存 `deny`） */
+  face: string[]
+}
+
+/**
+ * **从 `dispatch/started` 已存的面回溯旧会话**（`TASK-208` 落点五，`DEF-194` 的兼容半）。
+ *
+ * 允许它存在的理由：旧事件里**已经存了两份面** —— `sdoAllow`（SDO 流程面白名单）与 `deny`（实际下发的
+ * 完整 deny 面）⇒ 不用重建池，也能把"这个会话当时拿到的是什么面"现算出来。
+ *
+ * **诚实边界（不许声称 100% 无损回溯）**：
+ *   ① 旧事件**没有**当时 **禁令集**的副本（`EXECUTOR_DENIED_TOOLS` 是代码常量，只在"下发的 deny 面"
+ *      里被动体现）⇒ 本函数用「今天的禁令集**是否已被旧事件的 `deny` 覆盖**」来**证明**它没变过；
+ *      证明不了（有新的禁令不在旧 `deny` 里）⇒ **版本不可比 ⇒ 保守不复用**，理由里点名是哪几条；
+ *   ② 旧事件也没有**通用面 allow** 的副本（`roles.yml` 的 `bash`/`write` 一类）⇒ 面比对只在
+ *      **可回溯子面**（`sdo_*` ∪ 只读检视面）上做。通用面是黑名单语义（默认给），所以子面相等 +
+ *      角色 deny 已被覆盖 ⇒ 有效面一致；但这不是"逐字节还原"，回执里必须照这个口径说。
+ */
+export function maskBacktrack(
+  role: string,
+  started: { sdoAllow?: readonly unknown[] | undefined; deny?: readonly unknown[] | undefined },
+): MaskBacktrack {
+  const asNames = (value: readonly unknown[] | undefined): string[] =>
+    (value ?? []).map((item) => (typeof item === 'string' ? item.trim() : '')).filter((item) => item !== '')
+  const recordedSdo = asNames(started.sdoAllow)
+  const recordedDeny = new Set<string>(asNames(started.deny))
+  const face = [...new Set<string>([...READ_ONLY_INSPECTION_TOOLS, ...recordedSdo])]
+    .filter((name) => !recordedDeny.has(name))
+    .sort()
+  const card = faceCard(role)
+  if (card === undefined) return { reusable: false, face, detail: '角色认不出 ⇒ 无法回溯比对' }
+  // ① 禁令集：旧事件没有副本 ⇒ 只能要求「今天的禁令集已被旧 deny 面覆盖」才算证成它没变过
+  const newForbidden = EXECUTOR_DENIED_TOOLS.filter((name) => !recordedDeny.has(name))
+  if (newForbidden.length > 0) {
+    return {
+      reusable: false,
+      face,
+      detail: `旧事件的 deny 面里没有 ${newForbidden.join(' ')} ⇒ 禁令集在它创建之后变过，版本不可比`,
+    }
+  }
+  // ② 角色级 deny：同样要求"只增不减地覆盖"，否则旧会话可能握着今天已经禁掉的工具
+  const newDenied = card.deny.filter((name) => !recordedDeny.has(name))
+  if (newDenied.length > 0) {
+    return {
+      reusable: false,
+      face,
+      detail: `旧事件的 deny 面里没有 ${newDenied.join(' ')}（该角色 deny 变过），版本不可比`,
+    }
+  }
+  // ③ 面比：只在**可回溯子面**上做（通用面 allow 没有被记录，见上面的诚实边界②）
+  const today = maskFaceOf(card).filter((name) => isSdoTool(name) || (READ_ONLY_INSPECTION_TOOLS as readonly string[]).includes(name))
+  const same = today.length === face.length && today.every((name) => face.includes(name))
+  if (!same) {
+    return { reusable: false, face, detail: `现算面 [${face.join(' ')}] 与当前面 [${today.join(' ')}] 不等` }
+  }
+  return { reusable: true, face, detail: `禁令集与角色 deny 均已被旧 deny 面覆盖，且可回溯子面与当前面逐项相同` }
 }
 
 export interface KnownToolsFilter {

@@ -14,6 +14,7 @@
  *   · 旧渲染器 `records.renderTestPlan` 无其它调用点 ⇒ 删除（同源重复合并）。
  */
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -23,12 +24,25 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { apply } from '../src/index.js'
-import { maskFingerprint } from '../src/domain/roles.js'
 import {
+  EXECUTOR_DENIED_TOOLS,
+  MASK_FINGERPRINT_VERSION,
+  READ_ONLY_INSPECTION_TOOLS,
+  isSdoTool,
+  listRoleCards,
+  maskBacktrack,
+  maskFaceOf,
+  maskFingerprint,
+  maskFingerprintOf,
+  maskHashVersion,
+} from '../src/domain/roles.js'
+import {
+  DELIVERY_FAILED_PREFIX,
   admitDispatch,
   foldPoolChildren,
   poolReading,
   poolReadingsFingerprint,
+  reuseBlockedReason,
   reuseSkippedLines,
   rolePools,
 } from '../src/domain/pool.js'
@@ -188,8 +202,13 @@ const TASK163 = {
       childSessionId, tools: ['bash', 'edit', 'read'], violations: [], calls: [], callCount: 0,
     })
   },
-  /** 宿主桩：`start` 新起、`startContinuable` 建可续聊、`sendMessage` 是**复用**的投递原语。 */
-  mount(): { name: string; parameters: unknown; execute: (args: unknown, ctx: { agent?: unknown }) => unknown }[] {
+  /**
+   * 宿主桩：`start` 新起、`startContinuable` 建可续聊、`sendMessage` 是**复用**的投递原语。
+   *
+   * `overrides.sendMessage`（`TASK-208`）：按**候选**逐条决定受理/拒绝 —— 候选重试那条守卫要能踩到
+   * "第 1 个不可投、第 2 个可用"与"全部不可投"两种结局，而默认桩一律成功，踩不到。
+   */
+  mount(overrides: { sendMessage?: (target: string) => Promise<unknown> } = {}): { name: string; parameters: unknown; execute: (args: unknown, ctx: { agent?: unknown }) => unknown }[] {
     const tools: { name: string; parameters: unknown; execute: (args: unknown, ctx: { agent?: unknown }) => unknown }[] = []
     const services: Record<string, unknown> = {}
     const makeCtx = (): Record<string, unknown> => ({
@@ -210,7 +229,9 @@ const TASK163 = {
       list: () => ['spawn'],
       start: async () => ({ id: 'child-oneshot-m206' }),
       startContinuable: async () => ({ childId: 'child-fresh-m206' }),
-      sendMessage: async () => ({ messageId: 'msg-m206' }),
+      sendMessage: async (_sender: unknown, target: string) => (
+        overrides.sendMessage === undefined ? { messageId: 'msg-m206' } : overrides.sendMessage(target)
+      ),
       getProvider: () => ({ capabilities: { toolFilter: true } }),
       listDescendants: async () => [],
     }
@@ -561,4 +582,295 @@ test('M206-11 ③c `freshChild=true` 跳过复用 ⇒ 主路径回执**必须点
   assert.equal(started?.data['reused'], false, '`freshChild=true` ⇒ 本轮必须新起（复用是优化，不许覆盖调用方的决定）')
   assert.notEqual(started?.data['childSessionId'], childSessionId, '新起的子会话与那个可复用孩子不是同一个')
   assert.equal(started?.data['forceNew'], true, '定案键必须落进事件（回执只是同屏投影）')
+})
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **增量 208：复用修复（`DEF-185` 候选重试 + `DEF-194` 指纹两段式）**
+ *
+ * 真机两条读数（复现先行，台账现查）：
+ *   ① seq 5298（`dispatch/started`，TASK-185，22:52:20Z）：role=developer、`reused=false`、
+ *      `buckets{idle:77, idleSameParent:38, unusable:0}`、`reuseIdle=true`、`forceNew=false`，
+ *      而 `reuseSkipped` **只有 1 条**（`b5e60eac… is unavailable`）——「池里有 77 个空闲、全过闸门、
+ *      仍然不复用」在台账上**没有任何解释**；
+ *   ② 同一候选 `b5e60eac-971a-4da8-866d-ccd9c66abb72` 在 seq **5251 / 5277 / 5299** 三笔派发里
+ *      三次被挑中、三次 unavailable、三次新起 —— 准入只挑**一个**候选，失败即降级，池里其余候选
+ *      一次都没被投过。
+ *
+ * 这两格要挡住的退化方向：
+ *   · 退回"只试第 1 个候选"（池子看着满、复用事实上关闭）；
+ *   · 投递被拒只活在回执里（`idle>0` 与 `reused=false` 又变成无解之谜）；
+ *   · 指纹为"无关工具登记"买单（`DEF-194`：整池一次性作废），或反过来把禁令集从指纹里拿掉（`R-7` 回归）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+test('M206-12 守卫① 候选重试：第 1 个不可投递、第 2 个可用 ⇒ 复用第 2 个，且 skip 记 1 条（真装配链）', async () => {
+  const first = 'aaaa2080-1111-4bbb-8ccc-dddddddd01'
+  const second = 'aaaa2080-2222-4bbb-8ccc-dddddddd02'
+  // 两个孩子**五条判据全过**（否则"投递失败"与"判据没过"又混在一起）
+  TASK163.seedChild(first, 'TASK-20800', maskFingerprint('developer'))
+  TASK163.observe(first)
+  TASK163.seedChild(second, 'TASK-20801', maskFingerprint('developer'))
+  TASK163.observe(second)
+  writeYamlTask(TASK163.card('TASK-20802'))
+
+  // ① 准入面：候选是**一条有序队列**（修前只有一个 id —— `reuseCandidateOrder(...).find(...)`）
+  const plan = office.poolPlan(call, { reuseIdle: true })
+  const row = plan.dispatch.find((item) => item.task.id === 'TASK-20802')
+  assert.deepEqual(
+    row?.reuseCandidates,
+    [first, second],
+    `候选必须是**有序队列**（同父优先、其余保持台账顺序）：${JSON.stringify(row)}`,
+  )
+  assert.equal(row?.reuseChildId, first, '队列第 0 项就是 `reuseChildId`（快路径与队列不许各说一套）')
+
+  // ② 真装配链（`office.poolPlan` + `sdo_plan`）：宿主对第 1 个候选报 unavailable，对第 2 个受理
+  const tried: string[] = []
+  const tools = TASK163.mount({
+    sendMessage: async (target: string) => {
+      tried.push(target)
+      if (target === first) throw new Error(`subagent "${target}" is unavailable`)
+      return { messageId: `msg-${target}` }
+    },
+  })
+  const receipt = await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1 })
+
+  assert.deepEqual(
+    tried,
+    [first, second],
+    `必须**逐条试**：修前只试第 1 个就降级新起（实际试了 ${tried.join(' → ')}）`,
+  )
+  const journal = office.journalFor(WORKSPACE)
+  const started = journal.read().events.filter((event) => event.type === 'dispatch/started').at(-1)
+  assert.equal(started?.data['reused'], true, '第 2 个候选投递成功 ⇒ `reused=true`（修前这里必然 false + 新起一个）')
+  assert.equal(started?.data['childSessionId'], second, '复用成功的是**第 2 个**候选（不是第 1 个，也不是新起的）')
+  const skipped = started?.data['reuseSkipped'] as { childSessionId: string; role: string; reason: string }[] | undefined
+  assert.equal(
+    skipped?.length,
+    1,
+    `第 1 个候选的失败必须**逐条落账**（修前 reused=true ⇒ 恰好零条，池子退化的方向被掩盖）：${JSON.stringify(skipped)}`,
+  )
+  assert.equal(skipped?.[0]?.childSessionId, first, '落的是**被拒的那个候选**')
+  assert.equal(skipped?.[0]?.role, 'developer', '三字段之一：角色')
+  assert.match(skipped?.[0]?.reason ?? '', /delivery-failed/u, '稳定字形前缀：读侧靠它把"投递拒"与"闸门拒"分流')
+  assert.match(skipped?.[0]?.reason ?? '', /is unavailable/u, '必须带**宿主原话**（不是我们自己编的理由）')
+  // 独立事件承载同样逐条（同一份三字段投影，不许一处有一处没有）
+  const viaEvent = journal.read().events.filter((event) => String(event.type) === REUSE_SKIPPED_EVENT)
+  assert.deepEqual(
+    viaEvent.map((event) => event.data['childSessionId']),
+    [first],
+    `独立事件也要落（读侧两种承载都认）：${JSON.stringify(viaEvent.map((event) => event.data))}`,
+  )
+  // 回执面：逐条打出"谁没被复用、为什么"
+  assert.match(receipt, new RegExp(`childSessionId=${first}`, 'u'), `回执必须点名被拒的候选：${receipt.slice(0, 700)}`)
+  assert.match(receipt, /delivery-failed/u, `回执必须带宿主原话那一行：${receipt.slice(0, 700)}`)
+  // 读侧回读
+  // **`REV-092` #2（作者自核后收紧）**：这里原先是 `back.length >= 1` —— 是**下限**，抓不住"重复落账"。
+  // 但**不能**直接照评审建议写成 `=== 1`：实测读侧折出 **2** 条，因为 `reuseSkippedOf` 认**两种承载**
+  // 且**刻意不去重**（append-only 的历史读数照实回放）⇒ 承载① `dispatch/started.reuseSkipped` 1 条
+  // ＋ 承载② 独立事件 `dispatch/reuse-skipped` 1 条。所以收紧成**逐承载的等式**（严格强于 `=== 1`）：
+  // 重复落账 ⇒ 3 条 ⇒ 红；丢一个承载 ⇒ 1 条 ⇒ 红。下面还现场演示这一格的判别力。
+  const back = reuseSkippedOf(journal).filter((item) => item.childSessionId === first)
+  assert.deepEqual(
+    back.map((row) => row.via),
+    ['dispatch/started', REUSE_SKIPPED_EVENT],
+    `逐承载各一条（读侧不去重是刻意的）：${JSON.stringify(back.map((row) => row.via))}`,
+  )
+  assert.equal(back.length, 2, `读侧条数是**等式**（不是下限）：${JSON.stringify(back.map((row) => row.via))}`)
+  assert.match(back[0]?.reason ?? '', /delivery-failed/u, '回读的那条也要带字形前缀（写侧/读侧不许各说一套）')
+  // 判别力自证：往同一承载再落一条"重复记账"，读侧必须变 3 ⇒ 上面的等式立刻红（`>= 1` 抓不住这一格）
+  journal.append(REUSE_SKIPPED_EVENT as unknown as Parameters<typeof journal.append>[0], reuseSkippedEventData(
+    { childSessionId: first, role: 'developer', reason: `${DELIVERY_FAILED_PREFIX}duplicate bookkeeping (mutation probe)` },
+    { task: 'TASK-20802' },
+  ))
+  const duplicated = reuseSkippedOf(journal).filter((item) => item.childSessionId === first)
+  assert.equal(duplicated.length, 3, `重复落账必须让等式失败（否则"下限"这一格等于没断言）：${String(duplicated.length)}`)
+})
+
+test('M206-13 守卫② 全部候选不可投递 ⇒ 逐条记 skip + 才新起，且读数能解释（`idle>0` 与 `reused=false` 不再无解释并存）', async () => {
+  const first = 'bbbb2080-1111-4bbb-8ccc-dddddddd01'
+  const second = 'bbbb2080-2222-4bbb-8ccc-dddddddd02'
+  TASK163.seedChild(first, 'TASK-20810', maskFingerprint('developer'))
+  TASK163.observe(first)
+  TASK163.seedChild(second, 'TASK-20811', maskFingerprint('developer'))
+  TASK163.observe(second)
+  writeYamlTask(TASK163.card('TASK-20812'))
+
+  const tried: string[] = []
+  const tools = TASK163.mount({
+    sendMessage: async (target: string) => {
+      tried.push(target)
+      throw new Error(`subagent "${target}" is unavailable`)
+    },
+  })
+  await TASK163.callTool(tools, 'sdo_plan', { action: 'next', limit: 1 })
+
+  assert.deepEqual(tried, [first, second], `全部候选都要被试过（修前只试第 1 个）：${tried.join(' → ')}`)
+  const journal = office.journalFor(WORKSPACE)
+  const started = journal.read().events.filter((event) => event.type === 'dispatch/started').at(-1)
+  assert.equal(started?.data['reused'], false, '全部候选不可投 ⇒ 不复用')
+  assert.equal(started?.data['childSessionId'], 'child-fresh-m206', '全部失败**才**新起（不是第 1 个失败就新起）')
+  const skipped = (started?.data['reuseSkipped'] ?? []) as { childSessionId: string; reason: string }[]
+  assert.deepEqual(
+    skipped.map((item) => item.childSessionId),
+    [first, second],
+    `**每一条失败各落一行**（修前只有第 1 个候选一条）：${JSON.stringify(skipped)}`,
+  )
+  assert.ok(skipped.every((item) => /is unavailable/u.test(item.reason)), '每一条都要带宿主原话')
+
+  // **账实一致（落点二）**：下一轮读数里，这两个孩子必须从 `idle` 挪进 `unusable` 桶并带原因 ——
+  // 于是「idle>0 且 unusable=0 且 reused=false」这一格**不可能再出现**（`DEF-185` 的症状面被关掉）。
+  const dev = office.poolView(call).find((pool) => pool.role === 'developer')
+  assert.equal(dev?.idle.length, 0, '投递被拒的两个孩子不许再算"空闲可复用"（它们投不进去）')
+  assert.equal(dev?.unusable.length, 2, `两个都得进 unusable 桶（现算 ${String(dev?.unusable.length)}）：${JSON.stringify(dev?.unusable)}`)
+  for (const item of dev?.unusable ?? []) {
+    assert.match(item.reason, /is unavailable/u, `桶里的原因必须带宿主原话：${item.reason}`)
+  }
+  // 池容量口径不变：不可复用的孩子**不占池位**（R-1）
+  assert.equal(dev?.freeSlots, 4 - (dev?.busy.length ?? 0), `freeSlots = cap − 在飞（不可复用的不占位）：cap=${String(dev?.cap)} busy=${String(dev?.busy.length)}`)
+})
+
+test('M206-14 守卫③ 指纹三态：office 登记新工具不动别人 / 某角色 allow 真变只动自己 / 改禁令集 8 个全变（R-7 不回归）', () => {
+  const cards = listRoleCards()
+  const pick = (code: string): (typeof cards)[number] => {
+    const found = cards.find((item) => String(item.code) === code)
+    assert.ok(found !== undefined, `角色卡缺 ${code}`)
+    return found
+  }
+  const fingerprintOf = (allow: string[], deny: string[]): string => maskFingerprintOf(maskFaceOf({ allow, deny }))
+  const base = new Map(cards.map((card) => [String(card.code), fingerprintOf(card.allow, card.deny)]))
+
+  // (a) **只给 office 登记一个新工具** ⇒ 其余角色的指纹**逐字不变**（`DEF-194` 的病根就从这里关掉）
+  const officeCard = pick('office')
+  const officeAfter = fingerprintOf([...officeCard.allow, 'sdo_probe_registered'], officeCard.deny)
+  assert.notEqual(officeAfter, base.get('office'), 'office 自己的面真变了 ⇒ 它的指纹必须变（保守方向）')
+  for (const code of ['developer', 'reviewer', 'tester']) {
+    const card = pick(code)
+    assert.equal(
+      fingerprintOf(card.allow, card.deny),
+      base.get(code),
+      `${code} 的面一个字没变 ⇒ 指纹必须**逐字不变**（修前它跟着别人一起变，整池作废）`,
+    )
+  }
+
+  // (b) **某角色 allow 真变** ⇒ 只有它自己变（有效面变宽 ⇒ 旧会话缺这项能力，拒复用是对的）
+  const developer = pick('developer')
+  // 取一个**没被任何角色声明**的名字（`bash` 已经在 developer 的 allow 里，加它是空操作 ⇒ 测不出东西）
+  const developerAfter = fingerprintOf([...developer.allow, 'sdo_allow_probe'], developer.deny)
+  assert.notEqual(developerAfter, base.get('developer'), 'developer 的面真变了 ⇒ 它自己的指纹必须变')
+  for (const code of ['reviewer', 'tester', 'office']) {
+    const card = pick(code)
+    assert.equal(fingerprintOf(card.allow, card.deny), base.get(code), `${code} 没变 ⇒ 不许被连坐`)
+  }
+
+  // (c) **改禁令集 ⇒ 8 个角色一起变**（`R-7`：禁令上线前创建的会话不许被判"指纹一致"）
+  const before = new Map(cards.map((card) => [String(card.code), maskFingerprint(card.code)]))
+  const forbidden = EXECUTOR_DENIED_TOOLS as unknown as string[]
+  forbidden.push('probe_forbidden_tool')
+  try {
+    for (const card of cards) {
+      assert.notEqual(
+        maskFingerprint(card.code),
+        before.get(String(card.code)),
+        `${String(card.code)} 的指纹必须随禁令集一起变（把禁令从指纹里拿掉就是 R-7 回归）`,
+      )
+    }
+    // 行为面：禁令变化**之前**算出来的指纹不再被承认（旧会话公告面里握着被禁工具）
+    const staleChild: PoolChild = {
+      childSessionId: 'forbidden-stale', role: 'developer', task: 'TASK-20820', mode: 'continuable',
+      state: 'idle', rounds: 1, startedAt: '', finishedAt: '', maskHash: before.get('developer') ?? '',
+    }
+    const pools = rolePools({
+      children: [staleChild], roles: ['developer'], caps: {}, defaultCap: 4,
+      maskHashOf: (role) => maskFingerprint(role as Parameters<typeof maskFingerprint>[0]),
+    })
+    assert.equal(pools[0]?.idle.length, 0, '禁令变化前的会话不算可复用')
+    assert.match(pools[0]?.unusable[0]?.reason ?? '', /掩码已变更/u, '理由要读得出来')
+  } finally {
+    forbidden.pop()
+  }
+  // 撤销变异后必须**逐字回到原值**（否则同文件后面的用例读到脏状态）
+  for (const card of cards) {
+    assert.equal(maskFingerprint(card.code), before.get(String(card.code)), `撤销变异之后 ${String(card.code)} 必须回到原值`)
+  }
+})
+
+test('M206-15 落点五 v2 回溯：从已存的 `sdoAllow`/`deny` 现算面 —— 能证成才放行，禁令变过就判版本不可比', () => {
+  const developer = listRoleCards().find((card) => String(card.code) === 'developer')
+  assert.ok(developer !== undefined)
+  const sdoFace = maskFaceOf(developer).filter((name) => (
+    isSdoTool(name) || (READ_ONLY_INSPECTION_TOOLS as readonly string[]).includes(name)
+  ))
+  // 旧事件的**真实形状**：`sdoAllow` = 当时的 SDO 流程面白名单；`deny` = 当时实际下发的完整 deny 面
+  const coveringDeny = [...EXECUTOR_DENIED_TOOLS, ...developer.deny]
+
+  // ① 能证成 ⇒ 放行（不需要重建池：面是从**已存事件**现算的）
+  const ok = maskBacktrack('developer', { sdoAllow: sdoFace, deny: coveringDeny })
+  assert.equal(ok.reusable, true, `禁令集与角色 deny 都被已存 deny 覆盖 + 子面相等 ⇒ 可以放行：${ok.detail}`)
+  assert.deepEqual(ok.face, [...sdoFace].sort(), '现算的面就是"只读检视面 ∪ 已存 sdoAllow − 已存 deny"')
+  const legacyHash = createHash('sha1').update('legacy-mask-v1').digest('hex').slice(0, 12)
+  const reusableChild: PoolChild = {
+    childSessionId: 'legacy-ok', role: 'developer', task: 'TASK-20830', mode: 'continuable', state: 'idle',
+    rounds: 1, startedAt: '', finishedAt: '', maskHash: legacyHash, sdoAllow: sdoFace, deny: coveringDeny,
+  }
+  assert.equal(
+    reuseBlockedReason(reusableChild, maskFingerprint('developer')),
+    undefined,
+    '旧口径会话在"面能被证成一致"时必须**放行**（否则口径升级 = 整池一次性作废，正是 DEF-194 反对的代价）',
+  )
+
+  // ② 反例（诚实边界）：已存 deny 里少了今天的一条禁令 ⇒ **版本不可比 ⇒ 保守不复用**，并点名是哪条
+  const missingForbid = coveringDeny.filter((name) => name !== 'failure_forgive')
+  const notComparable = maskBacktrack('developer', { sdoAllow: sdoFace, deny: missingForbid })
+  assert.equal(notComparable.reusable, false, '旧事件没有当时禁令集的副本 ⇒ 证不成就不许放行')
+  assert.match(notComparable.detail, /failure_forgive/u, '理由必须点名缺的是哪一条禁令')
+  assert.match(notComparable.detail, /版本不可比/u, '回执口径：版本不可比（不是"面一定变了"）')
+  const blocked = reuseBlockedReason(
+    { ...reusableChild, childSessionId: 'legacy-forbid', deny: missingForbid },
+    maskFingerprint('developer'),
+  )
+  assert.match(blocked ?? '', /掩码已变更/u, '不放行时仍走既有的"掩码已变更"理由（与池视图逐字同源）')
+  assert.match(blocked ?? '', /failure_forgive/u, '坑在哪要写在台账上，别让人再反推一次')
+
+  // ③ 反例：已存面少了该角色的一条 sdo 工具 ⇒ 面不等（旧会话缺这项能力）⇒ 也不放行
+  const droppedSdo = sdoFace.find(isSdoTool)
+  assert.ok(droppedSdo !== undefined, '前置：developer 的 sdo 面里确实有工具')
+  const narrower = maskBacktrack('developer', { sdoAllow: sdoFace.filter((name) => name !== droppedSdo), deny: coveringDeny })
+  assert.equal(narrower.reusable, false, `旧会话缺 ${droppedSdo} ⇒ 面不等 ⇒ 不复用`)
+
+  // ④ 版本号三态：v2 带前缀、旧值认不出（"两种口径长得一样"就是 DEF-194 的病根）
+  assert.equal(maskHashVersion(maskFingerprint('developer')), MASK_FINGERPRINT_VERSION, 'v2 指纹必须自带版本号')
+  assert.equal(maskHashVersion('214659061731'), 0, '台账里的旧值（12 位十六进制、无前缀）按版本未知读')
+})
+
+test('M206-16 守卫⑤ 创建时的指纹**不被复用那笔覆盖**（覆盖 ⇒ 旧会话被洗白、R-7 的雪球口子）', () => {
+  const childSessionId = 'ffff2080-1111-4bbb-8ccc-dddddddd01'
+  // 创建时那一笔：一个**与当前不同**的 v2 指纹（代表"这个会话诞生于旧面"）
+  const createdWith = '2:000000000000'
+  office.recordDispatchStarted(call, {
+    taskId: 'TASK-20840', provider: 'spawn', childSessionId, parentSessionId: 's-m206',
+    tools: 3, role: 'developer', mode: 'continuable', maskHash: createdWith,
+  })
+  office.journalFor(WORKSPACE).append('dispatch/finished', { task: 'TASK-20840', childSessionId })
+  // 之后这个会话被**成功复用**一次：那一笔记的是"派发那一刻的角色面"（当前指纹），**不是**这个会话的面
+  office.recordDispatchStarted(call, {
+    taskId: 'TASK-20841', provider: 'spawn', childSessionId, parentSessionId: 's-m206',
+    tools: 3, role: 'developer', mode: 'continuable', maskHash: maskFingerprint('developer'), reused: true,
+  })
+  office.journalFor(WORKSPACE).append('dispatch/finished', { task: 'TASK-20841', childSessionId })
+
+  const children = [...foldPoolChildren(office.journalFor(WORKSPACE).read().events.map((event) => ({
+    type: event.type, data: event.data, at: event.at,
+  }))).values()]
+  const child = children.find((item) => item.childSessionId === childSessionId)
+  assert.equal(
+    child?.maskHash,
+    createdWith,
+    `复用那一笔**不许覆盖**创建时指纹（覆盖之后这个会话就被"洗白"了）：${String(child?.maskHash)}`,
+  )
+  // 行为面：所以它仍然被判"掩码已变更"，不会被永久复用（修前那种雪球）
+  const pools = rolePools({
+    children, roles: ['developer'], caps: {}, defaultCap: 4,
+    maskHashOf: () => maskFingerprint('developer'),
+  })
+  assert.equal(pools[0]?.idle.length, 0, '创建于旧面的会话不许因为"被复用成功过一次"就变成可复用')
+  assert.match(pools[0]?.unusable[0]?.reason ?? '', /掩码已变更/u, `理由要读得出来：${pools[0]?.unusable[0]?.reason ?? ''}`)
 })

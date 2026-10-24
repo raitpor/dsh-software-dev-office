@@ -176,7 +176,7 @@ function buildReadout(cwd: string): string {
 import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
-import { poolReadingLine, readingOfRole, reuseSkippedLines } from './domain/pool.js'
+import { DELIVERY_FAILED_PREFIX, poolReadingLine, readingOfRole, reuseSkippedLines } from './domain/pool.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
 import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
@@ -2166,6 +2166,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
           deny: denyFiltered.applied,
           maxDepth: settings.dispatchMaxDepth,
           ...(entry.reuseChildId === undefined ? {} : { reuseChildId: entry.reuseChildId }),
+          // **`TASK-208` 落点一**：把整条**有序候选队列**交给投递层逐条试（修前只传一个 id，
+          // 投递失败即降级新起 ⇒ `DEF-185` 的"每轮都挑同一个投不进去的候选"）。
+          ...(entry.reuseCandidates === undefined ? {} : { reuseCandidates: entry.reuseCandidates }),
         })
         if (held.length > 0) {
           out.push(fmt('uiDescribe.kDispatchLimitHeld', {
@@ -2183,29 +2186,41 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }))
         }
         /**
-         * **`DEF-185` / `DEF-186` 落点二（`TASK-196`）：投递被拒**不许静默**。**
+         * **`DEF-185` / `DEF-186` 落点二（`TASK-196`）+ `TASK-208` 落点一：投递被拒**不许静默**。**
          *
-         * 准入挑中了一个"闸门全过"的空闲孩子（`reuseSkipped` 于是为空），但**投递**这一步
-         * 宿主拒了（`startDispatch` 的 `sendMessage` 抛错 ⇒ `reuseFailed` ⇒ 退化成新起一个）。
-         * 修前这条原因只活在**回执里**（`kReuseFailed` 那一行），台账上则完全消失 ——
-         * 于是 `dispatch/started` 长成「`idle=68 / unusable=0 / reused=false` + 零条 skip」，
-         * 与"判据全过却不复用"在台账上**一模一样**（`DEF-185` 的形状，真机 seq 4982 / 4998）。
+         * 准入挑出了"闸门全过"的空闲孩子（`reuseSkipped` 于是为空），但**投递**这一步宿主拒了
+         * （`startDispatch` 的 `sendMessage` 抛错）。修前这条原因只活在**回执里**（`kReuseFailed`
+         * 那一行），台账上则完全消失 —— 于是 `dispatch/started` 长成
+         * 「`idle=68 / unusable=0 / reused=false` + 零条 skip」，与"判据全过却不复用"在台账上
+         * **一模一样**（`DEF-185` 的形状，真机 seq 4982 / 4998）。
          *
-         * 现在：投递被拒 ⇒ 补一条**带原因**的 `reuseSkipped`（子会话 id / 角色 / 宿主原话），
-         * 与闸门那批同形同面 —— 这才是「`idle>0` 且 `unusable=0` 且 `reused=false` ⇒ 必须解释」的答案来源。
+         * **`TASK-208` 起是逐条**（不再只报第 1 个候选）：投递层按候选队列逐条试，`reuseAttempts`
+         * 里每一条都带宿主原话 ⇒ 这里**一条失败落一行** `reuseSkipped`。
+         * 两个边界：
+         *   · 候选 1 被拒、候选 2 成功时 `reused=true`，**照样落候选 1 那一行**（修前这种情形零条，
+         *     于是"复用成功"看起来像"一次就成"，池子退化的方向被掩盖）；
+         *   · 行文带 ASCII 前缀 `delivery-failed: `（`pool.DELIVERY_FAILED_PREFIX`）—— 闸门拒与投递拒
+         *     走同一个承载，读侧（`foldPoolChildren`）靠这个稳定字形把投递失败折进 `unusable` 桶。
          */
         const attemptedReuse = entry.reuseChildId !== undefined && entry.reuseChildId !== ''
-        const deliverySkipped = attemptedReuse && outcome.started && outcome.reused === false
-          ? [{
-              childSessionId: entry.reuseChildId as string,
+        const deliverySkipped = outcome.started && outcome.reuseAttempts !== undefined && outcome.reuseAttempts.length > 0
+          ? outcome.reuseAttempts.map((row) => ({
+              childSessionId: row.childSessionId,
               role: task.role,
               // 语言包键**不在本卡写范围内** ⇒ 走已有的 `uiDescribe.kReuseFailed`（与回执那一行同源），
               // 没给原因那一格用 ASCII 投影（同上，不新增硬编码中文 —— `m7` 的棘轮守着这一条）。
-              reason: outcome.reuseFailed === undefined
-                ? 'reuse delivery failed (host gave no reason) -> forced new child'
-                : fmt('uiDescribe.kReuseFailed', { p1: outcome.reuseFailed }),
-            }]
-          : []
+              reason: `${DELIVERY_FAILED_PREFIX}${fmt('uiDescribe.kReuseFailed', { p1: row.reason })}`,
+            }))
+          // 降级路径（老调用方/旧宿主不给 `reuseAttempts`）：保持"一条"的原行为，不让读数凭空消失
+          : attemptedReuse && outcome.started && outcome.reused === false
+            ? [{
+                childSessionId: entry.reuseChildId as string,
+                role: task.role,
+                reason: `${DELIVERY_FAILED_PREFIX}${outcome.reuseFailed === undefined
+                  ? 'reuse delivery failed (host gave no reason) -> forced new child'
+                  : fmt('uiDescribe.kReuseFailed', { p1: outcome.reuseFailed })}`,
+              }]
+            : []
         if (deliverySkipped.length > 0) {
           out.push(fmt('uiIndex.kReuseSkipped', {
             p1: String(deliverySkipped.length),

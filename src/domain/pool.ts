@@ -18,6 +18,8 @@
  *      把它们算进"空闲可复用"就是把"池"说成不存在的能力 —— 这里单列 `retired` 如实记账。
  */
 import { fmt } from './i18n.js'
+import { REUSE_SKIPPED_EVENT } from './dispatchFace.js'
+import { MASK_FINGERPRINT_VERSION, maskBacktrack, maskHashVersion } from './roles.js'
 import type { TaskCard } from '../types.js'
 
 /** 一轮派发（`dispatch/started` + 其结算）。 */
@@ -51,8 +53,46 @@ export interface PoolChild {
    * **这一轮子代理的工具面指纹**（SDO-52）：真机上同一个子会话被复用约 137 张卡，
    * 中途给角色补的 `read_image` **始终拿不到** —— 工具面是**创建会话时**定下的，复用不会刷新。
    * 老事件没有这个字段 ⇒ 空串（**未知指纹 ⇒ 不允许复用**，保守但正确）。
+   *
+   * `TASK-208` 起带**口径版本**（`2:<hash>`，见 `MASK_FINGERPRINT_VERSION`）：没有版本前缀的是旧口径，
+   * 不能与现算值直接比 —— 那是 `DEF-194` 的"两种口径长得一样"的病根。
    */
   maskHash?: string | undefined
+  /**
+   * 该会话**创建时**的 SDO 流程面白名单（`dispatch/started.sdoAllow`）—— 旧口径指纹的**回溯依据**
+   * （`TASK-208` 落点五）。只在第一次 `dispatch/started` 上取：工具面是创建时定下的，后续复用那几笔
+   * 记的是"当时的角色面"，不是这个会话的面。
+   */
+  sdoAllow?: string[] | undefined
+  /** 该会话**创建时**实际下发的 deny 面（`dispatch/started.deny`）—— 同上，是"当时禁令集"的唯一残迹。 */
+  deny?: string[] | undefined
+  /**
+   * **最近一次投递被宿主拒**的原话（`TASK-208` 落点二）：该孩子仍空闲，但往它那儿投卡被拒过，
+   * 且在它之后没有一次成功投递（成功即清空）。
+   *
+   * 为什么必须进读数：`DEF-185` 的真机形状是「`idle=77 / unusable=0` 却 `reused=false`」——
+   * 投递被拒这件事只活在回执里，桶里一个字都没有 ⇒ 看起来"判据全过却不复用"。
+   */
+  deliveryFailedReason?: string | undefined
+}
+
+/**
+ * 「投递被宿主拒」那批留痕的**机器可读前缀**（`TASK-208` 落点二）。
+ *
+ * 为什么用前缀而不是新增字段：留在台账里的 `reuseSkipped` 行只有三字段（`childSessionId`/`role`/
+ * `reason`，见 `dispatchFace.reuseSkippedFields`），闸门拒与投递拒走**同一个**承载 ⇒ 读侧要靠一个
+ * **稳定字形**分流。ASCII 前缀不受语言包影响（口径与 `dispatchFace` 里那些 ASCII 投影一致）。
+ */
+export const DELIVERY_FAILED_PREFIX = 'delivery-failed: '
+
+/** 从一条 `reuseSkipped.reason` 里取出「投递被拒」的宿主原话（不是投递拒的 ⇒ `undefined`）。 */
+export function deliveryFailureOf(reason: string): string | undefined {
+  return reason.startsWith(DELIVERY_FAILED_PREFIX) ? reason.slice(DELIVERY_FAILED_PREFIX.length).trim() : undefined
+}
+
+function namesOf(value: unknown): string[] {
+  if (!Array.isArray(value)) return []
+  return value.map((item) => (typeof item === 'string' ? item.trim() : '')).filter((item) => item !== '')
 }
 
 /** 一个角色池的现状。 */
@@ -122,15 +162,26 @@ function text(value: unknown): string {
  * 同一 `childSessionId` 可以出现多轮（复用）：每轮 `started` 把它置回 busy，
  * 对应 `finished` 再置回 idle（`rounds` +1）。结算找不到对应 started 的（手写/丢事件）
  * 不凭空造一个孩子 —— 宁可少记，也不编。
+ *
+ * `TASK-208` 起多折三样（都只从**已有事件**折，不新增真源）：
+ *   · `sdoAllow` / `deny` —— **创建时**那两份面（旧口径指纹的回溯依据，落点五）；
+ *   · `maskHash` —— **创建时**那一份（复用那几笔记的是"当时的角色面"，不是这个会话的面 ⇒ 不许覆盖，
+ *     否则旧会话被复用一次之后就"看起来跟当前一致"，R-7 的口子重新打开）；
+ *   · `deliveryFailedReason` —— 最近一次**投递被宿主拒**的原话（落点二：让它进 `unusable` 桶）。
  */
 export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, PoolChild> {
   const children = new Map<string, PoolChild>()
   for (const event of events) {
-    const id = text(event.data['childSessionId'])
-    if (id === '') continue
     if (event.type === 'dispatch/started') {
+      const id = text(event.data['childSessionId'])
+      if (id === '') {
+        // 没有孩子 id 的 started 不成话，但它可能挂着**投递被拒**的留痕（那批 row 自己有 childSessionId）
+        applyDeliverySkips(children, event.data['reuseSkipped'], undefined)
+        continue
+      }
       const previous = children.get(id)
       const mergedCardIds = [...new Set([...(previous?.cardIds ?? []), text(event.data['task'])])].filter((item) => item !== '')
+      const reused = event.data['reused'] === true
       children.set(id, {
         childSessionId: id,
         role: text(event.data['role']),
@@ -145,11 +196,23 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
         cards: mergedCardIds.length,
         startedAt: event.at ?? text(event.data['startedAt']),
         finishedAt: '',
-        maskHash: text(event.data['maskHash']),
+        // ① 复用的那一笔**不覆盖**创建时的指纹（见函数头注释）；② 这一笔若是一次**成功投递**，
+        // 上一次的"投递被拒"就作废（成功即清空）。
+        maskHash: reused && previous !== undefined ? (previous.maskHash ?? '') : text(event.data['maskHash']),
+        sdoAllow: previous?.sdoAllow ?? namesOf(event.data['sdoAllow']),
+        deny: previous?.deny ?? namesOf(event.data['deny']),
         cardIds: mergedCardIds,
       })
+      applyDeliverySkips(children, event.data['reuseSkipped'], id)
       continue
     }
+    // **独立事件承载**（`dispatch/reuse-skipped`）：同样只认带「投递被拒」前缀的那几条
+    if (event.type === REUSE_SKIPPED_EVENT) {
+      applyDeliverySkips(children, [event.data], undefined)
+      continue
+    }
+    const id = text(event.data['childSessionId'])
+    if (id === '') continue
     if (event.type !== 'dispatch/finished') continue
     const child = children.get(id)
     if (child === undefined) continue
@@ -157,6 +220,35 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
     children.set(id, { ...child, state: 'idle', finishedAt: event.at ?? text(event.data['finishedAt']) })
   }
   return children
+}
+
+/**
+ * 把一批 `reuseSkipped` 留痕里**投递被拒**的那几条标到对应的孩子身上（`TASK-208` 落点二）。
+ *
+ * 两个边界：
+ *   · 只认 `DELIVERY_FAILED_PREFIX` 开头的那批 —— 闸门拒（掩码/持卡/余量）本来就由
+ *     `reuseBlockedReason` 现算，不需要台账帮忙，混进来只会把两件事说成一件；
+ *   · 孩子认不出（事件里没有它的 `dispatch/started`）⇒ **不凭空造**（`DEF-185` 的教训：宁可少记也不编）。
+ *     `justDelivered` 是这一笔事件里**刚被投递成功**的孩子：成功即清空上一次的失败标记。
+ */
+function applyDeliverySkips(children: Map<string, PoolChild>, rows: unknown, justDelivered: string | undefined): void {
+  if (justDelivered !== undefined) {
+    const delivered = children.get(justDelivered)
+    if (delivered !== undefined && delivered.deliveryFailedReason !== undefined) {
+      const { deliveryFailedReason: _cleared, ...rest } = delivered
+      children.set(justDelivered, rest)
+    }
+  }
+  if (!Array.isArray(rows)) return
+  for (const item of rows) {
+    const row = item as { childSessionId?: unknown; reason?: unknown }
+    const id = text(row.childSessionId)
+    const reason = deliveryFailureOf(text(row.reason))
+    if (id === '' || reason === undefined) continue
+    const child = children.get(id)
+    if (child === undefined) continue
+    children.set(id, { ...child, deliveryFailedReason: reason })
+  }
 }
 
 /** 角色 → 并行上限（配置里没写的角色用 `defaultCap`）。 */
@@ -199,13 +291,39 @@ export function reuseBlockedReason(
   if (maxCards > 0 && child.cards !== undefined && child.cards >= maxCards) {
     return fmt('uiPool.kReuseCardsExceeded', { p1: String(child.cards), p2: String(maxCards) })
   }
+  const deliveryFailed = child.deliveryFailedReason ?? ''
   const actual = child.maskHash ?? ''
-  if (wantedMaskHash === '' || actual !== wantedMaskHash) {
-    return actual === ''
-      ? '旧子代理没有掩码指纹（无法确认其工具面）'
-      : '掩码已变更（该会话的工具面是创建时的旧面）'
+  const maskReason = maskBlockedReason(child, actual, wantedMaskHash)
+  if (maskReason !== undefined) return maskReason
+  // **`TASK-208` 落点二**：投递被拒也是"不能复用"的事实，必须进同一个判据（⇒ 进 `unusable` 桶并带原因）。
+  // 放在掩码之后：掩码/观测是"这个会话的面不对"，比"上一次投递失败"更根本，先报更可执行的。
+  if (deliveryFailed !== '') {
+    return `上一次投递被宿主拒（宿主原话：${deliveryFailed}）⇒ 不再挑它`
   }
   return undefined
+}
+
+/**
+ * **掩码口径的比对**（`DEF-194` / `TASK-208` 落点三、落点五）—— 三条路，**方向全部是保守的**：
+ *
+ *   ① **同版本**（两侧都带版本号）⇒ 逐字节比哈希：快路径，面变没变一目了然；
+ *   ② **旧值无版本号** ⇒ 走 {@link maskBacktrack} 从已存的面**现算**：只有能证成"禁令集与角色 deny
+ *      都已覆盖、且可回溯子面逐项相同"才放行；证不成 ⇒ **版本不可比 ⇒ 不复用**（`R-7` 不回归）；
+ *   ③ 指纹缺失/当前指纹取不到 ⇒ 一律不复用（与旧口径一致）。
+ *
+ * 为什么"旧值"这一档不能沿用"掩码已变更"了事：旧台账里 77 个 developer 空闲会话全是旧口径指纹，
+ * 一句"面变了"会把整池一次性作废（`DEF-194` 反对的正是这种代价）；但也不能为了留住它们就把
+ * 判据放宽 —— 所以是"能证成才放行"，理由里逐字写出证成/证不成在哪。
+ */
+function maskBlockedReason(child: PoolChild, actual: string, wantedMaskHash: string): string | undefined {
+  if (wantedMaskHash !== '' && actual === wantedMaskHash) return undefined
+  if (actual === '') return '旧子代理没有掩码指纹（无法确认其工具面）'
+  if (wantedMaskHash === '' || maskHashVersion(actual) === MASK_FINGERPRINT_VERSION) {
+    return '掩码已变更（该会话的工具面是创建时的旧面）'
+  }
+  const backtrack = maskBacktrack(child.role, { sdoAllow: child.sdoAllow, deny: child.deny })
+  if (backtrack.reusable) return undefined
+  return `掩码已变更（旧口径指纹没有版本号，且回溯判不了：${backtrack.detail}）`
 }
 
 /**
@@ -342,8 +460,15 @@ export interface PoolAdmission {
   reuseIdle: boolean
   /** 本轮是否**强制新起**（`sdo_plan freshChild=true`）—— 同上，是"没打算复用"而不是"复用被拒" */
   forceNew: boolean
-  /** 本轮可派的卡；`reuseChildId` 给了就是「投给这个**已有**子代理」（真复用），没给就是新起一个 */
-  dispatch: { task: TaskCard; reuseChildId?: string | undefined }[]
+  /**
+   * 本轮可派的卡；`reuseChildId` 给了就是「投给这个**已有**子代理」（真复用），没给就是新起一个。
+   *
+   * `reuseCandidates`（`TASK-208` 落点一）：**有序候选队列**，`reuseChildId` 是它的第 0 项。
+   * 修前的形状是"只取一个候选"——`find()` 出来的那一个投递失败就整轮降级新起，
+   * 于是同一个投不进去的候选每轮都被挑中、每轮都新起（`DEF-185`，真机 `b5e60eac` 连撞三次）。
+   * 投递层（`startDispatch`）按这个顺序**逐条试**：成功即采用，失败逐条留痕，全部失败才新起。
+   */
+  dispatch: { task: TaskCard; reuseChildId?: string | undefined; reuseCandidates?: string[] | undefined }[]
   /** **被闸门拒的空闲子代理**（掩码/观测/持卡/余量四类，判据只有 `rolePools` 那一处）：回执与事件靠它答"为什么没复用" */
   reuseSkipped: { childSessionId: string; role: string; reason: string }[]
   /* ———————————————————— 定案面（`DEF-139` 落点一/二） ———————————————————— */
@@ -581,12 +706,29 @@ export function admitDispatch(input: {
      * 同父的挑完了，仍然可以落到它们身上。
      */
     if (input.reuseIdle && input.forceNew !== true && pool.idle.length > 0) {
-      const taken = reuseCandidateOrder(pool).find((child) => blockedReasonOf(child) === undefined)
+      /**
+       * **`TASK-208` 落点一（修 `DEF-185`）：候选不再是"一个"，而是一条有序队列。**
+       *
+       * 修前：`reuseCandidateOrder(pool).find(...)` ⇒ **只取第 1 个过闸门的候选**；投递失败（宿主
+       * `sendMessage` 抛 `is unavailable`）⇒ `startDispatch` 直接降级新起，**第 2..N 个候选一次都没试过**。
+       * 真机后果（seq 5251 / 5277 / 5299）：同一个投不进去的 `b5e60eac` 连续三轮被挑中、三轮 unavailable、
+       * 三轮新起，而池里另外 76 个空闲会话从未被投递过一次。
+       *
+       * 现在：过闸门的候选**按同一顺序整条交给投递层**（`reuseCandidates`），由它逐条试、成功即采用。
+       * 准入这边仍然只占**一个位子**（`room -= 1` / 从 `idle` 摘一个）——"试几个"是投递层的事，
+       * "这一张卡占几个位子"始终是 1。
+       */
+      const deliverable = reuseCandidateOrder(pool).filter((child) => blockedReasonOf(child) === undefined)
+      const taken = deliverable[0]
       if (taken !== undefined) {
         const index = pool.idle.findIndex((child) => child.childSessionId === taken.childSessionId)
         if (index >= 0) pool.idle.splice(index, 1)
         pool.busy.push({ ...taken, state: 'busy', task: task.id })
-        dispatch.push({ task, reuseChildId: taken.childSessionId })
+        dispatch.push({
+          task,
+          reuseChildId: taken.childSessionId,
+          reuseCandidates: deliverable.map((child) => child.childSessionId),
+        })
         room -= 1
         continue
       }
