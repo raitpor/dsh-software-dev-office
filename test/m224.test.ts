@@ -26,11 +26,22 @@
  */
 import assert from 'node:assert/strict'
 import { spawnSync } from 'node:child_process'
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
+
+import { Config, resolveSettings } from '../src/config.js'
+import { setLocale } from '../src/domain/i18n.js'
+import { createTask, listTasks, readyTasks } from '../src/domain/plan.js'
+import { ORDER_BASIS_LABEL, SNAPSHOT_CHAR_BUDGET, renderQueueTable, renderStatusSnapshot } from '../src/domain/snapshot.js'
+import { SoftwareDevOffice } from '../src/office.js'
+import type { SdoConfig } from '../src/config.js'
+import type { Journal } from '../src/infra/journal.js'
+import type { SdoStore } from '../src/infra/store.js'
+import type { OfficeCall } from '../src/office.js'
+import type { TaskCard } from '../src/types.js'
 
 /** 编译后本文件落在 `lib/test/`，仓库根是上两级。 */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -171,4 +182,220 @@ test('M224-05 脚本对现盘登记表是不动点（重排不洗表、不加括
   assert.equal((live.match(/\}  \}/gu) ?? []).length, 0, 'the live file must not carry a doubled closing brace')
   // 现盘表体必须能被解析出登记（表尾/表头的形态没跑偏）
   assert.ok(Object.keys(parsed.registered).length > 100, 'the live table must still parse into a full registration map')
+})
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`TASK-185` 追加：驾驶舱状态快照 + 派发队列有序全表（可观测性① / `DEF-174` / `DEF-175`）**
+ *
+ * 为什么追加在本文件：卡上的写范围点名了 `test/m224.test.ts`（拆卡时它还是空号）。
+ * 断言消息一律用英文、中文只写在断言**之外**（本文件不进 `KNOWN_PROSE_GAP`）——
+ * 连"中文证据串"也不许进断言：把中文串塞进断言实参，会被散文棘轮记成一个**未登记站点**。
+ * 于是所有"文案里有没有那句话"的判据都改判**结构化读数**（`verdict` 码 / `refs` / ASCII 投影）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+interface SnapFixture {
+  office: SoftwareDevOffice
+  call: OfficeCall
+  workspace: string
+  journal: Journal
+  store: SdoStore
+}
+
+const SNAP_BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m224-snapshot/', import.meta.url))
+
+/** 一台真实的办公室（真 `SdoStore` + 真 `Journal`）—— 快照的读数必须是**现算**，不是摆件。 */
+function snapFixture(name: string, overrides: Partial<SdoConfig> = {}): SnapFixture {
+  const workspace = join(SNAP_BASE, name)
+  // **每条用例用自己的干净台账**：不清理就会继承上一轮留下的卡（id 会顺延、排序断言随之漂移）。
+  rmSync(workspace, { recursive: true, force: true })
+  mkdirSync(workspace, { recursive: true })
+  const office = new SoftwareDevOffice(resolveSettings(Config({ ...overrides } as unknown as SdoConfig)))
+  const sessionId = `s-${name}`
+  office.noteSession(sessionId, workspace)
+  const call = { sessionId, cwd: workspace } as unknown as OfficeCall
+  office.init(call, { name: `M224 ${name}`, scale: 'normal', stakeholders: ['业务方'] })
+  return { office, call, workspace, journal: office.journalFor(workspace), store: office.storeFor(workspace) }
+}
+
+/** 造一张计划中的卡（写范围按序号错开：本条测的是**排序**，不是写范围相交）。 */
+function snapCard(f: SnapFixture, size: 'small' | 'medium' | 'large', scope: string): TaskCard {
+  return createTask(f.store, f.journal, {
+    title: `card ${scope}`,
+    goal: 'g',
+    dod: ['d'],
+    role: 'developer',
+    size,
+    writeScopes: [scope],
+  } as never)
+}
+
+const CJK = /[\u4e00-\u9fff]/u
+
+test('M224-S1 (guard 1, two-state) mixed small+medium queue: ordered list puts small first and carries its rank', () => {
+  const f = snapFixture('rank')
+  // **缺陷形状**：先建的 `medium` 拿到更小的 id（`createTask` 自增）——
+  // 这正是 `DEF-174` 的真机形状（`183 medium` 的 id 小于 `184 small`）。
+  const medium = snapCard(f, 'medium', 'src/rank/a.ts')
+  const small = snapCard(f, 'small', 'src/rank/b.ts')
+  assert.equal(medium.id.localeCompare(small.id) < 0, true, 'fixture premise: the medium card holds the smaller id')
+
+  const plan = f.office.poolPlan(f.call, { reuseIdle: false })
+  const snapshot = f.office.statusSnapshot(f.call, plan)
+  const text = renderStatusSnapshot(snapshot)
+
+  // ① 有序列表：small 在前，且**带秩值**（`TASK-x small(1)`）
+  const atSmall = text.indexOf(`${small.id} small(1)`)
+  const atMedium = text.indexOf(`${medium.id} medium(2)`)
+  assert.ok(atSmall >= 0, `the ordered list must carry the small card with its rank: ${text}`)
+  assert.ok(atMedium >= 0, `the ordered list must carry the medium card with its rank: ${text}`)
+  assert.ok(atSmall < atMedium, `small must precede medium in the ordered list: ${text}`)
+
+  // ② 两态：修前那把键（只有 id 升序，规模秩被覆盖）在**同一台台账**上会把 medium 排到前面 ——
+  //    守卫若只会"恒绿"，这一格就抓不住原缺陷。
+  //
+  //    ⚠️ **红的是哪一格要说清**（`REV-091` 重点②）：上面三格文本断言读的是候选全表的排序源
+  //    （`candidateQueue` ⇒ `plan.ts` 的唯一比较器），而变异（把 `office.ts` 的 `fairReady` 改回旧键）
+  //    **打不到它** —— 那张表仍会印 `small(1)` 在前。真正咬住"决策面那把键被覆盖"的是下面第 ③ 组
+  //    同源断言（`plan.dispatch` / `snapshot.next` / 准入与全表的顺序一致性）。两态证明的写法是：
+  //    **② 用重算的旧键证明"旧键会把顺序翻过来"，③ 证明"实现用的键与全表同序"**。
+  const preFixKey = [...readyTasks(listTasks(f.store), 999)].sort((a, b) => a.id.localeCompare(b.id))
+  assert.equal(preFixKey[0]?.id, medium.id, 'the pre-fix key (id ascending) must reproduce the inversion')
+
+  // ③ 读数与决策同源：快照里的"下一张"必须就是准入首位
+  assert.equal(plan.dispatch[0]?.task.id, small.id, 'the admittance head must be the small card')
+  assert.equal(snapshot.next, small.id, 'the snapshot next-card must equal the admittance head')
+  assert.equal(plan.queue[0]?.id, small.id, 'the ordered table head must equal the admittance head')
+})
+
+test('M224-S2 (guard 2, two-state) a card blocked by capacity is named in the snapshot with its reason', () => {
+  const f = snapFixture('capacity', { maxParallelDispatch: 1 })
+  const first = snapCard(f, 'small', 'src/cap/a.ts')
+  const second = snapCard(f, 'small', 'src/cap/b.ts')
+  assert.notEqual(first.id, second.id, 'fixture premise: two distinct cards')
+  const plan = f.office.poolPlan(f.call, { reuseIdle: false })
+  assert.equal(plan.queue.length, 2, `fixture premise: both cards are candidates: ${JSON.stringify(plan.queue)}`)
+  const blockedRow = plan.queue.find((entry) => entry.verdict === 'capacity')
+  assert.ok(blockedRow !== undefined, `the ordered table must classify the budget-blocked card: ${JSON.stringify(plan.queue)}`)
+  assert.equal(blockedRow.position > 0, true, 'the blocked row must keep its position in the ordered table')
+  // 反向一格：**被挡的那张**不许同时在派发名单里
+  assert.equal(plan.dispatch.some((entry) => entry.task.id === blockedRow.id), false, 'a capacity-blocked card must not be dispatched')
+
+  const text = renderStatusSnapshot(f.office.statusSnapshot(f.call, plan))
+  assert.ok(text.includes(blockedRow.id), `the blocked line must name the blocked card: ${text}`)
+  assert.ok(text.includes('budget='), `the blocked line must carry the structured budget reading: ${text}`)
+})
+
+test('M224-S3 (guard 3) snapshot volume stays under the pinned budget on a non-trivial ledger', () => {
+  const f = snapFixture('volume')
+  for (let index = 0; index < 12; index += 1) snapCard(f, index % 3 === 0 ? 'medium' : 'small', `src/vol/${String(index)}.ts`)
+  const plan = f.office.poolPlan(f.call, { reuseIdle: false })
+  const text = renderStatusSnapshot(f.office.statusSnapshot(f.call, plan))
+  assert.ok(text.length < SNAPSHOT_CHAR_BUDGET, `snapshot must stay under ${String(SNAPSHOT_CHAR_BUDGET)} chars, got ${String(text.length)}`)
+  assert.ok(text.includes(`/${String(SNAPSHOT_CHAR_BUDGET)}`), `the size line must state the pinned budget: ${text}`)
+  // 有界不等于"截得看不见"：队列行数与阻塞名必须真的在里面（否则守卫只证明"短"）
+  assert.ok(text.includes('small(1)'), `the ordered list must be present: ${text}`)
+})
+
+test('M224-S4 (guard 4) two snapshots of one ledger are byte-identical except the timestamp', () => {
+  const f = snapFixture('stable')
+  const medium = snapCard(f, 'medium', 'src/stable/a.ts')
+  snapCard(f, 'small', 'src/stable/b.ts')
+  f.office.recordDispatchStarted(f.call, {
+    taskId: medium.id,
+    provider: 'spawn',
+    childSessionId: 'cafebabe',
+    parentSessionId: f.call.sessionId ?? '',
+    tools: 3,
+    role: 'developer',
+  })
+  const first = renderStatusSnapshot(f.office.statusSnapshot(f.call, f.office.poolPlan(f.call, { reuseIdle: false }), new Date('2026-10-24T01:00:00.000Z')))
+  const second = renderStatusSnapshot(f.office.statusSnapshot(f.call, f.office.poolPlan(f.call, { reuseIdle: false }), new Date('2026-10-24T02:30:00.000Z')))
+  const body = (text: string): string => text.split('\n').slice(1).join('\n')
+  assert.notEqual(first.split('\n')[0], second.split('\n')[0], 'the timestamp line must really differ (otherwise this guard is vacuous)')
+  assert.equal(body(first), body(second), 'everything except the timestamp line must be byte-identical')
+  assert.equal(first.includes('cafebabe'), true, 'the in-flight line must show the child session prefix')
+})
+
+test('M224-S5 (landing 2) the ordered table is complete, rank-carrying and language-neutral (CJK-free in en)', () => {
+  const f = snapFixture('table')
+  const medium = snapCard(f, 'medium', 'src/tab/a.ts')
+  const small = snapCard(f, 'small', 'src/tab/b.ts')
+  const plan = f.office.poolPlan(f.call, { reuseIdle: false })
+  const table = renderQueueTable(plan.queue)
+  // 完整：每张候选都在表里（不是"只报数量"）
+  for (const entry of plan.queue) {
+    assert.ok(table.includes(entry.id), `every candidate must appear in the table (${entry.id}): ${table}`)
+    assert.ok(table.includes(`${entry.id} ${entry.size}(${String(entry.rank)})`), `every row must carry its size rank (${entry.id}): ${table}`)
+  }
+  assert.ok(table.indexOf(`${small.id} small(1)`) < table.indexOf(`${medium.id} medium(2)`), `small must come first in the table: ${table}`)
+  // 语言中立：`en` 语言下的回执必须零中文（既有守卫 `test/m105.test.ts` 的同一条口径）
+  assert.equal(CJK.test(table), false, `the ordered table must stay CJK-free: ${table}`)
+  setLocale('en')
+  try {
+    const en = renderQueueTable(f.office.poolPlan(f.call, { reuseIdle: false }).queue)
+    assert.equal(CJK.test(en), false, `the ordered table must stay CJK-free under en too: ${en}`)
+    assert.ok(en.includes('dispatch queue'), `the table header must be present under en: ${en}`)
+  } finally {
+    setLocale('zh-CN')
+  }
+})
+
+test('M224-S6 (landing 3) the decision trace lands in dispatch/decided (candidates + key + why); absent when not given', () => {
+  const f = snapFixture('trace')
+  const card = snapCard(f, 'small', 'src/trace/a.ts')
+  f.office.recordDispatch(f.call, {
+    taskId: card.id,
+    backend: 'subagent',
+    owner: 'developer',
+    trace: {
+      orderBasis: ORDER_BASIS_LABEL,
+      candidates: [`${card.id} small(1)`],
+      selectedWhy: 'candidate#1 of 1 admitted',
+    },
+  })
+  const withTrace = f.journal.read().events.filter((event) => event.type === 'dispatch/decided').at(-1)
+  assert.equal(String(withTrace?.data['orderBasis'] ?? ''), ORDER_BASIS_LABEL, 'the ordering key name must be recorded')
+  assert.deepEqual(withTrace?.data['candidates'], [`${card.id} small(1)`], 'the ordered candidate list must be recorded')
+  assert.equal(typeof withTrace?.data['selectedWhy'], 'string', 'why-this-card must be recorded')
+
+  // 两态：不传 trace ⇒ 三个键**根本不落**（老调用点形状不变，读侧能区分"没记"与"记了空")
+  f.office.recordDispatch(f.call, { taskId: card.id, backend: 'subagent', owner: 'developer' })
+  const bare = f.journal.read().events.filter((event) => event.type === 'dispatch/decided').at(-1)
+  for (const key of ['orderBasis', 'candidates', 'selectedWhy']) {
+    assert.equal(Object.hasOwn(bare?.data ?? {}, key), false, `without a trace the key must be absent: ${key}`)
+  }
+})
+
+test('M224-S7 (REV-091 finding 2/3) the key is a total order: the decision order equals the table order at FULL length', () => {
+  const f = snapFixture('total-order')
+  // 四种规模与四个 id 交叉错位：**任何"只比首位"的断言都不足以证明两把顺序同源**
+  const cards = [
+    snapCard(f, 'medium', 'src/ord/a.ts'),
+    snapCard(f, 'small', 'src/ord/b.ts'),
+    snapCard(f, 'large', 'src/ord/c.ts'),
+    snapCard(f, 'small', 'src/ord/d.ts'),
+  ]
+  assert.equal(cards.length, 4, 'fixture premise: four candidates')
+  const plan = f.office.poolPlan(f.call, { reuseIdle: false })
+
+  // ① **全序对拍**：准入名单（决策面）与有序表里 `verdict==='dispatch'` 的序列**逐项相等**
+  //    —— 比"首位相等"强：任何长度上的换序都会被抓到。
+  const tableOrder = plan.queue.filter((entry) => entry.verdict === 'dispatch').map((entry) => entry.id)
+  const decisionOrder = plan.dispatch.map((entry) => entry.task.id)
+  assert.deepEqual(tableOrder, decisionOrder, `the table order must equal the decision order at full length`)
+
+  // ② 规模秩优先：`small` 的两张都必须排在那张 `medium` 与 `large` 之前（同档内按 id 升序）
+  const ranks = plan.queue.map((entry) => entry.rank)
+  assert.deepEqual([...ranks].sort((a, b) => a - b), ranks, `the table must be sorted by size rank ascending`)
+  assert.deepEqual(
+    plan.queue.filter((entry) => entry.rank === 1).map((entry) => entry.id),
+    [cards[1]?.id, cards[3]?.id],
+    'same-rank cards must stay in id ascending order',
+  )
+
+  // ③ **全序前提**（评审点名的那个隐含假设）：末位 `id` 唯一兜底 ⇒ 排序结果与输入顺序无关。
+  //    两次不同输入顺序必须得到同一个序列；否则"两次独立排序同序"这条推理就站不住。
+  const forward = plan.queue.map((entry) => entry.id)
+  const again = f.office.poolPlan(f.call, { reuseIdle: false }).queue.map((entry) => entry.id)
+  assert.deepEqual(again, forward, 'the same ledger must always yield the same order')
 })

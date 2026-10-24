@@ -1223,8 +1223,11 @@ const UNKNOWN_SIZE_RANK = 4
  *
  * 提到模块级的原因（DEF-007）：`readyTasks`（谁**真被派出**）与 `classifyNonDispatchable`
  *（回执说**谁挡着谁**）必须用**同一口径**排序 —— 两处各排一次，回执就会点名一张"并不是它挡的"卡。
+ *
+ * **导出**（`TASK-185`）：派发队列的有序全表与状态快照都要**印出这个秩值**（`TASK-184 small(1)`）——
+ * 秩只在这里算一次，回执不许再抄一份数字表（抄了就会与排序脱节，而"回执与决策同源"是本仓的硬口径）。
  */
-function sizeRankOf(task: TaskCard): number {
+export function sizeRankOf(task: TaskCard): number {
   return SIZE_RANK[task.size] ?? UNKNOWN_SIZE_RANK
 }
 
@@ -1294,6 +1297,58 @@ export function readyTasks(tasks: TaskCard[], limit = 4, staleGate?: StaleGate |
     if (picked.length >= limit) break
   }
   return picked
+}
+
+/**
+ * **派发顺序的唯一键**（`TASK-185` 落点三 / `DEF-174`）：**规模秩 → 最近派发时间 → id 升序**。
+ *
+ * ## 为什么必须收敛到这里
+ *
+ * 修前有**两套**排序键，而且后一套**整段丢掉了规模秩**：
+ *   · `readyTasks` 用 `(sizeRank, id)` —— 声明面（"小卡先派"）就是它；
+ *   · `office.poolPlan` 的 `fairReady` 用 `(lastDispatched, id)` —— SDO-30 加的公平性重排，
+ *     本意只是"最近派发过的排到后面，别让同一张卡反复插队"，但它把排序键**换掉**了。
+ * 于是 `admitDispatch` 拿到的候选顺序与 `readyTasks` 毫无关系：**从没派发过的卡之间按 id 升序**
+ * ⇒ 真机上 `readyTasks` 说 `[184(small,1), 163(medium,2), 183(medium,2)]`，而实际派出去的第一张
+ * 是 `183`（`DEF-174` 的"medium 先于 small"，第 1/3/6 次派发全部如此）。
+ *
+ * 现在两套合成一把键：**秩先于公平**（`small` 永远在 `medium` 前），**同档内**才用"最近派发时间"
+ * 做公平性 —— SDO-30 要的"小卡不被反复跳过"由此仍然成立（同档里没派过的先上），而声明面的
+ * "小步快跑"不再被一次重排悄悄推翻。
+ */
+export function compareDispatchOrder(
+  a: TaskCard,
+  b: TaskCard,
+  lastDispatched: ReadonlyMap<string, string> = new Map<string, string>(),
+): number {
+  return sizeRankOf(a) - sizeRankOf(b)
+    || (lastDispatched.get(a.id) ?? '').localeCompare(lastDispatched.get(b.id) ?? '')
+    || a.id.localeCompare(b.id)
+}
+
+/** 把一批待派卡按 {@link compareDispatchOrder} 排好（**新数组**，不改入参）。 */
+export function orderDispatchQueue(
+  tasks: readonly TaskCard[],
+  lastDispatched: ReadonlyMap<string, string> = new Map<string, string>(),
+): TaskCard[] {
+  return [...tasks].sort((a, b) => compareDispatchOrder(a, b, lastDispatched))
+}
+
+/**
+ * **本轮派发候选的全表**（`planned` / `ready` 全部，**不分准入结果**）—— 有序全表与状态快照的读数源。
+ *
+ * 与 `readyTasks` 的区别只有一个：这里**不做**依赖/独占组/上限过滤 ⇒ 被挡住的卡也在表里，
+ * 于是"为什么这张没进队列"可以逐条回答（旧的 `readyTasks` 只给出**进了**的那几张，被挡的静默消失）。
+ * 排序用**同一把唯一键**，所以本表的前缀与"真被派出去的那几张"同序。
+ */
+export function candidateQueue(
+  tasks: readonly TaskCard[],
+  lastDispatched: ReadonlyMap<string, string> = new Map<string, string>(),
+): TaskCard[] {
+  return orderDispatchQueue(
+    tasks.filter((task) => task.status === 'planned' || task.status === 'ready'),
+    lastDispatched,
+  )
 }
 
 /** 依赖未满足的卡（给人看"为什么还不能派"）。 */

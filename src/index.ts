@@ -189,6 +189,13 @@ import type { DispatchFinished } from './domain/dispatchReports.js'
 import { maskAllows } from './domain/roles.js'
 import { isAdrId } from './domain/adr.js'
 import { composeUnderBase, evaluateWriteScope, isDevicePath, normalizeWorkspacePath } from './domain/writeScope.js'
+/**
+ * **驾驶舱的权威状态快照 + 队列有序全表**（`TASK-185`）。
+ *
+ * 为什么只 import 渲染函数：本文件被 i18n 棘轮钉在"零硬编码中文"，而快照/队列表的文案是中文的
+ * ⇒ 文案与排版全在 `domain/snapshot.ts`，这里只负责把**同一份读数**贴进回执（不另拼一套）。
+ */
+import { ORDER_BASIS_LABEL, orderKeyLabel, renderQueueTable, renderStatusSnapshot, selectedWhyLabel } from './domain/snapshot.js'
 import type { ProposedQuestion } from './domain/grill.js'
 
 export const name = 'dsh-software-dev-office'
@@ -1549,6 +1556,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const poolPlan = office.poolPlan(call, { reuseIdle: poolReuse })
       const poolText = describePoolBlock(poolPlan.pools, poolPlan.queued.map((task) => task.id), poolReuse, settings.dispatchOrphanTtlMinutes)
       const poolBlock = poolText === '' ? '' : '\n' + poolText + '\n'
+      /**
+       * **权威状态快照**（`TASK-185` 落点一）：在飞 / 本轮已交付 / 有序队列前 N 张 / 下一张 + 为什么 /
+       * 阻塞项，一次五行，体积钉在 `SNAPSHOT_CHAR_BUDGET` 以内。
+       *
+       * 位置：紧跟在状态正文之后、其余长块之前 —— 截断是**保留头部**的（`clampToolResult`），
+       * 所以"第一眼要看到的五件事"必须排在这些会按会话数/卡数膨胀的块前面（`DEF-175` 的教训：
+       * 真正要读的结论被挤到 8000 字符之外）。
+       * 读数来自**同一次** `poolPlan`（`poolPlan.queue`），不与池视图各算一遍。
+       */
+      const snapshotBlock = '\n' + renderStatusSnapshot(office.statusSnapshot(call, poolPlan), {
+        orphanTtlMinutes: settings.dispatchOrphanTtlMinutes,
+      }) + '\n'
       // **SDO-53**：公告清单 ≠ 实际可调 —— 把「我们声明的面」与「子代理实测拿到的面」的差集摆出来
       const faceMismatches = office.faceMismatches(call)
       const faceMismatchBlock = faceMismatches.length === 0
@@ -1573,12 +1592,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p2: deadExempt.map((item) => `${item.task}(${item.check})`).join(' '),
           }) + '\n'
       // **DEF-070**：普通状态回执也要报构建读数（这条才是 `sdo_status` 的常走路径）
-      if (forced === undefined) return buildLine + '\n' + text + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
+      if (forced === undefined) return buildLine + '\n' + text + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
       const note = forced.truncated
         ? fmt('uiIndex.kRebuildTruncated', { p1: String(forced.badLine ?? '?') })
         : t('uiIndex.kRebuildForced')
       // **DEF-070**：构建读数放在最前面（第一眼就该知道这份回执出自哪份构建）
-      return buildLine + '\n' + `${note}\n${text}` + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
+      return buildLine + '\n' + `${note}\n${text}` + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
     },
 
     async board(
@@ -1798,6 +1817,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // **R-9 逃生口**：卡被未结算派发冻住时，这一轮就能覆盖孤儿 TTL，不必改 preset 重启
         ...(args.orphanTtlMinutes === undefined ? {} : { orphanTtlMinutes: args.orphanTtlMinutes }),
       })
+      /**
+       * **本轮候选的完整有序全表**（`TASK-185` 落点二 / `DEF-174`）。
+       *
+       * 为什么必须在**每一次** `next` 的回执里（含 `why=true`，也含"一张都没派出去"的三支）：
+       * 修前它只印"派了谁 + 排队几张"，而"本轮到底按什么顺序挑"从来没出现过 ⇒ 驾驶舱只能猜
+       * （`DEF-174` 的真机剧本：连猜两次，最后才发现实际派的第一张是 `183`（medium），
+       * 而 `readyTasks` 说该派 `184`（small））。现在每行带**规模秩值**与**这一条为什么没进队列**，
+       * 超出上限时如实印"另有 N 张"。
+       *
+       * 行文来自 `domain/snapshot.ts`（本文件不许写中文），读数是 `plan.queue`（与准入同一份）。
+       */
+      const queueSection = renderQueueTable(plan.queue)
       // **R-14**：派发前把「卡的要求 ∩ 该角色的能力」矛盾摆出来（不阻断派发，但绝不允许它静默）
       const infeasibleBlock = (plan.infeasible ?? []).length === 0
         ? ''
@@ -1925,15 +1956,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const diagnostics = issues
             .map((issue) => fmt('uiIndex.kPlanIssueLine', { p1: issue.code, p2: issue.taskId, p3: issue.detail, p4: issue.remedy }))
             .join('\n')
-          if (args.why === true) return verdict + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
-          return verdict + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
+          if (args.why === true) return verdict + '\n' + queueSection + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
+          return verdict + '\n' + queueSection + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
         }
         if (plan.queued.length === 0) {
           // **R-9**：真机在这里印「没有可派发的任务卡（都已认领/完成）」，而实际上是 4 张 ready 卡
           // 被**停止的子会话**留下的未结算派发冻着 ⇒ 回执必须点名「被谁冻着、冻了多久、怎么解」。
           const frozen = plan.heldByDispatch ?? []
           if (frozen.length > 0) {
-            return fmt('uiIndex.kDispatchFrozen', {
+            return queueSection + '\n' + fmt('uiIndex.kDispatchFrozen', {
               p1: String(frozen.length),
               p2: frozen
                 .map((item) => fmt('uiIndex.kDispatchFrozenItem', {
@@ -1945,7 +1976,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               p3: String(settings.dispatchOrphanTtlMinutes),
             })
           }
-          return infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + describeNonDispatchable(office.nonDispatchable(call)) + structuralSection
+          return queueSection + '\n' + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + describeNonDispatchable(office.nonDispatchable(call)) + structuralSection
         }
         // **DEF-049 / TASK-078 落点二**：走队列分支时也把分类带上 —— "排队"是"池满"，
         // 与"卡是 blocked / 依赖未满足"是**不同**的原因，不能只报前者（否则读者仍分不清
@@ -1953,13 +1984,23 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const nonDispatchableNote = describeNonDispatchable(office.nonDispatchable(call))
         // 排队不是"没卡"，而是**被上限挡住**：必须说清是哪个池满，否则用户会以为流程卡住了
         const blocked = plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })).join('\n')
-        return heldByScopeSection + healthSection + rejectedSection + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
+        return queueSection + '\n' + heldByScopeSection + healthSection + rejectedSection + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
           + '\n' + blocked
           + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
           + '\n' + nonDispatchableNote
           + structuralSection
       }
 
+      /**
+       * **本轮候选的完整有序全表**（`TASK-185` 落点二 / `DEF-174`）。
+       *
+       * 为什么必须在**每一次** `next` 的回执里（含 `why=true`）：修前它只印"派了谁 + 排队几张"，
+       * 而"本轮到底按什么顺序挑"从来没出现过 ⇒ 驾驶舱只能猜（`DEF-174` 的真机剧本：连猜两次，
+       * 最后才发现实际派的第一张是 `183`（medium），而 `readyTasks` 说该派 `184`（small））。
+       * 现在每行带**规模秩值**与**这一条为什么没进队列**，超出上限时如实印"另有 N 张"。
+       *
+       * 行文来自 `domain/snapshot.ts`（本文件不许写中文），读数是 `plan.queue`（与准入同一份）。
+       */
       // **DEF-049 / TASK-078 落点二（`why=true`）**：`why` 是**为什么这一轮派不出去**的诊断面，
       // 因此它**不派发**任何卡（以前它只在"一张都没派出去"时才生效，于是"有 ready 卡 ⇒ 照派"
       // 把 blocked 卡的原因整个吞掉 —— 真机上驾驶舱连问两轮都没看见"有卡被 block 住了"）。
@@ -2002,7 +2043,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p2: plan.dispatch.slice(take).map((entry) => entry.task.id).join(' '),
           }))
         }
-        return infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + lines.filter((line) => line !== '').join('\n') + structuralSection
+        return infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + queueSection + lines.filter((line) => line !== '').join('\n') + structuralSection
       }
 
       const preference = args.backend === 'subagent' || args.backend === 'native-team' || args.backend === 'inline' ? args.backend : 'auto'
@@ -2088,6 +2129,17 @@ export function apply(ctx: Context, config: SdoConfig): void {
           ...(decision.degradedReason === undefined ? {} : { degradedReason: decision.degradedReason }),
           // **D-15**：显式指定覆盖了本迭代锁 —— 与降级一样必须留痕（同一份事件里两个不同语义的字段）
           ...(decision.overrideNote === undefined ? {} : { overrideNote: decision.overrideNote }),
+          /**
+           * **决策输入也落账**（`TASK-185` / `DEF-174`）：候选有序全表（带规模秩）+ 排序键名字 +
+           * 这一张为什么被选中。修前这三样**一个字都不记** ⇒ 从台账复现不出"为什么派的是 183"，
+           * 驾驶舱只能猜（并猜错过）。用 ASCII 投影（`orderKeyLabel` 的 `id size(rank)` 形态）：
+           * 台账是跨版本 append-only 的，读数不该随语言包变。
+           */
+          trace: {
+            orderBasis: ORDER_BASIS_LABEL,
+            candidates: plan.queue.map((entry) => orderKeyLabel(entry)),
+            selectedWhy: selectedWhyLabel(picked.findIndex((item) => item.task.id === task.id) + 1, picked.length),
+          },
         })
         lastBackend = { backend: decision.backend, iteration: iteration?.number }
         if (decision.backend === 'inline') {
@@ -2331,7 +2383,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。
       // 只在**真派发**这条路径上写：`why=true` 是纯诊断，不改台账。
       office.noteClaimMissing(call, health.claimMissing)
-      return `${dispatchSummary}\n\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      return `${dispatchSummary}\n${queueSection}\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
     },
 
     async task(call: OfficeCall, args: TaskArgs): Promise<string> {

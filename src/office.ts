@@ -77,8 +77,18 @@ import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domai
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { closeIteration, classifyNonDispatchable, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
+import { blockedTasks, candidateQueue, classifyNonDispatchable, closeIteration, compareDispatchOrder, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
 import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
+import { queueEntriesOf } from './domain/snapshot.js'
+import type {
+  QueueEntry,
+  SnapshotBlockedTask,
+  SnapshotDelivered,
+  SnapshotFlying,
+  // 名字与 `office.ts` 既有的项目级 `StatusSnapshot`（第 424 行那个导出）撞车 —— 这里显式起别名，
+  // 免得"项目状态"与"驾驶舱状态快照"两份完全不同的读数在同一个文件里共用一个词。
+  StatusSnapshot as StatusSnapshotView,
+} from './domain/snapshot.js'
 import type { DecomposeInput, DirtyRead, NonDispatchablePlan, PlanIssue, StaleGate } from './domain/plan.js'
 import {
   listDefects,
@@ -517,6 +527,45 @@ export interface ReleaseDeferInput {
   /** 批准人：只认 `human`（`ADR-022` 裁决①）。 */
   approvedBy: string
   reason: string
+}
+
+/**
+ * **一次派发决定的完整读数**：`PoolAdmission` 的全部既有字段 + **本轮候选的有序全表**。
+ *
+ * 为什么加一个子类型而不是改 `PoolAdmission` 本身：`PoolAdmission` 住在 `domain/pool.ts`（纯准入层，
+ * 不认识"卡的状态/依赖/冻结"这些卡面事实），而有序全表要的正是那几类原因。`TASK-185` 的写范围不含
+ * `pool.ts`，而**加字段**（子类型）对既有调用点是零破坏的 —— 回执、事件、门禁读到的 `PoolAdmission`
+ * 一字未变，只有本卡新增的两处消费者（状态快照 / `next` 回执）读 `queue`。
+ */
+export interface DispatchPlan extends PoolAdmission {
+  /**
+   * 本轮候选的**完整有序全表**（每行带规模秩与"为什么没进队列"）。
+   *
+   * 与 `dispatch` / `queued` / `blocked` 是**同一份读数**（同一函数里一起算出来），
+   * 所以"回执说谁上、实际派谁"不可能分叉（`DEF-174` 的病灶）。
+   */
+  queue: QueueEntry[]
+}
+
+/**
+ * **一笔派发决策的输入面**（`TASK-185` / `DEF-174`）：候选有序全表 + 排序键 + 为什么选它。
+ *
+ * 为什么单独成型而不是把三个字符串参数散在 `recordDispatch` 里：这三个键**必须同生同死**
+ * （只有候选集、没有排序键，或者只有"选中了谁"、没有候选集，都复现不出决策）。放在一个类型里，
+ * 调用方要么全给、要么全不给，不存在"记了一半"的中间态。
+ */
+export interface DispatchDecisionTrace {
+  /**
+   * 排序键的**名字**（不是"当前顺序"）：`sizeRank→lastDispatched→id`。
+   *
+   * 为什么要记名字：`DEF-174` 的复现难点正是"当时用的是哪把键"在台账上不可见 ——
+   * 记下名字，键一改，历史读数的解释方式跟着改，不必考古。
+   */
+  orderBasis: string
+  /** 候选的**有序全表**（每张带规模秩：`TASK-184 small(1)`），顺序即派发顺序 */
+  candidates: string[]
+  /** **这一张为什么被选中**（如"队列第 1 位，准入首位"） */
+  selectedWhy: string
 }
 
 export interface OfficeCall {
@@ -4012,8 +4061,25 @@ export class SoftwareDevOffice {
     return { ...plan, held }
   }
 
-  /** 记录派发决策（含后端、降级原因与"显式指定覆盖了迭代锁"的留痕）。 */
-  recordDispatch(call: OfficeCall, input: { taskId: string; backend: string; owner: string; degradedReason?: string | undefined; overrideNote?: string | undefined }): void {
+  /**
+   * 记录派发决策（含后端、降级原因与"显式指定覆盖了迭代锁"的留痕）。
+   *
+   * **`TASK-185` / `DEF-174` 落点三：把"决策输入"也记进去。**
+   * 病根（`DEF-174` 的 rootCause 原话）：`dispatch/decided` 只记 `task/backend/owner/…`，
+   * **没有候选集、没有排序依据、没有"为什么是它"** ⇒ 从台账**无法复现**这次选择，
+   * 于是"medium 先于 small"到底是候选集不同还是排序被覆盖，只能靠猜（并猜错过）。
+   * 现在同一笔事件里带上 {@link DispatchDecisionTrace}：候选有序全表（含每张的规模秩）、
+   * 排序键名字、以及"这一张为什么被选中"。三个键**缺省不落**（老调用点形状不变）。
+   */
+  recordDispatch(call: OfficeCall, input: {
+    taskId: string
+    backend: string
+    owner: string
+    degradedReason?: string | undefined
+    overrideNote?: string | undefined
+    /** 决策输入（`TASK-185`）：不传 ⇒ 老形状，不落这三个键 */
+    trace?: DispatchDecisionTrace | undefined
+  }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/decided', {
       task: input.taskId,
@@ -4022,6 +4088,13 @@ export class SoftwareDevOffice {
       degradedReason: input.degradedReason ?? '',
       // **D-15**：与 `degradedReason` 分开记 —— 降级 = 结果不等于请求；覆盖 = 结果等于请求（锁让路）。
       overrideNote: input.overrideNote ?? '',
+      ...(input.trace === undefined
+        ? {}
+        : {
+            orderBasis: input.trace.orderBasis,
+            candidates: input.trace.candidates,
+            selectedWhy: input.trace.selectedWhy,
+          }),
     })
   }
 
@@ -4314,16 +4387,25 @@ export class SoftwareDevOffice {
     call: OfficeCall,
     orphanTtlMinutes?: number,
     reuseBlockedOf?: ((child: PoolChild) => string | undefined) | undefined,
-  ): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[] } {
+  ): { children: PoolChild[]; pools: RolePool[]; ready: TaskCard[]; staleGate: StaleGate | undefined } {
     const { journal } = this.contextFor(call)
     const children = [
       ...foldPoolChildren(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values(),
     ]
+    /**
+     * **入口门禁的失效读数只读一次**（`TASK-185`）：它既决定 `ready` 是否为空，也决定有序全表里
+     * 每一行为什么没派（`gate-stale` 那一档）。同一次决定里读两遍会重演 `DEF-185` 的形态 ——
+     * 两份读数在并发/追加写入下可以不等，于是"回执说的"与"决定的"各一套。
+     * 所以读一次、**随返回值交出去**（`poolPlan` 直接用 `snapshot.staleGate`），
+     * 而入参形状**一个字没改**（`poolView()` 这类只读调用方零改动，m157 钉住的调用文本也不变）。
+     */
+    const staleGate = this.staleEntryGate(call)
     // **DEF-040**：门禁失效时池快照的 ready 也必须是空（否则回执会怂恿驾驶舱派卡）
-    const ready = readyTasks(this.tasks(call), 64, this.staleEntryGate(call))
+    const ready = readyTasks(this.tasks(call), 64, staleGate)
     return {
       children,
       ready,
+      staleGate,
       pools: rolePools({
         children,
         // **DEF-066**：把"空闲可复用"按**宿主会不会拒**分栏（本会话 / 跨父会话 / 父会话未知）
@@ -4413,6 +4495,9 @@ export class SoftwareDevOffice {
   /**
    * **派发准入（池 + 队列）**：先全局并行预算、再逐角色池；池满的卡**排队**（不丢）。
    *
+   * 返回 {@link DispatchPlan}：`PoolAdmission` 的既有字段一个不动，另加**本轮候选的有序全表**
+   * （`queue`）—— 快照、`sdo_status`、`sdo_plan action=next` 的回执都读这一份（`TASK-185` 落点二）。
+   *
    * @param options.reuseIdle 宿主有没有可续聊入口 —— 没有时"空闲子代理"不可投递（one-shot 结算即消失），
    *   此时池退化为**并发上限**（这一点必须在回执里说清，不能假装在复用）。
    */
@@ -4421,7 +4506,7 @@ export class SoftwareDevOffice {
     freshChild?: boolean | undefined
     /** **孤儿 TTL 覆盖**（R-9 的逃生口）：`sdo_plan action=next orphanTtlMinutes=N` —— 卡被未结算派发冻住时不必改 preset 重启 */
     orphanTtlMinutes?: number | undefined
-  } = {}): PoolAdmission {
+  } = {}): DispatchPlan {
     /**
      * **`DEF-185` / `DEF-186` 落点一（`TASK-196`）：判据闭包**只建一次**。
      *
@@ -4432,6 +4517,11 @@ export class SoftwareDevOffice {
      */
     const gate = this.reuseBlockedOf(call)
     const snapshot = this.poolSnapshot(call, options.orphanTtlMinutes, gate)
+    /**
+     * **入口门禁的失效读数**（`TASK-185`）：取池快照**交回来的那一份**（同一实例，不重读）。
+     * 它决定"这 7 张为什么一张都没派"里的 `gate-stale` 那一档 —— 与 `ready` 同源。
+     */
+    const staleGate = snapshot.staleGate
     const { journal } = this.contextFor(call)
     const tasks = this.tasks(call)
     const inProgress = tasks.filter((task) => task.status === 'in-progress').length
@@ -4482,9 +4572,18 @@ export class SoftwareDevOffice {
       if (child.task === '') continue
       if (child.startedAt > (lastDispatched.get(child.task) ?? '')) lastDispatched.set(child.task, child.startedAt)
     }
-    const fairReady = [...snapshot.ready].sort((a, b) =>
-      (lastDispatched.get(a.id) ?? '').localeCompare(lastDispatched.get(b.id) ?? '') || a.id.localeCompare(b.id),
-    )
+    /**
+     * **公平性重排**（SDO-30）—— `TASK-185` 落点三：这里修前把**排序键换掉了**。
+     *
+     * 修前这一行是 `(lastDispatched, id)`：它**完全不看规模秩** ⇒ 在"从没派发过"的卡之间退回 id 升序，
+     * 于是 `readyTasks` 声明面的"小步快跑"（`small` 先于 `medium`）在准入前被静默推翻。真机读数
+     * （`DEF-174`）：`readyTasks` 给出 `[184(small,1), 163(medium,2), 183(medium,2)]`，实际派的第一张是
+     * `183` —— 这就是"第 1/3/6 次派发都是 medium 先于 small"的定案原因（**排序键被覆盖**，不是候选集不同）。
+     *
+     * 现在用**唯一键** {@link compareDispatchOrder}：规模秩 → 最近派发时间 → id。秩在前 ⇒ 声明面不再被
+     * 一次重排改写；"最近派发过"的公平性只在**同档内**生效（SDO-30 要的"别让同一张卡反复插队"照旧成立）。
+     */
+    const fairReady = [...snapshot.ready].sort((a, b) => compareDispatchOrder(a, b, lastDispatched))
     // **`REQ-066` / `ADR-025` · `AC-303`（`TASK-172`）**：相交**默认照派**、只点名；只有两类串行。
     // 所以这里要**两份读数**：`scopeIntersections` 全量（回执点名用）与 `serialScopeIds`（真挡用）。
     // 修前只有一份 —— 于是"挡住"与"点名"被绑死：想不挡就只能丢掉可见性（m32 那类"约束不存在"）。
@@ -4548,8 +4647,72 @@ export class SoftwareDevOffice {
       .map((row) => ({ taskId: row.task.id, role: row.task.role, gaps: [...row.gaps] }))
       // 同一张卡可能出现两次（fairReady 是 snapshot.ready 的重排）⇒ 去重
       .filter((row, index, all) => all.findIndex((item) => item.taskId === row.taskId) === index)
+    /**
+     * **本轮候选的有序全表**（`TASK-185` 落点二 / `DEF-174`）。
+     *
+     * 与 `admission` **同一份读数**：候选来自 `candidateQueue`（`planned`/`ready` 全部，同一把唯一键排序），
+     * 判定逐条取自本函数里已经算过的那几份集合（`inFlight` / `serialScopeIds` / `dirtyScopeIds` /
+     * `heldByScope` / `dirtyByScope` / `admission.blocked` / `admission.dispatch`）。
+     *
+     * 为什么必须在**这里**建：这是唯一同时持有"候选全集 + 准入结论"的地方。放到界面层去拼，
+     * 就等于让回执自己再猜一遍 `admitDispatch` 干了什么 —— 那正是 `DEF-174` 里"决策输入没落账"的成因。
+     */
+    /** `refs` 是**结构化**的挡路者（ASCII：卡 id / 路径 / 读数），`detail` 是可含中文的人读句。 */
+    const serialScope = new Map<string, { refs: string[]; detail: string }>(
+      heldByScope
+        .filter((row) => row.kind !== 'merge')
+        .map((row) => [row.taskId, {
+          // 结构化：挡路的卡 + **具体路径**（回执按它印，`en` 语言下也不出现中文）
+          refs: [row.holderId, ...row.overlap],
+          detail: `${row.holderId} 占 ${row.overlap.join(' ')}`,
+        }]),
+    )
+    const dirtyScope = new Map<string, { refs: string[]; detail: string }>(
+      dirtyByScope.map((row) => [row.taskId, { refs: [...row.over], detail: row.over.join(' ') }]),
+    )
+    const frozen = new Map<string, { refs: string[]; detail: string }>(
+      heldByDispatch.map((row) => [row.taskId, {
+        refs: [row.childSessionId.slice(0, 8), `minutes=${String(row.minutes)}`],
+        detail: `${row.childSessionId.slice(0, 8)} 已 ${String(row.minutes)} 分钟`,
+      }]),
+    )
+    const waiting = new Map<string, readonly string[]>(blockedTasks(tasks).map((row) => [row.task.id, row.waitingOn]))
+    const exclusive = new Map<string, { refs: string[]; detail: string }>(
+      (classifyNonDispatchable(tasks, staleGate, dirtyRead).exclusive ?? []).map((row) => [row.task.id, {
+        refs: [row.other],
+        detail: `同组 ${row.other} 已占位`,
+      }]),
+    )
+    // 容量类的**结构化读数**：它让"容量挡了谁"在回执里也是可核的（`budget=4/4` 这种），
+    // 而不是只留一句中文（`en` 语言下那句中文会把"零中文"守卫顶红）。
+    const poolOf = new Map(snapshot.pools.map((pool) => [pool.role, pool] as const))
+    const blockedDetail = new Map(admission.blocked.map((row) => {
+      const pool = poolOf.get(row.task.role)
+      const refs = row.reason === 'global-budget'
+        ? [`budget=${String(inProgress)}/${String(this.settings.maxParallelDispatch)}`]
+        : [`role=${row.task.role}`]
+          .concat(pool === undefined ? [] : [`cap=${String(pool.cap)}`, `busy=${String(pool.busy.length)}`, `idle=${String(pool.idle.length)}`])
+      return [row.task.id, {
+        taskId: row.task.id,
+        reason: row.reason === 'global-budget' ? 'capacity' as const : 'pool-full' as const,
+        detail: row.detail,
+        refs,
+      }] as const
+    }))
+    const queue = queueEntriesOf({
+      candidates: candidateQueue(tasks, lastDispatched),
+      admitted: admission.dispatch.map((entry) => entry.task.id),
+      blocked: [...blockedDetail.values()],
+      frozen,
+      waiting,
+      serialScope,
+      dirtyScope,
+      exclusive,
+      gateStale: staleGate === undefined ? undefined : { gate: staleGate.gate, reason: staleGate.reason },
+    })
     return {
       ...admission,
+      queue,
       // **`DEF-139` 落点一（`TASK-163`）**：把「做决定时池里长什么样」摊成逐角色读数（`childrenSource` /
       // `childrenTotal` / 八桶 / `cap` / `freeSlots`），派发路径据此并进 `dispatch/started`。
       // 取**准入之前**的那份快照（`snapshot.pools` 未被 `admitDispatch` 改动：它先克隆再改），
@@ -4568,6 +4731,95 @@ export class SoftwareDevOffice {
       ...(dirtyByScope.length === 0 ? {} : { dirtyByScope }),
       ...(dirtyHints.length === 0 ? {} : { dirtyHints }),
       ...(dirtyRead?.ok === false ? { dirtyUnjudgeable: { reason: dirtyRead.reason } } : {}),
+    }
+  }
+
+  /**
+   * **驾驶舱的权威状态快照**（`TASK-185` 落点一）。
+   *
+   * 五件事一次说全，且**全部现算**（不读记忆、不读 `.sdo/tasks/*.yml` 再人肉复算）：
+   *   ① 在飞：`id / role / owner` + 已派发多少分钟 + 子会话前 8 位（`DEF-177` 至少要把"活了多久"摆出来）；
+   *   ② 本轮已交付：`id` + 合并提交短哈希（`worktree/merged.commit`，没有合并记录就印"未合并"，不猜）；
+   *   ③ ready 队列有序前 N 张（带规模秩，如 `TASK-184 small(1)`）；
+   *   ④ 下一张会派谁 + **为什么是它**（三条可核理由，见 `snapshot.ts` 的 `nextLine`）；
+   *   ⑤ 阻塞项逐条点名（容量 / 写范围 / 依赖 / 冻结 / 独占窗口 / 条目门禁）。
+   *
+   * `plan` 由调用方传入**同一次** `poolPlan` 的结果（不在这里再算一遍：两次读数可以不等）。
+   */
+  statusSnapshot(call: OfficeCall, plan: DispatchPlan, now: Date = new Date()): StatusSnapshotView {
+    const { journal } = this.contextFor(call)
+    const tasks = this.tasks(call)
+    const iteration = this.iteration(call)?.number
+    // ② 合并提交短哈希：`worktree/merged` 是**唯一**记着提交号的事件（`dispatch/*` 只有子会话 id）
+    const commits = new Map<string, string>()
+    for (const event of journal.read().events) {
+      if (event.type !== 'worktree/merged') continue
+      const data = event.data as Record<string, unknown>
+      const id = String(data['task'] ?? '')
+      const commit = String(data['commit'] ?? '')
+      if (id !== '' && commit !== '') commits.set(id, commit.slice(0, 8))
+    }
+    const doneTasks = tasks.filter((task) => task.status === 'done' || task.status === 'verified')
+    const inIteration = iteration === undefined
+      ? doneTasks
+      : doneTasks.filter((task) => task.iteration === undefined || task.iteration === iteration)
+    const deliveredSorted = [...inIteration].sort((a, b) => (b.updatedAt ?? '').localeCompare(a.updatedAt ?? '') || a.id.localeCompare(b.id))
+    const delivered: SnapshotDelivered[] = deliveredSorted.slice(0, 5).map((task) => ({ id: task.id, commit: commits.get(task.id) ?? '' }))
+    /**
+     * ① 在飞：卡的状态是 `in-progress`。
+     *
+     * 耗时**直接从 `dispatch/started` 现算**，而不是复用 `plan.heldByDispatch`：后者只收
+     * **活着的**派发（超孤儿 TTL 的会被剔掉）⇒ 一张已经派了两个钟头的卡会静默变成"刚派 0 分钟"。
+     * 那是**假读数**（本卡要治的正是这一类），所以这里自己读、并且把"读不出"与"刚派"分开，
+     * 超过 TTL 的还要明说（那张卡此刻很可能已经没人做了）。
+     */
+    const startedAt = new Map<string, string>()
+    for (const event of journal.read().events) {
+      if (event.type !== 'dispatch/started') continue
+      const data = event.data as Record<string, unknown>
+      const id = String(data['task'] ?? '')
+      if (id === '') continue
+      const at = String(event.at ?? data['startedAt'] ?? '')
+      if (at > (startedAt.get(id) ?? '')) startedAt.set(id, at)
+    }
+    const childOf = new Map((plan.heldByDispatch ?? []).map((row) => [row.taskId, row.childSessionId.slice(0, 8)] as const))
+    const ttlMinutes = this.settings.dispatchOrphanTtlMinutes
+    const flying: SnapshotFlying[] = tasks
+      .filter((task) => task.status === 'in-progress')
+      .map((task) => {
+        const started = Date.parse(startedAt.get(task.id) ?? '')
+        const minutes = Number.isFinite(started) ? Math.max(0, Math.round((now.getTime() - started) / 60_000)) : undefined
+        return {
+          id: task.id,
+          role: task.role,
+          owner: task.owner ?? '',
+          minutes,
+          stale: minutes !== undefined && ttlMinutes > 0 && minutes > ttlMinutes,
+          child: childOf.get(task.id) ?? '',
+        }
+      })
+    const taskBlocked: SnapshotBlockedTask[] = tasks
+      .filter((task) => task.status === 'blocked')
+      .map((task) => ({ id: task.id, role: task.role, size: task.size, reason: task.blockedReason ?? '' }))
+    const nextEntry = plan.dispatch[0]?.task.id
+    const blockedRows = plan.queue.filter((entry) => entry.verdict !== 'dispatch' && entry.verdict !== 'queued')
+    return {
+      at: now.toISOString(),
+      iteration,
+      flying,
+      delivered,
+      deliveredTotal: inIteration.length,
+      queue: plan.queue,
+      next: nextEntry,
+      blocked: blockedRows,
+      taskBlocked,
+      counts: {
+        inFlight: flying.length,
+        ready: tasks.filter((task) => task.status === 'ready').length,
+        planned: tasks.filter((task) => task.status === 'planned').length,
+        done: doneTasks.length,
+        blocked: taskBlocked.length,
+      },
     }
   }
 
