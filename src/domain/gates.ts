@@ -2450,8 +2450,10 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     const scale = readProjectConfig(ctx.store).config.scale
     const inScope = listTasks(ctx.store).filter((card) => card.status === 'done' && scopeCovers(profile, card.id))
     const gaps: string[] = []
+    // **`TASK-213` 落点二**：`claims` 逐卡读一次台账（N+1）⇒ 先读一次、循环里只过滤
+    const claimEvents = ctx.journal.read().events.filter((event) => event.type === 'task/claimed')
     for (const card of inScope) {
-      const claims = ctx.journal.read().events.filter((event) => event.type === 'task/claimed' && event.data.id === card.id)
+      const claims = claimEvents.filter((event) => event.data.id === card.id)
       const claimSeq = claims[claims.length - 1]?.seq
       if (claimSeq !== undefined) {
         gaps.push(...claimGaps(ctx.store, ctx.journal, card, claimSeq, profile).map((item) => `${card.id}：${item.detail}`))
@@ -2940,8 +2942,13 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // **2026-10-21 收窄两条**（用户裁定）：只有「`pass` 自评 + 这张卡没有可依据的独立面」才判红；
     // 自我否定与"已被独立采纳评审覆盖"的自评进 `noted`（留痕、不判红）—— 判据**只在这里判一次**，
     // 两个桶一起拿（`DEF-044` 的教训：同一概念两处判据必然分叉）。
+    /**
+     * **`TASK-213` 落点二**：本判据要两次「全部评审的采纳态」（自评独立性 + 已采纳 pass 评审），
+     * 修前各算一遍 ⇒ 同一份台账被解析两遍。现在读一次、两次判定共用这一份。
+     */
+    const gateLog = ctx.journal.read().events
     const adoptedPassReviewIds = new Set(
-      reviewAdoptions(ctx.store, ctx.journal)
+      reviewAdoptions(ctx.store, ctx.journal, gateLog)
         .filter((item) => item.state === 'adopted' && item.review.verdict === 'pass')
         .map((item) => item.review.id),
     )
@@ -2960,7 +2967,7 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
         && task.role !== 'reviewer'
         && producesProductArtifacts(task),
     )
-    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal).map((item) => [item.review.id, item]))
+    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal, gateLog).map((item) => [item.review.id, item]))
     const unreviewed: string[] = []
     const unadopted: string[] = []
     for (const task of doneTasks) {
@@ -3023,10 +3030,13 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
      * 完成点拦了、门禁却绿（或反之），真机上就会演变成"按哪条算"的争论。
      * 本文件只负责**渲染**（i18n 棘轮基线 0，一个中文字面量都不许加）。
      */
+    // **`TASK-213` 落点二**：`pendingReviewBigCards` 内部已读一次台账；这里再算采纳表时把那一份读出来
+    // 复用（修前是"一次 + 每条评审各一次"）
+    const requiredLog = ctx.journal.read().events
     const set = pendingReviewBigCards(ctx.store, ctx.journal)
     if (set.considered.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
     const reviews = listReviews(ctx.store)
-    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal).map((item) => [item.review.id, item]))
+    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal, requiredLog).map((item) => [item.review.id, item]))
     const missing = set.missing
     const unadopted = set.unadopted.map(
       (row) => `${row.id}（${row.reviews.map((item) => `${item.id}：${reviewAdoptionLabel(item.state as never)}`).join('，')}）`,

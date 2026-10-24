@@ -761,9 +761,17 @@ export interface PendingReviewBigCards {
 }
 
 export function pendingReviewBigCards(store: SdoStore, journal: Journal): PendingReviewBigCards {
-  // 读一次台账：评审与采纳态都按整本读，别在循环里现读（真账：199 张卡）
+  /**
+   * **一次读、整本用**（`TASK-213` 落点二）。
+   *
+   * 修前这句注释写着"读一次台账"，但 `reviewAdoptions` 内部**每条评审各读一次**（每条还要读 4 次：
+   * recorded / hashed / verified / dispatch）⇒ 实测一次调用 **279 次 `read()` / 3706ms / 解析 166 万行**。
+   * 现在把这一份事件数组交给下游，下游不再自己去读。
+   */
+  const events = journal.read().events
   const reviews = listReviews(store)
-  const adoptions = new Map(reviewAdoptions(store, journal).map((item) => [item.review.id, item]))
+  // **评审清单也只读一次**：`reviewAdoptions` 自己会再读一遍 93 个 YAML（真账 ~17.8ms），把它传进去
+  const adoptions = new Map(reviewAdoptions(store, journal, events, reviews).map((item) => [item.review.id, item]))
   const considered: string[] = []
   const missing: string[] = []
   const unadopted: { id: string; reviews: { id: string; state: string }[] }[] = []
@@ -986,7 +994,9 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
      * `review.requireOnDone`（默认开；显式 `false` 才关闭，关闭时在本回执的 N/A 行里明说）。
      */
     const requireOnDone = readProjectConfig(store).config.review.requireOnDone
-    const cardAdoptions = new Map(reviewAdoptions(store, journal).map((item) => [item.review.id, item]))
+    // **`TASK-213`**：本卡的采纳表与下面的逐条回显读同一份台账 ⇒ 只在上面读一次/下面各读一次会重复
+    const doneLog = journal.read().events
+    const cardAdoptions = new Map(reviewAdoptions(store, journal, doneLog).map((item) => [item.review.id, item]))
     const reviewVerdict = bigCardReviewVerdict(task, listReviews(store), cardAdoptions)
     if (reviewVerdict.considered && reviewVerdict.state !== 'adopted') {
       if (requireOnDone) {
@@ -1025,7 +1035,7 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
     const reviewEcho = cardReviews.length === 0
       ? undefined
       : cardReviews.map((review) => {
-        const adoption = reviewAdoption(store, journal, review)
+        const adoption = reviewAdoption(store, journal, review, doneLog)
         return fmt('uiGates.kReviewEchoRow', {
           p1: review.id,
           p2: review.verdict,
