@@ -135,6 +135,17 @@ export interface OfficeToolDeps {
   init(call: OfficeCall, args: InitArgs): Promise<string>
   lang(call: OfficeCall, args: LangArgs): Promise<string>
   status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string>
+  /**
+   * **变更增量推送**（`TASK-186`：可观测性②）—— 与 {@link status} 同一个工具面的第二个分支。
+   *
+   * 为什么与 `status` 共用一个工具而不是新开一个：新工具名会连带 README 工具清单、`test/m24` 的
+   * 工具计数、`src/data/roles.yml` 的角色 allow 三处一起动；而这条读数的语义就是"状态（增量版）"，
+   * 复用 `sdo_status` 的参数面是**更小的面**。
+   *
+   * `since` **必填语义**（形态上的可缺省只是为了形状兼容）：它由**调用方**给（journal 序号或 ISO 时间），
+   * 缺/认不出 ⇒ 可读拒绝 —— 工具**不猜起点**（猜出来的增量是假的）。实现见 `domain/changeFeed.ts`。
+   */
+  changes(call: OfficeCall, args: { since?: string | undefined }): Promise<string>
   project(call: OfficeCall, args: ProjectArgs): Promise<string>
   gate(call: OfficeCall, args: GateArgs): Promise<string>
   /**
@@ -857,9 +868,26 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       description: t('tool.sdo_status'),
       parameters: {
         rebuild: { type: 'boolean', description: t('param.rebuild') },
+        /**
+         * **增量模式**（`TASK-186`）：给这个指针就只报**那之后**的卡状态变化，而不是整份状态。
+         *
+         * 描述写在这里而不是语言包：本卡写范围不含 `src/data/lang/*.yml`，而参数描述在本仓既有先例里
+         * 就是内联英文（如 `sdo_init` 的 `process` / `scale`）—— 不新造一套，也不留硬编码中文后门。
+         */
+        since: {
+          type: 'string',
+          description: "Incremental mode: report only card status changes AFTER this pointer, plus this round's "
+            + "unsettled dispatches and done-without-evidence hints (read-only). Two forms: a journal seq "
+            + "(non-negative integer, e.g. '190') or an ISO time (e.g. '2026-10-24T01:00:00.000Z'). "
+            + "The start is NOT guessed: with `since` given but unreadable the call is refused; "
+            + "a pointer past the ledger head returns an empty increment that says no changes. "
+            + "Omit it for the full status.",
+        },
       },
       output: OUTPUT,
       async execute(args, exec) {
+        // **有 `since` ⇒ 增量读数**（`TASK-186`），没有 ⇒ 原来的整份状态（行为逐字不变）
+        if (typeof args.since === 'string') return deps.changes(callOf(exec), { since: args.since })
         return deps.status(callOf(exec), { rebuild: args.rebuild === true })
       },
     }),

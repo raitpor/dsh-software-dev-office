@@ -28,6 +28,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
+import { apply } from '../src/index.js'
 import { updateTask } from '../src/domain/collab.js'
 import { renderChangeFeed } from '../src/domain/changeFeed.js'
 import type { ChangeFeed } from '../src/domain/changeFeed.js'
@@ -361,4 +362,85 @@ test('M225-08 (pointer form) an ISO pointer folds to the last seq at or before t
   // 头部 seq 始终是台账事实
   assert.equal(future.headSeq, seq3, 'the head seq must stay the ledger fact for ISO pointers too')
   assert.ok(since < seq2, 'fixture premise: the pointer window starts before the crafted events')
+})
+
+/* ———————————————————————————————— 工具面接线（走真实注册面） ———————————————————————————————— */
+
+/**
+ * **真实注册面**（与 `test/m105.test.ts` 同款）：`apply()` 之后取 `sdo_status`，用 agent 桩把工作区
+ * 指到夹具目录再调它。这一层必须走注册面 —— 真机教训是"导出函数绿了但工具面拿不到"。
+ */
+interface ToolDefinition {
+  name: string
+  parameters: { properties?: Record<string, unknown> }
+  execute(args: unknown, exec: unknown): unknown
+}
+
+/** 装配一套假 ctx，拿回注册进宿主的工具表。 */
+function registeredTools(): Map<string, ToolDefinition> {
+  const tools = new Map<string, ToolDefinition>()
+  const services: Record<string, unknown> = {
+    tools: { register: (tool: ToolDefinition): (() => void) => { tools.set(tool.name, tool); return () => {} } },
+    commands: { register: (): (() => void) => () => {} },
+  }
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {},
+    on: () => () => {},
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => {
+      if (names.every((name) => name in services)) cb(makeCtx())
+    },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  apply(makeCtx() as never, Config({} as unknown as SdoConfig))
+  return tools
+}
+
+/** 按**声明面**过滤实参（宿主在 schema 阶段就是这么做的；未声明的键不会到达 execute）。 */
+function callTool(tool: ToolDefinition, workspace: string, args: Record<string, unknown>): string | Promise<string> {
+  const properties = tool.parameters.properties ?? {}
+  const filtered: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(args)) if (key in properties) filtered[key] = value
+  const agent = { id: 's225-tool', session: { header: { id: 's225-tool', cwd: workspace, delegationDepth: 0 } } }
+  return Promise.resolve(tool.execute(filtered, { agent } as never) as string | Promise<string>)
+}
+
+test('M225-09 (tool face) sdo_status declares `since`, and the increment comes out of the registered tool', async () => {
+  const f = fixture('tool-face')
+  const a = card(f, 'a')
+  const since = head(f)
+  const seq = f.journal.append('task/claimed', { id: a.id, owner: 'dev-a', revision: 2, sessionId: 'dev-a' }).seq
+  const tools = registeredTools()
+  const status = tools.get('sdo_status')
+  assert.ok(status !== undefined, 'sdo_status must be registered')
+  if (status === undefined) return
+  // ① 参数面**声明**了 `since`（否则模型看不见这条入口 —— 声明面就是可发现性）
+  assert.equal(Object.hasOwn(status.parameters.properties ?? {}, 'since'), true, 'sdo_status must declare the since parameter')
+
+  // ② 带 since ⇒ 增量读数（走 deps.changes）
+  const increment = await callTool(status, f.workspace, { since: String(since) })
+  assert.ok(increment.startsWith(`changes since=seq:${String(since)} `), `the tool must return the increment header: ${increment}`)
+  assert.ok(increment.includes(`- ${a.id} planned->in-progress`), `the increment must carry the change line: ${increment}`)
+  assert.ok(increment.includes(`seq=${String(seq)}`), `the increment must carry the seq anchor: ${increment}`)
+
+  // ③ 不带 since ⇒ 原来的整份状态（逐字不变的行为：没有增量首行）
+  const full = await callTool(status, f.workspace, {})
+  assert.equal(full.startsWith('changes since='), false, `without since the tool must keep returning the full status: ${full.slice(0, 120)}`)
+  // 两态：两条路径的产物确实不同（不是同一个函数的两种说法）
+  assert.notEqual(full, increment, 'the incremental reading and the full status must differ')
+})
+
+test('M225-10 (tool face) an unreadable `since` is refused through the tool, never silently downgraded', async () => {
+  const f = fixture('tool-refuse')
+  card(f, 'a')
+  const tools = registeredTools()
+  const status = tools.get('sdo_status')
+  assert.ok(status !== undefined, 'sdo_status must be registered')
+  if (status === undefined) return
+  const refused = await callTool(status, f.workspace, { since: 'not-a-pointer' })
+  assert.ok(refused.includes('since'), `the refusal must name the parameter: ${refused}`)
+  assert.ok(refused.includes('not-a-pointer'), `the refusal must echo the unreadable pointer: ${refused}`)
+  // **不静默降级**：拒绝时不能顺手返回整份状态（那会让"起点写错"看起来像"没有增量"）
+  assert.equal(refused.startsWith('changes since='), false, `a refusal must not look like an increment: ${refused.slice(0, 120)}`)
 })
