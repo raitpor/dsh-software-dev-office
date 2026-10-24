@@ -9,6 +9,8 @@
  *   ① 单卡单角色 ② DoD 非空 ③ 依赖无环且引用存在 ④ 规模不超上限（large = 没拆完）
  *   ⑤ 可能并行的卡之间写范围互斥 ⑥ 每卡至少一项证据要求
  */
+import { basename, dirname } from 'node:path'
+
 import { nextId } from '../infra/ids.js'
 import { countOf, pushShapeNote, recordListOf, textListOf, textOf } from '../infra/scalar.js'
 import type { FieldShapeNote } from '../infra/scalar.js'
@@ -19,6 +21,8 @@ import type { DesignElement, EvidenceItem, Iteration, MitigatesWaiver, Requireme
 import { listElements, VIEW_KIND_OF_ELEMENT } from './architecture.js'
 import { linkMany, readLinks } from './trace.js'
 import { globLiteralDepth, hasGlob, scopeOverlaps } from './scopePaths.js'
+// **`TASK-187`**：声明形状的写入时校验（`impact` / `landing` / `writeScopes`）—— 建卡那一刻就判
+import { checkDeclaration } from './declarationCheck.js'
 
 /** 设计 §8.1 的八个角色（拆分器只允许这些值）。 */
 export const ROLES = ['analyst', 'red-team', 'architect', 'office', 'developer', 'tester', 'reviewer', 'delivery'] as const
@@ -243,7 +247,31 @@ export interface TaskDraft {
   iteration?: number | undefined
 }
 
-export function createTask(store: SdoStore, journal: Journal, draft: TaskDraft): TaskCard {
+/**
+ * **台账目录（`.sdo/`）的上一级 = 工作区根**。
+ *
+ * 为什么需要它：`createTask` / `decompose` 只拿到 `SdoStore`，而它的 `root` 是**数据目录**
+ * （`<workspace>/<projectDirName>`，缺省 `.sdo`）—— 判"顶层目录是否真的存在"时拿数据目录当基准，
+ * 会把 `src/` / `test/` 这类**工作区**顶层目录全判成不存在（本项目实测：`src` 不在 `.sdo/` 里，
+ * 于是所有卡一建就被拒）。写范围与落点都是**工作区相对**的声明，基准只能是工作区根。
+ *
+ * 不用 `findProjectRoot` 向上爬（`DEF-054` 的教训：那是跨项目串账的入口）：`.sdo/` 的父目录
+ * 就是本工作区，这条关系是布局不变量（设计 §4.5）。
+ */
+function workspaceOfStore(store: SdoStore): string {
+  return dirname(store.root)
+}
+
+export function createTask(
+  store: SdoStore,
+  journal: Journal,
+  draft: TaskDraft,
+  /**
+   * 声明校验的档位：`declarationExistence: false` = **只判形状**（①③），不判顶层目录存在性（②）。
+   * `decompose` 会给结构通道推导出来的 draft 传 `false`（见 `declarationCheck.checkDeclaration` 的 `existence` 注释）。
+   */
+  options: { declarationExistence?: boolean | undefined } = {},
+): TaskCard {
   /**
    * **`DEF-162` 第②条 / `DEF-160` 的另一半（`TASK-171`）**：建卡那一刻就校验 `role`。
    *
@@ -256,6 +284,22 @@ export function createTask(store: SdoStore, journal: Journal, draft: TaskDraft):
     const legal = ROLES.join(' / ')
     throw new Error(`${fmt('uiPlan.kRoleNotARole', { p1: textOf(draft.role), p2: legal })}\n${fmt('uiPlan.kRoleNotARoleRemedy', { p1: legal })}`)
   }
+  /**
+   * **`TASK-187`（`DEF-163` / `DEF-168`）**：三条路径声明在**建卡那一刻**校验形状。
+   *
+   * 与上面的 `role` 同款"唯一入口 + 防御纵深"：`decompose` 会先筛成逐条 issue（好卡照建、坏卡点名），
+   * 这里再兜一层 —— 任何绕过 `decompose` 的调用也建不出"声明对不上却已落盘"的卡。
+   * 判据与文案的唯一实现在 `domain/declarationCheck.ts`（含"改成什么形状"的纯路径数组示例）。
+   */
+  const declaration = checkDeclaration(
+    { impact: draft.impact, landing: draft.landing, writeScopes: draft.writeScopes },
+    {
+      root: workspaceOfStore(store),
+      ledgerDir: basename(store.root),
+      ...(options.declarationExistence === undefined ? {} : { existence: options.declarationExistence }),
+    },
+  )
+  if (!declaration.ok) throw new Error(`${textOf(draft.title)}\n${declaration.detail}`)
   const now = new Date().toISOString()
   const task: TaskCard = {
     id: nextId('TASK', listTaskIds(store)),
@@ -320,6 +364,11 @@ export interface PlanIssue {
     // **`TASK-171`（`DEF-162` 第②条 / `DEF-160` 另一半）**：suggestion 的 `role` 不在 `ROLES` 白名单里
     // （`cockpit` 这类非法值过去能建卡成功，要到 `C-31` 才暴露）。**建卡那一刻**就拒：这张卡不会被建出来。
     | 'role-not-a-role'
+    // **`TASK-187`（`DEF-163` / `DEF-168`）**：`impact` / `landing` / `writeScopes` 不是纯路径
+    // （中文括注 / 空串 / 重复 / 顶层目录不存在）。**建卡那一刻**就拒 —— 修前这类声明能落盘，
+    // 到 `done` 的判据面才炸，而那时卡已不可改（只能看着一条对不上的声明烂在台账里）。
+    // 判据与文案的唯一实现在 `domain/declarationCheck.ts`（本文件在 m7 棘轮里，允许新增中文 0）。
+    | 'declaration-invalid'
   taskId: string
   detail: string
   remedy: string
@@ -1003,17 +1052,39 @@ export function decompose(
   const validDrafts: TaskDraft[] = []
   for (const draft of drafts) {
     const role = textOf(draft.role).trim()
-    if (isRole(role)) {
-      validDrafts.push(draft)
+    if (!isRole(role)) {
+      roleIssues.push({
+        code: 'role-not-a-role',
+        // 卡还没建出来：用标题点名（这是这条 suggestion 唯一的标识）
+        taskId: textOf(draft.title),
+        detail: fmt('uiPlan.kRoleNotARole', { p1: textOf(draft.role), p2: legalRoles }),
+        remedy: fmt('uiPlan.kRoleNotARoleRemedy', { p1: legalRoles }),
+      })
       continue
     }
-    roleIssues.push({
-      code: 'role-not-a-role',
-      // 卡还没建出来：用标题点名（这是这条 suggestion 唯一的标识）
-      taskId: textOf(draft.title),
-      detail: fmt('uiPlan.kRoleNotARole', { p1: textOf(draft.role), p2: legalRoles }),
-      remedy: fmt('uiPlan.kRoleNotARoleRemedy', { p1: legalRoles }),
-    })
+    /**
+     * **`TASK-187`**：声明形状同样**逐条预筛**（与 `role` 同款理由 —— 在这里筛成 issue，
+     * 好卡照建、坏卡逐条点名，批处理还能继续；若只留在 `createTask` 里抛错，抛出点之前的卡
+     * 已经落盘，读者只看到一条异常、看不到"哪条 suggestion 的哪条声明是坏的"）。
+     *
+     * 只对**新写入**生效：这里判的是**本次这批 draft**，库里已有的老卡不参与（不回溯历史）。
+     */
+    const declaration = checkDeclaration(
+      { impact: draft.impact, landing: draft.landing, writeScopes: draft.writeScopes },
+      // **建卡路径只判形状**（①③）：结构通道的写范围是按项目模板推导的，不是谁的声明（见模块注释）
+      { root: workspaceOfStore(store), ledgerDir: basename(store.root), existence: false },
+    )
+    if (!declaration.ok) {
+      roleIssues.push({
+        code: 'declaration-invalid',
+        taskId: textOf(draft.title),
+        detail: declaration.detail,
+        // 修法**只有一条**：照示例改成纯路径数组（`checkDeclaration` 已按该字段自己的合法项造示例）
+        remedy: JSON.stringify(declaration.example),
+      })
+      continue
+    }
+    validDrafts.push(draft)
   }
   for (const draft of validDrafts) {
     const key = `${draft.title}|${draft.role}`
@@ -1022,7 +1093,7 @@ export function decompose(
     const task = createTask(store, journal, {
       ...draft,
       ...(input.iteration === undefined ? {} : { iteration: input.iteration }),
-    })
+    }, { declarationExistence: false })
     created.push(task)
     const planRow = planByTitle.get(draft.title)
     if (planRow !== undefined) structuralCreated.push(planRow)

@@ -197,6 +197,7 @@ import { composeUnderBase, evaluateWriteScope, isDevicePath, normalizeWorkspaceP
  */
 import { ORDER_BASIS_LABEL, orderKeyLabel, renderQueueTable, renderStatusSnapshot, selectedWhyLabel } from './domain/snapshot.js'
 import { renderChangeFeed } from './domain/changeFeed.js'
+import { describeOverlap, describeWarning } from './domain/declarationCheck.js'
 import type { ProposedQuestion } from './domain/grill.js'
 
 export const name = 'dsh-software-dev-office'
@@ -1592,13 +1593,22 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p1: String(deadExempt.length),
             p2: deadExempt.map((item) => `${item.task}(${item.check})`).join(' '),
           }) + '\n'
+      /**
+       * **`TASK-187` 口径③的持久面**：在飞卡之间的"声明 × 写范围"相交**一直存在**，不能只在
+       * 那一次改卡回执里出现过就算完（换个会话、上下文压缩之后就没人记得了）。
+       * 有则逐条印、无则一行不占（相交不是错 ⇒ 不进判据、不拦派发）。
+       */
+      const overlapLines = office.declarationOverlapLines(call)
+      const overlapBlock = overlapLines.length === 0
+        ? ''
+        : '\n' + overlapLines.map((line) => `⚠ ${line}`).join('\n') + '\n'
       // **DEF-070**：普通状态回执也要报构建读数（这条才是 `sdo_status` 的常走路径）
-      if (forced === undefined) return buildLine + '\n' + text + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
+      if (forced === undefined) return buildLine + '\n' + text + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock + overlapBlock
       const note = forced.truncated
         ? fmt('uiIndex.kRebuildTruncated', { p1: String(forced.badLine ?? '?') })
         : t('uiIndex.kRebuildForced')
       // **DEF-070**：构建读数放在最前面（第一眼就该知道这份回执出自哪份构建）
-      return buildLine + '\n' + `${note}\n${text}` + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock
+      return buildLine + '\n' + `${note}\n${text}` + snapshotBlock + pendingBlock + poolBlock + faceMismatchBlock + faceBlock + finishedBlock + deadBlock + overlapBlock
     },
 
     /**
@@ -2494,7 +2504,22 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ...(args.size === undefined ? {} : { size: args.size }),
           })
           if (!updated.ok) return fmt('uiIndex.kTaskUpdateRejected', { p1: updated.code, p2: updated.detail })
-          return fmt('uiIndex.kTaskUpdated', { p1: updated.task.id, p2: updated.changed.join('、'), p3: String(updated.task.revision) })
+          /**
+           * **`TASK-187` 口径③：相交不是错，但必须可见。**
+           *
+           * 写进去的声明若与**在飞卡**（除本卡外的 `in-progress`）的写范围相交，改卡**照常成功**
+           * —— 同一处代码先后被两张卡改是常态。但那条事实必须**印在这一条回执上**：
+           * 只留一个结构化字段（`updated.overlaps`）等于"看得见的人只有写代码的人"。
+           * 文案由 `domain/declarationCheck.ts` 的 `describeOverlap` 渲染（语言随 `locale()`）。
+           */
+          const overlapNote = (updated.overlaps ?? []).map((overlap) => `\n⚠ ${describeOverlap(overlap)}`).join('')
+          /**
+           * **`TASK-187` 口径②的"要求显式新建标记"分支**：声明的顶层目录**还不存在**时，写入照常成功，
+           * 但这条回执必须把它说出来（"可能是笔误，也可能由本卡新建"——工具不替你判）。
+           * 与相交同一处尾注：`⚠` 开头、语言随 `locale()`。
+           */
+          const warningNote = (updated.warnings ?? []).map((warning) => `\n${describeWarning(warning)}`).join('')
+          return fmt('uiIndex.kTaskUpdated', { p1: updated.task.id, p2: updated.changed.join('、'), p3: String(updated.task.revision) }) + overlapNote + warningNote
         }
         case 'drop': {
           // D3-3 回收路径：建错的卡置为 dropped（留痕不删除），把「误拆不可逆」变成可回收

@@ -82,6 +82,9 @@ import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
 import { queueEntriesOf } from './domain/snapshot.js'
 import { changeFeedOf } from './domain/changeFeed.js'
 import type { ChangeFeedResult } from './domain/changeFeed.js'
+// **`TASK-187`**：声明形状的写入时校验（`impact` / `landing` / `writeScopes`）
+import { checkDeclaration, declarationOverlaps, describeOverlap } from './domain/declarationCheck.js'
+import type { DeclarationOverlap, DeclarationWarning } from './domain/declarationCheck.js'
 import type {
   QueueEntry,
   SnapshotBlockedTask,
@@ -661,6 +664,31 @@ export function hasIndependentReviewDod(dod: readonly unknown[]): boolean {
     return /独立评审/u.test(text) || /评审者\s*(?:≠|!=)\s*作者/u.test(text)
   })
 }
+
+/**
+ * **改卡的结果**（`TASK-187`）：`domain/collab.ts` 的 `updateTask` 返回值，外加本卡新增的一条读数。
+ *
+ * 为什么要扩这个形状：声明形状的**拒绝**走 `updateTask` 既有的失败面（`code` + `detail`，回执会印
+ * `[code] detail`）；而**相交**是"接受 + 点名"，它不属于既有两态，只能作为额外字段带出去。
+ * 三个分支在界面层读到的键（`ok` / `code` / `detail` / `task` / `changed`）依旧齐全 ⇒ 既有回执不变。
+ */
+export type TaskUpdateOutcome =
+  | (Extract<ReturnType<typeof updateTask>, { ok: true }> & {
+    /** 本次写入后，本卡声明与**在飞卡**写范围的相交读数（缺省 = 没有相交；相交不是错） */
+    overlaps?: DeclarationOverlap[] | undefined
+    /** 本次声明里"顶层目录还不存在"的**告警**（缺省 = 没有；告警不拦写入，但必须看得见） */
+    warnings?: DeclarationWarning[] | undefined
+  })
+  | Exclude<ReturnType<typeof updateTask>, { ok: true }>
+  | {
+    ok: false
+    /** 声明形状的拒绝码（`not-a-path` / `blank` / `duplicate` / `unknown-top-dir`） */
+    code: string
+    /** 可读拒绝（**含"改成什么形状"的纯路径数组示例**） */
+    detail: string
+    /** 修法示例的结构化形态（与 `detail` 里那串逐字同源；调用方可以直接照抄） */
+    example: string[]
+  }
 
 export class SoftwareDevOffice {
   /** 会话 → 工作目录。多会话并存在不同目录时也不会串。 */
@@ -4850,6 +4878,9 @@ export class SoftwareDevOffice {
       // **在飞 = 卡状态 `in-progress`**（与 ① 同一份读数），不是"派发还活着" —— 超了孤儿 TTL 的卡
       // 恰恰最需要看心跳（它可能早就没人做了）。子会话号从 `dispatch/started` 现算，取不到就空串。
       children: flying.map((item) => ({
+        // **任务号一定带上**（`REV-093#8` 连带修掉的自伤：子会话号读不出时会印出「在飞  从未观测到」
+        // 这种空名字）—— 渲染器用「任务号/子会话前 8 位」作主语。
+        task: item.id,
         child: item.child,
         at: item.child === '' ? undefined : lastObservedAt.get(fullChildOf.get(item.id) ?? ''),
       })),
@@ -5644,10 +5675,90 @@ export class SoftwareDevOffice {
     return readManifest(this.storeFor(this.requireWorkspace(call)))
   }
 
-  /** **改卡**（`sdo_task action=update`）：见 `updateTask` 的三条约束。 */
-  updateTask(call: OfficeCall, input: Parameters<typeof updateTask>[2]): ReturnType<typeof updateTask> {
-    const { store, journal } = this.contextFor(call)
-    return updateTask(store, journal, input)
+  /**
+   * **改卡**（`sdo_task action=update`）：见 `updateTask` 的三条约束。
+   *
+   * **`TASK-187`（可观测性③ / `DEF-163` / `DEF-168`）：声明形状在**接受的那一刻**校验。**
+   *
+   * 修前 `impact` / `landing` / `writeScopes` 写进来是什么就是什么，形状不对要到 `done` 的判据面
+   * 才炸（`landing-outside-scope` / `impact-undeclared`），而那时卡已不可改 —— 作者只能看着一条
+   * 永远对不上的声明烂在台账里。现在：不合法**当场拒绝**，拒绝文案里带"改成什么形状"的纯路径数组
+   * 示例（判据与文案的唯一实现在 `domain/declarationCheck.ts`）。
+   *
+   * **两条口径**：
+   *   · **只对新写入生效**：这里只判**本次调用声明的那几个字段**，库里老卡的旧声明不参与（不回溯历史）；
+   *   · **相交不是错**：写进去的声明若与**在飞卡**（除本卡外的 `in-progress`）的写范围相交，
+   *     **接受**并在 `overlaps` 里逐条点名（谁 / 哪条路径 / 撞上哪条范围）——不可见才是错。
+   */
+  updateTask(call: OfficeCall, input: Parameters<typeof updateTask>[2]): TaskUpdateOutcome {
+    const { store, journal, workspace } = this.contextFor(call)
+    // **本次调用**声明的字段才判（`undefined` = 没声明 ⇒ 该字段整条跳过）
+    const declared = checkDeclaration(
+      {
+        impact: input.impact,
+        landing: input.landing,
+        writeScopes: input.writeScopes,
+        addWriteScopes: input.addWriteScopes,
+      },
+      // **基准是工作区根**（不是台账目录 `.sdo/`）：写范围/落点都是工作区相对的声明
+      { root: workspace, ledgerDir: this.settings.projectDirName },
+    )
+    if (!declared.ok) return { ok: false, code: declared.code, detail: declared.detail, example: declared.example }
+    const result = updateTask(store, journal, input)
+    if (!result.ok) return result
+    // **口径③**：相交不是错，但必须点名。判据"哪些卡算在飞"只有这一处定义（除本卡外的 in-progress）
+    const inFlight = listTasks(store).filter((item) => item.id !== result.task.id && item.status === 'in-progress')
+    const overlaps = declarationOverlaps(
+      { impact: result.task.impact, landing: result.task.landing, writeScopes: result.task.writeScopes },
+      inFlight,
+    )
+    // **口径②的"要求显式新建标记"分支**：顶层目录还不存在 ⇒ 写入照常成功，但必须把这件事**带出去**
+    // （回执尾注逐条印；见 `src/index.ts` 的改卡回执）。这是"判不了就不拦"的具体形态。
+    const warnings = declared.warnings
+    if (overlaps.length === 0 && warnings.length === 0) return result
+    return { ...result, ...(overlaps.length === 0 ? {} : { overlaps }), ...(warnings.length === 0 ? {} : { warnings }) }
+  }
+
+  /**
+   * **开环的声明相交**（`TASK-187` 口径③的只读入口）：**在飞卡之间**的
+   * "声明（写范围 / 影响面 / 落点）× 另一张在飞卡的写范围"相交读数。
+   *
+   * 为什么要一个**独立入口**而不是只在 `updateTask` 的返回值里：一次改卡的相交是**持续存在**的事实
+   * （两张卡同时在飞就一直在），若只出现在那一次的返回值里，下一位读者（换个会话、上下文压缩之后）
+   * 又看不见了 —— 而卡上的口径是"相交不是错，**不可见才是错**"。所以给一个随时可取的读数。
+   */
+  declarationOverlaps(call: OfficeCall): DeclarationOverlap[] {
+    const { store } = this.contextFor(call)
+    const tasks = listTasks(store)
+    const inFlight = tasks.filter((task) => task.status === 'in-progress')
+    // 没有任何在飞卡 ⇒ 没有"与在飞卡相交"这回事（不是"读不出来"）
+    if (inFlight.length === 0) return []
+    // 一侧是**所有未结算的卡**（planned / ready / in-progress / blocked —— 它们的声明还是要用的），
+    // 另一侧只认**在飞卡**的写范围：这正是"声明 × 谁来抢先落了这块地"的那一问
+    const live = tasks.filter((task) => task.status !== 'done' && task.status !== 'verified' && task.status !== 'dropped')
+    const out: DeclarationOverlap[] = []
+    for (const task of live) {
+      const others = inFlight.filter((other) => other.id !== task.id)
+      if (others.length === 0) continue
+      for (const overlap of declarationOverlaps(
+        { impact: task.impact, landing: task.landing, writeScopes: task.writeScopes },
+        others,
+      )) {
+        // 两个 id 分开写：`declaredBy` = 谁的声明，`taskId` = 撞上的那张**在飞卡**
+        out.push({ ...overlap, declaredBy: task.id })
+      }
+    }
+    return out
+  }
+
+  /**
+   * **相交读数的可渲染形态**（`TASK-187` 口径③）：一句一条，语言随 `locale()`。
+   *
+   * 只读入口给**任何**回执/提示通道复用（改卡回执的尾注、状态块…），于是"把相交印出来"
+   * 不需要各处自己拼文案 —— 口径只有一份（`DEF-044` 的教训）。
+   */
+  declarationOverlapLines(call: OfficeCall): string[] {
+    return this.declarationOverlaps(call).map((overlap) => describeOverlap(overlap))
   }
 
   /** **真机运行记录**（用户要求：真机测试才能交付）。 */
