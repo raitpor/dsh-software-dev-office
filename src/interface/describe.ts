@@ -756,11 +756,16 @@ export function describeTask(task: TaskCard, shapeNotes: FieldShapeNote[] = []):
  * **未复用候选的列示档位**（`DEF-175` 的另一半：读数面必须有**上限**，否则它按历史会话数线性膨胀）。
  *
  * 为什么是"按原因归并"而不是"掐掉后 N 条"：`DEF-041` 要求「为什么没复用它」可解释，而真机形状是
- * **上百个候选、只有两三种原因**（现盘实测：101 个候选 / 2 种原因原话）⇒ 归并既保住了**原因**，
- * 又把体积钉在「原因种数 × 一句原话」的量级上，与子会话个数**脱钩**。所以要砍的是**数量**，
- * 不是原因本身 —— 原因原话在缺省档里是**整句**打印的（截断只在宿主动态原话无界时才发生）。
+ * **上百个候选、只有两三种原因** ⇒ 归并既保住了**原因**，又把体积钉在「原因种数 × 一句原话」的
+ * 量级上，与子会话个数**脱钩**。所以要砍的是**数量**，不是原因本身。
+ *
+ * ⚠️ **`REV-093#3` 的教训（这条判据的第一版错了）**：第一版按「**组数**」封顶（只印前 3 组），
+ * 于是出现第 4 种原因时，那种原因**整段消失**——只剩"还有 N 个"的计数。那是把**原因**砍掉了，
+ * 与「砍数量不砍原因」自相矛盾。现在改成按**字符预算**封顶：按原因出现顺序累加到预算为止，
+ * 于是常见形状（几种原因、每种一句原话）**一定全部印全**；只有在原因**又多又长**时才会折叠，
+ * 且折叠时明写「未展开的原因还有 K 种」（种数必须说出来 —— 读者至少知道"原因被折叠了"这件事）。
  */
-export const POOL_UNUSABLE_REASON_GROUPS = 3
+export const POOL_UNUSABLE_CHARS = 600
 
 /** 每个原因分组里最多点几个子会话（前 8 位：定位够用，逐条仍走 `verbose`）。 */
 export const POOL_UNUSABLE_IDS_PER_REASON = 3
@@ -770,25 +775,41 @@ export const POOL_UNUSABLE_IDS_PER_REASON = 3
  *
  * 定 200 的依据是**现盘最长的原因原话 168 字符**（掩码回溯判不了时点名缺哪几条禁令）——
  * 上限必须**大于真实形状**，否则默认档会把"缺哪几条禁令"这句最有价值的话切掉；
- * 它只是最后一道保险，不是常规路径。
+ * 它只是最后一道保险，不是常规路径（守卫见 `M232-05` 的截断分支两态）。
  */
 export const POOL_UNUSABLE_REASON_CHARS = 200
 
 /** 观测面**逐条**列示的缺省条数（`DEF-175` 另一半：`DEF-041` 的逐条面同样需要有上限）。 */
 export const FACE_DETAIL_ROWS = 3
 
-/** 池块/观测面的列示档位：缺省有界，`verbose: true` 才展开逐条。 */
+/**
+ * 池块/观测面的列示档位：缺省有界，`verbose: true` 才展开逐条。
+ *
+ * ⚠️ **`REV-093#2`**：`verbose` 目前**只有函数级入口**（`sdo_plan` 的参数表里没有它，
+ * `src/interface/tools.ts` 与 `src/index.ts` 不在本卡写范围）⇒ 回执正文**不许**再教读者去传它。
+ */
 export interface ReadoutOptions {
   /** `true` = 逐条展开（人手排查用）；缺省**有界汇总**（回执默认档）。 */
   verbose?: boolean | undefined
 }
 
+/** 一个原因分组的一段文本：`原因原话×条数（样本 前8位 … +其余）`。 */
+function unusableGroupPiece(reason: string, ids: readonly string[]): string {
+  const why = reason.length > POOL_UNUSABLE_REASON_CHARS ? `${reason.slice(0, POOL_UNUSABLE_REASON_CHARS)}…` : reason
+  const sampleIds = ids.slice(0, POOL_UNUSABLE_IDS_PER_REASON)
+  const more = ids.length > sampleIds.length ? ` +${String(ids.length - sampleIds.length)}` : ''
+  return `${why}×${String(ids.length)}（${sampleIds.join(' ')}${more}）`
+}
+
 /**
- * **未复用候选的缺省档文本**：按原因原话归并 + 每个原因点几个样本。
+ * **未复用候选的缺省档文本**：按原因原话归并 + 每个原因点几个样本 + **字符预算封顶**。
  *
- * 有界性由三个常量钉住（{@link POOL_UNUSABLE_REASON_GROUPS} / {@link POOL_UNUSABLE_IDS_PER_REASON} /
- * {@link POOL_UNUSABLE_REASON_CHARS}）⇒ 文本长度与候选个数无关，只与**原因种数**有关
- * （守卫见 `test/m230.test.ts` 的 2 → 20 对比）。
+ * 有界性由三个常量钉住（{@link POOL_UNUSABLE_CHARS} / {@link POOL_UNUSABLE_IDS_PER_REASON} /
+ * {@link POOL_UNUSABLE_REASON_CHARS}）⇒ 文本长度与候选个数无关；原因种数在预算内**全部印全**
+ * （守卫见 `test/m230.test.ts` 的 `M232-01` / `M232-02` / `M232-05`）。
+ *
+ * 折叠时必须**把被折叠的规模说出来**：候选条数用语言包的既有键，**原因种数**用 ASCII 投影
+ * （语言包文件不在本卡写范围，见 `uiDescribe.kPoolUnusableMore` 的同类处置）。
  */
 function unusableFoldText(rows: readonly { childSessionId: string; reason: string }[]): string {
   const groups = new Map<string, string[]>()
@@ -797,15 +818,24 @@ function unusableFoldText(rows: readonly { childSessionId: string; reason: strin
     ids.push(row.childSessionId.slice(0, 8))
     groups.set(row.reason, ids)
   }
-  const shownGroups = [...groups.entries()].slice(0, POOL_UNUSABLE_REASON_GROUPS)
-  const parts = shownGroups.map(([reason, ids]) => {
-    const why = reason.length > POOL_UNUSABLE_REASON_CHARS ? `${reason.slice(0, POOL_UNUSABLE_REASON_CHARS)}…` : reason
-    const sampleIds = ids.slice(0, POOL_UNUSABLE_IDS_PER_REASON)
-    const more = ids.length > sampleIds.length ? ` +${String(ids.length - sampleIds.length)}` : ''
-    return `${why}×${String(ids.length)}（${sampleIds.join(' ')}${more}）`
-  })
-  const folded = [...groups.entries()].slice(POOL_UNUSABLE_REASON_GROUPS).reduce((sum, [, ids]) => sum + ids.length, 0)
-  if (folded > 0) parts.push(fmt('uiDescribe.kPoolUnusableMore', { p1: String(folded) }))
+  const entries = [...groups.entries()]
+  const parts: string[] = []
+  let spent = 0
+  let index = 0
+  for (; index < entries.length; index += 1) {
+    const entry = entries[index]
+    if (entry === undefined) break
+    const piece = unusableGroupPiece(entry[0], entry[1])
+    // 第一段**无条件印**（哪怕它自己就超预算）：一条原因都不印，那块读数就等于没解释为什么没复用。
+    if (parts.length > 0 && spent + piece.length + 1 > POOL_UNUSABLE_CHARS) break
+    parts.push(piece)
+    spent += piece.length + 1
+  }
+  const folded = entries.slice(index)
+  if (folded.length > 0) {
+    const count = folded.reduce((sum, [, ids]) => sum + ids.length, 0)
+    parts.push(`${fmt('uiDescribe.kPoolUnusableMore', { p1: String(count) })}[reasons-not-shown=${String(folded.length)}]`)
+  }
   return parts.join('；')
 }
 
@@ -1179,7 +1209,12 @@ export function describeDispatchStarted(
  * **有界（`DEF-175` 的另一半）**：一个子会话两行，而历史子会话有上百个（现盘 103 个 ⇒ 一万五千
  * 字符）⇒ 缺省档只**逐条**打印前 {@link FACE_DETAIL_ROWS} 条（**有问题的排在前面**：公告面越界、
  * 执行面有掩码外调用 —— 这两类才是"工具面到底收窄了没有"的直接证据），其余折成一行计数归纳；
- * 要全部逐条（`verbose: true`）就走那条路，它与修前逐字相同。
+ * 函数级的 `verbose` 档与修前逐字相同。
+ *
+ * ⚠️ **`REV-093#2`（回执不许教读者一个不存在的参数）**：归纳行**不再**写「raise to every line:
+ * verbose=true」—— `sdo_plan` 的参数表里没有 `verbose`（`src/interface/tools.ts` 与 `src/index.ts`
+ * 不在本卡写范围），照那句话做只会拿到宿主 schema 里没有的参数。归纳行改为指一条**真有的**出路：
+ * 逐条原始观测就在台账原件 `evidence/child-tools.jsonl` 里（同一份数据，只是不经回执）。
  *
  * 归纳行是**语言中立 ASCII**：语言包文件不在本卡写范围内（`src/data/lang/*.yml`），
  * 而这条是给复验者的读数、不是终端用户的散文 —— 与 `domain/snapshot.ts` 的 `renderQueueTable` 同口径。
@@ -1196,13 +1231,13 @@ export function childFaceLines(
   for (const face of shown) lines.push(...childFaceDetailLines(face))
   const folded = faces.length - shown.length
   if (folded > 0) {
-    // 归纳行必须**自己说清被折掉的是什么**：条数 + 三类计数 + 怎么展开（否则读者以为"只观测到 3 个"）
+    // 归纳行必须**自己说清被折掉的是什么**：条数 + 三类计数 + 去哪看全量（否则读者以为"只观测到 3 个"）
     const outsideCalls = faces.reduce((sum, face) => sum + (face.callCount ?? (face.calls ?? []).length), 0)
     const announcedViolations = faces.filter((face) => face.violations.length > 0).length
     lines.push(
       `faces: ${String(faces.length)} observed; announced-with-violations ${String(announcedViolations)};`
       + ` outside-mask calls ${String(outsideCalls)}; detailed ${String(shown.length)}, folded ${String(folded)}`
-      + ' (raise to every line: verbose=true)',
+      + ' (every line lives in .sdo/evidence/child-tools.jsonl)',
     )
   }
   return lines

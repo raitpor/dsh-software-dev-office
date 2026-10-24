@@ -20,7 +20,7 @@
  * 夹具口径：真写卡 → 真认领 → 真 `reportTask`（`done` 是执行者唯一必经的关口，测内部函数没有意义）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -31,9 +31,9 @@ import { pendingReviewBigCards } from '../src/domain/collab.js'
 import { rolePools } from '../src/domain/pool.js'
 import {
   FACE_DETAIL_ROWS,
+  POOL_UNUSABLE_CHARS,
   POOL_UNUSABLE_IDS_PER_REASON,
   POOL_UNUSABLE_REASON_CHARS,
-  POOL_UNUSABLE_REASON_GROUPS,
   childFaceLines,
   describePoolBlock,
 } from '../src/interface/describe.js'
@@ -43,6 +43,7 @@ import type { OfficeCall } from '../src/office.js'
 import type { Review } from '../src/domain/records.js'
 import type { EvidenceItem, TaskCard } from '../src/types.js'
 
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m230/', import.meta.url))
 const WORKSPACE = join(BASE, 'proj')
 
@@ -352,7 +353,11 @@ test('M230-07 落点二：待评审中大卡 > 上限 5 ⇒ 行里明写「等 N
  *   · `M232-02` **逐条原因**在缺省档与 `verbose` 档**都拿得到**（缺省档按原因归并、原因原话整句保留；
  *     `verbose` 档每个子会话一行，一字不少）；
  *   · `M232-03` 观测面：缺省档只逐条打 `FACE_DETAIL_ROWS` 条、**有问题的排前面**，其余折成计数归纳行；
- *     `verbose` 档把每一条都打出来。
+ *     `verbose` 档把每一条都打出来；归纳行**不许**教读者一个工具面上不存在的参数（`REV-093#2`）。
+ *   · `M232-04`（`REV-093#3` 的返工）**第 4 种原因不许整段消失**：只要原因种数在字符预算内，缺省档
+ *     必须把它们**全部**印出来；只有"又多又长"时才折叠，且折叠时必须说出**被折叠的原因种数**。
+ *   · `M232-05`（`REV-093#4` 的返工）原因原话超长 ⇒ 截断分支的两态（缺省档截断且**保留细节在整句前部**、
+ *     `verbose` 档仍是原话全文），并且整段仍在字符预算之内。
  *
  * 编号沿用「增量」序列（`m231` 之后）：本卡写范围不含新建测试文件，故落在 `m230`。
  * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`，内联中文会被散文棘轮记成未登记站点）。
@@ -446,22 +451,98 @@ test('M232-02 逐条原因在缺省档与 verbose 档都拿得到（缺省按原
     assert.ok(folded.includes(reason), `the folded readout must keep the reason verbatim (${reason}): ${folded}`)
     assert.ok(verbose.includes(reason), `the verbose readout must keep it too (${reason})`)
   }
-  assert.equal((folded.match(/×9/gu) ?? []).length, POOL_UNUSABLE_REASON_GROUPS, `each of the ${String(POOL_UNUSABLE_REASON_GROUPS)} printed reason groups must carry its own count of 9: ${folded}`)
+  assert.equal((folded.match(/×9/gu) ?? []).length, reasons.length, `each printed reason group must carry its own count of 9: ${folded}`)
   // ② verbose 档：**每个**候选的子会话前 8 位都在（逐条，一个不少）
   for (const child of children) {
     const prefix = child.childSessionId.slice(0, 8)
     assert.ok(verbose.includes(prefix), `verbose must print every candidate (${prefix})`)
   }
-  // ③ 缺省档**不许**把 27 个候选全列出来：列出的样本数 ≤ 组数 × 每组样本数，并且**严格小于**全集
+  // ③ 缺省档**不许**把 27 个候选全列出来：列出的样本数 = 组数 × 每组样本数，并且**严格小于**全集
   const prefixes = children.map((child) => child.childSessionId.slice(0, 8))
   const listed = prefixes.filter((prefix) => folded.includes(prefix)).length
-  const cap = POOL_UNUSABLE_REASON_GROUPS * POOL_UNUSABLE_IDS_PER_REASON
-  assert.equal(listed, cap, `the folded readout must print exactly ${String(cap)} samples (3 groups × 3), got ${String(listed)}: ${folded}`)
+  const cap = reasons.length * POOL_UNUSABLE_IDS_PER_REASON
+  assert.equal(listed, cap, `the folded readout must print exactly ${String(cap)} samples (${String(reasons.length)} groups × ${String(POOL_UNUSABLE_IDS_PER_REASON)}), got ${String(listed)}: ${folded}`)
   assert.ok(listed < children.length, 'bounded: the folded readout must print fewer ids than there are candidates')
   // ④ 常量本身钉住（改数字必须改守卫）
-  assert.equal(POOL_UNUSABLE_REASON_GROUPS, 3, 'the reason-group cap is pinned')
   assert.equal(POOL_UNUSABLE_IDS_PER_REASON, 3, 'the sample-per-reason cap is pinned')
+  assert.ok(POOL_UNUSABLE_CHARS >= 400, `the char budget must be able to hold the real shape (a few reasons of ~168 chars each): ${String(POOL_UNUSABLE_CHARS)}`)
   assert.ok(POOL_UNUSABLE_REASON_CHARS >= 168, 'the reason cap must stay above the longest real reason (168 chars, measured on the live ledger)')
+})
+
+test('M232-04 (REV-093#3 rework) a 4th distinct reason must not vanish: every reason within the char budget is printed', () => {
+  // **两态**：`REV-093#3` 的形状是"4 种原因、第一版按组数封顶 ⇒ 第 4 种一个字都不印"。
+  // 现在按**字符预算**封顶 ⇒ 只要原因种数在预算内，全部印出来；超过预算才折叠，且必须点名种数。
+  const short = ['reason-A', 'reason-B', 'reason-C', 'reason-D', 'reason-E']
+  const poolOf = (reasons: string[], per: number): ReturnType<typeof rolePools> => {
+    const children = Array.from({ length: reasons.length * per }, (_, index) => ({
+      childSessionId: `feed${String(index).padStart(4, '0')}-1111-4222-8333-444444444444`,
+      role: 'developer',
+      task: `TASK-6${String(index).padStart(2, '0')}`,
+      mode: 'continuable' as const,
+      state: 'idle' as const,
+      rounds: 1,
+      startedAt: '2026-10-08T00:00:00.000Z',
+      finishedAt: '2026-10-08T00:01:00.000Z',
+      maskHash: 'same',
+    }))
+    return rolePools({
+      children,
+      roles: ['developer'],
+      caps: { developer: children.length },
+      defaultCap: children.length,
+      reuseBlockedOf: (child) => reasons[Number(child.childSessionId.slice(4, 8)) % reasons.length] ?? '',
+    })
+  }
+  // ① 态一：5 种**短**原因 ⇒ 预算装得下 ⇒ **五种全在**（第一版这里只会印 3 种）
+  const small = describePoolBlock(poolOf(short, 2), [], true, 60)
+  for (const reason of short) {
+    assert.ok(small.includes(reason), `every reason within the char budget must be printed (${reason}): ${small}`)
+  }
+  assert.equal(small.includes('reasons-not-shown'), false, `nothing may be folded when the budget holds everything: ${small}`)
+
+  // ② 态二：8 种**长**原因（每种 120 字符）⇒ 必然超预算 ⇒ 必须折叠，且**说出未展开的原因种数**
+  const long = Array.from({ length: 8 }, (_, index) => `reason-${String(index)}-${'x'.repeat(110)}`)
+  const big = describePoolBlock(poolOf(long, 2), [], true, 60)
+  const folded = /\[reasons-not-shown=(\d+)\]/u.exec(big)
+  assert.ok(folded !== null, `when the budget forces folding, the readout must say how many REASONS were not shown: ${big}`)
+  const notShown = Number(folded[1] ?? '0')
+  assert.ok(notShown > 0, `the folded reason count must be a real count: ${String(notShown)}`)
+  const shownReasons = long.filter((reason) => big.includes(reason.slice(0, 60)))
+  assert.equal(shownReasons.length + notShown, long.length, `shown + not-shown must add up to every distinct reason (${String(shownReasons.length)} + ${String(notShown)} != ${String(long.length)}): ${big}`)
+  // ③ 有界：整段仍在预算量级（不再是"原因种数 × 原话长度"的无界乘积）
+  // 那段文本所在行：用 ASCII 标记定位（散文棘轮的 READING 正则盯的是带该调用的行，注释里出现中文也会被记成站点）
+  const line = big.split('\n').find((row) => row.includes('reasons-not-shown')) ?? ''
+  assert.ok(line.length <= POOL_UNUSABLE_CHARS + POOL_UNUSABLE_REASON_CHARS + 80, `the folded line must stay bounded, got ${String(line.length)} chars: ${line}`)
+})
+
+test('M232-05 (REV-093#4 rework) the over-long reason truncation branch: default truncates but keeps the head, verbose keeps it whole', () => {
+  // 修前这条分支（`reason.length > POOL_UNUSABLE_REASON_CHARS`）**没有任何用例走过** —— 评审指出它是空白区。
+  // 前部细节用英文禁令名（真实原因原话里就是中文的'缺'后面跟这些英文工具名；这里只要形态）
+  const head = 'subagent_fork workflow plugin_manager create_goal update_goal'
+  const tailMarker = 'TAIL-MUST-SURVIVE-IN-VERBOSE'
+  const reason = `${head}${'x'.repeat(POOL_UNUSABLE_REASON_CHARS)}${tailMarker}`
+  assert.ok(reason.length > POOL_UNUSABLE_REASON_CHARS, 'fixture premise: the reason is longer than the cap')
+  const children = Array.from({ length: 2 }, (_, index) => ({
+    childSessionId: `d00d${String(index).padStart(4, '0')}-1111-4222-8333-444444444444`,
+    role: 'developer',
+    task: `TASK-5${String(index).padStart(2, '0')}`,
+    mode: 'continuable' as const,
+    state: 'idle' as const,
+    rounds: 1,
+    startedAt: '2026-10-08T00:00:00.000Z',
+    finishedAt: '2026-10-08T00:01:00.000Z',
+    maskHash: 'same',
+  }))
+  const pools = rolePools({ children, roles: ['developer'], caps: { developer: 2 }, defaultCap: 2, reuseBlockedOf: () => reason })
+  const folded = describePoolBlock(pools, [], true, 60)
+  const verbose = describePoolBlock(pools, [], true, 60, { verbose: true })
+  // ① 缺省档：截断（有省略号）、**前部细节仍在**（"缺哪几条禁令"这句最有价值的话在句子前部）
+  assert.ok(folded.includes('…'), `the default readout must mark the truncation: ${folded}`)
+  assert.ok(folded.includes(head), `the truncation must keep the informative head: ${folded}`)
+  assert.equal(folded.includes(tailMarker), false, `the truncation must really cut the tail: ${folded}`)
+  // ② verbose 档：原话全文（尾标还在）—— 信息一点没丢
+  assert.ok(verbose.includes(tailMarker), `the verbose readout must keep the full reason: ${verbose.slice(0, 200)}`)
+  assert.ok(verbose.includes(reason), 'the verbose readout must carry the reason verbatim, byte for byte')
 })
 
 test('M232-03 观测面：缺省档只逐条打 FACE_DETAIL_ROWS 条且**有问题的排前面**，verbose 逐条全打', () => {
@@ -492,4 +573,14 @@ test('M232-03 观测面：缺省档只逐条打 FACE_DETAIL_ROWS 条且**有问�
   for (const face of faces) assert.ok(verbose.some((line) => line.includes(face.childSessionId)), `verbose must name ${face.childSessionId}`)
   // ④ 常量钉住
   assert.equal(FACE_DETAIL_ROWS, 3, 'the per-face detail cap is pinned')
+  // ⑤ **回执不许教读者一个工具面上不存在的参数**（`REV-093#2`）：`sdo_plan` 的参数表里没有 `verbose`
+  //   ⇒ 归纳行只能指一条真有的出路（台账原件），并且**产品面**这句话必须逐字出现在两处归纳行里。
+  const summary = folded.at(-1) ?? ''
+  assert.equal(summary.includes('verbose'), false, `the summary must not promise a parameter the tool face does not accept: ${summary}`)
+  assert.ok(summary.includes('child-tools.jsonl'), `the summary must point at a real place to read every line: ${summary}`)
+  const poolSummary = describePoolBlock(rolePools({ children: [], roles: ['developer'], caps: { developer: 1 }, defaultCap: 1 }), [], true, 60)
+  assert.equal(poolSummary.includes('verbose'), false, `the pool block must not promise it either: ${poolSummary}`)
+  // ⑥ **产品面**自证：`sdo_plan` / `sdo_status` 的参数表里确实没有 `verbose`（本文件与产品代码同源核对）
+  const toolsSource = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')
+  assert.equal(/\bverbose\b/u.test(toolsSource), false, 'fixture premise for ⑤: the tool schema has no verbose parameter — if it ever gains one, rewrite the summary text and this guard together')
 })

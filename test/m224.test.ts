@@ -36,6 +36,7 @@ import { Config, resolveSettings } from '../src/config.js'
 import { setLocale } from '../src/domain/i18n.js'
 import { createTask, listTasks, readyTasks } from '../src/domain/plan.js'
 import { ORDER_BASIS_LABEL, SNAPSHOT_CHAR_BUDGET, isVolatileSnapshotLine, renderQueueTable, renderStatusSnapshot } from '../src/domain/snapshot.js'
+import type { StatusSnapshot } from '../src/domain/snapshot.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { JOURNAL_FILE } from '../src/infra/journal.js'
 import type { SdoConfig } from '../src/config.js'
@@ -317,12 +318,17 @@ test('M224-S4 (guard 4) two snapshots of one ledger are byte-identical except th
   const body = (text: string): string => text.split('\n').filter((line) => !isVolatileSnapshotLine(line)).join('\n')
   assert.equal(volatile(first).length, 2, `exactly two volatile lines (timestamp + heartbeat): ${volatile(first).join(' / ')}`)
   assert.notEqual(first.split('\n')[0], second.split('\n')[0], 'the timestamp line must really differ (otherwise this guard is vacuous)')
-  assert.notEqual(volatile(first)[1], volatile(second)[1], 'the heartbeat line must really differ too (it carries its own reading time)')
   assert.equal(body(first), body(second), 'everything except the volatile lines must be byte-identical')
   assert.equal(first.includes('cafebabe'), true, 'the in-flight line must show the child session prefix')
   // 体积行必须**只算正文**：两次读数的体积读数必须相同（心跳不得把预算读数拖下水）
   const sizeLine = (text: string): string => text.split('\n').at(-1) ?? ''
   assert.equal(sizeLine(first), sizeLine(second), `the size line must be stable across two readings: ${sizeLine(first)} / ${sizeLine(second)}`)
+  // **`REV-093#8` 的返工说明**：本格的"反空转"以前靠「心跳行必须不同」—— 而当时心跳行自带 `at=`，
+  // 那条断言只证明"读数时刻换了"，是恒真的。`at=` 已删掉，心跳行的**活力证明**搬进 `M224-S8`
+  // （同台账同刻逐字节相同 / 时刻 +90 分钟则分钟数恰好 +90 / 有更新的观测则更短）。
+  // ⚠️ 反过来这里**必须**承认一件事（评审 `REV-093#6`，本卡不修，另开跟卡）：
+  // ① 行的「已 N 分钟」不是易变行，所以本格的命题在"有卡在飞且派发时刻早于读数时刻"时是**假**的；
+  // 本格夹具不 claim 卡，① 行恒为「在飞 0」，所以它一直是绿的 —— 那是**既有洞**，不是本卡引入的。
 })
 
 test('M224-S8 (landing 2) the heartbeat line carries "last ledger write" + "last observed" as relative readings', () => {
@@ -403,6 +409,79 @@ test('M224-S8 (landing 2) the heartbeat line carries "last ledger write" + "last
   const staleLines = renderStatusSnapshot(staleSnapshot).split('\n')
   const staleBeat = staleLines.find((line) => isVolatileSnapshotLine(line) && line !== staleLines[0]) ?? ''
   assert.ok(staleBeat.includes('dead0000'), `the rendered heartbeat must name the stale card's child: ${staleBeat}`)
+  assert.ok(staleBeat.includes(card.id), `the heartbeat row must carry the task id too (a child id can be unreadable): ${staleBeat}`)
+})
+
+/**
+ * **心跳行的活力证明**（`REV-093#8` 的返工）：删掉行内绝对时刻之后，「这条读数真的在动吗」
+ * 必须由**读数本身**证明，而不是靠"读数时刻换了"。三格都用同一台办公室（同一台账）：
+ *   ① 同台账 + 同刻 ⇒ 心跳行**逐字节相同**（证明行里没有易变的时间戳残留）；
+ *   ② 同台账 + 时刻前进 90 分钟 ⇒ 台账那条的分钟数**恰好 +90**（证明它是现算的相对量，不是摆件）；
+ *   ③ 台账里出现**更新的观测** ⇒ 最近派发观测那条的分钟数**变小**（证明它跟台账走，不跟 now 走）；
+ *   ④ 「读不出」与「没有」分开：`at` 解析不了时说的是「时刻读不出」，不是「无 / 台账为空」。
+ */
+test('M224-S9 (REV-093#8 rewrite) the heartbeat reading is provably live and never leaks an absolute timestamp', () => {
+  const f = snapFixture('beat-live')
+  const card = snapCard(f, 'small', 'src/beat/live.ts')
+  assert.equal(f.office.claimTask(f.call, { taskId: card.id, owner: 'dev-live', expectedRevision: 1 }).ok, true, 'fixture premise: claim succeeds')
+  f.journal.append('dispatch/observed', {
+    childSessionId: 'cafe0000-0000-4000-8000-00000000000a',
+    toolCount: 3,
+    deniedOutsideCount: 0,
+    observedAt: '2026-10-24T00:00:00.000Z',
+  })
+  const beatOf = (at: string): { line: string; snapshot: ReturnType<SoftwareDevOffice['statusSnapshot']> } => {
+    const snapshot = f.office.statusSnapshot(f.call, f.office.poolPlan(f.call, { reuseIdle: false }), new Date(at))
+    const lines = renderStatusSnapshot(snapshot).split('\n')
+    return { line: lines.find((row) => isVolatileSnapshotLine(row) && row !== lines[0]) ?? '', snapshot }
+  }
+  // ① 同台账 + 同刻 ⇒ 逐字节相同（行里**没有**任何绝对时刻）
+  const a = beatOf('2026-10-24T01:00:00.000Z')
+  const again = beatOf('2026-10-24T01:00:00.000Z')
+  assert.ok(a.line !== '', 'the heartbeat line must be present')
+  assert.equal(a.line, again.line, `the same ledger read at the same moment must render the same heartbeat line: ${a.line} / ${again.line}`)
+  assert.equal(/\d{4}-\d{2}-\d{2}T/u.test(a.line), false, `the heartbeat line must not carry an absolute timestamp: ${a.line}`)
+  // ② 时刻前进 90 分钟 ⇒ 台账那条 +90（现算的相对量）
+  const later = beatOf('2026-10-24T02:30:00.000Z')
+  const minutesIn = (line: string): number => {
+    const hit = /(\d+) 分钟前/u.exec(line)
+    assert.ok(hit !== null, `the heartbeat line must carry an "N min ago" reading: ${line}`)
+    return Number(hit[1])
+  }
+  assert.equal(minutesIn(later.line) - minutesIn(a.line), 90, `advancing the reading moment by 90 minutes must add exactly 90 to the relative reading: ${a.line} / ${later.line}`)
+  // ③ 台账里出现更新的观测 ⇒ 「最近派发观测」那条的分钟数变小
+  f.journal.append('dispatch/observed', {
+    childSessionId: 'cafe0000-0000-4000-8000-00000000000a',
+    toolCount: 3,
+    deniedOutsideCount: 0,
+    observedAt: '2026-10-24T01:20:00.000Z',
+  })
+  const fresher = beatOf('2026-10-24T01:30:00.000Z')
+  assert.ok(fresher.line.includes('10'), `a newer observation must make the observed reading smaller (10 min): ${fresher.line}`)
+  // ④ 「读不出」≠「没有」：`at` 解析不了时说的必须是「时刻读不出」
+  const broken: StatusSnapshot = {
+    ...a.snapshot,
+    at: '2026-10-24T01:00:00.000Z',
+    heartbeat: {
+      ledger: { at: 'not-a-timestamp', seq: 42 },
+      observed: { at: 'also-not-a-timestamp', child: 'cafe0000' },
+      children: [{ task: 'TASK-999', child: '', at: 'garbage' }],
+    },
+  }
+  const beatLineOf = (snapshot: StatusSnapshot): string => {
+    const rows = renderStatusSnapshot(snapshot).split('\n')
+    return rows.find((row) => isVolatileSnapshotLine(row) && row !== rows[0]) ?? ''
+  }
+  const brokenLine = beatLineOf(broken)
+  assert.ok(brokenLine.includes('42'), `the unreadable ledger reading must still name its seq: ${brokenLine}`)
+  assert.ok(brokenLine.includes('TASK-999'), `a child without a session id must still be named by its task id: ${brokenLine}`)
+  // 「读不出」与「没有」必须是**两种**读数 —— 用两份快照相互对照来判，而不是比某个中文字面量
+  // （本文件的纪律：中文只写在断言之外，塞进断言实参会被散文棘轮记成未登记站点）。
+  const emptyLedger = beatLineOf({ ...broken, heartbeat: { ledger: undefined, observed: undefined, children: [] } })
+  assert.notEqual(brokenLine, emptyLedger, `"has readings but unreadable" must render differently from "no readings at all": ${brokenLine} / ${emptyLedger}`)
+  const unreadableOnly = beatLineOf({ ...broken, heartbeat: { ledger: { at: 'garbage', seq: 42 }, observed: undefined, children: [] } })
+  const noneOnly = beatLineOf({ ...broken, heartbeat: { ledger: undefined, observed: { at: 'garbage', child: 'cafe0000' }, children: [] } })
+  assert.notEqual(unreadableOnly, noneOnly, 'an unreadable ledger reading and an unreadable observation must not render the same line')
 })
 
 test('M224-S5 (landing 2) the ordered table is complete, rank-carrying and language-neutral (CJK-free in en)', () => {

@@ -196,7 +196,7 @@ export interface SnapshotHeartbeat {
   /** **最近一次派发观测**（`dispatch/observed`）：子代理最近一次"还在发请求"的心跳；一条都没有 ⇒ `undefined` */
   observed: { at: string; child: string } | undefined
   /** **在飞子会话各自的最近一次观测**（前 8 位 → 时刻）；没观测过的**不给项**（不伪造"刚观测到"） */
-  children: readonly { child: string; at: string | undefined }[]
+  children: readonly { task: string; child: string; at: string | undefined }[]
 }
 
 /** 状态快照（**结构化**；渲染见 {@link renderStatusSnapshot}）。 */
@@ -383,12 +383,17 @@ interface SnapshotLabels {
   /** ⑥ 心跳（`DEF-177`）：易变行的标签与三段相对量 */
   heartbeat: string
   ledgerAgo: string
+  ledgerJustNow: string
+  ledgerUnreadable: string
   ledgerNone: string
   observedAgo: string
+  observedJustNow: string
+  observedUnreadable: string
   observedNone: string
   childQuiet: string
+  childJustNow: string
+  childUnreadable: string
   childNoSignal: string
-  justNow: string
   /** 结论码 → 人读短语 */
   verdicts: Record<QueueVerdict, string>
   /** "为什么是它"的三条理由 */
@@ -419,12 +424,17 @@ const ZH: SnapshotLabels = {
   sizeLine: '体积 %N/%M 字符',
   heartbeat: '心跳',
   ledgerAgo: '台账最近落笔 %N 分钟前（seq=%M）',
-  ledgerNone: '台账最近落笔：读不出（台账为空）',
+  ledgerJustNow: '台账最近落笔：刚刚（seq=%N）',
+  ledgerUnreadable: '台账最近落笔：时刻读不出（seq=%N）',
+  ledgerNone: '台账最近落笔：无（台账为空）',
   observedAgo: '最近派发观测 %N 分钟前',
+  observedJustNow: '最近派发观测：刚刚',
+  observedUnreadable: '最近派发观测：时刻读不出',
   observedNone: '最近派发观测：无（还没有一次工具面观测落账）',
   childQuiet: '在飞 %N 已静 %M 分钟',
+  childJustNow: '在飞 %N 刚刚有过观测',
+  childUnreadable: '在飞 %N 观测时刻读不出',
   childNoSignal: '在飞 %N 从未观测到（只有派发那一刻）',
-  justNow: '刚刚',
   verdicts: {
     dispatch: '派发',
     queued: '排队（这一轮没取到）',
@@ -465,12 +475,17 @@ const EN: SnapshotLabels = {
   sizeLine: 'size %N/%M chars',
   heartbeat: 'heartbeat',
   ledgerAgo: 'last ledger write %N min ago (seq=%M)',
-  ledgerNone: 'last ledger write: unreadable (empty ledger)',
+  ledgerJustNow: 'last ledger write: just now (seq=%N)',
+  ledgerUnreadable: 'last ledger write: timestamp unreadable (seq=%N)',
+  ledgerNone: 'last ledger write: none (empty ledger)',
   observedAgo: 'last dispatch observation %N min ago',
+  observedJustNow: 'last dispatch observation: just now',
+  observedUnreadable: 'last dispatch observation: timestamp unreadable',
   observedNone: 'last dispatch observation: none yet',
   childQuiet: 'in-flight %N quiet for %M min',
+  childJustNow: 'in-flight %N observed just now',
+  childUnreadable: 'in-flight %N observation timestamp unreadable',
   childNoSignal: 'in-flight %N never observed (dispatch moment only)',
-  justNow: 'just now',
   verdicts: {
     dispatch: 'dispatch',
     queued: 'queued (not taken this round)',
@@ -583,49 +598,57 @@ function flyingLine(snapshot: StatusSnapshot, label: SnapshotLabels, ttlMinutes 
 /**
  * **⑥ 心跳**（`DEF-177` 的另一半）：台账最近落笔 / 最近派发观测 / 在飞子会话各自的静默时长。
  *
- * 三条纪律：
+ * 四条纪律（后两条是 `REV-093#8` 的返工）：
  *   ① **只读**：读数全部来自台账已有事件，快照不写任何事件（否则"同一台账两次快照逐字节相同"失效）；
- *   ② **相对量**：所有时刻都换算成"距今 N 分钟"（按快照自己的 `at` 现算），未来时刻夹到 0 并写"刚刚"；
- *   ③ **它自己就是一条易变行**：本行以 {@link SNAPSHOT_HEARTBEAT_MARK} 起首，确定性守卫按
+ *   ② **全相对量**：所有时刻都换算成"距今 N 分钟"（按快照自己的 `at` 现算），未来时刻夹到 0 写「刚刚」；
+ *   ③ **行内不许带绝对时刻** —— 读数时刻已在快照头行（`snapshot … at=`）里，本行再印一次只会
+ *      让"这条心跳真的在动吗"变成一个**恒真**的断言（时刻换了 ≠ 心跳动了）；反空转证明改由
+ *      `M224-S8` 给出：同台账同刻逐字节相同 / 时刻前进 90 分钟则分钟数恰好 +90 / 有更新的观测则更短。
+ *   ④ **「读不出」与「没有」分开**：`at` 解析不了 ⇒ 明说「时刻读不出」；真的没有那条事件 ⇒ 才说「无」。
+ *   ⑤ **它自己就是一条易变行**：本行以 {@link SNAPSHOT_HEARTBEAT_MARK} 起首，确定性守卫按
  *      {@link isVolatileSnapshotLine} 把它与时间戳行一并剔除 —— 剥离后剩下的才是必须逐字节相同的正文。
  */
 function heartbeatLine(snapshot: StatusSnapshot, label: SnapshotLabels): string {
   const beat = snapshot.heartbeat
   const nowMs = Date.parse(snapshot.at)
-  const ago = (at: string | undefined): number | undefined => {
+  /** `undefined` = 没有这条读数；`'unreadable'` = 有但时刻解析不了（两者**不许**混成一句话）。 */
+  const ago = (at: string | undefined): number | 'unreadable' | undefined => {
     if (at === undefined || at === '') return undefined
     const parsed = Date.parse(at)
-    return Number.isFinite(parsed) && Number.isFinite(nowMs) ? Math.max(0, Math.round((nowMs - parsed) / 60_000)) : undefined
+    return Number.isFinite(parsed) && Number.isFinite(nowMs) ? Math.max(0, Math.round((nowMs - parsed) / 60_000)) : 'unreadable'
   }
   const parts: string[] = []
   if (beat?.ledger === undefined) {
     parts.push(label.ledgerNone)
   } else {
     const minutes = ago(beat.ledger.at)
-    parts.push(minutes === undefined
-      ? label.ledgerNone
-      : fill(label.ledgerAgo, [minutes <= 0 ? label.justNow : String(minutes), String(beat.ledger.seq)]))
+    if (minutes === 'unreadable') parts.push(fill(label.ledgerUnreadable, [String(beat.ledger.seq)]))
+    else if (minutes === undefined) parts.push(fill(label.ledgerUnreadable, [String(beat.ledger.seq)]))
+    else if (minutes <= 0) parts.push(fill(label.ledgerJustNow, [String(beat.ledger.seq)]))
+    else parts.push(fill(label.ledgerAgo, [String(minutes), String(beat.ledger.seq)]))
   }
   if (beat?.observed === undefined) {
     parts.push(label.observedNone)
   } else {
     const minutes = ago(beat.observed.at)
-    parts.push(minutes === undefined
-      ? label.observedNone
-      : fill(label.observedAgo, [minutes <= 0 ? label.justNow : String(minutes)]))
+    if (minutes === 'unreadable' || minutes === undefined) parts.push(label.observedUnreadable)
+    else if (minutes <= 0) parts.push(label.observedJustNow)
+    else parts.push(fill(label.observedAgo, [String(minutes)]))
   }
   const children = (beat?.children ?? []).slice(0, SNAPSHOT_HEARTBEAT_ROWS).map((item) => {
+    // 主语 = `任务号/子会话前 8 位`（ASCII 连接）：子会话号读不出时**至少还有任务号**，
+    // 不许出现「在飞  从未观测到」这种空名字（`REV-093#8` 连带修掉的自伤）。
+    const subject = item.child === '' ? item.task : `${item.task}/${item.child}`
     const minutes = ago(item.at)
-    return minutes === undefined
-      ? fill(label.childNoSignal, [item.child])
-      : fill(label.childQuiet, [item.child, minutes <= 0 ? label.justNow : String(minutes)])
+    if (minutes === undefined) return fill(label.childNoSignal, [subject])
+    if (minutes === 'unreadable') return fill(label.childUnreadable, [subject])
+    if (minutes <= 0) return fill(label.childJustNow, [subject])
+    return fill(label.childQuiet, [subject, String(minutes)])
   })
   const folded = (beat?.children ?? []).length - children.length
   if (folded > 0) children.push(fill(label.more, [String(folded)]))
   if (children.length > 0) parts.push(children.join('；'))
-  // 本行**自带时间戳**：它既是"这份心跳读数是什么时候取的"，也保证同一台账的两次快照在这一行上
-  // 必然不同（确定性守卫的**反空转**断言靠它 —— 剔除易变行之后若还能读出"完全相同"就是判据写错了）。
-  return `${SNAPSHOT_HEARTBEAT_MARK} ${label.heartbeat} at=${snapshot.at}｜${parts.join('｜')}`
+  return `${SNAPSHOT_HEARTBEAT_MARK} ${label.heartbeat}｜${parts.join('｜')}`
 }
 
 /**
