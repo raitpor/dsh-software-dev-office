@@ -28,6 +28,15 @@ import { afterEach, beforeEach, test } from 'node:test'
 import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice, INDEPENDENT_REVIEW_DOD, REVIEW_PENDING_BIG_SHOWN } from '../src/office.js'
 import { pendingReviewBigCards } from '../src/domain/collab.js'
+import { rolePools } from '../src/domain/pool.js'
+import {
+  FACE_DETAIL_ROWS,
+  POOL_UNUSABLE_IDS_PER_REASON,
+  POOL_UNUSABLE_REASON_CHARS,
+  POOL_UNUSABLE_REASON_GROUPS,
+  childFaceLines,
+  describePoolBlock,
+} from '../src/interface/describe.js'
 import { renderStatusBlock } from '../src/interface/inject.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
@@ -329,4 +338,158 @@ test('M230-07 落点二：待评审中大卡 > 上限 5 ⇒ 行里明写「等 N
   )
   assert.deepEqual(snapshot.ids, set.pending, '字段里的 ids 是**全量**（列示上限只影响 line 的排版，不改读数）')
   assert.equal(namedOf(snapshot.line).length, REVIEW_PENDING_BIG_SHOWN, '已排版的那一行同样只列上限张数')
+})
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **增量 232（`TASK-210`）：读数面收口 —— `next` 回执不再按子会话平铺（`DEF-175` 的另一半）**
+ *
+ * 病灶：`next` 回执里的两块（`describePoolBlock` 的「不可复用」栏 + `childFaceLines` 的逐条观测）
+ * 都是**一个子会话一段**，而历史子会话有上百个 ⇒ 真机实录 **57135 字符**、被宿主截到 8000，
+ * 派发结论（派了谁 / 为什么 / 谁被挡）正好落在截断之外。
+ *
+ * 三条守卫（与卡上 DoD 的「守卫（两态）」一一对应）：
+ *   · `M232-01` 子会话 **2 → 20** ⇒ 读数块体积**不随子会话数线性膨胀**（阈值断言，两态）；
+ *   · `M232-02` **逐条原因**在缺省档与 `verbose` 档**都拿得到**（缺省档按原因归并、原因原话整句保留；
+ *     `verbose` 档每个子会话一行，一字不少）；
+ *   · `M232-03` 观测面：缺省档只逐条打 `FACE_DETAIL_ROWS` 条、**有问题的排前面**，其余折成计数归纳行；
+ *     `verbose` 档把每一条都打出来。
+ *
+ * 编号沿用「增量」序列（`m231` 之后）：本卡写范围不含新建测试文件，故落在 `m230`。
+ * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`，内联中文会被散文棘轮记成未登记站点）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+/** 读数块体积的**增长预算**（字符）：2 → 20 个子会话，涨得比这多就算"线性膨胀"。 */
+const GROWTH_BUDGET = 400
+
+/** 种一个"空闲但不可复用"的子会话（真事件：派发 → 结算 → 观测；掩码是过期的旧指纹）。 */
+function seedIdleChild(index: number): string {
+  const child = `c0ffee${String(index).padStart(2, '0')}-0000-4000-8000-0000000000${String(index).padStart(2, '0')}`
+  office.recordDispatchStarted(impl(), {
+    taskId: `TASK-8${String(index).padStart(3, '0')}`,
+    provider: 'spawn',
+    childSessionId: child,
+    parentSessionId: 's-impl',
+    tools: 3,
+    role: 'developer',
+    mode: 'continuable',
+    // 过期掩码 ⇒ 该候选进 `unusable` 桶（这正是真机里那 101 个的形状）
+    maskHash: 'deadbeefdeadbeef',
+  })
+  office.journalFor(WORKSPACE).append('dispatch/finished', { task: `TASK-8${String(index).padStart(3, '0')}`, childSessionId: child })
+  office.noteChildFace(impl(), { childSessionId: child, tools: ['bash', 'edit', 'read'], violations: [], calls: [], callCount: 0 })
+  return child
+}
+
+/** 一块真读数：真台账 → `office.poolPlan` → 回执里那两块（`next` 回执只在这两处按子会话平铺）。 */
+function readoutOf(): { pools: ReturnType<SoftwareDevOffice['poolPlan']>['pools']; text: string } {
+  const plan = office.poolPlan(impl(), { reuseIdle: false })
+  return {
+    pools: plan.pools,
+    text: describePoolBlock(plan.pools, [], true, 60) + '\n' + childFaceLines(office.childFaces(impl())).join('\n'),
+  }
+}
+
+test('M232-01 子会话 2 → 20：读数块体积不随子会话数线性膨胀（阈值断言，两态）', () => {
+  seedIdleChild(1)
+  seedIdleChild(2)
+  const small = readoutOf()
+  const smallCount = small.pools.reduce((sum, pool) => sum + pool.unusable.length, 0)
+  assert.equal(smallCount, 2, `fixture premise: two unusable candidates: ${JSON.stringify(small.pools.map((pool) => pool.unusable.length))}`)
+
+  for (let index = 3; index <= 20; index += 1) seedIdleChild(index)
+  const large = readoutOf()
+  const largeCount = large.pools.reduce((sum, pool) => sum + pool.unusable.length, 0)
+  assert.equal(largeCount, 20, `fixture premise: twenty unusable candidates: ${JSON.stringify(large.pools.map((pool) => pool.unusable.length))}`)
+
+  // 两态：同一块读数，只差子会话个数。**线性口径下**每多一个候选至少多一段「id + 原因」
+  // （本夹具的原因原话 > 100 字符）⇒ 18 个候选本该多出上千字符。
+  const grown = large.text.length - small.text.length
+  assert.ok(
+    grown >= 0,
+    `the readout must not shrink when more sessions appear (else the comparison is meaningless): ${String(grown)}`,
+  )
+  assert.ok(
+    grown <= GROWTH_BUDGET,
+    `the readout grew by ${String(grown)} chars for +18 child sessions (budget ${String(GROWTH_BUDGET)}) — it is still per-session`,
+  )
+  // 有界不等于"看不见"：全量条数与原因原话（这里 20 个候选同因 ⇒ 归并成一组 ×20）都必须还在
+  assert.ok(large.text.includes(String(largeCount)), `the readout must still state the full candidate count: ${large.text.slice(0, 300)}`)
+  assert.ok(large.text.includes('×20'), `the readout must still state why they are not reusable, grouped by reason: ${large.text.slice(0, 400)}`)
+})
+
+test('M232-02 逐条原因在缺省档与 verbose 档都拿得到（缺省按原因归并，verbose 逐条）', () => {
+  // 三种原因 × 9 个候选 = 27 个候选（每个原因分组都**超过**样本上限 ⇒ "列了几个"是可数的）
+  const reasons = ['reason-alpha', 'reason-beta', 'reason-gamma']
+  const children = Array.from({ length: 27 }, (_, index) => ({
+    childSessionId: `cafe${String(index).padStart(4, '0')}-1111-4222-8333-4444444444${String(index % 100).padStart(2, '0')}`,
+    role: 'developer',
+    task: `TASK-7${String(index).padStart(2, '0')}`,
+    mode: 'continuable' as const,
+    state: 'idle' as const,
+    rounds: 1,
+    startedAt: '2026-10-08T00:00:00.000Z',
+    finishedAt: '2026-10-08T00:01:00.000Z',
+    maskHash: 'same',
+  }))
+  const pools = rolePools({
+    children,
+    roles: ['developer'],
+    caps: { developer: 27 },
+    defaultCap: 27,
+    reuseBlockedOf: (child) => `${reasons[Number(child.childSessionId.slice(4, 8)) % reasons.length] ?? ''}（掩码不可比）`,
+  })
+  const folded = describePoolBlock(pools, [], true, 60)
+  const verbose = describePoolBlock(pools, [], true, 60, { verbose: true })
+
+  // ① 缺省档：三个原因**原话**都在（归并的是数量，不是原因）+ 每个原因带自己的计数
+  for (const reason of reasons) {
+    assert.ok(folded.includes(reason), `the folded readout must keep the reason verbatim (${reason}): ${folded}`)
+    assert.ok(verbose.includes(reason), `the verbose readout must keep it too (${reason})`)
+  }
+  assert.equal((folded.match(/×9/gu) ?? []).length, POOL_UNUSABLE_REASON_GROUPS, `each of the ${String(POOL_UNUSABLE_REASON_GROUPS)} printed reason groups must carry its own count of 9: ${folded}`)
+  // ② verbose 档：**每个**候选的子会话前 8 位都在（逐条，一个不少）
+  for (const child of children) {
+    const prefix = child.childSessionId.slice(0, 8)
+    assert.ok(verbose.includes(prefix), `verbose must print every candidate (${prefix})`)
+  }
+  // ③ 缺省档**不许**把 27 个候选全列出来：列出的样本数 ≤ 组数 × 每组样本数，并且**严格小于**全集
+  const prefixes = children.map((child) => child.childSessionId.slice(0, 8))
+  const listed = prefixes.filter((prefix) => folded.includes(prefix)).length
+  const cap = POOL_UNUSABLE_REASON_GROUPS * POOL_UNUSABLE_IDS_PER_REASON
+  assert.equal(listed, cap, `the folded readout must print exactly ${String(cap)} samples (3 groups × 3), got ${String(listed)}: ${folded}`)
+  assert.ok(listed < children.length, 'bounded: the folded readout must print fewer ids than there are candidates')
+  // ④ 常量本身钉住（改数字必须改守卫）
+  assert.equal(POOL_UNUSABLE_REASON_GROUPS, 3, 'the reason-group cap is pinned')
+  assert.equal(POOL_UNUSABLE_IDS_PER_REASON, 3, 'the sample-per-reason cap is pinned')
+  assert.ok(POOL_UNUSABLE_REASON_CHARS >= 168, 'the reason cap must stay above the longest real reason (168 chars, measured on the live ledger)')
+})
+
+test('M232-03 观测面：缺省档只逐条打 FACE_DETAIL_ROWS 条且**有问题的排前面**，verbose 逐条全打', () => {
+  const clean = (index: number): { childSessionId: string; tools: string[]; violations: string[]; calls: string[]; callCount: number } => ({
+    childSessionId: `aaaa${String(index).padStart(4, '0')}-2222-4333-8444-5555555555${String(index).padStart(2, '0')}`,
+    tools: ['bash', 'edit', 'read'],
+    violations: [],
+    calls: [],
+    callCount: 0,
+  })
+  const dirty = {
+    childSessionId: 'bbbb9999-2222-4333-8444-555555555555',
+    tools: ['bash', 'sdo_release'],
+    violations: ['sdo_release'],
+    calls: ['sdo_plan'],
+    callCount: 2,
+  }
+  const faces = [...Array.from({ length: 7 }, (_, index) => clean(index)), dirty]
+  const folded = childFaceLines(faces)
+  const verbose = childFaceLines(faces, { verbose: true })
+  // ① 缺省档：逐条只有 FACE_DETAIL_ROWS 条（每条两行），其余折成**一行**归纳
+  assert.equal(folded.length, FACE_DETAIL_ROWS * 2 + 1, `the folded face block must be ${String(FACE_DETAIL_ROWS)} details + 1 summary line: ${folded.join(' / ')}`)
+  // ② 有问题的排前面（`DEF-041` 的信息不许被"只打前 N 条"埋掉）
+  assert.ok(folded[0]?.includes('bbbb9999'), `the noteworthy face must come first: ${folded[0] ?? ''}`)
+  assert.ok(folded.some((line) => line.includes('2')), `the summary must carry the outside-mask call count: ${folded.join(' / ')}`)
+  // ③ verbose 档：每条子会话都在（2 行 × 8）
+  assert.equal(verbose.length, faces.length * 2, `verbose must print every face (two lines each): ${String(verbose.length)}`)
+  for (const face of faces) assert.ok(verbose.some((line) => line.includes(face.childSessionId)), `verbose must name ${face.childSessionId}`)
+  // ④ 常量钉住
+  assert.equal(FACE_DETAIL_ROWS, 3, 'the per-face detail cap is pinned')
 })

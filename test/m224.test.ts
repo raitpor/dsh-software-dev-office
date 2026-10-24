@@ -35,8 +35,9 @@ import { test } from 'node:test'
 import { Config, resolveSettings } from '../src/config.js'
 import { setLocale } from '../src/domain/i18n.js'
 import { createTask, listTasks, readyTasks } from '../src/domain/plan.js'
-import { ORDER_BASIS_LABEL, SNAPSHOT_CHAR_BUDGET, renderQueueTable, renderStatusSnapshot } from '../src/domain/snapshot.js'
+import { ORDER_BASIS_LABEL, SNAPSHOT_CHAR_BUDGET, isVolatileSnapshotLine, renderQueueTable, renderStatusSnapshot } from '../src/domain/snapshot.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { JOURNAL_FILE } from '../src/infra/journal.js'
 import type { SdoConfig } from '../src/config.js'
 import type { Journal } from '../src/infra/journal.js'
 import type { SdoStore } from '../src/infra/store.js'
@@ -310,10 +311,98 @@ test('M224-S4 (guard 4) two snapshots of one ledger are byte-identical except th
   })
   const first = renderStatusSnapshot(f.office.statusSnapshot(f.call, f.office.poolPlan(f.call, { reuseIdle: false }), new Date('2026-10-24T01:00:00.000Z')))
   const second = renderStatusSnapshot(f.office.statusSnapshot(f.call, f.office.poolPlan(f.call, { reuseIdle: false }), new Date('2026-10-24T02:30:00.000Z')))
-  const body = (text: string): string => text.split('\n').slice(1).join('\n')
+  // **易变行由字形判定，不由位置判定**（`TASK-210` 加了 ⑥ 心跳行；`slice(1)` 那种位置约定会在
+  // 任何人插一行时静默失效 —— 判据必须与渲染读同一个函数）。
+  const volatile = (text: string): string[] => text.split('\n').filter((line) => isVolatileSnapshotLine(line))
+  const body = (text: string): string => text.split('\n').filter((line) => !isVolatileSnapshotLine(line)).join('\n')
+  assert.equal(volatile(first).length, 2, `exactly two volatile lines (timestamp + heartbeat): ${volatile(first).join(' / ')}`)
   assert.notEqual(first.split('\n')[0], second.split('\n')[0], 'the timestamp line must really differ (otherwise this guard is vacuous)')
-  assert.equal(body(first), body(second), 'everything except the timestamp line must be byte-identical')
+  assert.notEqual(volatile(first)[1], volatile(second)[1], 'the heartbeat line must really differ too (it carries its own reading time)')
+  assert.equal(body(first), body(second), 'everything except the volatile lines must be byte-identical')
   assert.equal(first.includes('cafebabe'), true, 'the in-flight line must show the child session prefix')
+  // 体积行必须**只算正文**：两次读数的体积读数必须相同（心跳不得把预算读数拖下水）
+  const sizeLine = (text: string): string => text.split('\n').at(-1) ?? ''
+  assert.equal(sizeLine(first), sizeLine(second), `the size line must be stable across two readings: ${sizeLine(first)} / ${sizeLine(second)}`)
+})
+
+test('M224-S8 (landing 2) the heartbeat line carries "last ledger write" + "last observed" as relative readings', () => {
+  const f = snapFixture('heartbeat')
+  const card = snapCard(f, 'small', 'src/beat/a.ts')
+  // 先真认领（在飞 = 卡状态 `in-progress`，心跳按它与 ① 同一份读数取在飞子会话）
+  const claimed = f.office.claimTask(f.call, { taskId: card.id, owner: 'dev-beat', expectedRevision: 1 })
+  assert.equal(claimed.ok, true, `fixture premise: the claim must succeed: ${JSON.stringify(claimed).slice(0, 200)}`)
+  // 台账里放三条**时刻可钉**的事件：派发（占位）、观测（心跳）、最后一条普通落笔。
+  f.office.recordDispatchStarted(f.call, {
+    taskId: card.id,
+    provider: 'spawn',
+    childSessionId: 'beef1234-0000-4000-8000-000000000001',
+    parentSessionId: f.call.sessionId ?? '',
+    tools: 3,
+    role: 'developer',
+  })
+  f.journal.append('dispatch/observed', {
+    childSessionId: 'beef1234-0000-4000-8000-000000000001',
+    toolCount: 3,
+    deniedOutsideCount: 0,
+    observedAt: '2026-10-24T00:40:00.000Z',
+  })
+  const snapshot = f.office.statusSnapshot(f.call, f.office.poolPlan(f.call, { reuseIdle: false }), new Date('2026-10-24T01:00:00.000Z'))
+  assert.ok(snapshot.heartbeat !== undefined, 'the snapshot must carry the heartbeat reading (DEF-177)')
+  const beat = snapshot.heartbeat
+  assert.ok(beat.ledger !== undefined, 'the ledger must have a last-write reading')
+  assert.equal(beat.observed?.child, 'beef1234-0000-4000-8000-000000000001', 'the last observation must name its child session')
+  assert.equal(beat.children.length, 1, `the in-flight child must be listed: ${JSON.stringify(beat.children)}`)
+  assert.equal(beat.children[0]?.at, '2026-10-24T00:40:00.000Z', 'the child heartbeat must be the observedAt of its last observation')
+  const text = renderStatusSnapshot(snapshot)
+  const lines = text.split('\n')
+  const beatLine = lines.find((line) => isVolatileSnapshotLine(line) && line !== lines[0]) ?? ''
+  // 相对量：观测时刻 00:40 距读数 01:00 = 20 分钟（写绝对时刻就没人能一眼判断"还活着没"）
+  assert.ok(beatLine.includes('20'), `the heartbeat line must carry the relative minute reading (20): ${beatLine}`)
+  assert.ok(beatLine.includes('beef1234'), `the heartbeat line must name the in-flight child: ${beatLine}`)
+  assert.equal(beatLine.includes('2026-10-24T00:40:00.000Z'), false, 'the heartbeat reads relative ages, not the raw observation timestamp')
+
+  // 反向一格：空台账 ⇒ "读不出"必须与"刚刚"分开（把读不出印成 0 分钟就是一次假读数）
+  const empty = snapFixture('heartbeat-empty')
+  const emptySnapshot = empty.office.statusSnapshot(empty.call, empty.office.poolPlan(empty.call, { reuseIdle: false }), new Date('2026-10-24T01:00:00.000Z'))
+  const emptyText = renderStatusSnapshot(emptySnapshot)
+  const emptyLines = emptyText.split('\n')
+  const emptyBeat = emptyLines.find((line) => isVolatileSnapshotLine(line) && line !== emptyLines[0]) ?? ''
+  assert.ok(emptyBeat !== '', `even a ledger without observations must render the heartbeat line: ${emptyText}`)
+  assert.equal(emptySnapshot.heartbeat?.observed, undefined, 'a ledger without observations must report none (not a fabricated heartbeat)')
+  assert.equal(emptySnapshot.heartbeat?.children.length, 0, 'no in-flight child => no child heartbeat rows')
+
+  // **两态的另一半**：一张**超了孤儿 TTL** 的在飞卡（子会话早就不在 `heldByDispatch` 里了）——
+  // 它恰恰是最需要看心跳的那一张，心跳必须照样给它一行（只报"活着的派发"等于不报）。
+  const staleCard = snapCard(f, 'small', 'src/beat/b.ts')
+  const staleClaim = f.office.claimTask(f.call, { taskId: staleCard.id, owner: 'dev-stale', expectedRevision: 1 })
+  assert.equal(staleClaim.ok, true, 'fixture premise: the second claim must succeed')
+  // 直接写一行**20 小时前**的派发事件（`journal.append` 只会盖当前时刻，这里要的是真·陈旧时刻）
+  f.store.appendLine([JOURNAL_FILE], JSON.stringify({
+    seq: f.journal.read().events.length + 1,
+    at: '2026-10-23T05:00:00.000Z',
+    actor: 'sdo',
+    type: 'dispatch/started',
+    data: {
+      task: staleCard.id,
+      provider: 'spawn',
+      childSessionId: 'dead0000-0000-4000-8000-000000000002',
+      tools: 3,
+      role: 'developer',
+    },
+  }) + '\n')
+  const stalePlan = f.office.poolPlan(f.call, { reuseIdle: false })
+  assert.equal(
+    (stalePlan.heldByDispatch ?? []).some((row) => row.taskId === staleCard.id),
+    false,
+    'fixture premise: a dispatch older than the orphan TTL is NOT a "live" dispatch',
+  )
+  const staleSnapshot = f.office.statusSnapshot(f.call, stalePlan, new Date('2026-10-24T01:00:00.000Z'))
+  const staleChildren = staleSnapshot.heartbeat?.children ?? []
+  assert.equal(staleChildren.length, 2, `both in-progress cards must get a heartbeat row: ${JSON.stringify(staleChildren)}`)
+  assert.ok(staleChildren.some((row) => row.child === 'dead0000'), `the stale card's child must be listed too: ${JSON.stringify(staleChildren)}`)
+  const staleLines = renderStatusSnapshot(staleSnapshot).split('\n')
+  const staleBeat = staleLines.find((line) => isVolatileSnapshotLine(line) && line !== staleLines[0]) ?? ''
+  assert.ok(staleBeat.includes('dead0000'), `the rendered heartbeat must name the stale card's child: ${staleBeat}`)
 })
 
 test('M224-S5 (landing 2) the ordered table is complete, rank-carrying and language-neutral (CJK-free in en)', () => {

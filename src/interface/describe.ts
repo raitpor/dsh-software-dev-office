@@ -753,12 +753,111 @@ export function describeTask(task: TaskCard, shapeNotes: FieldShapeNote[] = []):
 }
 
 /**
+ * **未复用候选的列示档位**（`DEF-175` 的另一半：读数面必须有**上限**，否则它按历史会话数线性膨胀）。
+ *
+ * 为什么是"按原因归并"而不是"掐掉后 N 条"：`DEF-041` 要求「为什么没复用它」可解释，而真机形状是
+ * **上百个候选、只有两三种原因**（现盘实测：101 个候选 / 2 种原因原话）⇒ 归并既保住了**原因**，
+ * 又把体积钉在「原因种数 × 一句原话」的量级上，与子会话个数**脱钩**。所以要砍的是**数量**，
+ * 不是原因本身 —— 原因原话在缺省档里是**整句**打印的（截断只在宿主动态原话无界时才发生）。
+ */
+export const POOL_UNUSABLE_REASON_GROUPS = 3
+
+/** 每个原因分组里最多点几个子会话（前 8 位：定位够用，逐条仍走 `verbose`）。 */
+export const POOL_UNUSABLE_IDS_PER_REASON = 3
+
+/**
+ * 原因原话的**硬上限**（字符）：只防"宿主原话无界"这一种极端；归并才是主要手段。
+ *
+ * 定 200 的依据是**现盘最长的原因原话 168 字符**（掩码回溯判不了时点名缺哪几条禁令）——
+ * 上限必须**大于真实形状**，否则默认档会把"缺哪几条禁令"这句最有价值的话切掉；
+ * 它只是最后一道保险，不是常规路径。
+ */
+export const POOL_UNUSABLE_REASON_CHARS = 200
+
+/** 观测面**逐条**列示的缺省条数（`DEF-175` 另一半：`DEF-041` 的逐条面同样需要有上限）。 */
+export const FACE_DETAIL_ROWS = 3
+
+/** 池块/观测面的列示档位：缺省有界，`verbose: true` 才展开逐条。 */
+export interface ReadoutOptions {
+  /** `true` = 逐条展开（人手排查用）；缺省**有界汇总**（回执默认档）。 */
+  verbose?: boolean | undefined
+}
+
+/**
+ * **未复用候选的缺省档文本**：按原因原话归并 + 每个原因点几个样本。
+ *
+ * 有界性由三个常量钉住（{@link POOL_UNUSABLE_REASON_GROUPS} / {@link POOL_UNUSABLE_IDS_PER_REASON} /
+ * {@link POOL_UNUSABLE_REASON_CHARS}）⇒ 文本长度与候选个数无关，只与**原因种数**有关
+ * （守卫见 `test/m230.test.ts` 的 2 → 20 对比）。
+ */
+function unusableFoldText(rows: readonly { childSessionId: string; reason: string }[]): string {
+  const groups = new Map<string, string[]>()
+  for (const row of rows) {
+    const ids = groups.get(row.reason) ?? []
+    ids.push(row.childSessionId.slice(0, 8))
+    groups.set(row.reason, ids)
+  }
+  const shownGroups = [...groups.entries()].slice(0, POOL_UNUSABLE_REASON_GROUPS)
+  const parts = shownGroups.map(([reason, ids]) => {
+    const why = reason.length > POOL_UNUSABLE_REASON_CHARS ? `${reason.slice(0, POOL_UNUSABLE_REASON_CHARS)}…` : reason
+    const sampleIds = ids.slice(0, POOL_UNUSABLE_IDS_PER_REASON)
+    const more = ids.length > sampleIds.length ? ` +${String(ids.length - sampleIds.length)}` : ''
+    return `${why}×${String(ids.length)}（${sampleIds.join(' ')}${more}）`
+  })
+  const folded = [...groups.entries()].slice(POOL_UNUSABLE_REASON_GROUPS).reduce((sum, [, ids]) => sum + ids.length, 0)
+  if (folded > 0) parts.push(fmt('uiDescribe.kPoolUnusableMore', { p1: String(folded) }))
+  return parts.join('；')
+}
+
+/** 一条观测的**逐条**两行（公告面 + 执行面）—— 与修前逐字相同，`verbose` 档与样本档共用。 */
+function childFaceDetailLines(face: {
+  childSessionId: string
+  tools: string[]
+  violations: string[]
+  calls?: string[] | undefined
+  callCount?: number | undefined
+}): string[] {
+  const lines: string[] = []
+  lines.push(
+    face.violations.length === 0
+      ? fmt('uiDescribe.k203FaceAnnouncedClean', { p1: face.childSessionId, p2: String(face.tools.length) })
+      : fmt('uiDescribe.k204FaceAnnouncedViolations', { p1: face.childSessionId, p2: face.violations.join(' ') }),
+  )
+  const called = face.calls ?? []
+  if (called.length === 0) {
+    lines.push(fmt('uiDescribe.k205FaceCalledClean', { p1: face.childSessionId }))
+    return lines
+  }
+  // 文案里的"N 次"必须是**次数**（`calls` 是去重名 —— 两者口径不同，评审第三轮 B）
+  lines.push(
+    fmt('uiDescribe.k206FaceCalledViolations', {
+      p1: face.childSessionId,
+      // 旧条目（没有 callCount）用去重名字数兜底：方向**保守**（不夸大次数），
+      // 新条目都带 callCount ⇒ 正常路径不会走到兜底（评审第四轮 §3）。
+      p2: String(face.callCount ?? called.length),
+      p3: String(called.length),
+      p4: called.join(' '),
+    }),
+  )
+  return lines
+}
+
+/**
  * **角色池块**（子代理复用）：派发回执与 `sdo_status` 共用同一份渲染 —— 口径只有一份。
  *
  * 为什么必须有这一块：池上限与排队是**限制**，限制必须在回执里可见（否则用户只会看到
  * "有几张卡这次没派出去"，猜不出是池满了还是在等预算）。
+ *
+ * **有界（`DEF-175`）**：缺省档把"不可复用"那批按**原因**归并（见 {@link unusableFoldText}），
+ * 体积与候选个数脱钩；要逐条看原始清单（`verbose: true`）—— 那条路一字不少。
  */
-export function describePoolBlock(pools: RolePool[], queued: string[], reuseSupported: boolean, orphanTtlMinutes = 0): string {
+export function describePoolBlock(
+  pools: RolePool[],
+  queued: string[],
+  reuseSupported: boolean,
+  orphanTtlMinutes = 0,
+  options: ReadoutOptions = {},
+): string {
   if (pools.length === 0) return ''
   const lines = [t('uiDescribe.kPoolHeader')]
   for (const pool of pools) {
@@ -814,8 +913,13 @@ export function describePoolBlock(pools: RolePool[], queued: string[], reuseSupp
   if (unusable.length > 0) {
     // **DEF-041**：**每个**未复用候选都要给出原因（旧实现只印前 3 个，其余折成"还有 N 个" ——
     // 而"为什么没复用它"恰恰是判断池化有没有生效的关键）。
-    const shown = unusable.map((item) => `${item.childSessionId.slice(0, 8)}（${item.reason}）`)
-    lines.push(fmt('uiDescribe.kPoolUnusable', { p1: String(unusable.length), p2: shown.join('；') }))
+    // **DEF-175**：但"每个都印一整行"会按历史会话数线性膨胀（现盘 101 个候选 ⇒ 一万六千字符，
+    // 把派发结论挤到宿主的 8000 截断之外）⇒ 缺省档**按原因归并**（原因整句保留、样本给前几个），
+    // 要**逐条**原始清单就带 `verbose`（那条路一字不少，见 {@link unusableFoldText}）。
+    const detail = options.verbose === true
+      ? unusable.map((item) => `${item.childSessionId.slice(0, 8)}（${item.reason}）`).join('；')
+      : unusableFoldText(unusable)
+    lines.push(fmt('uiDescribe.kPoolUnusable', { p1: String(unusable.length), p2: detail }))
   }
   if (queued.length > 0) lines.push(fmt('uiDescribe.kPoolQueued', { p1: String(queued.length), p2: queued.join(' ') }))
   if (!reuseSupported) lines.push(t('uiDescribe.kPoolNoReuse'))
@@ -1071,30 +1175,34 @@ export function describeDispatchStarted(
  *
  * - 公告面：`request/header` 里它被公告的工具与掩码外项（宿主收窄的是**公告清单**）；
  * - 执行面：本会话里**实际发起**的掩码外调用次数与去重后的工具名（模型对**未公告**工具仍能调用，钩子兜底拒绝）。
+ *
+ * **有界（`DEF-175` 的另一半）**：一个子会话两行，而历史子会话有上百个（现盘 103 个 ⇒ 一万五千
+ * 字符）⇒ 缺省档只**逐条**打印前 {@link FACE_DETAIL_ROWS} 条（**有问题的排在前面**：公告面越界、
+ * 执行面有掩码外调用 —— 这两类才是"工具面到底收窄了没有"的直接证据），其余折成一行计数归纳；
+ * 要全部逐条（`verbose: true`）就走那条路，它与修前逐字相同。
+ *
+ * 归纳行是**语言中立 ASCII**：语言包文件不在本卡写范围内（`src/data/lang/*.yml`），
+ * 而这条是给复验者的读数、不是终端用户的散文 —— 与 `domain/snapshot.ts` 的 `renderQueueTable` 同口径。
  */
-export function childFaceLines(faces: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }[]): string[] {
+export function childFaceLines(
+  faces: { childSessionId: string; tools: string[]; violations: string[]; calls?: string[] | undefined; callCount?: number | undefined }[],
+  options: ReadoutOptions = {},
+): string[] {
+  const hot = faces.filter((face) => face.violations.length > 0 || (face.calls ?? []).length > 0)
+  const cold = faces.filter((face) => face.violations.length === 0 && (face.calls ?? []).length === 0)
+  // 逐条档：原顺序、全部；缺省档：**有问题的先打**、条数钉在 `FACE_DETAIL_ROWS`。
+  const shown = options.verbose === true ? faces : [...hot, ...cold].slice(0, FACE_DETAIL_ROWS)
   const lines: string[] = []
-  for (const face of faces) {
+  for (const face of shown) lines.push(...childFaceDetailLines(face))
+  const folded = faces.length - shown.length
+  if (folded > 0) {
+    // 归纳行必须**自己说清被折掉的是什么**：条数 + 三类计数 + 怎么展开（否则读者以为"只观测到 3 个"）
+    const outsideCalls = faces.reduce((sum, face) => sum + (face.callCount ?? (face.calls ?? []).length), 0)
+    const announcedViolations = faces.filter((face) => face.violations.length > 0).length
     lines.push(
-      face.violations.length === 0
-        ? fmt('uiDescribe.k203FaceAnnouncedClean', { p1: face.childSessionId, p2: String(face.tools.length) })
-        : fmt('uiDescribe.k204FaceAnnouncedViolations', { p1: face.childSessionId, p2: face.violations.join(' ') }),
-    )
-    const called = face.calls ?? []
-    if (called.length === 0) {
-      lines.push(fmt('uiDescribe.k205FaceCalledClean', { p1: face.childSessionId }))
-      continue
-    }
-    // 文案里的"N 次"必须是**次数**（`calls` 是去重名 —— 两者口径不同，评审第三轮 B）
-    lines.push(
-      fmt('uiDescribe.k206FaceCalledViolations', {
-        p1: face.childSessionId,
-        // 旧条目（没有 callCount）用去重名字数兜底：方向**保守**（不夸大次数），
-        // 新条目都带 callCount ⇒ 正常路径不会走到兜底（评审第四轮 §3）。
-        p2: String(face.callCount ?? called.length),
-        p3: String(called.length),
-        p4: called.join(' '),
-      }),
+      `faces: ${String(faces.length)} observed; announced-with-violations ${String(announcedViolations)};`
+      + ` outside-mask calls ${String(outsideCalls)}; detailed ${String(shown.length)}, folded ${String(folded)}`
+      + ' (raise to every line: verbose=true)',
     )
   }
   return lines

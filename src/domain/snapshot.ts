@@ -58,6 +58,22 @@ export const SNAPSHOT_QUEUE_ROWS = 8
 /** 快照里"阻塞项"的缺省条数。 */
 export const SNAPSHOT_BLOCKED_ROWS = 6
 
+/**
+ * 快照里"在飞子会话心跳"的缺省条数（`DEF-177` 的另一半）。
+ *
+ * 为什么也要有上限：一份读数按子会话数线性长，就会重演 `DEF-175` —— 别的东西被挤出截断之外。
+ */
+export const SNAPSHOT_HEARTBEAT_ROWS = 4
+
+/**
+ * 快照里**易变行**的字形标记（心跳行以它起首）。
+ *
+ * 为什么要有这个标记：快照的确定性守卫（"同一台账两次快照除时间戳外逐字节相同"）必须能**机械地**
+ * 把易变行剔掉 —— 靠"第二行"这种位置约定会被任何一次插行悄悄改掉判定（守卫变绿而不再守着东西）。
+ * 判据集中在 {@link isVolatileSnapshotLine} 一处，渲染与守卫读同一个函数。
+ */
+export const SNAPSHOT_HEARTBEAT_MARK = '⏱'
+
 /** `next` 回执里有序全表的缺省行数（完整列表的硬上限；超出时如实印"另有 N 张"）。 */
 export const QUEUE_TABLE_ROWS = 24
 
@@ -167,6 +183,22 @@ export interface SnapshotDelivered {
   commit: string
 }
 
+/**
+ * **心跳读数**（`DEF-177` 的另一半）：被派发的子代理"还活着还是卡住了"，在工具面上要能答。
+ *
+ * 三个字段全是**台账里已有的时刻**（不新写任何事件 —— 快照是**只读**读数，写心跳就会让"同一台账
+ * 两次快照逐字节相同"这条守卫失效）。相对量（"距今 N 分钟"）由渲染器按快照自己的 `at` 现算，
+ * 于是 `statusSnapshot` 本身仍是 `now` 的纯函数。
+ */
+export interface SnapshotHeartbeat {
+  /** **台账最近落笔**：`journal.jsonl` 最后一条事件的时刻与序号（读不出 ⇒ `undefined`，不猜） */
+  ledger: { at: string; seq: number } | undefined
+  /** **最近一次派发观测**（`dispatch/observed`）：子代理最近一次"还在发请求"的心跳；一条都没有 ⇒ `undefined` */
+  observed: { at: string; child: string } | undefined
+  /** **在飞子会话各自的最近一次观测**（前 8 位 → 时刻）；没观测过的**不给项**（不伪造"刚观测到"） */
+  children: readonly { child: string; at: string | undefined }[]
+}
+
 /** 状态快照（**结构化**；渲染见 {@link renderStatusSnapshot}）。 */
 export interface StatusSnapshot {
   /** 取这份读数的时刻（**唯一**随时间变化的部分 —— 同一台账两次快照除它之外逐字节相同） */
@@ -186,6 +218,11 @@ export interface StatusSnapshot {
   blocked: readonly QueueEntry[]
   /** 卡状态就是 `blocked` 的那些（单列，不与"等依赖"混） */
   taskBlocked: readonly SnapshotBlockedTask[]
+  /**
+   * **⑥ 心跳**（`DEF-177` 的另一半；可选是因为老调用点构造快照时可能还没有这份读数 ——
+   * 缺了就是缺了，渲染会如实说"读不出"，不会编一个出来）。
+   */
+  heartbeat?: SnapshotHeartbeat | undefined
   /** 计数 */
   counts: { inFlight: number; ready: number; planned: number; done: number; blocked: number }
 }
@@ -343,6 +380,15 @@ interface SnapshotLabels {
   unknownMinutes: string
   more: string
   sizeLine: string
+  /** ⑥ 心跳（`DEF-177`）：易变行的标签与三段相对量 */
+  heartbeat: string
+  ledgerAgo: string
+  ledgerNone: string
+  observedAgo: string
+  observedNone: string
+  childQuiet: string
+  childNoSignal: string
+  justNow: string
   /** 结论码 → 人读短语 */
   verdicts: Record<QueueVerdict, string>
   /** "为什么是它"的三条理由 */
@@ -371,6 +417,14 @@ const ZH: SnapshotLabels = {
   staleMinutes: '已 %N 分钟（超孤儿 TTL %M）',
   more: '另有 %N 张',
   sizeLine: '体积 %N/%M 字符',
+  heartbeat: '心跳',
+  ledgerAgo: '台账最近落笔 %N 分钟前（seq=%M）',
+  ledgerNone: '台账最近落笔：读不出（台账为空）',
+  observedAgo: '最近派发观测 %N 分钟前',
+  observedNone: '最近派发观测：无（还没有一次工具面观测落账）',
+  childQuiet: '在飞 %N 已静 %M 分钟',
+  childNoSignal: '在飞 %N 从未观测到（只有派发那一刻）',
+  justNow: '刚刚',
   verdicts: {
     dispatch: '派发',
     queued: '排队（这一轮没取到）',
@@ -409,6 +463,14 @@ const EN: SnapshotLabels = {
   staleMinutes: '%N min elapsed (past orphan TTL %M)',
   more: '%N more',
   sizeLine: 'size %N/%M chars',
+  heartbeat: 'heartbeat',
+  ledgerAgo: 'last ledger write %N min ago (seq=%M)',
+  ledgerNone: 'last ledger write: unreadable (empty ledger)',
+  observedAgo: 'last dispatch observation %N min ago',
+  observedNone: 'last dispatch observation: none yet',
+  childQuiet: 'in-flight %N quiet for %M min',
+  childNoSignal: 'in-flight %N never observed (dispatch moment only)',
+  justNow: 'just now',
   verdicts: {
     dispatch: 'dispatch',
     queued: 'queued (not taken this round)',
@@ -519,11 +581,70 @@ function flyingLine(snapshot: StatusSnapshot, label: SnapshotLabels, ttlMinutes 
 }
 
 /**
+ * **⑥ 心跳**（`DEF-177` 的另一半）：台账最近落笔 / 最近派发观测 / 在飞子会话各自的静默时长。
+ *
+ * 三条纪律：
+ *   ① **只读**：读数全部来自台账已有事件，快照不写任何事件（否则"同一台账两次快照逐字节相同"失效）；
+ *   ② **相对量**：所有时刻都换算成"距今 N 分钟"（按快照自己的 `at` 现算），未来时刻夹到 0 并写"刚刚"；
+ *   ③ **它自己就是一条易变行**：本行以 {@link SNAPSHOT_HEARTBEAT_MARK} 起首，确定性守卫按
+ *      {@link isVolatileSnapshotLine} 把它与时间戳行一并剔除 —— 剥离后剩下的才是必须逐字节相同的正文。
+ */
+function heartbeatLine(snapshot: StatusSnapshot, label: SnapshotLabels): string {
+  const beat = snapshot.heartbeat
+  const nowMs = Date.parse(snapshot.at)
+  const ago = (at: string | undefined): number | undefined => {
+    if (at === undefined || at === '') return undefined
+    const parsed = Date.parse(at)
+    return Number.isFinite(parsed) && Number.isFinite(nowMs) ? Math.max(0, Math.round((nowMs - parsed) / 60_000)) : undefined
+  }
+  const parts: string[] = []
+  if (beat?.ledger === undefined) {
+    parts.push(label.ledgerNone)
+  } else {
+    const minutes = ago(beat.ledger.at)
+    parts.push(minutes === undefined
+      ? label.ledgerNone
+      : fill(label.ledgerAgo, [minutes <= 0 ? label.justNow : String(minutes), String(beat.ledger.seq)]))
+  }
+  if (beat?.observed === undefined) {
+    parts.push(label.observedNone)
+  } else {
+    const minutes = ago(beat.observed.at)
+    parts.push(minutes === undefined
+      ? label.observedNone
+      : fill(label.observedAgo, [minutes <= 0 ? label.justNow : String(minutes)]))
+  }
+  const children = (beat?.children ?? []).slice(0, SNAPSHOT_HEARTBEAT_ROWS).map((item) => {
+    const minutes = ago(item.at)
+    return minutes === undefined
+      ? fill(label.childNoSignal, [item.child])
+      : fill(label.childQuiet, [item.child, minutes <= 0 ? label.justNow : String(minutes)])
+  })
+  const folded = (beat?.children ?? []).length - children.length
+  if (folded > 0) children.push(fill(label.more, [String(folded)]))
+  if (children.length > 0) parts.push(children.join('；'))
+  // 本行**自带时间戳**：它既是"这份心跳读数是什么时候取的"，也保证同一台账的两次快照在这一行上
+  // 必然不同（确定性守卫的**反空转**断言靠它 —— 剔除易变行之后若还能读出"完全相同"就是判据写错了）。
+  return `${SNAPSHOT_HEARTBEAT_MARK} ${label.heartbeat} at=${snapshot.at}｜${parts.join('｜')}`
+}
+
+/**
+ * **这一行是不是易变行**（快照确定性守卫的唯一判据）。
+ *
+ * 两类：时间戳行（`snapshot …at=`）与 ⑥ 心跳行（以 {@link SNAPSHOT_HEARTBEAT_MARK} 起首）。
+ * 渲染与守卫读**同一个函数** ⇒ 任何人把心跳换个位置、换个标记，守卫立刻跟着变（不会静默失效）。
+ */
+export function isVolatileSnapshotLine(line: string): boolean {
+  return line.startsWith('snapshot ') || line.startsWith(SNAPSHOT_HEARTBEAT_MARK)
+}
+
+/**
  * **渲染整份快照**（固定行：①在飞 ②已交付 ③有序队列 ④下一张 ⑤阻塞 + 一行体积读数）。
  *
- * 纪律：**只有第一行带时间戳** —— 于是"同一台账两次快照除时间戳外逐字节相同"是可断言的
- * （守卫见 `test/m224.test.ts` 的 M224-S4）。体积行只算**正文**（不含时间戳那一行），
- * 所以时间戳长度变化不会让两份快照的体积读数漂移。
+ * 纪律：**只有时间戳行与 ⑥ 心跳行是易变的**（两者都由 {@link isVolatileSnapshotLine} 认出来）——
+ * 于是"同一台账两次快照除易变行外逐字节相同"是可断言的（守卫见 `test/m224.test.ts` 的 M224-S4）。
+ * 体积行只算**正文**（不含时间戳行，也**不含**心跳行）：它是"这份读数有没有超出预算"的自证，
+ * 必须与取数时刻无关 —— 否则同一份台账的两次读数会给出两个体积。
  */
 export function renderStatusSnapshot(
   snapshot: StatusSnapshot,
@@ -538,7 +659,13 @@ export function renderStatusSnapshot(
     `⑤ ${blockedLine(snapshot, label)}`,
   ]
   const header = `snapshot${snapshot.iteration === undefined ? '' : ` iteration=#${String(snapshot.iteration)}`} at=${snapshot.at}`
+  const beat = heartbeatLine(snapshot, label)
   // 体积读数**只算正文**：它是"这份读数有没有超出预算"的自证，必须与时间戳无关。
   const bodyText = body.join('\n')
-  return [header, bodyText, fill(label.sizeLine, [String(bodyText.length), String(SNAPSHOT_CHAR_BUDGET)])].join('\n')
+  return [
+    header,
+    beat,
+    bodyText,
+    fill(label.sizeLine, [String(bodyText.length), String(SNAPSHOT_CHAR_BUDGET)]),
+  ].join('\n')
 }

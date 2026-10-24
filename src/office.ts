@@ -4752,9 +4752,15 @@ export class SoftwareDevOffice {
     const { journal } = this.contextFor(call)
     const tasks = this.tasks(call)
     const iteration = this.iteration(call)?.number
+    /**
+     * **一次性读**（`TASK-210` 起）：事件流只读一遍供三处使用（② 合并提交 / ① 派发时刻 / ⑥ 心跳）。
+     * 修前这里读了**两遍**，两遍之间若有追加，同一份快照里的 ① 与 ② 就可能来自两个不同的台账状态
+     * —— 一份自相矛盾的读数比没有读数更坏（同 `changeFeed` 的口径）。
+     */
+    const events = journal.read().events
     // ② 合并提交短哈希：`worktree/merged` 是**唯一**记着提交号的事件（`dispatch/*` 只有子会话 id）
     const commits = new Map<string, string>()
-    for (const event of journal.read().events) {
+    for (const event of events) {
       if (event.type !== 'worktree/merged') continue
       const data = event.data as Record<string, unknown>
       const id = String(data['task'] ?? '')
@@ -4776,15 +4782,25 @@ export class SoftwareDevOffice {
      * 超过 TTL 的还要明说（那张卡此刻很可能已经没人做了）。
      */
     const startedAt = new Map<string, string>()
-    for (const event of journal.read().events) {
+    const startedChild = new Map<string, string>()
+    for (const event of events) {
       if (event.type !== 'dispatch/started') continue
       const data = event.data as Record<string, unknown>
       const id = String(data['task'] ?? '')
       if (id === '') continue
       const at = String(event.at ?? data['startedAt'] ?? '')
       if (at > (startedAt.get(id) ?? '')) startedAt.set(id, at)
+      // 子会话号也**从台账**取（`DEF-177`）：`plan.heldByDispatch` 只收"还活着"的派发 ⇒
+      // 一张已经超了孤儿 TTL 的卡在 ① 里会连子会话号都没有，而它恰恰是最需要看心跳的那一张。
+      const child = String(data['childSessionId'] ?? '')
+      if (child !== '') startedChild.set(id, child)
     }
-    const childOf = new Map((plan.heldByDispatch ?? []).map((row) => [row.taskId, row.childSessionId.slice(0, 8)] as const))
+    const heldChildOf = new Map((plan.heldByDispatch ?? []).map((row) => [row.taskId, row.childSessionId] as const))
+    /** 卡 → 子会话**全 id**（台账优先，`heldByDispatch` 补足）：心跳查观测要用全 id。 */
+    const fullChildOf = new Map<string, string>(startedChild)
+    for (const [taskId, child] of heldChildOf) fullChildOf.set(taskId, child)
+    const childOf = new Map<string, string>()
+    for (const [taskId, child] of fullChildOf) childOf.set(taskId, child.slice(0, 8))
     const ttlMinutes = this.settings.dispatchOrphanTtlMinutes
     const flying: SnapshotFlying[] = tasks
       .filter((task) => task.status === 'in-progress')
@@ -4803,6 +4819,41 @@ export class SoftwareDevOffice {
     const taskBlocked: SnapshotBlockedTask[] = tasks
       .filter((task) => task.status === 'blocked')
       .map((task) => ({ id: task.id, role: task.role, size: task.size, reason: task.blockedReason ?? '' }))
+    /**
+     * **⑥ 心跳**（`DEF-177` 的另一半）：被派发的子代理"还活着还是卡住了"，以前在工具面上不可判定 ——
+     * `dispatch/observed` 只有派发那一刻的一条，之后既没有心跳、也没有"最近一次落笔"。
+     *
+     * 取数口径（全部是台账**已有**事件的时刻，本方法**不写**任何事件 —— 快照必须是只读读数）：
+     *   · `ledger`：`journal.jsonl` 最后一条事件的 `at` + 序号（"台账还在被写"）；
+     *   · `observed`：最近一条 `dispatch/observed` 的 `observedAt`（子代理最近一次"还在发请求"）；
+     *   · `children`：**在飞**（`plan.heldByDispatch`，与 ① 的子会话号同源）那些各自最近一条观测。
+     * 三条都只给**绝对时刻**，"距今 N 分钟"由渲染器按快照自己的 `at` 现算 ⇒ 本方法仍是 `now` 的纯函数。
+     */
+    const lastObservedAt = new Map<string, string>()
+    let latestObserved: { at: string; child: string } | undefined
+    for (const event of events) {
+      if (event.type !== 'dispatch/observed') continue
+      const data = event.data as Record<string, unknown>
+      const child = String(data['childSessionId'] ?? '')
+      const at = String(data['observedAt'] ?? event.at ?? '')
+      if (child === '' || at === '') continue
+      if (at > (lastObservedAt.get(child) ?? '')) lastObservedAt.set(child, at)
+      // 序号单调：后出现的观测才是"最近一次"，与 `at` 的可比性无关（手写事件的时刻可能乱序）
+      latestObserved = { at, child }
+    }
+    const ledgerLast = events.at(-1)
+    const heartbeat = {
+      ledger: ledgerLast === undefined
+        ? undefined
+        : { at: ledgerLast.at, seq: ledgerLast.seq },
+      observed: latestObserved,
+      // **在飞 = 卡状态 `in-progress`**（与 ① 同一份读数），不是"派发还活着" —— 超了孤儿 TTL 的卡
+      // 恰恰最需要看心跳（它可能早就没人做了）。子会话号从 `dispatch/started` 现算，取不到就空串。
+      children: flying.map((item) => ({
+        child: item.child,
+        at: item.child === '' ? undefined : lastObservedAt.get(fullChildOf.get(item.id) ?? ''),
+      })),
+    }
     const nextEntry = plan.dispatch[0]?.task.id
     const blockedRows = plan.queue.filter((entry) => entry.verdict !== 'dispatch' && entry.verdict !== 'queued')
     return {
@@ -4815,6 +4866,7 @@ export class SoftwareDevOffice {
       next: nextEntry,
       blocked: blockedRows,
       taskBlocked,
+      heartbeat,
       counts: {
         inFlight: flying.length,
         ready: tasks.filter((task) => task.status === 'ready').length,
