@@ -88,12 +88,15 @@ afterEach(() => {
 test('R-1：根会话认领过 developer 卡 ⇒ **仍是驾驶舱**（认领只决定卡归谁，不决定我是谁）', () => {
   const claims = [{ sessionId: 'session-parent', cardId: 'TASK-022', role: 'developer' as const }]
   // 根会话：没有父会话、delegationDepth 为 0（真机里 `owner=cockpit` 认领很常见）
+  // **由 ADR-031 导致的预期口径变更（TASK-189）**：根会话的身份是**流程官 `office`**
+  // （`kind` 仍是 `cockpit`）。R-1 要守的性质没变 —— 根会话**不会**因为认领过 developer 卡
+  // 就被判成 `dispatched/developer`（那才是真机症状）。
   assert.deepEqual(
     attributeRole({ sessionId: 'session-parent', delegationDepth: 0, claims }),
-    { kind: 'cockpit', role: 'cockpit' },
+    { kind: 'cockpit', role: 'office' },
     '父会话被判成 dispatched/developer ⇒ 掩码会拦它自己的工具调用（R-1 的真机症状）',
   )
-  assert.deepEqual(attributeRole({ sessionId: 'session-parent', delegationDepth: undefined, claims }), { kind: 'cockpit', role: 'cockpit' }, 'depth 缺省按 0')
+  assert.deepEqual(attributeRole({ sessionId: 'session-parent', delegationDepth: undefined, claims }), { kind: 'cockpit', role: 'office' }, 'depth 缺省按 0')
 
   // 子会话：带父会话 ⇒ 按认领卡的角色走（掩码照旧生效）
   assert.deepEqual(

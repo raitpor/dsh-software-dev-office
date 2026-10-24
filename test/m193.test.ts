@@ -79,7 +79,12 @@ test('M193-03 §3.3（`DEF-104`）接线与"死配置"回归：输入由唯一�
   }
   // ② 两个曾被判"死配置"的声明面**真的被读**，而且读出来的值**真的进了判定**（不是只被提到）
   assert.ok(index.includes('guardedTools: settings.disciplineTools'), '`disciplineTools` 必须进写范围纪律的判定')
-  assert.ok(index.includes('sharedPaths: settings.disciplineAllowPaths'), '`disciplineAllowPaths` 必须进公共放行面')
+  // **由 ADR-031 导致的预期口径变更（TASK-189）**：公共面按角色裁一次（office ⇒ `.sdo/`+`docs/`）——
+  // 这条守卫的意图（配置必须真的被读、真的进判定）不变，只把锚点换成新形态。
+  assert.ok(
+    index.includes('office.publicWritePaths(attributed.role, settings.disciplineAllowPaths)'),
+    'disciplineAllowPaths must enter the public allow face (narrowed per role)',
+  )
   const writeScope = readFileSync(join(ROOT, 'src', 'domain', 'writeScope.ts'), 'utf8')
   assert.ok(writeScope.includes('guardedTools'), '`writeScope` 必须声明受管辖工具（`guardedTools`）')
   assert.ok(writeScope.includes('sharedPaths'), '`writeScope` 必须声明公共放行面（`sharedPaths`）')

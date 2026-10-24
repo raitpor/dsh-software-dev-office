@@ -111,7 +111,9 @@ test('接线：派发前必须按宿主注册表过滤工具面（`filterKnownTo
 
 test('工具面里**不许出现宿主未注册的名字**（真机回归：`pdf` 让 `tools.restrict()` 抛错、整份工具面失效）', () => {
   // 宿主已注册、且角色卡允许引用的工具（含插件自己的 sdo_*）。**新名字要先确认真机注册过再加**。
-  const HOST_TOOLS = new Set(['skill', 'read', 'write', 'edit', 'glob', 'grep', 'read_image', 'bash', 'ask_user_question'])
+  // **由 ADR-031 导致的预期口径变更（TASK-189）**：`exit_plan_mode` 是宿主 `plan-mode` 服务注册的
+  // 真实工具（preset 里 `- id: plan-mode` 那行挂着它），ADR-031 ① 把它纳入 office 的身份与核对组。
+  const HOST_TOOLS = new Set(['skill', 'read', 'write', 'edit', 'glob', 'grep', 'read_image', 'bash', 'ask_user_question', 'exit_plan_mode'])
   const isPluginTool = (name: string): boolean => name.startsWith('sdo_')
   for (const role of ROLES) {
     const names = [...toolAllowList(role), ...(roleCard(role)?.deny ?? [])]

@@ -72,6 +72,9 @@ export function renderStatusBlock(status: StatusSnapshot, dataDirName: string, l
   // **§4.5（评审员）**：投影不可用时会被 `append → rebuild` 顺手重建，于是上一条 `truthError`
   // 会"毫无解释地消失"。这一行给出解释（诊断时不会误以为问题自己好了）。
   if (status.rebuilt) lines.push(t('status.rebuiltLine'))
+  // **`TASK-189`**：身份行（根会话＝`office` 流程官）。文案由 `office.ts` 排好，本文件只 push
+  // （本文件被 i18n 棘轮钉在「硬编码中文 0」——与 `reviewPendingBig.line` 同一先例）。
+  if (status.roleLine !== undefined && status.roleLine !== '') lines.push(status.roleLine)
   lines.push(fmt('status.projectLine', {
     id: project.id,
     name: project.name,

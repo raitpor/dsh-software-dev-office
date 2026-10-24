@@ -173,7 +173,7 @@ import {
   readApplicability,
 } from './domain/applicability.js'
 import { basisReplay, normalizeBasis, recordSignature, signoffInput, signatureState } from './domain/signature.js'
-import { gateIdOf, gateLabel, fmt, textOrProcess, t } from './domain/i18n.js'
+import { gateIdOf, gateLabel, fmt, locale, textOrProcess, t } from './domain/i18n.js'
 import type { RiskConclusion } from './domain/risks.js'
 import { listRisks, logRisk, readConclusion, riskStats, updateRisk, writeConclusion } from './domain/risks.js'
 import { answerQuestion, askQuestions, listQuestions, validateProposed, weakDimensions, writeProposedQuestions } from './domain/grill.js'
@@ -253,7 +253,7 @@ import {
   reuseSkippedEventData,
   reuseSkippedFields,
 } from './domain/dispatchFace.js'
-import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, listRoleCards, maskFingerprint, toolAllowList } from './domain/roles.js'
+import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, isProcessOfficerRole, listRoleCards, maskFingerprint, publicWritePathsFor, toolAllowList } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
 import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
 import { listDispositions, rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
@@ -501,6 +501,13 @@ export interface StatusSnapshot {
         line: string
       }
     | undefined
+  /**
+   * **状态块的「角色」行**（`TASK-189`）：本会话在 SDO 里的身份（根会话＝`office` 流程官）。
+   *
+   * 与 {@link reviewPendingBig.line} 同一形态：本模块**排好版**，`inject.ts` 只 push
+   * （那个文件被 i18n 棘轮钉在硬编码中文 0）。语言随 `locale()`。
+   */
+  roleLine?: string | undefined
   /** 当前阶段是否已进入"架构/设计"语境（按流程阶段 id 判断，不看项目类型） */
   designPhase?: boolean | undefined
   /**
@@ -1289,6 +1296,8 @@ export class SoftwareDevOffice {
       // 现算**不在这里**：`pendingReviewBigCards` 是 `C-42` 与完成点硬拦截共用的那一个函数
       // （三处一份口径）；本处只把它渲染成一行 —— 注入块（`inject.ts`）被 i18n 棘轮钉在 0 个中文，
       // 所以排版留在本模块（本文件本来就有用户可见文案），注入块只 push 这一行。
+      // **`TASK-189`**：身份行（根会话＝流程官 office）。放在状态块最前面几行里，每轮可见。
+      roleLine: this.roleLine(call),
       reviewPendingBig: (() => {
         const set = pendingReviewBigCards(store, new Journal(store))
         if (set.pending.length === 0) return undefined
@@ -3657,7 +3666,66 @@ export class SoftwareDevOffice {
    */
   canAdministerTasks(call: OfficeCall): boolean {
     if (this.isDispatchedChild(call)) return false
-    return this.roleOf(call) === 'cockpit'
+    // **`TASK-189`**：根会话的身份现在是 `office`（`attributeRole`），驾驶舱的处置权不能因此丢
+    // （`roleOf` 回 `office` ⇒ 只判 `'cockpit'` 会让 `unblock`/`drop`/`reopen` 全部拒绝）。
+    return this.isProcessOfficer(call)
+  }
+
+  /**
+   * **这个会话是不是流程官**（`TASK-189` / `DEF-181` / `ADR-031`）。
+   *
+   * 口径**只有一条**：`roleOf` 认出的角色是 `office`。而 `roleOf` → `attributeRole` 里
+   * **根会话（无父会话 + 深度 0）的身份就是 `office`** ⇒ 这条判定与"是不是根会话"同源，
+   * 不再是"两个地方各写一份 cockpit 判断"。
+   *
+   * 为什么单独一个方法：身份从 `cockpit` 改成 `office` 之后，凡是要问"这是流程官吗"的地方
+   * （改派授权、卡生命周期处置…）都得跟着换口径 —— 换一处漏一处就是"驾驶舱把自己的特许动作
+   * 挡掉"（`reassign` 就是这个形状）。所以给**一个**入口，调用点照它问。
+   */
+  isProcessOfficer(call: OfficeCall): boolean {
+    if (this.isDispatchedChild(call)) return false
+    return isProcessOfficerRole(this.roleOf(call))
+  }
+
+  /**
+   * **按角色裁过的公共写面**（`TASK-189`：`office` 只留 `.sdo/` 与 `docs/`）。
+   *
+   * 为什么在门面开一个方法而不是让调用点自己判断：公共面是**闸门的输入**，
+   * 两处各裁一次必然分叉（`DEF-044`）。判定本体仍在 `domain/roles.ts` 的
+   * {@link publicWritePathsFor}（一处实现），这里只把它接到"这次调用是谁"上。
+   */
+  publicWritePaths(role: string, configured: readonly string[]): string[] {
+    return publicWritePathsFor(role, configured)
+  }
+
+  /**
+   * **状态块的「角色」行**（`TASK-189` 落点：注入块每轮都能看到"我是谁"）。
+   *
+   * 文案留在本模块：`inject.ts` 被 i18n 棘轮钉在「硬编码中文 0」，所以它只 push 本方法排好的行
+   * （与 `reviewPendingBig.line` 同一先例）。语言随 `locale()`（`en` 之外按基准语言）。
+   */
+  roleLine(call: OfficeCall): string {
+    const role = this.roleOf(call)
+    const en = locale() === 'en'
+    if (isProcessOfficerRole(role)) {
+      return en ? 'Role: office (process officer)' : '角色：office（流程官）'
+    }
+    return en ? `Role: ${role}` : `角色：${role}`
+  }
+
+  /**
+   * **`role: office` 的卡：不派发的点名行**（`TASK-189`：不静默跳过）。
+   *
+   * 与 `classifyNonDispatchable` 的 `roleOffice` **同一份读数**（那里算、这里只排版）；
+   * 没有这种卡时返回空串（调用点据此不占行）。语言随 `locale()`。
+   */
+  roleBlockedLine(call: OfficeCall): string {
+    const rows = this.nonDispatchable(call).roleOffice ?? []
+    if (rows.length === 0) return ''
+    const ids = rows.map((task) => `${task.id}(${task.status})`).join(' ')
+    return locale() === 'en'
+      ? `Not dispatchable (role=office, never a dispatch target): ${ids}`
+      : `不派发（role=office，永不作为派发目标）：${ids}`
   }
 
   /**

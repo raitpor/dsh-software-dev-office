@@ -53,11 +53,24 @@ roles:
   #       reason: <为什么刻意不登记给任何角色；空理由会被判红>
   # 豁免条目本身也受检查：工具必须**已注册**（不许给不存在的工具挂豁免）、理由不得为空、已被某个角色
   # `allow` 登记的工具不许再挂豁免（多余豁免会遮蔽真正的回归）。
+  # ══ office（流程官）＝ **主会话身份**（`ADR-031` / `ADR-033` / `DEF-181` / `TASK-189`）══
+  # 六组写定，**权威声明在代码侧**（`domain/roles.ts` 的 `OFFICE_TOOL_GROUPS`）——本段与它必须
+  # **逐项一致**，守卫 `test/m225.test.ts` 的 M225-R5 现算对账（一处改了另一处没改当场红）。
+  #   ① identity  只读检视 + skill + 问用户 + 计划模式
+  #   ② process   流程面全集（含 `sdo_release`：签字只在使用者会话，派发角色一条都不写）
+  #   ③ record    `sdo_test` / `sdo_review` **给**（禁自采自评靠工具内置独立性校验，不靠掩码）
+  #   ④ ledger    `write` / `edit` —— **路径级**只限 `.sdo/` 与 `docs/`（`test/` 已从 office 的公共面移除）
+  #   ⑤ bash      `ADR-031` 要求不给 ⇒ 本卡**不动它**（现状 `deny: [bash]` 已挡），
+  #               `TASK-190` 负责收口公告面/presets 的连带（本卡不提前收）
+  #   ⑥ dispatch  不给派发族（`subagent`/`subagent_fork`/`workflow`/`send_message`）——派发只走 `sdo_plan`；
+  #               落实在代码侧 `EXECUTOR_FORBIDDEN_TOOLS`/`EXECUTOR_DENIED_TOOLS`（office 永不作为派发目标）
   - code: office
     name: 流程官/PM
-    allow: [skill, read, grep, glob, write, edit, sdo_init, sdo_status, sdo_feasibility, sdo_project, sdo_gate, sdo_plan, sdo_task, sdo_risk, sdo_cost, sdo_render, sdo_trace, sdo_deliver, sdo_redteam, sdo_release]
-    deny: [bash, ask_user_question]
-    rationale: 只有流程官能推门禁与派发；**手维 `.sdo/` 手可编辑真源需要 `edit`**（整篇 write 会丢内容，SDO-23 同类）；不碰实现由写范围纪律保证；**`sdo_release` 只在这里登记**（签字只在使用者会话，派发角色默认拒）
+    allow: [read, grep, glob, skill, ask_user_question, exit_plan_mode, sdo_init, sdo_status, sdo_project, sdo_requirement, sdo_design, sdo_plan, sdo_task, sdo_gate, sdo_risk, sdo_cost, sdo_feasibility, sdo_redteam, sdo_render, sdo_trace, sdo_deliver, sdo_quality, sdo_adr, sdo_hash, sdo_lang, sdo_release, sdo_test, sdo_review, write, edit]
+    # `ask_user_question` 按 `ADR-031` ① 已移出 deny（流程官要能问用户）；
+    # `bash` 按 `ADR-031` ⑤ 继续挡着 —— 本卡**不提前收**公告面与 presets 的连带（那是 `TASK-190`）。
+    deny: [bash]
+    rationale: 主会话身份＝流程官（ADR-031/033）：能推门禁与派发、能问用户、能记录用例与评审（但禁自采自评）；**手维 `.sdo/` 手可编辑真源需要 `edit`**（整篇 write 会丢内容，SDO-23 同类）；写范围只限 `.sdo/` 与 `docs/`（`test/` 不在公共面）；**`sdo_release` 只在这里登记**（签字只在使用者会话，派发角色默认拒）；bash 仍挡着（ADR-031 ⑤），公告面/presets 的连带由 TASK-190 收口
   - code: developer
     name: 实现工程师
     allow: [skill, read, grep, glob, write, edit, bash, sdo_task, sdo_trace, sdo_test]
@@ -84,9 +97,10 @@ roles:
 # 形状：`tool` 必须是**已注册**的 `sdo_*`，`reason` 不得为空（空理由不算豁免 —— 那会把"缺口"洗成"决策"）。
 # 已被某个角色 `allow` 登记的工具**不许**再挂豁免：多余豁免会遮蔽真正的回归（下次它从 allow 里掉了也照样绿）。
 # 守卫在 `test/m222.test.ts` 的 `M222-14` 里现算（工具注册表 × 本文件的 `roles[].allow` × 这一节）。
-cockpitOnly:
-  - tool: sdo_lang
-    reason: 显示语言是会话/用户层的配置面而不是流程职责：只有使用者会话（驾驶舱）才该改它，派给任何子代理等于把用户偏好交出去；test/m75.test.ts 的 M75-02 末行早已钉住「所有角色都拿不到 sdo_lang」。
+# **当前没有豁免条目**（`TASK-189` 起）：原先给 `sdo_lang` 挂的 `cockpitOnly` 豁免已**失效并删除** ——
+# ADR-031 ② 把 `sdo_lang` 纳入 office（流程官）的流程面，而 office 就是主会话 ⇒ 它不再"哪个角色都
+# 拿不到"。`test/m222.test.ts` 的 M222-14 会点名"挂了豁免但已被某个角色 allow"这种失效形态。
+cockpitOnly: []
 
 # **未认领子会话的最小面**（DEF-078 / 第五批 §3.1）—— 由**声明**给出，插件里不写任何工具名。
 #

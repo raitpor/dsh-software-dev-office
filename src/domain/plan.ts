@@ -1330,6 +1330,15 @@ export interface StaleGate {
   reason: string
 }
 
+/**
+ * **永不作为派发目标的角色**（`TASK-189` / `DEF-181` / `ADR-031`）。
+ *
+ * 单列一个常量而不是在两处各写一次 `'office'`：这条判断同时被**就绪队列**
+ * （{@link readyTasks}：不进队列）与**不可派分类**（{@link classifyNonDispatchable}：要点名）用到，
+ * 两处各写一份就会分叉（`DEF-044` 的教训）。
+ */
+export const NON_DISPATCHABLE_ROLES: readonly string[] = ['office']
+
 export function readyTasks(tasks: TaskCard[], limit = 4, staleGate?: StaleGate | undefined): TaskCard[] {
   // **DEF-040**：当前阶段入口门禁的签字已失效 ⇒ **一张都不派**（点名与补救交给调用方的回执）。
   if (staleGate !== undefined) return []
@@ -1356,7 +1365,11 @@ export function readyTasks(tasks: TaskCard[], limit = 4, staleGate?: StaleGate |
   )
   const picked: TaskCard[] = []
   for (const task of tasks
-    .filter((task) => (task.status === 'planned' || task.status === 'ready') && task.blockedBy.every((id) => satisfied(task, id)))
+    // **`TASK-189`**：`role: office` 的卡**不进就绪队列**（它是主会话身份，不是可派的活；
+    // 点名由 `classifyNonDispatchable` 的 `roleOffice` 那一类负责 —— 不静默跳过）
+    .filter((task) => (task.status === 'planned' || task.status === 'ready')
+      && !NON_DISPATCHABLE_ROLES.includes(String(task.role))
+      && task.blockedBy.every((id) => satisfied(task, id)))
     .sort((a, b) => sizeRankOf(a) - sizeRankOf(b) || a.id.localeCompare(b.id))) {
     const group = (task.exclusive ?? '').trim()
     if (group !== '') {
@@ -1417,7 +1430,11 @@ export function candidateQueue(
   lastDispatched: ReadonlyMap<string, string> = new Map<string, string>(),
 ): TaskCard[] {
   return orderDispatchQueue(
-    tasks.filter((task) => task.status === 'planned' || task.status === 'ready'),
+    // **`TASK-189`**：`role: office` 的卡**不进候选队列**（与 `readyTasks` 同一条常量）——
+    // 否则派发回执的有序表会把它印成 `queued`（"这一轮没取到"），读者会以为下一轮就会派它。
+    // 它们仍然**可见**：`classifyNonDispatchable` 的 `roleOffice` 那一类会逐条点名。
+    tasks.filter((task) => (task.status === 'planned' || task.status === 'ready')
+      && !NON_DISPATCHABLE_ROLES.includes(String(task.role))),
     lastDispatched,
   )
 }
@@ -1746,6 +1763,16 @@ export interface NonDispatchablePlan {
    * 输出"干净/无冲突"这类确定性结论。
    */
   dirtyUnjudgeable?: { reason: string } | undefined
+  /**
+   * ⑥ **`role: office` 的卡：永不作为派发目标**（`TASK-189` / `DEF-181` / `ADR-031` ①③）。
+   *
+   * 为什么需要它（而不是"悄悄过滤掉"）：`role: office` 的卡**不是**一张能派的活 —— office 是
+   * **主会话身份**（流程官），派发族也一律不给它（ADR-031 ⑥）。但"悄悄从队列里消失"与
+   * "活干完了"在回执上长得一模一样（同 `gateStale` 那条注释的教训）⇒ 必须**单独一类**点名。
+   *
+   * **只在真有这种卡时出现这个键**：没有时键根本不出现 ⇒ 既有调用点的返回形状逐字节不变。
+   */
+  roleOffice?: TaskCard[] | undefined
 }
 
 export function classifyNonDispatchable(
@@ -1828,11 +1855,17 @@ export function classifyNonDispatchable(
   })()
   const dirty = dirtyState.rows.length === 0 ? {} : { dirty: dirtyState.rows }
   const dirtyUnjudged = dirtyState.unjudgeable === undefined ? {} : { dirtyUnjudgeable: { reason: dirtyState.unjudgeable } }
+  // ⑥ `role: office` 的卡（`TASK-189`）：未结束的都算"不可派"，与其余各类并列点名（同样"只在有时出现"）
+  const roleOffice = NON_DISPATCHABLE_ROLES.length === 0
+    ? []
+    : tasks.filter((task) => !ended(task) && NON_DISPATCHABLE_ROLES.includes(String(task.role)))
+  const roleOfficePart = roleOffice.length === 0 ? {} : { roleOffice }
   return {
     ...gateStale,
     ...exclusive,
     ...dirty,
     ...dirtyUnjudged,
+    ...roleOfficePart,
     blocked,
     scope,
     // ③ 依赖未满足：blocked 卡已归 ①，别在两类里各报一次（否则读者会以为有两张卡）

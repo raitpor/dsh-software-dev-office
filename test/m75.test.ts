@@ -130,7 +130,15 @@ test('M75-02 SDO 流程面仍是白名单：补集全部进 deny 面（职责分
       if (!allowed) assert.ok(deny.includes(tool), `${role} 的 deny 面必须含不可用的 ${tool}`)
       // 例外：**执行者禁令**里的工具即使在该角色的 allow 里，也必须进 deny 面（子会话不许再派发）
       const executorForbidden = (EXECUTOR_FORBIDDEN_TOOLS as readonly string[]).includes(tool)
-      if (allowed && !executorForbidden) assert.equal(deny.includes(tool), false, `${role} 的 deny 面不许挡它自己的 ${tool}`)
+      /**
+       * **由 ADR-031 导致的预期口径变更（TASK-189）**：执行者禁用面（`EXECUTOR_DENIED_TOOLS`，
+       * 如 `exit_plan_mode`/`plugin_manager`）里的工具**可以**出现在某个角色的 allow 里 ——
+       * office（流程官）就是主会话，`exit_plan_mode` 归它；而那份禁用面只对**被派发的执行者**生效，
+       * office 永不作为派发目标。所以这条不变量对"非执行者 + 执行者禁用面里的工具"要让路：
+       * 判据本身没放宽 —— 它管的仍是"角色自己能用的通用面工具不该被自己的 deny 挡"。
+       */
+      const executorDenied = (EXECUTOR_DENIED_TOOLS as readonly string[]).includes(tool)
+      if (allowed && !executorForbidden && !executorDenied) assert.equal(deny.includes(tool), false, `${role} 的 deny 面不许挡它自己的 ${tool}`)
       if (executorForbidden) assert.ok(deny.includes(tool), `执行者禁令：${tool} 必须进 deny 面（${role}）`)
     }
   }
@@ -143,8 +151,15 @@ test('M75-02 SDO 流程面仍是白名单：补集全部进 deny 面（职责分
   assert.equal(maskAllows('tester', 'sdo_review'), false, 'tester 不许评审')
   assert.equal(maskAllows('reviewer', 'sdo_test'), false, 'reviewer 不许跑测试（那是 tester 的活）')
   assert.equal(maskAllows('delivery', 'sdo_design'), false)
-  // `sdo_lang` 不在任何角色的 allow 里 ⇒ 所有角色都拿不到（它属驾驶舱配置面）
-  for (const role of ROLES) assert.equal(maskAllows(role, 'sdo_lang'), false)
+  /**
+   * **由 ADR-031 导致的预期口径变更（TASK-189）**：`sdo_lang`（显示语言）原先挂在 `cockpitOnly:`
+   * 豁免里 —— "所有角色都拿不到"。ADR-031 ② 把它纳入 **office（流程官）的流程面**，而 office 就是
+   * 主会话（使用者会话本身就是配置面）⇒ 该豁免失效并已从 `roles.yml` 删除
+   * （`test/m222.test.ts` 的 M222-14 会点名"挂了豁免但已被某个角色 allow"这种形态）。
+   * 判据不变：**除 office 外**的派发角色仍然一条都拿不到。
+   */
+  for (const role of ROLES) assert.equal(maskAllows(role, 'sdo_lang'), role === 'office')
+  assert.equal(maskAllows('office', 'sdo_lang'), true, 'office is the user session, so it may change the display language (ADR-031 group 2)')
 })
 
 test('M75-03 角色认不出 ⇒ SDO 流程面**整体**挡住（fail-closed，不是"全放行"）', () => {
@@ -296,7 +311,9 @@ test('M75-07 断言"角色卡里承诺的工具"确实可用（提示面 ↔ 掩
 test('M75-08 `ask_user_question` 只给 analyst（用户裁定），其余角色一律没有', () => {
   for (const role of ROLES) {
     const allowed = maskAllows(role, 'ask_user_question')
-    assert.equal(allowed, role === 'analyst', `${role} 对 ask_user_question 的可见性不符合"仅 analyst"`)
+    // **由 ADR-031 导致的预期口径变更（TASK-189）**：ADR-031 ① 明确流程官**要能问用户** ⇒
+    // 可见面从"仅 analyst"扩到"analyst + office"（判据体不变，只看这两个角色能拿到）。
+    assert.equal(allowed, role === 'analyst' || role === 'office', `${role}: ask_user_question visibility must be analyst + office`)
     assert.equal(roleMaskDecision(role, 'ask_user_question').kind, allowed ? 'allow' : 'deny')
   }
   // 驾驶舱（root）仍能问用户：它不是角色子代理，`roleMaskDecision` 对它 fail-open
@@ -306,9 +323,13 @@ test('M75-08 `ask_user_question` 只给 analyst（用户裁定），其余角色
   const analyst = cards.find((card) => card.code === 'analyst')
   assert.ok(analyst?.allow.includes('ask_user_question'), 'analyst 的 allow 必须有 ask_user_question')
   assert.equal(analyst?.deny.includes('ask_user_question'), false, 'analyst 的 deny 不许同时挡它（自相矛盾）')
-  for (const card of cards.filter((item) => item.code !== 'analyst')) {
-    assert.ok(card.deny.includes('ask_user_question'), `${card.code} 的 deny 必须显式写 ask_user_question`)
+  // office 由 ADR-031 ① 拿到 ask_user_question（见上），其余角色仍必须显式挡它
+  for (const card of cards.filter((item) => item.code !== 'analyst' && item.code !== 'office')) {
+    assert.ok(card.deny.includes('ask_user_question'), `${card.code} must explicitly deny ask_user_question`)
   }
+  const officeCard = cards.find((card) => card.code === 'office')
+  assert.equal(officeCard?.allow.includes('ask_user_question'), true, 'office allow must contain ask_user_question (ADR-031 group 1)')
+  assert.equal(officeCard?.deny.includes('ask_user_question'), false, 'office deny must not block ask_user_question any more (self-contradiction)')
   // 无自相矛盾（deny ∩ allow = ∅）
   assert.deepEqual(maskConflicts(), [])
 })

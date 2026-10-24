@@ -85,8 +85,10 @@ test('M31-01 B5 角色推导四态：认领过的卡 → 卡上的角色；根�
   // **R-1（2026-10-05 真机）**：身份由血缘决定 —— 只有**子会话**才按认领卡的角色走掩码；
   // 根会话（父会话 + 流程官）即使认领过 developer 卡也仍是驾驶舱（真机症状：掩码开始拦它自己的工具）。
   assert.deepEqual(attributeRole({ sessionId: 's-dev', delegationDepth: 1, claims }), { kind: 'dispatched', role: 'developer', cardId: 'TASK-001' })
-  assert.deepEqual(attributeRole({ sessionId: 's-dev', claims }), { kind: 'cockpit', role: 'cockpit' }, '没有血缘信息 ⇒ 按根会话（驾驶舱）')
-  assert.deepEqual(attributeRole({ sessionId: 's-root', delegationDepth: 0, claims }) /*ROOT*/, { kind: 'cockpit', role: 'cockpit' })
+  // **由 ADR-031 导致的预期口径变更（TASK-189）**：根会话的身份是**流程官 `office`**（`kind` 仍是
+  // `cockpit` —— 既有消费方按 kind 判血缘）。判据本身一条没改：仍然是"没有父会话且深度 0 ⇒ 根会话"。
+  assert.deepEqual(attributeRole({ sessionId: 's-dev', claims }), { kind: 'cockpit', role: 'office' }, '没有血缘信息 ⇒ 按根会话（流程官 office）')
+  assert.deepEqual(attributeRole({ sessionId: 's-root', delegationDepth: 0, claims }) /*ROOT*/, { kind: 'cockpit', role: 'office' })
   assert.deepEqual(attributeRole({ sessionId: 's-child', delegationDepth: 1, claims }), { kind: 'unclaimed-child', role: 'dispatched' })
   assert.deepEqual(attributeRole({ sessionId: undefined, claims }), { kind: 'unknown', role: 'cockpit' })
   assert.deepEqual(attributeRole({ sessionId: '', claims }), { kind: 'unknown', role: 'cockpit' })

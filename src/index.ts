@@ -1859,6 +1859,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
        * 行文来自 `domain/snapshot.ts`（本文件不许写中文），读数是 `plan.queue`（与准入同一份）。
        */
       const queueSection = renderQueueTable(plan.queue)
+      /**
+       * **`TASK-189`（`DEF-181`）：`role: office` 的卡不派发，但**必须点名**。**
+       *
+       * 它出现在 queueSection 之后、所有分支的返回里都有它 —— 因为"这张卡为什么没派"与
+       * "这一轮派了几张"是两个独立读数：只在"一张都没派"时印，就会在真有别的卡在派时**静默漏掉**
+       * （那正是"悄悄消失"的形状）。行文由 `office.ts` 排好（`roleBlockedLine`，随 `locale()`），
+       * 本文件不写中文（i18n 棘轮基线 0），只负责拼进回执。
+       */
+      const roleBlockedSection = ((): string => {
+        const line = office.roleBlockedLine(call)
+        return line === '' ? '' : '\n' + line + '\n'
+      })()
       // **R-14**：派发前把「卡的要求 ∩ 该角色的能力」矛盾摆出来（不阻断派发，但绝不允许它静默）
       const infeasibleBlock = (plan.infeasible ?? []).length === 0
         ? ''
@@ -1986,8 +1998,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const diagnostics = issues
             .map((issue) => fmt('uiIndex.kPlanIssueLine', { p1: issue.code, p2: issue.taskId, p3: issue.detail, p4: issue.remedy }))
             .join('\n')
-          if (args.why === true) return verdict + '\n' + queueSection + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
-          return verdict + '\n' + queueSection + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
+          if (args.why === true) return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
+          return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
         }
         if (plan.queued.length === 0) {
           // **R-9**：真机在这里印「没有可派发的任务卡（都已认领/完成）」，而实际上是 4 张 ready 卡
@@ -2006,7 +2018,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               p3: String(settings.dispatchOrphanTtlMinutes),
             })
           }
-          return queueSection + '\n' + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + describeNonDispatchable(office.nonDispatchable(call)) + structuralSection
+          return queueSection + roleBlockedSection + '\n' + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + describeNonDispatchable(office.nonDispatchable(call)) + structuralSection
         }
         // **DEF-049 / TASK-078 落点二**：走队列分支时也把分类带上 —— "排队"是"池满"，
         // 与"卡是 blocked / 依赖未满足"是**不同**的原因，不能只报前者（否则读者仍分不清
@@ -2014,7 +2026,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const nonDispatchableNote = describeNonDispatchable(office.nonDispatchable(call))
         // 排队不是"没卡"，而是**被上限挡住**：必须说清是哪个池满，否则用户会以为流程卡住了
         const blocked = plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })).join('\n')
-        return queueSection + '\n' + heldByScopeSection + healthSection + rejectedSection + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
+        return queueSection + roleBlockedSection + '\n' + heldByScopeSection + healthSection + rejectedSection + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
           + '\n' + blocked
           + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
           + '\n' + nonDispatchableNote
@@ -2073,7 +2085,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p2: plan.dispatch.slice(take).map((entry) => entry.task.id).join(' '),
           }))
         }
-        return infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + queueSection + lines.filter((line) => line !== '').join('\n') + structuralSection
+        return infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + queueSection + roleBlockedSection + lines.filter((line) => line !== '').join('\n') + structuralSection
       }
 
       const preference = args.backend === 'subagent' || args.backend === 'native-team' || args.backend === 'inline' ? args.backend : 'auto'
@@ -2873,7 +2885,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
           {
             const ownSession = args.id !== undefined && office.claimSession(call, args.id) === call.sessionId
             if (!ownSession && office.isDispatchedChild(call)) return t('uiIndex.kTaskAdminOnly')
-            if (!ownSession && office.isDispatchedChild(call) === false && args.action === 'reassign' && office.roleOf(call) !== 'cockpit') return t('uiIndex.kTaskAdminOnly')
+            // **`TASK-189`**：根会话的身份现在是 `office`（`attributeRole`）——
+            // 旧写法 `roleOf(call) !== 'cockpit'` 会把**驾驶舱自己的** `reassign` 误挡（改自己的身份
+            // 伤到自己的特许动作）。流程官的口径收敛到 `office.isProcessOfficer(call)` 一处。
+            if (!ownSession && office.isDispatchedChild(call) === false && args.action === 'reassign' && !office.isProcessOfficer(call)) return t('uiIndex.kTaskAdminOnly')
           }
           const task =
             args.action === 'release'
@@ -4991,7 +5006,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 ...(sessionCwd === undefined ? {} : { workspace: sessionCwd }),
                 ...(workspaceRoot === '' ? {} : { workspaceRoot }),
                 guardedTools: settings.disciplineTools,
-                sharedPaths: settings.disciplineAllowPaths,
+                /**
+                 * **`TASK-189`（`DEF-181` / `ADR-031` ④）**：公共面**按角色裁一次** ——
+                 * 根会话现在是 `office`，它的公共面只有 `.sdo/` 与 `docs/`（`test/` 已移除）；
+                 * 其余角色**原样**拿到配置值（`developer`/`tester` 的卡要把用例写进 `test/`）。
+                 * 判定本体仍在 `domain/roles.ts` 的 `publicWritePathsFor`（一处实现），这里只传角色。
+                 */
+                sharedPaths: office.publicWritePaths(attributed.role, settings.disciplineAllowPaths),
                 ...(attributed.kind === 'dispatched' && attributed.cardId !== undefined
                   ? { cardScopes: claimCard?.writeScopes.map((scope) => String(scope)) ?? [] }
                   : {}),

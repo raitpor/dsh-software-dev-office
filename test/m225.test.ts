@@ -33,7 +33,12 @@ import { updateTask } from '../src/domain/collab.js'
 import { renderChangeFeed } from '../src/domain/changeFeed.js'
 import type { ChangeFeed } from '../src/domain/changeFeed.js'
 import { setLocale } from '../src/domain/i18n.js'
-import { createTask, listTasks, writeTask } from '../src/domain/plan.js'
+import { classifyNonDispatchable, createTask, listTasks, readyTasks, writeTask } from '../src/domain/plan.js'
+import { attributeRole, listRoleCards, officeAllowFace, publicWritePathsFor, toolAllowList } from '../src/domain/roles.js'
+import { evaluateWriteScope } from '../src/domain/writeScope.js'
+import { renderStatusBlock } from '../src/interface/inject.js'
+import * as orchestrator from '../src/integration/orchestrator.js'
+import { roleToolFilter } from '../src/integration/orchestrator.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
 import type { Journal } from '../src/infra/journal.js'
@@ -443,4 +448,131 @@ test('M225-10 (tool face) an unreadable `since` is refused through the tool, nev
   assert.ok(refused.includes('not-a-pointer'), `the refusal must echo the unreadable pointer: ${refused}`)
   // **不静默降级**：拒绝时不能顺手返回整份状态（那会让"起点写错"看起来像"没有增量"）
   assert.equal(refused.startsWith('changes since='), false, `a refusal must not look like an increment: ${refused.slice(0, 120)}`)
+})
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`TASK-189` 追加：office 身份层**（`DEF-181` / `ADR-031` / `ADR-033`）
+ *
+ * 六件事逐条钉住：① 根会话身份＝office ② `role:office` 的卡不派发且**点名** ③ 状态块有身份行
+ * ④ `roles.yml` 的 office 段＝ADR-031 六组（代码侧权威声明逐项对账）⑤ 死配置已删 ⑥ 写范围只留 `.sdo/`+`docs/`。
+ *
+ * 纪律：断言消息一律英文（本文件不进 `KNOWN_PROSE_GAP`）——所以**中文回执一律用 `en` 侧断言**，
+ * 基准语言那一侧只断结构化读数（`roleLine` 非空且含 `office`）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+test('M225-R1 (identity) the root session is attributed role=office while kind stays cockpit', () => {
+  const attribution = attributeRole({ sessionId: 's-root', delegationDepth: 0, claims: [] })
+  assert.equal(attribution.role, 'office', 'a root session must be the process officer (office)')
+  assert.equal(attribution.kind, 'cockpit', 'kind must stay cockpit: existing consumers judge lineage by kind')
+  // 没有父会话但深度缺省（=0）也要判成根会话（两个信号各自成立）
+  assert.equal(attributeRole({ sessionId: 's-root2', claims: [] }).role, 'office', 'a missing delegationDepth is depth 0')
+  // 两态：**有父会话**的会话不许被当成流程官（它是被派发的子会话）
+  const child = attributeRole({ sessionId: 's-child', delegationDepth: 1, parentSessionId: 's-root', claims: [] })
+  assert.notEqual(child.role, 'office', 'a child session must never be attributed office')
+  assert.equal(child.kind === 'cockpit', false, 'a child session must not be kind=cockpit')
+})
+
+test('M225-R2 (dispatch face, two-state) a role:office card never enters the ready queue and is named, not skipped', () => {
+  const f = fixture('office-dispatch')
+  const officeCard = createTask(f.store, f.journal, {
+    title: 'process officer card', goal: 'g', dod: ['d'], role: 'office', size: 'small', writeScopes: ['docs/'],
+  } as never)
+  const workCard = createTask(f.store, f.journal, {
+    title: 'work card', goal: 'g', dod: ['d'], role: 'developer', size: 'small', writeScopes: ['src/x.ts'],
+  } as never)
+  const tasks = listTasks(f.store)
+
+  // ① 不进就绪队列
+  const ready = readyTasks(tasks, 99).map((task) => task.id)
+  assert.equal(ready.includes(officeCard.id), false, 'a role:office card must never be handed to the dispatch face')
+  // ② 两态：同一份台账里的普通卡**照样**在队列里（不是"队列空了"）
+  assert.equal(ready.includes(workCard.id), true, 'an ordinary card must stay dispatchable')
+
+  // ③ 点名（不静默跳过）：结构化读数 + 渲染行
+  const plan = classifyNonDispatchable(tasks)
+  assert.deepEqual((plan.roleOffice ?? []).map((task) => `${task.id}:${task.role}`), [`${officeCard.id}:office`], 'the office card must be classified, not dropped')
+  const line = f.office.roleBlockedLine(f.call)
+  assert.equal(line.includes(officeCard.id), true, `the receipt line must name the office card: ${line}`)
+  assert.equal(line.includes(workCard.id), false, `the receipt line must not name dispatchable cards: ${line}`)
+  // 两态：台账里没有 role:office 卡时那一行**不占位**
+  const clean = fixture('office-dispatch-clean')
+  createTask(clean.store, clean.journal, { title: 'w', goal: 'g', dod: ['d'], role: 'developer', size: 'small', writeScopes: ['src/x.ts'] } as never)
+  assert.equal(clean.office.roleBlockedLine(clean.call), '', 'without such a card the line must be empty')
+})
+
+test('M225-R3 (status block) the role line says office, in both languages', () => {
+  const f = fixture('role-line')
+  const status = f.office.status(f.call)
+  assert.equal(typeof status.roleLine, 'string', 'the snapshot must carry a rendered role line')
+  assert.equal((status.roleLine ?? '').includes('office'), true, `the role line must name office: ${status.roleLine ?? ''}`)
+  const zhBlock = renderStatusBlock(status, '.sdo', 4000)
+  assert.equal(zhBlock.includes(status.roleLine ?? '<missing>'), true, 'the injected block must contain the role line')
+  setLocale('en')
+  try {
+    const enLine = f.office.roleLine(f.call)
+    assert.equal(CJK.test(enLine), false, `the en role line must stay CJK-free: ${enLine}`)
+    assert.equal(enLine.includes('office'), true, `the en role line must name office: ${enLine}`)
+  } finally {
+    setLocale('zh-CN')
+  }
+})
+
+test('M225-R4 (write scope, two-state) office may write .sdo/ and docs/ but not src/ or test/', () => {
+  const configured = ['.sdo/', 'docs/', 'test/']
+  const officePaths = publicWritePathsFor('office', configured)
+  assert.deepEqual(officePaths, ['.sdo/', 'docs/'], 'office faces only the ledger and the derived docs')
+  // 两态：别的角色**原样**拿到配置（developer/tester 的卡要把用例写进 test/）
+  assert.deepEqual(publicWritePathsFor('developer', configured), configured, 'other roles keep the configured public face')
+  assert.deepEqual(publicWritePathsFor('cockpit', configured), configured, 'the unknown-session fallback stays untouched (fail-open)')
+
+  const workspace = join(BASE, 'write-scope')
+  rmSync(workspace, { recursive: true, force: true })
+  mkdirSync(workspace, { recursive: true })
+  const decide = (path: string): string => evaluateWriteScope({
+    role: 'office',
+    tool: 'write',
+    paths: [path],
+    workspace,
+    workspaceRoot: workspace,
+    guardedTools: ['write', 'edit'],
+    sharedPaths: officePaths,
+  }).kind
+  assert.equal(decide('src/office.ts'), 'deny', 'office must not write src/')
+  assert.equal(decide('test/m225.test.ts'), 'deny', 'office must not write test/ (removed from the public face)')
+  assert.equal(decide('.sdo/tasks/TASK-001.yml'), 'allow', 'office maintains the ledger, so .sdo/ must pass')
+  assert.equal(decide('docs/DESIGN.md'), 'allow', 'office maintains derived docs, so docs/ must pass')
+  // 两态：同一条闸门在 cockpit（认不出人）态下放行 —— 说明上面那三条拒绝来自"office 这条身份"，不是闸门坏了
+  assert.equal(evaluateWriteScope({
+    role: 'cockpit', tool: 'write', paths: ['src/office.ts'], workspace, workspaceRoot: workspace,
+    guardedTools: ['write', 'edit'], sharedPaths: configured,
+  }).kind, 'allow', 'the cockpit fallback still fails open (unchanged)')
+})
+
+test('M225-R5 (roles.yml = ADR-031) the office section matches the code-side declaration item by item', () => {
+  const card = listRoleCards().find((item) => item.code === 'office')
+  assert.ok(card !== undefined, 'roles.yml must declare the office role')
+  if (card === undefined) return
+  const declared = [...card.allow].sort()
+  const expected = officeAllowFace().sort()
+  assert.deepEqual(declared, expected, 'roles.yml office allow must equal the ADR-031 six-group declaration')
+  // ① ask_user_question 已移出 deny；⑤ bash 暂留（TASK-190 收回，本卡不许提前收）
+  assert.equal(card.deny.includes('ask_user_question'), false, 'ask_user_question must no longer be denied for office')
+  assert.equal(card.allow.includes('ask_user_question'), true, 'office must be able to ask the user (ADR-031 group 1)')
+  assert.equal(card.allow.includes('exit_plan_mode'), true, 'office must be able to drive the plan review (ADR-031 group 1)')
+  // ⑤ `ADR-031`：office **不给 bash**（本卡不动它 —— 公告面/presets 的连带由 TASK-190 收口）
+  assert.equal(card.allow.includes('bash'), false, 'office must not get bash (ADR-031 group 5); TASK-190 finishes the rest')
+  assert.equal(card.deny.includes('bash'), true, 'bash must stay denied for office')
+  // ③ 记录面给、但要靠工具内置独立性校验
+  for (const tool of ['sdo_test', 'sdo_review']) assert.equal(card.allow.includes(tool), true, `office must keep ${tool} (ADR-031 group 3)`)
+  // ⑥ 派发族一个都不给
+  for (const tool of ['subagent', 'subagent_fork', 'workflow', 'send_message']) {
+    assert.equal(card.allow.includes(tool), false, `office must not get the dispatch family: ${tool}`)
+  }
+  // 死配置：`TOOL_FILTER_FALLBACK` 已删（不再有第二份会过期的工具面）
+  const orchestratorModule = orchestrator as unknown as Record<string, unknown>
+  assert.equal(Object.hasOwn(orchestratorModule, 'TOOL_FILTER_FALLBACK'), false, 'the dead fallback table must be gone')
+  // 唯一真源：每一族的 `roleToolFilter` 都必须等于掩码表现算
+  for (const item of listRoleCards()) {
+    assert.deepEqual(roleToolFilter(item.code), toolAllowList(item.code), `${item.code}: roleToolFilter must equal the pack-derived face`)
+  }
 })

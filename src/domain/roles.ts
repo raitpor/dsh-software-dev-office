@@ -88,6 +88,87 @@ export function roleCard(code: Role): RoleCard | undefined {
   return listRoleCards().find((role) => role.code === code)
 }
 
+/**
+ * **office（流程官）的工具面：`ADR-031` 六组的唯一声明**（`TASK-189` / `DEF-181`）。
+ *
+ * 为什么要有这份声明而不是只写在 `roles.yml` 里：`roles.yml` 是**随包数据**（可被换掉/写坏），
+ * 而"office 应该有哪六组"是**设计与裁决**。这里给一份**代码侧的权威清单**，
+ * 守卫拿它与 `roles.yml` 的 office 段**逐项对账**（两份集合必须完全一致）——
+ * 一处改了另一处没改会当场红，而不是靠人读 YAML（`DEF-044`：同一概念两处判据必然分叉）。
+ *
+ * 六组（`ADR-031` decision 逐字对应）：
+ *   ① `identity`  身份与核对 —— 只读检视 + 技能 + 问用户 + 计划模式（流程官要能问人、能推计划）
+ *   ② `process`   流程面全集 —— 本插件注册的 `sdo_*` 里属于"推流程"的那些（含 `sdo_release`）
+ *   ③ `record`    记录面 —— `sdo_test` / `sdo_review` **给**，但靠工具内置的独立性校验禁自采自评
+ *                 （`ADR-031` consequences：职责分离不靠掩码，靠"executedBy ≠ adoptedBy / 作者 ≠ 评审者"）
+ *   ④ `ledger`    台账与文档 —— `write` / `edit`，**路径级**只限 `.sdo/` 与 `docs/`（见 {@link OFFICE_PUBLIC_WRITE_PATHS}）
+ *   ⑤ `bash`      `ADR-031` 要求**不给**；本卡按 `ADR-033` 的生效顺序（"先补读数面，再收 bash"）**暂留**，
+ *                 由 `TASK-190` 收回（那条卡负责把它从本组移到 `deny` 并删掉这一项）
+ *   ⑥ `dispatch`  **不给派发族**（`subagent`/`subagent_fork`/`workflow`/`send_message`）—— 派发只走 `sdo_plan`。
+ *                 这一组的落实位置是**代码里的执行者面**（`EXECUTOR_FORBIDDEN_TOOLS` / `EXECUTOR_DENIED_TOOLS`），
+ *                 因为 office **永不作为派发目标**（它本身就是派发者）⇒ 掩码表里没有可收的位。
+ */
+export const OFFICE_TOOL_GROUPS = {
+  identity: ['read', 'grep', 'glob', 'skill', 'ask_user_question', 'exit_plan_mode'],
+  process: [
+    'sdo_init', 'sdo_status', 'sdo_project', 'sdo_requirement', 'sdo_design', 'sdo_plan', 'sdo_task',
+    'sdo_gate', 'sdo_risk', 'sdo_cost', 'sdo_feasibility', 'sdo_redteam', 'sdo_render', 'sdo_trace',
+    'sdo_deliver', 'sdo_quality', 'sdo_adr', 'sdo_hash', 'sdo_lang', 'sdo_release',
+  ],
+  record: ['sdo_test', 'sdo_review'],
+  ledger: ['write', 'edit'],
+  /**
+   * `ADR-031` ⑤ / `ADR-033` m2：**不给 bash**。
+   *
+   * 这里给**空组**（而不是把 `bash` 塞进 allow）是有据的：`roles.yml` 里 office 的 `deny` 本来就挡着
+   * `bash`，而 `test/m7.test.ts` 的 M7-02（"三条硬性禁令"之一）与 `test/m31.test.ts` 的 M31-04
+   * 都把"office 不跑 bash"钉成**不变量** —— 卡上写的"bash 暂留"= **不在本卡动它**（不提前收回公告面/
+   * presets 的连带），不是"本卡把 bash 打开再等 190 关"。`TASK-190` 负责把这条**收口到位**
+   * （其 DoD 写的是"office.deny 加 bash"，那条在本卡之后会变成已成立 —— 报告里已点名，由流程官校 DoD）。
+   */
+  bash: [] as string[],
+  /** `ADR-031` ⑥：一个都不给（落实在代码侧执行者面，见上） */
+  dispatch: [] as string[],
+} as const
+
+/** `office` 的完整工具面（六组展平、去重保序）—— 守卫拿它与 `roles.yml` 逐项对账。 */
+export function officeAllowFace(): string[] {
+  const flat = [
+    ...OFFICE_TOOL_GROUPS.identity,
+    ...OFFICE_TOOL_GROUPS.process,
+    ...OFFICE_TOOL_GROUPS.record,
+    ...OFFICE_TOOL_GROUPS.ledger,
+    ...OFFICE_TOOL_GROUPS.bash,
+    ...OFFICE_TOOL_GROUPS.dispatch,
+  ]
+  return [...new Set(flat)]
+}
+
+/**
+ * **`office` 的公共写面**（`ADR-031` ④：`test/` 从公共面移除）。
+ *
+ * 为什么要分角色：公共面（`disciplineAllowPaths`）本来是**全局**的一份配置，而"谁能写 `test/`"
+ * 不是全局问题 —— `developer` / `tester` 的卡要把用例写进 `test/`（那是它们的交付物），
+ * 而流程官**不该**替人写用例（`ADR-031` consequences：「守卫用例的编写归 developer/tester 卡」）。
+ * 所以收窄只对 `office` 生效：**同一份配置，按角色裁一次**（判定仍由 `writeScope.ts` 一处给出）。
+ */
+export const OFFICE_PUBLIC_WRITE_PATHS: readonly string[] = ['.sdo/', 'docs/']
+
+/** 这条角色是不是**流程官**（`office`）—— 根会话现在就是它（见 {@link attributeRole}）。 */
+export function isProcessOfficerRole(role: string): boolean {
+  return role === 'office'
+}
+
+/**
+ * **按角色裁公共写面**（缺省原样返回配置值 ⇒ 非 office 的角色行为逐字不变）。
+ *
+ * `cockpit`（"认不出人"的兜底态）保持**原样**：它本来就 fail-open（`writeScope.ts` 直接放行），
+ * 这里给它收窄只会让"认不出人"的会话突然开始被拦 —— 那是另一条纪律，不在本卡口径里。
+ */
+export function publicWritePathsFor(role: string, configured: readonly string[]): string[] {
+  return isProcessOfficerRole(role) ? [...OFFICE_PUBLIC_WRITE_PATHS] : [...configured]
+}
+
 /** 某角色的工具白名单（派发时作为 `toolFilter` 的 allow 部分）。 */
 /**
  * **只读检视类工具 = 所有角色的基础工具面**（真机缺陷的机制化修复）。
@@ -609,7 +690,16 @@ export type RoleAttribution =
    */
   | { kind: 'dispatched'; role: Role; cardId?: string | undefined }
   | { kind: 'unclaimed-child'; role: 'dispatched' }
-  | { kind: 'cockpit'; role: 'cockpit' }
+  /**
+   * **根会话 = 流程官 `office`**（`ADR-031` / `ADR-033` / `DEF-181` / `TASK-189`）。
+   *
+   * `kind` 仍是 `cockpit`（**既有消费方全部按 kind 判"这是不是根会话"**：掩码面 `maskSubject`
+   * 只在 `dispatched`/`unclaimed-child` 时成立、写范围闸门的 `cardScopes` 只在 `dispatched` 时传入
+   * ⇒ kind 一改会把驾驶舱变成"带卡范围的执行者"）。而 `role` 换成 `office` 是**路径级**纪律的开关：
+   * `writeScope.ts` 只在 `role === 'cockpit'` 时 fail-open，于是"根会话现在真的是流程官"这件事
+   * 第一次对写范围闸门生效（ADR-031 的 consequences 第 2 条就是它）。
+   */
+  | { kind: 'cockpit'; role: 'office' }
   | { kind: 'unknown'; role: 'cockpit' }
 
 export interface SessionClaim {
@@ -695,7 +785,12 @@ export function attributeRole(input: {
   // 判据用两个独立信号：没有父会话 **且** `delegationDepth` 为 0（缺省按 0）⇒ 根会话。
   // 子会话无论 header 有没有带 `parentSession`，都会走下面的 claims 分支（老口径不变）。
   const parent = input.parentSessionId ?? ''
-  if (parent === '' && (input.delegationDepth ?? 0) === 0) return { kind: 'cockpit', role: 'cockpit' }
+  if (parent === '' && (input.delegationDepth ?? 0) === 0) {
+    // **`TASK-189`（`DEF-181` / ADR-031 / ADR-033）**：根会话的身份是**流程官 `office`**，
+    // 不再借用 `cockpit` 这个"认不出人"的兜底值。`kind` 保持 `cockpit`（既有消费方按 kind 判血缘）。
+    // 守卫：无父会话且 depth 0 ⇒ `role === 'office'`（`test/m225.test.ts` 的 M225-R1）。
+    return { kind: 'cockpit', role: 'office' }
+  }
   const claim = input.claims.filter((item) => item.sessionId === sessionId).pop()
   if (claim !== undefined) {
     if (isRole(claim.role)) return { kind: 'dispatched', role: claim.role, cardId: claim.cardId }

@@ -77,6 +77,9 @@ const TOOL_PROVIDER: Record<string, string> = {
   bash: 'tool-bash',
   skill: 'tool-skill',
   ask_user_question: 'tool-ask-user',
+  // **由 ADR-031 导致的预期口径变更（TASK-189）**：office（流程官）要用计划模式推评审
+  // ⇒ `exit_plan_mode` 进了它的工具面；由宿主 `plan-mode` 服务提供（registry 行见 preset）。
+  exit_plan_mode: 'plan-mode',
 }
 // 表里**只登记真的被角色用到的工具名**（M28-05 会强制这一点）。以下四个**有意不登记**：
 //   `send_message` / `interrupt_agent` / `list_agents` / `subagent` / `read_image`

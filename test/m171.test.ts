@@ -151,9 +151,19 @@ test('M171-03 无 cwd：执行者**fail-closed 拒**（修前会跳过掩码与�
   const child = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'child-nocwd', cwd: undefined })
   assert.equal(child.kind, 'deny', '拿不到工作区的**执行者**必须 fail-closed，不许 fail-open')
   assert.match(child.reason ?? '', /无法确定本会话的工作区/u, `拒因必须说明是工作区归属不到：${child.reason ?? ''}`)
-  // 驾驶舱（depth 0）本就不受角色掩码约束、也没有卡的写范围 ⇒ 不受这条影响
+  /**
+   * **由 ADR-031 导致的预期口径变更（TASK-189）**：根会话的身份是**流程官 `office`**，
+   * 于是"写范围纪律第一次对主会话生效"（ADR-031 consequences 第 2 条）。这条用例要守的性质
+   * **没有变**：executor 的那条 `workspaceRoot === ''` fail-closed **不许**把根会话一起拦住。
+   * 所以现在断的是"拒因不是那条 fail-closed"，而不是"根会话一定放行"：
+   *   · 写 `src/`（产品代码）⇒ 拒，但拒因必须是**写范围**（不是"无法确定本会话的工作区"）；
+   *   · 写 `.sdo/`（公共面）⇒ 放行（根会话照旧维护台账）。
+   */
   const cockpit = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'cockpit', cwd: undefined, depth: 0 })
-  assert.equal(cockpit.kind, 'allow', '驾驶舱不该被这条 fail-closed 拦住')
+  assert.equal(/无法确定本会话的工作区/u.test(cockpit.reason ?? ''), false, `the root session must not be caught by that fail-closed: ${cockpit.reason}`)
+  assert.match(cockpit.reason ?? '', /写范围|公共面/u, `the root session writes product code, so it must be refused by the write scope (ADR-031 4): ${cockpit.reason}`)
+  const cockpitLedger = await h.drive('edit', { file_path: join(BASE, '.sdo/tasks/TASK-001.yml') }, { sessionId: 'cockpit', cwd: undefined, depth: 0 })
+  assert.equal(cockpitLedger.kind, 'allow', 'the root session still maintains the ledger (.sdo/ is in its public face)')
   // **更强的那一态**：连"登记过的 cwd"都没有的驾驶舱（工作区**彻底**不可知）也必须放行 ——
   // 它既没有角色掩码可判、也没有卡的写范围可判，锁死它只会把流程官挡在门外（判据是给执行者的）。
   const cockpitUnknown = await h.drive('edit', { file_path: join(BASE, 'src/index.ts') }, { sessionId: 'cockpit-unknown', cwd: undefined, depth: 0 })
@@ -244,18 +254,26 @@ test('M171-08 TC-134②：驾驶舱资格**不是写死的身份** —— 任意
     '被派发的子代理不许因为 id 叫 cockpit 就获得处置权（身份不是名字）',
   )
 
-  // ③ 结构：判据体里不许"按会话 id / 名字"认定驾驶舱 —— 只许用两个正面信号
+  /**
+   * ③ 结构：判据体里不许"按会话 id / 名字"认定流程官 —— 只许用角色口径的正面信号。
+   *
+   * **由 ADR-031 导致的预期口径变更（TASK-189）**：根会话的角色从 `cockpit` 变成 `office` 之后，
+   * `canAdministerTasks` 不再自己比较字面量，而是委托 `isProcessOfficer(call)`（同一个角色口径的
+   * **唯一入口** —— 换身份时"一处漏改就挡掉驾驶舱自己的特许动作"，`reassign` 就是这个形状）。
+   * 所以守卫从"body 里必须有 `roleOf(call)` + `'cockpit'` 字面量"改成"body 必须走角色口径的入口
+   * （`roleOf` 或 `isProcessOfficer`），且 `isProcessOfficer` 自己必须按**角色**判"。
+   */
   const source = readFileSync(join(ROOT, 'src', 'office.ts'), 'utf8')
   const start = source.indexOf('canAdministerTasks(call: OfficeCall): boolean {')
   assert.ok(start > 0, '夹具前提：`canAdministerTasks` 在盘上找得到')
   const body = source.slice(start, source.indexOf('\n  }', start))
   assert.equal(/sessionId/u.test(body), false, `判据体不许读会话 id（那正是"写死身份"的形态）：${body}`)
-  // `'cockpit'` 只许作为**角色**（`roleOf(call)` 的返回值）被比较，绝不作为会话 id/名字出现
-  const literalLines = body.split('\n').filter((line) => line.includes("'cockpit'"))
-  assert.ok(literalLines.length > 0, '夹具前提：资格判定确实落在角色口径上（不是别的机制）')
-  for (const line of literalLines) {
-    assert.match(line, /roleOf\(call\)/u, `'cockpit' 只能是**角色**的比较对象（不是会话 id/名字）：${line}`)
-  }
   assert.match(body, /isDispatchedChild/u, '必须用「是不是被派发的子代理」这个正面信号')
-  assert.match(body, /roleOf/u, '再加角色归属（根会话）这一条')
+  assert.match(body, /roleOf|isProcessOfficer/u, 'plus the role-based lineage (root session = process officer)')
+  // 委托出去的那条口径本身必须是**角色**判定（不是一个名字常量）
+  const officerStart = source.indexOf('isProcessOfficer(call: OfficeCall): boolean {')
+  assert.ok(officerStart > 0, '夹具前提：`isProcessOfficer` 在盘上找得到')
+  const officerBody = source.slice(officerStart, source.indexOf('\n  }', officerStart))
+  assert.match(officerBody, /isProcessOfficerRole\(this\.roleOf\(call\)\)/u, 'the officer check must derive from the ROLE (roleOf -> role face), never from a hard-coded name')
+  assert.equal(/sessionId/u.test(officerBody), false, 'the officer check must not read the session id either')
 })

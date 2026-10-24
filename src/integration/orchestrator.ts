@@ -16,19 +16,25 @@ import { scopePathWithin } from '../domain/scopePaths.js'
 import { ownerRolesEqual } from '../domain/claimCoverage.js'
 
 /**
- * 取某角色的**声明工具面**：优先随包掩码表，读不到就退回内置兜底（绝不静默给全量工具）。
+ * 取某角色的**声明工具面**（唯一真源：随包掩码表 `src/data/roles.yml`）。
  *
  * 注意：它**不再**是下发给宿主的 allow 白名单（见 `domain/roles.ts` 的 {@link maskAllows} 注释）。
  * 现在用于指纹、自检与回执里说明"这个角色声明了哪些工具"。
+ *
+ * **`TASK-189`（`DEF-181`）：删掉了内置兜底 `TOOL_FILTER_FALLBACK`。**
+ * 它是"随包数据读不到时用的第二份工具面"，**零产品调用点**（只有本函数与 `test/m7` 的等价性断言），
+ * 而它那条 `office` 早就与 `roles.yml` 分家了（兜底写着 `read/grep/glob/write`，真源已是 ADR-031 六组）
+ * ⇒ 一旦真源读不到，它就会**静默**把流程官降级成"四个工具"。这正是"两份真相"的典型形态
+ * （`DEF-044` 的教训）：**宁可给空面（立刻可诊断）也不给陈旧面（看起来正常）**。
+ * 守卫：`test/m225.test.ts` 的 M225-R5 断言该常量已不存在、且 `roleToolFilter(role) === toolAllowList(role)`。
  */
 export function roleToolFilter(role: string): string[] {
   try {
-    const list = toolAllowList(role as never)
-    if (list.length > 0) return list
+    return toolAllowList(role as never)
   } catch {
-    /* 数据缺失时退回兜底 */
+    // 真源读不到 ⇒ 空面（调用方据此可见"数据缺失"），绝不退回另一份可能过期的表
+    return []
   }
-  return TOOL_FILTER_FALLBACK[role] ?? TOOL_FILTER_FALLBACK['developer'] ?? []
 }
 
 export type BackendKind = 'subagent' | 'native-team' | 'inline'
@@ -129,21 +135,6 @@ export const PERSONA_BY_ROLE: Record<string, string> = {
   tester: 'sdo-tester',
   reviewer: 'sdo-reviewer',
   delivery: 'sdo-delivery',
-}
-
-/**
- * 角色工具面的**兜底**表（随包数据读不到时用）。
- * 正常路径走 `src/data/roles.yml` 的 allow 列表（`domain/roles.ts`），避免两份真相。
- */
-export const TOOL_FILTER_FALLBACK: Record<string, string[]> = {
-  analyst: ['read', 'grep', 'glob', 'write'],
-  'red-team': ['read', 'grep', 'glob'],
-  architect: ['read', 'grep', 'glob', 'write'],
-  office: ['read', 'grep', 'glob', 'write'],
-  developer: ['read', 'grep', 'glob', 'write', 'edit', 'bash'],
-  tester: ['read', 'grep', 'glob', 'write', 'edit', 'bash'],
-  reviewer: ['read', 'grep', 'glob'],
-  delivery: ['read', 'grep', 'glob', 'write', 'bash'],
 }
 
 export interface DispatchRequest {

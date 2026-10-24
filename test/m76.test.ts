@@ -210,7 +210,7 @@ test('M76-05 真实钩子：tester 能 `edit` 自己的用例；写 `src/` 被�
   }
 })
 
-test('M76-06 真实钩子：没认领的子会话写产品文件被拒；驾驶舱不受写范围管辖', async () => {
+test('M76-06 真实钩子：没认领的子会话写产品文件被拒；根会话（office）只写公共面', async () => {
   writeCard(card('TASK-001', 'developer', ['lib/']))
   journal.append('dispatch/started', { task: 'TASK-001', provider: 'spawn', childSessionId: 'child-d', tools: 9, role: 'developer' })
   const h = hookHarness()
@@ -228,9 +228,18 @@ test('M76-06 真实钩子：没认领的子会话写产品文件被拒；驾驶�
   assert.equal((await h.drive('write', 'child-d', { file_path: join(BASE, 'lib/a.js'), content: 'x' })).kind, 'allow')
   assert.equal((await h.drive('write', 'child-d', { file_path: join(BASE, 'src/a.ts'), content: 'x' })).kind, 'deny')
 
-  // 驾驶舱（depth 0）：不认人 ⇒ 写范围不管它（它是流程官，要维护台账/真源）
+  /**
+   * **由 ADR-031 导致的预期口径变更（TASK-189）**：根会话的身份是**流程官 `office`**，而
+   * "写范围纪律第一次对主会话生效"正是 ADR-031 的 consequences 第 2 条。
+   * 所以这条立场的判断变成三格（判据体没放宽，只是把"根会话"的期望写对）：
+   *   · 写 `src/`（产品代码）⇒ **拒**（流程官不碰实现，ADR-031 ④）；
+   *   · 写 `.sdo/` / `docs/`（公共面）⇒ **放行**（它要维护台账与派生文档）。
+   */
   const cockpit = await h.drive('write', 'cockpit-root', { file_path: join(BASE, 'src/a.ts'), content: 'x' }, 0)
-  assert.equal(cockpit.kind, 'allow', '驾驶舱不受卡级写范围管辖')
+  assert.equal(cockpit.kind, 'deny', 'the root session (office) must not write product code: the write scope applies to it (ADR-031 4)')
+  assert.match(cockpit.reason ?? '', /写范围|公共面/u, `the refusal must say it is a write-scope problem: ${cockpit.reason}`)
+  const cockpitLedger = await h.drive('write', 'cockpit-root', { file_path: join(BASE, '.sdo/notes.md'), content: 'x' }, 0)
+  assert.equal(cockpitLedger.kind, 'allow', 'the root session still maintains the ledger (.sdo/ is in its public face)')
 })
 
 // ————————————————————————— 接线与死配置守卫 —————————————————————————
@@ -238,7 +247,16 @@ test('M76-06 真实钩子：没认领的子会话写产品文件被拒；驾驶�
 test('M76-07 接线守卫：两个"死配置"必须真的被读（`disciplineTools` / `disciplineAllowPaths`）', () => {
   const index = readFileSync(join(ROOT, 'src', 'index.ts'), 'utf8')
   assert.match(index, /guardedTools: settings\.disciplineTools/u, '`disciplineTools` 必须真的决定"哪些工具的写入受管"')
-  assert.match(index, /sharedPaths: settings\.disciplineAllowPaths/u, '`disciplineAllowPaths` 必须真的作为公共放行面')
+  /**
+   * **由 ADR-031 导致的预期口径变更（TASK-189）**：公共面从"直接读配置"变成"**按角色裁一次**再进判定"
+   * —— `office`（根会话）只留 `.sdo/`+`docs/`，其余角色原样。守卫的**意图不变**：
+   * 配置必须真的被读、并且真的进了 `evaluateWriteScope`（下面第三条断言仍在）。
+   */
+  assert.match(
+    index,
+    /sharedPaths: office\.publicWritePaths\(attributed\.role, settings\.disciplineAllowPaths\)/u,
+    'disciplineAllowPaths must really be the public allow face (narrowed per role before judging)',
+  )
   assert.match(index, /evaluateWriteScope\(/u, '写范围纪律必须在真实钩子里被调用')
   // **第四批 §3.1（DEF-054 残余）**：归一的基准从恒用 `call.cwd` 改为 `sessionCwd`（会话 cwd；本次调用
   // 没带 cwd 时用**已解析的工作区根**兜底）。意图不变：真机传绝对路径，必须先按工作区归一一次。
