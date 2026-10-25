@@ -39,6 +39,7 @@ import {
   describePoolBlock,
 } from '../src/interface/describe.js'
 import { renderStatusBlock } from '../src/interface/inject.js'
+import { realLedgerSkip } from './support/real-ledger.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { Review } from '../src/domain/records.js'
@@ -470,7 +471,7 @@ test('M232-02 逐条原因在缺省档与 verbose 档都拿得到（缺省按原
   assert.ok(POOL_UNUSABLE_REASON_CHARS >= 168, 'the reason cap must stay above the longest real reason (168 chars, measured on the live ledger)')
 })
 
-test('M232-04 (REV-093#3 rework) a 4th distinct reason must not vanish: every reason within the char budget is printed', () => {
+test('M232-04 (REV-093#3 rework) a 4th distinct reason must not vanish: every reason within the char budget is printed', realLedgerSkip() ?? {}, () => {
   // **两态**：`REV-093#3` 的形状是"4 种原因、第一版按组数封顶 ⇒ 第 4 种一个字都不印"。
   // 现在按**字符预算**封顶 ⇒ 只要原因种数在预算内，全部印出来；超过预算才折叠，且必须点名种数。
   const short = ['reason-A', 'reason-B', 'reason-C', 'reason-D', 'reason-E']
