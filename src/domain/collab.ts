@@ -14,7 +14,7 @@ import type { SdoStore } from '../infra/store.js'
 import type { EvidenceItem, MitigatesWaiver, TaskCard } from '../types.js'
 import { listTasks, producesProductArtifacts, scopeIntersections, writeTask } from './plan.js'
 import { orphanLocks } from './dispatchHealth.js'
-import { normalizeScopePath, scopeOverlaps } from './scopePaths.js'
+import { normalizeScopePath, scopeOverlaps, scopePathWithin } from './scopePaths.js'
 
 /**
  * **流程官身份**（DEF-012）：`sdo_task` 的 `actor` 是自由文本，流程官历来以 `human` / `office` /
@@ -548,6 +548,15 @@ export interface ReportInput {
    * ⚠️ 自报是**声明**，不是观测 —— 回执与事件必须如实标注来源，绝不冒充宿主观测。
    */
   reportedFiles?: string[] | undefined
+  /**
+   * **公共面**（`settings.disciplineAllowPaths`，默认 `.sdo/` `docs/` `test/`），由 `office.ts` 传下来。
+   *
+   * **`DEN-198` 落点一**：写入闸门（`domain/writeScope.ts` 3a）早就把公共面当"不受卡范围约束"的面，
+   * 而 `done` 的 A2 对账（`auditWriteScopes`）不认它 ⇒ **同一份改动，闸门放行、结算判越界**。
+   * 现在对账也认这个面，但**不静默**：见回执里的「公共面改动」一行与 `task/done` 事件上的
+   * `publicFace` 字段（谁改了哪几份公共面，台账里可查）。
+   */
+  sharedPaths?: readonly string[] | undefined
 }
 
 /**
@@ -904,7 +913,28 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       .filter((file) => file !== '' && !file.startsWith('.sdo/'))
     const fromSelfReport = changed.entries === 0 && selfReported.length > 0
     const audited = changed.entries > 0 ? auditable : selfReported
-    const scopeAudit = auditWriteScopes(audited, task.writeScopes.map((scope) => textOf(scope)).filter((scope) => scope !== ''))
+    /**
+     * **`DEN-198` 落点一：A2 对账认得公共面，但**单列可审计**。**
+     *
+     * 病灶：写入闸门（`writeScope.ts` 3a）把 `disciplineAllowPaths`（`.sdo/` `docs/` `test/`）当公共面
+     * ——不受卡范围约束；而这里不认 ⇒ 同一份改动**闸门放行、done 判越界**（真机：改 `test/m189.test.ts`
+     * 的棘轮登记被拒，只能改卡）。公共面本来就是"大家都要碰"的面（登记/棘轮同步）。
+     *
+     * 两条纪律（缺一就会变成滥用口）：
+     *   ① **只对账产品面**：越界判定只拿 `productFace` 去比卡的 `writeScopes`；
+     *   ② **公共面改动必须自己说出来**：回执单列一行 + `task/done` 事件带 `publicFace` 字段
+     *      （哪张卡改了哪几份公共面，台账里可查，不是只靠执行者自报）。
+     *
+     * `sharedPaths` 由 `office.ts` 从设置里传下来；**没传 ⇒ 旧行为逐字不变**（不认公共面）。
+     */
+    const sharedPaths = (input.sharedPaths ?? []).map((path) => normalizeScopePath(textOf(path))).filter((path) => path !== '')
+    const isSharedFace = (file: string): boolean => {
+      const normalized = normalizeScopePath(textOf(file))
+      return normalized !== '' && sharedPaths.some((scope) => scopePathWithin(normalized, scope))
+    }
+    const publicFace = audited.filter((file) => isSharedFace(file))
+    const productFace = audited.filter((file) => !isSharedFace(file))
+    const scopeAudit = auditWriteScopes(productFace, task.writeScopes.map((scope) => textOf(scope)).filter((scope) => scope !== ''))
 
     // **DEF-033（第三批 §3.13）**：完成语义的"局部绿 / 全局冻结"之分 —— `done` 时逐条对账。
     // ① 声明的每条必须是**存在且当前确实在飞**的卡（假声明可读拒绝：写错 id、或写一张已 done 的卡）；
@@ -966,6 +996,23 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       return { ok: false, code: 'construction-profile-missing', detail: fmt('uiConstruction.c22', { p1: profileRead.problems.join('；') }) }
     }
     let naNotes: string[] = []
+    /**
+     * **`DEN-198` 落点一**：公共面改动**单列一行**（不静默放过）。
+     *
+     * 行文用**语言中立 ASCII**（`public-face changes (registry/ratchet sync): <path> × N`）：
+     * 语言包文件不在本卡写范围（`src/data/lang/*.yml`），而这一行是**给复验者看的读数**、
+     * 不是终端用户的散文 —— 与 `domain/pool.ts` 的 `poolReadingLine`、`domain/snapshot.ts` 的
+     * `renderQueueTable` 同口径（同一个先例，不是新造的规矩）。
+     */
+    if (publicFace.length > 0) {
+      const counts = new Map<string, number>()
+      for (const file of publicFace) counts.set(file, (counts.get(file) ?? 0) + 1)
+      naNotes.push(
+        `public-face changes (registry/ratchet sync, NOT counted as out-of-scope): `
+        + `${[...counts.entries()].map(([file, count]) => `${file} × ${String(count)}`).join('; ')}`
+        + ` (${String(publicFace.length)} file(s))`,
+      )
+    }
     if (profileRead.status === 'ok') {
       const packageGaps = constructionDoneGaps(store, journal, task, profileRead.profile, { scale: readProjectConfig(store).config.scale })
       if (packageGaps.length > 0) {
@@ -1014,7 +1061,16 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
       revision: task.revision + 1,
       updatedAt: now(),
     }
-    journal.append('task/done', { id: next.id, owner: input.owner, evidence: evidence.length, note: input.note ?? '' })
+    journal.append('task/done', {
+      id: next.id,
+      owner: input.owner,
+      evidence: evidence.length,
+      note: input.note ?? '',
+      // **`DEN-198`**：公共面改动逐条落事件（"这个卡改了哪几份公共面"在台账里可查）
+      ...(publicFace.length === 0 ? {} : { publicFace }),
+      // 对账来源如实标注（自报 vs 宿主观测）—— 公共面这一批也同源
+      ...(publicFace.length === 0 ? {} : { publicFaceSource: fromSelfReport ? 'self-reported' : 'observed' }),
+    })
     const savedTask = save(store, next)
     // **DEF-050 落点三**：声明的修复逐条回显现状态。文案在语言包（gates.ts 那条棘轮不适用于
     // 本文件，但口径仍与判据共用一个出口 `fixStatusRows` —— 两处各写一套正是 DEF-038 的成因）。
@@ -1451,6 +1507,18 @@ export function updateTask(
      *     否则等于造出两个写者，而那正是这把锁要防的事。
      */
     addWriteScopes?: string[] | undefined
+    /**
+     * **公共面**（`settings.disciplineAllowPaths`，由 `office.ts` 传下来）。
+     *
+     * **`DEN-198` 落点二**：两卡要共用**同一份台账/棘轮文件**（`test/m189.test.ts` 这类）时，
+     * 旧口径把公共面与产品面一视同仁 ⇒ `add-scope-conflict` ⇒ **没有合法通道**能声明"这张
+     * 公共面我们俩都要碰"（真机只能等对方收工，或把卡拆成一张只为改一行的卡）。
+     * 现在：公共面路径**允许与在飞卡相交**，但**不静默** —— 回执里点名"与哪张卡共享哪条路径"，
+     * 并落一条 `task/scopes-shared` 事件（双方均已声明这件事台账里可查）。
+     * **产品面不受影响**：`src/**` 等照样被重叠锁拒（`DEN-197` 的教训：那把锁对产品文件是必要的）。
+     * 没传 ⇒ 旧行为逐字不变。
+     */
+    sharedPaths?: readonly string[] | undefined
     /** 计划变更的理由（`addWriteScopes` 必填；进 `task/updated` 事件，事后可复核） */
     reason?: string | undefined
     /**
@@ -1533,12 +1601,25 @@ export function updateTask(
     if (reason === '') {
       return { ok: false, code: 'add-scope-reason-required', detail: fmt('uiCollab.kAddScopeReasonRequired', { p1: task.id }) }
     }
-    // **两个写者的机械防线**：追加的范围不得与**另一张在飞卡**相交（判定走唯一出口）
+    /**
+     * **两个写者的机械防线**：追加的范围不得与**另一张在飞卡**相交（判定走唯一出口）。
+     *
+     * **`DEN-198` 落点二**：**公共面**（`sharedPaths`）例外 —— 那本来就是"大家都要碰"的面
+     * （登记/棘轮同步），允许与在飞卡相交；相交的每一条都收进 `shared`，回执点名 + 落事件。
+     * **产品面一条都不放**（`DEN-197`：那把锁对产品文件是必要的）。
+     */
+    const sharedPaths = (input.sharedPaths ?? []).map((path) => normalizeScopePath(textOf(path))).filter((path) => path !== '')
+    const isSharedFace = (scope: string): boolean => sharedPaths.some((shared) => scopePathWithin(scope, shared))
+    const shared: { taskId: string; path: string; otherScope: string }[] = []
     const others = listTasks(store).filter((item) => item.id !== task.id && item.status === 'in-progress')
     for (const scope of added) {
       for (const other of others) {
         const overlap = scopeOverlaps([scope], other.writeScopes)
         if (overlap.length > 0) {
+          if (isSharedFace(scope)) {
+            for (const otherScope of overlap) shared.push({ taskId: other.id, path: scope, otherScope })
+            continue
+          }
           return {
             ok: false,
             code: 'add-scope-conflict',
@@ -1556,7 +1637,34 @@ export function updateTask(
     const next: TaskCard = { ...task, writeScopes: merged, revision: task.revision + 1, updatedAt: now() }
     const saved = save(store, next)
     journal.append('task/updated', { id: saved.id, by, fields: ['writeScopes'], added, reason })
-    return { ok: true, task: saved, changed: ['writeScopes'] }
+    /**
+     * **`DEN-198` 落点二的留痕**：公共面共享**不是静默放行** ——
+     *   · 落一条 `task/updated` 事件，`shared` 字段逐条记「与哪张在飞卡共享哪条路径」（双方均已声明）；
+     *   · 回执侧由 `office.ts` 把它变成可见的一行（`changed` 里的 `shared:<path>@<卡>` 记号）。
+     *
+     * 为什么不新造事件名 `task/scopes-shared`：事件类型联合在 `src/types.ts`（**不在本卡写范围**），
+     * 而"共享了哪条面"是**写范围变更**这件事的一部分 ⇒ 挂在 `task/updated` 上语义也正；
+     * 结构化字段 `shared[]` 照样可单独查询（`event.data.shared`），不依赖散文。
+     */
+    if (shared.length > 0) {
+      journal.append('task/updated', {
+        id: saved.id,
+        by,
+        fields: ['writeScopes'],
+        added,
+        reason,
+        shared: shared.map((row) => ({ with: row.taskId, path: row.path, otherScope: row.otherScope })),
+      })
+    }
+    return {
+      ok: true,
+      task: saved,
+      // 共享记号进 `changed`：回执会原样打印（`writeScopes、shared:test/m189.test.ts@TASK-21401`）
+      changed: shared.length === 0
+        ? ['writeScopes']
+        : ['writeScopes', ...shared.map((row) => `shared:${row.path}@${row.taskId}`)],
+      ...(shared.length === 0 ? {} : { shared }),
+    }
   }
   if (input.writeScopes !== undefined && task.owner !== undefined && task.owner !== '' && task.owner !== input.by) {
     return {

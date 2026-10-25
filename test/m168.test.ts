@@ -97,8 +97,14 @@ test('M168-01 两态：声明了 impact 却没「处理过」⇒ 逐条点名；
   // 实测它**永不独立成立** —— 清单里出现写范围**之外**的路径会先被 `write-scope-violation` 拒掉
   // （DEF-016 的对账就是干这个的）⇒ 该出路只在"已在写范围内"时"成立"，等于 ① 的影子。
   // 现已删除；这条断言把"为什么删"钉在盘上。
-  const fourth = claimedCard({ impact: ['test/m39.test.ts'] })
-  const viaReport = done(fourth.id, fourth.owner, ['test/m39.test.ts'])
+  //
+  // **`DEN-198`（`TASK-214`）校正了本格的前提**：公共面（`test/` `docs/` `被`disciplineAllowPaths` 放行的面）
+  // 从 `TASK-214` 起**不再算越界**（那是它要修的病灶 —— 闸门放行、done 却判越界）。
+  // 所以这一格要证的"自报越界必被拒"必须落在**产品面**上：夹具卡写范围是 `src/own/`，
+  // 自报 `src/elsewhere/x.ts` 仍是越界 ⇒ 断言与语义**一个字都没改**，只换了路径的面。
+  // **不得**因此放宽：这条反例仍然是"那条出路是死路"的证据（产品面越界照样拒）。
+  const fourth = claimedCard({ impact: ['src/elsewhere/x.ts'] })
+  const viaReport = done(fourth.id, fourth.owner, ['src/elsewhere/x.ts'])
   assert.equal(viaReport.ok, false, '自报写范围外的路径必须先被写范围对账拒掉（所以那条出路是死路）')
   if (!viaReport.ok) assert.equal(viaReport.code, 'write-scope-violation', `拒因应当是写范围对账：${JSON.stringify(viaReport)}`)
 })

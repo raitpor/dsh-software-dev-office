@@ -685,6 +685,14 @@ export type TaskUpdateOutcome =
     overlaps?: DeclarationOverlap[] | undefined
     /** 本次声明里"顶层目录还不存在"的**告警**（缺省 = 没有；告警不拦写入，但必须看得见） */
     warnings?: DeclarationWarning[] | undefined
+    /**
+     * **公共面共享读数**（`DEN-198` 落点二）：本次追加的范围里，哪些是**公共面**且与在飞卡共享。
+     *
+     * 为什么必须出现在回执数据类型里：公共面允许相交是**放宽了一条锁**——放宽的动作本身必须
+     * 在回执上被点名（"与 <卡> 共享 <路径>"），否则它就退化成静默放行。结构化的 `shared[]`
+     * 同时进台账事件（`task/updated.shared`），两处同源。
+     */
+    shared?: { taskId: string; path: string; otherScope: string }[] | undefined
   })
   | Exclude<ReturnType<typeof updateTask>, { ok: true }>
   | {
@@ -4039,7 +4047,16 @@ export class SoftwareDevOffice {
   /** 回报（done 必须带证据）。 */
   reportTask(call: OfficeCall, input: ReportInput): ReportResult {
     const { store, journal } = this.contextFor(call)
-    const result = reportTask(store, journal, input)
+    /**
+     * **`DEN-198` 落点一**：把**公共面**（`settings.disciplineAllowPaths`）交给 `done` 的 A2 对账。
+     *
+     * 口径只有一份：写入闸门（`domain/writeScope.ts` 3a）用的就是这个设置项 ⇒ 结算对账读同一份，
+     * 两边不会再一个放行一个判越界。调用方若显式给了 `sharedPaths`（测试/工具面）以调用方为准。
+     */
+    const result = reportTask(store, journal, {
+      ...input,
+      ...(input.sharedPaths === undefined ? { sharedPaths: this.settings.disciplineAllowPaths } : {}),
+    })
     if (result.ok) this.roleCacheVersion += 1
     if (result.ok && input.status === 'done') {
       // 完成的卡自动挂上"任务→需求"的追溯边（覆盖率与影响分析都靠它）
@@ -5772,7 +5789,11 @@ export class SoftwareDevOffice {
       { root: workspace, ledgerDir: this.settings.projectDirName },
     )
     if (!declared.ok) return { ok: false, code: declared.code, detail: declared.detail, example: declared.example }
-    const result = updateTask(store, journal, input)
+    // **`DEN-198` 落点二**：`addWriteScopes` 对**公共面**允许与在飞卡共享（口径同写入闸门的公共面）
+    const result = updateTask(store, journal, {
+      ...input,
+      ...(input.sharedPaths === undefined ? { sharedPaths: this.settings.disciplineAllowPaths } : {}),
+    })
     if (!result.ok) return result
     // **口径③**：相交不是错，但必须点名。判据"哪些卡算在飞"只有这一处定义（除本卡外的 in-progress）
     const inFlight = listTasks(store).filter((item) => item.id !== result.task.id && item.status === 'in-progress')

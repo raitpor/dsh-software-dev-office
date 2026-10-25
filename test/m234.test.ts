@@ -279,3 +279,149 @@ test('M234-05 (guard 5) pendingReviewBigCards reads the ledger at most twice (me
   assert.equal(set.pending.length, [...set.missing, ...set.unadopted.map((row) => row.id)].length, 'the reading itself must be unchanged')
   assert.ok(set.considered.length >= 0, 'the call must still return a considered list')
 })
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`DEN-198`（`TASK-214`）：公共面在「写入闸门」与「done 的 A2 对账」两处口径必须一致**
+ *
+ * 病灶（本卡实测）：写入闸门把 `disciplineAllowPaths`（`.sdo/` `docs/` `test/`）当公共面 —— 不受卡范围
+ * 约束；而 `done` 的 A2 对账不认它 ⇒ **同一份改动，闸门放行、结算判越界**。另一半：两卡真要共用
+ * 同一份台账/棘轮文件时，`addWriteScopes` 把它当产品面 ⇒ `add-scope-conflict` ⇒ **没有合法通道**。
+ *
+ * 四条守卫（两态，编号与卡上 DoD 一一对应）：
+ *   · `M234-D1` 公共面改动 ⇒ done **不再**判越界，但回执有「public-face changes」一行；
+ *   · `M234-D2` 产品面同场景 ⇒ **仍判越界**（防「公共面放行」被泛化成"哪儿都能写"）；
+ *   · `M234-D3` 卡 A 在飞时给卡 B `addWriteScopes(公共面)` ⇒ **放行且点名共享**，并落结构化事件；
+ *   · `M234-D4` 同场景换成产品面 ⇒ **仍拒**（`DEN-197` 的重叠锁不许被这次改动拆掉）。
+ *
+ * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`；中文只写在断言之外）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+/** 一张最小的可认领卡（`writeScopes` 由调用方指定）。 */
+function den198Card(id: string, writeScopes: string[], over: Record<string, unknown> = {}): Record<string, unknown> {
+  return {
+    id,
+    title: id,
+    goal: 'g',
+    inputs: [],
+    outputs: [],
+    dod: ['d'],
+    evidenceRequired: ['command'],
+    blockedBy: [],
+    writeScopes,
+    role: 'developer',
+    size: 'small',
+    revision: 1,
+    status: 'ready',
+    requirements: [],
+    evidence: [],
+    createdAt: '',
+    updatedAt: '',
+    ...over,
+  }
+}
+
+/** 一台干净办公室（真 store + 真 journal），返回会话调用面。 */
+function den198Office(name: string): { office: SoftwareDevOffice; call: (sid: string) => never; workspace: string } {
+  const dir = join(BASE, name)
+  rmSync(dir, { recursive: true, force: true })
+  mkdirSync(dir, { recursive: true })
+  const office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  office.noteSession('s-a', dir)
+  office.noteSession('s-b', dir)
+  const call = (sid: string): never => ({ sessionId: sid, cwd: dir }) as unknown as never
+  office.init(call('s-a'), { name: `M234 ${name}`, scale: 'normal', stakeholders: ['x'] })
+  return { office, call, workspace: dir }
+}
+
+/** 一条能过 A1 证据对账的 `command` 证据。 */
+function den198Evidence(): { kind: 'command'; detail: string; at: string; exitCode: number }[] {
+  return [{ kind: 'command', detail: 'node --test lib/test/m234.test.js（guard fixture）', at: '2026-10-25T00:00:00.000Z', exitCode: 0 }]
+}
+
+test('M234-D1 (DEN-198 guard 1) a public-face change no longer fails done, but is printed on its own line', () => {
+  const { office, call, workspace } = den198Office('den198-d1')
+  office.storeFor(workspace).writeYaml(['tasks', 'TASK-21401.yml'], { task: den198Card('TASK-21401', ['src/only-TASK-21401/']) })
+  const claimed = office.claimTask(call('s-a'), { taskId: 'TASK-21401', owner: 'dev-a', expectedRevision: 1 })
+  assert.equal(claimed.ok, true, 'fixture premise: the claim must succeed')
+  // 卡写范围**不含** test/ ⇒ 改的是公共面（登记/棘轮同步）
+  const done = office.reportTask(call('s-a'), {
+    taskId: 'TASK-21401',
+    owner: 'dev-a',
+    status: 'done',
+    evidence: den198Evidence(),
+    reportedFiles: ['test/m189.test.ts', 'docs/README.md'],
+  })
+  assert.equal(done.ok, true, `a public-face change must not block done: ${JSON.stringify(done).slice(0, 300)}`)
+  const notes = (done.ok ? (done.naNotes ?? []) : []).join('\n')
+  assert.match(notes, /public-face changes/u, `the receipt must carry its own public-face line: ${notes}`)
+  assert.match(notes, /test\/m189\.test\.ts × 1/u, `the line must name the path and its count: ${notes}`)
+  assert.match(notes, /registry\/ratchet sync/u, `the line must say what kind of writes these are: ${notes}`)
+  // **可审计**：`task/done` 事件带结构化字段（不是只靠执行者自报）
+  const event = office.journalFor(workspace).read().events.filter((row) => row.type === 'task/done').at(-1)
+  assert.ok(event !== undefined, 'fixture premise: a task/done event must exist')
+  assert.deepEqual(event.data['publicFace'], ['test/m189.test.ts', 'docs/README.md'], `the ledger must record which public files were touched: ${JSON.stringify(event.data)}`)
+  assert.equal(event.data['publicFaceSource'], 'self-reported', 'the source must be labelled honestly (self-report, not observation)')
+})
+
+test('M234-D2 (DEN-198 guard 2) the same shape on a PRODUCT file still fails done (no generalisation)', () => {
+  const { office, call, workspace } = den198Office('den198-d2')
+  office.storeFor(workspace).writeYaml(['tasks', 'TASK-21402.yml'], { task: den198Card('TASK-21402', ['src/only-TASK-21402/']) })
+  assert.equal(office.claimTask(call('s-a'), { taskId: 'TASK-21402', owner: 'dev-a', expectedRevision: 1 }).ok, true, 'fixture premise: claim')
+  const done = office.reportTask(call('s-a'), {
+    taskId: 'TASK-21402',
+    owner: 'dev-a',
+    status: 'done',
+    evidence: den198Evidence(),
+    reportedFiles: ['src/elsewhere/x.ts'],
+  })
+  assert.equal(done.ok, false, 'a product-file change outside the card scope must still be rejected')
+  if (done.ok) assert.fail('must be rejected')
+  assert.equal(done.code, 'write-scope-violation', 'the rejection code must stay the same')
+  assert.match(done.detail, /src\/elsewhere\/x\.ts/u, `the rejection must name the file: ${done.detail}`)
+})
+
+test('M234-D3 (DEN-198 guard 3) addWriteScopes on a public-face path is allowed while another card holds it, and says so', () => {
+  const { office, call, workspace } = den198Office('den198-d3')
+  // 卡 A 在飞且**持有** test/m189.test.ts
+  office.storeFor(workspace).writeYaml(['tasks', 'TASK-21403.yml'], {
+    task: den198Card('TASK-21403', ['src/only-TASK-21403/', 'test/m189.test.ts'], { owner: 'dev-a', status: 'in-progress' }),
+  })
+  office.storeFor(workspace).writeYaml(['tasks', 'TASK-21404.yml'], { task: den198Card('TASK-21404', ['src/only-TASK-21404/']) })
+  assert.equal(office.claimTask(call('s-b'), { taskId: 'TASK-21404', owner: 'dev-b', expectedRevision: 1 }).ok, true, 'fixture premise: claim B')
+  const added = office.updateTask(call('s-b'), {
+    taskId: 'TASK-21404',
+    by: 'dev-b',
+    addWriteScopes: ['test/m189.test.ts'],
+    reason: 'ratchet registry sync',
+  })
+  assert.equal(added.ok, true, `a shared public-face declaration must be allowed: ${JSON.stringify(added).slice(0, 300)}`)
+  if (!added.ok) assert.fail('must be allowed')
+  // **不静默**：回执的 changed 里点名「与哪张卡共享哪条路径」
+  assert.ok(added.changed.includes('shared:test/m189.test.ts@TASK-21403'), `the receipt must name the sharing pair: ${added.changed.join(' / ')}`)
+  assert.deepEqual(added.shared, [{ taskId: 'TASK-21403', path: 'test/m189.test.ts', otherScope: 'test/m189.test.ts' }], 'the structured reading must name both sides')
+  // **可审计**：台账事件里也带同一份读数
+  const event = office.journalFor(workspace).read().events
+    .filter((row) => row.type === 'task/updated' && row.data['shared'] !== undefined)
+    .at(-1)
+  assert.ok(event !== undefined, 'the sharing must be recorded in the ledger, not only in the receipt')
+  assert.deepEqual(event.data['shared'], [{ with: 'TASK-21403', path: 'test/m189.test.ts', otherScope: 'test/m189.test.ts' }], `ledger reading: ${JSON.stringify(event.data)}`)
+})
+
+test('M234-D4 (DEN-198 guard 4) the same addWriteScopes on a PRODUCT path is still rejected (DEN-197 lock kept)', () => {
+  const { office, call, workspace } = den198Office('den198-d4')
+  office.storeFor(workspace).writeYaml(['tasks', 'TASK-21405.yml'], {
+    task: den198Card('TASK-21405', ['src/only-TASK-21405/'], { owner: 'dev-a', status: 'in-progress' }),
+  })
+  office.storeFor(workspace).writeYaml(['tasks', 'TASK-21406.yml'], { task: den198Card('TASK-21406', ['src/only-TASK-21406/']) })
+  assert.equal(office.claimTask(call('s-b'), { taskId: 'TASK-21406', owner: 'dev-b', expectedRevision: 1 }).ok, true, 'fixture premise: claim B')
+  const added = office.updateTask(call('s-b'), {
+    taskId: 'TASK-21406',
+    by: 'dev-b',
+    addWriteScopes: ['src/only-TASK-21405/x.ts'],
+    reason: 'product path',
+  })
+  assert.equal(added.ok, false, 'a product-face overlap must still be rejected')
+  if (added.ok) assert.fail('must be rejected')
+  assert.equal(added.code, 'add-scope-conflict', 'the rejection code must stay the same')
+  assert.match(added.detail, /TASK-21405/u, `the rejection must name the in-flight card: ${added.detail}`)
+})
