@@ -179,7 +179,7 @@ export const KNOWN_DANGLING: readonly KnownDangling[] = [
   // 举例性函数名（描述"属性节点可以带哪些键"），仓内无此定义
   // 行号随 `DEF-169`（`sdo_task` 的 `status`/`role`/`limit` 进 schema 与 execute 映射）之后 +14：**只有行号变，身份一字未动**
   // 行号随 `TASK-186`（`sdo_status` 的 `since` 参数 + `OfficeToolDeps.changes` 签名）之后 +28：**只有行号变，身份一字未动**
-  { file: 'src/interface/tools.ts', line: 1057, head: 'compile', tail: 'PropertyMap', why: '举例性函数名（注释在描述联合声明口径）' },
+  { file: 'src/interface/tools.ts', line: 1076, head: 'compile', tail: 'PropertyMap', why: '举例性函数名（注释在描述联合声明口径）' },
   // 被**否决**的候选名（"而不是新造它"）⇒ 按定义不存在
   // 行号随 `TASK-171`（判据激活条件 `when` 进 `GateCriterionDef`）之后 +13：**只有行号变，身份一字未动**
   { file: 'src/types.ts', line: 885, head: 'introduces', tail: 'Semantics', why: '被否决的候选名（原句是"而不是新造它"）⇒ 按定义不存在' },

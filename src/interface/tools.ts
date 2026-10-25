@@ -81,6 +81,10 @@ import type { ToolDefinition, ToolRunContext } from '@deepseek-ai/dsh-tools'
 
 import { fmt, t } from '../domain/i18n.js'
 import { digestArtifact } from '../domain/evidence.js'
+// **`TASK-219` 落点四**：多路径哈希的渲染（`path  sha256[0..16]  bytes`）在界面层，一处口径
+import { describeHashRows } from './describe.js'
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 // 判定基准的**词表只有一份**（`evidence.ts` 的 `ORACLE_KINDS`）：schema 的 `enum` 直接由它派生 ——
 // 在这里再抄一遍四类取值，词表一改就会出现"工具面认、域层不认"的两份真值。
 import { ORACLE_KINDS } from '../domain/evidence.js'
@@ -396,6 +400,16 @@ export interface PlanArgs {
 export interface TaskArgs {
   action: string
   id?: string | undefined
+  /**
+   * **紧凑只读视图**（`TASK-219` 落点一）：`list` 只印列对齐表（未完成卡 + 终态计数），
+   * 不印看板分组/「另有 N 张」/子代理告警。缺省 `false` ⇒ 旧回执一字不变。
+   */
+  compact?: boolean | undefined
+  /**
+   * **卡定向读取的档位**（`TASK-219` 落点三）：`brief` = 只印 status/owner/revision/blockedReason/最近一条 note，
+   * **不印 DoD 全文**。缺省 `undefined` ⇒ 旧回执一字不变。
+   */
+  view?: string | undefined
   owner?: string | undefined
   /**
    * **`list` 的收窄条件**（**DEF-169** 落点二）：精确匹配卡状态（`ready` / `in-progress` /
@@ -869,6 +883,11 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       parameters: {
         rebuild: { type: 'boolean', description: t('param.rebuild') },
         /**
+         * **`TASK-219` 落点二/五**：`inflight` = 逐个在飞卡（含子会话前 8 位与"写范围 × 脏文件"交集）；
+         * `recover` = 重启现场重建（owner 不可达 / 脏文件归属 / 红判据归属）。缺省 ⇒ 旧状态回执一字不变。
+         */
+        view: { type: 'string', description: "Read-only views: 'inflight' (per in-flight card: role/size/owner/child session + write-scope × dirty-file overlap) or 'recover' (unreachable owners, dirty-file ownership, failing criteria → cards). Omit for the legacy status." },
+        /**
          * **增量模式**（`TASK-186`）：给这个指针就只报**那之后**的卡状态变化，而不是整份状态。
          *
          * 描述写在这里而不是语言包：本卡写范围不含 `src/data/lang/*.yml`，而参数描述在本仓既有先例里
@@ -1102,6 +1121,12 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_task',
       description: t('tool.sdo_task'),
       parameters: {
+        /**
+         * **`TASK-219`**：紧凑只读视图与卡定向档位。两个参数都**只增不改** —— 不给它们时，
+         * 回执与修前**逐字节相同**（守卫 `M235-05` 钉住这条反例）。
+         */
+        compact: { type: 'boolean', description: 'list: print one aligned table only (open cards; terminal cards folded into a count). Default false keeps the legacy board verbatim.' },
+        view: { type: 'string', description: "with id: view=brief prints status/owner/revision/blockedReason/last note only (no DoD body). Omit for the legacy detail view." },
         action: { type: 'string', required: true, description: actionList(TASK_ACTIONS) },
         title: { type: 'string', description: 'update: new title.' },
         dod: listDecl('update: JSON **text** of DoD items, e.g. \'["a","b"]\' — or a real array (the declaration accepts both).'),
@@ -1161,6 +1186,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
         return deps.task(callOf(exec), {
           action: typeof args.action === 'string' ? args.action : 'list',
           title: typeof args.title === 'string' ? args.title : undefined,
+          // **`TASK-219`**：两个新档位也要过 execute 映射（`M25` 钉的就是"声明了却没搬"）
+          compact: typeof args.compact === 'boolean' ? args.compact : undefined,
+          view: typeof args.view === 'string' ? args.view : undefined,
           // **DEF-169 落点二**：`list` 的收窄三键必须过 execute 映射（第三处；缺它参数被静默丢掉）
           status: typeof args.status === 'string' ? args.status : undefined,
           role: typeof args.role === 'string' ? args.role : undefined,
@@ -1745,11 +1773,41 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
       name: 'sdo_hash',
       description: t('tool.sdo_hash'),
       parameters: {
-        path: { type: 'string', required: true, description: t('param.hashPath') },
+        // `path` 保持必填语义的兼容形态：给了 `paths` 就可以不给它（`TASK-219` 落点四）
+        path: { type: 'string', description: t('param.hashPath') },
+        /**
+         * **多路径批量哈希**（`TASK-219` 落点四）：一次给多文件，逐行 `path  sha256[0..16]  bytes`。
+         *
+         * 为什么：核对交付物在位时今天是"一条一条 `sdo_hash`"或干脆 `grep -c`；
+         * 多路径把"同一批文件现在长什么样"收成一张紧凑读数。
+         */
+        paths: listDecl('Files to hash in one call, e.g. ["src/a.ts","test/b.ts"] (list form: JSON text or a real list).'),
+        /** **关键标识是否在位**（落点四的第二半）：给 `src/a.ts#markWritten` 这类 `路径#标识`，逐条给布尔。 */
+        markers: listDecl('Marker probes, e.g. ["src/infra/journal.ts#markWritten"] — prints one boolean per probe (list form: JSON text or a real list).'),
       },
       output: OUTPUT,
       async execute(args, exec) {
-        const outcome = digestArtifact(callOf(exec).cwd ?? '', typeof args.path === 'string' ? args.path : '')
+        const workspace = callOf(exec).cwd ?? ''
+        const collect = (raw: unknown): string[] => (parseList(raw) ?? []).map((item) => String(item ?? '').trim()).filter((item) => item !== '')
+        const many = [...collect(args.path), ...collect(args.paths)]
+        const markers = collect(args.markers)
+        // **多路径 / 标记探针**（`TASK-219`）：只有真给了才走新分支 ⇒ 单路径的旧回执一字不变
+        if (many.length > 1 || (args.paths !== undefined && many.length > 0) || markers.length > 0) {
+          const rows: { path: string; sha256: string; bytes: number }[] = []
+          const broken: { path: string; code: string }[] = []
+          for (const one of many) {
+            const outcome = digestArtifact(workspace, one)
+            if (outcome.ok) rows.push({ path: outcome.path, sha256: outcome.sha256, bytes: outcome.bytes })
+            else broken.push({ path: one, code: outcome.code })
+          }
+          const markerLines = markers.map((probe) => {
+            const [file = '', token = ''] = probe.split('#')
+            const text = digestArtifact(workspace, file).ok ? (readFileSync(resolve(workspace, file), 'utf8')) : ''
+            return `  marker ${probe} => ${text.includes(token) ? 'true' : 'false'}`
+          })
+          return [describeHashRows(rows, broken), ...markerLines].join('\n')
+        }
+        const outcome = digestArtifact(workspace, typeof args.path === 'string' ? args.path : '')
         if (!outcome.ok) {
           return fmt('uiIndex.kHashRejected', { p1: outcome.code, p2: typeof args.path === 'string' ? args.path : '' })
         }

@@ -18,7 +18,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
 import { boardModelFor, renderBoard } from './board/render.js'
-import { describeExemptions } from './interface/describe.js'
+import {describeExemptions, describeCompactTaskList, describeInflightView, describeRecoverView, describeTaskBrief} from './interface/describe.js'
 import { exemptionLines } from './domain/construction.js'
 import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewDefectError, ReviewReproError, updateTestCase } from './domain/records.js'
 import type { AcceptanceVerdict, Review } from './domain/records.js'
@@ -1519,7 +1519,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
       )
     },
 
-    async status(call: OfficeCall, args: { rebuild?: boolean | undefined }): Promise<string> {
+    async status(call: OfficeCall, args: { rebuild?: boolean | undefined; view?: string | undefined }): Promise<string> {
+      // **`TASK-219` 落点二/五**：只读视图（`inflight` / `recover`）。不给 `view` ⇒ 下面每一行与修前逐字相同。
+      if (args.view === 'inflight') return describeInflightView(office.inflightView(call))
+      if (args.view === 'recover') return describeRecoverView(office.recoverView(call))
       // **DEF-070**：`sdo_status` 的第一行必须是**本会话实际加载的那份构建**（端到端验证最容易验到旧构建）
       const buildLine = buildReadout(call.cwd ?? '')
       // **③b（本轮核实）**：旧实现把 `office.rebuild()` 的返回值**丢掉**了 —— 用户显式 `--rebuild` 之后，
@@ -2495,7 +2498,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
        * 修前回声夹在每张卡的派发块里、队列与池块在结论**之前** ⇒ 8000 截断先吃掉结论之后的一切，
        * 而结论本身又被队列挤到后面（`DEF-175` 的用户级症状）。
        */
-      const receiptRest = `${out.join('\n\n')}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      const receiptRest = `${out.join('\n\n')}${infeasibleBlock}${roleBlockedSection}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
       // **`M137-03`**（源码级判据）：回执必须由 `dispatchSummary` 起头 —— 这一行就是那个形状。
       // `head` 只用于**量长度**（与返回值的前半段逐字相同），回声按预算取舍后追加在最后。
       const head = `${dispatchSummary}\n${receiptRest}`
@@ -2970,11 +2973,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
            *   全量列举在本仓 205 张时必然撞宿主 8000 截断 ⇒ "默认全量"等于静默丢卡。
            */
           const all = office.tasks(call)
+          // **`TASK-219` 落点三**：`id` + `view=brief` ⇒ 只印状态/owner/rev/阻塞理由/最近一条 note（不印 DoD 全文）
+          if (args.id !== undefined && args.view === 'brief') {
+            const brief = office.taskBrief(call, args.id)
+            if (brief === undefined) return fmt('uiIndex.k49', { p1: args.id })
+            return describeTaskBrief(brief, settings.projectDirName)
+          }
           if (args.id !== undefined) {
             const one = all.find((task) => task.id === args.id)
             if (one === undefined) return fmt('uiIndex.k49', { p1: args.id })
             return describeTask(one, office.shapeNotes(call))
           }
+          // **`TASK-219` 落点一**：`compact=true` ⇒ 只印列对齐表（终态卡折成计数，标题截 40 字）
+          if (args.compact === true) return describeCompactTaskList(office.compactTaskRows(call), settings.projectDirName)
           // **DEF-050 / TASK-072**：`fixes` 必须在 **`list` 的回执**里可见（可见即约束）——
           // 一条只存在于 YAML 里的声明，读回执的人（流程官/用户）看不到就等于没有。
           // 这里不重写看板本体（`describeTaskBoard` 的行格式是别的卡的判据面），只把这段交给它，

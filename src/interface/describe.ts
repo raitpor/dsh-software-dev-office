@@ -1779,3 +1779,180 @@ export function describeExemptions(lines: string[]): string {
   const header = fmt('uiDescribe.kExemptions', { p1: String(lines.length) })
   return `\n${header}\n` + lines.map((line) => `  ${line}`).join('\n')
 }
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`TASK-219`：驾驶舱的五个紧凑只读视图**
+ *
+ * 病根（本卡实测，真账）：`sdo_task action=list` 的回执 **86k 字符**、`sdo_plan action=next` **27k**，
+ * 都被宿主截到 8000 ⇒ 驾驶舱要的那 6 个问题全在截断之外。这五个视图的共同纪律：
+ *   · **无一含「空闲子代理未被复用」那块**（那是 `next` 的派发诊断面；要的话只给一行计数）；
+ *   · **行数 = 数据条数**，任何一块都不许随卡数平方增长；
+ *   · 行文**语言中立 ASCII**：语言包 `src/data/lang/*.yml` 不在本卡写范围，
+ *     而这几张都是**给复验者的读数**（与 `poolReadingLine` / `renderQueueTable` 同口径）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+/** 紧凑卡表的**行数上限**（`TASK-219` 守卫①：100 张卡 < 4000 字符 ⇒ 行数必须与卡数脱钩）。 */
+export const COMPACT_ROWS_MAX = 40
+
+/** 在飞视图的**行数上限**（守卫②：100 个在飞会话 < 2000 字符）。 */
+export const INFLIGHT_ROWS_MAX = 12
+
+/** 在飞视图每行最多印几个脏文件（其余折成 `+N`）。 */
+export const INFLIGHT_DIRTY_MAX = 3
+
+/** 列对齐：按每个单元格的**显示宽度**补空格（CJK 记 2 列，避免中文标题把表格挤歪）。 */
+function padCell(text: string, width: number): string {
+  let shown = 0
+  for (const char of text) shown += /[\u1100-\u115f\u2e80-\ua4cf\uac00-\ud7a3\uf900-\ufaff\ufe30-\ufe4f\uff00-\uff60\uffe0-\uffe6]/u.test(char) ? 2 : 1
+  return text + ' '.repeat(Math.max(0, width - shown))
+}
+
+/** 定宽列渲染（表头 + 分隔 + 行）。 */
+function renderTable(headers: readonly string[], rows: readonly (readonly string[])[]): string[] {
+  const widths = headers.map((_header, index) => Math.max(
+    headers[index]?.length ?? 0,
+    ...rows.map((row) => String(row[index] ?? '').length),
+  ))
+  const line = (cells: readonly string[]): string => cells.map((cell, index) => padCell(String(cell ?? ''), widths[index] ?? 0)).join('  ').trimEnd()
+  return [line(headers), widths.map((width) => '-'.repeat(width)).join('  '), ...rows.map((row) => line(row))]
+}
+
+/**
+ * **落点一：紧凑卡表**（`sdo_task action=list compact=true`）。
+ *
+ * 只印未完成卡：`done` / `dropped` 折成**一行计数**（否则 223 张卡里 200 张是终态，
+ * 「100 张卡 < 4000 字符」这条守卫就永远不可能成立）。标题截 40 字，owner 截 8 位。
+ */
+export function describeCompactTaskList(
+  data: {
+    rows: { id: string; status: string; role: string; size: string; owner: string; revision: number; title: string }[]
+    finished: { done: number; dropped: number; other: number }
+    total: number
+  },
+  dirName = '.sdo',
+): string {
+  const lines = [`tasks: ${String(data.total)} total, ${String(data.rows.length)} open`
+    + ` (done ${String(data.finished.done)}, dropped ${String(data.finished.dropped)}`
+    + `${data.finished.other === 0 ? '' : `, other ${String(data.finished.other)}`})`]
+  // **行数封顶**（`TASK-219` 守卫①）：回执体积必须与"未完成卡数"**脱钩**，否则 100 张卡就是 7k+ 字符。
+  // 超出时如实说还有多少张没印 + 给收窄参数（"看不见"与"被截断"必须分得开）。
+  const shown = data.rows.slice(0, COMPACT_ROWS_MAX)
+  lines.push(...renderTable(
+    ['id', 'status', 'role', 'size', 'owner', 'rev', 'title'],
+    shown.map((row) => [row.id, row.status, row.role, row.size, row.owner === '' ? '-' : row.owner, String(row.revision), row.title]),
+  ))
+  if (data.rows.length > shown.length) {
+    lines.push(`(+${String(data.rows.length - shown.length)} more open cards — narrow with status= / owner= / role=)`)
+  }
+  lines.push(`(compact view: terminal cards folded into the count; full YAML under ${dirName}/tasks/)`)
+  return lines.join('\n')
+}
+
+/** **落点三：卡定向 brief**（`sdo_task id=<卡> view=brief`）—— **不印 DoD 全文**。 */
+export function describeTaskBrief(
+  brief: { task: { id: string; status: string; owner?: string | undefined; revision: number; role: string; size: string; blockedReason?: string | undefined; note?: string | undefined }; lastNote: { at: string; type: string; note: string } | undefined },
+  dirName = '.sdo',
+): string {
+  const task = brief.task
+  const lines = [
+    `${task.id}  status=${task.status}  owner=${task.owner === undefined || task.owner === '' ? '-' : task.owner}`
+    + `  rev=${String(task.revision)}  ${task.role}/${task.size}`,
+    `blockedReason: ${task.blockedReason === undefined || task.blockedReason === '' ? '-' : task.blockedReason}`,
+    brief.lastNote === undefined
+      ? 'last note: -'
+      : `last note (${brief.lastNote.type} @ ${brief.lastNote.at}): ${brief.lastNote.note}`,
+    `(brief view: DoD/full body omitted on purpose — read ${dirName}/tasks/${task.id}.yml when you need it)`,
+  ]
+  return lines.join('\n')
+}
+
+/**
+ * **落点二：在飞视图**（`sdo_status view=inflight`）。
+ *
+ * 每行：卡 / 角色 / 规模 / owner 前 8 / **子会话前 8** / 它的写范围撞上的**脏文件**（现算交集）。
+ * 零子代理告警（硬约束）。
+ */
+export function describeInflightView(
+  view: { rows: { id: string; role: string; size: string; owner: string; child: string; scopes: string[]; overlaps: string[] }[]; dirtyUnjudgeable: string | undefined },
+): string {
+  const lines = [`in-flight cards: ${String(view.rows.length)}`]
+  if (view.rows.length === 0) lines.push('(none)')
+  else {
+    // **行数与每行脏文件都封顶**（守卫②）：100 个在飞会话也必须 < 2000 字符。
+    const shownRows = view.rows.slice(0, INFLIGHT_ROWS_MAX)
+    lines.push(...renderTable(
+      ['id', 'role', 'size', 'owner', 'child', 'dirty-in-scope'],
+      shownRows.map((row) => {
+        const files = row.overlaps.slice(0, INFLIGHT_DIRTY_MAX)
+        const more = row.overlaps.length > files.length ? ` +${String(row.overlaps.length - files.length)}` : ''
+        return [
+          row.id,
+          row.role,
+          row.size,
+          row.owner === '' ? '-' : row.owner,
+          row.child === '' ? '-' : row.child,
+          row.overlaps.length === 0 ? '-' : `${files.join(' ')}${more}`,
+        ]
+      }),
+    ))
+    if (view.rows.length > shownRows.length) {
+      lines.push(`(+${String(view.rows.length - shownRows.length)} more in-flight cards — narrow by settling or dispatching)`)
+    }
+    // writeScopes 只给**有脏文件交集**的那几张（那才是"这一行为什么红"的明细），且条数封顶 ——
+    // 否则 100 张在飞卡每人一行写范围，守卫②（< 2000）永远过不去。
+    for (const row of shownRows.filter((item) => item.overlaps.length > 0)) {
+      const scopes = row.scopes.slice(0, INFLIGHT_DIRTY_MAX)
+      const more = row.scopes.length > scopes.length ? ` +${String(row.scopes.length - scopes.length)}` : ''
+      lines.push(`  ${row.id} writeScopes: ${scopes.length === 0 ? '-' : `${scopes.join(' ')}${more}`}`)
+    }
+  }
+  if (view.dirtyUnjudgeable !== undefined) lines.push(`dirty worktree unjudgeable: ${view.dirtyUnjudgeable}`)
+  return lines.join('\n')
+}
+
+/**
+ * **落点五：现场重建**（`sdo_status view=recover`）—— 重启后要回答的三个问题，一次说完。
+ */
+export function describeRecoverView(
+  view: {
+    orphanFlying: { id: string; role: string; owner: string; reason: string }[]
+    dirtyOwners: { file: string; tasks: string[] }[]
+    dirtyUnjudgeable: string | undefined
+    redCriteria: { gate: string; criterion: string; tasks: string[] }[]
+  },
+): string {
+  const lines: string[] = []
+  lines.push(`1) in-progress but owner unreachable: ${String(view.orphanFlying.length)}`)
+  if (view.orphanFlying.length === 0) lines.push('   (none)')
+  for (const row of view.orphanFlying) lines.push(`   ${row.id} ${row.role} owner=${row.owner === '' ? '-' : row.owner} — ${row.reason}`)
+  lines.push(`2) dirty files and the cards that own them (by write scope): ${String(view.dirtyOwners.length)}`)
+  if (view.dirtyOwners.length === 0) lines.push('   (none)')
+  for (const row of view.dirtyOwners) {
+    // **有界**：真账里 `src/index.ts` 被 37 张卡的写范围覆盖 —— 全列会把这份读数也撑爆。
+    // 取前 6 张 + 「+N」，并在行尾明说总数（"看不见"与"被截断"是两件事）。
+    const shown = row.tasks.slice(0, 6)
+    const more = row.tasks.length > shown.length ? ` +${String(row.tasks.length - shown.length)}` : ''
+    lines.push(`   ${row.file} → ${row.tasks.length === 0 ? '(no card claims it)' : `${shown.join(' ')}${more}`}`)
+  }
+  if (view.dirtyUnjudgeable !== undefined) lines.push(`   dirty worktree unjudgeable: ${view.dirtyUnjudgeable}`)
+  lines.push(`3) failing criteria and the cards they name: ${String(view.redCriteria.length)}`)
+  if (view.redCriteria.length === 0) lines.push('   (none)')
+  for (const row of view.redCriteria.slice(0, 20)) {
+    const shown = row.tasks.slice(0, 6)
+    const more = row.tasks.length > shown.length ? ` +${String(row.tasks.length - shown.length)}` : ''
+    lines.push(`   ${row.gate}/${row.criterion} → ${row.tasks.length === 0 ? '(names no card)' : `${shown.join(' ')}${more}`}`)
+  }
+  if (view.redCriteria.length > 20) lines.push(`   (+${String(view.redCriteria.length - 20)} more failing criteria — narrow it by gate)`)
+  return lines.join('\n')
+}
+
+/** **多路径哈希**（`sdo_hash paths=[...]`）：逐行 `path  sha256[0..16]  bytes`。 */
+export function describeHashRows(
+  rows: { path: string; sha256: string; bytes: number }[],
+  broken: { path: string; code: string }[],
+): string {
+  const lines = [`hashed ${String(rows.length)} file(s)${broken.length === 0 ? '' : `, ${String(broken.length)} unreadable`}`]
+  for (const row of rows) lines.push(`  ${padCell(row.path, Math.max(...rows.map((item) => item.path.length), 4))}  ${row.sha256.slice(0, 16)}  ${String(row.bytes)}`)
+  for (const item of broken) lines.push(`  ${item.path}  UNREADABLE ${item.code}`)
+  return lines.join('\n')
+}

@@ -111,15 +111,34 @@ test('M152-04 DoD ③：**allow/deny 面仍然最小** —— 只多一个 sdo_h
   assert.equal(denied.includes('write'), true, '只读评审：write 仍被挡')
 })
 
-test('M152-05 工具 schema 只有一个 `path` 参数（防"顺手开成通用文件读取器"）', () => {
+test('M152-05 工具 schema 的参数面被钉死（防"顺手开成通用文件读取器"）', () => {
   const def = tool()
   assert.ok(def !== undefined)
-  const properties = (def.parameters as { properties?: Record<string, unknown> }).properties ?? {}
-  assert.deepEqual(Object.keys(properties), ['path'], '只允许一个 path 参数')
   const parameters = def.parameters as { properties?: Record<string, Record<string, unknown>>; required?: string[] }
+  const names = Object.keys(parameters.properties ?? {})
+  /**
+   * **`TASK-219` 收窄了这条钉子的形状，但**没有减弱否定面**。
+   *
+   * 旧形状：参数集合**恰好**是 `['path']`。而 `TASK-219` 的 DoD 明确要求 `sdo_hash` 支持**多路径**
+   * （`paths`）与**关键标识在位探测**（`markers`）⇒ 旧形状的前提被改变了（与 `M168-01` 同型）。
+   * 真正要防的是**"`sdo_hash` 变成通用文件读取器"**，所以现在钉的是：
+   *   ① 参数集合**只能**落在这三个只读探针里（多一个都不行）；
+   *   ② **不得**出现任何"通用读取器"形状的参数（编码/偏移/行数/正则…）—— 这一半一条都没放松。
+   */
+  const allowed = ['path', 'paths', 'markers']
+  for (const name of names) {
+    assert.equal(allowed.includes(name), true, `sdo_hash 只能有只读探针参数 ${allowed.join(' / ')}，实际多出：${name}`)
+  }
+  assert.equal(names.includes('path'), true, 'path 必须仍在（单路径旧回执的入口）')
+  const forbidden = ['encoding', 'offset', 'limit', 'lines', 'grep', 'pattern', 'content', 'tail', 'head', 'exec']
+  for (const bad of forbidden) {
+    assert.equal(names.includes(bad), false, `不许把 sdo_hash 开成通用文件读取器：多出了 ${bad}`)
+  }
   assert.equal(parameters.properties?.['path']?.type, 'string', 'path 是字符串')
-  // `defineTool` 会把作者侧 DSL 编译成 JSON schema：`required: true` 落到**顶层数组**上
-  assert.deepEqual(parameters.required, ['path'], 'path 是唯一且必填的参数')
+  // `defineTool` 会把作者侧 DSL 编译成 JSON schema：`required: true` 落到**顶层数组**上。
+  // 多路径化之后 `path` 不再是必填（给 `paths` 就够），但**必填集合仍不得超出** `['path']`。
+  const required = parameters.required ?? []
+  for (const name of required) assert.equal(name === 'path', true, `必填集合只允许 path，实际：${required.join(' / ')}`)
 })
 
 test('M152-06 只读入口不产生任何 DSH 工具面白名单外的东西：注册面只多这一个工具', () => {

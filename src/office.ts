@@ -196,6 +196,8 @@ import { Journal } from './infra/journal.js'
 import { nextId } from './infra/ids.js'
 import { renderSrs } from './infra/render.js'
 import { readDirtyWorktree } from './infra/git.js'
+// **`TASK-219`**：脏文件与写范围的交集要落在**唯一出口**上（不另造前缀匹配）
+import { normalizeScopePath, scopePathWithin } from './domain/scopePaths.js'
 import {
   commitWorktree,
   createWorktree as createGitWorktree,
@@ -3599,6 +3601,158 @@ export class SoftwareDevOffice {
 
   taskById(call: OfficeCall, id: string): TaskCard | undefined {
     return this.tasks(call).find((task) => task.id === id)
+  }
+
+  /**
+   * **紧凑只读视图的数据面**（`TASK-219`）。
+   *
+   * 为什么需要它：真账上 `sdo_task action=list` 的回执 **86k 字符**（「空闲子代理未被复用」那节占大头），
+   * 宿主截到 8000 ⇒ 驾驶舱要的 6 个问题全在截断之外。这里只给**列对齐表**所需的字段：
+   * **默认只印未完成卡**（`done` / `dropped` 只给计数），标题**截到 40 字**——两条都是为了把行数
+   * 和行宽都钉在"卡数 × 常数"上（守卫：100 张卡 ⇒ 回执 < 4000 字符）。
+   */
+  compactTaskRows(call: OfficeCall): {
+    rows: { id: string; status: string; role: string; size: string; owner: string; revision: number; title: string }[]
+    finished: { done: number; dropped: number; other: number }
+    total: number
+  } {
+    const tasks = this.tasks(call)
+    const rows: { id: string; status: string; role: string; size: string; owner: string; revision: number; title: string }[] = []
+    const finished = { done: 0, dropped: 0, other: 0 }
+    for (const task of tasks) {
+      if (task.status === 'done' || task.status === 'verified') { finished.done += 1; continue }
+      if (task.status === 'dropped') { finished.dropped += 1; continue }
+      rows.push({
+        id: task.id,
+        status: task.status,
+        role: task.role,
+        size: task.size,
+        // owner 一律截 8 位（`developer-7e1069c4` ⇒ `7e1069c4`；cockpit 这类短串原样）
+        owner: task.owner === undefined ? '' : String(task.owner).replace(/^[a-z]+-/u, '').slice(0, 8),
+        revision: task.revision,
+        title: String(task.title ?? '').slice(0, 40),
+      })
+    }
+    return { rows, finished, total: tasks.length }
+  }
+
+  /**
+   * **在飞视图**（`TASK-219` 落点二）：逐个在飞卡印「谁在做 + 它的写范围撞上哪些脏文件」。
+   *
+   * 脏文件**现算**（`readDirtyWorktree`，与 `dirty-scope` 判据同一个出口），交集按
+   * `scopePathWithin` 判（与写范围对账同一个出口）——于是这一行是**判据的明细**，不是结论的复述。
+   * 本视图**不含**任何子代理告警（硬约束）。
+   */
+  inflightView(call: OfficeCall): {
+    rows: { id: string; role: string; size: string; owner: string; child: string; scopes: string[]; overlaps: string[] }[]
+    dirtyUnjudgeable: string | undefined
+  } {
+    const tasks = this.tasks(call)
+    const flying = tasks.filter((task) => task.status === 'in-progress')
+    const root = this.requireWorkspace(call)
+    const dirty = readDirtyWorktree(root)
+    const tracked = dirty.ok === true ? dirty.tracked : []
+    const children = new Map(this.dispatchedChildren(call).map((row) => [row.taskId, row.childSessionId] as const))
+    const rows = flying.map((task) => {
+      const scopes = task.writeScopes.map((scope) => textOf(scope)).filter((scope) => scope !== '')
+      const overlaps = tracked.filter((file) => scopes.some((scope) => scopePathWithin(file, normalizeScopePath(scope))))
+      return {
+        id: task.id,
+        role: task.role,
+        size: task.size,
+        owner: task.owner === undefined ? '' : String(task.owner).replace(/^[a-z]+-/u, '').slice(0, 8),
+        child: (children.get(task.id) ?? '').slice(0, 8),
+        scopes,
+        overlaps,
+      }
+    })
+    return { rows, dirtyUnjudgeable: dirty.ok === true ? undefined : String(dirty.reason) }
+  }
+
+  /**
+   * **卡定向读取**（`TASK-219` 落点三）：只给"现在该干什么"，**不印 DoD 全文**。
+   *
+   * `note` 取该卡**最近一条**带 `note` 的事件（`task/done` / `task/blocked` / `task/updated`）——
+   * 重启后最想知道的就是"上一棒说了什么"。
+   */
+  taskBrief(call: OfficeCall, taskId: string): {
+    task: TaskCard
+    lastNote: { at: string; type: string; note: string } | undefined
+  } | undefined {
+    const task = this.tasks(call).find((item) => item.id === taskId)
+    if (task === undefined) return undefined
+    const { journal } = this.contextFor(call)
+    let lastNote: { at: string; type: string; note: string } | undefined
+    for (const event of journal.read().events) {
+      const data = event.data as Record<string, unknown>
+      if (String(data['id'] ?? '') !== taskId) continue
+      const note = textOf(data['note'])
+      if (note !== '') lastNote = { at: event.at, type: event.type, note }
+    }
+    return { task, lastNote }
+  }
+
+  /**
+   * **现场重建**（`TASK-219` 落点五）：重启后要回答的三个问题，一次读全。
+   *
+   *   ① 哪些 `in-progress` 卡的 owner 会话**不可达**（台账里没有任何一个在飞派发指向它；
+   *      真机上这就是"卡还挂着、人已经没了"）；
+   *   ② 每个**脏文件**归属哪张卡（按卡写范围匹配；多个/没有都如实给出）；
+   *   ③ 当前**红的判据**（门禁 G3/G5 里失败的 criterion）点名到的卡是谁的。
+   *
+   * ②③ 都是**现算**：脏文件走 `readDirtyWorktree`（与 `dirty-scope` 同一出口），判据走
+   * `evaluate`（与门禁同一个出口），不另造判据。
+   */
+  recoverView(call: OfficeCall): {
+    orphanFlying: { id: string; role: string; owner: string; reason: string }[]
+    dirtyOwners: { file: string; tasks: string[] }[]
+    dirtyUnjudgeable: string | undefined
+    redCriteria: { gate: string; criterion: string; tasks: string[] }[]
+  } {
+    const tasks = this.tasks(call)
+    // ① owner 不可达：卡 in-progress，但没有任何**活着**的派发指向它（活派发 = started 未 finished 且未超 TTL）
+    const live = new Set(this.dispatchedChildren(call).map((row) => row.taskId))
+    const orphanFlying = tasks
+      .filter((task) => task.status === 'in-progress' && !live.has(task.id))
+      .map((task) => ({
+        id: task.id,
+        role: task.role,
+        owner: task.owner === undefined ? '' : String(task.owner),
+        reason: task.owner === undefined || task.owner === ''
+          ? 'no-owner'
+          : `no-live-dispatch（台账里没有指向 ${task.id} 的活派发；owner 会话多半已经没了）`,
+      }))
+    // ② 脏文件 → 卡（按写范围匹配；同一文件可命中多张卡，如实全列）
+    const root = this.requireWorkspace(call)
+    const dirty = readDirtyWorktree(root)
+    const tracked = dirty.ok === true ? dirty.tracked : []
+    const dirtyOwners = tracked.map((file) => ({
+      file,
+      tasks: tasks
+        .filter((task) => task.writeScopes.some((scope) => scopePathWithin(file, normalizeScopePath(textOf(scope)))))
+        .map((task) => task.id),
+    }))
+    // ③ 红的判据 → 卡（判据详情里点到的 TASK-id；结构化提取，不解析散文语义）
+    const redCriteria: { gate: string; criterion: string; tasks: string[] }[] = []
+    for (const gate of ['G3', 'G5', 'G6']) {
+      let evaluation
+      try {
+        evaluation = this.evaluate(call, gate)
+      } catch {
+        continue
+      }
+      for (const criterion of evaluation.criteria) {
+        if (criterion.ok) continue
+        const named = [...new Set((String(criterion.detail ?? '').match(/TASK-\d+/gu) ?? []))]
+        redCriteria.push({ gate, criterion: criterion.id, tasks: named })
+      }
+    }
+    return {
+      orphanFlying,
+      dirtyOwners,
+      dirtyUnjudgeable: dirty.ok === true ? undefined : String(dirty.reason),
+      redCriteria,
+    }
   }
 
   planIssues(call: OfficeCall): PlanIssue[] {
