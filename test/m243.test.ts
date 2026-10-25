@@ -11,7 +11,9 @@
  *
  * 本文件的守卫（编号与卡上 DoD 的「判据（两态）」一一对应）：
  *   · `M243-01` ① **写 1 条事件后紧接读 `< 2ms`**（改前 30–36ms）：真账副本上跑 10 次「写→读」，
- *     逐次打印读数；中位数 / 均值都要 < 2ms，且至少 8 条 < 2ms（跑满全量时调度抖动是真实的）;
+ *     逐次打印读数；断言是 `fastest < 2ms` + `median < 5ms` + **同机现测的改前形态 `>= 10x`**
+ *     （跑满全量时调度抖动是真实的 ⇒ `under2ms` 与 `baselineMedian` **只打印不判红**：
+ *     前者怕慢、后者怕快，两条都是环境敏感项，判据本体是绝对项 `fastest` 与负载无关的比值项）;
  *   · `M243-02` ② **判据是计数桩不是计时**：连续 10 次「写→读」中 `fullRecomputes` = 1（首次）、
  *     `incrementalApplies` = 10；关掉增量这一格必红（变异自证见交付说明）;
  *   · `M243-03` ③ **反例格**：模拟「换 inode」重写台账 ⇒ 必须走整批 `fullRecomputes`（**不许**错用增量）；
@@ -217,8 +219,18 @@ test('M243-01 (reading 1) a read right after a write stays under 2ms on the real
   // 判据 ①（本卡 DoD）：写 1 条事件后紧接读 —— 最好的那次必须真的进 2ms 以内
   assert.ok(fastest < 2, `the fastest write->read round must stay under 2ms (pre-fix 30-36ms, measured ${fastest.toFixed(2)}ms)`)
   assert.ok(median < 5, `median write->read must stay far below the pre-fix 30-36ms (measured median ${median.toFixed(2)}ms)`)
-  // **同机对照**：改前的形态必须比增量形态慢一个数量级（负载无关的那条判据）
-  assert.ok(baselineMedian > 10, `the pre-fix shape must still be measurable on this machine (measured ${baselineMedian.toFixed(2)}ms)`)
+  /**
+   * **`baselineMedian` 只是读数，不是判据**（`REV-114` 必核二 ②）：这条曾经是
+   * `assert.ok(baselineMedian > 10, …)`，断言的其实是「**这台机器够慢**」—— 在比现在快得多的
+   * 机器上（或空闲的 CI 大机）改前形态本来就可能测不到 10ms ⇒ 这一格会因为**机器太快**而红，
+   * 正是本卡要避免的那类环境红；它与上面的 `fastest < 2` 恰成**对称的假红面**（一条怕慢、一条怕快）。
+   *
+   * 处置：**降级成打印**，环境不满足时把理由印出来（不静默、也不判红）。下面那条
+   * `baselineMedian > median * 10` 的**比值**判据一个字都没降 —— 它是与负载无关的判据本体。
+   */
+  if (baselineMedian <= 10) {
+    console.log(`[M243-01] SKIP-NOTE baselineMedian<=10ms (measured ${baselineMedian.toFixed(2)}ms): this machine's pre-fix shape is too fast to time, so the absolute pre-fix floor is NOT asserted; the load-independent ratio criterion (>=10x) still applies`)
+  }
   /**
    * **10 倍**这条是负载无关的硬判据：跑满全量时两种形态一起变慢（实测基线 67–85ms vs 增量 2.8ms），
    * 比值仍然在 25x 以上；空载时是 53x。`under2ms` 只作**读数**打印 —— 把绝对毫秒写进断言就会让守卫
