@@ -78,7 +78,7 @@ export const STRONG_PHRASES = [
 export const UNIVERSAL_AXIS = ['结构上', '必然', '一定', '永远', '所有', '任何'] as const
 
 /** **族②的否定可能轴**（同上）。 */
-export const NEGATION_AXIS = ['不可能', '不会', '无例外', '进不了', '不留', '不存在', '没有', '不会是', '绝非'] as const
+export const NEGATION_AXIS = ['不可能', '不会', '无例外', '进不了', '不进', '不留', '不存在', '没有', '不会是', '绝非'] as const
 
 /**
  * 轴的两端**最多隔几个字**算「同句紧邻」。
@@ -145,20 +145,37 @@ export interface StrongClaimHit {
   kind: ClaimKind
 }
 
+/**
+ * **可见文本投影**（`TASK-255` 第 12 件）：算间距前先抹掉 Markdown 标记。
+ *
+ * 病灶（实证）：`contracts.ts:248`「任何契约都**不可能**声明它」里，`都` 与 `不可能` 之间的
+ * **可见**间隔是 3 个字，但**原始行**里还夹着 `**` 两个字符 ⇒ 间距算成 5 > `AXIS_MAX_GAP(4)`
+ * ⇒ 轴不中、又没有字面词 ⇒ **整条漏**。而基线里 `design.ts` 那条恰好间距 4 才中 ——
+ * 阈值两侧只差一个 `**`，判据就是在抖。
+ *
+ * **只用于算间距**：报错与登记仍用**原行原文**（读者要看原文）。
+ * **不**抬 `AXIS_MAX_GAP`：抬到 ≤40 噪音涨到 55 行（绝大多数是 `任何×没有`），那是拿噪音换召回。
+ */
+export function visibleTextOf(line: string): string {
+  return line.replace(/\*\*/gu, '').replace(/__/gu, '').replace(/`/gu, '')
+}
+
 /** 轴配对：返回本行里**紧邻**成立的 `全称×否定` 组合（排除 {@link AXIS_EXCLUDED_PAIRS}）。 */
 export function axisPairsOf(line: string): string[] {
   const out: string[] = []
+  // 间距在**可见文本**上量（`TASK-255`）：标记不占字，但会顶破紧邻阈值
+  const probe = visibleTextOf(line)
   for (const universal of UNIVERSAL_AXIS) {
-    let at = line.indexOf(universal)
+    let at = probe.indexOf(universal)
     while (at !== -1) {
       for (const negation of NEGATION_AXIS) {
         const pair = `${universal}×${negation}`
         if ((AXIS_EXCLUDED_PAIRS as readonly string[]).includes(pair)) continue
         const from = at + universal.length
-        const next = line.indexOf(negation, from)
+        const next = probe.indexOf(negation, from)
         if (next !== -1 && next - from <= AXIS_MAX_GAP) out.push(pair)
       }
-      at = line.indexOf(universal, at + 1)
+      at = probe.indexOf(universal, at + 1)
     }
   }
   return [...new Set(out)]
