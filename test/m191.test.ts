@@ -119,7 +119,7 @@ export function citationFaces(root: string): string[] {
  *     而 `.sdo-test/` 是**本仓自己的夹具/变异副本暂存地** —— 它底下常常是这个仓 `lib/` 的整树拷贝
  *     （`<卡>-mut/lib/src/*.d.ts` 这类），按同一条理由必须排除：它是同一份源码的副本，会把已删掉的名字
  *     永远喂饱（`TASK-265` 复核轮实测：`node_modules/.sdo-test/task-245-mut/lib/src/types.d.ts` 这份
- *     遗留副本让 `src/types.ts` 的两条登记当场变 `stale` ⇒ 假红。详见 `DEF-246`）。
+ *     遗留副本让 `src/types.ts` 的两条登记当场变 `stale` ⇒ 假红。详见 `DEF-250`）。
  */
 export function witnessFaces(root: string): string[] {
   const rootFiles = ['README.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json', 'client.js', 'client.d.ts']
@@ -350,7 +350,7 @@ test('M191-02 §3.5 DoD②（误报控制）：外部约定/第三方/语言的�
     false,
     '不存在的标识符必须判"解析不到"（否则这一格恒真）',
   )
-  // ④ 见证面的**准入谓词**双态（`TASK-265` 复核轮 / `DEF-246`）：夹具暂存根不进面，第三方类型面照进。
+  // ④ 见证面的**准入谓词**双态（`TASK-265` 复核轮 / `DEF-250`）：夹具暂存根不进面，第三方类型面照进。
   //    病根：`.sdo-test/` 底下是本仓 `lib/` 与夹具项目的整树拷贝，把那里的 `.d.ts` 当见证面
   //    ⇒ 已删掉的名字被副本永远喂饱 ⇒ 登记变 `stale`（今天真机上就是 `task-245-mut` 那份遗留副本干的）。
   assert.equal(
@@ -368,6 +368,31 @@ test('M191-02 §3.5 DoD②（误报控制）：外部约定/第三方/语言的�
     false,
     '现盘见证面里不许有夹具暂存根（node_modules/.sdo-test/）的文件',
   )
+  // ⑤ **机制**的合成探针（`REV-124` #6）：上面 ④ 钉的是**谓词**，这一条钉的是「副本进面 ⇒ 活锚变 `stale`」这条因果本身。
+  //    为什么必须补：真机那份作证副本（`.sdo-test/task-245-mut/lib/src/types.d.ts`）的暂存根已被清掉，
+  //    态 A 只剩报告里的两行字 ⇒ 副本一消失，机制就没人再钉。全程纯函数级、**零写盘**
+  //    （`TASK-245` 的纪律：变异/对照副本一律落 `.verify/<卡>/`，不许再落 `node_modules/`）。
+  const probeNote = '这一段把 `ghostSymbolZz` 接上。'
+  const citationProbe: NoteFile = { path: 'test/anchor.ts', text: `// ${probeNote}\n` }
+  const realProbe: NoteFile = { path: 'src/real.ts', text: 'export const realSymbol = 1\n' }
+  /** 副本形态的见证文件：路径落在夹具暂存根里，内容给那个悬空名背书（= 真机那份 `types.d.ts` 的形态）。 */
+  const copyProbe: NoteFile = {
+    path: join(ROOT, 'node_modules', '.sdo-test', 'task-265-probe', 'lib', 'src', 'types.d.ts'),
+    text: 'export declare const ghostSymbolZz: string\n',
+  }
+  const probeRegistry: KnownDangling[] = [
+    { file: 'test/anchor.ts', before: '这一段把 ', head: 'ghost', tail: 'SymbolZz', after: ' 接上。', why: '合成登记（两态探针用，不是现盘违规）' },
+  ]
+  // 态 A：副本**进面** ⇒ 名字被副本喂饱 ⇒ 不再是悬空 ⇒ 登记没被现算消化 ⇒ `stale` 出现（就是今晚那条假红）。
+  const withCopy = reconcileDangling({ files: [citationProbe, copyProbe], witnesses: [realProbe, citationProbe, copyProbe], registered: probeRegistry })
+  assert.equal(withCopy.stale.length, 1, `副本进面 ⇒ 登记必须变 stale（假红的机制）：${JSON.stringify(withCopy)}`)
+  assert.equal(withCopy.fresh.length, 0, '副本进面时不该同时出现"新悬空"（这一态只该有 stale）')
+  // 态 B：把副本按准入谓词挡在面外 ⇒ 名字仍悬空 ⇒ 登记被现算消化 ⇒ 三路全空（绿）。
+  const facesProbe = [citationProbe, copyProbe].filter((file) => isWitnessFace(file.path))
+  const withoutCopy = reconcileDangling({ files: facesProbe, witnesses: [realProbe, citationProbe], registered: probeRegistry })
+  assert.deepEqual([withoutCopy.fresh, withoutCopy.stale, withoutCopy.ambiguous], [[], [], []], `副本挡在面外 ⇒ 必须绿：${JSON.stringify(withoutCopy)}`)
+  // 反例（证明态 B 不是"把判据弄瞎"）：同一条路，**见证面里也没有任何定义**时，登记仍会被消化 —— 说明态 B 的绿来自"它确实还悬空"。
+  assert.equal(resolvesIn('ghostSymbolZz', bareRefs(citationProbe)[0] as BareRef, [realProbe, citationProbe]), false, '没有副本时它确实解析不到（否则态 B 是假的绿）')
 })
 
 test('M191-03 §3.5 DoD①：注释里写一个**不存在**的标识符 ⇒ 红并点名到「文件 + 注释」', () => {
