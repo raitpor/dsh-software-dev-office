@@ -68,13 +68,30 @@ interface JournalCacheEntry {
    *
    * 为什么钉**首行**而不是随机抽样：首行是最便宜的第二探针（一次几十字节的小 read），而且
    * 「早期行被改」的绝大多数形态都从文件头部开始（手改、`sed -i`、拿模板整篇替换）。
-   * **诚实的边界**：两次探测**证明不了**中间某一行没被等长改写 —— 那需要整份前缀的哈希（= 全量读，
-   * 等于取消缓存）。所以覆盖范围是：**首行 / 末行被改一定全量重解析；中间行被等长改写检测不到**。
-   * 台账是 append-only 真源，中间行的就地改写已经不是 append-only 了 —— 这一档取舍写在交付说明里。
+   * 台账是 append-only 真源，中间行的就地改写已经不是 append-only 了 —— 这一档由第三个探针兜（见 {@link mid}）。
    */
   head: string
   /** 首行锚点**结束**的字节偏移（与 `consumed` 同口径：行尾 `\n` 之后）。 */
   headEnd: number
+  /**
+   * **中段抽样行的原文**（第三个锚点，`REV-095` 必核二① 的补档）。
+   *
+   * 为什么两次探测不够（评审点名的形态）：只钉**首行 / 末行**时，「等长改写**中间**某行 + 首末行原样 +
+   * 再追加一行」三发探针全部落在未改写的行上 ⇒ 判「续读」⇒ 旧的中间事件被静默保留
+   * （读出一段从未存在过的事件序列）。加了这一档之后，**首 / 中 / 末三段抽样**任一段被等长改写都能看见
+   * （`M234-08` 钉住）。
+   *
+   * 取哪一行：**全量重解析时**取「结束位置 ≤ 文件长度一半的最后一个非空完整行」（`midEnd`）；
+   * 续读那一支沿用缓存里的那一行（它落在前缀里，前缀没被改就仍然有效）。
+   *
+   * **诚实的边界（别声称挡住）**：三次抽样仍是**抽样** —— 被改写的那一行若不在这三段里
+   * （例如 6 行台账改了第 3 行而抽样落在第 1/3/6 行之外的情形），依然检测不到。要完全挡住
+   * 只能对整份前缀做内容哈希（= 每次续读都读全文 ⇒ 取消缓存）。台账是 append-only 真源，
+   * 这一档取舍的**代价与收益**写在 {@link read} 的冷路径说明里。
+   */
+  mid: string
+  /** 中段抽样行**结束**的字节偏移（与 `headEnd` / `consumed` 同口径）。 */
+  midEnd: number
   /**
    * **挂在缓存条目上的按 type 分组索引**（`TASK-230`）。
    *
@@ -850,7 +867,18 @@ export class Journal {
     invalidateJournalCache(this.journalPath())
   }
 
-  /** 读取全部事件；遇到损坏行即停止并标记（语义与 `TASK-213` 之前**逐字相同**）。 */
+  /**
+   * 读取全部事件；遇到损坏行即停止并标记（语义与 `TASK-213` 之前**逐字相同**）。
+   *
+   * **取舍（`REV-095` 必核五①，明写不隐瞒）**：缓存换来的是「重复读不再重复解析」（真账一次调用
+   * 279 次 `read()` → 1 次），代价是**冷路径变慢** —— 全量那一条比修前多出 statSync + open/read
+   * + 三发锚点复算（首/中/末各一次小 `open`/`read`）。修前报告实测 13.06ms → 改后 30.09ms
+   * （约 2.3 倍，真账 5954 事件那一版），后续版本又多了第三个锚点探针。
+   * **别按 13ms 预期读账**：冷读是"一次性成本"，热读（本条目命中路径）是几十微秒级。
+   * 读数口径：`resetJournalReadStats()` 后强制一次全量（`invalidateJournalCache()` 或换 inode）
+   * 再 `read()`，看 `journalReadStats.fullParses / parsedLines / cacheHits` 与墙钟；
+   * 同一份 `read()` 连读两次，第二次必须是 `cacheHits +1`、`parsedLines` 不增。
+   */
   read(): JournalReadResult {
     journalReadStats.readCalls += 1
     const path = this.journalPath()
@@ -920,6 +948,14 @@ export class Journal {
     let head = appendOnly ? (cached?.head ?? '') : ''
     let headEnd = appendOnly ? (cached?.headEnd ?? 0) : 0
     /**
+     * **中段锚点**（第三个抽样点，`REV-095` 必核二①）：同 `head`，只在全量重解析时从文件里现取。
+     * 目标是「结束位置 ≤ 文件长度一半的**最后一个非空完整行**」——取「最后一个不超过中点」而不是
+     * 「最接近中点」，是为了让偏移只依赖**已经提交过的行**（循环里 `committed` 单调增，取到就覆盖）。
+     */
+    let mid = appendOnly ? (cached?.mid ?? '') : ''
+    let midEnd = appendOnly ? (cached?.midEnd ?? 0) : 0
+    const midTarget = Math.floor(stat.size / 2)
+    /**
      * 逐行：按 `\n` 的**字节位置**切（UTF-8 的多字节序列里不含 `0x0A` ⇒ 按字节切一定落在行边界），
      * 字节偏移因此**免费**得到 —— 不再对每一行算一次 `Buffer.byteLength`（那是冷路径的一笔纯开销）。
      * 只有**完整行**（以 `\n` 结尾）会被提交；最后一段没终结的字节留给下一次读。
@@ -935,12 +971,12 @@ export class Journal {
         try {
           parsed = JSON.parse(raw)
         } catch {
-          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd, mid, midEnd)
         }
         journalReadStats.parsedLines += 1
         const event = parsed as Partial<JournalEvent>
         if (!isJournalEvent(event, expected)) {
-          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd, mid, midEnd)
         }
         events.push(event as JournalEvent)
         committedEvents.push(event as JournalEvent)
@@ -949,9 +985,15 @@ export class Journal {
       }
       committed += bytes
       committedNewlines += 1
-      if (!appendOnly && head === '' && raw.trim() !== '') {
-        head = raw
-        headEnd = committed
+      if (!appendOnly && raw.trim() !== '') {
+        if (head === '') {
+          head = raw
+          headEnd = committed
+        }
+        if (committed <= midTarget) {
+          mid = raw
+          midEnd = committed
+        }
       }
       lineIndex += 1
       cursor = breakAt + 1
@@ -965,17 +1007,22 @@ export class Journal {
         try {
           parsed = JSON.parse(partial)
         } catch {
-          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd, mid, midEnd)
         }
         journalReadStats.parsedLines += 1
         const event = parsed as Partial<JournalEvent>
         if (!isJournalEvent(event, expected)) {
-          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd, mid, midEnd)
         }
         events.push(event as JournalEvent)
       }
     }
-    this.commit(path, stat, committed, committedNewlines, committedEvents, anchor, head, headEnd, {
+    // 退化形态（整份文件没有一条非空完整行落在中点之前）：中段锚点退回首行，保证它永远非空
+    if (!appendOnly && mid === '' && head !== '') {
+      mid = head
+      midEnd = headEnd
+    }
+    this.commit(path, stat, committed, committedNewlines, committedEvents, anchor, head, headEnd, mid, midEnd, {
       appendOnly,
       cleanTail: cursor >= buffer.length,
       baseCount,
@@ -985,17 +1032,20 @@ export class Journal {
   }
 
   /**
-   * **锚点复算**：缓存里"首行 / 末行"的原文，与盘上对应区间逐字相同吗？
+   * **锚点复算**：缓存里"首行 / 中段抽样行 / 末行"的原文，与盘上对应区间逐字相同吗？
    *
-   * 两发探针各读一行（几十~几百字节），比全量重解析便宜两三个数量级：
+   * 三发探针各读一行（几十~几百字节），比全量重解析便宜两三个数量级：
    *   · **末行探针**挡「就地整份重写且变长」（`size` 看不出来）；
    *   · **首行探针**挡「等长改写早期行 + 末行原样 + 再追加」—— 只钉末行时这一形态会被判成"续读"，
-   *     于是**旧的早期事件被静默保留**（`REV-095` 必核二①，`M234-08` 钉住）。
+   *     于是**旧的早期事件被静默保留**（`REV-095` 必核二①）；
+   *   · **中段探针**挡「等长改写**中间**行 + 首末行原样 + 再追加」—— 只钉首末两行时这一形态照样漏
+   *     （`M234-08` 钉住；评审点名的正是这一档）。
    * 任何异常（读不到 / 长度对不上 / 锚点为空）一律判 **不匹配**（保守方向：宁可全量重解析）。
    */
   private anchorsMatch(path: string, cached: JournalCacheEntry): boolean {
     return anchorLineMatches(path, cached.consumed, cached.anchor)
       && anchorLineMatches(path, cached.headEnd, cached.head)
+      && anchorLineMatches(path, cached.midEnd, cached.mid)
   }
 
   /**
@@ -1013,7 +1063,17 @@ export class Journal {
     committedNewlines: number,
     head: string,
     headEnd: number,
+    mid: string,
+    midEnd: number,
   ): JournalReadResult {
+    /**
+     * **中段锚点只能登记到"末个好行"为止**（与 `size = committed` 同一个口径）：
+     * 抽样行若落在坏行**之后**，它对这份缓存视图毫无约束力 —— 登记它只会让下一次读恒定判"不匹配"
+     * （每次都全量重解析）。这里退回首行（首行必定在一致前缀内）；连首行都没有 ⇒ 空串（判不匹配，保守）。
+     */
+    const midOk = midEnd !== 0 && midEnd <= committed
+    const keptMid = midOk ? mid : head
+    const keptMidEnd = midOk ? midEnd : headEnd
     // 缓存**停在末个好行**（`committed` = 它之后的字节偏移）；`size` 也记成这个前缀长度，
     // 于是下一次读会走「变长 ⇒ 续读尾部」那一支，从坏行处重新判定（不会把截断视图固化）。
     JOURNAL_CACHE.set(this.journalPath(), {
@@ -1024,10 +1084,12 @@ export class Journal {
       events: copyEvents(events),
       size: committed,
       mtimeMs: stat.mtimeMs,
-      // 两个锚点只登记到**末个好行**为止：坏行之后的字节不进缓存，也不进锚点
+      // 三个锚点只登记到**末个好行**为止：坏行之后的字节不进缓存，也不进锚点
       anchor: committed === 0 ? '' : (JOURNAL_CACHE.get(this.journalPath())?.anchor ?? ''),
       head,
       headEnd,
+      mid: keptMid,
+      midEnd: keptMidEnd,
     })
     // **`TASK-220`**：交出去的是**截断视图**（与全量慢路径一致的要求不变）⇒ 换代次，
     // 派生表按这一份重建（否则"截断前缀"会被缓存的派生表当成完整台账）
@@ -1057,6 +1119,8 @@ export class Journal {
     anchor: string,
     head: string,
     headEnd: number,
+    mid: string,
+    midEnd: number,
     incremental: {
       appendOnly: boolean
       cleanTail: boolean
@@ -1083,6 +1147,8 @@ export class Journal {
       anchor,
       head,
       headEnd,
+      mid,
+      midEnd,
       ...(nextIndex === undefined ? {} : { index: nextIndex }),
     })
     if (nextIndex !== undefined) tally(derivedTableStats.incrementalApplies, 'events-by-type')

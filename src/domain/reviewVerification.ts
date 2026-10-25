@@ -169,11 +169,19 @@ export interface ReviewFindingDisposition {
   at: string
 }
 
-/** 某个子会话被派发成什么角色（取最新一条 `dispatch/started`；拿不到 ⇒ 空串）。 */
-export function dispatchRoleOf(journal: Journal, sessionId: string): string {
+/**
+ * 某个子会话被派发成什么角色（取最新一条 `dispatch/started`；拿不到 ⇒ 空串）。
+ *
+ * **`REV-095` 必核四③（`TASK-279`）**：第三个参数可选地吃**已经算好的按 type 分组索引** ——
+ * 调用方若刚为别的判据读过台账（`verifyReviewFinding` 就是），传下来就**不再 `journal.read()` 一遍**。
+ * 判据一字未改（仍然是"按台账顺序扫 `dispatch/started`，取最后一条非空 `role`"），改的只是别重复读。
+ */
+export function dispatchRoleOf(journal: Journal, sessionId: string, index?: EventIndex): string {
+  const dispatchEvents = index === undefined
+    ? journal.read().events.filter((event) => event.type === 'dispatch/started')
+    : index.of('dispatch/started')
   let role = ''
-  for (const event of journal.read().events) {
-    if (event.type !== 'dispatch/started') continue
+  for (const event of dispatchEvents) {
     if (textOf(event.data['childSessionId']) !== sessionId) continue
     const found = textOf(event.data['role'])
     if (found !== '') role = found
@@ -880,7 +888,12 @@ export function verifyReviewFinding(
   // 修前每件都各读一次；现在读一次、四处共用（判据一字未改）。
   // **`TASK-220`**：`log` 换成记忆化的**按 type 分组索引**（recorded / claimed / dispatch 各取一组，
   // 不再对整份台账重扫三遍）；留痕整表也只取一次、两处共用（修前这里读两遍 8.5ms/遍）。
-  const index = journal.eventsIndex()
+  // **`REV-095` 必核四③（`TASK-279`）**：`dispatchRoleOf` 过去自己再 `journal.read()` 一次、
+  // 收尾的 `reviewAdoption` 又 `journal.eventsIndex()` 读一次 ⇒ 一次核实 **3 次** `read()`。
+  // 现在**第一次读就是唯一一次**：`log` 交给索引（`eventsIndex(log)` 不再读盘），索引交给
+  // `dispatchRoleOf`，`log` 与留痕整表一起交给 `reviewAdoption`。
+  const log = journal.read().events
+  const index = journal.eventsIndex(log)
   const dispositions = listDispositionsCached(store, journal)
   const recorded = recordedEvent(index, review.id)
   const recordedSession = typeof recorded?.data['sessionId'] === 'string' ? recorded.data['sessionId'] : undefined
@@ -893,7 +906,8 @@ export function verifyReviewFinding(
   const claimSession = claimed.sessionId
   const card = listTasks(store).find((item) => item.id === review.taskId)
   // 核实者的角色：从"这个会话被派发成什么角色"现算（拿不到就是 unknown，编不出来）
-  const verifierRole = input.sessionId === undefined ? '' : dispatchRoleOf(journal, input.sessionId)
+  // 传 `index`：这一次核实的台账读在函数开头已经发生过一次，别在这里再读一遍（`REV-095` 必核四③）
+  const verifierRole = input.sessionId === undefined ? '' : dispatchRoleOf(journal, input.sessionId, index)
   const ownerChecked: 'session' | 'no-claim' | 'owner-tenure-over' | 'owner-settled' | 'claim-released' = (() => {
     // **`DEF-099`（真机，2026-10-18）**：认领后**释放** ⇒ 当前没有 owner（旧实现把释放后的旧会话当 owner）。
     if (claimed.released) return 'claim-released'
@@ -1000,6 +1014,13 @@ export function verifyReviewFinding(
     // **`DEF-100`**：覆盖时把**被覆盖的那条**写进事件（派生视图只计最新，但审计要看得出"改过判"）
     ...(revised === undefined ? {} : { supersedes: revised }),
   })
+  /**
+   * **这里的读不能省**（`REV-095` 必核四③ 的边界，如实写清）：上面那一次读是**写之前**的快照，
+   * 而这一行要判的是**刚刚写下去**的那两条真源（`reviews/verified.yml` 的新留痕 + `review/verified` 新事件）
+   * ⇒ 必须按新代次重新取一次。把 `log` / `dispositions` 传进去会让它读到**写前**的旧表，
+   * 于是"最后一条发现核实完 ⇒ 可采纳"永远不成立（实测：`M67-01` 当场红）。
+   * 所以本函数的读数是 **写前 1 次（四处共用）+ 写后 1 次（判新状态）**，不是"全程 1 次"。
+   */
   const after = reviewAdoption(store, journal, review)
   const verified = findings.length - after.pending.length - after.stale.length - after.forged.length
   return {

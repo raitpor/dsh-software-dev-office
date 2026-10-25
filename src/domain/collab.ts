@@ -779,7 +779,18 @@ export interface PendingReviewBigCards {
   pending: string[]
 }
 
-export function pendingReviewBigCards(store: SdoStore, journal: Journal): PendingReviewBigCards {
+export function pendingReviewBigCards(
+  store: SdoStore,
+  journal: Journal,
+  /**
+   * **已经读出来的事件数组**（可选，`REV-095` 必核四③ / `TASK-279`）。
+   *
+   * 不传 ⇒ 本函数自己 `read()` 一次（命中缓存只是一次 stat）；传了 ⇒ **不再读盘**。
+   * 调用方（门禁 `review.required`）在同一次判定里还要向采纳表要表，两处本来会各读一次台账
+   * —— 传下来之后那一次判定只有**一次** `read()`（`M234-05` 的同一口径："一次调用只读一次"）。
+   */
+  events?: readonly JournalEvent[] | undefined,
+): PendingReviewBigCards {
   /**
    * **一次读、整本用**（`TASK-213` 落点二）。
    *
@@ -809,12 +820,12 @@ export function pendingReviewBigCards(store: SdoStore, journal: Journal): Pendin
    */
   return withProbeEpoch(() => {
     // 一次链里只读一次台账（`M234-05` 的"一次调用只读一次"）：这份事件数组一路传下去，下游不再 stat
-    const events = journal.read().events
+    const log = events ?? journal.read().events
     return journal.memoDerived(
       'pending-review-big-cards',
       [store.path('tasks'), store.path('reviews'), store.path('reviews', 'verified.yml')],
-      () => computePendingReviewBigCards(store, journal, events),
-      { apply: (previous, appended) => applyPendingReviewBigCards(store, journal, events, previous, appended) },
+      () => computePendingReviewBigCards(store, journal, log),
+      { apply: (previous, appended) => applyPendingReviewBigCards(store, journal, log, previous, appended) },
     )
   })
 }

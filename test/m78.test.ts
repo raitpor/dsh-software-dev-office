@@ -151,7 +151,13 @@ test('M78-04 R-12：判据按"是否产出产品工件"筛，而不是只排 rol
   assert.ok(uses.length >= 1, `C-45（review.independent）必须自己按产品工件筛（实际 ${uses.length} 处）`)
   const shared = collab.match(/producesProductArtifacts\(card\)/gu) ?? []
   assert.ok(shared.length >= 1, `共享判据（bigCardReviewVerdict）必须用同一个谓词（实际 ${shared.length} 处）`)
-  assert.match(gates, /pendingReviewBigCards\(ctx\.store, ctx\.journal\)/u, 'C-42 必须消费共享判据，不许另写一份过滤')
+  // **`TASK-279`（`REV-095` 必核四③）**：这条判据现在把**已经读出来的事件数组**一并传给共享判据
+  // （同一次判定只读一次台账）⇒ 参数表多一个可选位置；**接线口径没变**：仍然必须调共享函数，不许另写过滤。
+  assert.match(
+    gates,
+    /pendingReviewBigCards\(ctx\.store, ctx\.journal(?:, events)?\)/u,
+    'C-42 必须消费共享判据，不许另写一份过滤',
+  )
 })
 
 // ————————————————————————— R-13 —————————————————————————

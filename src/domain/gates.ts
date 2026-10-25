@@ -231,8 +231,8 @@ function na(id: string, reason: string): GateCriterionResult {
  * 的调用次数在门禁里降到 **0**。表的新鲜度由代次 + 来源探针负责（`bumpGeneration` 一写就作废），
  * 不再需要"一次检查一个临时缓存"那种作用域状态 —— 也就没有"同一个 ctx 复用导致读到旧表"的坑。
  */
-function gateAdoptions(ctx: GateContext): ReadonlyMap<string, ReviewAdoption> {
-  return adoptionTable(ctx.store, ctx.journal)
+function gateAdoptions(ctx: GateContext, events?: readonly JournalEvent[]): ReadonlyMap<string, ReviewAdoption> {
+  return adoptionTable(ctx.store, ctx.journal, events)
 }
 
 /** 被采纳、但**没有内容指纹**（老格式）的 `pass` 评审 id（G-2 的可见性标注）。 */
@@ -3058,10 +3058,14 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // **`TASK-213` 落点二**：`pendingReviewBigCards` 内部已读一次台账。
     // **`TASK-220`**：修前这里还会「再读一次重算采纳表」（`:3035-3039`）—— 现在改用`gateAdoptions`里
     // 那一张表（同一代次、同一探针；一次门禁检查里至多真算一次），评审表也走记忆化视图。
-    const set = pendingReviewBigCards(ctx.store, ctx.journal)
+    // **`REV-095` 必核四③（`TASK-279`）**：`pendingReviewBigCards(...)` 与 `gateAdoptions(ctx)` 各自
+    // 还会 `read()` 一次（命中缓存也只是 stat），于是**这一条判据读两次台账**。现在**本条判定只读一次**：
+    // 这一次读出来的事件既交给 `pendingReviewBigCards`（它不再读盘），也交给采纳表（同上）。
+    const events = ctx.journal.read().events
+    const set = pendingReviewBigCards(ctx.store, ctx.journal, events)
     if (set.considered.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
     const reviews = listReviewsCached(ctx.store, ctx.journal)
-    const adoptions = gateAdoptions(ctx)
+    const adoptions = gateAdoptions(ctx, events)
     const missing = set.missing
     const unadopted = set.unadopted.map(
       (row) => `${row.id}（${row.reviews.map((item) => `${item.id}：${reviewAdoptionLabel(item.state as never)}`).join('，')}）`,
