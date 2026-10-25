@@ -9,6 +9,7 @@ import { dirname } from 'node:path'
  *   ④ **失联不自动释放**：超时只报告"疑似失联"，释放必须显式 `release` / `reassign`（留痕）。
  */
 import type { Journal } from '../infra/journal.js'
+import { withProbeEpoch } from '../infra/journal.js'
 import { textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
 import type { EvidenceItem, JournalEvent, MitigatesWaiver, TaskCard } from '../types.js'
@@ -21,13 +22,14 @@ import { normalizeScopePath, scopeOverlaps, scopePathWithin } from './scopePaths
  * `cockpit` 落账（`office` 还是本项目的角色之一）。这里只做**身份白名单**，不含任何项目/语言假设。
  */
 const COCKPIT_ACTORS: readonly string[] = ['human', 'office', 'cockpit']
-import { listDefects, findingHashOf, listReviews, listTestResults, reviewContentHash, reviewReproIssue } from './records.js'
+import { listDefects, findingHashOf, listTestResults, reviewContentHash, reviewReproIssue } from './records.js'
 import type { Review } from './records.js'
 import { auditDoneEvidence } from './evidence.js'
 import { changedFilesSince } from './workspaceChanges.js'
 import { describeTestFirstGaps, testFirstGaps } from './testFirst.js'
 import {
   adoptionTable,
+  affectedReviewIds,
   blockingReview,
   listReviewsCached,
   reviewAdoption,
@@ -786,21 +788,51 @@ export function pendingReviewBigCards(store: SdoStore, journal: Journal): Pendin
    * 现在把这一份事件数组交给下游，下游不再自己去读。
    *
    * **`TASK-220`**：整张判定结果再按 `(台账路径, 代次)` **记忆化** —— 门禁 / 状态块 / `done` 关在一轮
-   * 里会重复问它（真账实测三次同价 43.09 / 42.45 / 43.60ms，零记忆化）。代次一变（任何 append /
-   * 重解析）或来源 YAML 被动过（探针失配）就整张作废：**同一个代次源**，不各算一套。
+   * 里会重复问它（真账实测三次同价 43.09 / 42.45 / 43.60ms，零记忆化）。来源 YAML 被动过（探针失配）
+   * 就整张作废：**同一个代次源**，不各算一套。
+   *
+   * **`TASK-230`**：代次变了不再整张作废 —— 写入只是**追加**事件，所以把「新追加的那几条」**增量应用**
+   * 进来（见 {@link applyPendingReviewBigCards}）；只有换 inode / 截断 / 全量重解析（读层走全量那一支）
+   * 才整张重算。实测：写 1 条事件后紧接读 **39.4 / 43.9 / 39.7ms** ⇒ 目标 < 2ms。
    *
    * 探针是**内容级**的（`REV-100` 第 1 条 / `DEF-218`）：`tasks/`、`reviews/` 两个目录都**逐条目** stat
    * （名字 + 尺寸 + mtime），所以"就地改一张已有卡的 `status`"也能看见（`M236-09` 钉住）。
    * 只 stat 目录本身不够 —— 目录 mtime/size 只在增删改名时变，而 `edit` / `echo >` 是同 inode 就地写。
    * 边界：写完把 mtime 回拨、或两次写落在同一时间刻度内 ⇒ 看不见（要挡住得做内容哈希，等于取消记忆化）。
    */
-  // 一次链里只读一次台账（`M234-05` 的"一次调用只读一次"）：这份事件数组一路传下去，下游不再 stat
-  const events = journal.read().events
-  return journal.memoDerived(
-    'pending-review-big-cards',
-    [store.path('tasks'), store.path('reviews'), store.path('reviews', 'verified.yml')],
-    () => computePendingReviewBigCards(store, journal, events),
-  )
+  /**
+   * **探针作用域**（`TASK-230`）：一次查询里的 4 张表共用同一轮 `stat`。
+   *
+   * 不加它，同一次 `pendingReviewBigCards` 会把 `tasks/`（真账 256 项）与 `reviews/`（121 项）
+   * 各 stat 两到四遍（单遍实测 0.3–0.8ms）—— 光探针就吃掉本卡"< 2ms"的大半预算。
+   * 作用域内全是同步代码，不存在"作用域里有人手改 YAML"的时间窗（见 `withProbeEpoch` 的说明）。
+   */
+  return withProbeEpoch(() => {
+    // 一次链里只读一次台账（`M234-05` 的"一次调用只读一次"）：这份事件数组一路传下去，下游不再 stat
+    const events = journal.read().events
+    return journal.memoDerived(
+      'pending-review-big-cards',
+      [store.path('tasks'), store.path('reviews'), store.path('reviews', 'verified.yml')],
+      () => computePendingReviewBigCards(store, journal, events),
+      { apply: (previous, appended) => applyPendingReviewBigCards(store, journal, events, previous, appended) },
+    )
+  })
+}
+
+/**
+ * **任务卡整表**的只读记忆化视图（`TASK-230`）。
+ *
+ * 为什么需要它：`listTasks` 要读 `tasks/*.yml` **256 个文件**（真账实测 27.9ms），而它一个事件都不读
+ * —— 修前每写一条事件就被整批作废并重读一遍，是"写后读 30–40ms"里最大的一块。
+ *
+ * `dependsOnEvents: false` 的依据是**读 compute 的体**：`listTasks(store)` 只碰 `tasks/` 目录
+ * （`listTaskIds` + `readTask`）。将来若让它读 `roles.yml` / config / 事件，**必须**把那些路径加进
+ * `probes`，否则会安静地读到旧表（`REV-100` 的扩探针义务）。
+ */
+function listTasksCached(store: SdoStore, journal: Journal): TaskCard[] {
+  return journal.memoDerived('tasks-table', [store.path('tasks')], () => listTasks(store), {
+    dependsOnEvents: false,
+  })
 }
 
 /** {@link pendingReviewBigCards} 的实心实现（只在记忆化未命中时跑一次）。 */
@@ -815,7 +847,7 @@ function computePendingReviewBigCards(
   const considered: string[] = []
   const missing: string[] = []
   const unadopted: { id: string; reviews: { id: string; state: string }[] }[] = []
-  for (const task of listTasks(store)) {
+  for (const task of listTasksCached(store, journal)) {
     if (task.status !== 'done') continue
     const verdict = bigCardReviewVerdict(task, reviews, adoptions)
     if (!verdict.considered) continue
@@ -828,6 +860,85 @@ function computePendingReviewBigCards(
     unadopted.push({ id: task.id, reviews: verdict.reviews })
   }
   return { considered, missing, unadopted, pending: [...missing, ...unadopted.map((row) => row.id)] }
+}
+
+/**
+ * **增量应用**（`TASK-230`）：只重判"被新事件点名的那几张卡"，未受影响的卡**原样沿用**旧结论。
+ *
+ * 为什么这样是对的（台账是 append-only）：写一条事件只会在**末尾**多一行，已有的 `task/*.yml`、
+ * `reviews/*.yml` 一个字节都没变（变了就走探针失配 ⇒ 整批重算，轮不到这里）。而一张卡的判定只由
+ * ①它的卡面（YAML）②它的 `pass` 评审（YAML）③这些评审的**采纳态**（事件）决定 —— 前两项由探针把关，
+ * 所以"新事件"能影响的**只能**是「被它点名的那些评审所归属的卡」。
+ *
+ * **顺序与全集都要与整批重算逐字相同**：仍然按 `listTasksCached` 的卡序走一遍（256 次 `Set` 查询 ≈ 0.02ms），
+ * 未受影响的卡从旧结论里**继承成员关系**（在 `considered` / `missing` / `unadopted` 的哪一档），
+ * 受影响的卡现算一遍 `bigCardReviewVerdict`（与整批重算**同一个函数**，不另写一套判据）。
+ *
+ * 三种情形返回**同一份旧结论**：① 新事件一条都没点名评审（例如 `task/updated` 这类与采纳无关的类型）
+ * ⇒ 结论不可能变；② 点名的评审不属于任何在册卡；③ 受影响的卡都不在中大卡考虑集里。
+ */
+function applyPendingReviewBigCards(
+  store: SdoStore,
+  journal: Journal,
+  events: readonly JournalEvent[],
+  previous: PendingReviewBigCards,
+  appended: readonly JournalEvent[],
+): PendingReviewBigCards | undefined {
+  const affectedReviews = affectedReviewIds(appended)
+  if (affectedReviews.size === 0) return previous
+  const reviews = listReviewsCached(store, journal)
+  const affectedCards = new Set(
+    reviews.filter((review) => affectedReviews.has(review.id)).map((review) => review.taskId),
+  )
+  if (affectedCards.size === 0) return previous
+  const adoptions = adoptionTable(store, journal, events)
+  const before = new Set(previous.considered)
+  const beforeMissing = new Set(previous.missing)
+  const beforeUnadopted = new Map(previous.unadopted.map((row) => [row.id, row.reviews]))
+  const considered: string[] = []
+  const missing: string[] = []
+  const unadopted: { id: string; reviews: { id: string; state: string }[] }[] = []
+  let changed = false
+  for (const task of listTasksCached(store, journal)) {
+    if (!before.has(task.id) && !affectedCards.has(task.id)) continue
+    if (affectedCards.has(task.id)) {
+      const verdict = bigCardReviewVerdict(task, reviews, adoptions)
+      const wasConsidered = before.has(task.id)
+      const nowConsidered = verdict.considered
+      if (wasConsidered !== nowConsidered) changed = true
+      if (!nowConsidered) continue
+      considered.push(task.id)
+      if (verdict.state === 'adopted') {
+        if (beforeMissing.has(task.id) || beforeUnadopted.has(task.id)) changed = true
+        continue
+      }
+      if (verdict.state === 'missing') {
+        if (!beforeMissing.has(task.id)) changed = true
+        missing.push(task.id)
+        continue
+      }
+      if (beforeMissing.has(task.id) || !beforeUnadopted.has(task.id)) changed = true
+      unadopted.push({ id: task.id, reviews: verdict.reviews })
+      continue
+    }
+    // 未受影响的卡：成员关系照旧搬过来（判据没有重算，也不该重算）
+    considered.push(task.id)
+    if (beforeMissing.has(task.id)) {
+      missing.push(task.id)
+      continue
+    }
+    const rows = beforeUnadopted.get(task.id)
+    if (rows !== undefined) unadopted.push({ id: task.id, reviews: rows })
+  }
+  const next = { considered, missing, unadopted, pending: [...missing, ...unadopted.map((row) => row.id)] }
+  // 连 `pending` 都没变（很常见：`review/verified` 事件改了采纳态但结论仍是"待核实"）⇒ 交回旧对象
+  if (!changed && samePendingBigCards(previous, next)) return previous
+  return next
+}
+
+/** 两份判定读数是否**逐字段相同**（用于"增量算完发现结论没变 ⇒ 交回旧对象"）。 */
+function samePendingBigCards(a: PendingReviewBigCards, b: PendingReviewBigCards): boolean {
+  return JSON.stringify(a) === JSON.stringify(b)
 }
 
 /**
@@ -1075,7 +1186,8 @@ export function report(store: SdoStore, journal: Journal, input: ReportInput): R
     // **`TASK-213`**：本卡的采纳表与下面的逐条回显读同一份台账 ⇒ 只在上面读一次/下面各读一次会重复
     const doneLog = journal.read().events
     const cardAdoptions = new Map(reviewAdoptions(store, journal, doneLog).map((item) => [item.review.id, item]))
-    const reviewVerdict = bigCardReviewVerdict(task, listReviews(store), cardAdoptions)
+    // **`TASK-230` 落点二**：改走**记忆化评审表**（修前每张卡 done 都重读 121 个 YAML，真账 6.6~14.5ms）
+    const reviewVerdict = bigCardReviewVerdict(task, listReviewsCached(store, journal), cardAdoptions)
     if (reviewVerdict.considered && reviewVerdict.state !== 'adopted') {
       if (requireOnDone) {
         return { ok: false, code: 'review-required', detail: describeReviewGateRefusal(task, reviewVerdict) }
@@ -1269,7 +1381,8 @@ export function appendReviewFindings(
   journal: Journal,
   input: AppendReviewFindingsInput,
 ): AppendReviewFindingsResult {
-  const review = listReviews(store).find((item) => item.id === input.reviewId)
+  // **`TASK-230` 落点二**：改走**记忆化评审表**（修前每次追加发现都重读 121 个 YAML）
+  const review = listReviewsCached(store, journal).find((item) => item.id === input.reviewId)
   if (review === undefined) {
     return { ok: false, code: 'no-review', detail: fmt('uiReview.appendNoReview', { p1: input.reviewId }) }
   }

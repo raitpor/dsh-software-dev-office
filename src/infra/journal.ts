@@ -75,6 +75,15 @@ interface JournalCacheEntry {
   head: string
   /** 首行锚点**结束**的字节偏移（与 `consumed` 同口径：行尾 `\n` 之后）。 */
   headEnd: number
+  /**
+   * **挂在缓存条目上的按 type 分组索引**（`TASK-230`）。
+   *
+   * 为什么挂在**读层条目**上而不是派生表记忆化里：索引是"这一份已解析事件"的纯函数，
+   * 而读层条目**自己知道**它刚提交了哪几条新事件 —— 续读尾部时顺手 `extendEventIndex` 即可，
+   * 不需要第三套判据去猜"代次之间的差到底是哪些事件"。条目一换（全量重解析 / 截断 / 失效），
+   * 索引跟着一起换：**同一个源**。
+   */
+  index?: EventIndex
 }
 
 /**
@@ -128,6 +137,12 @@ export const journalReadStats = {
  *   ② **读时发现变了**：全量重解析 / 续读尾部 / 截断（`commit` / `truncateAt`）；
  *   ③ **缓存被丢掉**：台账不见了（`read()` 的 miss 分支）。
  *
+ * **`TASK-230`：换代分两种**（`kind`）—— 派生表层不再"见换代就整批作废"：
+ *   · `append`（只追加）：保留已有派生表，把新追加的事件**增量应用**进去（见 {@link noteAppendedEvents}）；
+ *   · `wholesale`（换 inode / 变短 / 锚点不匹配 / 坏行截断 / 显式失效）：整批作废 + 重建。
+ * 这两档的**判据只有一份**：读层走"续读尾部"就是 `append`，读层走"全量重解析"就是 `wholesale`
+ * —— 折表层不许自己另判一套（`DEF-044` 的教训）。
+ *
  * 与读层缓存的关系：**同一个源**。读层条目换了（任何一条解析路径），代次就换；读层零解析命中，
  * 代次就不动 —— 两者不会各算一套（这正是本卡 DoD 的硬要求）。
  */
@@ -138,10 +153,30 @@ export function journalGeneration(path: string): number {
   return JOURNAL_GENERATION.get(path) ?? 0
 }
 
-/** 换代：代次 +1，并把该台账的**派生表整批失效**（同一口，别处不许自己清）。 */
-function bumpGeneration(path: string): void {
-  JOURNAL_GENERATION.set(path, journalGeneration(path) + 1)
-  invalidateDerivedTables(path)
+/** 换代的同时，派生表这边怎么处置（`TASK-230`）：只追加 / 整批作废 / 只抬增量地板。 */
+type GenerationKind =
+  /** 只追加：派生表**保留**，新事件留待增量应用 */
+  | 'append'
+  /** 整批作废：换 inode / 变短 / 锚点不匹配 / 坏行截断 / 显式失效 */
+  | 'wholesale'
+  /**
+   * 只抬增量地板、**不**作废表：读层"续读尾部"但末行未终结（正在写）—— 交出去的事件里含一条**没进缓存**
+   * 的事件，若允许增量，下一次读把它补全后再应用一次就会**重复计入**（见 `AppendSegment` 的说明）。
+   */
+  | 'floor'
+
+/** 换代：代次 +1；按 `kind` 决定派生表是**增量续命**、**整批作废**、还是**只抬地板**（同一口，别处不许自己清）。 */
+function bumpGeneration(path: string, kind: GenerationKind = 'wholesale'): number {
+  const next = journalGeneration(path) + 1
+  JOURNAL_GENERATION.set(path, next)
+  if (kind === 'wholesale') {
+    noteWholesaleChange(path, next, false)
+    invalidateDerivedTables(path)
+  } else if (kind === 'floor') {
+    // 「末行未终结」：**不**作废表（这一份视图对"读到什么"仍然是对的），但要**封口**，不许接着增量
+    noteWholesaleChange(path, next, true)
+  }
+  return next
 }
 
 /**
@@ -174,19 +209,73 @@ const DERIVED_MEMO_LIMIT = 64
  * / `pending-review-big-cards`），值是次数：
  *   · `computes`：真的重算了多少次（门禁一次检查里「采纳表 ≤ 1 次真算」读它）；
  *   · `hits`：命中记忆化多少次；
- *   · `probeMisses`：因**来源文件被改**（或代次变了）而重建多少次。
+ *   · `probeMisses`：因**来源文件被改**（或代次变了、增量又接不上）而重建多少次；
+ *   · `incrementalApplies` / `fullRecomputes`：**`TASK-230` 分开记**的两档 —— 见下面各自的说明。
  */
 export const derivedTableStats = {
   computes: {} as Record<string, number>,
   hits: {} as Record<string, number>,
   probeMisses: {} as Record<string, number>,
+  /**
+   * **增量应用**次数（`TASK-230`）：只把「上一次计算之后**新追加**的那些事件」并进旧结论，
+   * 没有整批重算（`compute()` 一次都没跑）。
+   *
+   * 为什么必须与 {@link fullRecomputes} 分开记：二者之和才是"这张表被喂饱的次数"，
+   * 单看 `computes` 分不出「整批重算」与「只应用新增事件」—— 而那正是本卡的判据
+   * （连续 10 次「写→读」：`fullRecomputes` = 1（首次）、`incrementalApplies` = 10）。
+   */
+  incrementalApplies: {} as Record<string, number>,
+  /**
+   * **整批重算**次数（`TASK-230`）：`compute()` 真的从头折了一遍 —— **含首次建表**。
+   * 与 {@link computes} 逐次同增（同一件事的两个名字：`computes` 是 `TASK-220` 的历史读数面，
+   * 本卡按 DoD 点名的名字另记一份，不改旧名字的含义）。
+   */
+  fullRecomputes: {} as Record<string, number>,
 }
 
-/** 清零派生表计数器（守卫与复现脚本用；不影响记忆化内容）。 */
+/** 清零派生表计数器（守卫与复现脚本用；不影响记忆化内容，也不清增量日志 —— 那是状态、不是读数）。 */
 export function resetDerivedTableStats(): void {
   derivedTableStats.computes = {}
   derivedTableStats.hits = {}
   derivedTableStats.probeMisses = {}
+  derivedTableStats.incrementalApplies = {}
+  derivedTableStats.fullRecomputes = {}
+}
+
+/**
+ * **一行读数**（`TASK-230` 落点三的"可查"面）。
+ *
+ * 为什么要一个纯函数：这两个计数器在进程外看不见（它们不是回执的一部分），而本卡的判据
+ * （`incrementalApplies` / `fullRecomputes`）必须能被第三人**当场读出来并核对**。
+ * 输出是**语言无关**的 `表名: full=… incremental=… hits=…` 形态 —— 渲染成给人看的那一行
+ * 由消费点按自己的语言面负责（本模块不含用户可见文案，与 `derivedTableStats` 同一路数）。
+ *
+ * **诚实的边界**：它只把读数摆出来，**不**自动进任何门禁/回执。要把这一行渲染进门禁回执，
+ * 得改 `src/domain/gates.ts`（`TASK-230` 的写范围不含它）—— 见本卡交付说明里的跟卡建议。
+ */
+export function describeDerivedTableStats(): string {
+  return deriveTableStatsLine(derivedTableStats)
+}
+
+/**
+ * **把一份派生表计数渲染成一行**（`TASK-230`）：`表名: full=… incremental=… hits=…`，按表名排序。
+ *
+ * 为什么把"拼这一行"单独抽出来：门禁 / 回执要渲染的是**同一份**读数，不允许各写一份格式
+ * （`DEF-044` 的教训：同一概念两处判据必然分叉）。纯函数 —— 传进来一份计数就渲染一份，
+ * 不读全局、不写盘，便于守卫拿它做"只有一处格式"的断言。
+ */
+export function deriveTableStatsLine(stats: {
+  computes: Record<string, number>
+  incrementalApplies: Record<string, number>
+  fullRecomputes: Record<string, number>
+  hits: Record<string, number>
+}): string {
+  const names = [...new Set([...Object.keys(stats.computes), ...Object.keys(stats.incrementalApplies)])].sort()
+  return names
+    .map((name) => `${name}: full=${stats.fullRecomputes[name] ?? 0}`
+      + ` incremental=${stats.incrementalApplies[name] ?? 0}`
+      + ` hits=${stats.hits[name] ?? 0}`)
+    .join(' | ')
 }
 
 function tally(bucket: Record<string, number>, key: string): void {
@@ -216,7 +305,15 @@ function tally(bucket: Record<string, number>, key: string): void {
  * 漏了不会报错，只会安静地读到旧表。
  */
 function probeStamp(probes: readonly string[]): string {
-  return probes.map((probe) => pathStamp(probe)).join('|')
+  const key = probes.join('\u0000')
+  const epoch = PROBE_EPOCH
+  if (epoch !== undefined) {
+    const remembered = epoch.get(key)
+    if (remembered !== undefined) return remembered
+  }
+  const stamp = probes.map((probe) => pathStamp(probe)).join('|')
+  if (epoch !== undefined) epoch.set(key, stamp)
+  return stamp
 }
 
 /** 单条来源路径的戳（目录 = 逐条目聚合；文件 = 四元组；读不到 = `-`）。 */
@@ -253,25 +350,198 @@ export function invalidateDerivedTables(path?: string): void {
   }
 }
 
+/**
+ * **派生表的记忆化选项**（`TASK-230`）。
+ *
+ * 为什么要把"吃不吃事件"变成一个显式声明：修前每张表都按 `(路径, 代次)` 记忆化，而**代次是"台账变了"**
+ * 的记号、不是"这张表的输入变了"的记号 —— 于是 `reviews-table`（真源 `reviews/*.yml`）、
+ * `dispositions-table`（`reviews/verified.yml`）、任务卡表（`tasks/*.yml`）在**每一次 append 之后**
+ * 都被整批作废并重算，哪怕它们一个事件都不读。真账实测：写 1 条事件后紧接读 `pendingReviewBigCards`
+ * **36.4 / 30.1 / 35.2ms**，五张表各真算 4 次、零复用。
+ */
+export interface DerivedMemoOptions<T> {
+  /**
+   * 这张派生表**吃不吃台账事件**（默认 `true`）。
+   *
+   *   · `true` ⇒ 键 = `(台账路径, 代次, 探针戳)`：代次一变，要么**增量应用**（见 {@link apply}）、
+   *     要么整批重算；
+   *   · `false` ⇒ 键 = `(台账路径, 探针戳)`：**只看来源文件**。只给"compute 一个事件都不读"的表
+   *     （评审表 / 留痕表 / 任务卡表）—— 它们的真源是手可编辑的 YAML，不是 journal。
+   *     声明错了的后果很重（事件写入就再也看不见了），所以**判定标准是读 compute 的体**，不是名字。
+   */
+  dependsOnEvents?: boolean
+  /**
+   * **增量应用**（只有 `dependsOnEvents !== false` 的表用得上）。
+   *
+   * 入参 = 上一份结果 + 「上一次计算之后**新追加**的那些事件」（来自 {@link appendedSince} 的日志）。
+   * 返回 `undefined` ⇒ 放弃增量、整批重算（**保守方向**：宁可重算，也不把结论缝错）。
+   *
+   * 调用方的义务（三条，缺一条就是静默错判）：
+   *   ① **与 `compute` 同判**：只许把"新事件的影响"并进旧结论，不许顺手改旧结论；
+   *   ② **只认它能证明无关/相关的事件类型**：拿不准就 `return undefined`；
+   *   ③ 只能读到"当前状态"的输入（`listReviewsCached` / `listDispositionsCached` / `eventsIndex`）——应用期间再读盘是允许的，
+   *      但那时读到的必须是**同一个代次**（`memoDerivedValue` 会再核一次代次，不符则不登记）。
+   */
+  apply?: (previous: T, appended: readonly JournalEvent[]) => T | undefined
+}
+
+/**
+ * **追加段日志**（`TASK-230`）：每个台账路径下，**每一次只追加的解析**记一段 `{ 代次, 身份, 事件 }`。
+ *
+ * 它是"增量应用"的唯一凭据：某张表停在代次 `g`，而现在代次是 `g+n`，那么只要
+ * **`g` 之后发生的每一次换代都是"只追加"**（没有整批作废），就能把 `g` 之后各段事件
+ * 依次并进旧结论 —— 台账是 append-only，已有结论因此不变。
+ *
+ * **什么时候整批作废**（`floor` 抬到当代次）：换 inode / 变短 / 锚点不匹配 / 坏行截断 / 显式失效
+ * —— **与读层同一个判据**（读层走"全量重解析"的那几支，这里就抬 `floor`；读层走"续读尾部"，
+ * 这里就记一段）。抬 `floor` 之后，`generation <= floor` 的旧表一律不许增量（只能整批重算）。
+ *
+ * **为什么 `floor` 是 `<=` 而不是 `<`**：读层"续读尾部"遇到**末行未终结**（正在写）时，交出去的事件
+ * 数组里含一条**没进缓存**的半截事件；此时若把当次换代记成"可增量"，下一次读把那一行补全、
+ * 记成新追加段，就会把同一条事件**应用两次**。所以那一档只抬 `floor`、不记段（见 `commit`）。
+ */
+interface AppendSegment {
+  /** 记这一段时的代次（单调递增，与 `journalGeneration` 同一个源） */
+  generation: number
+  /** 记这一段时台账的身份（`dev:ino`）—— 与读层同一口径：身份变了就不是 append-only */
+  dev: number
+  ino: number
+  /** 这一段里**新提交**的事件（保持台账顺序） */
+  events: JournalEvent[]
+}
+
+const APPEND_LOG = new Map<string, { floor: number; seal: number; trimmedBelow: number; segments: AppendSegment[] }>()
+/** 每本台账最多留多少段（只为不让进程内存无界增长；超出就把更早的段折进 `trimmedBelow`）。 */
+const APPEND_LOG_LIMIT = 32
+
+function appendLogOf(path: string): { floor: number; seal: number; trimmedBelow: number; segments: AppendSegment[] } {
+  const existing = APPEND_LOG.get(path)
+  if (existing !== undefined) return existing
+  const fresh = { floor: 0, seal: 0, trimmedBelow: 0, segments: [] as AppendSegment[] }
+  APPEND_LOG.set(path, fresh)
+  return fresh
+}
+
+/**
+ * 记一段**只追加**的事件（读层走了"变长 ⇒ 续读尾部"那一支）。
+ *
+ * `dev` / `ino` 不是装饰：**身份变了就不是 append-only**（读层那一支本来也不会走到这里 —— 换 inode
+ * 一定落进全量重解析）。这里做一次防御性对账：若上一段的身份与这一段不同（只可能来自并发会话在
+ * 两次读之间把台账换了个 inode 而本次又被判成续读），就把日志**封口**（抬 `floor` + 清段）——
+ * 宁可让派生表整批重算一次，也不把两段不同历史的结论缝在一起。
+ */
+function noteAppendedEvents(path: string, generation: number, dev: number, ino: number, events: readonly JournalEvent[]): void {
+  const log = appendLogOf(path)
+  const previous = log.segments[log.segments.length - 1]
+  if (previous !== undefined && (previous.dev !== dev || previous.ino !== ino)) {
+    noteWholesaleChange(path, generation, false)
+    return
+  }
+  log.segments.push({ generation, dev, ino, events: [...events] })
+  if (log.segments.length > APPEND_LOG_LIMIT) {
+    const dropped = log.segments.splice(0, log.segments.length - APPEND_LOG_LIMIT)
+    const newest = dropped[dropped.length - 1]
+    if (newest !== undefined && newest.generation > log.trimmedBelow) log.trimmedBelow = newest.generation
+  }
+}
+
+/**
+ * 这条台账在 `generation` 上发生了**不连续**。
+ *
+ * `seal`（封口）= 这一次换代的那一份视图**含有一条没进缓存的事件**（末行未终结）——
+ * 停在**当次及更早**代次的表不许增量（否则下一次读把那一行补全后会把它**应用两次**）。
+ * 其它不连续（换 inode / 截断 / 全量重解析 / 显式失效）只抬 `floor`：停在 `floor` **那一代**的表是
+ * 在这次不连续**之后**才算出来的（代次只增不减），可以接着增量；更早的不能。
+ */
+function noteWholesaleChange(path: string, generation: number, seal: boolean): void {
+  const log = appendLogOf(path)
+  if (generation > log.floor) log.floor = generation
+  if (seal && generation > log.seal) log.seal = generation
+  log.segments = []
+}
+
+/**
+ * **代次 `generation` 之后新追加的事件**（`TASK-230`）。
+ *
+ * 三种返回：`undefined` = **无法证明**只是追加（抬过 `floor` / 段日志被裁掉了更早的段）⇒ 调用方必须整批重算；
+ * `[]` = 代次变了但**没有**可应用的新事件（例如刚 `markWritten` 还没重读）⇒ 同样整批重算（保守）；
+ * 非空 = 这些段按记录顺序拼起来的追加事件。
+ */
+function appendedSince(path: string, generation: number): JournalEvent[] | undefined {
+  const log = APPEND_LOG.get(path)
+  if (log === undefined) return []
+  if (generation < log.floor) return undefined
+  // `<=`：封口那一代及更早不许增量（那一份视图里含一条没进缓存的事件，见 `noteWholesaleChange`）
+  if (generation <= log.seal) return undefined
+  if (generation < log.trimmedBelow) return undefined
+  const out: JournalEvent[] = []
+  for (const segment of log.segments) {
+    if (segment.generation > generation) out.push(...segment.events)
+  }
+  return out
+}
+
+/**
+ * **探针戳的作用域**（`TASK-230`）：一次**同步**的顶层查询里，同一组探针只 stat 一遍。
+ *
+ * 为什么需要它：写 1 条事件之后的一次 `pendingReviewBigCards` 会顺次问到 4 张表
+ * （`pending-review-big-cards` → `review-adoptions` → `dispositions-table` / `reviews-table` → 任务卡表），
+ * 而每张表都要复算自己的来源探针（真账 `tasks/` 256 项 + `reviews/` 121 项 ≈ 0.3–0.8ms/次）
+ * ⇒ 同一次查询里把同一组目录 stat 四遍，光探针就吃掉毫秒级预算。
+ *
+ * **为什么这是安全的**：作用域内全是同步代码（没有 `await`、没有回调让出），单线程下**不存在**
+ * "作用域之内有人手改了 YAML"的时间窗；跨调用（下一次工具调用）作用域已经关掉，探针必然重算。
+ * 边界照旧：写完之后把 mtime 回拨、或两次写落在同一时间刻度内，探针本来就看不见（见 {@link pathStamp}）。
+ */
+let PROBE_EPOCH: Map<string, string> | undefined
+
+/** 在一个**探针作用域**内跑 `fn`（可嵌套；只有最外层建立/销毁缓存）。 */
+export function withProbeEpoch<T>(fn: () => T): T {
+  if (PROBE_EPOCH !== undefined) return fn()
+  PROBE_EPOCH = new Map()
+  try {
+    return fn()
+  } finally {
+    PROBE_EPOCH = undefined
+  }
+}
+
 /** {@link memoDerived} 的实现（对外只经 `Journal.memoDerived` 用 —— 键里的路径由 `Journal` 给）。 */
 export function memoDerivedValue<T>(
   path: string,
   name: string,
   probes: readonly string[],
   compute: () => T,
+  options: DerivedMemoOptions<T> = {},
 ): T {
   const key = `${path}\u0000${name}`
+  const eventDependent = options.dependsOnEvents !== false
   const generation = journalGeneration(path)
   const stamp = probeStamp(probes)
   const cached = DERIVED_MEMO.get(key)
   if (cached !== undefined) {
-    if (cached.generation === generation && cached.stamp === stamp) {
+    // ① 命中：来源没动；吃事件的表还要求代次一致（不吃事件的表按定义**不**看代次，见 options 的说明）
+    if (cached.stamp === stamp && (!eventDependent || cached.generation === generation)) {
       tally(derivedTableStats.hits, name)
       return cached.value as T
+    }
+    // ② **增量应用**（`TASK-230`）：来源一字未动、只有"新追加的事件"⇒ 把这几条并进旧结论
+    if (eventDependent && options.apply !== undefined && cached.stamp === stamp && cached.generation < generation) {
+      const appended = appendedSince(path, cached.generation)
+      if (appended !== undefined && appended.length > 0) {
+        const incremented = options.apply(cached.value as T, appended)
+        if (incremented !== undefined) {
+          tally(derivedTableStats.incrementalApplies, name)
+          // 应用期间台账又换代（同步代码里只可能是读层自己续读）⇒ 只交结果、不登记，下次重新判
+          if (journalGeneration(path) === generation) DERIVED_MEMO.set(key, { generation, stamp, value: incremented })
+          return incremented
+        }
+      }
     }
     tally(derivedTableStats.probeMisses, name)
   }
   tally(derivedTableStats.computes, name)
+  tally(derivedTableStats.fullRecomputes, name)
   const value = compute()
   // 计算期间台账又变了（或来源文件又被动过）⇒ 只交结果、不登记：宁可不缓存，也不留陈旧条目。
   if (journalGeneration(path) === generation && probeStamp(probes) === stamp) {
@@ -302,12 +572,28 @@ export interface EventIndex {
 
 const EMPTY_EVENT_GROUP: readonly JournalEvent[] = []
 
+/**
+ * **索引的内部结构**（`TASK-230`）：`EventIndex` 是对外形状，分组表放在这里而不是接口上
+ * —— 对外三个方法一个字都没变（`M234-05` / `M236-*` 读的是它们），内部才能做**按 type 的增量扩展**。
+ */
+const EVENT_INDEX_GROUPS = new WeakMap<EventIndex, Map<string, JournalEvent[]>>()
+
 /** 两份事件数组是否**同一视图**（便宜的三指纹：长度 + 首 seq + 末 seq）。 */
 function sameEventsView(a: readonly JournalEvent[], b: readonly JournalEvent[]): boolean {
   if (a === b) return true
   if (a.length !== b.length) return false
   if (a.length === 0) return true
   return a[0]?.seq === b[0]?.seq && a[a.length - 1]?.seq === b[b.length - 1]?.seq
+}
+
+function makeEventIndex(events: readonly JournalEvent[], groups: Map<string, JournalEvent[]>): EventIndex {
+  const index: EventIndex = {
+    events,
+    of: (type) => groups.get(type) ?? EMPTY_EVENT_GROUP,
+    sameViewAs: (other) => sameEventsView(events, other),
+  }
+  EVENT_INDEX_GROUPS.set(index, groups)
+  return index
 }
 
 function buildEventIndex(events: readonly JournalEvent[]): EventIndex {
@@ -317,11 +603,33 @@ function buildEventIndex(events: readonly JournalEvent[]): EventIndex {
     if (group === undefined) groups.set(event.type, [event])
     else group.push(event)
   }
-  return {
-    events,
-    of: (type) => groups.get(type) ?? EMPTY_EVENT_GROUP,
-    sameViewAs: (other) => sameEventsView(events, other),
+  return makeEventIndex(events, groups)
+}
+
+/**
+ * **增量扩展一份事件索引**（`TASK-230`）：只碰"确实有新事件的那几个 type"。
+ *
+ * 为什么不是重建：真账 8848 条事件重建索引实测 1.18ms —— 单看不多，但它和"探针 + 采纳表 + 任务卡表"
+ * 叠在同一次写后读里就吃掉了半个预算；而 append 只新增一两条事件，**已有分组一条都不用动**。
+ * 三条纪律：
+ *   · **共享 untouched 分组**（按引用），只对**有新事件的 type** 做一次写时复制 —— 旧索引仍然只读可用；
+ *   · `events` 换成**这一份全量视图**（调用方的数组），`sameViewAs` 的判据因此仍是"长度 + 首末 seq"；
+ *   · 只有**依次追加**才算增量（调用方：读层续读尾部那一支），乱序/截断一律走重建。
+ */
+function extendEventIndex(previous: EventIndex, appended: readonly JournalEvent[], view: readonly JournalEvent[]): EventIndex {
+  const base = EVENT_INDEX_GROUPS.get(previous) ?? new Map<string, JournalEvent[]>()
+  const groups = new Map(base)
+  for (const event of appended) {
+    const current = groups.get(event.type)
+    if (current === undefined) {
+      groups.set(event.type, [event])
+      continue
+    }
+    // 第一次碰到这个 type ⇒ 写时复制（别把新事件 push 进旧索引还在用的数组里）
+    if (current === base.get(event.type)) groups.set(event.type, [...current, event])
+    else current.push(event)
   }
+  return makeEventIndex(view, groups)
 }
 
 /** 清零计数器（守卫与复现脚本用；不影响缓存内容）。 */
@@ -442,29 +750,34 @@ export class Journal {
    *
    * 用法纪律：`compute` 里**不许写盘**（写盘换代次 ⇒ 这次结果不会被登记，得下次重算）；
    * 返回的数组/Map 是**共享只读视图**，调用方要改就先自己拷一份。
+   * `options`（`TASK-230`）：声明这张表**吃不吃事件**、以及**能不能增量应用**。
    */
-  memoDerived<T>(name: string, probes: readonly string[], compute: () => T): T {
-    return memoDerivedValue(this.journalPath(), name, probes, compute)
+  memoDerived<T>(name: string, probes: readonly string[], compute: () => T, options: DerivedMemoOptions<T> = {}): T {
+    return memoDerivedValue(this.journalPath(), name, probes, compute, options)
   }
 
   /**
-   * **按 type 分组的事件索引**（记忆化；键 = 代次）。
+   * **按 type 分组的事件索引**（`TASK-220` 的第一张派生表；`TASK-230` 起**增量扩展**）。
    *
    * 两种吃法：
-   *   · 不给 `events` ⇒ 先 `read()` 让代次落定，再建索引（**一次读**；命中缓存 0.04ms）；
+   *   · 不给 `events` ⇒ 先 `read()` 让代次落定，再取索引（**一次读**；命中缓存 0.04ms）；
    *   · 给了 `events` ⇒ 见 {@link indexOf}（**不再读**：调用方刚读过，别为了查一次索引又 stat 一遍 ——
    *     `M234-05` 的"一次 `pendingReviewBigCards` 只读一次台账"就是靠这条守住的）。
+   *
+   * **`TASK-230` 的落点**：索引不再挂在"派生表记忆化"上，而是挂在**读层缓存条目**上
+   * （`JournalCacheEntry.index`）—— 续读尾部时由读层顺手 `extendEventIndex`，于是"写 1 条事件后
+   * 紧接读"不必重建 8848 条事件的分组（实测重建 1.18ms，而这个预算要让给别的表）。
    */
   eventsIndex(events?: readonly JournalEvent[]): EventIndex {
     if (events !== undefined) return this.indexOf(events)
-    const fresh = this.read().events
-    return memoDerivedValue(this.journalPath(), 'events-by-type', [], () => buildEventIndex(fresh))
+    return this.indexOf(this.read().events)
   }
 
   /**
    * 给**调用方自带的事件数组**配一份索引（**不读盘**）。
    *
-   * 三指纹（长度 + 首末 seq）与读层缓存里那一份相同 ⇒ 直接用按代次记忆化的索引；
+   * 三指纹（长度 + 首末 seq）与读层缓存里那一份相同 ⇒ 直接用条目上挂着的那一份索引
+   * （没有就现建并**挂上去**：同一个条目再来问就不必重建）；
    * 不同（调用方传了子集 / 别的台账 / 本进程还没读过）⇒ **现建、不缓存**（判据仍以调用方给的那一份为准）。
    * 为什么拿读层缓存条目而不是再 `read()` 一次：`read()` 会顺手 stat + 可能续读，而这条路上
    * 调用方**刚刚**读过；再读一遍既浪费，又会让"一次调用只读一次台账"的守卫（`M234-05`）变红。
@@ -472,8 +785,19 @@ export class Journal {
   indexOf(events: readonly JournalEvent[]): EventIndex {
     const cached = this.settledEntry()
     if (cached !== undefined && sameEventsView(cached.events, events)) {
-      return memoDerivedValue(this.journalPath(), 'events-by-type', [], () => buildEventIndex(events))
+      if (cached.index !== undefined) {
+        tally(derivedTableStats.hits, 'events-by-type')
+        return cached.index
+      }
+      tally(derivedTableStats.computes, 'events-by-type')
+      tally(derivedTableStats.fullRecomputes, 'events-by-type')
+      // 挂在**条目自己的那一份**上（不是调用方的数组）：条目换了它就跟着换
+      const built = buildEventIndex(cached.events)
+      cached.index = built
+      return built
     }
+    tally(derivedTableStats.computes, 'events-by-type')
+    tally(derivedTableStats.fullRecomputes, 'events-by-type')
     return buildEventIndex(events)
   }
 
@@ -506,8 +830,15 @@ export class Journal {
   private markWritten(): void {
     const entry = JOURNAL_CACHE.get(this.journalPath())
     if (entry !== undefined) entry.size = -1
-    // **`TASK-220`**：写盘即换代次（派生表必须立刻失效 —— 哪怕缓存条目本来就不存在）
-    bumpGeneration(this.journalPath())
+    /**
+     * **`TASK-220`**：写盘即换代次（派生表必须立刻知道"台账变了"）。
+     *
+     * **`TASK-230`**：这里记成 **`append`** —— 写路径只会**追加**一行，派生表**不再整批作废**：
+     * 新事件还没被解析（写者不重读），所以这一刻没有可应用的增量 ⇒ 但下一次 `read()` 续读尾部时
+     * 会把那几条事件记成一段追加（`noteAppendedEvents`），派生表届时**增量应用**它们。
+     * 台账被整份替换 / 回滚的场合走 {@link invalidate}（`wholesale`），那是另一次换代。
+     */
+    bumpGeneration(this.journalPath(), 'append')
   }
 
   /**
@@ -564,6 +895,14 @@ export class Journal {
     const appendOnly = grew && cached !== undefined && this.anchorsMatch(path, cached)
     const start = appendOnly ? (cached?.consumed ?? 0) : 0
     const baseEvents = appendOnly ? copyEvents(cached?.events ?? []) : []
+    /**
+     * **续读之前的长度**（`TASK-230`）：必须在解析循环**之前**取。
+     *
+     * 为什么不能到 `commit` 时再读 `baseEvents.length`：`events` 就是 `baseEvents` 本身
+     * （同一引用），循环里每推一条事件它都会变长 —— 拿"之后的长度"去切"新事件"，切出来永远是空数组，
+     * 于是派生表**永远**拿不到增量（真机上表现为"每次都整批重算"，且计数看着像没生效）。
+     */
+    const baseCount = baseEvents.length
     const baseNewlines = appendOnly ? (cached?.newlines ?? 0) : 0
     if (appendOnly) journalReadStats.tailParses += 1
     else journalReadStats.fullParses += 1
@@ -636,7 +975,12 @@ export class Journal {
         events.push(event as JournalEvent)
       }
     }
-    this.commit(path, stat, committed, committedNewlines, committedEvents, anchor, head, headEnd)
+    this.commit(path, stat, committed, committedNewlines, committedEvents, anchor, head, headEnd, {
+      appendOnly,
+      cleanTail: cursor >= buffer.length,
+      baseCount,
+      previousIndex: cached?.index,
+    })
     return { events, truncated: false }
   }
 
@@ -687,11 +1031,23 @@ export class Journal {
     })
     // **`TASK-220`**：交出去的是**截断视图**（与全量慢路径一致的要求不变）⇒ 换代次，
     // 派生表按这一份重建（否则"截断前缀"会被缓存的派生表当成完整台账）
+    // **`TASK-230`**：缺省 `wholesale` —— 坏行之后的字节**没有**进缓存，之后的续读会重新解析它们，
+    // 若把这次换代记成"只追加"，下一次读会把坏行之后的事件当成增量**再应用一遍** ⇒ 必须整批作废。
     bumpGeneration(this.journalPath())
     return { events, truncated: true, badLine }
   }
 
-  /** 把一个已解析的前缀登记进缓存（`size` 记成**已消费的字节数**，不是文件大小）。 */
+  /**
+   * 把一个已解析的前缀登记进缓存（`size` 记成**已消费的字节数**，不是文件大小）。
+   *
+   * **`TASK-230`**：顺带把「这次换代算不算只追加」记进增量日志（`APPEND_LOG`），并把按 type 分组的索引
+   * **增量扩展**（挂在条目上）。三档（与读层同一判据）：
+   *   · `appendOnly` 且末行终结 ⇒ `append`：记一段新事件，派生表可以增量应用；
+   *   · `appendOnly` 但末行未终结 ⇒ `floor`（**封口**）：**不**作废表，但停在当次及更早代次的表不许增量
+   *     —— 交出去的 `events` 里含一条没进缓存的半截事件，若允许增量，下一次读把那一行补全后
+   *     再应用一次就会**重复计入**；
+   *   · 全量重解析 ⇒ `wholesale`：整批作废（换 inode / 变短 / 锚点不匹配都是这一档）。
+   */
   private commit(
     path: string,
     stat: { dev: number; ino: number; size: number; mtimeMs: number },
@@ -701,8 +1057,20 @@ export class Journal {
     anchor: string,
     head: string,
     headEnd: number,
+    incremental: {
+      appendOnly: boolean
+      cleanTail: boolean
+      baseCount: number
+      previousIndex: EventIndex | undefined
+    },
   ): void {
     // 尾部还有未终结的行 ⇒ 缓存只能停在最后一个完整行（`consumed` 已由调用方算好）
+    const appended = incremental.appendOnly && incremental.cleanTail
+      ? events.slice(incremental.baseCount)
+      : undefined
+    const nextIndex = appended === undefined || incremental.previousIndex === undefined
+      ? undefined
+      : extendEventIndex(incremental.previousIndex, appended, events)
     JOURNAL_CACHE.set(path, {
       dev: stat.dev,
       ino: stat.ino,
@@ -715,10 +1083,19 @@ export class Journal {
       anchor,
       head,
       headEnd,
+      ...(nextIndex === undefined ? {} : { index: nextIndex }),
     })
+    if (nextIndex !== undefined) tally(derivedTableStats.incrementalApplies, 'events-by-type')
     // **`TASK-220`**：这是"真的解析过"的唯一收口（全量重解析 / 续读尾部都经过这里）⇒ 换代次。
     // 零解析命中在上面就 return 了，所以"没变就不换代"是自动成立的。
-    bumpGeneration(path)
+    // **`TASK-230`**：`kind` 决定派生表是**增量续命**还是**整批作废**（与读层同一个判据）。
+    const kind: GenerationKind = appended !== undefined
+      ? 'append'
+      : incremental.appendOnly ? 'floor' : 'wholesale'
+    const generation = bumpGeneration(path, kind)
+    if (appended !== undefined && appended.length > 0) {
+      noteAppendedEvents(path, generation, stat.dev, stat.ino, appended)
+    }
     if (JOURNAL_CACHE.size > JOURNAL_CACHE_LIMIT) {
       const oldest = JOURNAL_CACHE.keys().next()
       if (!oldest.done) JOURNAL_CACHE.delete(oldest.value)

@@ -91,23 +91,32 @@ export function resetReviewAdoptionStats(): void {
 }
 
 /**
- * **评审表**（`reviews/REV-*.yml`）的**只读**记忆化视图 —— 键 = `(台账路径, 代次)` + 来源探针。
+ * **评审表**（`reviews/REV-*.yml`）的**只读**记忆化视图 —— 键 = `(台账路径, 来源探针)`。
  *
  * 这是 `listReviews`（真源读取）的批量形态：门禁、状态块、`done` 关读的都是同一批 YAML，
  * 修前各自 `listReviews` 一遍（真账 98 个文件 ~5.4ms）。返回的是**共享只读视图**：要排序/改就先拷。
+ *
+ * **`TASK-230`**：`dependsOnEvents: false` —— 这张表的 compute 一个事件都不读（真源是 YAML），
+ * 修前却在**每一次 append 之后**被整批作废并重读 121 个文件（真账 14.5ms）。判"变没变"只该看
+ * 来源探针（`reviews/` 逐条目 stat），代次是"台账变了"的记号，不是"这张表的输入变了"的记号。
  */
 export function listReviewsCached(store: SdoStore, journal: Journal): Review[] {
-  return journal.memoDerived('reviews-table', reviewProbes(store), () => listReviews(store))
+  return journal.memoDerived('reviews-table', reviewProbes(store), () => listReviews(store), {
+    dependsOnEvents: false,
+  })
 }
 
 /**
- * **核实留痕整表**（`reviews/verified.yml`）的只读记忆化视图 —— 同 `listReviewsCached` 的口径。
+ * **核实留痕整表**（`reviews/verified.yml`）的只读记忆化视图 —— 同 `listReviewsCached` 的口径
+ * （含 `TASK-230` 的 `dependsOnEvents: false`：它同样一个事件都不读，修前每次 append 后被重读 12.3ms）。
  *
  * 修前 `listDispositions(store)` 单次 ~8.5ms，而 `verifyReviewFinding` 一次要问两遍、采纳判定
  * 每条评审还要各问一遍（`TASK-213` 已经收到"批量只读一次"，本卡再把**单次形态**也记忆化）。
  */
 export function listDispositionsCached(store: SdoStore, journal: Journal): ReviewFindingDisposition[] {
-  return journal.memoDerived('dispositions-table', reviewProbes(store), () => listDispositions(store))
+  return journal.memoDerived('dispositions-table', reviewProbes(store), () => listDispositions(store), {
+    dependsOnEvents: false,
+  })
 }
 
 export type ReviewFindingOutcome = 'reproduced' | 'refuted'
@@ -458,7 +467,8 @@ export type RehashResult =
  * 补记只会把证据抹掉。补记只对"从来没有指纹"的评审开放，且回执/事件里写明"补记之前的改动不可校验"。
  */
 export function rehashReview(store: SdoStore, journal: Journal, input: { reviewId: string; by?: string | undefined }): RehashResult {
-  const review = listReviews(store).find((item) => item.id === input.reviewId)
+  // **`TASK-230` 落点二**：改走**记忆化评审表**（修前这里每问一次就读一遍 121 个 YAML，真账 6.6~14.5ms）
+  const review = listReviewsCached(store, journal).find((item) => item.id === input.reviewId)
   if (review === undefined) return { ok: false, code: 'no-review', detail: fmt('uiReview.noReview', { p1: input.reviewId }) }
   const current = reviewContentHash(review)
   // **`TASK-213`**：两条判定读同一份台账 ⇒ 读一次（修前这里读两次）
@@ -571,12 +581,16 @@ function adoptionOf(
 }
 
 /**
- * **采纳表**（全部评审的采纳态，按 id 序）的**记忆化视图** —— 键 = `(台账路径, 代次)` + 来源探针。
+ * **采纳表**（全部评审的采纳态，按 id 序）的**记忆化视图** —— 键 = `(台账路径, 代次)` + 来源探针，
+ * 并且**能增量应用**（`TASK-230`）。
  *
  * 为什么要有这一层（`TASK-220`）：门禁 / `done` 关 / 状态块 / 报告都要"全部评审的采纳态"，
- * 修前每处各折一遍（实测 37.62 / 33.64 / 30.62ms，三次同价 = 零记忆化）。代次没变时它们问的是
- * **同一张表**；代次一变（任何 append / 重解析）这张表整批作废（`bumpGeneration` 调的
- * `invalidateDerivedTables`，与读层缓存同一个源）。
+ * 修前每处各折一遍（实测 37.62 / 33.64 / 30.62ms，三次同价 = 零记忆化）。
+ *
+ * **`TASK-230` 的增量判据**（与读层同一个判据）：写一条事件之后，代次变了但**来源文件一字未动**，
+ * 且 `g` 之后每一次换代都是"只追加"（`appendedSince` 给得出那几条事件）⇒ 只把**受影响的评审**
+ * 重判一遍（`applyAdoptionTable`），其余条目原样沿用 —— append-only 台账里，已有结论不会因为
+ * 末尾多了一条事件而改变。换 inode / 截断 / 全量重解析 ⇒ `appendedSince` 给 `undefined` ⇒ 整批重算。
  *
  * 返回的是**共享只读表**：调用方要改先自己拷一份（判据不改、只是别重算）。
  */
@@ -598,9 +612,11 @@ export function adoptionTable(
     reviewAdoptionStats.computes += 1
     return adoptionsOf(store, journal, log)
   }
-  return journal.memoDerived('review-adoptions', reviewProbes(store), () => {
+  return journal.memoDerived<ReadonlyMap<string, ReviewAdoption>>('review-adoptions', reviewProbes(store), () => {
     reviewAdoptionStats.computes += 1
     return adoptionsOf(store, journal, log)
+  }, {
+    apply: (previous, appended) => applyAdoptionTable(store, journal, previous, appended),
   })
 }
 
@@ -617,6 +633,60 @@ function adoptionsOf(
     .sort((a, b) => a.id.localeCompare(b.id))
     .map((review) => adoptionOf(review, index, dispositions))
   return new Map(items.map((item) => [item.review.id, item]))
+}
+
+/**
+ * **能改掉某条评审采纳态的事件类型**（`TASK-230` 的增量白名单）。
+ *
+ * 为什么这三种是**完备**的：采纳判定只读三处事件 —— `recordedEvent`（`review/recorded`）、
+ * `latestHashEvent`（`review/hashed`）、`verifiedEvents`（`review/verified`），
+ * 逐条核过 {@link adoptionOf} 的函数体（其余输入是评审 YAML 与 `reviews/verified.yml`，
+ * 二者都由**来源探针**把关：探针一变就整批重算，轮不到增量）。
+ * 将来若让 `adoptionOf` 多读一种事件，**必须**往这里加 —— 漏了不会报错，只会安静地少判一条。
+ */
+const ADOPTION_EVENT_TYPES: readonly string[] = ['review/recorded', 'review/hashed', 'review/verified']
+
+/**
+ * 一批新事件里**点名**的评审 id（只认上面三种类型；没有 `id` 的事件等于没点名）。
+ *
+ * **对外导出**（`TASK-230`）：`pendingReviewBigCards` 的增量应用要用**同一个**白名单 ——
+ * 两处各写一份必然分叉（`DEF-044` 的教训：同一概念两处判据）。
+ */
+export function affectedReviewIds(appended: readonly JournalEvent[]): Set<string> {
+  const ids = new Set<string>()
+  for (const event of appended) {
+    if (!ADOPTION_EVENT_TYPES.includes(event.type)) continue
+    const id = String(event.data['id'] ?? '')
+    if (id !== '') ids.add(id)
+  }
+  return ids
+}
+
+/**
+ * **增量应用**：只重判"被新事件点名"的评审，其余条目原样搬过来（`TASK-230`）。
+ *
+ * 三种情形：① 一条都没点名 ⇒ 原样返回**同一份表**（结论不可能变）；② 点名的评审不在表里
+ * （表是 `listReviews` 的全集）⇒ 同样无事发生；③ 否则新建一份 Map（浅拷 + 逐条覆盖）。
+ * 顺序不变：`new Map(previous)` 保住 id 序，`set` 已有键不挪位置。
+ */
+function applyAdoptionTable(
+  store: SdoStore,
+  journal: Journal,
+  previous: ReadonlyMap<string, ReviewAdoption>,
+  appended: readonly JournalEvent[],
+): ReadonlyMap<string, ReviewAdoption> | undefined {
+  const affected = affectedReviewIds(appended)
+  if (affected.size === 0) return previous
+  const index = journal.eventsIndex()
+  const dispositions = listDispositionsCached(store, journal)
+  const next = new Map(previous)
+  let touched = false
+  for (const review of listReviewsCached(store, journal)) {
+    if (!affected.has(review.id)) continue
+    next.set(review.id, adoptionOf(review, index, dispositions))
+    touched = true
+  }
+  return touched ? next : previous
 }
 
 /**
@@ -656,7 +726,13 @@ export function reviewAdoptions(
     .map((review) => adoptionOf(review, index, dispositions))
 }
 
-/** 某张卡的评审（按 id 序 = 记录顺序）。 */
+/**
+ * 某张卡的评审（按 id 序 = 记录顺序）。
+ *
+ * **`TASK-230` 落点二**：没有 `Journal` 入参 ⇒ 没法走记忆化视图，只能在**真源读取**上直接筛。
+ * 需要批量/热路径的调用方请用 {@link adoptedPassReviews}（它走 `reviewsOfCardCached`）。
+ * 这一格保留原形是为了不改既有签名（门禁与回执里都在用）。
+ */
 export function reviewsOfCard(store: SdoStore, taskId: string): Review[] {
   return listReviews(store)
     .filter((review) => review.taskId === taskId)
