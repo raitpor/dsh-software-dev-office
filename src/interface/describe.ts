@@ -887,6 +887,9 @@ export interface PoolBlockOptions extends ReadoutOptions {
   /**
    * 本次准入的**复用分配**（`PoolAdmission['reuseAdmissions']` 同一形状）—— **计划面，不是在飞**。
    *
+   * 渲染侧只拿它印**还没在飞**的那部分：某个位子的孩子已经出现在 `pools[].busy` 里 ⇒ 它在飞，
+   * 不算进这一行（`REV-123#3`：对真在飞的位子说「不是在飞」是与 `DEF-229` 同族的假话）。
+   *
    * 空/未给 = 这一轮没有复用准入（或调用方是**探针**：`sdo_status` 会为读数跑一次准入，但那次
    * 并没有派发任何东西，把它的计划印成"本次准入"就等于替一次不存在的派发立说法）。
    */
@@ -1002,6 +1005,32 @@ export function describePoolBlock(
 ): string {
   if (pools.length === 0) return ''
   const lines = [t('uiDescribe.kPoolHeader')]
+  /**
+   * **每一行池读数之后紧跟本角色的「本次准入」计划行**（`TASK-271`，承接 `TASK-245` DoD 第 2 条）：
+   * 读 `reuseAdmissions`，**不读 `busy`**。
+   *
+   * 修前这一块**只说事实**（`在飞 N/M` 只数 `busy`），而准入那一刻的计划位子已经单独一桶 —— 于是回执
+   * 会出现「在飞 0/3、空闲可复用 0、却准入了 1 张复用」的读者困境：三行读数都在，**没有一行说这一轮的
+   * 位子已经许出去了**。这一行补的就是它。
+   *
+   * ⚠️ **只在「这些位子确实还没在飞」时才印**（`REV-123#3`）：无条件印会把真 `started{reused:true}` 那一格
+   * 说成「不是在飞」—— 那是 `DEF-229` 的镜像（把有的事印成没有），同一族假话。判据是 `busy` 里的会话 id：
+   * 某个准入位子的孩子已经在 `busy` 里 ⇒ 它就在飞，不再算进这一行；一个位子都不剩 ⇒ 整行不出现
+   * （于是「准入后被 `limit` 挡下」与「真的派了」两态印出的东西**不同**，不必靠推理去分开）。
+   *
+   * 三条版面纪律（本卡 DoD 落点二/三）：
+   *   · **只加行、不改既有字形**：`kPoolLine` / `kPoolBusyMap` 一个字节不动（`test/m36` 与 `m77`
+   *     的既有断言依赖「在飞 N/M」这个字形）；
+   *   · **字形与池行分开、且紧跟本角色的池行**（`REV-123#8`）：这一行以「准入计划（角色）：」起头，
+   *     不再与池行同以「角色：」开头；旧实现把所有计划行排在**全部**池行之后，按行挑读会误当池行；
+   *   · **不印卡号**：这一行是计数，不是定位。卡号只出现在 `busy` 的定位行与逐卡的复用依据行里，
+   *     被挡下的卡因此不会因为在计划面出现就被读成在飞（`test/m250` 的 M250-13 ② 盯的就是这个）。
+   *
+   * 缩进那个 `'　'` 拼在**代码里**、不写进语言包取值：`test/m189` 的豁免判据要求判据里的中文串**逐字
+   * 等于**语言包取值（`label`），而抽取器会 `trim()` 掉首尾空白 ⇒ 取值自己带前导全角空格就永远对不上，
+   * 「钉中文侧字面量」就只能写成子串（那才是未登记的散文站点 —— `REV-123#1/#2`）。
+   */
+  const reuseAdmissions = options.reuseAdmissions ?? []
   for (const pool of pools) {
     lines.push(
       fmt('uiDescribe.kPoolLine', {
@@ -1013,32 +1042,15 @@ export function describePoolBlock(
         p6: String(pool.stale.length),
       }),
     )
-  }
-  /**
-   * **本次准入的复用分配**（`TASK-271`，承接 `TASK-245` DoD 第 2 条）：读 `reuseAdmissions`，**不读 `busy`**。
-   *
-   * 修前这一块**只说事实**（`在飞 N/M` 只数 `busy`），而准入那一刻的计划位子在数据面上已经单独一桶
-   * —— 于是回执会出现"在飞 0/3、空闲可复用 0、却准入了 1 张复用"的读者困境：三行读数都在，**没有一行
-   * 说这一轮的位子已经许出去了**。这一行补的就是它，并且**逐字说明它不是在飞**（两桶口径不同，
-   * 混读会把「准入通过、被 `limit` 挡下」理解成「已经派了」）。
-   *
-   * 三条版面纪律（本卡 DoD 落点二/三）：
-   *   · **只加行、不改既有字形**：`kPoolLine` / `kPoolBusyMap` 一个字节不动（`test/m36` 与 `m77`
-   *     的既有断言依赖「在飞 N/M」这个字形）；
-   *   · **不印卡号**：这一行是计数，不是定位。卡号只出现在 `busy` 的定位行与逐卡的复用依据行里，
-   *     被挡下的卡因此不会因为在计划面出现就被读成在飞（`test/m250` 的 M250-13 ② 盯的就是这个）；
-   *   · **零准入不印**：没有复用准入时这一块的行数与加这个特性之前逐字节相同（零准入不许多一行空话）。
-   */
-  const reuseAdmissions = options.reuseAdmissions ?? []
-  for (const pool of pools) {
-    const admitted = reuseAdmissions.filter((row) => row.role === pool.role).length
-    if (admitted === 0) continue
-    // 「不是在飞」这句话走**独立键**（`kPoolAdmissionNotInFlight`）而不是写在模板里：
+    const busyIds = new Set(pool.busy.map((child) => child.childSessionId))
+    const pending = reuseAdmissions.filter((row) => row.role === pool.role && !busyIds.has(row.childSessionId))
+    if (pending.length === 0) continue
+    // 「不是在飞」这半句走**独立键**（`kPoolAdmissionNotInFlight`）而不是写在模板里：
     // 它是本行**唯一**要读者记住的那半句，单独一个键才能被两份语言包各自承接、也才能被
     // 用例按键（而不是按整句）核对 —— 整句核对会把「参数替换对不对」和「这句话说没说」混成一条判据。
-    lines.push(fmt('uiDescribe.kPoolAdmissionPlan', {
+    lines.push('　' + fmt('uiDescribe.kPoolAdmissionPlan', {
       p1: pool.role,
-      p2: String(admitted),
+      p2: String(pending.length),
       p3: t('uiDescribe.kPoolAdmissionNotInFlight'),
     }))
   }

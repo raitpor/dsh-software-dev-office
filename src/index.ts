@@ -1591,9 +1591,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const poolPlan = office.poolPlan(call, { reuseIdle: poolReuse })
       /**
        * ⚠️ **状态面不传 `reuseAdmissions`**（`TASK-271` 落点一的边界）：这一段的 `poolPlan` 是**探针**
-       * —— 它为读数跑了一次准入，但这次调用**没有派发任何东西**。把它的计划位子印成「本次已先准入 N 张」
-       * 就是替一次不存在的派发立说法，正是 `DEF-229` 那类混淆的镜像。只有在**真的走了一次派发决定**
-       * 的两处（`why` 诊断面与派发回执）才把这份计划交进池块。
+       * —— 它为读数跑了一次准入，但这次调用**没有派发任何东西**。把它的计划位子印成「已先准入 N 张」
+       * 就是替一次不存在的派发立说法，正是 `DEF-229` 那类混淆的镜像。
+       *
+       * 交进池块的两处都在**真走了一次派发决定**的路上（`REV-123#7`：以前这里把其中一处称作「`why`
+       * 诊断面」，与代码不符）：① `next` 的 `plan.dispatch.length === 0` 分支（`why` 真/假**共用**这一支）；
+       * ② 真派发的回执。这一处（`sdo_status`）**不在**其中，且由 `test/m271` 的 M271-06 守着。
        */
       const poolText = describePoolBlock(poolPlan.pools, poolPlan.queued.map((task) => task.id), poolReuse, settings.dispatchOrphanTtlMinutes)
       /**
@@ -2118,6 +2121,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
           + roleBlockedSection + nonDispatchableNote
           + '\n' + heldByScopeSection + healthSection + rejectedSection
           + '\n' + queueSection
+          // **`TASK-271`**：`plan.dispatch.length === 0` 这一支（`why` 真/假共用）也是**真走了一次派发决定**
+          // —— 准入已经把位子许出去了 ⇒ 计划面必须可见（否则读者只看到「一张都没派」）。
           + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
           + structuralSection
       }
