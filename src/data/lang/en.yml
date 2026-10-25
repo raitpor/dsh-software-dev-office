@@ -1478,7 +1478,7 @@ uiDescribe:
   changeRollbackSteps: 'You must finish these in order before development continues: (1) update the affected requirements (`sdo_requirement action=update`) → (2) re-freeze G2 (`sdo_requirement action=baseline`) → (3) redo the design and re-pass G3; until then `sdo_task action=claim` is refused with `change-not-digested`'
   kPoolHeader: '**Role pools (subagent reuse; you trigger delivery)**'
   kPoolLine: '  {p1}: in flight {p2}/{p3} | idle reusables {p4} | retired (one-shot) {p5} | stale unsettled {p6}'
-  kPoolAdmissionPlan: 'admission plan ({p1}): {p2} seat(s) admitted this round (reuse) — {p3}: these seats have not reached the ledger yet (a real dispatch needs a dispatch/started); "in flight" counts only those'
+  kPoolAdmissionPlan: 'admission plan ({p1}): {p2} seat(s) admitted this round (reuse) — {p3}: these seats were not dispatched this round ("in flight" counts only seats the ledger really recorded with a dispatch/started)'
   kPoolAdmissionNotInFlight: '**NOT in flight**'
   kPoolQueued: '  Queued {p1}: {p2} (a full pool **never drops a card**; the next `sdo_plan action=next` dispatches it)'
   kPoolNoReuse: '  The host exposes no continuable entry => a pool degrades to a **concurrency cap** (every dispatch is a new session; subagents cannot be reused)'

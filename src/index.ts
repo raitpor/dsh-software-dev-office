@@ -2121,8 +2121,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
           + roleBlockedSection + nonDispatchableNote
           + '\n' + heldByScopeSection + healthSection + rejectedSection
           + '\n' + queueSection
-          // **`TASK-271`**：`plan.dispatch.length === 0` 这一支（`why` 真/假共用）也是**真走了一次派发决定**
-          // —— 准入已经把位子许出去了 ⇒ 计划面必须可见（否则读者只看到「一张都没派」）。
+          // **`TASK-271`**：这一支是 `plan.dispatch.length === 0`（一张卡都没通过准入）⇒ 准入自然没有许出
+          // 任何位子 ⇒ 交进去的计划面**必然为空**，这一行不会出现。保留接线只为两处口径一致（同一份快照、
+          // 同一个参数形状）；**不要**在这里声称「准入已经把位子许出去了」—— 那是 `REV-127#1` 那一类假话。
           + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
           + structuralSection
       }
@@ -2722,9 +2723,20 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const tail = plan.queued.length === 0 ? '' : fmt('uiIndex.k32', { p1: plan.queued.length })
       // 池视图（在飞/空闲可复用/已退役）+ 还在排队的卡：一次派发之后"池子长什么样"要能看见
       const freshNote = freshChild ? '\n' + t('uiIndex.kFreshChild') : ''
-      // **`TASK-271`**：**计划面**（本次准入的复用分配）也交给池块 —— 它读 `reuseAdmissions` 并逐字标注
-      // 「不是在飞」；`busy`（在飞）那一路照旧只由 `dispatch/started` 折叠，一个字节不改。
-      const poolBlock = describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
+      /**
+       * **`TASK-271`**：**计划面**（本次准入的复用分配）也交给池块 —— 它读 `reuseAdmissions` 并逐字标注
+       * 「不是在飞」；`busy`（在飞）那一路照旧只由 `dispatch/started` 折叠，一个字节不改。
+       *
+       * ⚠️ **只交「准入通过、这一轮没派出去」的那几张**（`held`，`REV-127#1`）。不能整桶交进去：
+       * `plan` 是**派发前**取的快照（`office.poolPlan` 在第 3 步 `recordDispatchStarted` **之前**），
+       * 而渲染器判「这个位子是不是已经在飞」读的正是这份 `plan.pools[*].busy` ⇒ **本轮刚派出去**的
+       * 复用位子不在 `busyIds` 里，会被算成待派 ⇒ 同一份回执会同时印「复用到 c-old」与「这些位子
+       * 这一轮没派出去」两句自相矛盾的话。收窄到 `held` 之后，交出去的每个位子确实都还没落台账。
+       */
+      const heldReuseSeats = held.flatMap((entry) => (entry.reuseChildId === undefined
+        ? []
+        : [{ task: entry.task.id, childSessionId: entry.reuseChildId, role: entry.task.role }]))
+      const poolBlock = describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: heldReuseSeats })
       // **DEF-067 落点一**：真正派发这条回执同样要带上「暂不可派」段 —— 否则某张卡没派出去这件事
       // 只在诊断面（`why=true`）可见，而 `why` 恰恰**不派发**（TASK-078 的设计）⇒ 主路径上看不见。
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。

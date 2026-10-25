@@ -24,12 +24,26 @@
  *   · `M271-06` **状态面不印计划行**（`REV-123#6`）：`sdo_status` 的 `poolPlan` 是**读数探针**，
  *     这次调用没有派发任何东西 ⇒ 回执里**不许**出现计划行。这条边界以前只有注释，没有守卫。
  *
- * ⚠️ **本文件的写作纪律（两条，都是被评审教过的）**：
- *   ① 断言行**一律英文消息**，中文只出现在两处**字面量锚**里；
+ * ⚠️ **本文件的写作纪律（四条，前三条都是被评审逐条教过的；`REV-127#5/#6/#7` 补正了措辞）**：
+ *
+ *   ① 断言行**一律英文消息**；中文一共出现在**四处行内站点**（两条 `assert.equal(t(键), 整串)` +
+ *      两条「不得出现」的 `includes('**不是在飞**')`），另外还有**两个冻结副本常量**
+ *      （`ZH_PLAN_TEMPLATE` / `ZH_NOT_IN_FLIGHT`）—— 那对常量**只许**给 `pinsOf` / `planLineOf` 这类
+ *      **非读文本调用**用。旧版这一句写成「中文只出现在两处字面量锚里」，与实际不符（4 处站点 + 2 个常量），
+ *      会误导下一个读文件头的人数错。
  *   ② 中文侧的判据**不再从同一个键现取**（旧版 `t(key)` ⇒ 期望值与渲染同源 ⇒ 文案被反写也全绿，
- *      `REV-123#1`）。现在写成**整串等于语言包取值**的字面量：`test/proseInventory.ts` 的
+ *      `REV-123#1`）。行内那两条写成**整串等于语言包取值**的字面量：`test/proseInventory.ts` 的
  *      `classifySite` 对这种串判 `label`（不是 `prose`），而 `KNOWN_PROSE_GAP` 只统计 `prose`
  *      站点 ⇒ `test/m189` 的 `M189-08` 不变红（`REV-123#2`）。写**子串**才会造出未登记站点。
+ *   ③ **那两条行内字面量不许改成「引用本文件的 const」**（`REV-127#6` 把它提到文件头，因为它是下一次
+ *      重构的第一道防线）：一旦改成引用，`cjkBindings` 仍会取到中文，而断言那一行只剩常量名 ⇒
+ *      `test/m189` 的 `M189-13` 会把它记成「行内没有该中文但被登记」⇒ **多出 `test/m271.test.ts:NNN`
+ *      站点 ⇒ 红并点名位置**（判据是 `notOnLine()` 与 6 条硬编码 `KNOWN` 的 `deepEqual`）。这条是**响的**，
+ *      但只响在 `M189-13`，救不了「文件头写着两处、实际四处」那种误导。
+ *   ④ **`kPoolLine` 的整串锚做不到，是结构性差别、不是偷懒**（`REV-127#7`）：该取值的前导全角空格在
+ *      引号**内**，`loadLangPack` 只剥引号（**不** `trim`），而 `extractProseSites` 入册时 `.trim()`
+ *      ⇒ 两边永远差一个 U+3000 ⇒ 判 `prose`。这正是**计划行的缩进拼在代码里**（`'　' + fmt(…)`）、
+ *      而池行钉不了的根因；`kPoolLine` 的硬字形锚因此只能留在 `test/m36.test.ts`。
  */
 import assert from 'node:assert/strict'
 import { mkdirSync, rmSync } from 'node:fs'
@@ -63,10 +77,10 @@ const CALL = { sessionId: SESSION, cwd: WORKSPACE } as unknown as OfficeCall
  * 为什么必须整串：抽取器把「含读文本调用 + 内联中文」记成站点，`classifySite` 只对**逐字等于语言包取值**
  * 的串判 `label`（免登记），子串一律判 `prose`（要登记进 `KNOWN_PROSE_GAP`，而那张表不在本卡写范围）。
  */
-const ZH_PLAN_TEMPLATE = '准入计划（{p1}）：已先准入 {p2} 张（复用）—— {p3}：这些位子还没落到台账（真派发还要有一笔 dispatch/started）；「在飞」只数那个'
+const ZH_PLAN_TEMPLATE = '准入计划（{p1}）：已先准入 {p2} 张（复用）—— {p3}：这些位子这一轮没派出去（「在飞」只数台账里真有一笔 dispatch/started 的）'
 const ZH_NOT_IN_FLIGHT = '**不是在飞**'
 /** 英文侧同两件（ASCII 之外只为可读；英文串本来就不进散文站点）。 */
-const EN_PLAN_TEMPLATE = 'admission plan ({p1}): {p2} seat(s) admitted this round (reuse) — {p3}: these seats have not reached the ledger yet (a real dispatch needs a dispatch/started); "in flight" counts only those'
+const EN_PLAN_TEMPLATE = 'admission plan ({p1}): {p2} seat(s) admitted this round (reuse) — {p3}: these seats were not dispatched this round ("in flight" counts only seats the ledger really recorded with a dispatch/started)'
 const EN_NOT_IN_FLIGHT = '**NOT in flight**'
 
 type Locale = 'zh-CN' | 'en'
@@ -205,7 +219,7 @@ test('M271-01 admission seats are printed from reuseAdmissions, and never as in-
   // ③ 模板与那句话**各按整串**核对（`REV-123#1/#4`：这两条是中文侧唯一的字面量锚）
   // ⚠️ 这两条的字面量必须**内联在断言行上**（不能只引用本文件的 const）：`test/m189` 的 M189-13 钉着
   // 「哪 6 个站点允许『行内没有该中文但被登记』」—— 引用 const 会新增这种站点，直接顶红那张固定名单。
-  assert.equal(t('uiDescribe.kPoolAdmissionPlan'), '准入计划（{p1}）：已先准入 {p2} 张（复用）—— {p3}：这些位子还没落到台账（真派发还要有一笔 dispatch/started）；「在飞」只数那个', 'the zh plan template must stay this exact sentence')
+  assert.equal(t('uiDescribe.kPoolAdmissionPlan'), '准入计划（{p1}）：已先准入 {p2} 张（复用）—— {p3}：这些位子这一轮没派出去（「在飞」只数台账里真有一笔 dispatch/started 的）', 'the zh plan template must stay this exact sentence')
   assert.equal(t('uiDescribe.kPoolAdmissionNotInFlight'), '**不是在飞**', 'the zh "not in flight" phrase must stay this exact phrase')
   // ④ 占位符没被替换 = 模板接错
   const leavesPlaceholder = block.includes('{p3}')
@@ -396,7 +410,7 @@ async function callTool(
  * 卡 id 必须是 `TASK-<数字>`：`listTaskIds` 只认这个形态的文件名（`domain/plan.ts` 的既有口径），
  * 写成 `TASK-FRESH` 会让 `listTasks()` 全空 —— 那会变成「这一格测的是空池」的假绿。
  */
-function mountAssembly(): {
+function mountAssembly(options: { testerCard?: boolean | undefined } = {}): {
   office: SoftwareDevOffice
   tools: ReturnType<typeof mount>
 } {
@@ -407,7 +421,10 @@ function mountAssembly(): {
   office.init(CALL, { name: 'M271 准入与在飞分开印', scale: 'normal', stakeholders: ['业务方'] })
   office.journalFor(WORKSPACE).append('phase/entered', { phase: 'construction' })
   seedIdleChild(office, 'c-old', 'TASK-OLD')
-  office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-27101.yml'], { task: card('TASK-27101', 'tester') })
+  // `testerCard: false` ⇒ 只剩那一张 developer 卡：`limit=1` 之下它**就是**被派出去的那张（M271-07 用）
+  if (options.testerCard !== false) {
+    office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-27101.yml'], { task: card('TASK-27101', 'tester') })
+  }
   office.storeFor(WORKSPACE).writeYaml(['tasks', 'TASK-27102.yml'], { task: card('TASK-27102') })
   return { office, tools: mount() }
 }
@@ -460,4 +477,37 @@ test('M271-06 sdo_status must not print the admission plan line (its poolPlan is
   const hasPoolHeader = status.includes(t('uiDescribe.kPoolHeader'))
   assert.equal(hasPoolHeader, true, 'premise: the status receipt must really carry the pool block')
   assert.equal(locale(), 'zh-CN', 'the locale must be the base one for these literal anchors')
+})
+
+test('M271-07 a reuse seat that really got dispatched must not be printed as "not dispatched"', async () => {
+  // `REV-127#1/#2` 的守卫：整桶把 `plan.reuseAdmissions` 交给池块时，**派发前**的 `busy` 快照里没有
+  // 本轮刚派出去的孩子 ⇒ 那一行会对一个**已经派出去**的复用位子说「这一轮没派出去」。
+  // 这一格走真装配链，且让复用位子**真的被派出去**（只有一张 developer 卡 + 一个空闲可复用孩子）。
+  const { office, tools } = mountAssembly({ testerCard: false })
+  const devView = office.poolView(CALL).find((pool) => pool.role === 'developer')
+  const candidateIds = (devView?.idle ?? []).map((child) => child.childSessionId).join(',')
+  assert.equal(candidateIds, 'c-old', `premise: the idle child must be offered for reuse, got: ${candidateIds}`)
+
+  const receipt = await callTool(tools, 'sdo_plan', { action: 'next', backend: 'subagent', limit: 1 })
+  // 前提一：复用**真的**发生了（投递落到那个空闲孩子上，台账落了一笔 reused=true）
+  const deliveredSeat = delivered.includes('c-old')
+  assert.equal(deliveredSeat, true, `premise: the reuse seat must really be delivered, got ${JSON.stringify(delivered)}`)
+  const startedRows = office.journalFor(WORKSPACE).read().events
+    .filter((event) => event.type === 'dispatch/started')
+    .map((event) => `${String(event.data['task'] ?? '')}:${String(event.data['childSessionId'] ?? '')}:${String(event.data['reused'] === true)}`)
+  const reuseStarted = startedRows.filter((row) => row === 'TASK-27102:c-old:true')
+  assert.equal(reuseStarted.length, 1, `premise: exactly one reused dispatch must be on the ledger: ${JSON.stringify(startedRows)}`)
+  // 前提二：这一份回执**确实带池块**（否则"没有计划行"可能只是没有池段 —— 假绿）
+  const hasPoolHeader = receipt.includes(t('uiDescribe.kPoolHeader'))
+  assert.equal(hasPoolHeader, true, 'premise: the receipt must really carry the pool block')
+  // 前提三：同一份回执里**有**复用事实那行（这就是"两句自相矛盾"的另一半）
+  const saysReused = receipt.includes('c-old')
+  assert.equal(saysReused, true, `premise: the receipt must state the reuse fact: ${receipt.slice(-1200)}`)
+
+  // 断言：一个真的派出去的复用位子，**不许**再被印成「这一轮没派出去」
+  const printsClaim = receipt.includes('**不是在飞**')
+  assert.equal(printsClaim, false, `a dispatched reuse seat must not be called "not in flight": ${receipt.slice(-1200)}`)
+  const planLine = planLineOf('zh-CN', 'developer', 1)
+  const printsPlanLine = receipt.includes(planLine)
+  assert.equal(printsPlanLine, false, `no plan line may survive for a seat that really went out: ${receipt.slice(-1200)}`)
 })
