@@ -59,6 +59,22 @@ interface JournalCacheEntry {
    * 续读之前先复算这一段锚点：对得上才承认前缀还在；对不上 ⇒ 全量重解析。
    */
   anchor: string
+  /**
+   * **首个非空完整行的原文 + 它结束的字节偏移**（第二个锚点，`REV-095` 必核二①）。
+   *
+   * 为什么只钉末行不够：末行锚点的探针落在固定区间（`[consumed - len - 1, consumed)`），
+   * 于是「**等长改写早期行 + 末行原样 + 再追加**」这一形态它看不见 —— 末行一个字节都没变，
+   * 探针对得上 ⇒ 判"续读"⇒ **旧的早期事件被静默保留**（读到一段从未存在过的序列）。
+   *
+   * 为什么钉**首行**而不是随机抽样：首行是最便宜的第二探针（一次几十字节的小 read），而且
+   * 「早期行被改」的绝大多数形态都从文件头部开始（手改、`sed -i`、拿模板整篇替换）。
+   * **诚实的边界**：两次探测**证明不了**中间某一行没被等长改写 —— 那需要整份前缀的哈希（= 全量读，
+   * 等于取消缓存）。所以覆盖范围是：**首行 / 末行被改一定全量重解析；中间行被等长改写检测不到**。
+   * 台账是 append-only 真源，中间行的就地改写已经不是 append-only 了 —— 这一档取舍写在交付说明里。
+   */
+  head: string
+  /** 首行锚点**结束**的字节偏移（与 `consumed` 同口径：行尾 `\n` 之后）。 */
+  headEnd: number
 }
 
 /**
@@ -86,8 +102,17 @@ export const journalReadStats = {
   tailParses: 0,
   /** 其中**全量重解析**的次数（身份变了 / 变短 / 同长被改） */
   fullParses: 0,
-  /** 实际 `JSON.parse` 过的台账行数 —— 本卡最有说服力的那一个数 */
+  /**
+   * **`read()` 内**实际 `JSON.parse` 过的台账行数 —— 本卡最有说服力的那一个数。
+   *
+   * **口径（`REV-095` 必核五②）**：只统计 `read()`。`append()` 每次都还要跑一次
+   * {@link maxSeqOfText}（对**盘上全文**逐行 `JSON.parse`，`D2` 的 seq 不变量要求它看坏行），
+   * 那部分单独记在 {@link appendParsedLines} 里 —— 旧描述写成"实际 JSON.parse 过的台账行数"
+   * 在 append 路径上**低估**了，读的人会以为一次 append 只解析了 1 行。
+   */
   parsedLines: 0,
+  /** `append()` 里 `maxSeqOfText` 对全文逐行 `JSON.parse` 的行数（与 `parsedLines` **分开记**，别混）。 */
+  appendParsedLines: 0,
 }
 
 /** 清零计数器（守卫与复现脚本用；不影响缓存内容）。 */
@@ -97,6 +122,7 @@ export function resetJournalReadStats(): void {
   journalReadStats.tailParses = 0
   journalReadStats.fullParses = 0
   journalReadStats.parsedLines = 0
+  journalReadStats.appendParsedLines = 0
 }
 
 /** 丢掉某个台账的缓存（缺省 = 全部）。**显式失效入口**，`append` 之后也会自动调它。 */
@@ -123,6 +149,58 @@ function isJournalEvent(event: Partial<JournalEvent>, expected: number): boolean
     && typeof event.type === 'string'
     && typeof event.data === 'object'
     && event.data !== null
+}
+
+/**
+ * **一行锚点复算**：盘上 `[end - 该行字节数 - 1, end - 1)` 与缓存的原文逐字相同吗？
+ *
+ * `end` 是"该行**行尾换行之后**"的偏移（`consumed` 与 `headEnd` 都是这个口径，公式因此只有一份）。
+ * 只读那一行（几十~几百字节），比全量重解析便宜两三个数量级。任何异常（读不到 / 长度对不上 /
+ * 锚点为空）一律判 **不匹配** —— 保守方向：宁可全量重解析，也不交陈旧台账。
+ */
+function anchorLineMatches(path: string, end: number, text: string): boolean {
+  if (text === '') return false
+  const bytes = Buffer.byteLength(text)
+  if (end < bytes + 1) return false
+  let fd: number | undefined
+  try {
+    fd = openSync(path, 'r')
+    const buffer = Buffer.allocUnsafe(bytes)
+    const got = readSync(fd, buffer, 0, bytes, end - bytes - 1)
+    return got === bytes && buffer.toString('utf8') === text
+  } catch {
+    return false
+  } finally {
+    if (fd !== undefined) closeSync(fd)
+  }
+}
+
+/** 读 `[start, end)` 这一段字节（一次 open/read/close）。 */
+function readRange(path: string, start: number, end: number): Buffer {
+  const length = end - start
+  const fd = openSync(path, 'r')
+  try {
+    const buffer = Buffer.allocUnsafe(length)
+    const got = readSync(fd, buffer, 0, length, start)
+    return got === length ? buffer : buffer.subarray(0, got)
+  } finally {
+    closeSync(fd)
+  }
+}
+
+/**
+ * **「台账不是普通文件」的错误**（`REV-095` 必核三）。
+ *
+ * 改前 `read()` 走 `store.readText`（`existsSync` + `readFileSync`）⇒ 台账被换成目录时**抛 `EISDIR`**。
+ * 缓存层必须恢复同一口径：把一次真实错误吞成"空台账"既与改前不同，也让"台账坏了"变得不可见。
+ */
+function notAFile(path: string, isDirectory: boolean): NodeJS.ErrnoException {
+  const error = new Error(
+    `${isDirectory ? 'EISDIR: illegal operation on a directory' : 'ENOTFILE: not a regular file'}, read '${path}'`,
+  ) as NodeJS.ErrnoException
+  error.code = isDirectory ? 'EISDIR' : 'ENOTFILE'
+  error.path = path
+  return error
 }
 
 /** 追加日志与投影的唯一入口。 */
@@ -167,14 +245,21 @@ export class Journal {
     } catch {
       stat = undefined
     }
-    if (stat === undefined || !stat.isFile()) {
+    if (stat === undefined) {
       JOURNAL_CACHE.delete(path)
       return { events: [], truncated: false }
     }
+    /**
+     * **非普通文件（等价性，`REV-095` 必核三）**：改前 `read()` 走 `store.readText`
+     * （`existsSync` + `readFileSync`）—— 台账被换成**目录**时它会**抛 `EISDIR`**。
+     * 缓存版最初把这一支吞成"空台账"，那等于把一次**真实错误静默**掉，且与改前不同。
+     * 这里恢复改前的抛错口径（`M234-09` 钉住它）。
+     */
+    if (!stat.isFile()) throw notAFile(path, stat.isDirectory())
 
     const cached = JOURNAL_CACHE.get(path)
     const sameIdentity = cached !== undefined && cached.dev === stat.dev && cached.ino === stat.ino
-    const sameSize = sameIdentity && cached.size === stat.size
+    const sameSize = sameIdentity && cached !== undefined && cached.size === stat.size
     const touched = cached !== undefined && cached.mtimeMs !== stat.mtimeMs
     // ① 文件**没动**（同身份、同长度、同 mtime）⇒ 零解析
     if (cached !== undefined && sameIdentity && sameSize && !touched) {
@@ -185,56 +270,51 @@ export class Journal {
      * ② 只有**变长**（append-only 的正常路径）⇒ 从 `consumed` 续读，只解析新增行。
      *
      * 两条前提：同身份（`dev+ino`）、且 `size > consumed`。**再加一道锚点复算** ——
-     * 「变长」本身不证明"前面那段没被改写"，所以续读前先回读 `consumed` 之前的最后一行，
-     * 与缓存里记的原文逐字比对：对不上就是改写，直接走全量重解析。
+     * 「变长」本身不证明"前面那段没被改写"，所以续读前先回读**首行与末行**，
+     * 与缓存里记的原文逐字比对：任何一处对不上就是改写，直接走全量重解析。
      */
     const grew = cached !== undefined && sameIdentity && stat.size > cached.consumed
-    const appendOnly = grew && cached !== undefined && this.anchorMatches(path, cached)
+    const appendOnly = grew && cached !== undefined && this.anchorsMatch(path, cached)
     const start = appendOnly ? (cached?.consumed ?? 0) : 0
     const baseEvents = appendOnly ? copyEvents(cached?.events ?? []) : []
     const baseNewlines = appendOnly ? (cached?.newlines ?? 0) : 0
     if (appendOnly) journalReadStats.tailParses += 1
     else journalReadStats.fullParses += 1
 
-    let chunk = ''
-    if (stat.size > start) {
-      const length = stat.size - start
-      const fd = openSync(path, 'r')
-      try {
-        const buffer = Buffer.allocUnsafe(length)
-        const got = readSync(fd, buffer, 0, length, start)
-        chunk = buffer.subarray(0, got).toString('utf8')
-      } finally {
-        closeSync(fd)
-      }
-    }
+    const buffer = stat.size > start ? readRange(path, start, stat.size) : Buffer.alloc(0)
 
     const events = baseEvents
     let expected = baseEvents.length + 1
     let committed = start
     let committedNewlines = baseNewlines
     const committedEvents = copyEvents(baseEvents)
-    // 只把**完整行**（以 `\n` 结尾）交给缓存；最后一段没终结的字节留给下一次读
-    const lastBreak = chunk.lastIndexOf('\n')
-    const complete = lastBreak === -1 ? '' : chunk.slice(0, lastBreak + 1)
-    const partial = lastBreak === -1 ? chunk : chunk.slice(lastBreak + 1)
-    const parts = complete === '' ? [] : complete.split('\n').slice(0, -1)
     // 锚点 = **最后一个被提交的完整行**（空行没有可比的原文，沿用上一个非空行）
     let anchor = appendOnly ? (cached?.anchor ?? '') : ''
-    for (const [index, raw] of parts.entries()) {
-      const lineNumber = baseNewlines + index + 1
-      const bytes = Buffer.byteLength(raw) + 1
+    // 首行锚点：只在**全量重解析**时从文件头取（续读那一支沿用缓存里的，别拿尾巴冒充首行）
+    let head = appendOnly ? (cached?.head ?? '') : ''
+    let headEnd = appendOnly ? (cached?.headEnd ?? 0) : 0
+    /**
+     * 逐行：按 `\n` 的**字节位置**切（UTF-8 的多字节序列里不含 `0x0A` ⇒ 按字节切一定落在行边界），
+     * 字节偏移因此**免费**得到 —— 不再对每一行算一次 `Buffer.byteLength`（那是冷路径的一笔纯开销）。
+     * 只有**完整行**（以 `\n` 结尾）会被提交；最后一段没终结的字节留给下一次读。
+     */
+    let cursor = 0
+    let lineIndex = 0
+    for (let breakAt = buffer.indexOf(0x0a, 0); breakAt !== -1; breakAt = buffer.indexOf(0x0a, cursor)) {
+      const raw = buffer.toString('utf8', cursor, breakAt)
+      const lineNumber = baseNewlines + lineIndex + 1
+      const bytes = breakAt + 1 - cursor
       if (raw.trim() !== '') {
         let parsed: unknown
         try {
           parsed = JSON.parse(raw)
         } catch {
-          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines)
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
         }
         journalReadStats.parsedLines += 1
         const event = parsed as Partial<JournalEvent>
         if (!isJournalEvent(event, expected)) {
-          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines)
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
         }
         events.push(event as JournalEvent)
         committedEvents.push(event as JournalEvent)
@@ -243,49 +323,48 @@ export class Journal {
       }
       committed += bytes
       committedNewlines += 1
+      if (!appendOnly && head === '' && raw.trim() !== '') {
+        head = raw
+        headEnd = committed
+      }
+      lineIndex += 1
+      cursor = breakAt + 1
     }
     // 末行未终结（正在写）：**可以返回**（与慢路径一致），但**不进缓存**（它还会被续写）
-    if (partial.trim() !== '') {
-      const lineNumber = baseNewlines + parts.length + 1
-      let parsed: unknown
-      try {
-        parsed = JSON.parse(partial)
-      } catch {
-        return this.truncateAt(stat, events, lineNumber, committed, committedNewlines)
+    if (cursor < buffer.length) {
+      const partial = buffer.toString('utf8', cursor, buffer.length)
+      if (partial.trim() !== '') {
+        const lineNumber = baseNewlines + lineIndex + 1
+        let parsed: unknown
+        try {
+          parsed = JSON.parse(partial)
+        } catch {
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
+        }
+        journalReadStats.parsedLines += 1
+        const event = parsed as Partial<JournalEvent>
+        if (!isJournalEvent(event, expected)) {
+          return this.truncateAt(stat, events, lineNumber, committed, committedNewlines, head, headEnd)
+        }
+        events.push(event as JournalEvent)
       }
-      journalReadStats.parsedLines += 1
-      const event = parsed as Partial<JournalEvent>
-      if (!isJournalEvent(event, expected)) {
-        return this.truncateAt(stat, events, lineNumber, committed, committedNewlines)
-      }
-      events.push(event as JournalEvent)
     }
-    this.commit(path, stat, committed, committedNewlines, committedEvents, anchor)
+    this.commit(path, stat, committed, committedNewlines, committedEvents, anchor, head, headEnd)
     return { events, truncated: false }
   }
 
   /**
-   * **锚点复算**：缓存里"末个完整行"的原文，与盘上 `[consumed - 该行长度, consumed)` 逐字相同吗？
+   * **锚点复算**：缓存里"首行 / 末行"的原文，与盘上对应区间逐字相同吗？
    *
-   * 只读那一行（几十~几百字节），比全量重解析便宜两三个数量级，却能把「就地整份重写且更长」这种
-   * 靠 `size` 看不出来的形态挡住。任何异常（读不到/长度对不上）一律判 **不匹配**（保守方向）。
+   * 两发探针各读一行（几十~几百字节），比全量重解析便宜两三个数量级：
+   *   · **末行探针**挡「就地整份重写且变长」（`size` 看不出来）；
+   *   · **首行探针**挡「等长改写早期行 + 末行原样 + 再追加」—— 只钉末行时这一形态会被判成"续读"，
+   *     于是**旧的早期事件被静默保留**（`REV-095` 必核二①，`M234-08` 钉住）。
+   * 任何异常（读不到 / 长度对不上 / 锚点为空）一律判 **不匹配**（保守方向：宁可全量重解析）。
    */
-  private anchorMatches(path: string, cached: JournalCacheEntry): boolean {
-    if (cached.anchor === '' || cached.consumed <= 0) return cached.consumed === 0
-    const bytes = Buffer.byteLength(cached.anchor)
-    // `consumed` 是**行尾换行之后**的偏移 ⇒ 该行正文在 [consumed - bytes - 1, consumed - 1)
-    if (cached.consumed < bytes + 1) return false
-    let fd: number | undefined
-    try {
-      fd = openSync(path, 'r')
-      const buffer = Buffer.allocUnsafe(bytes)
-      const got = readSync(fd, buffer, 0, bytes, cached.consumed - bytes - 1)
-      return got === bytes && buffer.toString('utf8') === cached.anchor
-    } catch {
-      return false
-    } finally {
-      if (fd !== undefined) closeSync(fd)
-    }
+  private anchorsMatch(path: string, cached: JournalCacheEntry): boolean {
+    return anchorLineMatches(path, cached.consumed, cached.anchor)
+      && anchorLineMatches(path, cached.headEnd, cached.head)
   }
 
   /**
@@ -301,6 +380,8 @@ export class Journal {
     badLine: number,
     committed: number,
     committedNewlines: number,
+    head: string,
+    headEnd: number,
   ): JournalReadResult {
     // 缓存**停在末个好行**（`committed` = 它之后的字节偏移）；`size` 也记成这个前缀长度，
     // 于是下一次读会走「变长 ⇒ 续读尾部」那一支，从坏行处重新判定（不会把截断视图固化）。
@@ -312,7 +393,10 @@ export class Journal {
       events: copyEvents(events),
       size: committed,
       mtimeMs: stat.mtimeMs,
-      anchor: JOURNAL_CACHE.get(this.journalPath())?.anchor ?? '',
+      // 两个锚点只登记到**末个好行**为止：坏行之后的字节不进缓存，也不进锚点
+      anchor: committed === 0 ? '' : (JOURNAL_CACHE.get(this.journalPath())?.anchor ?? ''),
+      head,
+      headEnd,
     })
     return { events, truncated: true, badLine }
   }
@@ -325,6 +409,8 @@ export class Journal {
     newlines: number,
     events: JournalEvent[],
     anchor: string,
+    head: string,
+    headEnd: number,
   ): void {
     // 尾部还有未终结的行 ⇒ 缓存只能停在最后一个完整行（`consumed` 已由调用方算好）
     JOURNAL_CACHE.set(path, {
@@ -337,6 +423,8 @@ export class Journal {
       size: consumed,
       mtimeMs: stat.mtimeMs,
       anchor,
+      head,
+      headEnd,
     })
     if (JOURNAL_CACHE.size > JOURNAL_CACHE_LIMIT) {
       const oldest = JOURNAL_CACHE.keys().next()
