@@ -616,6 +616,82 @@ function structuralReason(row: StructuralSkip, reason: StructuralSkipReason): st
   return t('uiIndex.kStructuralReasonAlreadyCovered')
 }
 
+/**
+ * **结构通道「未建卡」的行文档位**（`DEF-175` 落点三 / `TASK-218`；与 {@link POOL_UNUSABLE_CHARS}
+ * 那一族**同一手法**：按原因原话归并 + 每组样本上限 + 整块字符预算）。
+ *
+ * 病（`TASK-218` 实测，真账）：36 个元素未建卡，其中 **35 个是同一条原因**（"已有卡（覆盖判定命中）"
+ * + 同一句命中口径）⇒ 回执把同一句 60 字的理由**抄 35 遍**，这一块 **3827 字符**，占整份 `next`
+ * 回执（10880）的三分之一，把派发结论一起挤出宿主 8000 截断之外。
+ *
+ * 有界性是"**与元素个数脱钩**"而不是"少印几条"：长度只随**原因种数**增长，每种原因一行。
+ * **砍数量不砍原因**：每组仍印一句**完整**原因原话（不截断、不换措辞）、代表元素（id + 名）、
+ * 组内另有 {@link STRUCTURAL_SKIP_IDS_PER_REASON} 个样本 id、以及**精确条数**；被预算折叠的组
+ * 明写**组数**与**元素数**（`REV-093#3` 的教训：只留计数会让一种原因整段消失），并指向台账。
+ */
+export const STRUCTURAL_SKIP_IDS_PER_REASON = 3
+
+/** 缺省档**整块**（全部未建卡原因）的字符预算：现盘 2 种原因 × 一句原话 ≈ 300，留一倍余量给"原因变多"。 */
+export const STRUCTURAL_SKIP_CHARS = 700
+
+/**
+ * 折叠时那句**指路**（ASCII）：逐元素的完整清单在设计与卡的台账里 ——
+ * 结构与原因由 `structuralPlanOf` 从这两处现算（本文件只渲染）。
+ */
+export const STRUCTURAL_SKIP_SOURCE = '.sdo/design + .sdo/tasks'
+
+/** 一个原因组的一行：代表元素（id + 名）+ 一句原因原话 + 组内样本 id + **精确条数**。 */
+function structuralSkipLine(head: StructuralSkip, rest: readonly StructuralSkip[]): string {
+  const reason: StructuralSkipReason = head.reason
+  const sample = rest.slice(0, STRUCTURAL_SKIP_IDS_PER_REASON)
+  const more = rest.length > sample.length ? ` +${String(rest.length - sample.length)}` : ''
+  const ids = sample.length === 0 ? '' : `; same-reason: ${sample.map((row) => row.designId).join(' ')}${more}`
+  return fmt('uiIndex.kStructuralSkippedLine', {
+    p1: head.designId,
+    p2: head.name,
+    p3: structuralReason(head, reason),
+    p4: (head.how === undefined ? '' : fmt('uiIndex.kStructuralHitBasis', { p1: structuralBasis(head.how) })) + ids,
+  })
+}
+
+/**
+ * **未建卡元素的缺省档文本**：按（原因原话 + 命中口径）归并，一个原因一行，整块受预算约束。
+ *
+ * 归并键取**渲染后的原因原话**（含 `scope-too-broad` 被拒的具体写范围）而不是原因枚举：
+ * 后者的详情逐行不同，按枚举报成一组会把"被拒的是哪些模块"抹掉 —— 那是这张读数最值钱的部分。
+ * 于是形状是：同因的 35 行并成一行；`scope-too-broad` 各占一行（各自带被拒写范围），
+ * 只有"原因又多又长"时才折叠，且折叠时把**组数与元素数**都现算着说出来。
+ */
+function structuralSkippedLines(rows: readonly StructuralSkip[]): string[] {
+  const groups = new Map<string, { head: StructuralSkip; rows: StructuralSkip[] }>()
+  for (const row of rows) {
+    const reason: StructuralSkipReason = row.reason
+    const key = `${structuralReason(row, reason)}\u0000${row.how === undefined ? '' : structuralBasis(row.how)}`
+    const group = groups.get(key) ?? { head: row, rows: [] }
+    group.rows.push(row)
+    groups.set(key, group)
+  }
+  const entries = [...groups.values()]
+  const lines: string[] = []
+  let spent = 0
+  let index = 0
+  for (; index < entries.length; index += 1) {
+    const entry = entries[index]
+    if (entry === undefined) break
+    const line = structuralSkipLine(entry.head, entry.rows.slice(1))
+    // 第一组**无条件印**：一组都不印，这块读数就等于没解释"为什么没有卡"。
+    if (lines.length > 0 && spent + line.length + 1 > STRUCTURAL_SKIP_CHARS) break
+    lines.push(line)
+    spent += line.length + 1
+  }
+  const folded = entries.slice(index)
+  if (folded.length > 0) {
+    const count = folded.reduce((sum, entry) => sum + entry.rows.length, 0)
+    lines.push(`…[reasons-not-shown=${String(folded.length)} elements-not-shown=${String(count)} (full list: ${STRUCTURAL_SKIP_SOURCE})]`)
+  }
+  return lines
+}
+
 export function describeStructuralPlan(plan: StructuralPlan | undefined): string {
   if (plan === undefined) return ''
   const { created, skipped } = plan
@@ -634,17 +710,9 @@ export function describeStructuralPlan(plan: StructuralPlan | undefined): string
     lines.push(fmt('uiIndex.kStructuralCreatedBasis', { p1: structuralBasisState(row) }))
   }
   if (created.length === 0) lines.push(t('uiIndex.kStructuralNone'))
-  for (const row of skipped) {
-    // **R6**：`StructuralSkip.reason` 现在是完整的 `StructuralSkipReason`（含 `no-basis`）⇒ 直接用，
-    // 不再需要"按运行时值加宽"的局部类型
-    const reason: StructuralSkipReason = row.reason
-    lines.push(fmt('uiIndex.kStructuralSkippedLine', {
-      p1: row.designId,
-      p2: row.name,
-      p3: structuralReason(row, reason),
-      p4: row.how === undefined ? '' : fmt('uiIndex.kStructuralHitBasis', { p1: structuralBasis(row.how) }),
-    }))
-  }
+  // **`DEF-175` 落点三**：未建卡元素**按原因归并**（修前逐条 ⇒ 同一句理由抄 N 遍）；
+  // 逐元素清单仍在台账里（`STRUCTURAL_SKIP_SOURCE`），回执只保证"每种原因都读得到、条数对得上"。
+  if (skipped.length > 0) lines.push(...structuralSkippedLines(skipped))
   if (gaps.length > 0) lines.push(...structuralDispositionBlock(gaps, policy))
   lines.push(t('uiIndex.kStructuralHint'))
   return lines.join('\n')
@@ -1187,6 +1255,11 @@ export function describeDispatchStarted(
   degradedReason?: string | undefined,
   /** **D-15**：显式指定覆盖了本迭代锁时的留痕说明 */
   overrideNote?: string | undefined,
+  /**
+   * **`TASK-218`**：`false` = 本块**不印**提示词回声（调用方改用 {@link dispatchPromptEcho} 把它放到
+   * 整份回执的最后）。缺省 `true` ⇒ 直调本函数的既有调用方与守卫逐字不变。
+   */
+  echoPrompt = true,
 ): string {
   const lines = [fmt('uiDescribe.k199DispatchStarted', { p1: request.task.id, p2: request.owner, p3: provider, p4: childSessionId })]
   lines.push(fmt('uiDescribe.k200DispatchTools', {
@@ -1217,9 +1290,49 @@ export function describeDispatchStarted(
   // 观测是**持续**写入的：派发这一刻子代理还没跑，所以这里必然可能"未观测到"——指路，别让它成为死数据
   lines.push(t('uiDescribe.k207FaceLedgerPointer'))
   lines.push(fmt('uiDescribe.k107', { p1: request.expectedRevision }))
-  lines.push('')
-  lines.push(request.prompt)
+  if (echoPrompt) {
+    lines.push('')
+    lines.push(request.prompt)
+  }
   return lines.join('\n')
+}
+
+/**
+ * **提示词回声**（`TASK-218` / `DEF-175` 结构性有界）—— 与上面那块**拆开**渲染，由调用方放到
+ * 整份回执的**最末尾**。
+ *
+ * 为什么必须能拆开：提示词是**卡数据**（每张卡的 DoD / 写范围 / 协议拼出来，实测 2.5k–4k 字符），
+ * 与"派了谁、为什么、谁被挡"这种**结论**混在同一块里 ⇒ 宿主截断时先没的是结论之后的整段，
+ * 而结论本身又被提示词压在后面。现在的顺序是**结论在前、回声在最后** ⇒ 截断只吃回声，
+ * 不吃结论（守卫 `M232-11` 钉这一条）。
+ */
+export function dispatchPromptEcho(taskId: string, prompt: string): string {
+  return prompt === '' ? '' : `\n\n[prompt echo for ${taskId}]\n${prompt}`
+}
+
+/**
+ * **整份回执的总预算**（`TASK-218`）：宿主上限 8000，留 1000 余量给宿主差异/尾巴。
+ *
+ * 它**只用于回声那一块**的取舍 —— 结论与各块读数不在预算之内（它们各有自己的硬上限：
+ * 跳过复用块 `pool.REUSE_SKIP_CHARS`、结构通道 `STRUCTURAL_SKIP_CHARS`、观测面 `FACE_DETAIL_ROWS`）。
+ */
+export const RECEIPT_BUDGET = 7000
+
+/**
+ * **回声块的取舍**（`TASK-218` 结构性有界）：读数块在前、提示词回声在所有块之后；
+ * 总长超过 {@link RECEIPT_BUDGET} 时**只省回声**并给一行 ASCII 指路，**绝不省结论**。
+ *
+ * 为什么不省别的：回声是唯一"子代理已经按原样收到"的块（来源文本在卡面与角色卡里），
+ * 而结论 / 队列 / 池读数 / 结构通道**没有第二处**可读 —— 省它们等于把回执变成没法复核的东西。
+ *
+ * 入参 `head` 是**已经拼好的前半段**（结论 + 各读数块），本函数只回"要追加的尾巴"，
+ * 于是调用方那条 `return` 仍以 `dispatchSummary` 起头（`M137-03` 的源码级判据钉的形状）。
+ */
+export function receiptEchoSuffix(head: string, echoes: readonly string[]): string {
+  const echo = echoes.filter((item) => item !== '').join('')
+  if (echo === '') return ''
+  if (head.length + echo.length <= RECEIPT_BUDGET) return echo
+  return `\n\n[prompt echo omitted: receipt budget ${String(RECEIPT_BUDGET)} chars; the prompt was delivered to the child as-is — its source text is the task card (.sdo/tasks/<id>.yml) + the role card]`
 }
 
 /**

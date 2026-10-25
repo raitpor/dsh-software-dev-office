@@ -936,8 +936,13 @@ export interface ReuseSkipOptions {
 }
 
 /**
- * 一组原因里最多点几个子会话（列**完整** uuid：回执上的 `childSessionId=` 一直是可反查的定位串，
- * 逐条清单另有 `verbose` 档）。
+ * 一组原因里最多点几个子会话（列**前 8 位**：与回执里其余 `childSessionId` 的写法同口径 ——
+ * `describe.ts` 的 `POOL_UNUSABLE_IDS_PER_REASON`、`ownerOf` 的会话段、在飞定位全是前 8 位，
+ * "定位够用"这一点由那几处先例定过；**完整** uuid 走 `verbose` 档，一字不少）。
+ *
+ * 为什么不在这里列完整 uuid：`TASK-218` 实测三组 × 3 条完整 uuid = 324 字符，而回执的其余
+ * 每一处都只用前 8 位 —— 同一份回执里两种口径并存本身就是新的不一致，且这 200+ 字符
+ * 正是把派发结论顶出 8000 的那部分。反查能力不减：前 8 位在台账里是唯一的定位前缀。
  */
 export const REUSE_SKIP_IDS_PER_REASON = 3
 
@@ -960,14 +965,22 @@ export const REUSE_SKIP_CHARS = 700
 /** 折叠时的**指路**（ASCII）：被折叠原因的原话在台账里逐条写着 —— 回执不教读者一个不存在的参数。 */
 export const REUSE_SKIP_REASON_SOURCE = '.sdo/journal.jsonl dispatch/reuse-skipped'
 
-/** 一个原因分组的理想形态：`原因原话×条数（样本 id … +其余）`，字段名沿用回执行的三个 ASCII 名。 */
+/**
+ * 一个原因分组的理想形态：`原因原话×条数（样本 id … +其余）`，字段名沿用回执行的三个 ASCII 名。
+ *
+ * **单条分组保持修前的逐条字形**（`childSessionId=<完整 uuid> role=… reason=…`）：归并是
+ * "同一句原因被抄 N 遍"的对策，**只有一条**的组没有可归并的东西 ⇒ 原样逐条、一字不改
+ * （`DEF-139` 的逐条三字段语义因此对单条候选逐字保留，既有守卫 `M206-06`/`M206-10`/`M206-12`
+ * 钉的就是这个形状）。多条分组才走 8 位前缀 + `×N`（与回执其余处的写法同口径）。
+ */
 function reuseSkipGroupLine(
   role: string,
   reason: string,
   ids: readonly string[],
 ): string {
   const why = reason.length > REUSE_SKIP_REASON_CHARS ? `${reason.slice(0, REUSE_SKIP_REASON_CHARS)}…` : reason
-  const sample = ids.slice(0, REUSE_SKIP_IDS_PER_REASON)
+  if (ids.length === 1) return `childSessionId=${ids[0] ?? ''} role=${role} reason=${why}`
+  const sample = ids.slice(0, REUSE_SKIP_IDS_PER_REASON).map((id) => id.slice(0, 8))
   const more = ids.length > sample.length ? ` +${String(ids.length - sample.length)}` : ''
   return `childSessionId=${sample.join(' ')}${more} role=${role} reason=${why}×${String(ids.length)}`
 }
@@ -984,7 +997,8 @@ function reuseSkipGroupLine(
  * **按（角色, 原因原话）归并**：一个分组一行、样本给前 {@link REUSE_SKIP_IDS_PER_REASON} 个、
  * 原因原话整句保留（只受 {@link REUSE_SKIP_REASON_CHARS} 硬上限约束）、整块受
  * {@link REUSE_SKIP_CHARS} 预算约束 ⇒ 文本长度与候选个数**脱钩**，只剩"原因种数"这一维
- *（真账 3 种）。砍的是**数量**，不是原因 —— 原因原话是这条读数今天最有价值的部分。
+ *（`TASK-218` 实测真账 79 个候选只有 2 种原因 ⇒ 整块 665 字符，与候选个数无关）。
+ * 砍的是**数量**，不是原因 —— 原因原话是这条读数今天最有价值的部分。
  *
  * 逐条清单仍然要得回来：走**函数级** `options.verbose`（那条路与修前逐字相同）。
  * ⚠️ **`verbose` 不是 `sdo_plan` 的参数**（工具面在 `src/interface/tools.ts`，它的参数表里没有这一项）

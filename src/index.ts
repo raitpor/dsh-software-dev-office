@@ -80,6 +80,8 @@ import {
   selectTaskBoard,
   describeTrace,
   describeDispatchStarted,
+  dispatchPromptEcho,
+  receiptEchoSuffix,
   childFaceLines,
   describePoolBlock,
 } from './interface/describe.js'
@@ -2018,7 +2020,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
               p3: String(settings.dispatchOrphanTtlMinutes),
             })
           }
-          return queueSection + roleBlockedSection + '\n' + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + describeNonDispatchable(office.nonDispatchable(call)) + structuralSection
+          // **`TASK-218`**：结论（为什么一张都没派）在前，队列在后
+          return describeNonDispatchable(office.nonDispatchable(call)) + '\n' + infeasibleBlock + roleBlockedSection
+            + '\n' + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection
         }
         // **DEF-049 / TASK-078 落点二**：走队列分支时也把分类带上 —— "排队"是"池满"，
         // 与"卡是 blocked / 依赖未满足"是**不同**的原因，不能只报前者（否则读者仍分不清
@@ -2026,10 +2030,14 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const nonDispatchableNote = describeNonDispatchable(office.nonDispatchable(call))
         // 排队不是"没卡"，而是**被上限挡住**：必须说清是哪个池满，否则用户会以为流程卡住了
         const blocked = plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })).join('\n')
-        return queueSection + roleBlockedSection + '\n' + heldByScopeSection + healthSection + rejectedSection + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
-          + '\n' + blocked
+        // **`TASK-218`**：**不派发的裁决排最前**（逐张 blocked + 角色/暂不可派），队列与池读数在后
+        // —— 宿主截断只会吃掉排在后面的读数，不会吃掉"为什么没派"。
+        return blocked
+          + '\n' + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
+          + roleBlockedSection + nonDispatchableNote
+          + '\n' + heldByScopeSection + healthSection + rejectedSection
+          + '\n' + queueSection
           + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
-          + '\n' + nonDispatchableNote
           + structuralSection
       }
 
@@ -2043,6 +2051,32 @@ export function apply(ctx: Context, config: SdoConfig): void {
        *
        * 行文来自 `domain/snapshot.ts`（本文件不许写中文），读数是 `plan.queue`（与准入同一份）。
        */
+      /**
+       * **「跳过复用的原因」的**唯一**渲染入口**（`TASK-218` / `DEF-175` 落点二）。
+       *
+       * 修前同一份清单在**三处**各自渲染（`kReuseSkipped` 各写一份）：`why=true` 诊断面、逐张派发
+       * 的循环里、以及塞进 `kDispatchFreshSelf` 的 `{p4}` 那一份单行摘要 —— 真账 80 个候选时
+       * 每一遍 **17419 字符**，两份就把派发结论挤出宿主 8000 截断之外（实测整份 27387 字符）。
+       * 现在：
+       *   · **一处渲染**：全文件只有这一处 `kReuseSkipped` 的 `fmt` 调用（守卫 `M232-08` 按
+       *     源码里的调用点数量断言），两个消费点（`why` 诊断面 / 主路径）都复用它；
+       *   · **主路径只印一次**：块在"逐张派发"的循环**之前**拼一次（修前在循环里 ⇒ 同一份清单
+       *     按本轮派发的**卡数**重复，与"按子会话数膨胀"同族的第二维膨胀）；
+       *   · `{p4}` 只剩「本轮没有候选被跳过」那一句（`kFreshNoSkip`），有跳过时留空 ——
+       *     原因就在这个块里，不重复印。
+       *
+       * 缺省档**按原因归并**（`pool.reuseSkippedLines` 的新口径）：砍数量不砍原因 ——
+       * 原因原话整句保留、每组样本有上限、整块有字符预算；逐条清单走该函数的 `verbose` 档。
+       */
+      const reuseSkipBlockOf = (rows: readonly { childSessionId: string; role: string; reason: string }[]): string =>
+        rows.length === 0
+          ? ''
+          : fmt('uiIndex.kReuseSkipped', {
+              p1: String(rows.length),
+              // **`DEF-139` 落点二**：三字段（id / 角色 / 理由）一个都不许少 —— 归并的是数量，不是原因
+              p2: reuseSkippedLines(rows).join('\n'),
+            })
+      const reuseSkipBlock = reuseSkipBlockOf(plan.reuseSkipped)
       // **DEF-049 / TASK-078 落点二（`why=true`）**：`why` 是**为什么这一轮派不出去**的诊断面，
       // 因此它**不派发**任何卡（以前它只在"一张都没派出去"时才生效，于是"有 ready 卡 ⇒ 照派"
       // 把 blocked 卡的原因整个吞掉 —— 真机上驾驶舱连问两轮都没看见"有卡被 block 住了"）。
@@ -2057,18 +2091,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
         if (held.length > 0) lines.push(fmt('uiIndex.kWhyQueued', { p1: String(held.length), p2: held.join(' ') }))
         /**
          * **`DEF-139` 落点二（`TASK-163`）**：`why=true` 是"为什么这一轮派不出去"的诊断面 ——
-         * 「谁没被复用、为什么」必须在场，且**逐条三字段**（`childSessionId` / `role` / `reason`）。
+         * 「谁没被复用、为什么」必须在场，且三字段（`childSessionId` / `role` / `reason`）一个不少。
          *
          * 修前这一支对 `reuseSkipped` 一字不提（只在主路径的回执行里出现一次，还缺 `role`）⇒
          * 驾驶舱连问两轮都只能在"池里有空闲却新起"这个现象上打转，最后靠掩码哈希反推根因
          * （并**反推错过两次**）。诊断面答不了这个问题，`why` 就名不副实。
+         *
+         * **`TASK-218`**：内容与主路径**同一份**（复用上面的唯一入口 `reuseSkipBlock`），
+         * 因此"这份清单长什么样"只有一处口径；逐条清单走 `reuseSkippedLines` 的 `verbose` 档。
          */
-        if (plan.reuseSkipped.length > 0) {
-          lines.push(fmt('uiIndex.kReuseSkipped', {
-            p1: String(plan.reuseSkipped.length),
-            p2: reuseSkippedLines(plan.reuseSkipped).join('\n'),
-          }))
-        }
+        if (reuseSkipBlock !== '') lines.push(reuseSkipBlock)
         // **定案键**：这一轮**到底试没试**复用 / 是不是强制新起 —— 与"复用被拒"必须分得开。
         // 行文用 ASCII 投影（`poolReadingLine` 同口径）：语言包键不在本卡写范围内，
         // 而这一行是给复验者的读数，不是给终端用户的散文。
@@ -2085,7 +2117,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p2: plan.dispatch.slice(take).map((entry) => entry.task.id).join(' '),
           }))
         }
-        return infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + queueSection + roleBlockedSection + lines.filter((line) => line !== '').join('\n') + structuralSection
+        // **`TASK-218`**：诊断行（为什么这一轮派不出去）在前，队列/结构在后
+        return lines.filter((line) => line !== '').join('\n') + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + roleBlockedSection + queueSection + structuralSection
       }
 
       const preference = args.backend === 'subagent' || args.backend === 'native-team' || args.backend === 'inline' ? args.backend : 'auto'
@@ -2098,33 +2131,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const idleSameParentTotal = plan.pools.reduce((sum, pool) => sum + pool.idleSameParent.length, 0)
       // **DEF-015**：名单体检的结果（与卡无关，循环里只算一次；探针盲态时**不得**回报）
       let denyPhantoms: string[] = []
-      /**
-       * **「跳过复用的原因」整份回执只印一次**（`TASK-218` / `DEF-175` 落点二）。
-       *
-       * 修前同一份清单印**两遍**：一遍塞进 `kDispatchFreshSelf` 的 `{p4}`（单行、`；` 分隔），
-       * 一遍是这个多行块 —— 真账 80 个候选时**每遍 17419 字符**，两份合起来把派发结论挤出宿主
-       * 8000 截断之外（实测整份 27387 字符）。现在只留**这一处**：`{p4}` 仅保留「本轮没有候选
-       * 被跳过」那一句（`kFreshNoSkip`），有跳过时留空 —— 原因就在这个块里，不重复印。
-       *
-       * 两条口径：
-       *   · **只算一次、只印一次**：修前这个块在"逐张派发"的循环里 ⇒ 同一份清单会按**本轮派发的
-       *     卡数**重复（与"按子会话数膨胀"同族的第二维膨胀）；
-       *   · 缺省档**按原因归并**（`pool.reuseSkippedLines` 的新口径）：砍数量不砍原因 ——
-       *     原因原话整句保留、每组样本有上限、整块有字符预算。
-       */
-      const reuseSkipBlock = plan.reuseSkipped.length === 0
-        ? ''
-        : fmt('uiIndex.kReuseSkipped', {
-            p1: String(plan.reuseSkipped.length),
-            // **`DEF-139` 落点二**：三字段（id / 角色 / 理由）一个都不许少 —— 归并的是数量，不是原因
-            p2: reuseSkippedLines(plan.reuseSkipped).join('\n'),
-          })
       // **R-5C（sdo-test-new 2026-10-08）**：被 `limit` 截掉的卡**既不在"已派发"也不在"排队"**里
       // （它们已通过容量准入，只是这一轮没派）⇒ 回执里凭空消失。如实点名，并说明下次还会再挑。
       const held = plan.dispatch.slice(take)
       const out: string[] = []
-      // 只印一次（不随本轮派发的卡数重复）：放在本轮所有派发卡之前，位置与修前 `take=1` 时一致。
-      if (reuseSkipBlock !== '') out.push(reuseSkipBlock)
+      /**
+       * **`TASK-218`：结论在前、回声在最后。**
+       *
+       * `out` 里放的是**本轮每张卡的派发结论**（`k199DispatchStarted` 那句 + owner / 证据 / 未复用说明）——
+       * 它是这张回执唯一不可替代的东西（读不到它，用户就不知道"派了谁、为什么"）。
+       * 「跳过复用的原因」块与队列表排在结论**之后**；提示词回声（卡数据，2.5k–4k 字符）排在**最后**
+       * 并由 {@link receiptEchoSuffix} 按总预算取舍 ⇒ 宿主 8000 截断只会吃掉回声。
+       */
+      const promptEchoes: string[] = []
       for (const entry of picked) {
         const task = entry.task
         // **`DEF-139` 落点一**：这张卡的角色的现场读数（准入前快照；见 `poolPlan` 里 `readings` 的口径）
@@ -2282,10 +2301,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
               }]
             : []
         if (deliverySkipped.length > 0) {
-          out.push(fmt('uiIndex.kReuseSkipped', {
-            p1: String(deliverySkipped.length),
-            p2: reuseSkippedLines(deliverySkipped).join('\n'),
-          }))
+          // **`TASK-218`**：**投递**被拒的这一批走同一个渲染入口（唯一一处 `kReuseSkipped` 渲染）
+          out.push(reuseSkipBlockOf(deliverySkipped))
         }
         /**
          * **`DEF-139` 落点三的「修触发条件」半**（`TASK-163`）：**跳过复用这件事不许再静默**。
@@ -2425,9 +2442,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
               { reused: outcome.reused, mode: outcome.mode },
               decision.degradedReason,
               decision.overrideNote,
+              // **`TASK-218`**：提示词回声**不在这里**印 —— 它由 `promptEchoes` 收到整份回执的最后，
+              // 于是宿主截断先吃回声、后吃读数，结论永远在最前（守卫 `M232-11`）。
+              false,
             )
               + (notes.length === 0 ? '' : '\n' + notes.join('\n')),
           )
+          promptEchoes.push(dispatchPromptEcho(task.id, request.prompt))
           continue
         }
         out.push(
@@ -2461,7 +2482,24 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。
       // 只在**真派发**这条路径上写：`why=true` 是纯诊断，不改台账。
       office.noteClaimMissing(call, health.claimMissing)
-      return `${dispatchSummary}\n${queueSection}\n${out.join('\n\n')}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      /**
+       * **`TASK-218`：整份回执按「结论 → 读数 → 回声」排布 + 总预算取舍。**
+       *
+       * 顺序（也就是宿主截断时的牺牲顺序，越靠后越先被吃）：
+       *   ① `dispatchSummary`（本次派了哪几张，一行）与 `out`（每张卡的**派发结论**：派给谁、owner、
+       *      证据、为什么没复用）—— **唯一不可替代**的那一块；
+       *   ② 「跳过复用的原因」块；③ 队列表（本轮候选全表）；④ 池视图 / 健康 / 暂不可派 / 结构通道；
+       *   ⑤ **提示词回声**（卡数据，2.5k–4k 字符）—— 由 {@link receiptEchoSuffix} 按
+       *      {@link RECEIPT_BUDGET} 整块取舍，超预算时只留一行指路。
+       *
+       * 修前回声夹在每张卡的派发块里、队列与池块在结论**之前** ⇒ 8000 截断先吃掉结论之后的一切，
+       * 而结论本身又被队列挤到后面（`DEF-175` 的用户级症状）。
+       */
+      const receiptRest = `${out.join('\n\n')}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      // **`M137-03`**（源码级判据）：回执必须由 `dispatchSummary` 起头 —— 这一行就是那个形状。
+      // `head` 只用于**量长度**（与返回值的前半段逐字相同），回声按预算取舍后追加在最后。
+      const head = `${dispatchSummary}\n${receiptRest}`
+      return `${dispatchSummary}\n${receiptRest}` + receiptEchoSuffix(head, promptEchoes)
     },
 
     async task(call: OfficeCall, args: TaskArgs): Promise<string> {
