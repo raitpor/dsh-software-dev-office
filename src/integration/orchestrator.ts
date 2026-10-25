@@ -150,12 +150,19 @@ export interface SeatReading {
   both: string[]
   /** 悬空的派发决定（**不占位**，只点名） */
   danglingDecisions: string[]
+  /**
+   * **超过孤儿 TTL、尚未结算的派发**（`REV-104` #6 / #4）：它们**不占位**（TTL 已判它们不算活），
+   * 但必须**可见** —— 否则"重启后 60 分钟内 `free` 掉到 0"这件事在读数上完全看不出来。
+   */
+  staleDispatches: string[]
 }
 
 export function seatReading(input: {
   inProgress: readonly string[]
   liveDispatches: readonly string[]
   danglingDecisions?: readonly string[] | undefined
+  /** 超过孤儿 TTL 的派发（不占位，但让"重启窗口"可见；`REV-104` #6） */
+  staleDispatches?: readonly string[] | undefined
   budget: number
 }): SeatReading {
   const inProgress = [...new Set(input.inProgress.filter((id) => id !== ''))].sort()
@@ -170,6 +177,7 @@ export function seatReading(input: {
     liveDispatches: live,
     both: inProgress.filter((id) => liveSet.has(id)),
     danglingDecisions: [...new Set(input.danglingDecisions ?? [])].filter((id) => id !== '').sort(),
+    staleDispatches: [...new Set(input.staleDispatches ?? [])].filter((id) => id !== '').sort(),
   }
 }
 
@@ -188,6 +196,9 @@ export function seatLine(reading: SeatReading): string {
   return `dispatch-seats: occupied=${String(reading.occupied)}/${String(reading.budget)} free=${String(reading.free)}`
     + ` inProgress=${String(reading.inProgress.length)} live=${ids(reading.liveDispatches)}`
     + ` both=${ids(reading.both)} dangling=${ids(reading.danglingDecisions)}`
+    // **`REV-104` #6**：超过孤儿 TTL 的派发**不占位**，但它们是"重启后 free 掉到 0"那个窗口的
+    // 现形面 —— 不印出来，读者只会看到 `free=0` 而没有一张 `in-progress` 卡，无从归因。
+    + ` stale=${ids(reading.staleDispatches)}`
 }
 
 /**
@@ -206,6 +217,9 @@ export function seatLine(reading: SeatReading): string {
  */
 export function seatNeedsLine(reading: SeatReading): boolean {
   if (reading.danglingDecisions.length > 0) return true
+  // **`REV-104` #6**：有"超 TTL 未结算"的派发时也要印 —— 它解释的是"`free` 为什么被吃掉过"
+  // （重启窗口：那批孩子已失联，但 TTL 到期前它们算过 live）。
+  if (reading.staleDispatches.length > 0) return true
   const claimed = new Set(reading.inProgress)
   return reading.liveDispatches.some((id) => !claimed.has(id))
 }

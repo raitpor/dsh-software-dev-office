@@ -33,16 +33,17 @@ import type { Context } from '@deepseek-ai/cordis'
 import { Config, resolveSettings } from '../src/config.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import { apply } from '../src/index.js'
-import { seatNeedsLine, seatReading } from '../src/integration/orchestrator.js'
+import { seatLine, seatNeedsLine, seatReading } from '../src/integration/orchestrator.js'
 import {
   DANGLING_LINES_SHOWN,
   DECIDED_SETTLE_SECONDS,
+  danglingDecisionLine,
   danglingDecisionLines,
   danglingDecisions,
   dispatchDecisionRows,
   liveDispatchReading,
 } from '../src/domain/pool.js'
-import type { DispatchDecisionRow } from '../src/domain/pool.js'
+import type { DispatchDecisionRow, DispatchLedgerEvent } from '../src/domain/pool.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { TaskCard } from '../src/types.js'
@@ -90,7 +91,7 @@ function seedDecision(taskId: string, at: string, extra: Record<string, unknown>
 const isoAgo = (seconds: number): string => new Date(Date.now() - seconds * 1000).toISOString()
 
 /** 宿主桩：`start` / `startContinuable` 直接给一个子会话 id（真派发），或抛错（起会话失败）。 */
-function mount(mode: 'ok' | 'start-throws' = 'ok'): {
+function mount(mode: 'ok' | 'start-throws' | 'throws-list' = 'ok'): {
   name: string
   parameters: unknown
   execute: (args: unknown, ctx: { agent?: unknown }) => unknown
@@ -112,14 +113,24 @@ function mount(mode: 'ok' | 'start-throws' = 'ok'): {
   })
   services['tools'] = { register: (tool: unknown) => { tools.push(tool as (typeof tools)[number]); return () => {} } }
   const boom = async (): Promise<never> => { throw new Error('宿主拒绝：无法创建子代理（夹具）') }
-  services['subagents'] = {
-    list: () => ['spawn'],
+  const subagents: Record<string, unknown> = {
     start: mode === 'start-throws' ? boom : async () => ({ id: 'm244-child-0000-4000-8000-00000000aa01' }),
     startContinuable: mode === 'start-throws' ? boom : async () => ({ childId: 'm244-fresh-0000-4000-8000-00000000aa02' }),
     sendMessage: mode === 'start-throws' ? boom : async () => ({ messageId: 'm244-msg' }),
     getProvider: () => ({ capabilities: { toolFilter: true } }),
     listDescendants: async () => [],
   }
+  /**
+   * `throws-list`：让 `runtime.list` 的**属性访问本身**抛错 —— 这是适配层里唯一没有 try/catch 包住的
+   * 一段（`typeof runtime.list === 'function'` 会先触发 getter），异常会直接逃出 `startDispatch`
+   * （`REV-104` #1）。必须用 `defineProperty`：写进对象字面量会在**造桩那一刻**就抛（spread 会求值）。
+   */
+  if (mode === 'throws-list') {
+    Object.defineProperty(subagents, 'list', { get(): () => string[] { throw new Error('boom: list getter exploded') }, configurable: true })
+  } else {
+    subagents['list'] = () => ['spawn']
+  }
+  services['subagents'] = subagents
   apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
   return tools
 }
@@ -304,7 +315,8 @@ test('M244-07 (landing 2 + budget) the dangling list is bounded: N show lines pl
   // 5 张悬空卡：逐行点名只印前 `DANGLING_LINES_SHOWN` 张，其余折成一行**计数 + 卡#锚点**
   const rows: DispatchDecisionRow[] = Array.from({ length: 5 }, (_unused, index) => ({
     seq: 100 + index, at: isoAgo(3600), taskId: `TASK-97${String(index)}`, backend: 'subagent', owner: 'developer',
-    outcome: undefined, failureReason: '', closure: 'pending' as const, startedSeq: undefined, ageSeconds: 3600,
+    outcome: undefined, failureReason: '', closure: 'pending' as const, startedSeq: undefined,
+    pendingReason: 'no-closure' as const, ageSeconds: 3600,
   }))
   const lines = danglingDecisionLines(rows)
   assert.equal(lines.length, DANGLING_LINES_SHOWN + 1, `逐行 + 折叠 = 上限 + 1 行（得到 ${String(lines.length)} 行）`)
@@ -320,6 +332,139 @@ test('M244-07 (landing 2 + budget) the dangling list is bounded: N show lines pl
   const wide = danglingDecisionLines(many).join('\n')
   assert.ok(wide.length <= 3 * 200 + 200, `200 张悬空卡也只许常数级（实际 ${String(wide.length)} 字符）`)
   assert.equal(danglingDecisionLines([]).length, 0, '没有悬空 ⇒ 一个字都不许印')
+})
+
+/* ————————————————— `REV-104` #2：outcome='started' 也要台账事件背书 ————————————————— */
+
+test('M244-08 (REV-104 #2) outcome=started without a matching dispatch/started is treated as dangling', () => {
+  /**
+   * 两次独立 append：`recordDispatch`（decided）与 `recordDispatchStarted`（started）。
+   * 第二笔失败时，台账长成「决定说起来了、started 事件没有」。修前 `closure` 直接采信
+   * `outcome='started'` ⇒ 悬空守卫（看 closure）与容量守卫（看 live）**都放过它**。
+   */
+  const nowMs = Date.now()
+  const broken = [
+    { seq: 10, at: new Date(nowMs - 3600_000).toISOString(), type: 'dispatch/decided',
+      data: { task: 'TASK-971', backend: 'subagent', owner: 'developer', outcome: 'started' } },
+  ]
+  const row = dispatchDecisionRows(broken, { nowMs })[0]
+  assert.equal(row?.closure, 'pending', '没有对应 started 的 outcome=started 不许算收口')
+  assert.equal(row?.pendingReason, 'started-event-missing', '要说清缺的是哪一笔')
+  assert.equal(danglingDecisions(broken, { nowMs }).length, 1, '它必须进悬空清单')
+  assert.match(danglingDecisionLine(row as DispatchDecisionRow), /reason=outcome=started-but-no-dispatch-started/u,
+    '点名理由要与"什么都没有"分开（那是两种不同的故障）')
+
+  // 反例格：真有那一笔 started ⇒ 必须收口（不许把正常的派发判红）
+  const healthy = [...broken, { seq: 11, at: new Date(nowMs - 3599_000).toISOString(), type: 'dispatch/started',
+    data: { task: 'TASK-971', childSessionId: 'm244-971-0000-4000-8000-000000000971' } }]
+  const okRow = dispatchDecisionRows(healthy, { nowMs })[0]
+  assert.equal(okRow?.closure, 'started')
+  assert.equal(okRow?.startedSeq, 11, '收口要给出 started 的序号（可复算锚点）')
+  assert.deepEqual(danglingDecisions(healthy, { nowMs }), [])
+})
+
+test('M244-08b (REV-104 #1) a throw escaping startDispatch still leaves a closed failed decision', async () => {
+  writeCard(card('TASK-972', { status: 'ready' }))
+  const tools = mount('throws-list')
+  const receipt = await callTool(tools, 'sdo_plan', { action: 'next', limit: 1 })
+  assert.match(receipt, /TASK-972/u, `夹具前提：这一轮要挑到 TASK-972：${receipt}`)
+  const decisions = office.journalFor(WORKSPACE).read().events.filter((event) => event.type === 'dispatch/decided')
+  assert.equal(decisions.length, 1, '抛出也必须留下决定（修前：零痕迹）')
+  assert.equal(String(decisions[0]?.data['outcome'] ?? ''), 'failed', '抛出要收口成 failed')
+  assert.match(String(decisions[0]?.data['failureReason'] ?? ''), /startDispatch threw|boom/u, `要写异常原话：${String(decisions[0]?.data['failureReason'] ?? '')}`)
+  assert.deepEqual(office.dispatchDecisionHealth(call).pending, [], '收口过的失败决定不是悬空')
+})
+
+/* —————————————— `REV-104` #7：窗口只对老形状/别的写者有意义（真时间戳四态） —————————————— */
+
+test('M244-09 (REV-104 #7) the settle window is judged on real timestamps: four states', () => {
+  const nowMs = Date.parse('2026-10-25T12:00:00.000Z')
+  const at = (secondsAgo: number): string => new Date(nowMs - secondsAgo * 1000).toISOString()
+  const decided = (seq: number, secondsAgo: number, extra: Record<string, unknown> = {}): DispatchLedgerEvent => ({
+    seq, at: at(secondsAgo), type: 'dispatch/decided',
+    data: { task: `TASK-98${String(seq)}`, backend: 'subagent', owner: 'developer', ...extra },
+  })
+  const started = (seq: number, secondsAgo: number, task: string): DispatchLedgerEvent => ({
+    seq, at: at(secondsAgo), type: 'dispatch/started', data: { task, childSessionId: `c${String(seq)}` },
+  })
+
+  // ① 窗口内（100s）还没 started ⇒ 还不算悬空（判据只判"没有收口"，不判"慢"）
+  assert.deepEqual(danglingDecisions([decided(1, 100)], { nowMs }), [])
+  // ② 过了窗口（301s）仍没有 started ⇒ 判红
+  assert.equal(danglingDecisions([decided(1, 301)], { nowMs }).length, 1)
+  // ③ started 迟到（决定 400s 前、started 99s 前 = 迟 301s）⇒ **已收口，不许判红**
+  const late = [decided(1, 400), started(2, 99, 'TASK-981')]
+  assert.deepEqual(danglingDecisions(late, { nowMs }), [], '迟到但到了 = 收口，不许误报')
+  assert.equal(dispatchDecisionRows(late, { nowMs })[0]?.closure, 'started')
+  // ④ outcome=started 但 started 永不到 ⇒ 仍判红（`REV-104` #2 那一格的时间戳版本）
+  assert.equal(danglingDecisions([decided(1, 400, { outcome: 'started' })], { nowMs }).length, 1)
+})
+
+/* —————————————— `REV-104` #4/#6：重启窗口的可见量（stale 进 seats 行） —————————————— */
+
+test('M244-10 (REV-104 #4/#6) stale dispatches do not occupy a seat but must be visible in the seats line', () => {
+  /**
+   * 重启窗口：宿主重启后 TTL（默认 60 分钟）内，所有 `started` 无 `finished` 的都算 live ⇒
+   * `free` 可能是 0 而卡表上一张 `in-progress` 都没有（真账 seq 2488 就是这个形状：
+   * live = TASK-081/082/083/084、in-progress = 0）。超 TTL 之后它们进 `stale`（不占位），
+   * 但"曾经占过"这件事必须看得见。
+   */
+  const reading = seatReading({
+    inProgress: [],
+    liveDispatches: [],
+    staleDispatches: ['TASK-981', 'TASK-982'],
+    budget: 4,
+  })
+  assert.equal(reading.occupied, 0, '超 TTL 的派发不占位')
+  assert.equal(seatNeedsLine(reading), true, '有 stale ⇒ 必须印（否则 free 的变化无从归因）')
+  const line = seatLine(reading)
+  assert.match(line, /stale=TASK-981 TASK-982/u, `seats 行要点名 stale：${line}`)
+})
+
+/* ————————————————— `REV-104` #5：recover/inflight 不许用"全部 started" ————————————————— */
+
+test('M244-11 (REV-104 #5) recoverView/inflightView judge orphans on live dispatches, not on every started ever', () => {
+  // 卡还在 in-progress，但它的子会话**已经结算**（started + finished 都走过）
+  writeCard(card('TASK-991', { status: 'in-progress', owner: 'developer-deadbee' }))
+  office.recordDispatchStarted(call, {
+    taskId: 'TASK-991', provider: 'spawn', childSessionId: 'm244-991-0000-4000-8000-000000000991',
+    tools: 3, role: 'developer', mode: 'continuable',
+  })
+  const before = office.recoverView(call)
+  assert.deepEqual(before.orphanFlying.map((row) => row.id), [], '还在飞的卡不是孤儿（反例面：不许恒红）')
+  assert.match(office.inflightView(call).rows[0]?.child ?? '', /^m244-991/u, '在飞视图要给子会话前 8 位')
+
+  office.journalFor(WORKSPACE).append('dispatch/finished', {
+    task: 'TASK-991', childSessionId: 'm244-991-0000-4000-8000-000000000991',
+  })
+  const after = office.recoverView(call)
+  assert.deepEqual(after.orphanFlying.map((row) => row.id), ['TASK-991'],
+    '孩子已结算、卡仍 in-progress ⇒ 必须判成孤儿（修前是假绿：注释说"活派发 = started 未 finished"，代码却用全部 started）')
+  assert.equal(office.inflightView(call).rows[0]?.child, '', '已结算的孩子不许再出现在在飞视图里')
+})
+
+/* ———————————— `REV-104` #6：两条 early return 也要印（有界）悬空点名 ———————————— */
+
+test('M244-12 (REV-104 #6) the "no dispatch + plan issues" branch also names dangling decisions (bounded)', async () => {
+  /**
+   * 修前这一支（`plan.dispatch = 0` 且有计划问题）**没有健康区** ⇒ 悬空的派发决定一个字都不印
+   * （评审推翻了我上一版"所有分支可见"的说法）。夹具：一张声明了 `fixes` 却没声明 `impact` 的卡
+   * ⇒ `planIssues` 非空、`dispatch` 为空 ⇒ 恰好走那一支；另加两笔悬空决定。
+   */
+  // 占满 4 个位子（预算默认 4）⇒ 这一轮一张都派不出去，于是回执落到"没有派发"那一支
+  for (const id of ['TASK-980', 'TASK-981', 'TASK-982', 'TASK-983']) {
+    writeCard(card(id, { status: 'in-progress', owner: 'developer-busy01' }))
+  }
+  // 一张"声明了 fixes 却没声明 impact"的卡 ⇒ `planIssues` 非空（这一支的另一半条件）
+  writeCard(card('TASK-995', { status: 'ready', fixes: ['DEF-214'] } as Partial<TaskCard>))
+  seedDecision('TASK-996', isoAgo(3600))
+  seedDecision('TASK-997', isoAgo(3600))
+  const receipt = await callTool(mount('ok'), 'sdo_plan', { action: 'next', limit: 1 })
+  assert.match(receipt, /本次没有派发|没有派发/u, `夹具前提：这一轮要走"没有派发"那一支：${receipt.slice(0, 200)}`)
+  const dangling = linesWith(receipt, 'dangling-decided:')
+  assert.equal(dangling.length, 2, `这一支必须点名悬空（有界）：${receipt}`)
+  assert.match(dangling[0] ?? '', /TASK-99[67]/u, '要点名卡')
+  assert.match(dangling[0] ?? '', /decidedSeq=/u, '要点名决定锚点')
 })
 
 /* ————————————————————— 落点二：占位只有一份口径 ————————————————————— */

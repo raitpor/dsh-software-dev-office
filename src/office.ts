@@ -3691,7 +3691,13 @@ export class SoftwareDevOffice {
     const root = this.requireWorkspace(call)
     const dirty = readDirtyWorktree(root)
     const tracked = dirty.ok === true ? dirty.tracked : []
-    const children = new Map(this.dispatchedChildren(call).map((row) => [row.taskId, row.childSessionId] as const))
+    /**
+     * **`REV-104` #5**：这一行修前用的是 `dispatchedChildren`（**全部** `started`，不过 `finished`、
+     * 不过 TTL）⇒ 结算过的孩子也算"在飞"，`sdo_status view=inflight` 会把死派发印成活的。
+     * 现在读真在飞（{@link liveDispatchReading}：`started` 未 `finished`、未超 TTL、未被 release 覆盖）。
+     */
+    const liveNow = this.liveDispatch(call)
+    const children = new Map(liveNow.children.map((row) => [row.task, row.childSessionId] as const))
     const rows = flying.map((task) => {
       const scopes = task.writeScopes.map((scope) => textOf(scope)).filter((scope) => scope !== '')
       const overlaps = tracked.filter((file) => scopes.some((scope) => scopePathWithin(file, normalizeScopePath(scope))))
@@ -3749,8 +3755,15 @@ export class SoftwareDevOffice {
     redCriteria: { gate: string; criterion: string; tasks: string[] }[]
   } {
     const tasks = this.tasks(call)
-    // ① owner 不可达：卡 in-progress，但没有任何**活着**的派发指向它（活派发 = started 未 finished 且未超 TTL）
-    const live = new Set(this.dispatchedChildren(call).map((row) => row.taskId))
+    /**
+     * ① owner 不可达：卡 `in-progress`，但没有任何**活着**的派发指向它。
+     *
+     * **`REV-104` #5（含 `REV-099` ① 的同一处）**：注释一直这么写，而修前代码用的是
+     * `dispatchedChildren`（全部 `started`，**不过** `finished`、**不过** TTL）⇒
+     * 「孩子早已结算、卡仍 in-progress」会被判成**非孤儿**（假绿）。现在注释与代码同源：
+     * 活派发 = {@link liveDispatchReading}（`started` 未 `finished`、未超 TTL、未被 release 覆盖）。
+     */
+    const live = new Set(this.liveDispatch(call).taskIds)
     const orphanFlying = tasks
       .filter((task) => task.status === 'in-progress' && !live.has(task.id))
       .map((task) => ({
@@ -4355,11 +4368,15 @@ export class SoftwareDevOffice {
   }
 
   /**
-   * 容量预算内的派发计划。
+   * 容量预算内的派发计划（**只服务测试**：生产路径零调用点，`REV-104` #10）。
    *
-   * **`TASK-231` 落点二**：占位走唯一出口 {@link seatReading}（`in-progress` ∪ **真在飞**，去重）——
-   * 修前这里只数卡状态 `in-progress`，于是"派发还活着但卡没认领"这件事在预算里**一个位子都不占**，
-   * 而池视图却把它算成 `busy`：同一份台账两种容量读数。
+   * 生产路径只有 `poolPlan`（`sdo_plan next` / `sdo_status` 都读它）。本方法修前是"第二条容量口径"
+   * 的陈旧副本 —— 它也自己算一遍 {@link seatReading}。两处都读同一个纯函数（`seatReading`）⇒ 算法
+   * 不会分叉，但**消费者**仍只有一处：新代码请调 `poolPlan`，不要再把本方法接回生产路径。
+   *
+   * **`TASK-231` 落点二**：占位 = `in-progress` ∪ **真在飞**（去重）—— 修前只数卡状态 `in-progress`，
+   * 于是"派发还活着但卡没认领"在预算里**一个位子都不占**，而池视图却把它算成 `busy`：
+   * 同一份台账两种容量读数。
    */
   dispatchPlan(call: OfficeCall, maxParallel = this.settings.maxParallelDispatch): { dispatch: TaskCard[]; queued: TaskCard[]; held: ScopeHold[] } {
     const tasks = this.tasks(call)
@@ -4962,6 +4979,8 @@ export class SoftwareDevOffice {
       inProgress: inProgressIds,
       liveDispatches: live.taskIds,
       danglingDecisions: danglingRows.map((row) => row.taskId),
+      // **`REV-104` #6**：超 TTL 未结算的派发不占位，但要进读数（重启窗口的现形面）
+      staleDispatches: live.stale.map((child) => child.task).filter((id) => id !== ''),
       budget: this.settings.maxParallelDispatch,
     })
     // **R-9**：把"被谁冻着、冻了多久"交回给回执（否则 `k30` 那句"都已认领/完成"是假话）
@@ -5636,7 +5655,13 @@ export class SoftwareDevOffice {
     return readConstructionProfile(this.storeFor(this.requireWorkspace(call)))
   }
 
-  /** 本会话派发出去的子会话（来自 `dispatch/started`；带卡上的角色，用于算"掩码外工具"）。 */
+  /**
+   * **历史面**：台账里**所有** `dispatch/started`（带卡上的角色，用于算"掩码外工具"与"谁跑过"）。
+   *
+   * ⚠️ **不许**用它回答"谁在飞"（`REV-104` #5）：它不过 `finished`、不过孤儿 TTL、也不看
+   * `task/released` ⇒ 结算过的、几个月前的、失联的派发全都算进来。要"在飞"就调
+   * {@link liveDispatch}（`liveDispatchReading` 的包装）。
+   */
   dispatchedChildren(call: OfficeCall): { childSessionId: string; taskId: string; role: string; provider: string; startedAt: string }[] {
     const { store, journal } = this.contextFor(call)
     const roleOfCard = new Map(listTasks(store).map((task) => [task.id, task.role]))

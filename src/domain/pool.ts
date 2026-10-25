@@ -451,7 +451,13 @@ export interface LiveDispatchReading {
 }
 
 /**
- * 现算「真在飞的卡」（`TASK-231` 落点二 / 落点三的唯一出口）。
+ * 现算「真在飞的卡」：**所有"谁在飞"的判定都走这里**（池视图 / 冻结判定 / 容量预算 /
+ * `recoverView` / `inflightView`）。
+ *
+ * ⚠️ 措辞更正（`REV-104` #5）：上一版把它写成"唯一出口"，而 `recoverView` / `inflightView`
+ * 当时仍在用 `dispatchedChildren`（全部 `started`，不过 `finished`、不过 TTL）—— 声称强于机制。
+ * 现在这两处也改过来了；"唯一"指的是**`started` 三态判定的唯一实现**，不是"全仓只有一处读
+ * `dispatch/started`"（历史面 `dispatchedChildren` 仍在，用于"谁跑过"）。
  *
  * 一张卡算**在飞**的充要条件：`dispatch/started` 之后既没有 `dispatch/finished`、也没超孤儿 TTL，
  * 且该卡在那笔派发之后**没有**被 `task/released`（R-9：那是操作者的显式判定）。
@@ -506,9 +512,16 @@ export type DispatchDecisionClosure = 'started' | 'failed' | 'inline' | 'pending
 /**
  * 缺省收口窗口（秒）：`dispatch/decided` 之后多久仍无 `started` / `failed` 就判红。
  *
- * 为什么是 300 而不是几秒：真账 204 笔决定的「决定 → started」延迟实测中位数 3.3 秒、最大 36.6 秒
- * （本仓 `.sdo/journal.jsonl` 现算，`TASK-231` 的复现读数）⇒ 窗口必须远大于最长真实延迟，
- * 否则守卫会把每一次正常派发都判红。**它只判"悬空"，不判"慢"**。
+ * **这条窗口对谁有意义**（`REV-104` #7 纠正了原先的依据）：`TASK-231` 起派发路径改成
+ * **先尝试、后落账**（`startDispatch` 返回之后才写 decided），所以**新账**上 decided 与 started 的
+ * 间隔是毫秒级 —— 对新账它**恒绿**，这是写顺序的保证，不是窗口的功劳。
+ * 它真正守的是两类**别的**形状：
+ *   · **老形状**（decided 先写、started 后写，台账里 204 笔都是这个形状）；
+ *   · **别的写者 / 半失败**：如 `REV-104` #2 那条 —— 决定写了 `outcome='started'`，但对应的
+ *     `dispatch/started` 那次 append 没成。
+ *
+ * 300 秒是**给"慢宿主/慢磁盘"留的余量**（老形状的实测延迟中位数 3.3 秒、最大 36.6 秒），
+ * 不是延迟判据本身：**它只判"没有收口"，不判"慢"**。
  */
 export const DECIDED_SETTLE_SECONDS = 300
 
@@ -529,6 +542,13 @@ export interface DispatchDecisionRow {
   closure: DispatchDecisionClosure
   /** 若收口是 `started`：那一笔的序号 */
   startedSeq: number | undefined
+  /**
+   * 悬空时**为什么**悬空（只对 `closure === 'pending'` 有值）：
+   *   · `started-event-missing` —— 决定上写着 `outcome='started'`，但台账里**没有**对应的
+   *     `dispatch/started`（`REV-104` #2：两次独立 append，第二笔失败时两个守卫都会放过它）；
+   *   · `no-closure` —— 老形状：既没有 `outcome`，也没有等到 `started`。
+   */
+  pendingReason: 'started-event-missing' | 'no-closure' | undefined
   /** 距"现在"多少秒；`at` 读不出 ⇒ `-1`（**判不了**，见 {@link danglingDecisions}） */
   ageSeconds: number
 }
@@ -560,29 +580,40 @@ export function dispatchDecisionRows(
     const at = event.at ?? ''
     const parsed = Date.parse(at)
     const ageSeconds = Number.isFinite(parsed) ? Math.max(0, Math.round((now - parsed) / 1000)) : -1
-    let closure: DispatchDecisionClosure = outcome ?? 'pending'
+    /**
+     * 收口判定（`REV-104` #2 之后）：**`started` 这一态也必须由台账事件背书**。
+     *
+     * 修前只有"老形状"才去找 `dispatch/started`；`outcome='started'` 被**无条件信任** ——
+     * 而 decided 与 started 是**两次独立 append**，第二笔失败时台账就长成「决定说起来了、
+     * started 事件没有」，悬空守卫（看 `closure`）与容量守卫（看 `live`）**都会放过它**。
+     * 现在两侧同判：`started` 只认"真的有一笔 `dispatch/started`"。
+     */
+    let closure: DispatchDecisionClosure = 'pending'
     let startedSeq: number | undefined
-    if (outcome === undefined) {
-      if (backend === 'inline') {
-        closure = 'inline'
-      } else {
-        // 只看"下一笔同卡的 dispatch 事件"：出现新的 decided 就说明这一笔被**覆盖**了，不许被它洗白
-        for (let cursor = index + 1; cursor < events.length; cursor += 1) {
-          const later = events[cursor]
-          if (later === undefined) break
-          if (text(later.data['task']) !== taskId) continue
-          if (later.type === 'dispatch/started') {
-            closure = 'started'
-            startedSeq = later.seq ?? cursor
-            break
-          }
-          if (later.type === 'dispatch/decided') break
+    let pendingReason: 'started-event-missing' | 'no-closure' | undefined
+    if (outcome === 'failed' || outcome === 'inline') {
+      closure = outcome
+    } else if (outcome === undefined && backend === 'inline') {
+      // 老台账里的 inline 决定（降级就地执行）：天然没有子会话可起，收口就在回执里
+      closure = 'inline'
+    } else {
+      // 只看"下一笔同卡的 dispatch 事件"：出现新的 decided 就说明这一笔被**覆盖**了，不许被它洗白
+      for (let cursor = index + 1; cursor < events.length; cursor += 1) {
+        const later = events[cursor]
+        if (later === undefined) break
+        if (text(later.data['task']) !== taskId) continue
+        if (later.type === 'dispatch/started') {
+          closure = 'started'
+          startedSeq = later.seq ?? cursor
+          break
         }
+        if (later.type === 'dispatch/decided') break
       }
+      if (closure === 'pending') pendingReason = outcome === 'started' ? 'started-event-missing' : 'no-closure'
     }
     rows.push({
       seq, at, taskId, backend, owner: text(event.data['owner']),
-      outcome, failureReason: text(event.data['failureReason']), closure, startedSeq, ageSeconds,
+      outcome, failureReason: text(event.data['failureReason']), closure, startedSeq, pendingReason, ageSeconds,
     })
   }
   return rows
@@ -609,10 +640,16 @@ export function danglingDecisions(
  * （语言包键不在本卡写范围，且这一行是给复验者的读数）。
  */
 export function danglingDecisionLine(row: DispatchDecisionRow): string {
+  const reason = row.closure !== 'pending'
+    ? '-'
+    : row.pendingReason === 'started-event-missing'
+      // 决定写着 started，但台账里没有那一笔 —— 比"什么都没发生"更需要人看（`REV-104` #2）
+      ? 'outcome=started-but-no-dispatch-started'
+      : 'no-dispatch-started-and-no-dispatch-failed'
   return `dangling-decided: task=${row.taskId} decidedSeq=${String(row.seq)}`
     + ` owner=${row.owner === '' ? '-' : row.owner} at=${row.at === '' ? '-' : row.at}`
     + ` ageSeconds=${String(row.ageSeconds)} closure=${row.closure}`
-    + ` reason=${row.closure === 'pending' ? 'no-dispatch-started-and-no-dispatch-failed' : '-'}`
+    + ` reason=${reason}`
 }
 
 /**

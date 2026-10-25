@@ -1994,6 +1994,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
         /**
          * **`TASK-231` 落点二/三：两条读数都**进回执预算**（返工，按 `TASK-218` 的口径）。**
          *
+         * ⚠️ **覆盖范围（`REV-104` #6 纠正）**：这两行只在**带健康区**的分支可见。`sdo_plan next`
+         * 里那两条 early return（「没有派发 + 计划有问题」、「被未结算派发冻住」）修前**没有**这个
+         * 字段 —— 现在各自补了**有界的悬空点名**（`danglingDecisionLines`），但**没有**搬整套健康区
+         * （理由：那一支的排布是 `SDO-54` 的"诊断紧跟裁决"，整段 health 会引入与本支无关的
+         * `orphan` / `claimMissing` 行，且「没有派发 + 计划有问题」正是体积守卫 `M232-12` 盯的那一支）。
+         * 上一版这里写着「所有分支可见」，那句是过度声称。**
+         *
          * 体积纪律（实测，本卡返工的起因）：`TASK-218` 把整份 `next` 回执压在 `RECEIPT_BUDGET=7000`
          * 与宿主 8000 以内，冻结夹具的余量只剩两百来字符；新读数若**无条件**追加，
          * 就会把那份余量吃光（实测占位行 103 字符 ⇒ 7,192 → 7,295）。所以：
@@ -2040,13 +2047,24 @@ export function apply(ctx: Context, config: SdoConfig): void {
             .map((issue) => fmt('uiIndex.kPlanIssueLine', { p1: issue.code, p2: issue.taskId, p3: issue.detail, p4: issue.remedy }))
             .join('\n')
           if (args.why === true) return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
-          return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
+          /**
+           * **`REV-104` #6**：这一支（「没有派发 + 计划有问题」）修前**没有**健康区 ⇒
+           * 悬空的派发决定在这里**一个字都不印**（评审也是在这一点上推翻了我上一版「所有分支可见」的
+           * 说法）。现在补**有界**的点名（`danglingDecisionLines`：最多 3 行 + 折叠计数），
+           * 不搬整套健康区 —— 理由见上面那段覆盖范围的注释。
+           */
+          const danglingHere = danglingDecisionLines(office.dispatchDecisionHealth(call).pending)
+          const danglingSection = danglingHere.length === 0 ? '' : '\n' + danglingHere.join('\n') + '\n'
+          return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + danglingSection + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
         }
         if (plan.queued.length === 0) {
           // **R-9**：真机在这里印「没有可派发的任务卡（都已认领/完成）」，而实际上是 4 张 ready 卡
           // 被**停止的子会话**留下的未结算派发冻着 ⇒ 回执必须点名「被谁冻着、冻了多久、怎么解」。
           const frozen = plan.heldByDispatch ?? []
           if (frozen.length > 0) {
+            // **`REV-104` #6**：这一支修前同样没有健康区 —— 补有界的悬空点名（理由同上）。
+            const danglingHere = danglingDecisionLines(office.dispatchDecisionHealth(call).pending)
+            const danglingSection = danglingHere.length === 0 ? '' : '\n' + danglingHere.join('\n')
             return queueSection + '\n' + fmt('uiIndex.kDispatchFrozen', {
               p1: String(frozen.length),
               p2: frozen
@@ -2057,7 +2075,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 }))
                 .join(' '),
               p3: String(settings.dispatchOrphanTtlMinutes),
-            })
+            }) + danglingSection
           }
           // **`TASK-218`**：结论（为什么一张都没派）在前，队列在后
           return describeNonDispatchable(office.nonDispatchable(call)) + '\n' + infeasibleBlock + roleBlockedSection
@@ -2289,18 +2307,35 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // 盲态没有"剔掉了什么"可言（那批 dropped 是探针的错觉）—— 不许当事实回报。
         const droppedTools = probeBlind ? [] : denyFiltered.dropped
 
-        const outcome = await startDispatch({
-          runtime: subagentsApi,
-          provider: settings.dispatchProvider,
-          agent: call.agent,
-          request,
-          deny: denyFiltered.applied,
-          maxDepth: settings.dispatchMaxDepth,
-          ...(entry.reuseChildId === undefined ? {} : { reuseChildId: entry.reuseChildId }),
-          // **`TASK-208` 落点一**：把整条**有序候选队列**交给投递层逐条试（修前只传一个 id，
-          // 投递失败即降级新起 ⇒ `DEF-185` 的"每轮都挑同一个投不进去的候选"）。
-          ...(entry.reuseCandidates === undefined ? {} : { reuseCandidates: entry.reuseCandidates }),
-        })
+        /**
+         * **`REV-104` #1：`startDispatch` 也可能"抛出"，而不只是返回失败。**
+         *
+         * 适配层已经把三处宿主调用逐段 `try/catch` 化（`startContinuable` / `sendMessage` / `start`），
+         * 所以**常规**失败都落在返回空间里（`started:false` + `reason`）。但适配层之外仍有能逃逸的
+         * 那一段（对 `runtime.list` 的**属性访问本身**、运行时级异常）—— 修前那样一抛，这一轮
+         * **既没有 decided、也没有 failed**，台账上**零痕迹**（比悬空更糟：连"发生过"都没有）。
+         * 现在把调用包起来：抛出也落一笔 `outcome='failed'` 的决定，`failureReason` 写异常消息。
+         */
+        const outcome = await (async (): Promise<Awaited<ReturnType<typeof startDispatch>>> => {
+          try {
+            return await startDispatch({
+              runtime: subagentsApi,
+              provider: settings.dispatchProvider,
+              agent: call.agent,
+              request,
+              deny: denyFiltered.applied,
+              maxDepth: settings.dispatchMaxDepth,
+              ...(entry.reuseChildId === undefined ? {} : { reuseChildId: entry.reuseChildId }),
+              // **`TASK-208` 落点一**：把整条**有序候选队列**交给投递层逐条试（修前只传一个 id，
+              // 投递失败即降级新起 ⇒ `DEF-185` 的"每轮都挑同一个投不进去的候选"）。
+              ...(entry.reuseCandidates === undefined ? {} : { reuseCandidates: entry.reuseCandidates }),
+            })
+          } catch (error) {
+            const detail = error instanceof Error ? error.message : String(error)
+            // **ASCII**：这一格进台账（`failureReason`），跨版本/跨语言都要可读 —— 也避开 i18n 棘轮
+            return { started: false, reason: 'failed', detail: `startDispatch threw: ${detail}` } as const
+          }
+        })()
         /**
          * **收口落账**（`TASK-231` 落点一）：决定与它的结局写进**同一笔** `dispatch/decided`。
          *
