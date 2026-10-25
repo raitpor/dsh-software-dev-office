@@ -137,7 +137,17 @@ export const journalReadStats = {
    * 在 append 路径上**低估**了，读的人会以为一次 append 只解析了 1 行。
    */
   parsedLines: 0,
-  /** `append()` 里 `maxSeqOfText` 对全文逐行 `JSON.parse` 的行数（与 `parsedLines` **分开记**，别混）。 */
+  /**
+   * **`append()` 侧**（{@link maxSeqOfText}）**看过的盘上非空行数**（与 `parsedLines` 分开记，别混）。
+   *
+   * 口径（**`REV-129` 必修①，逐字写清**）：`maxSeqOfText` 每遇到一个非空行就 +1 ——
+   * **成功 `JSON.parse` 的行**与**解析失败后退回正则扫 seq 的坏行****都计**，
+   * 因为两者都是 append 为"分配不重复的 seq"而付出的逐行代价（`D2` 的不变量要求它看坏行）。
+   *
+   * **它是真的累加**（`maxSeqOfText` 返回数、`append()` 记账），不是恒 0 的仪表：
+   * `REV-129` 必修① 点出过上一版只声明不累加 —— 那比"没记"更坏（读者会把 0 当读数）。
+   * 守卫 `M234-12` 钉住「append 一次 ⇒ 该数 = append 前盘上的非空行数」；删掉累加它就红。
+   */
   appendParsedLines: 0,
 }
 
@@ -1188,9 +1198,13 @@ export class Journal {
     // 一份文本同时给两件事用：截断前缀（`read()`，走缓存）与盘上最大 seq（坏行也要扫）
     const last = this.read()
     const text = this.store.readText(JOURNAL_FILE) ?? ''
+    const scanned = maxSeqOfText(text)
+    // **`REV-129` 必修①**：append 侧的逐行代价**真的记账**（与 `read()` 的 `parsedLines` 分开）——
+    // 上一版只有声明与清零、全仓无一处累加 ⇒ 那是个恒 0 的仪表，`M234-12` 钉住它现在会说话。
+    journalReadStats.appendParsedLines += scanned.scanned
     const event: JournalEvent = {
       // 截断期也不能分配重复 seq：取「截断前缀长度」与「盘上最大 seq」的较大者 + 1
-      seq: Math.max(last.events.length, maxSeqOfText(text)) + 1,
+      seq: Math.max(last.events.length, scanned.max) + 1,
       at: new Date().toISOString(),
       actor,
       type,
@@ -1345,12 +1359,19 @@ export class Journal {
  *
  * 为什么它必须看**全文**而不是缓存前缀：截断期若按「前缀长度 + 1」分配，新事件会拿到一个与坏行
  * 重复的 `seq`（真机后果：签字之后改过真源仍被判 `valid`）。
+ *
+ * **仍然是纯函数**（`REV-129` 必修①）：它**不碰**任何计数器，只把「扫了多少个非空行」连同最大 `seq`
+ * 一起返回；记账由调用方（`append()`）做 —— 于是这个函数能单测、能被复用，而
+ * `journalReadStats.appendParsedLines` 也就有了**真的**数据源（不再是一个恒 0 的字段）。
  */
-function maxSeqOfText(text: string): number {
+function maxSeqOfText(text: string): { max: number; scanned: number } {
   let max = 0
+  let scanned = 0
   for (const line of text.split('\n')) {
     const trimmed = line.trim()
     if (trimmed === '') continue
+    // 口径：**成功解析的行**与**坏行（退回正则扫 seq）都算一行** —— 两者都是逐行的代价
+    scanned += 1
     try {
       const parsed = JSON.parse(trimmed) as { seq?: unknown }
       if (typeof parsed.seq === 'number' && Number.isFinite(parsed.seq) && parsed.seq > max) max = parsed.seq
@@ -1364,5 +1385,5 @@ function maxSeqOfText(text: string): number {
       }
     }
   }
-  return max
+  return { max, scanned }
 }

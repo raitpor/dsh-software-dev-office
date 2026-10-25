@@ -22,8 +22,18 @@
  *     （`REV-095` 必核二①：只钉首末两行时这一形态会被拼成一段从未存在过的事件序列）；
  *   · `M234-09` ⑦ 台账被换成**目录** ⇒ `read()` 抛 `EISDIR`（与修前 `store.readText` 同口径，
  *     `REV-095` 必核三：不能把真实错误吞成"空台账"）；
- *   · `M234-10` ⑧ 一次 `verifyReviewFinding` 只读**一次**台账（`REV-095` 必核四③：修前 3 次）；
- *   · `M234-11` ⑨ 一次 `review.required` 判据只读**一次**台账（同上：修前 2 次）。
+ *   · `M234-10` ⑧ 一次 `verifyReviewFinding` 的台账读次数 = **写前 1 + append 内部 2 + 写后 1**
+ *     （`REV-095` 必核四③：修前写前就是 3 次）；
+ *   · `M234-11` ⑨ 一次 `review.required` 判据只读**一次**台账（同上：修前 2 次）；
+ *   · `M234-12` ⑩ `appendParsedLines` **真的会涨**且等于 append 扫过的非空行数
+ *     （`REV-129` 必修①：上一版只有声明与清零 ⇒ 恒 0 的死计数器）；
+ *   · `M234-13` ⑪ **首段锚点**的杀手格：等长只改**第 1 行** + 末行原样 + 中间不读 + 追加 ⇒ 全量重解析
+ *     （`REV-129` 必修②：补格前把 `head` 那一发探针删掉，15 格无一红）。
+ *
+ * **首 / 中 / 末三段各由哪一格钉住**（`REV-129` 必修② 要求写明）：
+ *   · **末段** ⇒ `M234-06`（就地整份重写且变长）/ `M234-07`（同长改写，mtime 兜底）；
+ *   · **中段** ⇒ `M234-08`（等长改第 2、3 行）；
+ *   · **首段** ⇒ `M234-13`（等长只改第 1 行）。
  *
  * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`；中文只写在断言之外）。
  */
@@ -413,7 +423,7 @@ test('M234-05 (guard 5) pendingReviewBigCards reads the ledger at most twice (me
  * 传写前的快照会让"最后一条发现核实完 ⇒ 可采纳"永远不成立，见 `verifyReviewFinding` 里的说明） = **4**。
  * 反例（把 `index` 传回去）当场变 6 ⇒ 这格必红（`MUT-C` 实测）。
  */
-test('M234-10 (guard 8) one verify-review costs exactly one ledger read for the judgement itself', () => {
+test('M234-10 (guard 8) one verify-review costs 1 pre-write ledger read + append internals + 1 post-write read', () => {
   const f = fresh('verify-once')
   const store = office.storeFor(f.workspace)
   const journal = f.journal
@@ -435,10 +445,15 @@ test('M234-10 (guard 8) one verify-review costs exactly one ledger read for the 
     sessionId: 'verifier-session',
   })
   assert.equal(result.ok, true, `the verify must go through the whole path: ${JSON.stringify(result).slice(0, 300)}`)
-  assert.equal(
-    journalReadStats.readCalls,
-    4,
-    `pre-write judgement (1) + append() internal reads (2) + post-write adoption (1) = 4; the old shape read 6. got ${String(journalReadStats.readCalls)}`,
+  /**
+   * **上界而不是等号**（`REV-129` 低优先）：4 = 1（写前判定）+ 2（append 内部：`append()` 的 `this.read()`
+   * 与 `rebuild()` 的 `this.read()` 各一次）+ 1（写后判采纳）。后两项里有一项是**别人的成本**：
+   * 将来谁把 `rebuild()` 的那次读省掉（那是**改善**），这一格不该因此变红 —— 所以钉 **≤ 4**。
+   * 回归方向（把共享视图拆回去 ⇒ 6）仍然被杀：`MUT-C` 实测 6 > 4 ⇒ 红。
+   */
+  assert.ok(
+    journalReadStats.readCalls <= 4,
+    `pre-write judgement (1) + append/rebuild internals (2) + post-write adoption (1) = at most 4; the old shape read 6. got ${String(journalReadStats.readCalls)}`,
   )
 })
 
@@ -464,6 +479,87 @@ test('M234-11 (guard 9) one review.required evaluation reads the ledger exactly 
   assert.notEqual(result, undefined, 'the criterion must still be registered')
   assert.equal(result?.ok, false, 'fixture premise: a done medium card with no review must fail this criterion')
   assert.equal(journalReadStats.readCalls, 1, `one criterion evaluation must read the ledger once, got ${String(journalReadStats.readCalls)}`)
+})
+
+/**
+ * **`M234-12`（`REV-129` 必修①）：`appendParsedLines` 不是恒 0 的仪表。**
+ *
+ * 上一版只有「声明 + 文档 + 清零」三处、全仓无一处累加 ⇒ 字段结构性恒为 0，而证词却写「口径已分开记」——
+ * 那比"没记"更坏：读者会把 `0` 当成读数。这一格钉两件事：
+ *   ① append 一次 ⇒ 该数 = **append 前盘上的非空行数**（`maxSeqOfText` 为分配 seq 逐行看盘）；
+ *   ② **坏行也计**（口径写清）：塞一行半写坏行再 append ⇒ 该数跟着 +1（`D2` 的 seq 不变量要求看坏行）。
+ * 反例（把 `journalReadStats.appendParsedLines += …` 删掉）⇒ ① 得到 0 ⇒ 当场红（`MUT-F` 实测）。
+ */
+test('M234-12 (guard 10) appendParsedLines really counts the non-empty lines append scans for seq', () => {
+  const f = fresh('append-scanned')
+  const journal = f.journal
+  const path = join(f.workspace, '.sdo', JOURNAL_FILE)
+  const project = { name: 'M234', process: 'waterfall', scale: 'normal', stakeholders: [], phase: 'intake', phaseHistory: [] }
+  journal.append('project/created', { project })
+  journal.append('phase/entered', { phase: 'requirements' })
+  journal.append('phase/entered', { phase: 'architecture' })
+  journal.read()
+  resetJournalReadStats()
+  journal.append('phase/entered', { phase: 'construction' })
+  assert.equal(
+    journalReadStats.appendParsedLines,
+    3,
+    `append must count the 3 non-empty lines it scanned before writing, got ${String(journalReadStats.appendParsedLines)}`,
+  )
+  // ② 坏行也计：口径写清（`maxSeqOfText` 对坏行退回正则扫 seq，仍是逐行代价）
+  office.storeFor(f.workspace).appendLine([JOURNAL_FILE], '{"seq":99')
+  const scannedLines = readFileSync(path, 'utf8').split('\n').filter((row) => row.trim() !== '').length
+  resetJournalReadStats()
+  journal.append('phase/entered', { phase: 'verification' })
+  assert.equal(
+    journalReadStats.appendParsedLines,
+    scannedLines,
+    `a half-written line counts too: expected ${String(scannedLines)} scanned lines, got ${String(journalReadStats.appendParsedLines)}`,
+  )
+})
+
+/**
+ * **`M234-13`（`REV-129` 必修②）：首段锚点的杀手格。**
+ *
+ * 形态（之前**一格都没有**）：同 inode、**等长只改第 1 行** + 其余行逐字节不动 + 中间不读 + 再追加一行。
+ *   · 文件变长 ⇒ 只看 `size` 会判"续读尾部"；
+ *   · 末段锚点（原末行）原样、中段锚点（4 条等长行 ⇒ 抽样落在第 2 行）也原样 ⇒ 两发探针都对得上；
+ *   · 只有**首段锚点**能看见第 1 行被等长改写。
+ * 反例（把 `anchorsMatch` 里 `head` 那一发删掉）⇒ 这一形态会被拼成旧首行 + 新尾部 ⇒ 本格红（`MUT-G` 实测）。
+ */
+test('M234-13 (guard 11) an equal-length rewrite of the FIRST line is caught by the head anchor', () => {
+  const f = fresh('head-anchor')
+  const journal = f.journal
+  const path = join(f.workspace, '.sdo', JOURNAL_FILE)
+  const lines = [1, 2, 3, 4].map((seq) => eventLine(seq, 'phase/entered', { phase: 'phase-aaa' }))
+  plant(f.workspace, `${lines.join('\n')}\n`)
+  const warm = journal.read()
+  assert.equal(warm.events.length, 4, 'fixture premise: four events were read')
+  const inoBefore = statSync(path).ino
+  const sizeBefore = statSync(path).size
+  // 只改**第 1 行**（等长）；第 2/3/4 行逐字节不动；中间不读
+  const first = lines[0] ?? ''
+  const rewrittenFirst = first.replace('"phase-aaa"', '"phase-bbb"')
+  assert.equal(rewrittenFirst.length, first.length, 'fixture premise: the rewrite keeps the byte length')
+  assert.notEqual(rewrittenFirst, first, 'fixture premise: the first line really changed')
+  const rewritten = [rewrittenFirst, ...lines.slice(1)]
+  assert.deepEqual(rewritten.slice(1), lines.slice(1), 'fixture premise: lines 2..4 are byte-identical')
+  writeFileSync(path, `${rewritten.join('\n')}\n`)
+  assert.equal(statSync(path).ino, inoBefore, 'fixture premise: the in-place rewrite keeps the inode')
+  office.storeFor(f.workspace).appendLine([JOURNAL_FILE], eventLine(5, 'phase/entered', { phase: 'phase-zzz' }))
+  assert.ok(statSync(path).size > sizeBefore, 'fixture premise: the file grew after the rewrite')
+
+  resetJournalReadStats()
+  const after = journal.read()
+  assert.equal(journalReadStats.fullParses, 1, 'a rewritten FIRST line must force a full reparse (the head anchor no longer matches)')
+  assert.equal(journalReadStats.tailParses, 0, 'it must not be spliced as an append-only tail read')
+  assert.equal(after.events.length, 5, `the rewritten ledger has five events, got ${String(after.events.length)}`)
+  assert.equal(
+    String(after.events[0]?.data['phase']),
+    'phase-bbb',
+    'the rewritten first event must be the one returned — a splice would keep the cached "phase-aaa"',
+  )
+  assert.equal(String(after.events.at(-1)?.data['phase']), 'phase-zzz', 'the appended tail must be the new one')
 })
 
 /* ————————————————————————————————————————————————————————————————————————————————
