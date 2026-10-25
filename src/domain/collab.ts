@@ -13,7 +13,7 @@ import { textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
 import type { EvidenceItem, JournalEvent, MitigatesWaiver, TaskCard } from '../types.js'
 import { listTasks, producesProductArtifacts, scopeIntersections, writeTask } from './plan.js'
-import { orphanLocks } from './dispatchHealth.js'
+import { DISPATCH_ABORTED_EVENT, orphanLocks, unsettledDispatch } from './dispatchHealth.js'
 import { normalizeScopePath, scopeOverlaps, scopePathWithin } from './scopePaths.js'
 
 /**
@@ -1850,9 +1850,32 @@ export function addErrata(
   return { ok: true, task: saved, count: (saved.errata ?? []).length }
 }
 
+/**
+ * **显式释放**（回到 `ready`，清空 `owner`）。
+ *
+ * **`TASK-237` / `DEF-224` 落点二：release 必须收口。** 放手的卡若还有一笔**未结算的派发**
+ * （`dispatch/started` 之后没有任何终态事件），就先把那一轮派发落一条 `dispatch/aborted`
+ * —— 否则台账留下「`dispatch/started` 还在、卡却 `ready` 且无 `owner`」的第四种不一致形态：
+ * 读者看到"有派发"，却没有任何地方说"这一轮已经作废了"（现盘实测 20 次落到这一形态）。
+ *
+ * **顺序有意如此**（先收口、后改状态）：卡的**最后一条**事件仍然是 `task/released`
+ * ⇒ 所有"读该卡最后一条事件"的既有读者（孤儿锁、阶段推进）读数一字不变。
+ * 判定与读侧同源：`unsettledDispatch`（`domain/dispatchHealth.ts`）是唯一出口，
+ * 收口事件本身也进它的终态表，因此**重复 release 不会重复收口**。
+ */
 export function release(store: SdoStore, journal: Journal, input: { taskId: string; actor: string; reason: string }): TaskCard | undefined {
   const task = listTasks(store).find((item) => item.id === input.taskId)
   if (task === undefined) return undefined
+  const open = unsettledDispatch(journal.read().events, task.id)
+  if (open !== undefined) {
+    journal.append(DISPATCH_ABORTED_EVENT, {
+      task: task.id,
+      childSessionId: open.childSessionId,
+      startedSeq: open.startedSeq,
+      reason: input.reason,
+      actor: input.actor,
+    })
+  }
   const { owner: _owner, blockedReason: _blocked, ...rest } = task
   const next: TaskCard = { ...rest, status: 'ready', revision: task.revision + 1, updatedAt: now() }
   journal.append('task/released', { id: next.id, actor: input.actor, reason: input.reason, previousOwner: task.owner ?? '' })

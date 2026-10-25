@@ -2055,6 +2055,17 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   'dispatch/finished',
   // **DEF-053**：派发未认领的静默失败留痕（不改设计真源 —— 与 dispatch/* 同族）
   'dispatch/claim-missing',
+  /**
+   * **派发被主动收口**（`TASK-237` / `DEF-224` 落点二）：`release` 一张"已派发但未结算"的卡时，
+   * 必须同时落这一条，否则台账里会留下「`dispatch/started` 还在、卡却 `ready` 无 `owner`」的第四种形态
+   * （现盘实测 20 次）。写者是 `domain/collab.ts` 的 `release`，读侧判定是
+   * `domain/dispatchHealth.ts` 的 `unsettledDispatch`。
+   *
+   * 它**不是** `dispatch/finished`：那一笔记的是"子会话这一轮结束了"，本事件记的是"这张卡不归它了"
+   * （会话可能还在跑）—— 所以池子的 busy 判据故意不把它当结算（会话照旧占位子）。
+   * 它不改任何设计真源 ⇒ 与 `dispatch/*` 同族，属纯记账（见下面的中性表）。
+   */
+  'dispatch/aborted',
   // **DEF-059**：认领被拒的留痕（拒签不改任何真源，只是把「谁被拒过、因为什么」记下来）
   'task/claim-rejected',
   'dispatch/reported',
@@ -2387,6 +2398,9 @@ export type SdoEventType =
   | 'dispatch/decided'
   // **DEF-053**：派发后窗口内没有认领 ⇒ 静默失败（纯记账，不改真源）
   | 'dispatch/claim-missing'
+  // **TASK-237 / DEF-224 落点二**：`release` 一张"已派发但未结算"的卡 ⇒ 同时落一条收口事件
+  // （否则留下「started 还在、卡 ready 无 owner」的第四种形态）。写者是 `collab.ts` 的 `release`。
+  | 'dispatch/aborted'
   // **DEF-059**：认领被拒（拒签零事件 ⇒ 争用次数在真源里数不出）
   | 'task/claim-rejected'
   | 'dispatch/started'
