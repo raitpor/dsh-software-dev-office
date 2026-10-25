@@ -205,6 +205,27 @@ interface SnapFixture {
 
 const SNAP_BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m224-snapshot/', import.meta.url))
 
+/**
+ * 心跳行按 `｜` 切**段**（渲染顺序：台账｜最近派发观测｜在飞子会话）。
+ *
+ * 为什么要切段：`REV-094#4` 指出裸子串断言（`line.includes('20')`）是**恒真**的 —— 段外的任务号、
+ * seq、别的段里出现同一个数字就能让它过。相对量断言必须锚在**带分钟语义的那一段**上。
+ */
+const beatSegments = (line: string): string[] => line.split('｜')
+
+/**
+ * 段内的分钟读数（**只有**带分钟语义的段才有值）：
+ *   · 「N 分钟前」—— 台账最近落笔 / 最近派发观测；
+ *   · 「已静 N 分钟」—— 在飞子会话那一行。
+ * 段里没有这类读数 ⇒ `undefined`（**不返回 0** —— 0 在渲染里是"刚刚"）。
+ */
+const minuteReading = (segment: string): number | undefined => {
+  const ago = /(\d+) 分钟前/u.exec(segment)
+  if (ago !== null) return Number(ago[1])
+  const quiet = /已静 (\d+) 分钟/u.exec(segment)
+  return quiet === null ? undefined : Number(quiet[1])
+}
+
 /** 一台真实的办公室（真 `SdoStore` + 真 `Journal`）—— 快照的读数必须是**现算**，不是摆件。 */
 function snapFixture(name: string, overrides: Partial<SdoConfig> = {}): SnapFixture {
   const workspace = join(SNAP_BASE, name)
@@ -363,7 +384,13 @@ test('M224-S8 (landing 2) the heartbeat line carries "last ledger write" + "last
   const lines = text.split('\n')
   const beatLine = lines.find((line) => isVolatileSnapshotLine(line) && line !== lines[0]) ?? ''
   // 相对量：观测时刻 00:40 距读数 01:00 = 20 分钟（写绝对时刻就没人能一眼判断"还活着没"）
-  assert.ok(beatLine.includes('20'), `the heartbeat line must carry the relative minute reading (20): ${beatLine}`)
+  // **`REV-094#4`**：这里以前是裸子串 `includes('20')` —— 任务号 / seq / 别的段里出现 20 就能让它过。
+  // 现在锚到**段**上：20 分钟这个读数必须成段地出现**两次**，且其中只有一次带子会话号
+  // （不带号的那段 = 全局「最近派发观测」，带号的那段 = 该在飞子会话自己的心跳）。
+  const segments = beatSegments(beatLine)
+  const twenty = segments.filter((segment) => minuteReading(segment) === 20)
+  assert.equal(twenty.length, 2, `the 20-minute reading must own a segment twice (global + per-child), not just appear anywhere: ${beatLine}`)
+  assert.equal(twenty.filter((segment) => segment.includes('beef1234')).length, 1, `exactly one of those two is the per-child row: ${beatLine}`)
   assert.ok(beatLine.includes('beef1234'), `the heartbeat line must name the in-flight child: ${beatLine}`)
   assert.equal(beatLine.includes('2026-10-24T00:40:00.000Z'), false, 'the heartbeat reads relative ages, not the raw observation timestamp')
 
@@ -450,14 +477,27 @@ test('M224-S9 (REV-093#8 rewrite) the heartbeat reading is provably live and nev
   }
   assert.equal(minutesIn(later.line) - minutesIn(a.line), 90, `advancing the reading moment by 90 minutes must add exactly 90 to the relative reading: ${a.line} / ${later.line}`)
   // ③ 台账里出现更新的观测 ⇒ 「最近派发观测」那条的分钟数变小
+  // **`REV-094#4`**：以前这一格只断言 `includes('10')` —— 裸子串、无锚点（任务号 / seq / 别的段里出现
+  // 10 就恒真）。现在用**同刻两次读数互证**：同一个读数时刻（01:30）下，台账里多一条更新的观测 ⇒
+  // 只有「最近派发观测」那**一段**变化，且它的新值正好是 10 分钟前。
+  const beforeNewObservation = beatOf('2026-10-24T01:30:00.000Z').line
   f.journal.append('dispatch/observed', {
     childSessionId: 'cafe0000-0000-4000-8000-00000000000a',
     toolCount: 3,
     deniedOutsideCount: 0,
     observedAt: '2026-10-24T01:20:00.000Z',
   })
-  const fresher = beatOf('2026-10-24T01:30:00.000Z')
-  assert.ok(fresher.line.includes('10'), `a newer observation must make the observed reading smaller (10 min): ${fresher.line}`)
+  const afterNewObservation = beatOf('2026-10-24T01:30:00.000Z').line
+  const beforeSegments = beatSegments(beforeNewObservation)
+  const afterSegments = beatSegments(afterNewObservation)
+  assert.equal(afterSegments.length, beforeSegments.length, `one more observation must not change the segment layout: ${beforeNewObservation} / ${afterNewObservation}`)
+  const moved = afterSegments.filter((segment, index) => segment !== beforeSegments[index])
+  // 会动的段**恰好两条**：台账那段（多了一条事件 ⇒ seq 加一）与观测那段（分钟数变小）。
+  assert.equal(moved.length, 2, `a newer observation may move exactly two segments (ledger seq + observed reading): ${moved.join(' / ')}`)
+  // 其中**只有一条**带分钟读数，且它必须是新的 10 分钟 —— 这才是"观测读数变小"的锚点（不是裸子串 `10`）。
+  const minuteMoves = moved.filter((segment) => minuteReading(segment) !== undefined)
+  assert.equal(minuteMoves.length, 1, `exactly one moved segment carries a minute reading: ${moved.join(' / ')}`)
+  assert.equal(minuteReading(minuteMoves[0] ?? ''), 10, `that segment must carry the new relative reading (10 min): ${minuteMoves[0] ?? ''}`)
   // ④ 「读不出」≠「没有」：`at` 解析不了时说的必须是「时刻读不出」
   const broken: StatusSnapshot = {
     ...a.snapshot,

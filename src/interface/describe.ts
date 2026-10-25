@@ -767,7 +767,7 @@ export function describeTask(task: TaskCard, shapeNotes: FieldShapeNote[] = []):
  */
 export const POOL_UNUSABLE_CHARS = 600
 
-/** 每个原因分组里最多点几个子会话（前 8 位：定位够用，逐条仍走 `verbose`）。 */
+/** 每个原因分组里最多点几个子会话（前 8 位：定位够用；逐条清单只在**函数级** `verbose` 档，见 {@link ReadoutOptions}）。 */
 export const POOL_UNUSABLE_IDS_PER_REASON = 3
 
 /**
@@ -778,6 +778,15 @@ export const POOL_UNUSABLE_IDS_PER_REASON = 3
  * 它只是最后一道保险，不是常规路径（守卫见 `M232-05` 的截断分支两态）。
  */
 export const POOL_UNUSABLE_REASON_CHARS = 200
+
+/**
+ * 折叠时那句**指路**（ASCII）：被折叠原因的原话在台账的这两处 —— `dispatch/started` 的 `reuseSkipped`
+ * 数组与 `dispatch/reuse-skipped` 事件（现盘 seq 5230 / 5231 起逐条都有 `reason`）。
+ *
+ * 为什么是 ASCII 而不是语言包：语言包文件不在本卡写范围（同 `childFaceLines` 归纳行的处置），
+ * 而这句是给**复验者**的读数、不是终端用户的散文。
+ */
+export const POOL_UNUSABLE_REASON_SOURCE = '.sdo/journal.jsonl dispatch/reuse-skipped'
 
 /** 观测面**逐条**列示的缺省条数（`DEF-175` 另一半：`DEF-041` 的逐条面同样需要有上限）。 */
 export const FACE_DETAIL_ROWS = 3
@@ -810,6 +819,11 @@ function unusableGroupPiece(reason: string, ids: readonly string[]): string {
  *
  * 折叠时必须**把被折叠的规模说出来**：候选条数用语言包的既有键，**原因种数**用 ASCII 投影
  * （语言包文件不在本卡写范围，见 `uiDescribe.kPoolUnusableMore` 的同类处置）。
+ *
+ * ⚠️ **`REV-094#6`（折叠段必须指路）**：只印 `[reasons-not-shown=K]` 的**计数**，被折叠那些原因的
+ * 原话就从回执里彻底消失 —— 读者知道"有原因没显示"，却不知道**去哪读**。所以折叠时补一处
+ * **ASCII 指路**（与 `childFaceLines` 的归纳行同口径：语言包不在写范围，复验读数走 ASCII），
+ * 指向台账里逐条写着原话的两类事件。不折叠时**不印**这句（否则是噪音，守卫两态都钉住）。
  */
 function unusableFoldText(rows: readonly { childSessionId: string; reason: string }[]): string {
   const groups = new Map<string, string[]>()
@@ -834,7 +848,10 @@ function unusableFoldText(rows: readonly { childSessionId: string; reason: strin
   const folded = entries.slice(index)
   if (folded.length > 0) {
     const count = folded.reduce((sum, [, ids]) => sum + ids.length, 0)
-    parts.push(`${fmt('uiDescribe.kPoolUnusableMore', { p1: String(count) })}[reasons-not-shown=${String(folded.length)}]`)
+    parts.push(
+      `${fmt('uiDescribe.kPoolUnusableMore', { p1: String(count) })}[reasons-not-shown=${String(folded.length)}]`
+      + ` (full text: ${POOL_UNUSABLE_REASON_SOURCE})`,
+    )
   }
   return parts.join('；')
 }
@@ -879,7 +896,11 @@ function childFaceDetailLines(face: {
  * "有几张卡这次没派出去"，猜不出是池满了还是在等预算）。
  *
  * **有界（`DEF-175`）**：缺省档把"不可复用"那批按**原因**归并（见 {@link unusableFoldText}），
- * 体积与候选个数脱钩；要逐条看原始清单（`verbose: true`）—— 那条路一字不少。
+ * 体积与候选个数脱钩；要逐条看原始清单就走**函数级** `options.verbose`（那条路一字不少）。
+ *
+ * ⚠️ **`REV-094#9`**：`verbose` **只有函数级入口**（`sdo_plan` 的参数表里没有它 —— `src/interface/tools.ts`
+ * 与 `src/index.ts` 不在本卡写范围）⇒ 注释里提它时必须带"函数级"这层限定，否则下一个人照注释把文案
+ * 加进回执，就会把 `REV-093#2` 的空承诺修回去。
  */
 export function describePoolBlock(
   pools: RolePool[],
@@ -945,7 +966,8 @@ export function describePoolBlock(
     // 而"为什么没复用它"恰恰是判断池化有没有生效的关键）。
     // **DEF-175**：但"每个都印一整行"会按历史会话数线性膨胀（现盘 101 个候选 ⇒ 一万六千字符，
     // 把派发结论挤到宿主的 8000 截断之外）⇒ 缺省档**按原因归并**（原因整句保留、样本给前几个），
-    // 要**逐条**原始清单就带 `verbose`（那条路一字不少，见 {@link unusableFoldText}）。
+    // 要**逐条**原始清单就带**函数级** `verbose`（那条路一字不少，见 {@link unusableFoldText}；
+    // 工具面没有这个参数 —— `REV-093#2` / `REV-094#9`）。
     const detail = options.verbose === true
       ? unusable.map((item) => `${item.childSessionId.slice(0, 8)}（${item.reason}）`).join('；')
       : unusableFoldText(unusable)

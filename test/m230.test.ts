@@ -34,6 +34,7 @@ import {
   POOL_UNUSABLE_CHARS,
   POOL_UNUSABLE_IDS_PER_REASON,
   POOL_UNUSABLE_REASON_CHARS,
+  POOL_UNUSABLE_REASON_SOURCE,
   childFaceLines,
   describePoolBlock,
 } from '../src/interface/describe.js'
@@ -499,6 +500,8 @@ test('M232-04 (REV-093#3 rework) a 4th distinct reason must not vanish: every re
     assert.ok(small.includes(reason), `every reason within the char budget must be printed (${reason}): ${small}`)
   }
   assert.equal(small.includes('reasons-not-shown'), false, `nothing may be folded when the budget holds everything: ${small}`)
+  // ②的第三态（`REV-094#6`）：**不折叠时不许印指路**（否则每次派发都多一句噪音）
+  assert.equal(small.includes(POOL_UNUSABLE_REASON_SOURCE), false, `the "where the full text lives" pointer must only appear when something was folded: ${small}`)
 
   // ② 态二：8 种**长**原因（每种 120 字符）⇒ 必然超预算 ⇒ 必须折叠，且**说出未展开的原因种数**
   const long = Array.from({ length: 8 }, (_, index) => `reason-${String(index)}-${'x'.repeat(110)}`)
@@ -509,6 +512,12 @@ test('M232-04 (REV-093#3 rework) a 4th distinct reason must not vanish: every re
   assert.ok(notShown > 0, `the folded reason count must be a real count: ${String(notShown)}`)
   const shownReasons = long.filter((reason) => big.includes(reason.slice(0, 60)))
   assert.equal(shownReasons.length + notShown, long.length, `shown + not-shown must add up to every distinct reason (${String(shownReasons.length)} + ${String(notShown)} != ${String(long.length)}): ${big}`)
+  // ②的第四态（`REV-094#6`）：折叠时**必须指路** —— 被折叠原因的原话去哪读（计数不够，读者要知道去哪）
+  assert.ok(big.includes(POOL_UNUSABLE_REASON_SOURCE), `when something was folded the readout must say where the full text lives: ${big}`)
+  // 指路目标是**真的**：那条事件在现盘台账里逐条都带 `reason`（不是一句写着好看的话）
+  const liveLedger = readFileSync(join(ROOT, '.sdo', 'journal.jsonl'), 'utf8')
+  assert.ok(liveLedger.includes('dispatch/reuse-skipped'), 'fixture premise: the pointed-at event type really exists in the live ledger')
+  assert.ok(liveLedger.includes('"reason"'), 'fixture premise: that event really carries the reason text')
   // ③ 有界：整段仍在预算量级（不再是"原因种数 × 原话长度"的无界乘积）
   // 那段文本所在行：用 ASCII 标记定位（散文棘轮的 READING 正则盯的是带该调用的行，注释里出现中文也会被记成站点）
   const line = big.split('\n').find((row) => row.includes('reasons-not-shown')) ?? ''
@@ -578,8 +587,32 @@ test('M232-03 观测面：缺省档只逐条打 FACE_DETAIL_ROWS 条且**有问�
   const summary = folded.at(-1) ?? ''
   assert.equal(summary.includes('verbose'), false, `the summary must not promise a parameter the tool face does not accept: ${summary}`)
   assert.ok(summary.includes('child-tools.jsonl'), `the summary must point at a real place to read every line: ${summary}`)
-  const poolSummary = describePoolBlock(rolePools({ children: [], roles: ['developer'], caps: { developer: 1 }, defaultCap: 1 }), [], true, 60)
+  // ⑤ 的第二半（`REV-094#2` 指出的**空断言**）：修前这里用 `children: []` 的池 ⇒ `unusable` 为空 ⇒
+  //   `kPoolUnusable` 那行**根本不会渲染**，池块那半改前改后都过（"池块已被钉住"是假象）。
+  //   夹具改成**至少 1 个不可复用候选**：先断言那行真的渲染出来（前提），再断言它不承诺 `verbose`。
+  const poolFixture = rolePools({
+    children: [{
+      childSessionId: 'c0ffee00-1111-4222-8333-444444444444',
+      role: 'developer',
+      task: 'TASK-90',
+      mode: 'continuable' as const,
+      state: 'idle' as const,
+      rounds: 1,
+      startedAt: '2026-10-08T00:00:00.000Z',
+      finishedAt: '2026-10-08T00:01:00.000Z',
+      maskHash: 'other',
+    }],
+    roles: ['developer'],
+    caps: { developer: 1 },
+    defaultCap: 1,
+    reuseBlockedOf: () => 'mask fingerprint changed',
+  })
+  const poolSummary = describePoolBlock(poolFixture, [], true, 60)
+  assert.ok(poolSummary.includes('c0ffee00'), `fixture premise: the unusable line must really render (else this half is vacuous): ${poolSummary}`)
   assert.equal(poolSummary.includes('verbose'), false, `the pool block must not promise it either: ${poolSummary}`)
+  // 同一夹具的第二态：函数级 `verbose` 档一个字都不许丢（它是本仓人手排查的出口）
+  const poolVerbose = describePoolBlock(poolFixture, [], true, 60, { verbose: true })
+  assert.ok(poolVerbose.includes('mask fingerprint changed'), `the verbose pool block must keep the reason verbatim: ${poolVerbose}`)
   // ⑥ **产品面**自证：`sdo_plan` / `sdo_status` 的参数表里确实没有 `verbose`（本文件与产品代码同源核对）
   const toolsSource = readFileSync(join(ROOT, 'src', 'interface', 'tools.ts'), 'utf8')
   assert.equal(/\bverbose\b/u.test(toolsSource), false, 'fixture premise for ⑤: the tool schema has no verbose parameter — if it ever gains one, rewrite the summary text and this guard together')

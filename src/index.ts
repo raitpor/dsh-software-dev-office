@@ -2098,14 +2098,33 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const idleSameParentTotal = plan.pools.reduce((sum, pool) => sum + pool.idleSameParent.length, 0)
       // **DEF-015**：名单体检的结果（与卡无关，循环里只算一次；探针盲态时**不得**回报）
       let denyPhantoms: string[] = []
-      const reuseSkipSummary = plan.reuseSkipped.length === 0
-        ? t('uiDescribe.kFreshNoSkip')
-        // **`DEF-139` 落点二**：逐条三字段（id / 角色 / 理由），不许退化成只打数量
-        : reuseSkippedLines(plan.reuseSkipped).join('；')
+      /**
+       * **「跳过复用的原因」整份回执只印一次**（`TASK-218` / `DEF-175` 落点二）。
+       *
+       * 修前同一份清单印**两遍**：一遍塞进 `kDispatchFreshSelf` 的 `{p4}`（单行、`；` 分隔），
+       * 一遍是这个多行块 —— 真账 80 个候选时**每遍 17419 字符**，两份合起来把派发结论挤出宿主
+       * 8000 截断之外（实测整份 27387 字符）。现在只留**这一处**：`{p4}` 仅保留「本轮没有候选
+       * 被跳过」那一句（`kFreshNoSkip`），有跳过时留空 —— 原因就在这个块里，不重复印。
+       *
+       * 两条口径：
+       *   · **只算一次、只印一次**：修前这个块在"逐张派发"的循环里 ⇒ 同一份清单会按**本轮派发的
+       *     卡数**重复（与"按子会话数膨胀"同族的第二维膨胀）；
+       *   · 缺省档**按原因归并**（`pool.reuseSkippedLines` 的新口径）：砍数量不砍原因 ——
+       *     原因原话整句保留、每组样本有上限、整块有字符预算。
+       */
+      const reuseSkipBlock = plan.reuseSkipped.length === 0
+        ? ''
+        : fmt('uiIndex.kReuseSkipped', {
+            p1: String(plan.reuseSkipped.length),
+            // **`DEF-139` 落点二**：三字段（id / 角色 / 理由）一个都不许少 —— 归并的是数量，不是原因
+            p2: reuseSkippedLines(plan.reuseSkipped).join('\n'),
+          })
       // **R-5C（sdo-test-new 2026-10-08）**：被 `limit` 截掉的卡**既不在"已派发"也不在"排队"**里
       // （它们已通过容量准入，只是这一轮没派）⇒ 回执里凭空消失。如实点名，并说明下次还会再挑。
       const held = plan.dispatch.slice(take)
       const out: string[] = []
+      // 只印一次（不随本轮派发的卡数重复）：放在本轮所有派发卡之前，位置与修前 `take=1` 时一致。
+      if (reuseSkipBlock !== '') out.push(reuseSkipBlock)
       for (const entry of picked) {
         const task = entry.task
         // **`DEF-139` 落点一**：这张卡的角色的现场读数（准入前快照；见 `poolPlan` 里 `readings` 的口径）
@@ -2219,14 +2238,13 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p3: held.map((item) => item.task.id).join(' '),
           }))
         }
-        if (plan.reuseSkipped.length > 0) {
-          // **`DEF-139` 落点二**：三字段逐条（`childSessionId` / `role` / `reason`）——
-          // 修前这里只有 `id（理由）`，跨角色混在一起时读不出"是哪个角色的谁、被哪道闸门拒"
-          out.push(fmt('uiIndex.kReuseSkipped', {
-            p1: String(plan.reuseSkipped.length),
-            p2: reuseSkippedLines(plan.reuseSkipped).join('\n'),
-          }))
-        }
+        /**
+         * **`TASK-218`（`DEF-175` 落点二）：这里不再渲染「跳过复用的原因」那一块。**
+         *
+         * 同一份清单修前印两遍（此处一遍 + 循环前的 `reuseSkipBlock` 一遍），且此处还在**逐张派发**
+         * 的循环里 ⇒ 清单条数 × 本轮卡数。现在它只由循环前的 `reuseSkipBlock` 印一次
+         *（守卫 `M232-03`：整份回执里关键行出现次数 == 1）。
+         */
         /**
          * **`DEF-185` / `DEF-186` 落点二（`TASK-196`）+ `TASK-208` 落点一：投递被拒**不许静默**。**
          *
@@ -2383,7 +2401,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
                   p1: task.id,
                   p2: outcome.childSessionId.slice(0, 8),
                   p3: String(idleSameParentTotal),
-                  p4: reuseSkipSummary,
+                  // **`TASK-218`（`DEF-175` 落点二）**：清单**不再**塞进这里 —— 它只由循环前的
+                  // `reuseSkipBlock` 印一次。有候选被跳过时这一格留空（原因就在那块里），
+                  // 一个都没跳过时仍报 `kFreshNoSkip`（那是"没有跳过"的正面读数，不是重复）。
+                  p4: plan.reuseSkipped.length === 0 ? t('uiDescribe.kFreshNoSkip') : '',
                 }),
             evidenceLine,
             isRole(task.role) ? fmt('uiIndex.kDispatchOwnerLine', { p1: ownerOf(task.role, outcome.childSessionId), p2: outcome.childSessionId.slice(0, 8) }) : '',
