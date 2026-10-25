@@ -382,7 +382,7 @@ export const KNOWN_STRONG_CLAIMS: StrongClaimEntry[] = [
   { file: "src/domain/plan.ts", text: "// **DEF-044**：走**唯一出口** —— 认 `'*'` 与**传递依赖**（修前这行既不认星号也不算闭包，", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/plan.ts", text: "// **唯一出口**：认领面（`collab.claim`）与这里共用 `scopeSerialKindOf` —— 两面分叉就会出现", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/plan.ts", text: "// 路径代数走 `scopeOverlaps` **唯一出口**（ADR-009：归一 + 目录边界前缀），与既有各条同一把尺子。", why: "grandfathered: 2026-10-25 存量快照，未审" },
-  { file: "src/domain/pool.ts", text: "* \"结构上必然收口\"的强断言（旧版本正是这么写的，被 `REV-104` #2 推翻）。", why: "grandfathered: 2026-10-25 存量快照，未审" },
+  { file: "src/domain/pool.ts", text: "* 「决定与收口同生同死，悬空在结构上不可能」这种强断言（**这是 `REV-104` #2 当时被推翻的原话**，", why: "逐字引述被推翻的历史断言（seq 8467 / REV-105#1 三处旁证）：引号 + 过去时 + 上一句明说被推翻 ⇒ 本行是病历不是声称" },
   { file: "src/domain/pool.ts", text: "* ⚠️ 措辞更正（`REV-104` #5）：上一版把它写成\"唯一出口\"，而 `recoverView` / `inflightView`", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/pool.ts", text: "* 折叠出**每一笔派发决定**的收口状态（`TASK-231` 落点一 / 落点三的唯一出口）。", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/records.ts", text: "* **已修但无测试结论的缺陷**（DEF-075 / 第三批 §3.8）—— 判据的唯一出口。", why: "grandfathered: 2026-10-25 存量快照，未审" },
