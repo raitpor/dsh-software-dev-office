@@ -75,8 +75,8 @@ import { addErrata, claim, pendingReviewBigCards, reassign, release, report as r
 import { staleEntryGateOf } from './domain/entryGate.js'
 import type { UnblockResult } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
-import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf } from './domain/dispatchHealth.js'
-import type { ClaimMissing, OrphanLock, ReuseDelivery } from './domain/dispatchHealth.js'
+import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf, suspendedDispatches } from './domain/dispatchHealth.js'
+import type { ClaimMissing, OrphanLock, ReuseDelivery, SuspendedDispatch } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
 import { blockedTasks, candidateQueue, classifyNonDispatchable, closeIteration, compareDispatchOrder, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
 import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
@@ -4308,19 +4308,35 @@ export class SoftwareDevOffice {
    * **派发健康度**（DEF-053）：孤儿写锁 + 派发未认领。
    *
    * 只**报告**（真源纪律：失联 owner 不自动释放，防误抢），产出 `release` 命令与可审计事件。
+   *
+   * **`TASK-261` 落点二**：另加一条「悬置超时 N 分钟」读数 `suspended`（`dispatchHealth.ts` 的
+   * `suspendedDispatches`）。它是**读数不是判定** —— 会话空闲那一格由 `sessionIdleAfterEvent` 判，
+   * 收不到时间入参；这里超时多久都不会把谁从"忙"里放出来（把"悬了很久"读成"空闲了"是 `DEF-224`
+   * 的形状）。渲染面（`index.ts` 的健康区行与语言包）不在本卡写范围，故本卡只把它**交到**健康区入口。
    */
-  dispatchHealth(call: OfficeCall, options: { nowMs?: number | undefined; claimWindowMs?: number | undefined } = {}): {
+  dispatchHealth(call: OfficeCall, options: {
+    nowMs?: number | undefined
+    claimWindowMs?: number | undefined
+    /** 悬置超时的窗口（分钟）；缺省取 `dispatchOrphanTtlMinutes` —— 与 `rolePools` 的孤儿 TTL 同一档 */
+    suspendedTtlMinutes?: number | undefined
+  } = {}): {
     orphans: OrphanLock[]
     claimMissing: ClaimMissing[]
+    suspended: SuspendedDispatch[]
   } {
     const { journal } = this.contextFor(call)
     const events = journal.read().events
     const tasks = this.tasks(call)
+    const suspendedTtlMinutes = options.suspendedTtlMinutes ?? this.settings.dispatchOrphanTtlMinutes
     return {
       orphans: orphanLocks(tasks, events),
       claimMissing: claimMissing(tasks, events, {
         ...(options.nowMs === undefined ? {} : { nowMs: options.nowMs }),
         ...(options.claimWindowMs === undefined ? {} : { windowMs: options.claimWindowMs }),
+      }),
+      suspended: suspendedDispatches(events, {
+        ...(options.nowMs === undefined ? {} : { nowMs: options.nowMs }),
+        ttlMs: suspendedTtlMinutes * 60_000,
       }),
     }
   }

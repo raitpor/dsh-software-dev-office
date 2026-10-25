@@ -46,6 +46,17 @@
  * 同时补上口径乙那个**方向正确**的会话谓词 {@link sessionIdleByFinished}（按 `dispatch/finished` 判，
  * `dispatch/aborted` 不参与），旧的口径甲谓词 {@link sessionHasNoUnsettledDispatch} 标 `@deprecated`
  * 并写明它为什么不能当空闲判定。三个读侧的改前/改后对账与两态读数在 `test/m248.test.ts`。
+ *
+ * **`TASK-261`：口径乙从"两个谓词"收成一个增量真源，另立一条悬置超时读数。**
+ *   · 落点一 —— `pool.ts` 的 busy 折叠与 {@link sessionIdleByFinished} 曾是**同一件事的两份实现**
+ *     （一份是状态机、一份是"最近一笔 `started` / `finished` 比序号"）。现在判定只有
+ *     {@link sessionIdleAfterEvent} 一处：折叠**按键**喂它，谓词是它在**单个会话**上的整体形态。
+ *     逐事件一致性读数（同一份台账、同一批前缀，改前内联与改后真源逐条相同）在
+ *     `test/m248.test.ts` 的 `M248-07`；真实路径守卫（`rolePools` / `reuseCandidateOrder`）在 `M248-08`。
+ *   · 落点二 —— **TTL 不参与空闲判定**：{@link sessionIdleAfterEvent} 收不到任何时间入参，
+ *     一笔 `started` 悬多久都照旧判忙；超时只另出一条读数 {@link suspendedDispatches}
+ *     （「悬置超时 N 分钟」），经 `office.dispatchHealth` 交健康区。两态守卫 `M248-09` / `M248-10`。
+ *     为什么不能在超时后改判空闲：那正是 `DEF-224` 的形状 —— 把"不知道它还在不在"读成"它空闲"。
  */
 import { textOf } from '../infra/scalar.js'
 import {
@@ -467,6 +478,79 @@ export function sessionHasNoUnsettledDispatch(
   return !unsettledCardsBySession(events, options).has(id)
 }
 
+/*
+ * ————————————————————————————————————————————————————————————————————————————————
+ * **口径乙的增量真源**（`TASK-261` 落点一）
+ *
+ * 修前这一档有**两份实现**：`domain/pool.ts` 的 busy 折叠里内联着"是 `session` 档终态就出栈"，
+ * 而 {@link sessionIdleByFinished} 又拿"最近一笔 `started` / `finished` 的序号比大小"再写一遍。
+ * 单轮会话下两份等价；复用多轮（同一子会话接第二张卡）时，等价性要靠**两处各自**都处理对
+ * "第一轮的 `finished` 不许把第二轮的 `started` 洗成空闲"—— 一处改、另一处不动不会有任何报错。
+ *
+ * 现在判定只有 {@link sessionIdleAfterEvent}：折叠层**按键**逐事件喂它，谓词是它在**单个会话**上的
+ * 整体形态。**在本层、对「`started` 悬空」这条判据而言**，它是当前接入的读数来源。
+ * ————————————————————————————————————————————————————————————————————————————————
+ */
+
+/** 参与折叠的最小事件形状（`domain/pool.ts` 的 `PoolEvent` 与 `JournalEvent` 都满足）。 */
+export interface DispatchEventLike {
+  readonly type: string
+}
+
+/** 一笔事件折叠出来的两件事（口径乙）。 */
+export interface SessionIdleStep {
+  /** 这一笔之后的**会话空闲**判定：`false` = 会话仍占着位子 */
+  idle: boolean
+  /**
+   * 这一笔是不是**这一轮的结算**（`session` 档终态）。与 {@link SessionIdleStep.idle} 出自同一处判，
+   * 于是调用方不必再各判一遍事件名 —— `domain/pool.ts` 用它决定"要不要收口这一轮"（`finishedAt`）。
+   */
+  settled: boolean
+}
+
+/**
+ * **口径乙的增量判定**（`TASK-261` 落点一；{@link sessionIdleByFinished} 的逐事件形态）。
+ *
+ * 判据：`dispatch/started` ⇒ 忙；`session` 档终态（只有 `dispatch/finished`）⇒ 空闲；其余事件**不动**
+ * （`dispatch/aborted` 只说明卡不归它了，`dispatch/reported` 只说明报告交回了 —— 都不说明会话停了）。
+ *
+ * **TTL 不参与**（`TASK-261` 落点二）：本函数**没有时间入参**。一笔 `started` 悬了十小时，
+ * 这里照旧判忙 —— 把"悬了很久"读成"它空闲了"正是 `DEF-224` 的形状（"不知道"被转成"空闲"）。
+ * 超时另出一条读数 {@link suspendedDispatches}，它是**读数**，不改这一格。
+ *
+ * @param prevIdle 折叠到上一笔为止的空闲判定（没被派发过的会话从 `true` 起算）
+ */
+export function sessionIdleAfterEvent(prevIdle: boolean, event: DispatchEventLike): SessionIdleStep {
+  if (event.type === 'dispatch/started') return { idle: false, settled: false }
+  if (isTerminalDispatch(event.type, 'session')) return { idle: true, settled: true }
+  return { idle: prevIdle, settled: false }
+}
+
+/**
+ * **按键折叠器**（`TASK-261` 落点一）：`domain/pool.ts` 的 busy 折叠用它，而不是再写一份判据。
+ *
+ * 为什么要有它：折叠层要按 `childSessionId` **分别**记住每个会话折叠到哪一格（台账里所有会话的
+ * 事件是交错追加的），而判定本身只该有一处。这个对象只做"记住上一格 + 调
+ * {@link sessionIdleAfterEvent}"，判据仍在那一个函数里。
+ */
+export interface SessionIdleTracker {
+  /** 把一条事件喂给某个会话，返回这一笔之后的判定（同时把该会话的新状态记下来）。 */
+  step(childSessionId: string, event: DispatchEventLike): SessionIdleStep
+}
+
+/** 造一个空的按键折叠器（`TASK-261` 落点一；语义见 {@link SessionIdleTracker}）。 */
+export function sessionIdleTracker(): SessionIdleTracker {
+  const idleness = new Map<string, boolean>()
+  return {
+    step(childSessionId: string, event: DispatchEventLike): SessionIdleStep {
+      const id = textOf(childSessionId)
+      const next = sessionIdleAfterEvent(idleness.get(id) ?? true, event)
+      idleness.set(id, next.idle)
+      return next
+    },
+  }
+}
+
 /**
  * **这个子会话空闲吗** —— 按 `finished` 口径判（`TASK-240` 落点二，口径乙的会话级谓词）。
  *
@@ -482,20 +566,95 @@ export function sessionHasNoUnsettledDispatch(
  * （同一子会话接多轮卡），第一轮留下的 `finished` 会把第二轮正在跑的 `started` 洗成空闲。
  * 单轮会话下两种写法等价；`test/m248.test.ts` 三格逐格钉住（含"已 `aborted` 但未 `finished` ⇒ 忙"）。
  *
- * **接驳状态（如实写）**：本卡只交付**判据**，零生产调用点 —— 派发前"哪个候选会话空闲"的接线在
- * `office.ts` 的会话选择里，那个文件不在本卡写范围（`REV-103` 裁定 ① 已降级为补线卡）。
+ * **`TASK-261` 起它只是 {@link sessionIdleAfterEvent} 在单个会话上的整体形态**（按给定顺序折叠；
+ * journal 是追加序，前缀折叠与逐事件折叠因此同解），不再自己写一份判据。
+ *
+ * **接驳状态（`TASK-261` 如实改写）**：`domain/pool.ts` 的 busy 折叠现在**走同一处真源**
+ * （{@link sessionIdleAfterEvent}），所以本谓词与池视图不再各折一份。派发前"哪个候选会话空闲"的
+ * 会话选择仍在 `office.ts`（`REV-103` 裁定 ① 的补线卡）；本谓词今天在**池视图与准入**这条真实路径上
+ * 生效：只有 `started` 没有 `finished` 的会话不进 `idle`、也不进 `reuseCandidateOrder` 的可复用集
+ * （`M248-08`）。
  */
 export function sessionIdleByFinished(events: readonly JournalEvent[], childSessionId: string): boolean {
   const id = textOf(childSessionId)
   if (id === '') return true
-  let lastStarted = -1
-  let lastFinished = -1
+  let idle = true
   for (const event of events) {
     if (textOf(event.data['childSessionId']) !== id) continue
-    if (event.type === 'dispatch/started') lastStarted = Math.max(lastStarted, event.seq)
-    else if (isTerminalDispatch(event.type, 'session')) lastFinished = Math.max(lastFinished, event.seq)
+    idle = sessionIdleAfterEvent(idle, event).idle
   }
-  return !(lastStarted >= 0 && lastStarted > lastFinished)
+  return idle
+}
+
+/** {@link suspendedDispatches} 的一行：某个会话手上有一笔 `started` 悬得比 TTL 还久。 */
+export interface SuspendedDispatch {
+  /** 那一笔 `started` 指的卡（会话可能接过好几张，这里点名的是**悬着的那一张**） */
+  taskId: string
+  childSessionId: string
+  /** 那一笔 `dispatch/started` 的序号（可复算锚点） */
+  startedSeq: number
+  /** 距发起已经过去多少分钟 */
+  minutes: number
+}
+
+/** {@link suspendedDispatches} 的入参。 */
+export interface SuspendedOptions {
+  nowMs?: number | undefined
+  /**
+   * 悬多久才算"悬置超时"（缺省取本模块的 15 分钟；`office.dispatchHealth` 传的是项目设置
+   * `dispatchOrphanTtlMinutes`（默认 60 分钟）—— 与池视图的孤儿 TTL 同一档）；**`<= 0` = 任何悬着的都算**。
+   */
+  ttlMs?: number | undefined
+}
+
+/**
+ * **悬置超时读数**（`TASK-261` 落点二）：「这个会话有一笔 `started` 已经悬了 N 分钟」逐条交出来。
+ *
+ * **它是读数，不是判定**（`DEF-224` 的同一个错误就是把这个读数当判定用）：
+ * 本函数**不**把任何会话从"忙"里放出来 —— 会话空闲只由 {@link sessionIdleAfterEvent} 判，
+ * 而它收不到时间入参。超时之后这一行只说明"该有人看一眼这一笔了"（回执/体检/人工处置），
+ * 不说明"位子空了、可以再派一张卡进去"。
+ *
+ * 口径与 {@link unsettledDispatch} 的差别：那一档问"要不要收口"（`card` 档，含 `aborted`，
+ * 不设 TTL），本读数问"悬得够久了没有"（`session` 档 + TTL）。折叠走 {@link sessionIdleTracker}
+ * —— 与池视图、与谓词同源，本处不自己认事件名。
+ *
+ * 真机现场（`.sdo/journal.jsonl`，`TASK-261` 开工时现算，TTL 15 分钟）：本读数 **5** 行
+ * （悬置 843–1070 分钟）＝ `rolePools` 的 `stale` 桶 **5** 条＝空闲判定对这 5 个会话判**忙**
+ * ——三处对得上，就是因为它们读的是同一处判据。两态读数见 `M248-09`。
+ */
+export function suspendedDispatches(
+  events: readonly JournalEvent[],
+  options: SuspendedOptions = {},
+): SuspendedDispatch[] {
+  const nowMs = options.nowMs ?? Date.now()
+  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
+  type Open = { taskId: string; startedSeq: number; startedAt: number }
+  const tracker = sessionIdleTracker()
+  const open = new Map<string, Open>()
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    const child = textOf(event.data['childSessionId'])
+    if (child === '') continue
+    const step = tracker.step(child, event)
+    if (event.type === 'dispatch/started') {
+      open.set(child, { taskId: cardOf(event), startedSeq: event.seq, startedAt: Date.parse(event.at ?? '') })
+      continue
+    }
+    // 结算与"空闲"出自同一处判（`sessionIdleAfterEvent` 的 `settled`）：本读数不自己认事件名
+    if (step.settled) open.delete(child)
+  }
+  const out: SuspendedDispatch[] = []
+  for (const [childSessionId, row] of open) {
+    const aged = !Number.isFinite(row.startedAt) ? false : nowMs - row.startedAt > ttlMs
+    if (ttlMs > 0 && !aged) continue
+    out.push({
+      taskId: row.taskId,
+      childSessionId,
+      startedSeq: row.startedSeq,
+      minutes: Number.isFinite(row.startedAt) ? Math.max(0, Math.floor((nowMs - row.startedAt) / 60_000)) : 0,
+    })
+  }
+  return out.sort((a, b) => a.startedSeq - b.startedSeq)
 }
 
 /** "同一会话在飞卡 ≤ 1"被违反的**那一刻**：两张卡同时挂在一个子会话上（口径乙）。 */
