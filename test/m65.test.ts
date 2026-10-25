@@ -135,7 +135,9 @@ test('M65-01 卡离开 in-progress 后，仍在飞的子会话**不得**失去�
   assert.equal(await toolVerdict(h.pre, 'read', 'child-1'), 'allow', '掩码内工具不许被误拦')
 
   // ② 卡离开 in-progress（真路径：驾驶舱 drop）—— 归属随之失效（纯函数复核，不含缓存）
-  const dropped = await h.callTool('sdo_task', { action: 'drop', id: 'TASK-001' }, 'cockpit', 0)
+  // `DEF-244`（`TASK-270`）起 `drop` 必须声明分档：本格的断言对象是"卡离开 in-progress 之后掩码还在不在"，
+  // 分档与本格无关 ⇒ 给最弱的那一档 `never-done`（四档里**唯一**不需要凭据的）。
+  const dropped = await h.callTool('sdo_task', { action: 'drop', id: 'TASK-001', disposition: 'never-done' }, 'cockpit', 0)
   assert.match(dropped, /dropped/u, `前置：drop 要成功：${dropped}`)
   assert.deepEqual(claimsBySession(store, journal), [], '前置：卡离开 in-progress 后归属确实失效（这就是本缺陷的触发条件）')
   assert.deepEqual(
@@ -158,7 +160,8 @@ test('M65-02 血缘角色取**最新一次派发**（复用同一子会话换角
   assert.equal(await toolVerdict(h.pre, 'write', 'child-1'), 'deny', '前置：reviewer 不能 write')
 
   // 卡离开进行中 + 复用同一子会话承接第二张 developer 卡（真实派发会写第二条 dispatch/started）
-  await h.callTool('sdo_task', { action: 'drop', id: 'TASK-001' }, 'cockpit', 0)
+  // （分档同上一格：本格考的是"掩码跟着最新一次派发换"，与 `drop` 的分档无关）
+  await h.callTool('sdo_task', { action: 'drop', id: 'TASK-001', disposition: 'never-done' }, 'cockpit', 0)
   card('TASK-002', 'developer')
   journal.append('dispatch/started', { task: 'TASK-002', provider: 'spawn', childSessionId: 'child-1', tools: 9, role: 'developer' })
   await bumpRoleCacheVersion(h.callTool)

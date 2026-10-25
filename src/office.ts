@@ -8,6 +8,7 @@
  *   · 投影（project.json）只是派生视图，随时可由 journal 重建（AC-006）。
  */
 import { createHash } from 'node:crypto'
+import { execFileSync } from 'node:child_process'
 import { existsSync, readFileSync, statSync } from 'node:fs'
 import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
@@ -71,9 +72,9 @@ import { capacityPlan, independenceViolations, seatReading } from './integration
 import type { SeatReading } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
-import { addErrata, claim, pendingReviewBigCards, reassign, release, report as reportTask, staleClaims, unblock, updateTask } from './domain/collab.js'
+import { addErrata, claim, dropDeclarationOf, dropDeclarationVerdict, dropDispositionTally, landingPointerOf, pendingReviewBigCards, reassign, release, report as reportTask, staleClaims, unblock, updateTask, withDropDeclaration, withLandingPointer } from './domain/collab.js'
 import { staleEntryGateOf } from './domain/entryGate.js'
-import type { UnblockResult } from './domain/collab.js'
+import type { DropDeclaration, DropDeclareVerdict, DropDispositionTally, LandingReachability, UnblockResult } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf, suspendedDispatches } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery, SuspendedDispatch } from './domain/dispatchHealth.js'
@@ -3999,6 +4000,122 @@ export class SoftwareDevOffice {
   dropTaskChecked(call: OfficeCall, taskId: string, reason: string): DropOutcome {
     const { store, journal } = this.contextFor(call)
     return dropTaskChecked(store, journal, taskId, reason)
+  }
+
+  /**
+   * **落地提交能否由 HEAD 到达**（`DEF-244` 落点二/三的唯一实现处）。
+   *
+   * 三种失败码而不是布尔：回执要能分清「压根不是本仓库的提交」「拼错了 / 解析不出」「解析得出但
+   * 不在 HEAD 历史里」—— 三种修法完全不同，混成一句 "invalid" 等于让调用者自己猜。
+   *
+   * 判据只用 git 自己的事实（`rev-parse --verify` + `merge-base --is-ancestor`）：
+   * 不自己遍历提交图、不解析 reflog，因此与"这条提交真的在这个仓库里、且 HEAD 走得到"同宽。
+   * 不可判定（不是仓库 / git 不可用 / 工作区都取不到）**一律不放行**：这一档的全部内容就是那个事实。
+   */
+  landingReachabilityOf(workspace: string, hash: string): LandingReachability {
+    const run = (args: readonly string[]): boolean => {
+      try {
+        execFileSync('git', [...args], { cwd: workspace, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
+        return true
+      } catch {
+        return false
+      }
+    }
+    const target = String(hash ?? '').trim()
+    if (target === '') return { ok: false, code: 'unverifiable' }
+    if (!run(['rev-parse', '--is-inside-work-tree'])) return { ok: false, code: 'unverifiable' }
+    if (!run(['rev-parse', '--verify', '--quiet', `${target}^{commit}`])) return { ok: false, code: 'unresolvable' }
+    if (!run(['merge-base', '--is-ancestor', target, 'HEAD'])) return { ok: false, code: 'unreachable' }
+    return { ok: true }
+  }
+
+  /**
+   * **`DEF-244` 落点一/二：带「分档 + 凭据」的 drop**（工具面走这一个）。
+   *
+   * 顺序有意如此：**先判档与凭据、再动台账**。判不过 ⇒ `dropTaskChecked` 一次都没被调，
+   * 卡面与事件**零写盘**（"本次没有写盘"那句话在回执里是真的）。
+   *
+   * 判过之后：先走 `dropTaskChecked`（`DEF-118` 已完成卡不许 drop、`DEF-081` 依赖者扫描
+   * 都在那一处，本函数**不重复实现**），再把声明折进卡片真源（`writeTask` 是唯一写入口）。
+   */
+  dropTaskDeclared(
+    call: OfficeCall,
+    input: {
+      taskId: string
+      reason: string
+      disposition?: string | undefined
+      landing?: string | undefined
+      review?: string | undefined
+      supersededBy?: string | undefined
+      by?: string | undefined
+    },
+  ):
+    | { ok: true; card: TaskCard; declaration: DropDeclaration }
+    | { ok: false; code: string; detail: string } {
+    const { store, journal } = this.contextFor(call)
+    const tasks = listTasks(store)
+    const knownTaskIds = tasks.map((task) => task.id)
+    const knownReviewIds = this.reviews(call).map((review) => review.id)
+    // 工作区取不到（未 init / cwd 不可知）⇒ **判不了**，交给判定器走 unverifiable 那一路
+    let workspace = ''
+    try {
+      workspace = this.requireWorkspace(call)
+    } catch {
+      workspace = ''
+    }
+    const verdict: DropDeclareVerdict = dropDeclarationVerdict({
+      taskId: input.taskId,
+      disposition: input.disposition,
+      landing: input.landing,
+      review: input.review,
+      supersededBy: input.supersededBy,
+      knownReviewIds,
+      knownTaskIds,
+      reachability: (hash: string): LandingReachability =>
+        workspace === '' ? { ok: false, code: 'unverifiable' } : this.landingReachabilityOf(workspace, hash),
+      by: input.by,
+      at: new Date().toISOString(),
+    })
+    if (!verdict.ok) return { ok: false, code: verdict.code, detail: verdict.detail }
+    const dropped = dropTaskChecked(store, journal, input.taskId, input.reason)
+    if (!dropped.ok) return { ok: false, code: dropped.code, detail: dropped.detail }
+    // 声明折进**同一份**卡片真源（`writeTask` 是唯一写入口：别处再写一遍必然漂移）
+    const card = withDropDeclaration(dropped.card, verdict.declaration)
+    writeTask(store, card)
+    return { ok: true, card, declaration: verdict.declaration }
+  }
+
+  /** **`DEF-244` 落点四**：`dropped` 卡按分档的只读读数（`list` 的分档视图消费）。 */
+  dropDispositionTally(call: OfficeCall): DropDispositionTally {
+    return dropDispositionTally(this.tasks(call))
+  }
+
+  /** 读回一张卡的分档声明（读侧归一；历史卡读回来是 `undefined`）。 */
+  dropDeclarationOf(call: OfficeCall, taskId: string): DropDeclaration | undefined {
+    const task = this.tasks(call).find((item) => item.id === taskId)
+    return task === undefined ? undefined : dropDeclarationOf(task)
+  }
+
+  /** 读回一张卡的落地指针（`done` 给了 `landing` 才有；没有 ⇒ 空串）。 */
+  landingPointerOf(call: OfficeCall, taskId: string): string {
+    const task = this.tasks(call).find((item) => item.id === taskId)
+    return task === undefined ? '' : landingPointerOf(task)
+  }
+
+  /**
+   * **`DEF-244` 落点三：`done` 给了 `landing` 就把它记进卡面**（一个提交哈希 ⇒ 卡可回溯）。
+   *
+   * 只写卡面、不追加事件：这一笔不是状态迁移（卡早已 done），`task/done` 事件的体量与形状
+   * 不动 —— 与 `errata`（追加式勘误）同一个理由：历史正文不改，只补一行可复核的指针。
+   */
+  noteLandingPointer(call: OfficeCall, taskId: string, commit: string): string {
+    const { store } = this.contextFor(call)
+    const task = this.tasks(call).find((item) => item.id === taskId)
+    if (task === undefined) return ''
+    const pointer = String(commit ?? '').trim()
+    if (pointer === '') return ''
+    writeTask(store, withLandingPointer(task, pointer))
+    return pointer
   }
 
   /** **`DEF-118`**：`reopen`（done/verified → in-progress，须带 reason + approvedBy）。 */

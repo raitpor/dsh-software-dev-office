@@ -193,7 +193,9 @@ test('D6：非流程官会话不得 `drop` 未完成的卡（真机上这一下�
   assert.equal(journal.read().events.filter((event) => event.type === 'task/dropped').length, 0, '被拒不得落盘')
 
   // 反向：驾驶舱（未认领会话 ⇒ cockpit）可以
-  const allowed = await callTool('sdo_task', { action: 'drop', id: 'TASK-001', reason: '重复卡' }, 's-cockpit')
+  // `DEF-244`（`TASK-270`）起 `drop` 必须声明分档（凭据按档强制）：本格断言的对象是"谁能 drop"，
+  // 所以给最弱的那一档 `never-done`（四档里**唯一**不需要凭据的）。
+  const allowed = await callTool('sdo_task', { action: 'drop', id: 'TASK-001', reason: '重复卡', disposition: 'never-done' }, 's-cockpit')
   assert.doesNotMatch(allowed, /职权/u, `驾驶舱应可放弃：${allowed}`)
   assert.equal(journal.read().events.filter((event) => event.type === 'task/dropped').length, 1)
 })

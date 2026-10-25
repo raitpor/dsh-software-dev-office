@@ -249,6 +249,20 @@ function parseViewKind(value: string | undefined): ViewKind | undefined {
   return value !== undefined && (VIEW_KINDS as readonly string[]).includes(value) ? (value as ViewKind) : undefined
 }
 
+/**
+ * 取一个**单值文本参数**（`DEF-244`：`landing` 在 `done` / `drop` 上读成一个提交哈希）。
+ *
+ * 为什么需要它：`sdo_task` 的 `landing` 有两种语义 —— `update` 读成路径列表（走
+ * `compositeArg` + JSON），`done` / `drop` 读成**一个**提交。宿主宽松路径可能把单值塞成
+ * 真数组，这里把两种到达形态归一成一个字符串；空 / 缺省一律回落空串（调用方按"没给"处理，
+ * 不给**只警告不拦**）。
+ */
+function singleTextArg(value: string | unknown[] | undefined): string {
+  if (typeof value === 'string') return value.trim()
+  if (Array.isArray(value)) return String(value[0] ?? '').trim()
+  return ''
+}
+
 /** 契约种类解析。 */
 function parseContractKind(value: string | undefined): 'http' | 'event' | 'rpc' | 'schema' {
   return value === 'http' || value === 'event' || value === 'rpc' ? value : 'schema'
@@ -2877,8 +2891,26 @@ export function apply(ctx: Context, config: SdoConfig): void {
             })
           }
           // **`DEF-118`（第十三批 §1.2）**：已完成卡不许 drop —— 旧实现零守卫，真机把 8 张 done 卡抹成 dropped。
-          const dropped = office.dropTaskChecked(call, args.id, args.reason ?? t('uiIndex.dropNoReason'))
-          if (!dropped.ok) return `${dropped.detail}`
+          /**
+           * **`DEF-244` / `TASK-270` 落点一/二：`drop` 必须声明「这是哪一档」，凭据按档强制。**
+           *
+           * 病根：`dropped` 卡在台账里只剩一个状态词 —— 「从没做过」「做了但没在这张卡上收口」
+           * 「在等评审」「被别人取代」四种事实长得一模一样，于是驾驶舱只能拿 `git status` 反推，
+           * 而「工作树干净」被反读成「没落地」（`DEF-243`）。
+           *
+           * 判定与机械校验（祖先关系 / 评审存在 / 卡存在）都在域层的 `dropDeclarationVerdict` 一处；
+           * 这里只做装配与排版 —— 拒绝文案由域层给（**点名四档 / 点名那个哈希**），直接原文返回。
+           */
+          const declared = office.dropTaskDeclared(call, {
+            taskId: args.id,
+            reason: args.reason ?? t('uiIndex.dropNoReason'),
+            disposition: args.disposition,
+            landing: singleTextArg(args.landing),
+            review: args.review,
+            supersededBy: args.supersededBy,
+            by: args.actor ?? args.owner ?? 'human',
+          })
+          if (!declared.ok) return `${declared.detail}`
           // **`AC-304`**：卡被 `drop` ⇒ 副本清场（显式作废，现场不再需要；冲突现场那一路走 `force`）
           const droppedSite = office.dropWorktree(call, args.id, true)
           const droppedNote = droppedSite.state === 'removed'
@@ -2886,7 +2918,20 @@ export function apply(ctx: Context, config: SdoConfig): void {
             : droppedSite.state === 'kept'
               ? '\n' + fmt('uiIndex.kWorktreeKept', { p1: args.id, p2: droppedSite.detail })
               : ''
-          return describeTask(dropped.card, office.shapeNotes(call)) + droppedNote
+          /**
+           * 分档回执：**单列出来**（不是塞回 describeTask）。三行各自回答一件事 ——
+           * 是哪一档、那一档的凭据是什么、以及（仅 `never-done`）为什么它不需要凭据。
+           * 「唯一一档可以不带证据」这句话只在 `never-done` 上出现：其余三档都有一条点名的凭据。
+           */
+          const declaration = declared.declaration
+          const tierLines = [
+            fmt('uiIndex.kDropDispositionLine', { p1: declaration.disposition, p2: args.id }),
+            ...(declaration.disposition === 'never-done' ? [t('uiIndex.kDropTierNeverDone')] : []),
+            ...(declaration.landing === undefined ? [] : [fmt('uiIndex.kDropTierLanding', { p1: declaration.landing })]),
+            ...(declaration.review === undefined ? [] : [fmt('uiIndex.kDropTierReview', { p1: declaration.review })]),
+            ...(declaration.supersededBy === undefined ? [] : [fmt('uiIndex.kDropTierSuperseded', { p1: declaration.supersededBy })]),
+          ]
+          return describeTask(declared.card, office.shapeNotes(call)) + '\n' + tierLines.join('\n') + droppedNote
         }
         case 'reopen':
         case 'restore': {
@@ -3030,9 +3075,43 @@ export function apply(ctx: Context, config: SdoConfig): void {
            *
            * 顺序有讲究：**先合并、后结算** —— 合并被冲突挡住时，这张卡就**不该**落 `done`
            * （`AC-305` 第三档：合并被阻断、现场保留、且不许静默覆盖）。冲突时**零写盘**并给三步处置。
+           * `AC-310` 落点三：合并成功 ⇒ 副本由 `removeWorktree` 删掉（`git worktree remove --force`，
+           * 带 `--force` 是因为副本里那条 `node_modules` 软链会让不带它的 remove 自己拒删）；
+           * 合并失败/冲突 ⇒ 副本目录与分支原样保留，回执照实说"现场在 `<副本路径>`"。
            * 没有副本（非 git 仓库 / 没派发过）⇒ `none`，旧路径一字不改。
            */
           let worktreeBlock = ''
+          /**
+           * **`DEF-244` / `TASK-270` 落点三：`done` 的落地指针 —— 给了就验，不给只警告不拦。**
+           *
+           * 校验放在**合并与结算之前**：一个错的哈希如果等到写完台账才报，回执里就会出现
+           * 「落 `done` 了，但指针没验过」这种两截事实。判据是 `landingReachabilityOf`
+           * （`git merge-base --is-ancestor`），与 `drop disposition=delivered-deferred` **同一个出口**。
+           *
+           * 为什么**不给不拦**：存量 180 张 done/verified 里大批找不到提到它的提交（现算读数见
+           * `.sdo/evidence/def243/status-vs-commits.mjs`）—— 把「没给指针」判红只会逼人写豁免，
+           * 而豁免不产生任何可追溯性。给了一句警告，至少让「已交付」不再只是一句话。
+           */
+          const landingCommit = args.action === 'done' ? singleTextArg(args.landing) : ''
+          if (args.action === 'done' && landingCommit !== '') {
+            let pointerWorkspace = ''
+            try {
+              pointerWorkspace = office.requireWorkspace(call)
+            } catch {
+              pointerWorkspace = ''
+            }
+            const reach = pointerWorkspace === ''
+              ? { ok: false, code: 'unverifiable' as const }
+              : office.landingReachabilityOf(pointerWorkspace, landingCommit)
+            if (!reach.ok) {
+              const why = reach.code === 'unresolvable'
+                ? t('uiIndex.kDoneLandingUnresolvable')
+                : reach.code === 'unreachable'
+                  ? t('uiIndex.kDoneLandingUnreachable')
+                  : t('uiIndex.kDoneLandingUnverifiable')
+              return fmt('uiIndex.kDoneLandingRejected', { p1: landingCommit, p2: why })
+            }
+          }
           if (args.action === 'done') {
             const merge = office.finishWorktree(call, { taskId: args.id, message: `sdo: merge ${args.id} work` })
             if (merge.state === 'conflict') {
@@ -3074,10 +3153,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
           })
           if (!result.ok) return fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
           const taskText = describeTask(result.task, office.shapeNotes(call))
+          /**
+           * 落地指针**单列一行**（`DEF-244` 落点三）：给了 ⇒ 写进卡面 `landingCommit` 并印出那个
+           * 提交（回执本身就是"这一笔交付对应哪条提交"的凭据）；没给 ⇒ 只印一行警告，
+           * **不判红也不改卡**。写卡在这里做（`reportTask` 已成功、卡已 `done`），
+           * 因此"指针写进去了"与"这张卡真的完成了"是同一个瞬间的两件事。
+           */
+          const landingBlock = args.action !== 'done'
+            ? ''
+            : landingCommit === ''
+              ? '\n' + t('uiIndex.kDoneLandingNoPointer')
+              : '\n' + fmt('uiIndex.kDoneLandingPointer', { p1: office.noteLandingPointer(call, args.id, landingCommit) || landingCommit })
           // **SDO-58**：结算后量一下子代理报告 —— 异常短/缺失就显式告警（真机 235 字节的残片报告
-           * `AC-310` 落点三：合并成功 ⇒ 副本由 `removeWorktree` 删掉（`git worktree remove --force`，
-           * 带 `--force` 是因为副本里那条 `node_modules` 软链会让不带它的 remove 自己拒删）；
-           * 合并失败/冲突 ⇒ 副本目录与分支原样保留，回执照实说"现场在 `<副本路径>`"。
           // 是事后才被复评员发现的，审计链断在这里）
           const health = args.action === 'done' ? office.childReportHealth(call, args.id) : { state: 'none' as const }
           const reportWarning = health.state === 'short'
@@ -3164,7 +3251,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               + '\n' + t('uiIndex.kImpactGapsRemedy')
           return (result.workspaceAudit !== undefined && !result.workspaceAudit.checked
             ? taskText + '\n' + t('uiIndex.kWorkScopeNotAudited')
-            : taskText + selfReportNote) + fixBlock + artifactBlock + naBlock + impactBlock + unfrozenBlock + worktreeBlock + reportWarning + fragmentWarning
+            : taskText + selfReportNote) + fixBlock + artifactBlock + naBlock + impactBlock + unfrozenBlock + worktreeBlock + reportWarning + fragmentWarning + landingBlock
         }
         case 'errata': {
           // **DEF-071**：done 卡的**追加式**勘误通道 —— 历史不重写，但"本卡不做的说明"必须能补。
@@ -3263,6 +3350,32 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const fixLines = declared.length === 0
             ? []
             : ['', t('uiIndex.kFixCards'), ...declared.map((task) => `- ${task.id}（${task.status}）→ ${(task.fixes ?? []).join('、')}`)]
+          /**
+           * **`DEF-244` / `TASK-270` 落点四：`dropped` 卡按分档的只读视图。**
+           *
+           * 四种事实（从没做过 / 做了没在这张卡上收口 / 在等评审 / 被别人取代）此前在台账里只有
+           * 一个状态词 `dropped`，读者只能去翻 git（`DEF-243` 的伤口）。这里逐档数一遍，
+           * 且**四档全列**（哪怕 0 张）：只列非零会让"这一档没人用过"读成"没有这一档"。
+           *
+           * **存量不回填**：没有声明的历史卡单独一行、单独计数并写明原委 —— 断言口径是
+           * 「本轮之后新建的 `drop` 必带档」，**不是**「全库都有档」。把 74 张历史卡判红，
+           * 只会逼人去写豁免（那样的读数不产生任何可追溯性）。
+           *
+           * 没有 `dropped` 卡时一个字都不加（空库回执与修前逐字节相同）。
+           */
+          const tally = office.dropDispositionTally(call)
+          const tallyLines = tally.dropped === 0
+            ? []
+            : [
+                '',
+                t('uiIndex.kDropTallyHeader'),
+                ...tally.byDisposition.map((row) => fmt('uiIndex.kDropTallyRow', { p1: row.disposition, p2: String(row.count) })),
+                fmt('uiIndex.kDropTallyUndeclared', {
+                  p1: String(tally.undeclared),
+                  p2: String(tally.dropped),
+                  p3: String(tally.declared),
+                }),
+              ]
           return describeTaskBoard({
             tasks: all,
             ready: office.readyForDispatch(call, 64),
@@ -3271,7 +3384,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             iteration: office.iteration(call),
             shapeNotes: office.shapeNotes(call),
             filter,
-            extraLines: fixLines,
+            extraLines: [...fixLines, ...tallyLines],
           })
         }
       }

@@ -2096,3 +2096,247 @@ export function reassign(store: SdoStore, journal: Journal, input: { taskId: str
 export function staleClaims(tasks: TaskCard[], ttlMs: number, at = Date.now()): TaskCard[] {
   return tasks.filter((task) => task.status === 'in-progress' && at - Date.parse(task.updatedAt) > ttlMs)
 }
+
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`DEF-244` / `TASK-270`：`drop` 必须声明「这是哪一档」，`done` 可以给落地指针。**
+ *
+ * 病根（现盘读数，算式见任务卡与 `.sdo/evidence/def243/status-vs-commits.mjs`）：
+ * `dropped` 卡在台账里只剩一个状态词 —— 「从没做过」「做了但没在这张卡上收口」「在等评审」
+ * 「被别人取代」四种事实**长得一模一样**。于是驾驶舱只能靠 `git status` 反推，而
+ * 「工作树干净」被反读成「没落地」（`DEF-243`）。
+ *
+ * 修法三条（都在本模块这一处实现，工具面只做装配）：
+ *   ① **缺省拒收**：没有 `disposition` 就不许 drop —— **不默认 `never-done`**。默认值会把
+ *      「最接近的真实状态」记成「最远的状态」，那正是这次事故的形态。
+ *   ② **凭据按档强制**：`delivered-deferred` 要落地提交哈希（**且必须可由 HEAD 到达**）、
+ *      `awaiting-review` 要一条**存在**的 `REV-*`、`superseded` 要**存在**的取代卡 id。
+ *      只有 `never-done` 不带凭据 —— 它是四档里**唯一**允许空手的那一档。
+ *   ③ **机械校验**：祖先关系由调用方注入的判定器现算（域层不碰 git / IO），本模块只负责
+ *      「凭据齐不齐、对不对得上台账」。验收要求「随便填个 commit 就过」是不可能发生的。
+ *
+ * 落盘位置：卡片真源 `tasks/<id>.yml` 的 `dropDeclaration`（`TaskCard` 的字段是**追加式**的，
+ * 读端 `dropDeclarationOf` 归一；理由见该函数的注释）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+/** 四档的**机器标识**（进台账、进判据、进回执；语言无关 —— 文案由语言包出）。 */
+export const DROP_DISPOSITIONS = ['never-done', 'delivered-deferred', 'awaiting-review', 'superseded'] as const
+export type DropDisposition = (typeof DROP_DISPOSITIONS)[number]
+
+/** 卡片真源上的声明键（`tasks/<id>.yml` 的 `task.dropDeclaration`）。 */
+export const DROP_DECLARATION_FIELD = 'dropDeclaration'
+/** 卡片真源上的落地指针键（`done` 给了 `landing` 才落；与 `landing`（DEF-018 的路径声明）不是一回事）。 */
+export const LANDING_POINTER_FIELD = 'landingCommit'
+
+/** 一条 `drop` 的分档声明。**只带该档自己的凭据**（别的档的键不落，免得台账里出现无主字段）。 */
+export interface DropDeclaration {
+  disposition: DropDisposition
+  /** `delivered-deferred`：落地提交哈希（调用方已核对「可由 HEAD 到达」）。 */
+  landing?: string
+  /** `awaiting-review`：等的那条评审 `REV-*`（调用方已核对台账里存在）。 */
+  review?: string
+  /** `superseded`：取代它的那张卡（调用方已核对台账里存在）。 */
+  supersededBy?: string
+  /** 谁声明的（审计用）。 */
+  by?: string
+  /** 何时声明的（ISO 时间）。 */
+  at?: string
+}
+
+/** 一份判定器结果：`ok` 之外必须说清**为什么不是**（回执要能点名那个哈希）。 */
+export interface LandingReachability {
+  ok: boolean
+  /** 失败码：`unverifiable`（不是仓库 / git 不可用）｜`unresolvable`（解析不出提交）｜`unreachable`（不在 HEAD 历史里） */
+  code?: 'unverifiable' | 'unresolvable' | 'unreachable' | undefined
+}
+
+export interface DropDeclareInput {
+  taskId: string
+  /** 分档；`undefined` / 空串 ⇒ 拒收（**不默认**任何一档）。 */
+  disposition?: string | undefined
+  landing?: string | undefined
+  review?: string | undefined
+  supersededBy?: string | undefined
+  /** 台账里现存的评审 id 全集（调用方从 `.sdo/reviews/` 读）。 */
+  knownReviewIds?: readonly string[] | undefined
+  /** 台账里现存的任务卡 id 全集（调用方从 `tasks/*.yml` 读）。 */
+  knownTaskIds?: readonly string[] | undefined
+  /**
+   * `landing` 的**祖先关系判定器**（由调用方注入 —— 域层不碰 git）。
+   *
+   * **不给就是判不了**：`delivered-deferred` 会因此被拒（fail-closed）。理由：这一档的全部内容
+   * 就是「那个提交真的在历史里」，判不了还放行等于把它降级成一句自述。
+   */
+  reachability?: ((hash: string) => LandingReachability) | undefined
+  by?: string | undefined
+  at?: string | undefined
+}
+
+/** 拒绝码：每一条都能指名道姓说**缺什么 / 错在哪**（与 `DropOutcome` 同一路数）。 */
+export type DropDeclareCode =
+  | 'disposition-missing'
+  | 'disposition-unknown'
+  | 'landing-missing'
+  | 'landing-shape'
+  | 'landing-unverifiable'
+  | 'landing-unresolvable'
+  | 'landing-unreachable'
+  | 'review-missing'
+  | 'review-shape'
+  | 'review-unknown'
+  | 'superseded-missing'
+  | 'superseded-self'
+  | 'superseded-unknown'
+
+export type DropDeclareVerdict =
+  | { ok: true; declaration: DropDeclaration }
+  | { ok: false; code: DropDeclareCode; detail: string }
+
+/** 提交哈希的**形态**判据（短哈希也接受：7–40 位十六进制；解析与祖先关系交给 git 判）。 */
+const COMMIT_SHAPE = /^[0-9a-fA-F]{7,40}$/u
+/** 评审 id 的形态判据（与 `records.listReviews` 的文件名口径同源：`REV-<数字>`）。 */
+const REVIEW_SHAPE = /^REV-\d+$/u
+
+/**
+ * **分档 + 凭据的判定**（纯函数：不读盘、不调 git —— 两个外部事实都由调用方注入）。
+ *
+ * 顺序有意如此：**先判档，再判凭据**。缺档时连"该给什么凭据"都无从谈起，先报凭据缺失
+ * 会把「你没声明这是哪一档」误读成「你少给了一个哈希」。
+ */
+export function dropDeclarationVerdict(input: DropDeclareInput): DropDeclareVerdict {
+  const tiers = DROP_DISPOSITIONS.join(' / ')
+  const raw = textOf(input.disposition).trim()
+  if (raw === '') return { ok: false, code: 'disposition-missing', detail: fmt('uiCollab.kDropDispositionMissing', { p1: tiers }) }
+  if (!(DROP_DISPOSITIONS as readonly string[]).includes(raw)) {
+    return { ok: false, code: 'disposition-unknown', detail: fmt('uiCollab.kDropDispositionUnknown', { p1: raw, p2: tiers }) }
+  }
+  const disposition = raw as DropDisposition
+  const audit = {
+    ...(textOf(input.by).trim() === '' ? {} : { by: textOf(input.by).trim() }),
+    ...(textOf(input.at).trim() === '' ? {} : { at: textOf(input.at).trim() }),
+  }
+  if (disposition === 'never-done') {
+    // 唯一一档不许凭据：把别的档的键原样留进台账，等于让读者以为这里有证据
+    return { ok: true, declaration: { disposition, ...audit } }
+  }
+  if (disposition === 'delivered-deferred') {
+    const landing = textOf(input.landing).trim()
+    if (landing === '') return { ok: false, code: 'landing-missing', detail: t('uiCollab.kDropLandingMissing') }
+    if (!COMMIT_SHAPE.test(landing)) return { ok: false, code: 'landing-shape', detail: fmt('uiCollab.kDropLandingShape', { p1: landing }) }
+    const reach = input.reachability?.(landing)
+    if (reach === undefined || !reach.ok) {
+      const code: DropDeclareCode =
+        reach?.code === 'unresolvable' ? 'landing-unresolvable' : reach?.code === 'unreachable' ? 'landing-unreachable' : 'landing-unverifiable'
+      // 文案在这里生成（**必须点名那个哈希**）：判定器只回码，人话只有一处，不按调用方分叉
+      const detail = code === 'landing-unresolvable'
+        ? fmt('uiCollab.kDropLandingUnresolvable', { p1: landing })
+        : code === 'landing-unreachable'
+          ? fmt('uiCollab.kDropLandingUnreachable', { p1: landing })
+          : fmt('uiCollab.kDropLandingUnverifiable', { p1: landing })
+      return { ok: false, code, detail }
+    }
+    return { ok: true, declaration: { disposition, landing, ...audit } }
+  }
+  if (disposition === 'awaiting-review') {
+    const review = textOf(input.review).trim()
+    if (review === '') return { ok: false, code: 'review-missing', detail: t('uiCollab.kDropReviewMissing') }
+    if (!REVIEW_SHAPE.test(review)) return { ok: false, code: 'review-shape', detail: fmt('uiCollab.kDropReviewShape', { p1: review }) }
+    const known = input.knownReviewIds ?? []
+    // 已知集合为空有两种来源：台账真的没有评审，或调用方没传。两种都必须拒（判不了就是判不了）——
+    // 但文案要把「台账里现有几条」现算出来，否则读者分不清是哪一个。
+    if (!known.includes(review)) {
+      return { ok: false, code: 'review-unknown', detail: fmt('uiCollab.kDropReviewUnknown', { p1: review, p2: String(known.length) }) }
+    }
+    return { ok: true, declaration: { disposition, review, ...audit } }
+  }
+  // superseded
+  const supersededBy = textOf(input.supersededBy).trim()
+  if (supersededBy === '') return { ok: false, code: 'superseded-missing', detail: t('uiCollab.kDropSupersededMissing') }
+  if (supersededBy === input.taskId) return { ok: false, code: 'superseded-self', detail: fmt('uiCollab.kDropSupersededSelf', { p1: supersededBy }) }
+  const knownCards = (input.knownTaskIds ?? []).filter((id) => id !== input.taskId)
+  if (!knownCards.includes(supersededBy)) {
+    return { ok: false, code: 'superseded-unknown', detail: fmt('uiCollab.kDropSupersededUnknown', { p1: supersededBy, p2: String(knownCards.length) }) }
+  }
+  return { ok: true, declaration: { disposition, supersededBy, ...audit } }
+}
+
+/** 把声明**折成卡片真源里的形态**（键名与 `DROP_DECLARATION_FIELD` 一致；别的字段一字不动）。 */
+export function withDropDeclaration(task: TaskCard, declaration: DropDeclaration): TaskCard {
+  return { ...task, [DROP_DECLARATION_FIELD]: declaration } as TaskCard
+}
+
+/** 同样折一行落地指针（`done` 给了 `landing` 时才落）。 */
+export function withLandingPointer(task: TaskCard, commit: string): TaskCard {
+  return { ...task, [LANDING_POINTER_FIELD]: textOf(commit).trim() } as TaskCard
+}
+
+/**
+ * 读回一张卡的分档声明（**读侧归一**，不采信 YAML 里的原样值）。
+ *
+ * 为什么读端要归一而不是直接 `task.dropDeclaration`：`TaskCard` 在 `src/types.ts` 里**没有**
+ * 这两个字段（本轮写范围不含它），所以写进去的键在类型面是"额外的"；读端若不加归一，一个
+ * 手写坏掉的 `dropDeclaration`（缺档 / 档名拼错 / 不是对象）会以 `undefined` 之外的各种形状
+ * 流进出题面。**判不了就当没有**（与 `uiText` 只认 `=== true` 同一口径）：历史卡（该字段出现
+ * 之前建的）读回来就是 `undefined` —— 那不是错误，是存量。
+ */
+export function dropDeclarationOf(task: TaskCard): DropDeclaration | undefined {
+  const raw = (task as unknown as Record<string, unknown>)[DROP_DECLARATION_FIELD]
+  if (raw === undefined || raw === null || typeof raw !== 'object' || Array.isArray(raw)) return undefined
+  const record = raw as Record<string, unknown>
+  const disposition = textOf(record.disposition).trim()
+  if (!(DROP_DISPOSITIONS as readonly string[]).includes(disposition)) return undefined
+  const landing = textOf(record.landing).trim()
+  const review = textOf(record.review).trim()
+  const supersededBy = textOf(record.supersededBy).trim()
+  const by = textOf(record.by).trim()
+  const at = textOf(record.at).trim()
+  return {
+    disposition: disposition as DropDisposition,
+    ...(landing === '' ? {} : { landing }),
+    ...(review === '' ? {} : { review }),
+    ...(supersededBy === '' ? {} : { supersededBy }),
+    ...(by === '' ? {} : { by }),
+    ...(at === '' ? {} : { at }),
+  }
+}
+
+/** 读回一张卡的落地指针（没有 / 空串 ⇒ `''`，调用方按"未提供"处理）。 */
+export function landingPointerOf(task: TaskCard): string {
+  return textOf((task as unknown as Record<string, unknown>)[LANDING_POINTER_FIELD]).trim()
+}
+
+/** 一张 `dropped` 卡按分档的**只读读数**（`sdo_task action=list` 的分档视图消费它）。 */
+export interface DropDispositionTally {
+  /** `dropped` 卡总数（现算基数，不是抄来的数字）。 */
+  dropped: number
+  /** 其中带合法声明的张数。 */
+  declared: number
+  /** 其中**没有**（或声明读不回来）的张数 —— 存量不回填，它们就落在这一档。 */
+  undeclared: number
+  /** 逐档计数（**四档全列**，哪怕是 0；只列非零会让"这一档没人用过"读成"没有这一档"）。 */
+  byDisposition: { disposition: DropDisposition; count: number }[]
+}
+
+/**
+ * 按分档数一遍 `dropped` 卡。
+ *
+ * **这不是判据**：它只回答"台账现在长什么样"。口径见任务卡落点四 —— 断言写的是
+ * 「本轮之后新建的 `drop` 必带档」，不是「全库都有档」：存量 74 张不回填，把它们判红
+ * 只会逼人去写豁免（与本卡同一族的教训：把「推不出来的状态」判成红，读数不会更可追溯）。
+ */
+export function dropDispositionTally(tasks: readonly TaskCard[]): DropDispositionTally {
+  const dropped = tasks.filter((task) => task.status === 'dropped')
+  const counts = new Map<DropDisposition, number>(DROP_DISPOSITIONS.map((tier) => [tier, 0]))
+  let declared = 0
+  for (const task of dropped) {
+    const declaration = dropDeclarationOf(task)
+    if (declaration === undefined) continue
+    declared += 1
+    counts.set(declaration.disposition, (counts.get(declaration.disposition) ?? 0) + 1)
+  }
+  return {
+    dropped: dropped.length,
+    declared,
+    undeclared: dropped.length - declared,
+    byDisposition: DROP_DISPOSITIONS.map((tier) => ({ disposition: tier, count: counts.get(tier) ?? 0 })),
+  }
+}

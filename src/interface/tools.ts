@@ -495,8 +495,27 @@ export interface TaskArgs {
   /**
    * **update：本卡声称要落地的路径**（DEF-018）：JSON **text** 或真数组；整份替换。
    * 由 `sdo_plan` 的判据 `landing-outside-scope` 逐条核对是否落在本卡写范围内。
+   *
+   * **`done`：本卡的落地提交哈希**（`DEF-244` 落点三）—— 同一个参数名两种语义，按 `action` 判：
+   * `update` 读成"要改哪些路径"，`done` 读成一个提交（**给了就校验「可由 HEAD 到达」**，
+   * 不给只警告不拦）。为什么复用这个名字：两者都是「这张卡落在哪里」的指针，台账里已经用
+   * `landing` 表示"落点"，再造一个 `commit` 会让读者以为它们是两件事。
    */
   landing?: string | unknown[] | undefined
+  /**
+   * **`drop` 的分档声明**（`DEF-244` 落点一）：`never-done` / `delivered-deferred` /
+   * `awaiting-review` / `superseded`。**缺省拒收**（不默认 `never-done`）：默认值会把
+   * 「最接近的真实状态」记成「最远的状态」，那正是 `DEF-244` 那场事故的形态。
+   * 凭据按档强制 —— `delivered-deferred` 要 `landing`（且必须可由 HEAD 到达）、
+   * `awaiting-review` 要 `review`（`REV-*` 且台账里存在）、`superseded` 要 `supersededBy`；
+   * `never-done` 是四档里**唯一**可以不带凭据的那一档。
+   */
+  disposition?: string | undefined
+  /**
+   * **`drop disposition=superseded` 的凭据**（`DEF-244` 落点二）：**取代它的那张卡**的 id
+   * （必须存在于台账，且不能是本卡自己）。"被谁取代"就是这一档的全部内容。
+   */
+  supersededBy?: string | undefined
   /**
    * **update：本卡要独占的窗口组名**（DEF-007）：同组同时只能有一张卡在跑。
    * 自由文本（插件不内置任何组名）；空串 = 撤回声明。
@@ -1148,7 +1167,17 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           description:
             'update: an explicit **cannot-be-determined** declaration for the impact surface (DEF-036), reused verbatim from the change-request vocabulary: state **why** the affected files/cases cannot be worked out. Either `impact` or this one satisfies the criterion; defaulting to «no impact» is not allowed. An empty string **withdraws** the declaration.',
         },
-        landing: listDecl('update: the **landing paths this card claims it will write** (DEF-018), given as JSON **text** (e.g. \'["src/domain/plan.ts"]\') or as a real array. Replaces the whole declaration. Plan criterion `landing-outside-scope` reconciles every declared path against the card write scope and is red when a path falls outside it, naming that path. Declaring nothing means the card claims no landing paths (existing cards are unaffected).'),
+        landing: listDecl('update: the **landing paths this card claims it will write** (DEF-018), given as JSON **text** (e.g. \'["src/domain/plan.ts"]\') or as a real array. Replaces the whole declaration. Plan criterion `landing-outside-scope` reconciles every declared path against the card write scope and is red when a path falls outside it, naming that path. Declaring nothing means the card claims no landing paths (existing cards are unaffected). **done**: the same parameter means **this card\'s landing commit hash** (DEF-244) — a plain string, checked with `git merge-base --is-ancestor` against HEAD; supplying it is optional (omitting only warns, never blocks, because a large share of completed cards cannot be traced to a commit).'),
+        disposition: {
+          type: 'string',
+          description:
+            "drop: **which tier this drop is** (DEF-244) — one of never-done / delivered-deferred / awaiting-review / superseded. Omitting it is **rejected** (it is never defaulted to never-done: that default is exactly the incident where the nearest true state got recorded as the furthest one). Credentials are enforced per tier: `delivered-deferred` needs `landing` (a commit hash that must be reachable from HEAD), `awaiting-review` needs `review` (a `REV-*` that must exist in the ledger), `superseded` needs `supersededBy` (an existing card id). `never-done` is the **only** tier that carries no credentials.",
+        },
+        supersededBy: {
+          type: 'string',
+          description:
+            'drop: the credential for `disposition=superseded` (DEF-244) — the id of **the card that supersedes this one** (must exist in the ledger and must not be this card). "Superseded by whom" is the entire content of that tier.',
+        },
         uiText: {
           type: 'boolean',
           description:
@@ -1231,6 +1260,9 @@ export function createOfficeTools(deps: OfficeToolDeps): ToolDefinition[] {
           outcome: parseEnum(args.outcome, ['reproduced', 'refuted'] as const),
           proof: typeof args.proof === 'string' ? args.proof : undefined,
           revise: typeof args.revise === 'boolean' ? args.revise : undefined,
+          // **DEF-244**：分档与取代卡 id 照样必须过 execute 映射（缺它参数会被静默丢掉 — tq_ff348198）
+          disposition: typeof args.disposition === 'string' ? args.disposition : undefined,
+          supersededBy: typeof args.supersededBy === 'string' ? args.supersededBy : undefined,
         })
       },
     }),

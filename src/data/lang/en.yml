@@ -977,6 +977,21 @@ uiCollab:
   unblockNotAuthorized: "resuming {p1} (unblock) is limited to the **cockpit** or the card's **original owner** (current owner: {p2}) — a resume puts the card back into the dispatch queue, which is a plan artefact, so no arbitrary session may change it (same separation-of-duties rule as drop / reassign)"
   unblockReasonMissing: "resuming {p1} requires `reason`: state how the blocking condition was resolved — a silent resume hides a plan change (both the receipt and the `task/unblocked` event keep it)"
   unblockNotBlocked: "{p1} is currently {p2}, **not blocked** — there is nothing to resume (unblock only handles blocked cards; to change a ready / planned card use `sdo_task action=update`, and if you really will not do it use `sdo_task action=drop`)"
+  # -- `DEF-244` / `TASK-270`: `drop` must declare a tier; credentials are enforced per tier and checked mechanically --
+  # Each line states "nothing was written": what got rejected is a **ledger write**, not a wording preference.
+  kDropDispositionMissing: "`drop` rejected: you must declare **which tier this is** ({p1}) - omitted means rejected, and it is **not defaulted to `never-done`**: recording \"the nearest true state\" as \"the furthest state\" is exactly the `DEF-244` incident (the operator had only one lever). **Nothing was written.**"
+  kDropDispositionUnknown: "`drop` rejected: `disposition={p1}` is not one of the four tiers ({p2}). **Nothing was written.**"
+  kDropLandingMissing: "`drop` rejected: `delivered-deferred` requires `landing` (the **landing commit hash**) - the whole content of this tier is \"delivered, only not closed out on this card\"; without a hash it reads exactly like `never-done`. **Nothing was written.**"
+  kDropLandingShape: "`drop` rejected: `landing={p1}` does not look like a commit hash (7-40 hex characters only). **Nothing was written.**"
+  kDropLandingUnverifiable: "`drop` rejected: `landing={p1}` cannot be verified - the current workspace is not a readable git repository (or git is unavailable), so \"reachable from HEAD\" cannot be checked mechanically. **Nothing was written.**"
+  kDropLandingUnresolvable: "`drop` rejected: `landing={p1}` does not resolve to a commit in this repository (`git rev-parse --verify` failed) - it is mistyped, or it belongs to another repository. **Nothing was written.**"
+  kDropLandingUnreachable: "`drop` rejected: commit `{p1}` is **not in the history of the current HEAD** (`git merge-base --is-ancestor` says no) - \"delivered\" must point at a commit HEAD can reach. **Nothing was written.**"
+  kDropReviewMissing: "`drop` rejected: `awaiting-review` requires `review` (`REV-*`) - this tier says \"waiting on a review\", and without an id there is nothing to check. **Nothing was written.**"
+  kDropReviewShape: "`drop` rejected: `review={p1}` is not of the form `REV-*`. **Nothing was written.**"
+  kDropReviewUnknown: "`drop` rejected: review `{p1}` does not exist in the ledger (`.sdo/reviews/` currently holds {p2} `REV-*.yml` files) - pointing at a review that does not exist is the same as having no credential. **Nothing was written.**"
+  kDropSupersededMissing: "`drop` rejected: `superseded` requires `supersededBy` (the id of **the card that supersedes it**) - \"superseded by whom\" is the only content of this tier. **Nothing was written.**"
+  kDropSupersededSelf: "`drop` rejected: `supersededBy={p1}` is this very card - a card cannot supersede itself. **Nothing was written.**"
+  kDropSupersededUnknown: "`drop` rejected: `supersededBy={p1}` does not exist in the ledger ({p2} cards besides this one). **Nothing was written.**"
 # Receipts for the **write face** of the release-plan layer (`TASK-171` / `TASK-178`): one group for writing a release, one for deferral records.
 # The criteria (C-72/C-73/C-75) read journal events; this text only reports written / rejected.
   kOwnerClaimRejected: "Refusing to claim {p1}: the card role is {p2} while owner {p3} yields role {p4} - the cockpit / process officer must **not** claim implementation or test cards (`role in {developer, tester}`); legal owner forms: {p5} (e.g. `subagent:developer:1`)"
@@ -1992,6 +2007,22 @@ uiIndex:
   kContractTestRecorded: "contract test recorded: {p1} | {p2} (written to `.sdo/construction/contract-first.yml`)"
   kContractTestRejected: "contract test record rejected (**nothing written**): {p1}"
   kMutationTargetHint: "Note: `target` is empty - state WHAT you changed (file/function) so a reviewer can reproduce it (this is a hint, not a failure)"
+  # -- `DEF-244` / `TASK-270`: the `drop` disposition declaration and the `done` landing pointer ------
+  # These lines only ECHO facts that were already checked mechanically (ancestry / review exists / card exists).
+  kDropDispositionLine: "Disposition: `{p1}` (written into the card source of truth `tasks/{p2}.yml` as `dropDeclaration`, readable back)"
+  kDropTierNeverDone: "this is **the only one of the four tiers that may carry no evidence**: it states \"this card was never delivered\" - the other three all need a credential (landing commit hash / review id / the card that supersedes it)"
+  kDropTierLanding: "landing credential: commit `{p1}` - checked to be **reachable from HEAD** (`git merge-base --is-ancestor` says yes)"
+  kDropTierReview: "review being awaited: `{p1}` - checked to exist in the ledger (`.sdo/reviews/`)"
+  kDropTierSuperseded: "superseded by: `{p1}` - checked to exist in the ledger"
+  kDropTallyHeader: "`dropped` cards by disposition (read-only view, `DEF-244`):"
+  kDropTallyRow: "- `{p1}`: {p2}"
+  kDropTallyUndeclared: "- no disposition declared: {p1} (of {p2} `dropped` cards, {p3} carry a declaration) - history is not backfilled: every `drop` created from now on must declare a tier, older cards read back into this row"
+  kDoneLandingPointer: "landing pointer for this card: commit `{p1}` - checked to be **reachable from HEAD**, and written into the card face as `landingCommit` (\"delivered\" is no longer just a sentence)"
+  kDoneLandingNoPointer: "landing pointer for this card: (**not provided**) - a hint only, never a block: many completed cards have no commit that mentions them, so failing \"no pointer\" would only push people into writing waivers; the cost is that this card still cannot be traced back to a commit from the ledger"
+  kDoneLandingUnverifiable: "the current workspace is not a readable git repository (or git is unavailable), so \"reachable from HEAD\" cannot be checked mechanically"
+  kDoneLandingUnresolvable: "no such commit in this repository (`git rev-parse --verify` failed): it is mistyped, or it belongs to another repository"
+  kDoneLandingUnreachable: "is **not in the history of the current HEAD** (`git merge-base --is-ancestor` says no)"
+  kDoneLandingRejected: "❌ `done` rejected: the landing pointer `{p1}` {p2}. Fix: pass a commit hash that **belongs to this repository and is reachable from HEAD**; or omit it (omitting is only a hint, never a block). **Nothing was written to the ledger.**"
 uiLang:
   current: "- Current UI language: **{p1}** (base language {p2})"
   available: "- Language packs shipped: {p1}"

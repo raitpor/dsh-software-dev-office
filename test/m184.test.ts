@@ -104,7 +104,9 @@ test('M184-01 §3.7 行为（真注册面）：直接引用者 + 传递下游 �
   const still = office.storeFor(WORKSPACE).readYaml<{ task: TaskCard }>('tasks', 'TASK-001.yml')?.task
   assert.equal(still?.status, 'in-progress', '被拒时**零写盘**（卡状态不许变）')
   // 反例：没有人引用它 ⇒ 放行（不是恒拒）
-  const ok = String(await drop.execute({ action: 'drop', id: 'TASK-004', reason: '不需要了' }, exec))
+  // `DEF-244`（`TASK-270`）起 `drop` 必须声明分档，凭据按档强制：这里只关心"依赖者扫描"这一条判据，
+  // 所以给最弱的那一档 `never-done`（四档里**唯一**不需要凭据的）—— 本格断言的对象没变。
+  const ok = String(await drop.execute({ action: 'drop', id: 'TASK-004', reason: '不需要了', disposition: 'never-done' }, exec))
   assert.equal(ok.includes('被拒'), false, `没人吊着就必须放行：${ok.slice(0, 200)}`)
   assert.equal(office.storeFor(WORKSPACE).readYaml<{ task: TaskCard }>('tasks', 'TASK-004.yml')?.task?.status, 'dropped', '放行后真的作废')
 })
