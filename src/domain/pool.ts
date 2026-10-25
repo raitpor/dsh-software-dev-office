@@ -161,7 +161,8 @@ function text(value: unknown): string {
  * 从事件流折叠出**每个子代理**的状态。
  *
  * 同一 `childSessionId` 可以出现多轮（复用）：每轮 `started` 把它置回 busy，
- * 对应 `finished` 再置回 idle（`rounds` +1）。结算找不到对应 started 的（手写/丢事件）不凭空造一个孩子 —— 宁可少记，也不编。
+ * 对应 `finished` 再置回 idle（`rounds` +1）。结算找不到对应 started 的（手写/丢事件）
+ * 不凭空造一个孩子 —— 宁可少记，也不编。
  *
  * `TASK-208` 起多折三样（都只从**已有事件**折，不新增真源）：
  *   · `sdoAllow` / `deny` —— **创建时**那两份面（旧口径指纹的回溯依据，落点五）；
@@ -170,7 +171,11 @@ function text(value: unknown): string {
  *   · `deliveryFailedReason` —— 最近一次**投递被宿主拒**的原话（落点二：让它进 `unusable` 桶）。
  */
 export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, PoolChild> {
-  const children = new Map<string, PoolChild>(); const retired = retiredSetOf(events); const idle = sessionIdleTracker() // **先减退役集再折叠**（`TASK-228` 落点一；顺序与复活规则见 `retiredSetOf`）；忙闲读数走**同一处真源**（`TASK-261` 落点一：`dispatchHealth.ts` 的 `sessionIdleTracker`，修前这里内联过一份）
+  const children = new Map<string, PoolChild>()
+  // **先减退役集再折叠**（`TASK-228` 落点一；顺序与复活规则见 `retiredSetOf`）
+  const retired = retiredSetOf(events)
+  // 忙闲读数走**同一处真源**（`TASK-261` 落点一：`dispatchHealth.ts` 的 `sessionIdleTracker`，修前这里内联过一份）
+  const idle = sessionIdleTracker()
   for (const event of events) {
     if (event.type === 'dispatch/started') {
       const id = text(event.data['childSessionId'])
@@ -213,7 +218,9 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
     }
     const id = text(event.data['childSessionId'])
     if (id === '') continue
-    const step = idle.step(id, event); if (!step.settled) continue // 收口判据也读同一处真源（`settled` = 这一笔结算了这一轮；修前是内联的 `isTerminalDispatch(…, 'session')`）
+    // 收口判据也读同一处真源（`settled` = 这一笔结算了这一轮；修前是内联的 `isTerminalDispatch(…, 'session')`）
+    const step = idle.step(id, event)
+    if (!step.settled) continue
     const child = children.get(id)
     if (child === undefined) continue
     // 结算只认"当前这一轮"：已经 idle 的孩子再收一条 finished 不重复计数（幂等）

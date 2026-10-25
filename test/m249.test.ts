@@ -58,6 +58,11 @@
  *
  * 基线**不用 `file:line`**（行号会漂：`REV-106`#5 的 seq 8407 锚点今天就过期了），
  * 按「文件 + 该行去空白后的原文」做**多重集**（同文件同文本出现次数也要对得上）。
+ *
+ * **`TASK-265`：双态探针也改用同一把尺子**。修前 `M249-10/11/12` 各钉一个**行号**
+ * （`contracts.ts:248` / `pool.ts:467` / `worktree.ts:24` / `journal.ts:94`）—— 位置一漂就红，
+ * 于是实现去迁就布局（`TASK-261` 把 `pool.ts` 压到该行之上净增 0 行）。现在探针读的是
+ * `{ file, 逐字文本 }` 锚（`ANCHOR_*`，要求**恰好一处**）：挪行 ⇒ 绿，改字/出现两处 ⇒ 红（`M249-13`）。
  */
 import assert from 'node:assert/strict'
 import { readdirSync, readFileSync } from 'node:fs'
@@ -336,6 +341,88 @@ export interface StrongClaimEntry {
   why: string
 }
 
+/* ——————————————— 锚点：**钉文本，不钉行号**（`TASK-265` / `DEF-233`） ——————————————— */
+
+/**
+ * 一处**文本锚** = `file` + **逐字原文**（**不含行号**）。
+ *
+ * 病根（同一病因已三次发作）：探针要的本来是「这段内容还在盘上」，写成 `file:line` 之后就变成
+ * 「它还在第 N 行」—— 于是同一个断言把两件不同的事合成一条，两者不可区分：
+ *   · `TASK-228` 为了不动锚点，把新增代码**全写在它下面**、`RolePool` 走接口合并；
+ *   · `M191-01` 真机假红：登记键是 `file:line`，另一个会话在 `src/types.ts` 上方插了几行 ⇒
+ *     行号漂移 ⇒ 棘轮判红，而被点名的 11 条 observed 里**没有一条**是被测卡碰过的文件；
+ *   · `TASK-261` 为了让本文件读的 `pool.ts` 那一行不动，把 `pool.ts` 做到**该行之上净增 0 行**
+ *     （新增 1 行 import + 同行合并 + 逐字压缩 1 行文档）⇒ 实现去迁就一个行号。
+ *
+ * 现在只钉内容：同一段文本挪到哪一行都仍是同一处（**位置漂移 ⇒ 绿**，那是修好的证明）；
+ * 文本改一个字、或这段文本在文件里出现不止一处 ⇒ **红**（`M249-13` 把这两头都钉住）。
+ */
+export interface SourceAnchor { file: string; text: string }
+
+/** 一处定位读数：`line` **只用于报错点名**，不进任何判定。 */
+export interface AnchorHit { line: number; text: string }
+
+/** 纯函数版（双态探针喂合成文本，不碰现盘）：所有**含**这段逐字文本的行。 */
+export function linesContaining(source: string, anchor: string): AnchorHit[] {
+  return source
+    .split('\n')
+    .flatMap((line, index) => (line.includes(anchor) ? [{ line: index + 1, text: line }] : []))
+}
+
+/** 现盘版：文件不在现盘 ⇒ 抛错（改名/移动要同步改锚文本）。 */
+export function anchorHits(anchor: SourceAnchor): AnchorHit[] {
+  const file = readSources().find((row) => row.path === anchor.file)
+  if (file === undefined) throw new Error(`现盘里找不到 ${anchor.file}（本格按现盘真行取证；改名/移动要同步改锚文本）`)
+  return linesContaining(file.text, anchor.text)
+}
+
+/**
+ * **恰好一次**才认：0 处（文本改了/删了）、2 处以上（同一段文本在文件里有两处）都抛错并**点名出现次数**。
+ *
+ * 为什么不"静默取第一条"：那会让"锚点在两处"变成假绿 —— 第二处被改掉也不再有人知道；
+ * 而「恰好一处」本身也是本格要的属性（一处断言 = 一处内容，不是"文件里某行大概像"）。
+ *
+ * 消息里带一个**结构化读数** `anchor-hits=N`（与中文并列）：断言可以直接对结构化键取值，
+ * 不必去读中文散文（`§4.3` 读散文棘轮的口径：中文当**定位/说明**，判据读数走结构化键）。
+ */
+export function exactlyOne(file: string, hits: readonly AnchorHit[], anchor: string): string {
+  if (hits.length !== 1) {
+    throw new Error(`${file} 里锚文本出现 ${String(hits.length)} 次（必须恰好 1 次）｜ anchor-hits=${String(hits.length)} ｜ ${anchor}`)
+  }
+  return (hits[0] as AnchorHit).text
+}
+
+/** 现盘版 `exactlyOne`：定位 + 恰好一次，返回**该行原文**（探针要的是盘上的字，不是本文件里的副本）。 */
+export function anchorLine(anchor: SourceAnchor): string {
+  return exactlyOne(anchor.file, anchorHits(anchor), anchor.text)
+}
+
+/**
+ * 四格双态探针的**锚文本**（逐字取自现盘）。
+ *
+ * 两条约束写在明处：
+ *   ① 它们与 `src/` 的措辞**同源**：源码那一行改了字，这里就**定位不到** ⇒ 当场红（这是该红的）；
+ *      把那一行挪去别处 ⇒ 照旧定位到 ⇒ 绿（这是不该红的）。
+ *   ② 两处锚（`contracts` / `pool`）同时就是基线里的登记条目（`{ ...ANCHOR, why }`）——
+ *      **同一份逐字文本不抄两遍**，改一处两边同步，省掉"锚与基线各写一份然后分叉"这类假绿。
+ */
+export const ANCHOR_REQUIRES_PROJECTION: SourceAnchor = {
+  file: 'src/domain/contracts.ts',
+  text: '* `requires` 此前**只有读侧**（读端白名单会给缺省空数组）⇒ 任何契约都**不可能**声明它 ⇒',
+}
+export const ANCHOR_LIVE_SET: SourceAnchor = {
+  file: 'src/domain/pool.ts',
+  text: '* 它永远不进这个集合（哪怕它一条 `started` 都没有）。',
+}
+export const ANCHOR_INSIDE_REPO: SourceAnchor = {
+  file: 'src/integration/worktree.ts',
+  text: '*      不在仓库内 ⇒ 结构上不可能进索引；`inside-repo` 是**拒绝**码，把 `.sdo/drafts/worktrees/`',
+}
+export const ANCHOR_JOURNAL_SWEEP: SourceAnchor = {
+  file: 'src/infra/journal.ts',
+  text: '* 条数上限只为防"测试里千百个临时工作区"把内存撑爆 —— 淘汰只是丢缓存（下次重解析），不改变语义。',
+}
+
 /**
  * **技术债快照**（未审）：形状 = `{ file, text, why }`，**不含行号**；比较按**多重集**。
  *
@@ -392,10 +479,12 @@ export const KNOWN_STRONG_CLAIMS: StrongClaimEntry[] = [
   { file: "src/domain/records.ts", text: "* **阻塞级缺陷的四态分类**（防御门禁 C-51 与读数共用的**唯一出口**）。", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/records.ts", text: "* 每个 id 必须**真实存在**（`reviewDefectIssue` 是唯一出口；未知 id ⇒ 可读拒绝、零写盘）。", why: "grandfathered: 2026-10-25 存量快照，未审" },
   // ——— `TASK-255` 重算新增的 4 条（**活站点**，不是 2026-10-25 的存量快照；`why` 逐条写具体理由）———
-  { file: "src/domain/contracts.ts", text: "* `requires` 此前**只有读侧**（读端白名单会给缺省空数组）⇒ 任何契约都**不可能**声明它 ⇒", why: "历史陈述，不是对现机制的声称：说的是 DEF-056 写侧落地**之前**的形状（读端白名单给 `[]` ⇒ 没有写入通路 ⇒ 谁也声明不了 `requires`）。修法就在同文件 280 行「DEF-056：写侧落地」。本卡只是把它从漏抓登记进基线，没有放宽判据（文件头边界 ①）。" },
-  { file: "src/domain/pool.ts", text: "* 它永远不进这个集合（哪怕它一条 `started` 都没有）。", why: "「这个集合」= 同文件 `liveDispatchReading` 的 `live`（pool.ts:495-503）：它只收 `foldPoolChildren` 里 `state === 'busy'` 的子项，而 `busy` 只由 `dispatch/started` 建立；该函数内 `dispatch/decided` 没有任何入集路径 ⇒ 在本函数范围内「永远不进」成立。" },
+  // 前两条的 `file` / `text` 直接取**锚**（`{ ...ANCHOR, why }`）：同一份逐字文本只写一处，
+  // 锚与基线不会各写一份然后分叉（`TASK-265`）。
+  { ...ANCHOR_REQUIRES_PROJECTION, why: "历史陈述，不是对现机制的声称：说的是 DEF-056 写侧落地**之前**的形状（读端白名单给 `[]` ⇒ 没有写入通路 ⇒ 谁也声明不了 `requires`）。修法就在同文件那段「DEF-056：写侧落地」。本卡只是把它从漏抓登记进基线，没有放宽判据（文件头边界 ①）。" },
+  { ...ANCHOR_LIVE_SET, why: "「这个集合」= 同文件 `liveDispatchReading` 的 `live`：它只收 `foldPoolChildren` 里 `state === 'busy'` 的子项，而 `busy` 只由 `dispatch/started` 建立；该函数内 `dispatch/decided` 没有任何入集路径 ⇒ 在本函数范围内「永远不进」成立。（原文曾按 `pool.ts:495-503` 点名，`TASK-265` 起不再引用行号。）" },
   { file: "src/domain/records.ts", text: "* 每份交付都带一串必然出现、且**没有任何动作可做**的告警（报警疲劳，正是本项目反复警惕的那种）。", why: "后果陈述，主语是**漏改的那一半**：同段 804-806 行点名 `evidenceFreshness` 未跟着 `verificationStats` 改成 latest-wins（平铺遍历全部历史 ⇒ 旧记录被永久算过期），并给了真机读数「9 条过期告警里 7 条属这种」。修法是统一走 `latestResultPerCase`，不是声称现在还会必然出现。" },
-  { file: "src/office.ts", text: "* `dispatch/decided` **永远不进这个集合** —— 决定了不等于发生了（`DEF-214` 的第一层危害）。", why: "「这个集合」由本方法转调的域层 `liveDispatchReading` 构造（域层读数见 `pool.ts:479-504`：只收 `busy` 子项，`busy` 只来自 `dispatch/started`）⇒ `decided` 无入集路径，「永远不进」在本方法范围内成立。" },
+  { file: "src/office.ts", text: "* `dispatch/decided` **永远不进这个集合** —— 决定了不等于发生了（`DEF-214` 的第一层危害）。", why: "「这个集合」由本方法转调的域层 `liveDispatchReading` 构造（域层读数见该函数：只收 `busy` 子项，`busy` 只来自 `dispatch/started`）⇒ `decided` 无入集路径，「永远不进」在本方法范围内成立。（原文曾按 `pool.ts:479-504` 点名，`TASK-265` 起不再引用行号。）" },
   { file: "src/domain/releaseTool.ts", text: "/** 一次调用要用的台账入口（域层不自己拼绝对路径：`SdoStore` 才是路径沙箱的唯一出口）。 */", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/reviewDoc.ts", text: "* 两处用的是**同一个** `metaLines`，所以摘要永远不会和全文的总览对不上。", why: "grandfathered: 2026-10-25 存量快照，未审（扩轴后新捕获，仍未审）" },
   { file: "src/domain/reviewVerification.ts", text: "* **有 `pass` 测试结论、却没有被已采纳评审点名的 `fixed` 缺陷**（DEF-076 / 第四批 §3.3）—— 判据的唯一出口。", why: "grandfathered: 2026-10-25 存量快照，未审" },
@@ -658,17 +747,7 @@ test('M249-09 (acceptance) 两句历史原文喂进来都必须判红并点名�
   assert.equal(registered, false, '这两句都已从 src/ 删除 ⇒ 基线里不许还留着（否则 M249-06 会判它过期）')
 })
 
-/**
- * 取现盘 `src/` 的**真行**（双态探针要的是原文，不是我抄进测试的副本；行号漂了 / 文件没了当场红）。
- */
-function realSourceLine(path: string, line: number): string {
-  const file = readSources().find((row) => row.path === path)
-  if (file === undefined) throw new Error(`现盘里找不到 ${path}（本格按现盘真行取证，改名/移动要同步改这里）`)
-  const rows = file.text.split('\n')
-  const text = rows[line - 1]
-  if (typeof text !== 'string') throw new Error(`${path} 取不到第 ${String(line)} 行（共 ${String(rows.length)} 行）`)
-  return text
-}
+/* 探针取真行不再有独立的取行函数：一律 `anchorLine(ANCHOR_*)`（见文件上方 `SourceAnchor` 那段）。 */
 
 /**
  * 某个「全称 → 否定」在文本上的**原始间距**（只做定位，不参与判据）。
@@ -702,11 +781,10 @@ function axisReadingOf(line: string): AxisReading {
   return { pairs: pairs.length, halvesOk, phrase }
 }
 
-test('M249-10 (projection, TASK-255 12) 可见文本投影：contracts.ts:248 **修前整条漏、修后中**，且报错仍用原行原文', () => {
-  const raw = realSourceLine('src/domain/contracts.ts', 248)
-  // 锚点用 **ASCII** 定位（这一行就是那句，不是"某一行大概像"）：三族判据都不读中文也能钉住它
-  const anchor = raw.includes('`requires`')
-  assert.equal(anchor, true, `锚点漂了（现盘 contracts.ts:248）：${raw}`)
+test('M249-10 (projection, TASK-255 12) 可见文本投影：contracts.ts 那句 **修前整条漏、修后中**，且报错仍用原行原文', () => {
+  const raw = anchorLine(ANCHOR_REQUIRES_PROJECTION)
+  // "这一行就是那句，不是某一行大概像"：锚是**整行原文**（`anchorLine` 已要求恰好一处）
+  assert.equal(raw.trim(), ANCHOR_REQUIRES_PROJECTION.text, '取到的必须是整行原文（锚按逐字文本命中）')
   // 间距对照（同一段文本算两遍，证明差的就是那两个 `**`）
   const rawGap = gapOfPair(raw, '任何', '不可能')
   const visibleGap = gapOfPair(visibleTextOf(raw), '任何', '不可能')
@@ -732,10 +810,10 @@ test('M249-10 (projection, TASK-255 12) 可见文本投影：contracts.ts:248 **
   assert.notEqual(after[0]?.text, visibleTextOf(raw).trim(), '报错不许用投影后的文本（原文里的 `**` 必须还在）')
 })
 
-test('M249-11 (negation axis, TASK-255 13) 补 `不进`：pool.ts:467 **修前漏、修后中**，且它是轴抓的、不是字面表', () => {
-  const raw = realSourceLine('src/domain/pool.ts', 467)
-  const anchor = raw.includes('`started`')
-  assert.equal(anchor, true, `锚点漂了（现盘 pool.ts:467）：${raw}`)
+test('M249-11 (negation axis, TASK-255 13) 补 `不进`：`pool.ts` 那句「永远不进这个集合」**修前漏、修后中**，且它是轴抓的、不是字面表', () => {
+  const raw = anchorLine(ANCHOR_LIVE_SET)
+  // 修前钉的是 `pool.ts:467` 这个**行号**（`TASK-261` 因此把该行之上压到净增 0 行）；现在钉的是**这段文本**
+  assert.equal(raw.trim(), ANCHOR_LIVE_SET.text, '取到的必须是整行原文（锚按逐字文本命中，不看行号）')
   // **修前读数**：三族逐族不中 + 不是被前提挡住 ⇒ 整条漏
   assert.deepEqual(axisPairsOfBefore255(raw), [], '修前：轴不中（`不进` 不在否定轴里）')
   const literalBefore = STRONG_PHRASES.filter((phrase) => raw.includes(phrase))
@@ -766,17 +844,16 @@ test('M249-11 (negation axis, TASK-255 13) 补 `不进`：pool.ts:467 **修前�
   assert.deepEqual(excludedStillHits, [], '排除表里的每条都必须在零间距下也判不出来（否则排除列表是死的）')
   assert.equal(AXIS_EXCLUDED_PAIRS.length >= 2, true, '本卡新增的组合必须**写在表上**，不许靠"恰好没中"')
   // 那条"跨小句"的真行：它**确实**够近（间距 = 阈值），排除它是**有代价**的决定
-  const crossRaw = realSourceLine('src/infra/journal.ts', 94)
+  const crossRaw = anchorLine(ANCHOR_JOURNAL_SWEEP)
   const crossGap = gapOfPair(crossRaw, '任何', '不进')
   assert.equal(crossGap <= AXIS_MAX_GAP, true, `这一行确实够近（间距 ${String(crossGap)} ≤ ${String(AXIS_MAX_GAP)}）—— 排除它是有代价的`)
   const crossPairs = axisPairsOf(crossRaw)
   assert.deepEqual(crossPairs, [], '但它是跨小句巧合（`任何` 修饰前一小句）⇒ 不许命中')
 })
 
-test('M249-12 (premise counter-example, TASK-255) 投影没把前提识别废掉：带前提的 worktree.ts:24 修后**仍不红**', () => {
-  const raw = realSourceLine('src/integration/worktree.ts', 24)
-  const anchor = raw.includes('inside-repo')
-  assert.equal(anchor, true, `锚点漂了（现盘 worktree.ts:24）：${raw}`)
+test('M249-12 (premise counter-example, TASK-255) 投影没把前提识别废掉：带前提的 `worktree.ts` 那句修后**仍不红**', () => {
+  const raw = anchorLine(ANCHOR_INSIDE_REPO)
+  assert.equal(raw.trim(), ANCHOR_INSIDE_REPO.text, '取到的必须是整行原文（锚按逐字文本命中，不看行号）')
   // 这一行**确实够格判红**（轴中、字面词也在）—— 所以它是"反例"，不是"恰好没中"
   const reading = axisReadingOf(raw)
   assert.equal(reading.pairs >= 1, true, `轴确实中了（投影没有把它弄丢）：${reading.phrase}`)
@@ -793,4 +870,44 @@ test('M249-12 (premise counter-example, TASK-255) 投影没把前提识别废掉
   const nakedLine = raw.replace('不在仓库内', '')
   const naked = scanStrongClaims([{ path: 'src/integration/worktree.ts', text: nakedLine }])
   assert.equal(naked.length, 1, '把前提从句拿掉就该红')
+})
+
+test('M249-13 (anchor, TASK-265) 锚点钉文本不钉行号：漂 5 行仍绿；改一个字 / 出现两次都红并点名次数', () => {
+  const anchor = ANCHOR_LIVE_SET.text
+  // 同一段文本的两个位置：第 1 行 / 前面多 5 行（模拟"另一个会话在上面插了几行"）
+  const hole = ['// 无关的一行', '', 'const a = 1', 'const b = 2', '']
+  const atTop = [anchor, 'const x = 1', ''].join('\n')
+  const drifted = [...hole, anchor, 'const x = 1', ''].join('\n')
+  const top = linesContaining(atTop, anchor)
+  const far = linesContaining(drifted, anchor)
+  // 双态一：**位置漂移 ⇒ 仍是同一处**（行号变了，定位不变 —— 这才是修好的证明）
+  assert.equal(top.length, 1, `原地必须恰好一处：${JSON.stringify(top)}`)
+  assert.equal(far.length, 1, `漂到第 ${String(hole.length + 1)} 行后仍必须恰好一处：${JSON.stringify(far)}`)
+  assert.equal(top[0]?.line, 1, '原地在第 1 行')
+  assert.equal(far[0]?.line, hole.length + 1, '漂移后在第 6 行')
+  assert.equal((far[0]?.line ?? 0) - (top[0]?.line ?? 0), 5, '两态确实差 5 行（否则这条对照是空转的）')
+  assert.equal(far[0]?.text, top[0]?.text, '取到的必须是同一行原文（位置无关）')
+  // 双态二：**改一个字 ⇒ 定位不到**（红）；先自证探针真的改到了字节，避免空断言
+  const changed = drifted.replace('永远不进', '永远不进入')
+  assert.notEqual(changed, drifted, '探针必须真的改到了字节（否则下面那条是空断言）')
+  assert.deepEqual(linesContaining(changed, anchor), [], '文本改了字 ⇒ 一处都定位不到')
+  // 双态三：**同一段文本出现两处 ⇒ 不是"恰好一处"**（`exactlyOne` 的核心口径，含点名次数）
+  const twice = linesContaining(`${drifted}${anchor}\n`, anchor)
+  assert.equal(twice.length, 2, `两处文本必须数到 2：${JSON.stringify(twice.map((hit) => hit.line))}`)
+  const verdictOf = (hits: readonly AnchorHit[]): string => {
+    try {
+      exactlyOne('src/_probe.ts', hits, anchor)
+      return 'green'
+    } catch (error) {
+      return (error as Error).message
+    }
+  }
+  assert.equal(verdictOf(top), 'green', '恰好一处 ⇒ 绿')
+  // 读**结构化读数**（`anchor-hits=N`），不读中文散文：中文只当说明（`§4.3` 口径）
+  assert.equal(verdictOf([]).includes('anchor-hits=0'), true, `零处 ⇒ 红，且点名出现 0 次：${verdictOf([])}`)
+  assert.equal(verdictOf(twice).includes('anchor-hits=2'), true, `两处 ⇒ 红，且点名出现 2 次：${verdictOf(twice)}`)
+  // 现盘读数：四个锚都**恰好一处**（真文件走同一条路；`src/` 的措辞改了就在这里红）
+  const live = [ANCHOR_REQUIRES_PROJECTION, ANCHOR_LIVE_SET, ANCHOR_INSIDE_REPO, ANCHOR_JOURNAL_SWEEP]
+    .map((item) => `${item.file}: anchor-hits=${String(anchorHits(item).length)}`)
+  assert.deepEqual(live.map((row) => row.slice(row.indexOf('anchor-hits'))), ['anchor-hits=1', 'anchor-hits=1', 'anchor-hits=1', 'anchor-hits=1'], `四个锚都必须恰好一处：${live.join('；')}`)
 })

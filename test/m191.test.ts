@@ -163,54 +163,73 @@ export function resolvesIn(token: string, ref: BareRef, witnesses: readonly Note
  * **现盘的历史违规（身份登记）** —— 判据**不为它们放宽**：登记与现算必须**恰好相等**（`M191-01`），
  * 任何**新增**悬空当场红并点名；某条登记不再现算得到（有人真去修了）也红，要求**同步收紧**这份登记。
  *
- * ⚠️ `token` 拆成两段：**登记表自己不给这些名字背书** —— 若整名写在判据文件里，它就会从**见证面**里
- * 解析到自己（同一份文件里把名字写一遍 = 自解析，正是 `test/docRefs.ts` 的"引用自己那一行不算"要挡的形态）。
- * 逐条身份 = `相对路径:行号 \`标识符\``（`M191-01` 的比对键）。
+ * **登记键 = `文件` + 标识符 + 注释的逐字原文，不含行号**（`TASK-265` / `DEF-233`）：
+ * 行号会随任何无关改动漂移 —— 真机上另一个会话在 `src/types.ts` 上面插了几行，整条棘轮就判红，
+ * 而被点名的 11 条 observed 里**没有一条**是被测卡碰过的文件。位置不是身份，内容才是：
+ * 同一段注释挪到哪一行都是同一处（绿），文本改一个字或出现两处才红（`M191-06` 双态钉住）。
+ *
+ * ⚠️ `token` 拆成两段（`head` + `tail`）：**登记表自己不给这些名字背书** —— 若整名写在判据文件里，
+ * 它就会从**见证面**里解析到自己（同一份文件里把名字写一遍 = 自解析，正是 `test/docRefs.ts` 的
+ * "引用自己那一行不算"要挡的形态）。`M191-06` 把这条不变式做成了断言。
+ * 注释原文里**互相引用**的那几个名字（`types.ts` 的两条互指、`m88` 的两条互指）同样拆开写，理由同上；
+ * `method.ts` 那条的注释里有一个 `.includes` 调用（点号紧跟括号）也要拆 —— 否则那一行会被算成 §4.3 的读散文站点。
  */
-interface KnownDangling { file: string; line: number; head: string; tail: string; why: string }
+export interface KnownDangling {
+  file: string
+  /** 注释原文里**标识符之前**的部分（逐字 —— 引号里是注释原文，不是判据措辞）。 */
+  before: string
+  head: string
+  tail: string
+  /** 注释原文里**标识符之后**的部分（逐字）。 */
+  after: string
+  why: string
+}
+
+/** 登记条目的**逐字注释原文**（位置无关：它不含行号，所以行号漂移改不动它）。 */
+export const noteOf = (entry: KnownDangling): string => `${entry.before}\`${entry.head}${entry.tail}\`${entry.after}`
+
+/** 登记条目的身份键（与现算的悬空键同形；**行号不进键**）。 */
+export const knownKeys = (): string[] =>
+  KNOWN_DANGLING.map((entry) => `${entry.file} :: \`${entry.head}${entry.tail}\` :: ${noteOf(entry)}`).sort()
+
+/** 现算侧的同一把尺子：文件 + 标识符 + **注释原文**。 */
+export const identityOf = (ref: BareRef): string => `${identityFile(ref.path)} :: \`${ref.token}\` :: ${ref.note}`
 
 export const KNOWN_DANGLING: readonly KnownDangling[] = [
   // 举例性函数名（描述别的项目形态），仓内无此定义
-  { file: 'src/domain/method.ts', line: 267, head: 'check', tail: 'Types', why: '举例性函数名：注释在描述"成员类型不支持某个方法"那种形态' },
+  { file: 'src/domain/method.ts', before: '', head: 'check', tail: 'Types', after: ' 的 `type.collaborators' + '.includes' + '(...)` 抛 `includes is not a function`。', why: '举例性函数名：注释在描述"成员类型不支持某个方法"那种形态' },
   // 旧常量名的**残段**（真名带前缀，见同行前半句）
-  { file: 'src/domain/signature.ts', line: 13, head: 'SIGNATURE_INVALIDATING', tail: '_EVENTS', why: '旧常量名残段（真名带 G2_ 前缀，见同一注释的前半句）' },
+  { file: 'src/domain/signature.ts', before: '`G2_SIGNATURE_INVALIDATING_EVENTS` 与 ', head: 'SIGNATURE_INVALIDATING', tail: '_EVENTS', after: '）。', why: '旧常量名残段（真名带 G2_ 前缀，见同一注释的前半句）' },
   // 历史形态的旧入口名（已移除，仅注释记述）
-  { file: 'src/interface/argv.ts', line: 243, head: 'bare', tail: 'Option', why: '旧入口名（已移除；注释只在记述历史形态）' },
+  { file: 'src/interface/argv.ts', before: '历史形态：裸 `k=v`。键必须非空、值必须非空（与旧 ', head: 'bare', tail: 'Option', after: ' 一致）', why: '旧入口名（已移除；注释只在记述历史形态）' },
   // 举例性函数名（描述"属性节点可以带哪些键"），仓内无此定义
-  // 行号随 `DEF-169`（`sdo_task` 的 `status`/`role`/`limit` 进 schema 与 execute 映射）之后 +14：**只有行号变，身份一字未动**
-  // 行号随 `TASK-186`（`sdo_status` 的 `since` 参数 + `OfficeToolDeps.changes` 签名）之后 +28：**只有行号变，身份一字未动**
-  { file: 'src/interface/tools.ts', line: 1076, head: 'compile', tail: 'PropertyMap', why: '举例性函数名（注释在描述联合声明口径）' },
-  // 被**否决**的候选名（"而不是新造它"）⇒ 按定义不存在
-  // 行号随 `TASK-171`（判据激活条件 `when` 进 `GateCriterionDef`）之后 +13：**只有行号变，身份一字未动**
-  { file: 'src/types.ts', line: 885, head: 'introduces', tail: 'Semantics', why: '被否决的候选名（原句是"而不是新造它"）⇒ 按定义不存在' },
-  { file: 'src/types.ts', line: 885, head: 'impact', tail: 'Surface', why: '同上（被否决的候选名）' },
+  { file: 'src/interface/tools.ts', before: '且 ', head: 'compile', tail: 'PropertyMap', after: ' 允许属性节点带 `required` + `oneOf`）⇒ 这里**声明联合**：', why: '举例性函数名（注释在描述联合声明口径）' },
+  // 被**否决**的候选名（"而不是新造它"）⇒ 按定义不存在（两条互指，名字都拆开写）
+  { file: 'src/types.ts', before: '为什么复用**同名口径**而不是新造 ', head: 'introduces', tail: 'Semantics', after: ' / `impact' + 'Surface`：仓库已有影响面词汇', why: '被否决的候选名（原句是"而不是新造它"）⇒ 按定义不存在' },
+  { file: 'src/types.ts', before: '为什么复用**同名口径**而不是新造 `introduc' + 'esSemantics` / ', head: 'impact', tail: 'Surface', after: '：仓库已有影响面词汇', why: '同上（被否决的候选名）' },
   // 第三方包（留档副本模块）的导出名，本仓未安装其面
-  { file: 'test/m100-hooks.mjs', line: 21, head: 'declared', tail: 'ItemGaps', why: '第三方包（留档副本模块）的导出名；本仓未安装它的类型面' },
+  { file: 'test/m100-hooks.mjs', before: '留档副本的**模块契约**会随新导出漂移（实测：collab.js 新增 ', head: 'declared', tail: 'ItemGaps', after: ' 后，', why: '第三方包（留档副本模块）的导出名；本仓未安装它的类型面' },
   // 旧结构名（改结构后已移除，仅注释记述）
-  { file: 'test/m139.test.ts', line: 108, head: 'list', tail: 'Schema', why: '旧结构名（`DEF-077` 改结构后已移除，注释只在记述旧形态）' },
-  // 夹具标识符的**片段**（被引用的整名是它的超串）
-  // `TASK-184`：`node scripts/refresh-prose-gap.mjs --write` 现算重生成 `m189` 的 `KNOWN_PROSE_GAP`
-  // （登记 `test/m223.test.ts` 的 26 个读散文站点）时，**重排了整张表并吃掉表内 3 行历史注释** ⇒
-  // 本行行号净减 1：406 → 405。只有行号变，身份（下面那条拆段登记）一字未动。
-  // 注：本条注释**刻意不写出整名**（判据的见证面含本文件，会把整名喂饱成"可解析"）。
-  { file: 'test/m189.test.ts', line: 406, head: 'Ed', tail: 'ge', why: '夹具标识符的片段（整名是它的超串，注释在讲"子串喂饱"那一格；DEF-155 补 4 行注释后 398 → 402；TASK-172 给 m218 补一行登记后 403 → 404；TASK-163 给 m74/m206 补三条登记注释后 404 → 406；TASK-184 重生成散文棘轮表后 406 → 405；TASK-196 重生成散文棘轮表（新增 m231 一行登记）后 405 → 406）' },
-  // 第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号
-  { file: 'test/m88.test.ts', line: 544, head: 'no', tail: 'Answerer', why: '第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号（其 .d.ts 未收录）' },
-  { file: 'test/m88.test.ts', line: 544, head: 'NO_', tail: 'PROVIDER', why: '同上（该包的运行时错误码）' },
+  { file: 'test/m139.test.ts', before: '*DEF-077（第四批 §3.2）改了结构**：联合形态从"注册前统一升级（', head: 'list', tail: 'Schema', after: '）"搬到了**参数声明处**', why: '旧结构名（`DEF-077` 改结构后已移除，注释只在记述旧形态）' },
+  // 夹具标识符的**片段**（被引用的整名是它的超串；整名也拆开写，别喂饱见证面）
+  { file: 'test/m189.test.ts', before: '③ 子串喂饱（后缀方向）：只有 `realSymbol' + 'EdgeXyz`（含 ', head: 'Ed', tail: 'ge', after: ' 前缀、另加长尾）时同理 —— 两个方向都不许被喂饱', why: '夹具标识符的片段（整名是它的超串，注释在讲"子串喂饱"那一格）。修前这条记着一串行号变迁（398→402→403→404→406→405→406）—— 那串数字正是"登记键钉位置"的病历：`TASK-265` 起锚是注释原文，行号不进登记。' },
+  // 第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号（两条互指，名字都拆开写）
+  { file: 'test/m88.test.ts', before: '——`@deepseek-ai/dsh-user-questions` 的 ', head: 'no', tail: 'Answerer', after: ' 抛 `NO_' + 'PROVIDER`，不是 resolve undefined。）', why: '第三方包（`@deepseek-ai/dsh-user-questions`）的运行时符号（其 .d.ts 未收录）' },
+  { file: 'test/m88.test.ts', before: '——`@deepseek-ai/dsh-user-questions` 的 `no' + 'Answerer` 抛 ', head: 'NO_', tail: 'PROVIDER', after: '，不是 resolve undefined。）', why: '同上（该包的运行时错误码）' },
   // 设想中的夹具名（该基线文件未实现这两个）
-  { file: 'test/task001-red-baseline.test.ts', line: 33, head: 'handEdited', tail: 'OnUnchangedDoc', why: '设想中的夹具名（该基线文件没有实现它）' },
-  { file: 'test/task001-red-baseline.test.ts', line: 67, head: 'swap', tail: 'Store', why: '设想中的夹具名（同上）' },
+  { file: 'test/task001-red-baseline.test.ts', before: '· ', head: 'handEdited', tail: 'OnUnchangedDoc', after: '：对一份**没人改过**的文档连渲两次，第二次的 `handEdited`。', why: '设想中的夹具名（该基线文件没有实现它）' },
+  { file: 'test/task001-red-baseline.test.ts', before: '把当前 `src/` + `test/` 复制成一棵临时树，并按 ', head: 'swap', tail: 'Store', after: ' 决定用哪一版 testingStore.ts 与模块图。', why: '设想中的夹具名（同上）' },
 ]
 
-/** 登记条目的比对键（与现算的悬空键同形）。 */
-export const knownKeys = (): string[] =>
-  KNOWN_DANGLING.map((entry) => `${entry.file}:${entry.line} \`${entry.head}${entry.tail}\``).sort()
+/** 某份文件的**注释原文**清单（锚的"出现几次"就数它；与现算悬空同一份切分逻辑）。 */
+export function commentNotes(file: NoteFile): string[] {
+  return splitCodeAndComments(file.text).comments.map((span) => normalizeNote(span.text))
+}
 
 /** 现算的全部悬空（**未**扣掉登记）：用于"登记与身份恰好相等"的双向对账。 */
-export function danglingRefs(root: string, witnesses: readonly NoteFile[]): BareRef[] {
+export function unresolvedRefs(files: readonly NoteFile[], witnesses: readonly NoteFile[]): BareRef[] {
   const out: BareRef[] = []
-  for (const path of citationFaces(root)) {
-    const file: NoteFile = { path, text: readFileSync(path, 'utf8') }
+  for (const file of files) {
     for (const ref of bareRefs(file)) {
       if (externalShaped(ref.token)) continue
       if (resolvesIn(ref.token, ref, witnesses)) continue
@@ -220,17 +239,82 @@ export function danglingRefs(root: string, witnesses: readonly NoteFile[]): Bare
   return out
 }
 
-const keyOf = (ref: BareRef): string => `${rel(ref.path)}:${ref.line} \`${ref.token}\``
+/** 现盘版（读 `src/` + `test/` 的注释面）。 */
+export function danglingRefs(root: string, witnesses: readonly NoteFile[]): BareRef[] {
+  return unresolvedRefs(citationFaces(root).map((path) => ({ path, text: readFileSync(path, 'utf8') })), witnesses)
+}
+
+/** 双向对账的读数（三路都点名；位置一律不参与）。 */
+export interface DanglingReading {
+  /** 现算了但没登记（**新增**悬空 ⇒ 红并点名） */
+  fresh: string[]
+  /** 登记了但现算不到（**登记失效** ⇒ 红并要求同步收紧） */
+  stale: string[]
+  /** 该登记的锚文本在它的文件里出现次数 ≠ 1（⇒ 红并点名次数；`M191-06` 双态钉住） */
+  ambiguous: string[]
+}
+
+/**
+ * **登记 ⇄ 现算**的对账（纯函数，双态探针可以直接喂合成文件）。
+ *
+ * 三路各管一件事，缺一路就有一条静默通道：`fresh` 挡新悬空、`stale` 挡"修好了却不收紧登记"、
+ * `ambiguous` 挡"同一段注释在文件里有两处"（那时按文本定位指的不再是**一处**内容）。
+ */
+export function reconcileDangling(input: {
+  files: readonly NoteFile[]
+  witnesses: readonly NoteFile[]
+  registered?: readonly KnownDangling[]
+}): DanglingReading {
+  const registered = input.registered ?? KNOWN_DANGLING
+  const budget = new Map<string, number>()
+  for (const entry of registered) {
+    const key = `${entry.file} :: \`${entry.head}${entry.tail}\` :: ${noteOf(entry)}`
+    budget.set(key, (budget.get(key) ?? 0) + 1)
+  }
+  const fresh: string[] = []
+  for (const key of [...new Set(unresolvedRefs(input.files, input.witnesses).map(identityOf))].sort()) {
+    const left = budget.get(key) ?? 0
+    if (left <= 0) fresh.push(key)
+    else budget.set(key, left - 1)
+  }
+  const stale = [...budget].flatMap(([key, left]) => Array.from({ length: left }, () => key)).sort()
+  const byFile = new Map(input.files.map((file) => [identityFile(file.path), file] as const))
+  const ambiguous = registered.flatMap((entry) => {
+    const file = byFile.get(entry.file)
+    const hits = file === undefined ? 0 : commentNotes(file).filter((note) => note === noteOf(entry)).length
+    return hits === 1 ? [] : [`${entry.file} :: anchor-hits=${String(hits)} :: \`${entry.head}${entry.tail}\``]
+  })
+  return { fresh, stale, ambiguous }
+}
+
+/** 身份的路径形态：绝对路径折成相对（合成探针用的相对路径原样保留）。 */
+function identityFile(path: string): string {
+  return path.startsWith(ROOT) ? rel(path) : path.split('\\').join('/')
+}
 
 test('M191-01 现盘（只读扫描）：`src/`+`test/` 注释里的反引号标识符全部可解析，或按身份登记', () => {
   const witnesses = witnessFaces(ROOT).map((path) => ({ path, text: readFileSync(path, 'utf8') }))
-  assert.equal(citationFaces(ROOT).length >= 200, true, `被检查面必须够宽（现算 ${citationFaces(ROOT).length} 个文件）`)
-  assert.equal(witnesses.length > citationFaces(ROOT).length, true, '见证面必须比被检查面宽（含依赖类型面）')
-  const observed = [...new Set(danglingRefs(ROOT, witnesses).map(keyOf))].sort()
+  const files = citationFaces(ROOT).map((path) => ({ path, text: readFileSync(path, 'utf8') }))
+  assert.equal(files.length >= 200, true, `被检查面必须够宽（现算 ${files.length} 个文件）`)
+  assert.equal(witnesses.length > files.length, true, '见证面必须比被检查面宽（含依赖类型面）')
+  const reading = reconcileDangling({ files, witnesses })
+  // ① 每个登记的锚必须在它的文件里**恰好出现一次**（≠1 ⇒ 点名次数：那时它指的已不是一处内容）
   assert.deepEqual(
-    observed,
-    knownKeys(),
-    `悬空标识符必须与身份登记**恰好相等**（多一条 ⇒ 新悬空，点名；少一条 ⇒ 登记失效，请同步收紧）：${JSON.stringify(observed).slice(0, 900)}`,
+    reading.ambiguous,
+    [],
+    `登记的锚文本必须在该文件里恰好出现一次（次数 ≠ 1 的已点名）：${JSON.stringify(reading.ambiguous).slice(0, 900)}`,
+  )
+  // ② 新增悬空 ⇒ 红并点名（多一条就红）
+  assert.deepEqual(
+    reading.fresh,
+    [],
+    `悬空标识符必须与身份登记**恰好相等**（多一条 ⇒ 新悬空，点名）：${JSON.stringify(reading.fresh).slice(0, 900)}`,
+  )
+  // ③ 登记失效 ⇒ 也红（少一条 ⇒ 有人真去修了，请同步收紧；不许静默通过）
+  assert.deepEqual(
+    reading.stale,
+    [],
+    `登记失效：这些锚在该文件里已经找不到（改了措辞或删了注释），请同步收紧登记：${JSON.stringify(reading.stale).slice(0, 900)}`,
   )
 })
 
@@ -310,3 +394,75 @@ test('M191-05 §3.5 DoD②（形态口径）：`--`/路径/点号形态**不进*
     '反例：整名存在时必须判"解析到"（否则这一格恒红）',
   )
 })
+
+test('M191-06 (anchor, TASK-265) 登记钉注释原文不钉行号：漂 5 行同键；改一字 / 出现两次都红并点名', () => {
+  const witnesses: NoteFile[] = [{ path: 'src/real.ts', text: 'export const realSymbol = 1\n' }]
+  const anchor = '// 这一段把 `ghostSymbolZz` 接上。'
+  const atTop: NoteFile[] = [{ path: 'test/anchor.ts', text: `${anchor}\n` }]
+  const hole = '// 无关的一行\n'
+  const drifted: NoteFile[] = [{ path: 'test/anchor.ts', text: `${hole.repeat(5)}${anchor}\n` }]
+  const lineOf = (files: readonly NoteFile[]): number => bareRefs(files[0] as NoteFile)[0]?.line ?? 0
+  // 双态一：**位置漂移 ⇒ 同一个身份键**（行号进键正是 `M191-01` 那次真机假红的来源）
+  assert.equal(lineOf(atTop), 1, '原地在注释第 1 行')
+  assert.equal(lineOf(drifted), 6, '漂移后在注释第 6 行')
+  assert.equal(lineOf(drifted) - lineOf(atTop), 5, '两态确实差 5 行（否则这条对照是空转的）')
+  const identityAt = (files: readonly NoteFile[]): string =>
+    allIdentities(files, [...witnesses, ...files]).join('|')
+  assert.notEqual(identityAt(atTop), '', '探针必须真的产出身份（否则下面"同键"是两条空串相等）')
+  assert.equal(identityAt(atTop), identityAt(drifted), `位置漂移后身份必须不变：${identityAt(atTop)} ／ ${identityAt(drifted)}`)
+  // 双态二：**改一个字 ⇒ 登记失效**（旧文本不再现算得到，新文本又不在登记里 ⇒ 两头都点名）
+  const registered: KnownDangling[] = [
+    { file: 'test/anchor.ts', before: '这一段把 ', head: 'ghost', tail: 'SymbolZz', after: ' 接上。', why: '合成登记（双态探针用，不是现盘违规）' },
+  ]
+  const green = reconcileDangling({ files: atTop, witnesses: [...witnesses, ...atTop], registered })
+  assert.deepEqual([green.fresh, green.stale, green.ambiguous], [[], [], []], `原地必须全绿：${JSON.stringify(green)}`)
+  const changed = anchor.replace('接上', '接上了')
+  assert.notEqual(changed, anchor, '探针必须真的改到了字节（否则下面两条是空断言）')
+  const changedFiles: NoteFile[] = [{ path: 'test/anchor.ts', text: `${hole.repeat(5)}${changed}\n` }]
+  const red = reconcileDangling({ files: changedFiles, witnesses: [...witnesses, ...changedFiles], registered })
+  assert.equal(red.stale.length, 1, `文本改了字 ⇒ 登记的锚找不到（登记失效，点名）：${JSON.stringify(red)}`)
+  assert.equal(red.fresh.length, 1, `改动后的新文本不在登记里 ⇒ 也要点名：${JSON.stringify(red)}`)
+  // 双态三：**同一段注释出现两处 ⇒ 锚不再指"一处内容"**（点名次数，不静默取第一条）
+  const twice: NoteFile[] = [{ path: 'test/anchor.ts', text: `${anchor}\n${hole}${anchor}\n` }]
+  const doubled = reconcileDangling({ files: twice, witnesses: [...witnesses, ...twice], registered })
+  assert.equal(
+    doubled.ambiguous.some((row) => row.includes('anchor-hits=2')),
+    true,
+    `同一段注释两处 ⇒ 必须点名出现 2 次：${JSON.stringify(doubled.ambiguous)}`,
+  )
+  // 反证：现盘登记每条都必须恰好一处（否则"按文本定位"指的不是一处内容）
+  const perEntry = KNOWN_DANGLING.map((entry) => {
+    const file = { path: join(ROOT, entry.file), text: readFileSync(join(ROOT, entry.file), 'utf8') }
+    return { entry, hits: commentNotes(file).filter((note) => note === noteOf(entry)).length }
+  })
+  assert.deepEqual(
+    perEntry.filter((row) => row.hits !== 1).map((row) => `${row.entry.file} ⇒ anchor-hits=${String(row.hits)}`),
+    [],
+    '每条登记的锚文本在它的文件里都必须恰好出现一次（≠1 ⇒ 点名次数）',
+  )
+  // **真实内容漂移**（不碰盘上文件）：拿一条真实登记的注释原文，在它上面插一行 ⇒ 行号 +1、身份键一字不动。
+  const first = KNOWN_DANGLING[0] as KnownDangling
+  const realText = readFileSync(join(ROOT, first.file), 'utf8')
+  const realRows = realText.split('\n')
+  const realSpans = splitCodeAndComments(realText).comments.filter((span) => normalizeNote(span.text) === noteOf(first))
+  assert.equal(realSpans.length, 1, `${first.file} 里该注释必须恰好一处（现算 ${String(realSpans.length)} 处）`)
+  const realAt = (realSpans[0] as CommentSpan).line
+  const shifted = [...realRows.slice(0, realAt - 1), '// 另一会话在它上面插的一行', ...realRows.slice(realAt - 1)].join('\n')
+  const refOf = (text: string): BareRef =>
+    bareRefs({ path: join(ROOT, first.file), text }).find((ref) => noteOf(first) === ref.note) as BareRef
+  assert.equal(refOf(realText).line, realAt, '真实内容：定位到登记的注释行')
+  assert.equal(refOf(shifted).line, realAt + 1, '插一行后它确实往下挪了一行（否则这条对照是空转的）')
+  assert.equal(identityOf(refOf(shifted)), identityOf(refOf(realText)), '真实内容漂移后身份键必须一字不动（键里没有行号）')
+  // 不变式（同一件事的另一头）：**登记表自己不许替任何登记名背书** —— 整名写进本文件就会从见证面里自解析。
+  // 这一条把"head/tail 拆开写"从口头纪律变成机械读数；注释原文里互指的名字也必须拆。
+  const self = readFileSync(join(ROOT, 'test', 'm191.test.ts'), 'utf8')
+  const vouched = KNOWN_DANGLING
+    .map((entry) => entry.head + entry.tail)
+    .filter((token) => new RegExp(`\\b${token}\\b`, 'u').test(self))
+  assert.deepEqual(vouched, [], `登记表自己给这些名字背书了（会在见证面里自解析 ⇒ 登记失效）：${vouched.join('、')}`)
+})
+
+/** 合成探针用：给定文件面与见证面，现算的**全部**悬空身份（不去重、不扣登记）。 */
+function allIdentities(files: readonly NoteFile[], witnesses: readonly NoteFile[]): string[] {
+  return unresolvedRefs(files, witnesses).map(identityOf)
+}
