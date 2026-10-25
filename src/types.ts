@@ -2064,6 +2064,12 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
    * 它**不是** `dispatch/finished`：那一笔记的是"子会话这一轮结束了"，本事件记的是"这张卡不归它了"
    * （会话可能还在跑）—— 所以池子的 busy 判据故意不把它当结算（会话照旧占位子）。
    * 它不改任何设计真源 ⇒ 与 `dispatch/*` 同族，属纯记账（见下面的中性表）。
+   *
+   * ⚠️ **这一行是有守卫价值的登记，但守卫还没写**（`REV-103` F6）：G3 走的是**黑名单**口径
+   * （不在本表里即失效）⇒ 删掉这一行，`isSignatureInvalidatingEvent('G3', …)` 会翻成 `true`，
+   * **每一次 release 都会把 G3 签字判失效**。本该钉住它的用例在 `test/m37.test.ts` 的账本清单里，
+   * 而那里**没有** `dispatch/aborted`（且 `test/m37.test.ts` 不在 `TASK-237` 写范围）⇒
+   * 补那格守卫另立卡；在那之前，删这一行会静默开一个洞。
    */
   'dispatch/aborted',
   // **DEF-059**：认领被拒的留痕（拒签不改任何真源，只是把「谁被拒过、因为什么」记下来）

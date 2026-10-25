@@ -26,8 +26,8 @@ import {
   DISPATCH_ABORTED_EVENT,
   claimMissing,
   doubleStartedSessions,
-  inFlightCardsBySession,
-  sessionIsIdle,
+  sessionHasNoUnsettledDispatch,
+  unsettledCardsBySession,
   unsettledDispatch,
 } from '../src/domain/dispatchHealth.js'
 import { listTasks } from '../src/domain/plan.js'
@@ -170,9 +170,10 @@ test('M247-03 守卫判红：同一会话两条在飞卡 ⇒ 点名会话与两�
   assert.equal(row?.second.taskId, 'TASK-912', '后派进去的卡要被点名')
   assert.equal(row?.second.startedSeq, second.seq)
 
-  // 同一份台账的"此刻"读数：该会话手上有两张在飞卡，且**不**空闲（派发前检查要看的就是这个）
-  assert.equal(inFlightCardsBySession(events).get('eeee5555-wire')?.length, 2)
-  assert.equal(sessionIsIdle(events, 'eeee5555-wire'), false, '持有在飞卡的会话不得被当空闲候选')
+  // 同一份台账的**口径甲**读数（按会话聚合的"还没收口的派发"）：两张都悬着
+  assert.equal(unsettledCardsBySession(events).get('eeee5555-wire')?.length, 2)
+  // ⚠️ 这个 `false` 只说明"台账里还有没交代的派发"，**不是**"会话忙不忙"的判据（REV-103 F2）
+  assert.equal(sessionHasNoUnsettledDispatch(events, 'eeee5555-wire'), false)
 })
 
 test('M247-04 反例格必须绿：同一会话**先后**完成两张卡（先 finished 再 started）；不同会话各持一张也绿', () => {
@@ -184,16 +185,16 @@ test('M247-04 反例格必须绿：同一会话**先后**完成两张卡（先 f
   journal.append('dispatch/started', { task: 'TASK-922', childSessionId: 'ffff6666-wire', role: 'developer' })
 
   const events = journal.read().events
-  assert.deepEqual(doubleStartedSessions(events), [], '同一会话先后两张卡不是违反（终态先摘掉了第一张）')
-  assert.equal(inFlightCardsBySession(events).get('ffff6666-wire')?.length, 1, '此刻只该有一张在飞')
+  assert.deepEqual(doubleStartedSessions(events), [], '同一会话先后两张卡不是违反（finished 先摘掉了第一张）')
+  assert.equal(unsettledCardsBySession(events).get('ffff6666-wire')?.length, 1, '口径甲：此刻只该有一笔没收口的派发')
 
   // 不同会话各持一张在飞卡：不是违反
   seedCard(store, card('TASK-923', 'in-progress', { owner: 'developer-gggg7777' }))
   journal.append('dispatch/started', { task: 'TASK-923', childSessionId: 'gggg7777-wire', role: 'tester' })
   const more = journal.read().events
   assert.deepEqual(doubleStartedSessions(more), [])
-  assert.equal(sessionIsIdle(more, 'gggg7777-wire'), false)
-  assert.equal(sessionIsIdle(more, 'hhhh8888-wire'), true, '没有在飞卡的会话必须判空闲（否则派发永远找不到人）')
+  assert.equal(sessionHasNoUnsettledDispatch(more, 'gggg7777-wire'), false)
+  assert.equal(sessionHasNoUnsettledDispatch(more, 'hhhh8888-wire'), true, '没有派发过的会话，口径甲里当然是干净的')
 })
 
 test('M247-05 现盘全账体检：「同一会话在飞卡 ≤ 1」在任何时刻都成立（TTL 之外也算）', realLedgerSkip() ?? {}, () => {
@@ -214,26 +215,47 @@ test('M247-05 现盘全账体检：「同一会话在飞卡 ≤ 1」在任何时
     (event) => String(event.type) === 'dispatch/finished' && key(event) === 'TASK-231' && event.seq < (start234 as JournalEvent).seq,
   )
   assert.equal(finished231.length >= 1, true, 'TASK-231 必须在 TASK-234 派发之前就结算过（这就是"双 started 不复现"的机械读数）')
-  assert.equal(
-    events.some((event) => String(event.type) === 'dispatch/started' && key(event) === 'TASK-231' && event.seq > (start234 as JournalEvent).seq && event.seq < (start234 as JournalEvent).seq + 1),
-    false,
-    '两张卡在台账里不许有重叠的 started 窗口',
+  // 有判别力的一格（`REV-103` F8：旧断言是"整数 seq 的开区间"，恒真、改成真重叠也不会红）：
+  // 把台账**截到 234 起派那一刻**再折叠一遍 ⇒ 若 231 当时还开着，这里就会报出那条违反。
+  const cutoff = (start234 as JournalEvent).seq
+  const prefix = events.filter((event) => event.seq <= cutoff)
+  assert.deepEqual(
+    doubleStartedSessions(prefix, { ttlMs: 0 }),
+    [],
+    'TASK-234 起派的那一刻，该会话不该再有任何未 finished 的卡（若 231 当时未结算，这一格必红）',
   )
 })
 
-/* ————————————————————— 落点一：候选会话空闲判定（只给谓词，接线不在本卡范围） ————————————————————— */
+/* ————————————————— 两条口径必须分开（REV-103 F2 的红→绿格） ————————————————— */
 
-test('M247-06 候选会话空闲谓词：TTL 内算占用、TTL 外不算、结算后不算', () => {
+test('M247-06 口径分离：`dispatch/aborted` 让**台账**干净（口径甲），但**不**释放会话（口径乙）', () => {
   const nowMs = Date.parse('2026-10-25T12:00:00.000Z')
-  const fresh = at(1, 2, 'dispatch/started', { task: 'TASK-931', childSessionId: 'iiii9999-wire' }, nowMs)
-  assert.equal(sessionIsIdle([fresh], 'iiii9999-wire', { nowMs }), false, '刚投出去（TTL 内）⇒ 占着位子')
-  const stale = at(1, 30, 'dispatch/started', { task: 'TASK-932', childSessionId: 'jjjj0000-wire' }, nowMs)
-  assert.equal(sessionIsIdle([stale], 'jjjj0000-wire', { nowMs }), true, '超 TTL 的旧 started 不再挡派发（默认 15 分钟）')
-  assert.equal(sessionIsIdle([stale], 'jjjj0000-wire', { nowMs, ttlMs: 0 }), false, '口径反过来：不按 TTL 过滤时它仍算在飞（看全账用这一档）')
-  // 结算之后就空闲（不论 TTL）
-  const settled = [stale, at(2, 29, DISPATCH_ABORTED_EVENT, { task: 'TASK-932', childSessionId: 'jjjj0000-wire' }, nowMs)]
-  assert.equal(sessionIsIdle(settled, 'jjjj0000-wire', { nowMs, ttlMs: 0 }), true, '收口之后必须判空闲')
-  // 两条 started 的时间差在 TTL 内 ⇒ 违反；相差超过 TTL ⇒ 不报（老 started 不是派发决策的输入）
+  const session = 'pppp6666-wire'
+  const released = [
+    at(1, 9, 'dispatch/started', { task: 'TASK-971', childSessionId: session }, nowMs),
+    at(2, 8, DISPATCH_ABORTED_EVENT, { task: 'TASK-971', childSessionId: session, startedSeq: 1, reason: 'released' }, nowMs),
+  ]
+  // 口径甲：这一轮**收口了**（release 的写侧判定就该这么看）
+  assert.equal(unsettledDispatch(released, 'TASK-971'), undefined, '收口之后这张卡不再"悬着"')
+  assert.equal(sessionHasNoUnsettledDispatch(released, session, { nowMs, ttlMs: 0 }), true)
+  assert.equal((unsettledCardsBySession(released, { nowMs, ttlMs: 0 }).get(session) ?? []).length, 0)
+  // 口径乙：会话**没停**（`aborted` 不是 `finished`）⇒ 再派一张就是违反
+  assert.equal(doubleStartedSessions(released, { nowMs, ttlMs: 0 }).length, 0, '只收口一张、没有再派 ⇒ 此刻没有违反')
+  const reused = [...released, at(3, 7, 'dispatch/started', { task: 'TASK-972', childSessionId: session }, nowMs)]
+  const violations = doubleStartedSessions(reused, { nowMs, ttlMs: 0 })
+  assert.equal(violations.length, 1, '被 release 但会话还在跑时再派一张 ⇒ 必须判违反（这就是旧谓词方向相反会造成的危害）')
+  assert.equal(violations[0]?.first.taskId, 'TASK-971', '被放弃的那张卡仍占着会话（因为没有人说它 finished）')
+  assert.equal(violations[0]?.second.taskId, 'TASK-972')
+  // 而口径甲在这时仍然是"没有悬空的"（TASK-971 收口了、TASK-972 是真在飞）—— 两条口径问的不是一件事
+  assert.equal((unsettledCardsBySession(reused, { nowMs, ttlMs: 0 }).get(session) ?? []).map((row) => row.taskId).join(','), 'TASK-972')
+  // 真结算（`finished`）才把会话放出来 —— 拿**另一条**时间线看（守卫报的是"任何时刻"，事后再 finished 不能把already发生的违反抹掉）
+  const settledFirst = [released[0] as JournalEvent, at(9, 8, 'dispatch/finished', { task: 'TASK-971', childSessionId: session, reason: 'completed' }, nowMs)]
+  assert.equal(doubleStartedSessions([...settledFirst, at(10, 7, 'dispatch/started', { task: 'TASK-973', childSessionId: session }, nowMs)], { nowMs, ttlMs: 0 }).length, 0, 'finished 之后同一个会话才算真的空出来')
+  assert.equal(unsettledDispatch([released[0] as JournalEvent], 'TASK-971') !== undefined, true, '反证：没有 finished 也没有 aborted 时，口径甲里它仍悬着')
+})
+
+test('M247-06b 守卫的 TTL 两档：TTL 内算违反、TTL 外不报、`ttlMs:0` 看全账', () => {
+  const nowMs = Date.parse('2026-10-25T12:00:00.000Z')
   const close = [at(1, 10, 'dispatch/started', { task: 'TASK-933', childSessionId: 'kkkk1111-wire' }, nowMs), at(2, 9, 'dispatch/started', { task: 'TASK-934', childSessionId: 'kkkk1111-wire' }, nowMs)]
   assert.equal(doubleStartedSessions(close, { nowMs }).length, 1)
   const far = [at(1, 40, 'dispatch/started', { task: 'TASK-935', childSessionId: 'llll2222-wire' }, nowMs), at(2, 1, 'dispatch/started', { task: 'TASK-936', childSessionId: 'llll2222-wire' }, nowMs)]
@@ -241,31 +263,65 @@ test('M247-06 候选会话空闲谓词：TTL 内算占用、TTL 外不算、结�
   assert.equal(doubleStartedSessions(far, { nowMs, ttlMs: 0 }).length, 1, '同一份事件在"不过滤 TTL"的口径下必须报出来')
 })
 
-test('M247-09 不误伤「同一张卡的复投」（追加指令给正握着这张卡的会话）：不是违反，只在飞一条且序号更新', () => {
+test('M247-09 不误伤「同一张卡的复投」（追加指令给正握着这张卡的会话）：不是违反、也不叠加违反', () => {
   const nowMs = Date.parse('2026-10-25T12:00:00.000Z')
-  const first = at(1, 6, 'dispatch/started', { task: 'TASK-961', childSessionId: 'oooo5555-wire' }, nowMs)
-  const again = at(2, 5, 'dispatch/started', { task: 'TASK-961', childSessionId: 'oooo5555-wire', reused: true }, nowMs)
-  const same = [first, again]
-  assert.deepEqual(doubleStartedSessions(same, { nowMs, ttlMs: 0 }), [], '同一张卡投第二次不是"同时持两张"')
-  const rows = inFlightCardsBySession(same, { nowMs }).get('oooo5555-wire') ?? []
-  assert.equal(rows.length, 1, '在飞清单只该有一条（复投是更新，不是叠加）')
-  assert.equal(rows[0]?.startedSeq, again.seq, '清单留住的是**最新**那一笔（后续按它回读台账）')
-  assert.equal(sessionIsIdle(same, 'oooo5555-wire', { nowMs }), false)
+  const session = 'oooo5555-wire'
+  const first = at(1, 6, 'dispatch/started', { task: 'TASK-961', childSessionId: session }, nowMs)
+  const again = at(2, 5, 'dispatch/started', { task: 'TASK-961', childSessionId: session, reused: true }, nowMs)
+  assert.deepEqual(doubleStartedSessions([first, again], { nowMs, ttlMs: 0 }), [], '同一张卡投第二次不是"同时持两张"')
+  // 机械计数：A → A(复投) → B 只该有**一条**违反（复投是更新，不是叠加）；三张不同的卡才该有两条
+  const aab = [first, again, at(3, 4, 'dispatch/started', { task: 'TASK-962', childSessionId: session }, nowMs)]
+  const rows = doubleStartedSessions(aab, { nowMs, ttlMs: 0 })
+  assert.equal(rows.length, 1, '复投不许把违反数翻倍')
+  assert.equal(rows[0]?.first.taskId, 'TASK-961')
+  assert.equal(rows[0]?.second.taskId, 'TASK-962')
+  const abc = [
+    at(1, 6, 'dispatch/started', { task: 'TASK-963', childSessionId: session }, nowMs),
+    at(2, 5, 'dispatch/started', { task: 'TASK-964', childSessionId: session }, nowMs),
+    at(3, 4, 'dispatch/started', { task: 'TASK-965', childSessionId: session }, nowMs),
+  ]
+  assert.equal(doubleStartedSessions(abc, { nowMs, ttlMs: 0 }).length, 2, '三张不同的卡在同一会话上 ⇒ 两次违反（复投豁免不许吞掉真违反）')
+})
+
+test('M247-10 第二次真实派发：started → aborted → started → release ⇒ **必须再写一条** aborted（幂等判据不许把第二次派发当重复）', () => {
+  const { store, journal } = freshLedger('g')
+  seedCard(store, card('TASK-981', 'in-progress', { owner: 'developer-qqqq7777' }))
+  const firstStarted = journal.append('dispatch/started', { task: 'TASK-981', childSessionId: 'qqqq7777-wire', role: 'developer' })
+  release(store, journal, { taskId: 'TASK-981', actor: 'cockpit', reason: 'handover-1' })
+  assert.equal(eventsOf(journal, DISPATCH_ABORTED_EVENT).length, 1, '第一次 release 收口一次')
+
+  // 第二次**真实**派发（同一张卡真的又跑了一轮）：卡重新被认领，再派一次
+  seedCard(store, card('TASK-981', 'in-progress', { owner: 'developer-qqqq7777', revision: 3 }))
+  journal.append('task/claimed', { id: 'TASK-981', by: 'developer-qqqq7777', sessionId: 'qqqq7777-wire' })
+  const secondStarted = journal.append('dispatch/started', { task: 'TASK-981', childSessionId: 'qqqq7777-wire', role: 'developer' })
+  assert.equal(secondStarted.seq > firstStarted.seq, true, '夹具前提：第二次派发在第一次之后')
+  assert.equal(unsettledDispatch(journal.read().events, 'TASK-981')?.startedSeq, secondStarted.seq, '折叠把**新的** started 重新记为 open')
+
+  release(store, journal, { taskId: 'TASK-981', actor: 'cockpit', reason: 'handover-2' })
+  const aborted = eventsOf(journal, DISPATCH_ABORTED_EVENT)
+  assert.equal(aborted.length, 2, '第二次 release 必须**再写一条** aborted（幂等只挡"同一轮重复"，不挡"新的一轮"）')
+  assert.equal(aborted[0]?.data['startedSeq'], firstStarted.seq, '第一条指回第一次派发')
+  assert.equal(aborted[1]?.data['startedSeq'], secondStarted.seq, '第二条必须指回**第二次**派发（若仍指向第一次，说明幂等判据把新派发当成了重复）')
+  assert.equal(aborted[1]?.data['reason'], 'handover-2')
+  assert.equal(unsettledDispatch(journal.read().events, 'TASK-981'), undefined, '第二次收口之后也不再悬着')
 })
 
 /* ——————————————————————————————— 读侧计入：收口事件是终态 ——————————————————————————————— */
 
-test('M247-07 读侧计入 dispatch/aborted：release 过的卡不再被当成"派发未认领"的静默失败候选', () => {
+test('M247-07 读侧计入 dispatch/aborted：只把这一轮标成"已收口 + 理由"，候选**照旧一行**（噪声未修）', () => {
   const nowMs = Date.parse('2026-10-25T12:00:00.000Z')
   const started = at(1, 10, 'dispatch/started', { task: 'TASK-941', childSessionId: 'mmmm3333-wire' }, nowMs)
   const ready = card('TASK-941', 'ready')
   const before = claimMissing([ready], [started], { nowMs, windowMs: 5 * 60_000 })
   assert.equal(before.length, 1, '没有终态事件时它确实是"静默失败候选"')
   assert.equal(before[0]?.ended, false)
+  assert.equal(before[0]?.reason, '')
 
   const aborted = at(2, 9, DISPATCH_ABORTED_EVENT, { task: 'TASK-941', childSessionId: 'mmmm3333-wire', startedSeq: 1, reason: 'released' }, nowMs)
   const after = claimMissing([ready], [started, aborted], { nowMs, windowMs: 5 * 60_000 })
-  assert.equal(after.length, 1)
+  // ⚠️ `REV-103` F7：**仍然是 1 行** —— 本卡只让"这一轮后来怎样了"可读（`ended` + `reason`），
+  // **没有**消掉噪声。真消噪声要动 `claimMissing` / `office.noteClaimMissing` / 语言包（都不在本卡写范围）。
+  assert.equal(after.length, 1, '噪声未修：收口之后它仍是**一行候选**（不许把这条断言改成 0 来冒充已修）')
   assert.equal(after[0]?.ended, true, '收口事件必须被读成"这一轮派发已经结束"')
   assert.equal(after[0]?.reason, 'released')
 })

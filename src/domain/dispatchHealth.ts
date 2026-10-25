@@ -24,8 +24,22 @@
  *
  * **不变量 · 同一子会话的在飞卡 ≤ 1**（同卡落点三）：一个 continuable 子会话只有一条工作线索，
  * 两张卡同时"进行中"时写范围互斥实际被绕过（它写的是两卡范围的并集）。
- * {@link doubleStartedSessions} 是这条不变量的**唯一判定**；{@link inFlightCardsBySession} 给
- * "派发前先看候选会话空不空"用（候选有在飞卡 ⇒ **跳过该会话**，不是把第二张卡投进去）。
+ * {@link doubleStartedSessions} 是这条不变量的**唯一判定**（按**口径乙**，见下）。
+ *
+ * **两条口径必须分开**（`REV-103` F2，2026-10-25 —— `DEF-224` 的修法就栽在这上面）：
+ *   · **口径甲 · 这一轮派发在台账里还悬着吗** —— 终态 = 会话自己结算（`dispatch/finished` /
+ *     `dispatch/reported`）**或**写者主动收口（`dispatch/aborted`）。{@link unsettledDispatch}
+ *     与既有的 `claimMissing` / `reuseDeliveries` 用这一档。
+ *   · **口径乙 · 这个子会话还占着位子吗** —— **只认** `dispatch/finished`（与 `pool.ts` 的 busy
+ *     折叠同一档）。`dispatch/aborted` 只说明"卡不归它了"，**不说明它停了**：一个被 release 收口、
+ *     但仍可能在跑的会话，按口径乙**依然是忙的**。
+ * 把两档混成一份表就会交出一个**方向相反的零件**：本模块早期版本那个"会话空闲"谓词把 aborted 当出栈
+ * ⇒ 被 release 但仍在跑的会话被判"空闲" ⇒ 接线之后正会把第二张卡投进去（`DEF-224` 的形态）。
+ * 因此那一族谓词现在**只回答口径甲**，名字也改成口径甲的名字（{@link unsettledCardsBySession} /
+ * {@link sessionHasNoUnsettledDispatch}，注释里逐条写明**不可用于"会话空闲"判定**）。
+ *
+ * **"派发前检查候选会话空闲"不在本卡交付**（`REV-103` 裁定 ①）：它要接进 `office.ts` 的会话选择与
+ * `pool.ts` 的 busy 折叠（都不在 `TASK-237` 写范围）⇒ 已降级为**另立补线卡**，判据用**口径乙**。
  */
 import { textOf } from '../infra/scalar.js'
 import type { JournalEvent, TaskCard } from '../types.js'
@@ -39,16 +53,27 @@ import type { JournalEvent, TaskCard } from '../types.js'
 export const DISPATCH_ABORTED_EVENT = 'dispatch/aborted'
 
 /**
- * 子会话的**终态**事件：出现它就意味着那一轮派发已经结算。
+ * **口径甲**的终态：这一轮派发在台账里**不再悬着**了。
  *
- * **`dispatch/aborted`**（`TASK-237` / `DEF-224` 落点二）：它记的是"这一轮派发被主动放弃了"
- * （卡的 `release` 是唯一写者）。为什么它必须进这张表：没有它，一次 `release` 之后那一笔
- * `dispatch/started` 在本模块的三个读数里**永远是"未结算"** —— `claimMissing` 会把它当
- * 静默失败候选一直报（噪声），`reuseDeliveries` 则永远读成"未见消费"。
- * **它不表示子会话已经死了**：会话可能还在跑，只是这张卡不归它了 —— 所以池子那侧的 busy 判据
- * （`pool.ts` 按 `dispatch/started`→终态折叠）**故意不看**这条事件，会话照旧占着位子。
+ * `dispatch/aborted`（`TASK-237` / `DEF-224` 落点二）记的是"这一轮派发被主动放弃了"（卡的 `release`
+ * 是唯一写者）。它进这张表之后，`claimMissing` 的那一行会从"不知道后来怎样了"变成"已作废、理由在此"
+ * （`ended: true` + `reason`）。
+ *
+ * **诚实的边界（`REV-103` F7）：它 ≠ 噪声已消。** `claimMissing` 不按终态过滤 —— `ended` 翻真之后
+ * **仍然 push 一行候选**；`office.noteClaimMissing` 也照旧把它写成 `dispatch/claim-missing` 事件，
+ * 回执仍印"⇒ 视为静默失败"。真消掉这条噪声要动 `office.ts` / `index.ts` / 语言包（都不在本卡写范围）
+ * ⇒ 另立卡。本卡只做"把这一轮标成已收口 + 带上理由"，**不声称更多**。
  */
-const TERMINAL_DISPATCH_EVENTS: readonly string[] = ['dispatch/finished', 'dispatch/reported', DISPATCH_ABORTED_EVENT]
+const SETTLED_DISPATCH_EVENTS: readonly string[] = ['dispatch/finished', 'dispatch/reported', DISPATCH_ABORTED_EVENT]
+
+/**
+ * **口径乙**：把子会话从"忙"里释放出来的**唯一**事件。
+ *
+ * 与 `pool.ts` 的 busy 折叠**同一档**（那里也只认 `dispatch/finished`）。为什么**不**含 `aborted`：
+ * 收口只说明写者放弃了这张卡，会话本身可能还在跑；把它当"空闲"就会把第二张卡投给一个仍在干活的会话。
+ * 为什么**不**含 `dispatch/reported`：那条只说明"交回了报告"，`pool.ts` 同样不拿它释放位子。
+ */
+const SESSION_FREEING_EVENTS: readonly string[] = ['dispatch/finished']
 
 /** 参与"这张卡由谁在做"时间线的全部事件（用于取**最后一条**）。 */
 const TIMELINE_EVENTS: readonly string[] = [
@@ -58,7 +83,7 @@ const TIMELINE_EVENTS: readonly string[] = [
   'task/dropped',
   'task/blocked',
   'dispatch/started',
-  ...TERMINAL_DISPATCH_EVENTS,
+  ...SETTLED_DISPATCH_EVENTS,
 ]
 
 /** 卡 `in-progress`，但**拥有它的子会话已经结算** ⇒ 这把写锁没有活着的持有者。 */
@@ -124,7 +149,7 @@ export function orphanLocks(tasks: readonly TaskCard[], events: readonly Journal
     const timeline = byCard.get(task.id)
     const last = timeline?.at(-1)
     if (last === undefined) continue
-    if (!TERMINAL_DISPATCH_EVENTS.includes(last.type)) continue
+    if (!SETTLED_DISPATCH_EVENTS.includes(last.type)) continue
     out.push({
       taskId: task.id,
       owner: textOf(task.owner ?? ''),
@@ -164,7 +189,7 @@ export function claimMissing(
     const startedMs = Date.parse(lastStart.at ?? '')
     const minutes = Number.isFinite(startedMs) ? Math.floor((nowMs - startedMs) / 60_000) : 0
     if (Number.isFinite(startedMs) && nowMs - startedMs < windowMs) continue
-    const terminal = [...after].reverse().find((event) => TERMINAL_DISPATCH_EVENTS.includes(event.type))
+    const terminal = [...after].reverse().find((event) => SETTLED_DISPATCH_EVENTS.includes(event.type))
     out.push({
       taskId: card,
       childSessionId: textOf(lastStart.data['childSessionId']),
@@ -227,7 +252,7 @@ export function reuseDeliveries(
     const after = timeline.filter((event) => event.seq > lastStart.seq)
     const heldBefore = timeline.some((event) => event.seq < lastStart.seq && claimedBy(event))
     const claimedAfter = after.some(claimedBy)
-    const endedAfter = after.some((event) => TERMINAL_DISPATCH_EVENTS.includes(event.type))
+    const endedAfter = after.some((event) => SETTLED_DISPATCH_EVENTS.includes(event.type))
     const state: ReuseDelivery['state'] = heldBefore
       ? 'held'
       : claimedAfter
@@ -254,13 +279,15 @@ export function reuseDeliveries(
 /* ————————————————————————————————————————————————————————————————————————————————
  * **形状三 / 不变量**（`TASK-237` / `DEF-224` 落点二与落点三）
  *
- * 三个纯函数，**同一个口径**（`dispatch/started` 入栈、终态出栈）：
- *   · {@link unsettledDispatch}  某张卡"最后一笔派发还没结算"没有 ⇒ 写侧（`release`）据此补收口事件；
- *   · {@link inFlightCardsBySession}  每个子会话**此刻**手里有哪些在飞卡 ⇒ 派发前"候选会话空不空"；
- *   · {@link doubleStartedSessions}  "同一会话在飞卡 ≤ 1"这条不变量**被违反的时刻**（点名会话与两张卡）。
+ * 三个判定，**两条口径**（`REV-103` F2 之后不再混用）：
+ *   · 口径甲 —— {@link unsettledDispatch}（某张卡"最后一轮派发还悬着吗"）与
+ *     {@link unsettledCardsBySession} / {@link sessionHasNoUnsettledDispatch}（按会话聚合的同一件事）；
+ *   · 口径乙 —— {@link doubleStartedSessions}（"同一会话在飞卡 ≤ 1"这条不变量**被违反的时刻**）。
+ * ⚠️ 口径甲的两个会话谓词**不可用于"会话空闲"判定**（名字里也已经不出现了）：`dispatch/aborted`
+ * 会把它们翻成"干净"，而写者放弃这张卡并不代表子会话停了。派发前检查必须用口径乙（见模块头）。
  * ———————————————————————————————————————————————————————————————————————————————— */
 
-/** 一笔**还没结算**的派发：那张卡的最后一笔 `dispatch/started` 之后没有任何终态事件。 */
+/** 一笔**还没结算**的派发（口径甲）：那张卡的最后一笔 `dispatch/started` 之后没有任何终态事件。 */
 export interface UnsettledDispatch {
   /** 那一笔派发起时的子会话（旧事件可能没有 ⇒ 空串，如实说"不知道投给了谁"） */
   childSessionId: string
@@ -268,48 +295,50 @@ export interface UnsettledDispatch {
   startedSeq: number
 }
 
-/**
- * 某张卡**当前是否还有未结算的派发**（`TASK-237` 落点二的唯一判定，写侧与读侧同源）。
- *
- * 口径：按 `seq` 顺序折叠这张卡的全部派发相关事件 —— `dispatch/started` 记下"开着的那一笔"，
- * 任何终态（{@link TERMINAL_DISPATCH_EVENTS}，含 `dispatch/aborted` 自身）把它清掉。
- * **不设 TTL**：这里回答的是"这一笔要不要收口"，不是"它还算不算新鲜" ——
- * 十小时前放手、至今没结算的派发同样要收口（否则那笔 started 永远悬着）。
- */
-export function unsettledDispatch(events: readonly JournalEvent[], taskId: string): UnsettledDispatch | undefined {
-  let open: UnsettledDispatch | undefined
-  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
-    if (cardOf(event) !== taskId) continue
-    if (event.type === 'dispatch/started') {
-      open = { childSessionId: textOf(event.data['childSessionId']), startedSeq: event.seq }
-      continue
-    }
-    if (TERMINAL_DISPATCH_EVENTS.includes(event.type)) open = undefined
-  }
-  return open
-}
-
-/** 一个子会话**此刻**手里的一张在飞卡。 */
-export interface InFlightCard {
+/** 口径甲的一行：某会话手上**这一轮还没收口**的卡。 */
+export interface UnsettledCard {
   taskId: string
   childSessionId: string
   /** 那一笔 `dispatch/started` 的序号（可复算锚点） */
   startedSeq: number
-  /** 距发起已经过去多少分钟（`started` 的时间戳解析不出来时按 0 记，与既有读数同口径） */
+  /** 距发起已经过去多少分钟（时间戳解析不出来时按 0 记，与既有读数同口径） */
   minutes: number
 }
 
-/** {@link inFlightCardsBySession} / {@link doubleStartedSessions} 的公共入参。 */
-export interface InFlightOptions {
+/** {@link unsettledCardsBySession} / {@link sessionHasNoUnsettledDispatch} 的入参。 */
+export interface UnsettledOptions {
   nowMs?: number | undefined
-  /** 在飞窗口（默认 15 分钟 = `office.ts` 的 `staleTasks` 默认值）；**`<= 0` = 不按 TTL 过滤**（看全账历史） */
+  /** 只统计 `started` 距今不超过这个窗口的（默认 15 分钟 = `office.ts` 的 `staleTasks` 默认值）；**`<= 0` = 不按 TTL 过滤** */
+  ttlMs?: number | undefined
+}
+
+/** {@link doubleStartedSessions} 的入参（口径乙）。 */
+export interface OccupancyOptions {
+  nowMs?: number | undefined
+  /**
+   * 判"违反"时的窗口：`second.started` 那一刻回头看，`first` 是否还在窗口内（默认 15 分钟；**`<= 0` = 不按 TTL 过滤**）。
+   * 为什么要窗口：十小时前的老 `started` 不是**这次**派发决策的输入；`ttlMs: 0` 用来做"任何时刻"的体检。
+   */
   ttlMs?: number | undefined
 }
 
 const DEFAULT_TTL_MS = 15 * 60_000
 
-/** 把一个子会话的在飞清单里的**结算**项摘掉（按卡 id；结算事件的 `childSessionId` 可能缺 ⇒ 全表找）。 */
-function settle(map: Map<string, { taskId: string; childSessionId: string; startedSeq: number; startedAt: number }[]>, event: JournalEvent): void {
+/** 口径乙的一行：某会话手上**`started` 未 `finished`** 的卡（会话仍占着位子）。 */
+export interface OccupiedCard {
+  taskId: string
+  childSessionId: string
+  /** 那一笔 `dispatch/started` 的序号（可复算锚点） */
+  startedSeq: number
+  /** 距发起已经过去多少分钟 */
+  minutes: number
+}
+
+/** 把一个会话的在飞清单里的**结算**项摘掉（按卡 id；结算事件的 `childSessionId` 可能缺 ⇒ 全表找）。 */
+function settle(
+  map: Map<string, { taskId: string; childSessionId: string; startedSeq: number; startedAt: number }[]>,
+  event: JournalEvent,
+): void {
   const card = cardOf(event)
   const child = textOf(event.data['childSessionId'])
   const sessions = child === '' ? [...map.keys()] : [child]
@@ -326,74 +355,126 @@ function settle(map: Map<string, { taskId: string; childSessionId: string; start
 }
 
 /**
- * 每个子会话**此刻**手里的在飞卡（`started` 未结算，且在 `ttlMs` 窗口内）。
+ * 某张卡**当前是否还有未结算的派发**（口径甲；`TASK-237` 落点二的唯一判定，写侧与读侧同源）。
  *
- * 用途（`TASK-237` 落点一）：派发前看候选会话 —— **清单非空就跳过该会话**（换一个空闲会话或新起），
- * 而不是把第二张卡投进去。返回的 `Map` 只含**非空**会话 ⇒ `map.has(id)` 就是"它在飞"。
- *
- * **诚实的边界**：本函数只给判定，**接线不在本模块** —— 真正选会话的地方在 `office.ts` 的
- * `reuseBlockedOf` 与 `pool.ts` 的 busy 折叠（两处都不在 `TASK-237` 的写范围），
- * 所以"派发器真的会跳过"这一步仍待一张补线卡（见该卡交付说明的残余项）。
+ * 口径：按 `seq` 顺序折叠这张卡的全部派发相关事件 —— `dispatch/started` 记下"开着的那一笔"，
+ * 口径甲的任一终态（{@link SETTLED_DISPATCH_EVENTS}，含 `dispatch/aborted` 自身）把它清掉。
+ * **不设 TTL**：这里回答的是"这一笔要不要收口"，不是"它还算不算新鲜" ——
+ * 十小时前放手、至今没结算的派发同样要收口（否则那笔 started 永远悬着）。
  */
-export function inFlightCardsBySession(
-  events: readonly JournalEvent[],
-  options: InFlightOptions = {},
-): Map<string, InFlightCard[]> {
-  return foldInFlight(events, options).map
+export function unsettledDispatch(events: readonly JournalEvent[], taskId: string): UnsettledDispatch | undefined {
+  let open: UnsettledDispatch | undefined
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (cardOf(event) !== taskId) continue
+    if (event.type === 'dispatch/started') {
+      open = { childSessionId: textOf(event.data['childSessionId']), startedSeq: event.seq }
+      continue
+    }
+    if (SETTLED_DISPATCH_EVENTS.includes(event.type)) open = undefined
+  }
+  return open
 }
 
 /**
- * 单个候选会话是否**空闲**（没有在飞卡）—— 派发前检查的最小谓词。
+ * 按会话聚合的**口径甲**读数：每个会话手上还有哪些"这一轮没收口"的卡。
  *
- * 与 {@link inFlightCardsBySession} 同一口径；抽出来是为了让调用点读起来是"No"而不是"我遍历了一遍"。
+ * ⚠️ **不可用于"这个会话空闲吗"**（`REV-103` F2）：`dispatch/aborted` 会把它清空，而收口只说明
+ * 写者放弃了卡、**不说明子会话停了**。要看"忙不忙"用口径乙（`pool.ts` 的 busy 折叠 / 将来的补线卡）。
+ * 本函数今天的用途只有一个：让"台账里还有没有悬空决定"这件事能按会话看（回执/体检），不是派发决策。
  */
-export function sessionIsIdle(
+export function unsettledCardsBySession(
   events: readonly JournalEvent[],
-  childSessionId: string,
-  options: InFlightOptions = {},
-): boolean {
-  const id = textOf(childSessionId)
-  if (id === '') return true
-  return !foldInFlight(events, options).map.has(id)
-}
-
-/** "同一会话在飞卡 ≤ 1"被违反的**那一刻**：两张卡同时挂在一个子会话上。 */
-export interface DoubleStartedSession {
-  childSessionId: string
-  /** 先发起的那一张（判红要点名它） */
-  first: InFlightCard
-  /** 后发起的那一张（它就是"派第二张卡给忙碌会话"的那一刻） */
-  second: InFlightCard
-}
-
-interface FoldResult {
-  map: Map<string, InFlightCard[]>
-  violations: DoubleStartedSession[]
-}
-
-/**
- * 折叠口径的**唯一实现**：`dispatch/started` 入栈、终态出栈。
- *
- * 两处 TTL 用的是**两个不同时刻**，这是有意的：
- *   · 判"违反"时用**事件自己的时刻**（`second.started` 那一刻，`first` 是否已经 stale）——
- *     这样"十小时前的老 started + 今天的第二张卡"不会被算成违反，而"刚刚两次连派"一定算；
- *   · 判"此刻在飞"时用 `nowMs` —— 回答的是"现在这个会话忙不忙"。
- * 代价如实写在这里：TTL 之外的"历史重叠"不报（那已经不是派发决策的输入，只是旧账）。
- */
-function foldInFlight(events: readonly JournalEvent[], options: InFlightOptions): FoldResult {
+  options: UnsettledOptions = {},
+): Map<string, UnsettledCard[]> {
   const nowMs = options.nowMs ?? Date.now()
   const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
   type Open = { taskId: string; childSessionId: string; startedSeq: number; startedAt: number }
   const open = new Map<string, Open[]>()
+  for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
+    if (SETTLED_DISPATCH_EVENTS.includes(event.type)) {
+      settle(open, event)
+      continue
+    }
+    if (event.type !== 'dispatch/started') continue
+    const child = textOf(event.data['childSessionId'])
+    if (child === '') continue
+    const list = open.get(child) ?? []
+    const card = cardOf(event)
+    const row = { taskId: card, childSessionId: child, startedSeq: event.seq, startedAt: Date.parse(event.at ?? '') }
+    // 同一张卡的复投（追加指令）只更新那一笔的序号，不叠第二行
+    const index = list.map((item) => item.taskId).lastIndexOf(card)
+    if (index >= 0) list[index] = row
+    else list.push(row)
+    open.set(child, list)
+  }
+  const map = new Map<string, UnsettledCard[]>()
+  for (const [child, list] of open) {
+    const alive = list.filter((row) => ttlMs <= 0 || !Number.isFinite(row.startedAt) || nowMs - row.startedAt <= ttlMs)
+    if (alive.length > 0) {
+      map.set(child, alive.map((row) => ({
+        taskId: row.taskId,
+        childSessionId: row.childSessionId,
+        startedSeq: row.startedSeq,
+        minutes: Number.isFinite(row.startedAt) ? Math.max(0, Math.floor((nowMs - row.startedAt) / 60_000)) : 0,
+      })))
+    }
+  }
+  return map
+}
+
+/**
+ * 该会话手上有**没有收口的派发**（口径甲）。
+ *
+ * ⚠️ **名字里不许出现「空闲 / idle」（`REV-103` F2）**：`true` 只意味着"台账里没有悬着没交代的派发"，
+ * **不**意味着"这个会话可以再派一张卡"。真机教训：`dispatch/aborted` 把这里翻成 `true` 之后，
+ * 若拿它当派发前检查，就会把第二张卡投给一个仍在跑上一张卡的会话（`DEF-224` 的形态）。
+ * 派发前的判据见 {@link doubleStartedSessions} 的口径乙与补线卡的说明。
+ */
+export function sessionHasNoUnsettledDispatch(
+  events: readonly JournalEvent[],
+  childSessionId: string,
+  options: UnsettledOptions = {},
+): boolean {
+  const id = textOf(childSessionId)
+  if (id === '') return true
+  return !unsettledCardsBySession(events, options).has(id)
+}
+
+/** "同一会话在飞卡 ≤ 1"被违反的**那一刻**：两张卡同时挂在一个子会话上（口径乙）。 */
+export interface DoubleStartedSession {
+  childSessionId: string
+  /** 先发起的那一张（判红要点名它） */
+  first: OccupiedCard
+  /** 后发起的那一张（它就是"派第二张卡给忙碌会话"的那一刻） */
+  second: OccupiedCard
+}
+
+interface FoldResult {
+  violations: DoubleStartedSession[]
+}
+
+/**
+ * **口径乙**的唯一实现：`dispatch/started` 入栈、**`dispatch/finished`** 出栈。
+ *
+ * 为什么出栈只认 `finished`（而 `aborted` 不算）：见模块头的两条口径 —— 收口是"卡不归它了"，
+ * 不是"它停了"。把 `aborted` 当出栈会让守卫对"被 release 但仍在跑的会话"瞎掉。
+ * 判"违反"用**事件自己的时刻**（`second.started` 那一刻回头看 `first` 是否还在 TTL 内）：
+ * 这样"十小时前的老 started + 今天的第二张卡"不会被算成违反，而"刚刚两次连派"一定算。
+ */
+function foldOccupancy(events: readonly JournalEvent[], options: OccupancyOptions): FoldResult {
+  const ttlMs = options.ttlMs ?? DEFAULT_TTL_MS
+  const nowMs = options.nowMs ?? Date.now()
+  type Open = { taskId: string; childSessionId: string; startedSeq: number; startedAt: number }
+  const open = new Map<string, Open[]>()
   const violations: DoubleStartedSession[] = []
-  const card = (row: Open): InFlightCard => ({
-    taskId: row.taskId,
-    childSessionId: row.childSessionId,
-    startedSeq: row.startedSeq,
-    minutes: Number.isFinite(row.startedAt) ? Math.max(0, Math.floor((nowMs - row.startedAt) / 60_000)) : 0,
+  const row = (item: Open): OccupiedCard => ({
+    taskId: item.taskId,
+    childSessionId: item.childSessionId,
+    startedSeq: item.startedSeq,
+    minutes: Number.isFinite(item.startedAt) ? Math.max(0, Math.floor((nowMs - item.startedAt) / 60_000)) : 0,
   })
   for (const event of [...events].sort((a, b) => a.seq - b.seq)) {
-    if (TERMINAL_DISPATCH_EVENTS.includes(event.type)) {
+    if (SESSION_FREEING_EVENTS.includes(event.type)) {
       settle(open, event)
       continue
     }
@@ -403,10 +484,10 @@ function foldInFlight(events: readonly JournalEvent[], options: InFlightOptions)
     const at = Date.parse(event.at ?? '')
     const started = { taskId: cardOf(event), childSessionId: child, startedSeq: event.seq, startedAt: at }
     const previous = open.get(child) ?? []
-    const live = previous.filter((row) => ttlMs <= 0 || !Number.isFinite(at) || !Number.isFinite(row.startedAt) || at - row.startedAt <= ttlMs)
+    const live = previous.filter((item) => ttlMs <= 0 || !Number.isFinite(at) || !Number.isFinite(item.startedAt) || at - item.startedAt <= ttlMs)
     // **同一张卡的复投不是违反**：追加指令给"正握着这张卡"的会话（`reuseDeliveries` 的 `held` 那一格）
     // 只该更新那一笔的序号，不该叠出第二张"在飞卡"—— 不变量说的是"两张**卡**"，不是"两次投递"。
-    const sameCard = live.findIndex((row) => row.taskId === started.taskId)
+    const sameCard = live.findIndex((item) => item.taskId === started.taskId)
     if (sameCard >= 0) {
       live[sameCard] = started
       open.set(child, live)
@@ -416,37 +497,35 @@ function foldInFlight(events: readonly JournalEvent[], options: InFlightOptions)
       const first = live[0] as Open
       violations.push({
         childSessionId: child,
-        first: card(first),
+        first: row(first),
         second: { taskId: started.taskId, childSessionId: child, startedSeq: event.seq, minutes: 0 },
       })
     }
     live.push(started)
     open.set(child, live)
   }
-  // 此刻在飞：按 `nowMs` 再剪一次 TTL（清掉"已经很久没动静"的那些，它们不再是派发决策的输入）
-  const map = new Map<string, InFlightCard[]>()
-  for (const [child, list] of open) {
-    const alive = list.filter((row) => ttlMs <= 0 || !Number.isFinite(row.startedAt) || nowMs - row.startedAt <= ttlMs)
-    if (alive.length > 0) map.set(child, alive.map(card))
-  }
-  return { map, violations }
+  return { violations }
 }
 
 /**
- * **不变量判定**（`TASK-237` 落点三）：台账里任何时刻「同一 `childSessionId` 的 started 未结算卡数 ≤ 1」。
+ * **不变量判定**（`TASK-237` 落点三，口径乙）：台账里任何时刻「同一 `childSessionId` 的
+ * **`started` 未 `finished`** 的卡数 ≤ 1」。
  *
  * 返回每一次**违反**（空数组 = 绿）：每条点名会话 + 先发起的卡（`first`）与后派进去的卡（`second`），
  * 两张卡都带自己的 `startedSeq` —— 判红时人可以直接按序号回读台账。
- *
  * 判据只读 `dispatch/*` 的事件顺序与时间，**不读任何措辞**，也不读卡上的 `owner` 字符串
  * （那是 `orphanLocks` 的坑，见模块头）。
  *
- * **反例格**（同一会话**先后**完成两张卡：先 `dispatch/finished` 再 `dispatch/started`）必须绿 ——
- * 终态先把第一张摘掉，第二次 `started` 时清单已空，因此不产生违反；`test/m247.test.ts` 钉住这一格。
+ * **两态**（卡面 DoD 点名）：
+ *   · 红格：同会话两张卡各有 `started`、中间没有 `finished` ⇒ 一条违反（`test/m247.test.ts` 的 `M247-03`）；
+ *   · 绿格：**同一会话先后**完成两张卡（先 `dispatch/finished` 再 `dispatch/started`）⇒ 无违反（`M247-04`）；
+ *     同一张卡的复投（`started` 两次同一张卡）⇒ 也不算"两张卡"（`M247-09`）。
+ * **已知边界**：`dispatch/reported` 不释放位子（与 `pool.ts` 同档）；`dispatch/aborted` **也不释放**
+ * —— 被 release 但会话仍在跑时，守卫照旧认为它忙（这正是要的方向）。
  */
 export function doubleStartedSessions(
   events: readonly JournalEvent[],
-  options: InFlightOptions = {},
+  options: OccupancyOptions = {},
 ): DoubleStartedSession[] {
-  return foldInFlight(events, options).violations
+  return foldOccupancy(events, options).violations
 }
