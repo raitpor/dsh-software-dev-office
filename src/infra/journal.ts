@@ -277,11 +277,49 @@ export function resetDerivedTableStats(): void {
  * 输出是**语言无关**的 `表名: full=… incremental=… hits=…` 形态 —— 渲染成给人看的那一行
  * 由消费点按自己的语言面负责（本模块不含用户可见文案，与 `derivedTableStats` 同一路数）。
  *
- * **诚实的边界**：它只把读数摆出来，**不**自动进任何门禁/回执。要把这一行渲染进门禁回执，
- * 得改 `src/domain/gates.ts`（`TASK-230` 的写范围不含它）—— 见本卡交付说明里的跟卡建议。
+ * **消费点（`TASK-284` 补齐）**：`interface/describe.ts` 的 `describeStatus`（`sdo_status`）与
+ * `describePlan`（`sdo_plan` 的看板）经 {@link describeDerivedTableStatsLine} 渲染这一行。
+ * `TASK-230` 交付时这里写着「不自动进任何门禁/回执」，`TASK-281` 核 `REV-114` 时实测
+ * `grep -rnE 'deriveTableStatsLine|describeDerivedTableStats' src/ | grep -v journal.ts` **零命中**
+ * —— 读数建好了没人看得见（`DEF-015` 那一族），本卡把它接上。
  */
 export function describeDerivedTableStats(): string {
   return deriveTableStatsLine(derivedTableStats)
+}
+
+/**
+ * 派生表读数那一行的**标签**（`TASK-284`）：把两个计数器的含义写在数字**旁边**。
+ *
+ * 为什么必须带这句解释：`full=1 incremental=0` 单看数字会被读成两种**相反**的意思 ——
+ * 「增量没生效」（坏）或「还没有写入」（正常）。`TASK-230` 的读数是给引擎看病的，
+ * 读者得知道 `full` = 整批重算 / `incremental` = 只应用新追加的事件 / `hits` = 命中复用。
+ *
+ * 为什么是 ASCII 而不是语言包：`journal.ts` 是引擎层；而消费点之一 `interface/describe.ts`
+ * 被 i18n 棘轮钉在「硬编码中文 = 0」，语言包文件不在本卡写范围。这句是给**复验者**的读数标签、
+ * 不是终端用户的散文（与 `describe.ts` 的 `POOL_UNUSABLE_REASON_SOURCE` 同一处置）。
+ */
+export const DERIVED_TABLE_STATS_LABEL = '- derived tables (full = whole-batch recompute, '
+  + 'incremental = only newly appended events applied, hits = cache reuse): '
+
+/**
+ * 一个派生表都还没被读过时的读数正文。
+ *
+ * 为什么**不许是空串**：`''` 会被 `receipt.includes('')` 判成"渲染了" —— 那正是一条只在纸面上
+ * 成立的守卫（`REV-129` 打回 `TASK-279` 的那类假绿）。给一句可辨的 ASCII，守卫就能靠它区分
+ * 「没读过」与「读了」。
+ */
+export const DERIVED_TABLE_STATS_NONE = '(no derived table read yet in this process)'
+
+/**
+ * **读数面直接可印的一行**（`TASK-284` 落点一）：{@link DERIVED_TABLE_STATS_LABEL} + {@link deriveTableStatsLine}。
+ *
+ * 为什么由本模块出这一行、而不是让两个消费点各自拼前缀：`TASK-281` 点出的缺口就是
+ * 「读数建好没消费者」，而接的时候若两处各拼一份前缀，口径就会像 `DEF-044` 那样分叉。
+ * 前缀与正文都只在这里定义一次；消费点只负责 push。
+ */
+export function describeDerivedTableStatsLine(): string {
+  const body = deriveTableStatsLine(derivedTableStats)
+  return `${DERIVED_TABLE_STATS_LABEL}${body === '' ? DERIVED_TABLE_STATS_NONE : body}`
 }
 
 /**

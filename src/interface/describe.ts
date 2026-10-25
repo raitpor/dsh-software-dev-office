@@ -19,6 +19,7 @@ import { riskStats } from '../domain/risks.js'
 import { VIEW_KINDS } from '../types.js'
 import { VIEW_LABEL } from '../domain/architecture.js'
 import { fmt, gateLabel, gateWithId, label, phaseText, t, textOrProcess } from '../domain/i18n.js'
+import { describeDerivedTableStatsLine } from '../infra/journal.js'
 import { contractFieldNoteHeader, contractFieldNoteLines } from '../domain/contracts.js'
 import type { ContractFieldNote } from '../domain/contracts.js'
 import { shapeNoteBlock } from '../domain/shapeNotes.js'
@@ -133,6 +134,26 @@ export function describeStatus(status: StatusSnapshot, dataDirName: string, shap
   if (status.configSource === 'default') {
     lines.push(fmt('uiDescribe.k21', { p1: dataDirName, p2: status.config.process, p3: status.config.scale }))
   }
+
+  /**
+   * **`TASK-284` 落点一：派生表读数进 `sdo_status`。**
+   *
+   * 为什么接这一处：上一行回答「派生投影是否需要重建」，这一行回答「这台进程手里的派生表
+   * 是怎么来的」（整批重算 / 只应用新追加事件 / 命中复用）—— 同一个语义区（派生状态对不对），
+   * 且 `sdo_status` 正是用户主动问「台账现在长什么样」的那个面。
+   *
+   * 为什么无条件印：它是 `TASK-230` 那份读数**唯一**的逐表消费点（`TASK-281` 核 `REV-114` 时
+   * 实测 `src/` 里除 `journal.ts` 外零命中）；再加一层"只在异常时才印"的条件，就会退回
+   * 「读数建好没人看得见」（`DEF-015`）—— 读者连"正常长什么样"都没有基线可比。
+   *
+   * 为什么放得进 `sdo_status` 而 `sdo_plan action=next` 的成功分支放不进：状态面没有整份字符预算；
+   * `next` 的回执被 `RECEIPT_BUDGET=7000` 钉着，判据上界是 `RECEIPT_BUDGET + 400 = 7400`。
+   * 冻结夹具的现测（`M232-06` 打印的 `frozen receipt: 4 cards -> N chars`）：单跑
+   * `node --test lib/test/m232.test.js` 7000 出头、全量并发跑 4702 —— 两次都**随账态浮动**，
+   * 余量只有两百到两千多字符。读数行本身约 300 字符，且这一支根本不渲染看板
+   * ⇒ 把整行塞进成功回执要么挤爆预算、要么得先砍别的读数（`TASK-218` 的体积纪律）。
+   */
+  lines.push(describeDerivedTableStatsLine())
 
   lines.push(t('uiDescribe.k22'))
   lines.push(fmt('uiDescribe.k23', { p1: dataDirName }))
@@ -764,6 +785,20 @@ export function describePlan(
   const detail = options.detail === true
   const stats = planStats(tasks)
   const lines: string[] = [fmt('uiDescribe.k194', { p1: stats.total, p2: Object.entries(stats.byStatus).map(([status, count]) => `${status} ${count}`).join('，') || t('uiDescribe.k193') })]
+  /**
+   * **`TASK-284` 落点一（`sdo_plan` 的看板）：派生表读数也上板。**
+   *
+   * 为什么接这一处：这张看板是**拆卡/派发判断**的读数面 —— 它回答"这些卡是怎么被算出来的"，
+   * 而 `full=` 一路涨、`incremental=` 一直是 0 就说明记忆化没生效（`TASK-230` 之前的形态：
+   * 每次写入后整批重算 30–36ms），派发前的读数本身就是慢的。位置紧跟"拆分结果"那一行：
+   * 读数属于"这份台账"，而不是某一轮派发的结论。
+   *
+   * **覆盖范围的诚实边界**：本函数出现在 `sdo_plan action=decompose` 与 `action=next` 的
+   * **没派出去**那一支（"计划有问题"）。`action=next` 的**成功**回执**不含**这张看板 ——
+   * 那一支的读数区整段在 `src/index.ts` 里拼，而 `src/index.ts` **不在本卡写范围**（卡面点名它由
+   * 并发卡握着，动它要先 `block`）⇒ 本卡接不到那里，已写成跟卡建议（见 `M243-09` 的注释）。
+   */
+  lines.push(describeDerivedTableStatsLine())
   /**
    * 摘要档只展开**这一轮还要管的卡**（`DEF-169` 落点三：「只保留本次派发 / 受阻 / 依赖未满足的关键信息」）。
    *

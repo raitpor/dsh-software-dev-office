@@ -28,6 +28,9 @@
  *     `incrementalApplies`，并由 `describeDerivedTableStats()` 拼成一行可读读数（门禁/回执要渲染它，
  *     只差一个"渲染点"：`gates.ts` 不在本卡写范围，见交付说明的跟卡建议）；
  *   · `M243-08` **落点二的行为面**：`rehashReview` 改走记忆化评审表（热表上必须命中、不重建）。
+ *   · `M243-09` **`TASK-284` 的接线守卫**：`sdo_status` 与 `sdo_plan` 看板的回执里**真有**那一行 ——
+ *     删掉接线必红（上面 `M243-07` 只钉格式，回执里有没有它一个字都管不着）。
+ *     本文件自 `TASK-284` 起不再只是 `TASK-230` 的守卫：读数的**消费者**归这里守。
  *
  * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`；中文只写在断言之外）。
  */
@@ -54,6 +57,7 @@ import {
   Journal,
   deriveTableStatsLine,
   describeDerivedTableStats,
+  describeDerivedTableStatsLine,
   derivedTableStats,
   invalidateDerivedTables,
   invalidateJournalCache,
@@ -61,6 +65,7 @@ import {
 } from '../src/infra/journal.js'
 import { SdoStore } from '../src/infra/store.js'
 import { SoftwareDevOffice } from '../src/office.js'
+import { describePlan, describeStatus } from '../src/interface/describe.js'
 import type { SdoConfig } from '../src/config.js'
 import type { Review } from '../src/domain/records.js'
 import type { TaskCard } from '../src/types.js'
@@ -70,6 +75,8 @@ const WORKSPACE = join(BASE, 'ws')
 
 let store: SdoStore
 let journal: Journal
+/** 本文件的 office 实例（`TASK-284` 的接线格要经真实 `status()` 取快照，所以提到模块级）。 */
+let office: SoftwareDevOffice
 
 /** 一张 `done` 的 medium 产品卡（进 `review.required` 的考虑集）。 */
 function card(id: string, status: TaskCard['status'] = 'done'): TaskCard {
@@ -157,7 +164,7 @@ function realCopy(name: string): { store: SdoStore; journal: Journal } {
 beforeEach(() => {
   rmSync(BASE, { recursive: true, force: true })
   mkdirSync(WORKSPACE, { recursive: true })
-  const office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
   office.noteSession('s-243', WORKSPACE)
   store = office.storeFor(WORKSPACE)
   journal = office.journalFor(WORKSPACE)
@@ -435,4 +442,74 @@ test('M243-08 (landing 2, behaviour) rehashReview reads the memoised review tabl
   )
   assert.equal(count(derivedTableStats.fullRecomputes, 'reviews-table'), 0, 'a warm reviews table must not be rebuilt')
   assert.equal(listReviews(store).length, 1, 'the source of truth still holds exactly one review')
+})
+
+/**
+ * **`M243-09`：读数**真的进了回执**（`TASK-284` 的接线守卫）。**
+ *
+ * 上一格（`M243-07`）只钉住"这一行长什么样"。`TASK-281` 核 `REV-114` 时点出的缺口正是：
+ * 格式被钉住了，而**没有任何一格证明回执里真有这一行** —— 把 `describeStatus` / `describePlan`
+ * 里那两行 `push` 删掉，`M243-07` 照样绿（它只调格式函数，从不问回执）。
+ *
+ * 本格三件事，缺一条就退化成纸面守卫：
+ *   ① **读数会说话**：清缓存 ⇒ 建表一次（`full=1`）⇒ 写一条事件 ⇒ 只应用新增（`incremental=1`），
+ *      两次采样**必须不同** —— 恒等于某个常量的"读数"过不了这一条
+ *      （`REV-129` 的反面教材①：算了不加、永远读 0，比没有更坏）；
+ *   ② `sdo_status` 的回执（`describeStatus`）里**逐字**含那一行；
+ *   ③ `sdo_plan` 的看板（`describePlan`）里**逐字**含那一行。
+ *
+ * 为什么用"逐字 equals"而不是正则：正则 `full=\d+` 会被一行**写死的** `full=0` 蒙过去；
+ * 逐字比的是**同一时刻现算出来的那一行**，接线一删必然不等。采样点必须紧贴渲染
+ * （快照算完、格式函数还没跑）：`describeStatus` / `describePlan` 是纯排版、不碰派生表，
+ * 所以两次读数之间没有第三者能改动计数器。
+ *
+ * **覆盖范围的诚实边界**（本卡写范围不含 `src/index.ts`）：`sdo_plan action=next` 的
+ * **成功**回执里没有这张看板（读数区整段在 `index.ts` 拼），所以本格钉的是
+ * 「`sdo_plan` 看板（`decompose` / `next` 没派出去那一支）」+「`sdo_status`」两处。
+ */
+test('M243-09 (wiring, TASK-284) the reading actually reaches the sdo_status receipt and the sdo_plan board', () => {
+  const call = { sessionId: 's-243' }
+  // 状态面要走到**完整回执**那一支：没有 `project.yml` 时 `describeStatus` 早返回「尚未初始化」，
+  // 那时印不印这一行与本卡的接线无关（会变成空断言）。
+  office.init(call, { name: 'M243 wiring', scale: 'normal', stakeholders: ['业务方'] })
+  seedReview('TASK-901', 'REV-901')
+
+  // ① 读数会说话：清缓存 ⇒ 建表一次（full=1）；写一条事件 ⇒ 只应用新增（incremental=1）
+  resetDerivedTableStats()
+  invalidateDerivedTables()
+  pendingReviewBigCards(store, journal)
+  const afterBuild = describeDerivedTableStatsLine()
+  journal.append('task/updated', { task: 'TASK-901', note: 'wiring' })
+  pendingReviewBigCards(store, journal)
+  const afterApply = describeDerivedTableStatsLine()
+  console.log(`[M243-09] after build: ${afterBuild}`)
+  console.log(`[M243-09] after apply: ${afterApply}`)
+  assert.notEqual(afterBuild, afterApply, 'the reading must move when the ledger moves (a frozen constant is not a reading)')
+  assert.match(
+    afterApply,
+    /pending-review-big-cards: full=1 incremental=1 hits=\d+/u,
+    'premise: exactly one full build plus exactly one incremental apply — both counters are live, not constants',
+  )
+
+  // ② `sdo_status`：快照算完 → 现采一行 → 渲染
+  const snapshot = office.status(call)
+  const statusLine = describeDerivedTableStatsLine()
+  const statusReceipt = describeStatus(snapshot, '.sdo')
+  assert.ok(
+    statusLine.includes('pending-review-big-cards: full='),
+    'premise: the rendered line names a real table (an empty line would make includes() vacuously true)',
+  )
+  assert.ok(
+    statusReceipt.includes(statusLine),
+    `sdo_status must carry the derived-table reading; missing line:\n${statusLine}\nreceipt head:\n${statusReceipt.slice(0, 1200)}`,
+  )
+
+  // ③ `sdo_plan` 的看板（`describePlan`）：派不出去那一支的回执里就有这张板
+  const tasks = office.tasks(call)
+  const boardLine = describeDerivedTableStatsLine()
+  const board = describePlan(tasks, [])
+  assert.ok(
+    board.includes(boardLine),
+    `the sdo_plan board must carry the derived-table reading; missing line:\n${boardLine}\nboard head:\n${board.slice(0, 600)}`,
+  )
 })
