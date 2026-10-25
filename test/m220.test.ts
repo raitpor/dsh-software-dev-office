@@ -380,7 +380,7 @@ test('M220-09 归档后 evidence/ 体积回落到保留集，且脱敏面可带 
 
 /* —————————————————————————— M220-10 真账只读演练 —————————————————————————— */
 
-test('M220-10 real ledger rehearsal is reproducible, read-only and under the 10 MB entry budget', realLedgerSkip() ?? {}, () => {
+test('M220-10 real ledger rehearsal is reproducible and read-only; the scan-surface cap tracks the journal (canary)', realLedgerSkip() ?? {}, () => {
   const store = new SdoStore(REAL_LEDGER_DIR)
   const journalPath = join(REAL_LEDGER_DIR, 'journal.jsonl')
   const journalBefore = sha256Hex(readFileSync(journalPath))
@@ -407,6 +407,19 @@ test('M220-10 real ledger rehearsal is reproducible, read-only and under the 10 
    * —— 32 MiB 覆盖"台账还小、但 yml 很多"的项目；`× 4` 覆盖现状 1.75 的两倍余量。
    * 这是**canary**（前提随账态漂），不是正确性判据：本格真正钉的是
    * 「只读 + 可复现 + 报告不含机器前缀」（上面三条断言），预算这一条只防**失控增长**。
+   *
+   * ⚠️ **这个判据有一个必须明说的空洞**（`REV-111` 必核一①）：它约束的是
+   * `scannedBytes − journal ≤ 3 × journal` 这个**比值**，因此**台账自己无限增长时它永不红**
+   * （journal 涨到 100 MB，预算自动变成 400 MB）。**绝对体量今天无人在管** —— 需要一格
+   * **独立**的绝对上界（`journal.jsonl < N` 且事件数 < M，且它**应当红**：体量到了就该治理，
+   * 不是 canary），与 `DEF-231` 的体量治理方案合流。本卡只负责把相对判据说清楚，不假装绝对值有守卫。
+   *
+   * **扫描面的真源清单以代码为准**（`REV-111` 必核二③，我上一版报告写错了两个名字）：
+   * `LEDGER_TRUTH_DIRS`（`scrub.ts:248-251`，18 个目录）＝ changes / construction / contracts /
+   * decisions / defects / design / gates / issues / quality / questions / releases / requirements /
+   * reviews / risks / tasks / testing / tests / trace；`LEDGER_TRUTH_FILES`（`:254`）＝
+   * config.yml / feasibility.yml / HANDOFF.md / journal.jsonl。出面清单见 `LEDGER_EXCLUDED`。
+   * （上一版写过的 `adr/` 实际叫 `decisions/`，`planning/` **在代码里不存在** —— 已订正。）
    */
   const journalBytes = statSync(journalPath).size
   const budgetBytes = Math.max(32 * 1024 * 1024, journalBytes * 4)
