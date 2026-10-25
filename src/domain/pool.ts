@@ -965,6 +965,228 @@ export const REUSE_SKIP_CHARS = 700
 /** 折叠时的**指路**（ASCII）：被折叠原因的原话在台账里逐条写着 —— 回执不教读者一个不存在的参数。 */
 export const REUSE_SKIP_REASON_SOURCE = '.sdo/journal.jsonl dispatch/reuse-skipped'
 
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`TASK-224` / `DEF-210`：`dispatch/reuse-skipped` 从"一行一个候选"改成"一行一个原因"**
+ *
+ * 病根（真账两时点并列，读者能看到它在长）：卡面量的时候 **608 条事件里 495 条**是它（81%，1 种原因、
+ * 86 个子会话、6 次派发、平均 82 条/派发）；本轮再量已经是 **7795 条 / 1938 条（24.9%）/ 944KB / 5 种原因**
+ * —— 噪音不但没停，还**开始衍生变体**（同一种原因因 deny 面尾部差一个词而分成 985 + 923 两条）。
+ *
+ * 两次写入的差别是"O(候选数) → O(原因种数)"：一次派发只落**一条**，`reasons[]` 里每个原因带
+ * `count` 与 `sampleChildIds ≤3`；与**上一次**派发"原因集 + 各自 count 全等"时只落一条
+ * `{ task, sameAsSeq, candidates }` 引用（读者靠 seq 回溯到完整原话）。
+ *
+ * 三条纪律：
+ *   ① **不丢原因**：聚合的是数量，原话一条不少（与回执 `reuseSkippedLines` 的归并同一口径）；
+ *   ② **老事件不改写**：真源 append-only，读侧两种形状都认（{@link reuseSkippedRowsFromEvents}）；
+ *   ③ **`sameAsSeq` 判得比"原因集相同"更严**：数量变了（86→12）说明现场变了，引用旧读数会把
+ *      "这次跳过了几个"读错 —— 所以 `count` 也必须全等。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+
+/** 聚合计划：**一次派发只产出 1 条事件**（`reasons[]` 承载全部原因）。 */
+export interface ReuseSkippedPlan {
+  /** 直接交给 `journal.append(REUSE_SKIPPED_EVENT, event)` 的数据面（恒为 1 条） */
+  events: Record<string, unknown>[]
+  /** 这次是"引用上一次"而不是完整形态时，被引用的 seq */
+  sameAsSeq?: number
+  /** 候选总数（= `reasons[].count` 之和，或引用形态里的 `candidates`） */
+  candidates: number
+  /** 不同原因原话的种数（软阈值：> 3 时回执明说，**不硬砍**） */
+  reasonCount: number
+}
+
+/**
+ * 从台账里取**上一次** `dispatch/reuse-skipped` 的读数（给 `sameAsSeq` 的"全等"判据用）。
+ *
+ * 只看**尾部**同类事件的最后一条：聚合形态读它的 `reasons[]`；引用形态读它自己引用的那条
+ * （递归 ≤4 层，找不到就返回 `undefined` ⇒ 本次一定写完整形态，绝不引用一个读不回来的 seq）。
+ */
+export function lastReuseSkippedReference(
+  events: readonly { seq: number; type: string; data: Record<string, unknown> }[],
+): ReuseSkippedReference | undefined {
+  const bySeq = new Map(events.map((event) => [event.seq, event] as const))
+  const reasonsOf = (data: Record<string, unknown>, depth = 0): { reason: string; count: number }[] | undefined => {
+    const sameAs = data['sameAsSeq']
+    if (typeof sameAs === 'number') {
+      if (depth >= 4) return undefined
+      const target = bySeq.get(sameAs)
+      return target === undefined ? undefined : reasonsOf(target.data, depth + 1)
+    }
+    const reasons = data['reasons']
+    if (!Array.isArray(reasons)) return undefined
+    const out: { reason: string; count: number }[] = []
+    for (const item of reasons) {
+      const row = item as { reason?: unknown; count?: unknown }
+      const reason = text(row.reason)
+      const count = typeof row.count === 'number' && row.count > 0 ? row.count : 1
+      out.push({ reason, count })
+    }
+    return out
+  }
+  for (let index = events.length - 1; index >= 0; index -= 1) {
+    const event = events[index]
+    if (event === undefined || event.type !== REUSE_SKIPPED_EVENT) continue
+    const reasons = reasonsOf(event.data)
+    if (reasons === undefined) continue
+    return { seq: event.seq, reasons }
+  }
+  return undefined
+}
+
+/** 上一次派发留下的"可被引用"的读数（`seq` + 原因集与各自 count）。 */
+export interface ReuseSkippedReference {
+  seq: number
+  reasons: { reason: string; count: number }[]
+}
+
+/**
+ * 把一次派发里被拒的候选**聚合成一条事件**（`TASK-224` 落点一）。
+ *
+ * `previous` 给定时：若本次"原因集 + 各自 count"与它**全等** ⇒ 产出 `{ task, sameAsSeq, candidates }`
+ * （落点二）；只要多一种、少一种、或某种的 count 变了 ⇒ 回到完整形态（守卫 `M238-04` 钉住这条反例）。
+ */
+export function planReuseSkippedEvents(
+  rows: readonly { childSessionId: string; role: string; reason: string }[],
+  options: { task?: string | undefined; decidedAt?: string | undefined; previous?: ReuseSkippedReference | undefined } = {},
+): ReuseSkippedPlan {
+  const task = options.task
+  const decidedAt = options.decidedAt ?? new Date().toISOString()
+  const groups = new Map<string, { reason: string; count: number; sampleChildIds: string[]; roles: string[] }>()
+  for (const row of rows) {
+    const reason = text(row.reason)
+    const group = groups.get(reason) ?? { reason, count: 0, sampleChildIds: [], roles: [] }
+    group.count += 1
+    // 样本最多 3 个（"谁被跳过"要能点名，但**不**随候选数线性膨胀）
+    if (group.sampleChildIds.length < REUSE_SKIP_IDS_PER_REASON) group.sampleChildIds.push(row.childSessionId)
+    const role = text(row.role)
+    if (role !== '' && !group.roles.includes(role)) group.roles.push(role)
+    groups.set(reason, group)
+  }
+  const reasons = [...groups.values()]
+  const candidates = rows.length
+  if (reasons.length === 0) return { events: [], candidates: 0, reasonCount: 0 }
+  const previous = options.previous
+  if (previous !== undefined && previous.reasons.length === reasons.length) {
+    // **全等判据**：原因集 + 各自 count 都必须一致（顺序无关）
+    const mine = new Map(reasons.map((group) => [group.reason, group.count]))
+    const same = previous.reasons.every((row) => mine.get(row.reason) === row.count)
+    if (same) {
+      return {
+        events: [{
+          ...(task === undefined ? {} : { task }),
+          sameAsSeq: previous.seq,
+          candidates,
+          decidedAt,
+        }],
+        sameAsSeq: previous.seq,
+        candidates,
+        reasonCount: reasons.length,
+      }
+    }
+  }
+  return {
+    events: [{
+      ...(task === undefined ? {} : { task }),
+      candidates,
+      reasons: reasons.map((group) => ({
+        reason: group.reason,
+        count: group.count,
+        sampleChildIds: group.sampleChildIds,
+        ...(group.roles.length === 0 ? {} : { roles: group.roles }),
+      })),
+      decidedAt,
+    }],
+    candidates,
+    reasonCount: reasons.length,
+  }
+}
+
+/**
+ * **读侧展开**（`TASK-224`：两种形状都要能读，老事件不改写）。
+ *
+ * 认三种：① 老的"一行一个候选"（有 `childSessionId`）；② 新的聚合形态（`reasons[]`）；
+ * ③ 引用形态（`sameAsSeq` ⇒ 回台账找那条，展开它的 `reasons[]`）。
+ * 引用找不回（被轮转/截断）⇒ **返回空并如实标注**，绝不编造原因。
+ */
+export function reuseSkippedRowsFromEvents(
+  events: readonly { seq: number; type: string; data: Record<string, unknown> }[],
+): { rows: { childSessionId: string; role: string; reason: string }[]; unresolvedSameAs: number[] } {
+  const bySeq = new Map(events.map((event) => [event.seq, event] as const))
+  const expand = (data: Record<string, unknown>, depth = 0): { childSessionId: string; role: string; reason: string }[] => {
+    const direct = text(data['childSessionId'])
+    if (direct !== '') {
+      return [{ childSessionId: direct, role: text(data['role']), reason: text(data['reason']) }]
+    }
+    const sameAs = data['sameAsSeq']
+    if (typeof sameAs === 'number' && depth < 4) {
+      const target = bySeq.get(sameAs)
+      if (target !== undefined) return expand(target.data, depth + 1)
+      return []
+    }
+    const reasons = data['reasons']
+    if (!Array.isArray(reasons)) return []
+    const out: { childSessionId: string; role: string; reason: string }[] = []
+    for (const item of reasons) {
+      const row = item as { reason?: unknown; count?: unknown; sampleChildIds?: unknown; roles?: unknown }
+      const reason = text(row.reason)
+      const count = typeof row.count === 'number' && row.count > 0 ? row.count : 1
+      const samples = Array.isArray(row.sampleChildIds) ? row.sampleChildIds.map((id) => text(id)).filter((id) => id !== '') : []
+      const role = Array.isArray(row.roles) && row.roles.length > 0 ? text(row.roles[0]) : ''
+      // 展开成 count 行：`applyDeliverySkips` 按子会话逐个标记，所以要的是"每个候选一行"。
+      // 样本之外的候选**没有 id**（聚合就是为此）⇒ 用 `sampleChildIds` 里已有的 id 兜底，绝不编 uuid。
+      for (let index = 0; index < count; index += 1) {
+        const id = samples[index] ?? samples[samples.length - 1] ?? ''
+        if (id === '') break
+        out.push({ childSessionId: id, role, reason })
+      }
+    }
+    return out
+  }
+  const rows: { childSessionId: string; role: string; reason: string }[] = []
+  const unresolvedSameAs: number[] = []
+  for (const event of events) {
+    if (event.type !== REUSE_SKIPPED_EVENT) continue
+    const got = expand(event.data)
+    if (got.length === 0 && typeof event.data['sameAsSeq'] === 'number') unresolvedSameAs.push(event.data['sameAsSeq'] as number)
+    rows.push(...got)
+  }
+  return { rows, unresolvedSameAs }
+}
+
+/**
+ * **最近一次派发写了多少条台账事件**（`TASK-224` 的"回退可被发现"读数）。
+ *
+ * 为什么必须有：修前是 82 条/派发，而**没有任何读数说这件事** ⇒ 同类回退无人能发现。
+ * 口径：台账尾部同类事件按 `task` 分组，取**最后出现的那张卡**这一组。
+ */
+export function lastReuseSkippedWriteCount(
+  events: readonly { seq: number; type: string; data: Record<string, unknown> }[],
+): { task: string; events: number; bytes: number; candidates: number; sameAsSeq: number | undefined } | undefined {
+  let lastTask = ''
+  for (const event of events) {
+    if (event.type !== REUSE_SKIPPED_EVENT) continue
+    const task = text(event.data['task'])
+    if (task !== '') lastTask = task
+  }
+  if (lastTask === '') return undefined
+  let count = 0
+  let bytes = 0
+  let candidates = 0
+  let sameAsSeq: number | undefined
+  for (const event of events) {
+    if (event.type !== REUSE_SKIPPED_EVENT) continue
+    if (text(event.data['task']) !== lastTask) continue
+    count += 1
+    bytes += Buffer.byteLength(JSON.stringify(event.data)) + 1
+    const many = event.data['candidates']
+    if (typeof many === 'number') candidates += many
+    const ref = event.data['sameAsSeq']
+    if (typeof ref === 'number') sameAsSeq = ref
+  }
+  return { task: lastTask, events: count, bytes, candidates, sameAsSeq }
+}
+
+
 /**
  * 一个原因分组的理想形态：`原因原话×条数（样本 id … +其余）`，字段名沿用回执行的三个 ASCII 名。
  *

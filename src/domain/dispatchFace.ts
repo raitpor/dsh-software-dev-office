@@ -11,6 +11,8 @@
 import { existsSync } from 'node:fs'
 
 import type { Journal } from '../infra/journal.js'
+// **`TASK-224`**：聚合/引用/老形状的展开只有一处实现（`pool.reuseSkippedRowsFromEvents`）
+import { reuseSkippedRowsFromEvents } from './pool.js'
 import type { SdoStore } from '../infra/store.js'
 import type { PoolReading } from './pool.js'
 
@@ -246,16 +248,29 @@ export function reuseSkippedOf(journal: Journal): ReuseSkippedRecord[] {
     // 别的构建写过的事件，本构建**照样要读得回来**，读侧因此只认**字形**，不认类型声明。
     const type: string = event.type
     if (type === REUSE_SKIPPED_EVENT) {
-      const childSessionId = textOfValue(event.data.childSessionId)
-      if (childSessionId === '') continue
-      out.push({
-        childSessionId,
-        role: textOfValue(event.data.role),
-        reason: textOfValue(event.data.reason),
-        task: textOfValue(event.data.task),
-        seq: event.seq,
-        via: event.type,
-      })
+      /**
+       * **`TASK-224` 落点：两种事件形状都要读得回来。**
+       *
+       * 修前这里只认"一行一个候选"（`data.childSessionId`）；`DEF-210` 之后写入端改成
+       * **一行一个原因**（`{ candidates, reasons: [{ reason, count, sampleChildIds }] }`）或
+       * **引用形态**（`{ sameAsSeq }`）⇒ 老读口会把它们**整条跳过**（真机上就是"回读 0 条"）。
+       * 现在把展开交给唯一出口 `pool.reuseSkippedRowsFromEvents`（它同时处理老形状/聚合/引用，
+       * 并如实返回解不开的 `sameAsSeq`，不编造原因），这里只负责补上 `seq` / `via` / `task`。
+       *
+       * ⚠️ **不做去重**：逐承载各一条是刻意语义（append-only 的历史读数照实回放），
+       * `M206-12` 钉的就是这条。
+       */
+      const expanded = reuseSkippedRowsFromEvents([{ seq: event.seq, type: String(event.type), data: event.data }])
+      for (const row of expanded.rows) {
+        out.push({
+          childSessionId: row.childSessionId,
+          role: row.role,
+          reason: row.reason,
+          task: textOfValue(event.data.task),
+          seq: event.seq,
+          via: event.type,
+        })
+      }
       continue
     }
     if (event.type !== 'dispatch/started') continue

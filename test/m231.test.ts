@@ -40,6 +40,7 @@ import { SoftwareDevOffice } from '../src/office.js'
 import { apply } from '../src/index.js'
 import { maskFingerprint } from '../src/domain/roles.js'
 import { REUSE_SKIPPED_EVENT, readDispatchReadings, reuseSkippedOf } from '../src/domain/dispatchFace.js'
+import { reuseSkippedRowsFromEvents } from '../src/domain/pool.js'
 import type { SdoConfig } from '../src/config.js'
 import type { OfficeCall } from '../src/office.js'
 import type { TaskCard } from '../src/types.js'
@@ -373,12 +374,20 @@ test('M231-04 落点三② 闸门拒掉的孩子 ⇒ `dispatch/reuse-skipped` �
 
   const events = office.journalFor(WORKSPACE).read().events.filter((e) => e.type === REUSE_SKIPPED_EVENT)
   assert.ok(events.length >= 1, `闸门拒的孩子必须落独立事件：${JSON.stringify(events.map((e) => e.data))}`)
-  const event = events.find((e) => e.data['childSessionId'] === STALE_MASK)
+  /**
+   * **`TASK-224`**：事件形状改成"一行一个原因"，孩子 id 落在 `reasons[].sampleChildIds` 里 ⇒
+   * 改从**读侧展开**取（断言对象与强度不变：仍然要求"事件里点名了那个孩子"），并新增"只写 1 条"。
+   */
+  assert.equal(events.length, 1, `一次派发只写一条聚合事件：${JSON.stringify(events.map((e) => e.data))}`)
+  const expanded = reuseSkippedRowsFromEvents(events).rows
+  const event = expanded.find((row) => row.childSessionId === STALE_MASK)
   assert.ok(event !== undefined, `事件里必须点名那个孩子：${JSON.stringify(events.map((e) => e.data))}`)
-  assert.equal(event.data['role'], 'developer', '事件三字段之一：role')
-  assert.match(String(event.data['reason'] ?? ''), /掩码/u, '事件三字段之一：reason（逐字同源）')
-  assert.equal(event.data['task'], 'TASK-23122', '事件必须带所属卡（读者不必再去别处拼装上下文）')
-  assert.equal(typeof event.data['decidedAt'], 'string', '事件必须带判定时刻')
+  // 三字段仍逐一断言（role / reason / task / decidedAt 一条不少），只是前两个取自**展开后的行**
+  assert.equal(event.role, 'developer', '事件三字段之一：role')
+  assert.match(String(event.reason ?? ''), /掩码/u, '事件三字段之一：reason（逐字同源）')
+  const carrier = events[0]?.data ?? {}
+  assert.equal(carrier['task'], 'TASK-23122', '事件必须带所属卡（读者不必再去别处拼装上下文）')
+  assert.equal(typeof carrier['decidedAt'], 'string', '事件必须带判定时刻')
   // 读侧回读：同一份台账两次读数一致（`REQ-035` / `REQ-037` 可复现性口径）
   assert.deepEqual(
     reuseSkippedOf(office.journalFor(WORKSPACE)),

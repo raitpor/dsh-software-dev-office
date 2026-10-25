@@ -136,7 +136,7 @@ import {
 // （`release/written` / `release/deferred`），手写 YAML 的 `frozenBy: human` 核不到任何东西。
 import { HUMAN_APPROVER, currentRelease, deferredIdsOf, listReleases, packageVersionOf, writeRelease } from './domain/release.js'
 import { textOf } from './infra/scalar.js'
-import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePoolReadings, rolePools, unresolvedBlock as findUnresolvedBlock } from './domain/pool.js'
+import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePoolReadings, rolePools, unresolvedBlock as findUnresolvedBlock, lastReuseSkippedReference, planReuseSkippedEvents } from './domain/pool.js'
 import type { PoolAdmission, PoolChild, PoolReading, RolePool } from './domain/pool.js'
 import type { UndigestedChange } from './domain/change.js'
 import { renderHeader } from './infra/render.js'
@@ -252,7 +252,6 @@ import {
   readChildObservations,
   recordChildFace,
   recordChildObserved,
-  reuseSkippedEventData,
   reuseSkippedFields,
   toolUsageOf,
   writeChildToolCall,
@@ -4473,11 +4472,18 @@ export class SoftwareDevOffice {
     // 为什么两种承载都写：挂在 `dispatch/started` 上的是"这一笔的现场"，独立事件才**数得清、引得到**
     // （回执引用序号、按子会话反查都靠它）；两者由同一份 `reuseSkippedFields` 投影 ⇒ 不会各说一套。
     if (input.reuseSkipped !== undefined && input.reuseSkipped.length > 0) {
-      // 同一次派发共用一个判定时刻（逐条各取一次 `now` 会让"同一次决定"在台账上散成 N 个时刻）
-      const decidedAt = new Date().toISOString()
-      for (const row of reuseSkippedFields(input.reuseSkipped)) {
-        journal.append('dispatch/reuse-skipped', reuseSkippedEventData(row, { task: input.taskId, decidedAt }))
-      }
+      /**
+       * **`TASK-224` / `DEF-210`**：**一次派发只写一条**（修前是一行一个候选 ⇒ 真账 82 条/派发、944KB）。
+       *
+       * 聚合与"引用上一次"的判定都在 `pool.planReuseSkippedEvents`（唯一出口）；这里只负责落盘 ——
+       * 于是"写几条"这件事有一处可读、可测、可回退发现（`sdo_status` 另有读数）。
+       */
+      const previous = lastReuseSkippedReference(journal.read().events)
+      const plan = planReuseSkippedEvents(reuseSkippedFields(input.reuseSkipped), {
+        task: input.taskId,
+        previous,
+      })
+      for (const event of plan.events) journal.append('dispatch/reuse-skipped', event)
     }
     // **§2 第 1 条**：派发（尤其**复用**同一子会话换角色）会改变这个会话的血缘角色 ⇒ 让角色缓存立刻失效，
     // 否则新掩码最多滞后一个 TTL（旧实现只认领/回报时 +1）。

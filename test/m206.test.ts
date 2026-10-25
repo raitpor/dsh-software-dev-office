@@ -36,16 +36,7 @@ import {
   maskFingerprintOf,
   maskHashVersion,
 } from '../src/domain/roles.js'
-import {
-  DELIVERY_FAILED_PREFIX,
-  admitDispatch,
-  foldPoolChildren,
-  poolReading,
-  poolReadingsFingerprint,
-  reuseBlockedReason,
-  reuseSkippedLines,
-  rolePools,
-} from '../src/domain/pool.js'
+import { DELIVERY_FAILED_PREFIX, admitDispatch, foldPoolChildren, poolReading, poolReadingsFingerprint, reuseBlockedReason, reuseSkippedLines, rolePools, reuseSkippedRowsFromEvents } from '../src/domain/pool.js'
 import {
   REUSE_SKIPPED_EVENT,
   dispatchReadingFields,
@@ -527,11 +518,21 @@ test('M206-09 ②b 被闸门拒的孩子 ⇒ `dispatch/reuse-skipped` **事件**
   const journal = office.journalFor(WORKSPACE)
   const events = journal.read().events.filter((event) => event.type === REUSE_SKIPPED_EVENT)
   assert.equal(events.length, 1, `被闸门拒的孩子必须**落一条事件**（不落事件 = 读数只活在这一轮的内存里）：${JSON.stringify(events.map((event) => event.data))}`)
-  assert.equal(events[0]?.data['childSessionId'], childSessionId, '三条字段之一：孩子 id')
-  assert.equal(events[0]?.data['role'], 'developer', '三条字段之一：角色')
-  assert.match(String(events[0]?.data['reason'] ?? ''), /掩码/u, `三条字段之一：理由（要读得出是哪道闸门）：${String(events[0]?.data['reason'] ?? '')}`)
+  /**
+   * **`TASK-224` 换了取值入口，断言强度一条没降**：`dispatch/reuse-skipped` 现在是"一行一个原因"
+   *（`{ candidates, reasons: [{ reason, count, sampleChildIds }] }`），孩子 id 落在这批候选里而不是事件顶层。
+   * 所以三字段与所属卡改为从**读侧展开**（`reuseSkippedRowsFromEvents`，本卡新增的唯一读出口）取 ——
+   * 这同时就是"读侧两种形状都认"的正面证据。
+   */
+  const expanded = reuseSkippedRowsFromEvents(events).rows
+  assert.equal(expanded.length, 1, `展开后必须正好一个候选：${JSON.stringify(expanded)}`)
+  assert.equal(expanded[0]?.childSessionId, childSessionId, '三条字段之一：孩子 id')
+  assert.equal(expanded[0]?.role, 'developer', '三条字段之一：角色')
+  assert.match(String(expanded[0]?.reason ?? ''), /掩码/u, `三条字段之一：理由（要读得出是哪道闸门）：${String(expanded[0]?.reason ?? '')}`)
   assert.equal(events[0]?.data['task'], 'TASK-16313', '要能反查是哪张卡的那一笔派发')
   assert.equal(typeof events[0]?.data['decidedAt'], 'string', '判定时刻要落盘（否则"那一刻"无从复现）')
+  // **`TASK-224` 核心收益**：这一次派发只写了 1 条事件（修前是一行一个候选）
+  assert.equal(events.length, 1, `一次派发只写一条聚合事件：${JSON.stringify(events.map((event) => event.data))}`)
   // 读侧：事件承载同样认得（两种承载同一份读数）
   const viaEvent = reuseSkippedOf(journal).filter((row) => row.via === REUSE_SKIPPED_EVENT)
   assert.equal(viaEvent.length, 1, '读侧必须回读得到这条留痕')
@@ -654,8 +655,14 @@ test('M206-12 守卫① 候选重试：第 1 个不可投递、第 2 个可用 �
   assert.match(skipped?.[0]?.reason ?? '', /is unavailable/u, '必须带**宿主原话**（不是我们自己编的理由）')
   // 独立事件承载同样逐条（同一份三字段投影，不许一处有一处没有）
   const viaEvent = journal.read().events.filter((event) => String(event.type) === REUSE_SKIPPED_EVENT)
+  /**
+   * **`TASK-224` 换取值入口、不降强度**：事件从"一行一个候选"变成"一行一个原因"（候选落在
+   * `reasons[].sampleChildIds` 里）⇒ 孩子 id 改从**读侧展开**取；同时**新增**"这次只写了 1 条事件"的断言
+   * —— 那正是本卡的核心收益（修前每候选一条）。
+   */
+  assert.equal(viaEvent.length, 1, `一次派发只写一条聚合事件：${JSON.stringify(viaEvent.map((event) => event.data))}`)
   assert.deepEqual(
-    viaEvent.map((event) => event.data['childSessionId']),
+    reuseSkippedRowsFromEvents(viaEvent).rows.map((row) => row.childSessionId),
     [first],
     `独立事件也要落（读侧两种承载都认）：${JSON.stringify(viaEvent.map((event) => event.data))}`,
   )

@@ -18,7 +18,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
 import { boardModelFor, renderBoard } from './board/render.js'
-import {describeExemptions, describeCompactTaskList, describeInflightView, describeRecoverView, describeTaskBrief, describeToolUsageView} from './interface/describe.js'
+import { describeExemptions, describeCompactTaskList, describeInflightView, describeRecoverView, describeTaskBrief, describeToolUsageView, describeLedgerWriteVolume } from './interface/describe.js'
 import { exemptionLines } from './domain/construction.js'
 import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewDefectError, ReviewReproError, updateTestCase } from './domain/records.js'
 import type { AcceptanceVerdict, Review } from './domain/records.js'
@@ -178,7 +178,7 @@ function buildReadout(cwd: string): string {
 import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
-import { DELIVERY_FAILED_PREFIX, poolReadingLine, readingOfRole, reuseSkippedLines } from './domain/pool.js'
+import { DELIVERY_FAILED_PREFIX, poolReadingLine, readingOfRole, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
 import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
@@ -1533,8 +1533,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const forced = args.rebuild === true ? office.rebuild(call) : undefined
       // **DEF-030**：状态面同样要能一次列全豁免（否则"豁免可以静默发生"）
       const exemptionReadout = describeExemptions(exemptionLines(office.constructionProfile(call).profile))
+      /**
+       * **`TASK-224`**：台账写入量读数（最近一次派发落了几条 `dispatch/reuse-skipped`）。
+       * 修前 82 条/派发而回执上从无这个数字 ⇒ 同类回退无人能发现；现在是状态面的一行固定读数。
+       */
+      const ledgerWriteReadout = '\n' + describeLedgerWriteVolume(
+        lastReuseSkippedWriteCount(office.journalFor(call.cwd ?? '').read().events),
+      )
       const text = describeStatus(office.status(call), settings.projectDirName, office.shapeNotes(call))
         + exemptionReadout
+        + ledgerWriteReadout
       // **观测的事后出口（评审第三轮 C）**：派发回执那一刻子代理还没跑，观测数据只有到了这里（或看板）才看得到
       const faces = office.childFaces(call)
       // **取汇报 ①③**：最近完成的派发（卡 / 子会话 / 结论 / 耗时 / 报告落点 + 报告摘要）

@@ -2055,3 +2055,23 @@ export function describeHashRows(
   for (const item of broken) lines.push(`  ${item.path}  UNREADABLE ${item.code}`)
   return lines.join('\n')
 }
+
+/**
+ * **台账写入量读数**（`TASK-224`）：最近一次派发落了几条 `dispatch/reuse-skipped`。
+ *
+ * 为什么它必须出现在**状态面**：修前是 **82 条/派发**（真账 944KB 就是它堆出来的），而这个数字
+ * **在任何回执上都没有出现过** ⇒ 同类回退无人能发现。现在它是一行固定读数：
+ * 数字掉了说明聚合生效，数字涨回去说明有人把写入退回"一行一个候选"。
+ */
+export function describeLedgerWriteVolume(
+  readout: { task: string; events: number; bytes: number; candidates: number; sameAsSeq: number | undefined } | undefined,
+  softThreshold = 3,
+): string {
+  if (readout === undefined) return 'ledger writes (last dispatch): -'
+  const over = readout.events > softThreshold
+    ? `  ⚠ over the soft threshold (${String(softThreshold)}) — one event per reason is expected`
+    : ''
+  const ref = readout.sameAsSeq === undefined ? '' : `  sameAsSeq=${String(readout.sameAsSeq)}`
+  return `ledger writes (last dispatch): ${readout.task} events=${String(readout.events)} `
+    + `bytes=${String(readout.bytes)} candidates=${String(readout.candidates)}${ref}${over}`
+}
