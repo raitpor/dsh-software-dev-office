@@ -4395,7 +4395,9 @@ export class SoftwareDevOffice {
   }
 
   /**
-   * **真在飞的卡**（`TASK-231` 落点二）：唯一出口 {@link liveDispatchReading}。
+   * **真在飞的卡**（`TASK-231` 落点二）：`office` 这一层的**唯一入口** {@link liveDispatchReading}
+   * （口径本身在域层；"唯一"限本层 —— 全仓仍有 `dispatchedChildren` 那条**历史面**折叠，
+   * 它只回答"谁跑过"，不回答"谁在飞"，见它的函数注释）。
    *
    * 只认 `dispatch/started`（未 `finished`、未超孤儿 TTL、且卡在派发之后没被 `task/released`）。
    * `dispatch/decided` **永远不进这个集合** —— 决定了不等于发生了（`DEF-214` 的第一层危害）。

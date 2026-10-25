@@ -556,13 +556,24 @@ export interface DispatchDecisionRow {
 /**
  * 折叠出**每一笔派发决定**的收口状态（`TASK-231` 落点一 / 落点三的唯一出口）。
  *
- * 收口的两条来源，**行上自带**优先：
- *   ① 同一笔 `dispatch/decided` 上的 `outcome`（`started` / `failed` / `inline`）—— 新口径：
- *      决定与收口**同生同死**，悬空在结构上不可能；
- *   ② 老台账没有 `outcome` ⇒ 看它之后**同一张卡**有没有 `dispatch/started`（有 ⇒ `started`；
- *      若先又出现一笔新的 `decided` ⇒ 前一笔判 **`pending`**，不会被后一笔的 started 洗白）。
+ * 收口的两条来源：
+ *   ① 同一笔 `dispatch/decided` 上的 `outcome`：`failed` / `inline` **直接收口**（写顺序保证
+ *      "先尝试、后落账"⇒ 这两态没有悬空窗口，崩溃在尝试期间连 decided 都不会有）；
+ *   ② **`started` 这一态不由 `outcome` 一句话说了算**：它必须由**台账事件背书** ——
+ *      看同一张卡之后有没有 `dispatch/started`（有 ⇒ `started` 并记下它的序号）。找不到就照
+ *      `pending` 处理，并点名 `pendingReason='started-event-missing'`。
+ *      为什么：decided 与 started 是**两次独立 append**，第二笔写失败时台账会留下
+ *      「决定说起来了、started 事件没有」—— 修前那一版无条件采信 `outcome='started'`，
+ *      于是悬空守卫（看 `closure`）与容量守卫（看 `live`）**都会放过它**（`REV-104` #2）。
+ *   ③ 老台账没有 `outcome`（`TASK-231` 之前的 204 笔）⇒ 走与 ② **同一条**向后扫的路径；
+ *      若先又出现一笔新的 `decided` ⇒ 前一笔判 **`pending`**，不会被后一笔的 started 洗白。
  *
  * 老 `inline` 决定（降级就地执行）**天然没有** started ⇒ 按 `inline` 收口（它的收口就在回执里）。
+ *
+ * ⚠️ 措辞纪律（`REV-105` #1）：`failed` 侧由**写顺序**保证，`started` 侧由**事件核对**保证 ——
+ * 两侧的保证方式不同，所以这句话的正确写法就是上面 ①② 那两句，**不要**把它们合并成一句
+ * "结构上必然收口"的强断言（旧版本正是这么写的，被 `REV-104` #2 推翻）。
+ * 改声明时先 `grep` **全部出现处**，不是改记得的那一处。
  */
 export function dispatchDecisionRows(
   events: readonly DispatchLedgerEvent[],

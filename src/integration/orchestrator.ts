@@ -144,7 +144,7 @@ export interface SeatReading {
   free: number
   /** 卡状态是 `in-progress` 的那批 */
   inProgress: string[]
-  /** 真在飞的那批（唯一出口：`liveDispatchReading`） */
+  /** 真在飞的那批（本层唯一入口：`liveDispatchReading`；口径在域层，池视图另走 `foldPoolChildren` 折叠） */
   liveDispatches: string[]
   /** 两边都出现过的卡（只占一个位子） */
   both: string[]
