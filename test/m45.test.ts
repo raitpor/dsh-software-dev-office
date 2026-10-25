@@ -139,8 +139,18 @@ test('SDO-34：`.sdo/` 下的台账写入**不占卡的写范围**（要求如�
 test('SDO-46：blocked 卡**仍占**写范围（有意口径），但冲突要**说清持有者状态与解除动作**', () => {
   const blocked = card('TASK-020', { status: 'blocked', writeScopes: ['tools/checks/'] })
   const fresh = card('TASK-021', { writeScopes: ['tools/checks/'] })
-  const issues = validatePlan([blocked, fresh]).filter((issue) => issue.code === 'write-scope-disjoint')
-  assert.equal(issues.length > 0, true, 'blocked 仍排他（D6-1 的口径保持不变）')
+  // **`DEF-239`（`ADR-025`）**：普通相交属 `merge`（照派 + 三路合并）⇒ 这条判据不再为它出 issue。
+  // "blocked 仍占着写范围"这条口径**没有变**，变的是处置：**可见，但不拦**（派发面由 `scopeHeldTasks`
+  // 过滤 `merge`、回执里仍点名）。
+  assert.deepEqual(
+    validatePlan([blocked, fresh]).filter((issue) => issue.code === 'write-scope-disjoint'),
+    [],
+    'merge 档不出 issue（ADR-025）',
+  )
+  // 正向格：给 blocked 的持有者加一份**独占窗口**声明 ⇒ 判据必须重新出，且仍要说清"它 blocked 着、怎么解除"。
+  const blockedWindow = card('TASK-022', { status: 'blocked', writeScopes: ['tools/checks/'], exclusive: 'full-suite' })
+  const issues = validatePlan([blockedWindow, fresh]).filter((issue) => issue.code === 'write-scope-disjoint')
+  assert.equal(issues.length > 0, true, 'blocked holder + exclusive window must still be reported')
   assert.match(issues[0]?.detail ?? '', /blocked/u, '要点明挡住的卡处于 blocked')
   assert.match(issues[0]?.remedy ?? '', /action=release|drop/u, '要给出解除动作')
 })

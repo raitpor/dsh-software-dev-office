@@ -1105,7 +1105,9 @@ uiPlan:
   t12: "Change it to one of — {p1}"
   t13: "Dependency {p1} does not exist"
   t14: "Dependency cycle — {p1}"
-  t15: "{p1} and {p2} may run in parallel, but their write scopes overlap — {p3}"
+  t15: "{p1} and {p2} have write scopes that intersect at {p3}, and at least one of them declares an exclusive window (`exclusive` non-empty) — those two must be serialised (running both at once is the case that deletes each other's fixtures). An intersection on its own is still dispatched: this line only reports the serialise-only branch, plain intersections never appear in this check"
+  t15UnknownScope: "the write scopes of {p1} and {p2} **cannot be determined** (one side has no write scope / an empty one) — treated as the whole repository, fail-closed serialise. This branch **lists no paths**: there are no paths to compare, so listing any would be fabrication"
+  k13UnknownScope: "fill in the missing write scope (`sdo_task action=update id=<card> addWriteScopes=<JSON text> reason=...` to append, or `release` first and then replace `writeScopes` wholesale) — an empty scope neither reserves anything nor is audited for out-of-scope writes, so the check can only treat it as the whole repository. A card that really writes no code (a pure review card) should declare what it actually writes — normally the ledger directory — or be dropped explicitly"
 
 uiDescribe:
   kExemptions: "Per-check waivers ({p1}):"

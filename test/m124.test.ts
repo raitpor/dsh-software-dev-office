@@ -113,16 +113,30 @@ test('M124-02 done 对账：改动 src/a.tsx 对卡范围 [src/a.ts] 必须判�
   assert.equal(inDir.ok, true, '目录范围内的文件照旧通过')
 })
 
-test('M124-03 计划期：互为前缀的两个文件不再报"可能重叠"，目录 × 其下仍报', () => {
+test('M124-03 计划期：互为前缀的两个文件不再报"可能重叠"，目录 × 其下仍判相交（DEF-239：判据只报"必须串行"那两档）', () => {
   const falsePositive = validatePlan([card('TASK-901', ['src/a.ts']), card('TASK-902', ['src/a.tsx'])]).filter(
     (issue) => issue.code === 'write-scope-disjoint',
   )
   assert.deepEqual(falsePositive, [], '文件名前缀不得判成"可能并行但写范围重叠"')
 
-  const real = validatePlan([card('TASK-903', ['src/domain/']), card('TASK-904', ['src/domain/plan.ts'])]).filter(
-    (issue) => issue.code === 'write-scope-disjoint',
+  // **`DEF-239`（`ADR-025`）**：判据改用 `scopeSerialKindOf` 定支之后，`merge` 档**不出** issue ——
+  // 所以"目录 × 其下"这条边界**改在路径代数那一层直接钉**（那才是 `ADR-009` 的语义所在），
+  // 判据只核"该不该串行"。两层都断言：语义没变、出 issue 的门槛变了。
+  assert.equal(scopePathsIntersect('src/domain/', 'src/domain/plan.ts'), true, '目录范围与其下文件**必须**算相交')
+  assert.deepEqual(
+    validatePlan([card('TASK-903', ['src/domain/']), card('TASK-904', ['src/domain/plan.ts'])]).filter(
+      (issue) => issue.code === 'write-scope-disjoint',
+    ),
+    [],
+    'merge 档不出 issue（ADR-025：相交默认照派）',
   )
-  assert.equal(real.length, 1, '目录范围与其下文件**必须**仍报重叠（这是真冲突）')
+
+  const real = validatePlan([
+    card('TASK-903', ['src/domain/'], { exclusive: 'full-suite' }),
+    card('TASK-904', ['src/domain/plan.ts']),
+  ]).filter((issue) => issue.code === 'write-scope-disjoint')
+  assert.equal(real.length, 1, '独占窗口 + 目录 × 其下相交 ⇒ 必须出 issue（真串行那一档）')
+  assert.match(real[0]?.detail ?? '', /src\/domain/u, 'issue 要点名相交的那条路径（`scopeOverlaps` 归一后的写法，不带尾斜杠）')
 })
 
 test('M124-04 认领期：拒签回执点名**重叠的那个路径**，且不误伤互不冲突的卡（0.1.7 批3：只有两类串行才拒）', async () => {

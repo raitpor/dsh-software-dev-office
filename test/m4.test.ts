@@ -88,7 +88,9 @@ test('六条机械校验：单角色 / DoD / 无环 / 规模 / 写范围互斥 /
   const bad: TaskCard[] = [
     { ...(tasks[0] as TaskCard), id: 'TASK-900', role: 'wizard', dod: [], size: 'large', evidenceRequired: [] },
     // 写范围重叠且互相没有依赖 → 可能并行 → 必须报
-    { ...(tasks[0] as TaskCard), id: 'TASK-901', writeScopes: ['src/des-001/'] },
+    // **`DEF-239`（`ADR-025`）**：普通相交属 `merge`（照派）⇒ 这条判据只报"真需要串行"那一档，
+    // 所以夹具必须落在**独占窗口**上，否则本用例对 `write-scope-disjoint` 就没有判别力了。
+    { ...(tasks[0] as TaskCard), id: 'TASK-901', writeScopes: ['src/des-001/'], exclusive: 'full-suite' },
     { ...(tasks[1] as TaskCard), id: 'TASK-902', writeScopes: ['src/des-001/sub/'] },
   ]
   const issues = validatePlan([...tasks, ...bad]).map((issue) => issue.code)
@@ -545,8 +547,15 @@ test('D5-1/D5-2（依据 sdo-test 复测修复）：dropped 卡不参与成对�
       { title: '冲突乙', dod: ['x'], role: 'developer', writeScopes: ['src/same/'], size: 'small' },
     ],
   })
+  // **`DEF-239`（`ADR-025`）**：普通相交属 `merge` ⇒ 这条判据不再为它出 issue。要给本用例判别力，
+  // 两张卡必须落在"真需要串行"那一档 —— 给它们同一份**独占窗口**声明。suggestion 的 DTO 没有这个
+  // 字段（`TaskDraft` 只收建卡的最小集），所以建卡之后补：卡面字段就是真源，不走别的通道。
+  const d51Store = office.storeFor(workspace)
+  for (const task of office.tasks(call()).filter((item) => item.title === '冲突甲' || item.title === '冲突乙')) {
+    d51Store.writeYaml(['tasks', `${task.id}.yml`], { task: { ...task, exclusive: 'full-suite' } })
+  }
   const conflict = office.planIssues(call()).filter((issue) => issue.code === 'write-scope-disjoint')
-  assert.ok(conflict.length > 0, '两张同写范围的卡应被判为冲突（用例有判别力）')
+  assert.ok(conflict.length > 0, 'exclusive-window + 同写范围 ⇒ 必须判冲突（用例有判别力）')
   const victim = office.tasks(call()).find((task) => task.title === '冲突乙') as TaskCard
   office.dropTask(call(), victim.id, '作废后不应再参与成对校验')
   const after = office.planIssues(call()).filter((issue) => issue.code === 'write-scope-disjoint')
@@ -587,6 +596,10 @@ test('D6-1（依据 sdo-test 构造阶段实测修复）：写范围租约——
     role: 'developer', size: 'small', dependencies: [], blockedBy: [],
     writeScopes: ['pom.xml'], requirements: [], evidenceRequired: ['artifact'], evidence: [],
     iteration: 1, revision: 1, createdAt: '', updatedAt: '',
+    // **`DEF-239`（`ADR-025`）**：普通相交属 `merge`（照派）⇒ 这条判据只为"真需要串行"那一档出 issue。
+    // 本用例要钉的是**写范围租约**（done / dropped 释放范围），它必须在一个**会出 issue** 的档位上才可判，
+    // 所以整组夹具统一带上同一份**独占窗口**声明 —— 换掉的是"出 issue 的门槛"，"谁占着范围"没变。
+    exclusive: 'full-suite',
   } as unknown as TaskCard
   const conflicts = (tasks: TaskCard[]) => validatePlan(tasks).filter((issue) => issue.code === 'write-scope-disjoint').length
 

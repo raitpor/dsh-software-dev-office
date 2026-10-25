@@ -16,7 +16,12 @@
  *   · `exclusive-window` / `unknown-scope` ⇒ 真**串行**（`scopeHeldTasks` 才返回它）。
  * 于是"不许放宽"这条守据在派发面换了读数：真并行**必须仍被看见**（`scopeIntersections` 一条，
  * 点名两张卡与路径）；一旦任一方声明独占窗口 ⇒ **必须仍被挡住**（`scopeHeldTasks` 一条）。
- * 三处判据的**静态面**（`validatePlan` / `classifyNonDispatchable`）口径一字未动。
+ *
+ * **`DEF-239`（`TASK-268`）再收一格**：两个**静态面**（`validatePlan` 的 `write-scope-disjoint`、
+ * `classifyNonDispatchable` 的 `scope` 维）也改成同一支 `scopeSerialKindOf` 定支 ——
+ * `merge` 在静态面同样**不出** issue，只有 `exclusive-window` / `unknown-scope` 出。
+ * 因此本文件"不许放宽"的读数从"`merge` 也要报"换成"同一形状加一份独占窗口**必须**报"
+ * （`M160-01` ④' / `M160-02` / `M160-05` 三格逐条钉住，反向格仍在：`merge` 一律 0 条）。
  */
 import assert from 'node:assert/strict'
 import { readFileSync } from 'node:fs'
@@ -82,17 +87,25 @@ test('M160-01 三种**有序**形状在三处判据里都不算冲突；真并�
   ]
   // ③ 直接依赖（修前就对：抑制机制本身是好的）
   const direct = [card('TASK-A', 'ready', ['src/d/'], ['TASK-B']), card('TASK-B', 'ready', ['src/d/'])]
-  // ④ **真并行**：无依赖 + 写范围重叠 ⇒ 必须继续报冲突
+  // ④ **真并行**：无依赖 + 写范围重叠 ⇒ 必须继续**看得见**；要它继续**报冲突**得落在串行那一档
   const parallel = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/p/'])]
+  // ④' 同形 + 任一方声明**独占窗口** ⇒ 两个静态面都必须重新出 issue（`DEF-239` 的"不许放宽"读数落在这里）
+  const parallelWindow = [card('TASK-A', 'ready', ['src/p/'], [], 'full-suite'), card('TASK-B', 'ready', ['src/p/'])]
 
   assert.deepEqual(readings(star), { validatePlan: 0, classify: 0, scopeHeld: 0 }, "①'*'：三处都不得报冲突")
   assert.deepEqual(readings(chain), { validatePlan: 0, classify: 0, scopeHeld: 0 }, '②传递依赖：三处都不得报冲突')
   assert.deepEqual(readings(direct), { validatePlan: 0, classify: 0, scopeHeld: 0 }, '③直接依赖：三处一致（回归基线）')
+  // **`DEF-239`（`ADR-025`）**：普通相交属 `merge` ⇒ 两个静态面也**不再**为它出 issue。
+  // "修缺陷不等于放宽判据"这条守据因此换到下一个读数上：同一形状加一份独占窗口，两个面都必须重新出。
   assert.deepEqual(
     readings(parallel),
+    { validatePlan: 0, classify: 0, scopeHeld: 0 },
+    '④真并行 + merge：两个静态面都不出 issue（ADR-025）；它的可见性读数在下面 `named` 那条',
+  )
+  assert.deepEqual(
+    readings(parallelWindow),
     { validatePlan: 1, classify: 2, scopeHeld: 0 },
-    '④真并行：validatePlan / classify **必须**继续报冲突（修缺陷不等于放宽判据）；'
-      + '派发面 `scopeHeld` 为 0 是**新口径**（`ADR-025`：相交默认照派），它的"不许放宽"读数见下一条',
+    "④'真并行 + 独占窗口：validatePlan / classify **必须**继续报冲突（不许借改口径放宽判据）",
   )
 
   // `scopeHeldTasks` 那一面用"在飞持有者"造同一形状（三条都要 0）
@@ -128,9 +141,11 @@ test('M160-01 三种**有序**形状在三处判据里都不算冲突；真并�
 })
 
 test('M160-02 反例：把写范围改成不相交 ⇒ 冲突消失（证明不是"全都不报"）', () => {
-  const overlapping = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/p/'])]
-  const disjoint = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/q/'])]
-  assert.deepEqual(readings(overlapping), { validatePlan: 1, classify: 2, scopeHeld: 0 }, '前置：重叠时确实报')
+  // **`DEF-239`（`ADR-025`）**：这一格原来拿 `merge` 当"会报"的正例，那正例本身已经不成立
+  // —— 现在正例落在**独占窗口**那一档，反例（不相交）仍然必须 0 条。
+  const overlapping = [card('TASK-A', 'ready', ['src/p/'], [], 'full-suite'), card('TASK-B', 'ready', ['src/p/'])]
+  const disjoint = [card('TASK-A', 'ready', ['src/p/'], [], 'full-suite'), card('TASK-B', 'ready', ['src/q/'])]
+  assert.deepEqual(readings(overlapping), { validatePlan: 1, classify: 2, scopeHeld: 0 }, '前置：重叠 + 独占窗口时确实报')
   assert.deepEqual(readings(disjoint), { validatePlan: 0, classify: 0, scopeHeld: 0 }, '反例：不相交时不报')
 })
 
@@ -211,8 +226,6 @@ test('M160-05 TC-127：**反事实模拟** —— 谓词改回旧式，三种有
       ],
     },
   ]
-  // 对照组：真并行（无任何依赖）—— 新旧都必须报 1 条
-  const control = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/p/'])]
 
   for (const shape of shapes) {
     // 反事实：旧谓词下**每种形状各有 1 条假冲突**
@@ -221,7 +234,25 @@ test('M160-05 TC-127：**反事实模拟** —— 谓词改回旧式，三种有
     const live = readings(shape.tasks)
     assert.deepEqual(live, { validatePlan: 0, classify: 0, scopeHeld: 0 }, `${shape.name}：现实现三处都必须 0 条`)
   }
-  // 对照组不动：旧 1 → 新 1（validatePlan）/ 新 2（classify：双向各计一次）
+  // 对照组：真并行（无任何依赖）—— 旧谓词报 1 条；现口径下 `merge` 两个静态面都不出 issue，
+  // 所以"不许借反事实放宽"的读数落在**独占窗口**那一支：同一形状 + 一份独占窗口 ⇒ 必须重新报。
+  const control = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/p/'])]
+  const controlWindow = [card('TASK-A', 'ready', ['src/p/'], [], 'full-suite'), card('TASK-B', 'ready', ['src/p/'])]
+
+  for (const shape of shapes) {
+    // 反事实：旧谓词下**每种形状各有 1 条假冲突**
+    assert.equal(oldConflicts(shape.tasks), 1, `${shape.name}：旧谓词必须给出 1 条假冲突（否则这条反事实没咬住）`)
+    // 现实：唯一出口 `orderedPair` 判为有序 ⇒ 三处判据都不报（1 → 0）
+    const live = readings(shape.tasks)
+    assert.deepEqual(live, { validatePlan: 0, classify: 0, scopeHeld: 0 }, `${shape.name}：现实现三处都必须 0 条`)
+  }
   assert.equal(oldConflicts(control), 1, '对照组：旧谓词 1 条')
-  assert.deepEqual(readings(control), { validatePlan: 1, classify: 2, scopeHeld: 0 }, '对照组：新口径下**仍然**要报（不许借反事实放宽）')
+  // `DEF-239`：`merge` 档两个静态面都不出（这是新口径，不是放宽 —— 旧谓词在这里本来就报）
+  assert.deepEqual(readings(control), { validatePlan: 0, classify: 0, scopeHeld: 0 }, '对照组 × merge：ADR-025 下不出 issue')
+  // 承重读数：同一形状加一份独占窗口 ⇒ 新口径下**仍然**要报（validatePlan 1 / classify 双向 2）
+  assert.deepEqual(
+    readings(controlWindow),
+    { validatePlan: 1, classify: 2, scopeHeld: 0 },
+    '对照组 × 独占窗口：新口径下仍然要报（不许借反事实放宽）',
+  )
 })

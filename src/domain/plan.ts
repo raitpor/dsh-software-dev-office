@@ -973,18 +973,40 @@ export function validatePlan(tasks: TaskCard[], options: { textPaths?: readonly 
       if (a.iteration !== b.iteration && (a.iteration !== undefined || b.iteration !== undefined)) continue
       // **ADR-009 / DEF-057**：唯一出口（归一 + 目录边界前缀）—— 旧的双向 `startsWith`
       // 把 `src/a.ts` × `src/a.tsx` 判成"可能并行但写范围重叠"（假阳性，评审卡因此被无谓推迟）。
-      const overlap = scopeOverlaps(a.writeScopes, b.writeScopes)
-      if (overlap.length > 0) {
-        // **SDO-46**：把"挡住你的那张卡是什么状态"和"怎么腾范围"直接写给读者 —— 真机上被挡住的新卡
-        // 只看到一张看板，误判成"卡没建成"；确认后显式 `drop` 阻塞卡即立刻可派。
-        const holderNote = a.status === 'blocked' || b.status === 'blocked' ? t('uiPlan.kBlockedHolderNote') : ''
+      //
+      // **`DEF-239`（`ADR-025`）**：相交**该不该串行**同样只由那一支定 —— `scopeSerialKindOf`。
+      // 本判据**不另写**一份 `exclusive` / `unknown-scope` 判定（`DEF-044`：三处逐字重复，
+      // 同一个洞被继承三遍）。三档各走各的：
+      //   · `unknown-scope`（任一方写范围为空/缺失）⇒ 判不了 ⇒ fail-closed，按"要串行"报；
+      //   · `merge`（默认）⇒ 这一处**不出** issue（相交 ≠ 真冲突：照派、副本内写、三路合并）；
+      //   · `exclusive-window` ⇒ 出，并点名相交的那几条路径。
+      const kind = scopeSerialKindOf(a, b)
+      if (kind === 'unknown-scope') {
+        // ⚠️ 这一档 `scopeOverlaps` 恒给**空数组**（没有路径可比）⇒ 文案**不拼路径**，拼了就是编造。
         issues.push({
           code: 'write-scope-disjoint',
           taskId: a.id,
-          detail: fmt('uiPlan.t15', { p1: a.id, p2: b.id, p3: overlap.join('、') }) + holderNote,
-          remedy: t('uiPlan.k13') + t('uiPlan.kScopeReleaseHint') + t('uiPlan.kScopeSplitSuggestion'),
+          detail: fmt('uiPlan.t15UnknownScope', { p1: a.id, p2: b.id }),
+          remedy: t('uiPlan.k13UnknownScope'),
         })
+        continue
       }
+      const overlap = scopeOverlaps(a.writeScopes, b.writeScopes)
+      // 写范围**不相交** ⇒ 不关这条判据。`exclusive` 的排队另由 `classifyNonDispatchable` 的 `exclusive`
+      // 类点名 —— 那是"同一独占窗口组"这一轴（不要求范围相交），与这里的"写范围相交"是两回事。
+      if (overlap.length === 0) continue
+      // **反向守卫**：`merge` 在这一处**不出** issue —— 把 `merge` 的卡拦住不派同样是错的
+      // （`ADR-025`；两个方向都由 `test/m268.test.ts` 钉住）。
+      if (kind === 'merge') continue
+      // **SDO-46**：把"挡住你的那张卡是什么状态"和"怎么腾范围"直接写给读者 —— 真机上被挡住的新卡
+      // 只看到一张看板，误判成"卡没建成"；确认后显式 `drop` 阻塞卡即立刻可派。
+      const holderNote = a.status === 'blocked' || b.status === 'blocked' ? t('uiPlan.kBlockedHolderNote') : ''
+      issues.push({
+        code: 'write-scope-disjoint',
+        taskId: a.id,
+        detail: fmt('uiPlan.t15', { p1: a.id, p2: b.id, p3: overlap.join('、') }) + holderNote,
+        remedy: t('uiPlan.k13') + t('uiPlan.kScopeReleaseHint') + t('uiPlan.kScopeSplitSuggestion'),
+      })
     }
   }
 
@@ -1746,8 +1768,14 @@ export interface NonDispatchablePlan {
   exclusive?: { task: TaskCard; other: string }[] | undefined
   /** ① 需要 unblock / drop 的 blocked 卡 */
   blocked: TaskCard[]
-  /** ② 写范围与别的未结束卡重叠（1:1 独占的卡才有意义） */
-  scope: { task: TaskCard; other: string; overlap: string[] }[]
+  /**
+   * ② 写范围与别的未结束卡重叠（1:1 独占的卡才有意义）。
+   *
+   * **`DEF-239`（`ADR-025`）**：这一维只收**真需要串行**的两档（`exclusive-window` /
+   * `unknown-scope`）—— 判定与 `validatePlan` 的 `write-scope-disjoint` 共用 `scopeSerialKindOf`，
+   * `kind` 随行带出（读者能一眼看出"挡住我的是哪一档"，也不用去别处再推一次）。
+   */
+  scope: { task: TaskCard; other: string; overlap: string[]; kind: ScopeIntersectionKind }[]
   /** ③ 依赖未满足 */
   dependencies: { task: TaskCard; waitingOn: string[] }[]
   /**
@@ -1796,7 +1824,9 @@ export function classifyNonDispatchable(
     if (task.status !== 'planned' && task.status !== 'ready') continue
     // 1:1 独占的口径与设计一致：**单一路径**的写范围才谈得上互斥；多路径是"共同公约"声明，
     // 它本来就不阻止别人也写同一片（否则任何共同面都会把计划钉死）。
-    if (task.writeScopes.length !== 1) continue
+    // **`DEF-239`**：只排除**多路径**（`> 1`）—— **零路径**是"无法判定"，fail-closed 那一档要看见它，
+    // 拿 `!== 1` 一并排除会把这个洞留在这一面（`validatePlan` 会报、这一面不报 ⇒ 两面不同口径）。
+    if (task.writeScopes.length > 1) continue
     for (const other of tasks) {
       if (other.id === task.id || ended(other)) continue
       if (other.status === 'blocked') continue
@@ -1804,9 +1834,21 @@ export function classifyNonDispatchable(
       if (orderedPair(task, other, tasks)) continue
       // **ADR-009 / DEF-057**：与 `validatePlan` 同一个出口。这里保留"**对方**参与重叠的路径"
       // （回执要说清挡住你的是哪条路径）。
+      //
+      // **`DEF-239`（`ADR-025`）· 判据二**：这一处与 `validatePlan` 的 `write-scope-disjoint`
+      // 调的是**同一个函数** `scopeSerialKindOf`（不是两段长得像的代码）—— 只对 `exclusive-window`
+      // 与 `unknown-scope` 出这一行，`merge` 不算"挡住"。两处一旦分叉，就会出现
+      // 「回执说被写范围挡住、派发面其实照派」这种自相矛盾的读数。
+      const kind = scopeSerialKindOf(task, other)
+      if (kind === 'merge') continue
+      // `unknown-scope` 档没有路径可比（`scopeOverlaps` 恒为空数组）⇒ 不许把"空集"当成"不相交"吃掉它。
+      if (kind === 'unknown-scope') {
+        scope.push({ task, other: other.id, overlap: [], kind })
+        break
+      }
       const overlap = scopeOverlaps(other.writeScopes, task.writeScopes)
       if (overlap.length > 0) {
-        scope.push({ task, other: other.id, overlap: overlap.map((item) => textOf(item)) })
+        scope.push({ task, other: other.id, overlap: overlap.map((item) => textOf(item)), kind })
         break
       }
     }
