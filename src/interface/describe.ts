@@ -28,6 +28,7 @@ import { planStats } from '../domain/plan.js'
 import type { PlanIssue } from '../domain/plan.js'
 import type { RolePool } from '../domain/pool.js'
 import type { DispatchRequest } from '../integration/orchestrator.js'
+import type { ToolUsage } from '../domain/dispatchFace.js'
 
 /** `sdo_init` 的回执。 */
 /**
@@ -1376,6 +1377,104 @@ export function childFaceLines(
     )
   }
   return lines
+}
+
+/* ———————————————— 工具使用视图：按角色 × 工具的调用次数 + `bash` 单列（`TASK-221` 落点二） ———————————————— */
+
+/**
+ * **`sdo_status view=tools` 的回执上限（字符）** —— 与 `pool.REUSE_SKIP_CHARS` /
+ * `STRUCTURAL_SKIP_CHARS` 同一手法：读数与候选**个数脱钩**，只与"角色种数 × 行宽"相关。
+ *
+ * 为什么必须硬钉：真账上子会话有上百个、工具二十来个，逐条印就是一万五千字符（`DEF-175` 的老病灶）。
+ * 判据是**结构性**的，不是"这一份数据刚好够短"（守卫 `M237-03` 拿合成的大账去撞它）。
+ */
+export const TOOL_VIEW_MAX_CHARS = 2000
+
+/** 每个角色最多印多少种工具（DoD 要求 top10）。 */
+export const TOOL_VIEW_TOOL_ROWS = 10
+
+/** `bash` 那一行里最多印多少个命令形态（top3）。 */
+export const TOOL_VIEW_SHAPE_ROWS = 3
+
+/** "该会话无流水"最多点名几个会话（其余给计数）。 */
+export const TOOL_VIEW_SESSION_ROWS = 3
+
+/**
+ * **按角色的工具使用统计**（`sdo_status view=tools` 的渲染面，落点二）。
+ *
+ * 三个刻意的口径，都写在回执里（不靠读者猜）：
+ *   ① `bash` **单列一行**：次数 / 占该角色总调用的比例 / 最频繁的命令形态前 3
+ *      —— 这一行就是"补工具 ⇒ `bash` 下降"的判据（前后两次读同一行比数字）；
+ *   ② **只统计流水**：计数行（{@link TOOL_VIEW_SHAPE_ROWS} 之外的"超出上限折叠"）计入次数，
+ *      但**不留形态** ⇒ 形态那一栏只来自明细行，回执不假装它覆盖了全部调用；
+ *   ③ **旧条目无流水时如实说**：`withoutFlow` 里的会话（`DEF-205` 之前的宣告面条目）印
+ *      "sessions with no flow"，**绝不**为它们编造 0 次调用或"没用 `bash`"。
+ *
+ * 语言中立 ASCII：语言包（`src/data/lang/*.yml`）不在本卡写范围，而这一份是给复验者与模型的
+ * **读数**、不是终端散文 —— 与 {@link childFaceLines} 的归纳行同口径。
+ */
+export function describeToolUsageView(usage: ToolUsage): string {
+  const head: string[] = [
+    'tools usage (read-only) · source .sdo/evidence/child-tools.jsonl',
+    `calls ${String(usage.calls)} · sessions ${String(usage.sessions)} · detail rows ${String(usage.detailedRows)}`
+    + ` · count rows ${String(usage.foldedRows)} · bad lines ${String(usage.badLines)}`,
+  ]
+  if (usage.calls === 0) {
+    head.push('no call flow recorded yet (faces exist, but no usage — nothing is fabricated)')
+  }
+  if (usage.withoutFlow.length > 0) {
+    const named = usage.withoutFlow.slice(0, TOOL_VIEW_SESSION_ROWS).map((id) => id.slice(0, 8)).join(' ')
+    const more = usage.withoutFlow.length - Math.min(TOOL_VIEW_SESSION_ROWS, usage.withoutFlow.length)
+    head.push(
+      `sessions with no flow: ${String(usage.withoutFlow.length)} (${named}${more > 0 ? ` +${String(more)}` : ''})`
+      + ' — old entries carry no usage, not fabricated',
+    )
+  }
+  // 每个角色一块：标题行 + 最多 top10 工具行；`bash` 排第一且自带形态栏
+  const blocks: string[][] = usage.roles.map((role) => {
+    const rows: string[] = [`${role.role}  calls=${String(role.total)}`]
+    const ordered = role.tools.slice(0, TOOL_VIEW_TOOL_ROWS)
+    for (const item of ordered) {
+      const share = role.total === 0 ? 0 : Math.round((item.count / role.total) * 100)
+      if (item.tool === 'bash' && role.bash !== undefined) {
+        const shapes = role.bash.shapes.slice(0, TOOL_VIEW_SHAPE_ROWS).map((shape) => `${shape.shape} ${String(shape.n)}`).join(' / ')
+        rows.push(
+          `  bash ${String(item.count)} ${String(share)}%`
+          + (shapes === '' ? '' : `  top shapes: ${shapes}`)
+          + (role.bash.shapes.length > TOOL_VIEW_SHAPE_ROWS ? ' …' : ''),
+        )
+        continue
+      }
+      rows.push(`  ${item.tool} ${String(item.count)} ${String(share)}%`)
+    }
+    if (role.tools.length > ordered.length) {
+      rows.push(`  … ${String(role.tools.length - ordered.length)} more tools (folded)`)
+    }
+    return rows
+  })
+  // **字符预算**：先砍尾部角色的尾行（`bash` 行在每块的第二行，短账上不会走到它），再砍整块
+  let foldedRows = 0
+  const render = (): string => {
+    const body = blocks.flat()
+    const tail = foldedRows === 0 ? '' : `\n… ${String(foldedRows)} tool rows folded (cap ${String(TOOL_VIEW_MAX_CHARS)} chars)`
+    return [...head, ...body].join('\n') + tail
+  }
+  while (render().length > TOOL_VIEW_MAX_CHARS) {
+    const last = [...blocks].reverse().find((block) => block.length > 1)
+    if (last !== undefined) {
+      last.pop()
+      foldedRows += 1
+      continue
+    }
+    const tailBlocks = blocks.filter((block) => block.length > 0)
+    if (tailBlocks.length > 1) {
+      blocks.pop()
+      foldedRows += 1
+      continue
+    }
+    break
+  }
+  return render()
 }
 
 /** 就地执行（inline 降级）：把任务卡交给主模型。 */

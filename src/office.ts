@@ -9,7 +9,7 @@
  */
 import { createHash } from 'node:crypto'
 import { existsSync, readFileSync, statSync } from 'node:fs'
-import { basename, join, relative, resolve, sep } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type { BoardRequirement } from './board/render.js'
 import type { ProjectConfig, Settings } from './config.js'
@@ -254,6 +254,8 @@ import {
   recordChildObserved,
   reuseSkippedEventData,
   reuseSkippedFields,
+  toolUsageOf,
+  writeChildToolCall,
 } from './domain/dispatchFace.js'
 import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, isProcessOfficerRole, listRoleCards, maskFingerprint, publicWritePathsFor, toolAllowList } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
@@ -273,7 +275,7 @@ import {
 import { CONSTRUCTION_CHECKS, CONSTRUCTION_PACKAGES } from './types.js'
 import type { ConstructionPackage } from './types.js'
 import type { ConstructionExemption, ConstructionProfile, ContractTestRecord, MutationRecord, ProfileRead } from './domain/construction.js'
-import type { ChildFaceEntry } from './domain/dispatchFace.js'
+import type { ChildFaceEntry, ChildToolCallInput, ToolUsage } from './domain/dispatchFace.js'
 import { claimBaseline } from './domain/collab.js'
 
 /**
@@ -710,6 +712,18 @@ export type TaskUpdateOutcome =
 export class SoftwareDevOffice {
   /** 会话 → 工作目录。多会话并存在不同目录时也不会串。 */
   private readonly cwdBySession = new Map<string, string>()
+
+  /**
+   * **每个子会话已经写下的明细流水条数**（`TASK-221` 落点一；只在内存里）。
+   *
+   * 为什么要缓存：`noteChildToolCall` 在**最热的路径**上（每次工具调用一次），而"本会话写了第几条"
+   * 只要数一份 append-only 文件就能得到。每次重扫整份台账会让这个钩子的成本随台账长度线性增长
+   * —— 那正是本仓另一族性能病灶（读层不缓存、同参重复调用）的形状。
+   *
+   * 为什么缓存不影响守恒：它**只**决定"这一条记明细还是记计数行"，读侧的总和（明细 + Σ计数）
+   * 来自文件本身。几个进程同时写时最坏情况是"多留几条明细"（更详细，不丢数据）。
+   */
+  private readonly toolCallCounts = new Map<string, number>()
 
   constructor(readonly settings: Settings) {}
 
@@ -5550,6 +5564,62 @@ export class SoftwareDevOffice {
   /** 读回观测（供回执里如实展示）。 */
   childFaces(call: OfficeCall): ChildFaceEntry[] {
     return readChildFaces(this.storeFor(this.requireWorkspace(call))).faces
+  }
+
+  /**
+   * **记一条工具调用流水**（`TASK-221` 落点一 / `DEF-205`）：子会话每调用一次工具，落一条**精简**行。
+   *
+   * 与 {@link noteChildFace} 的分工（**落点三：把「越界」与「使用」分开**）：
+   *   · `noteChildFace` 记的是**观测面** —— 公告给它哪些工具、以及**掩码外的调用**（越界面，语义不动）；
+   *   · 本方法记的是**使用面** —— 每一次正常调用（工具名 / 目标路径 / 形态 / 退出码 / 耗时 / 成败）。
+   * 两者写进同一份台账（`evidence/child-tools.jsonl`）但**形状不同**，读侧按形状分开
+   * （`readChildFaces` 跳过流水行 ⇒ 既有渲染面一个字节都不变；`readChildToolCalls` 只读流水行）。
+   *
+   * **硬约束**：不记参数内容（只从参数里取"路径"与"命令首词形态"）、每会话最多
+   * `CALLS_PER_SESSION_CAP` 条明细（超出折叠成计数行）、单条 < `CALL_LINE_MAX_BYTES` 字节 ——
+   * 三条都在 `domain/dispatchFace.ts` 里兜住，这里只负责"取到工作区 + fail-open"。
+   *
+   * fail-open 的方向：观测是**记账**，任何异常都不该挡住子代理干活（与 `noteChildFace` 同一条纪律）。
+   */
+  noteChildToolCall(call: OfficeCall, input: ChildToolCallInput): void {
+    try {
+      const workspace = this.workspaceRootFor(call)
+      if (workspace === undefined) return
+      const store = this.storeFor(workspace)
+      // 没有 `.sdo/` 的工作区不写（不给无关会话造垃圾；与 A2 采集同一条纪律）
+      if (!existsSync(store.root)) return
+      const key = `${store.root}#${input.childSessionId}`
+      const cached = this.toolCallCounts.get(key)
+      const targetPath = input.targetPath === undefined ? undefined : this.relativeToWorkspace(input.targetPath, workspace)
+      const written = writeChildToolCall(
+        store,
+        { ...input, ...(targetPath === undefined ? {} : { targetPath }) },
+        cached === undefined ? {} : { detailedSoFar: cached },
+      )
+      this.toolCallCounts.set(key, written.detailed)
+    } catch {
+      /* fail-open：记账失败不该挡住任何东西（下一次调用会再记一条） */
+    }
+  }
+
+  /** **工具使用统计**的读侧（`sdo_status view=tools` 的数据面；落点二）。 */
+  toolUsage(call: OfficeCall): ToolUsage {
+    return toolUsageOf(this.storeFor(this.requireWorkspace(call)))
+  }
+
+  /**
+   * 把绝对路径换成**相对工作区**的路径（台账里只印相对路径：`NFR-009`）。
+   *
+   * 换不了（在工作区之外 / 相对路径无法判定）就**原样保留** —— 宁可让读者看到一个绝对路径，
+   * 也不要把一条真实读数悄悄丢成空串。
+   */
+  private relativeToWorkspace(path: string, workspace: string): string {
+    const target = path.trim()
+    if (target === '') return ''
+    const absolute = isAbsolute(target) ? target : resolve(workspace, target)
+    const rel = relative(workspace, absolute)
+    if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return target
+    return rel.split(sep).join('/')
   }
 
   /** **观测事件**的读侧投影（`dispatch/observed`；按子会话折叠，见 `readChildObservations`）。 */

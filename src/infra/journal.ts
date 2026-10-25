@@ -10,7 +10,7 @@
  *   · 读取时遇到**损坏或不连续的尾部**就停在那里，返回最后一个一致前缀
  *     （宁可少认，不可把半截记录当成事实）。
  */
-import { closeSync, openSync, readSync, statSync } from 'node:fs'
+import { closeSync, openSync, readdirSync, readSync, statSync } from 'node:fs'
 
 import { SdoStore } from './store.js'
 import type {
@@ -193,18 +193,52 @@ function tally(bucket: Record<string, number>, key: string): void {
   bucket[key] = (bucket[key] ?? 0) + 1
 }
 
-/** 探针戳：每个来源路径的 `dev:ino:size:mtimeMs`（读不到记 `-`）。 */
+/**
+ * 探针戳：每个来源路径的**内容级指纹**（读不到记 `-`）。
+ *
+ * **文件** ⇒ `dev:ino:size:mtimeMs` 四元组（tmp+rename 会让 inode 变，就地写会让 size/mtime 变）。
+ *
+ * **目录** ⇒ `readdir` 之后**逐条目 stat**，把 `名字:尺寸:mtimeMs` 排序后整串折进戳里。
+ * 为什么不能只 stat 目录（`REV-100` 第 1 条，真机形态）：目录的 `mtimeMs` / `size` **只在增删改名时变**；
+ * 就地改写一条**已有**文件的**内容**（`echo >`、`cp` 覆盖、宿主 `edit` 工具 —— 都是同 inode 写）
+ * 目录 stat 一动不动 ⇒ 只盯目录的探针会一直交**旧派生表**，静默错判采纳。
+ * 逐项（名字 + 尺寸 + mtime）比"最大 mtime / 尺寸之和 / 条目数"更精细（一次改名+改内容不会撞），
+ * 代价相同：都只做一轮 `stat`，成本与目录条目数线性相关（真账 `tasks/` 229 项、`reviews/` 100 项）。
+ *
+ * **边界（如实，别声称挡住）**：下面这些都挡得住 —— tmp+rename（产品写路径 / `sed -i`）、同 inode 的
+ * 就地改写（尺寸变或不变，`writeFileSync` 会推进 `mtime`）、新增 / 删除 / 改名；
+ * **挡不住**「写完之后再把 `mtime` 回拨到原值」（`utimes` / `touch -r`），也挡不住"两次写落在同一个
+ * 时间刻度内"—— 那需要内容哈希，而每读一次就哈希整目录等于取消记忆化。
+ *
+ * **扩探针的义务**：四张表当前的 compute 只读 `tasks/*.yml`、`reviews/*.yml`、`reviews/verified.yml`
+ * 与 journal 事件（`roles.yml` / config / 工具分组**都不是**输入，已逐条核过）。将来若把
+ * `defects/` / `tests/` / `gates/` 等真源拉进任何一张记忆化表，**必须把它加进调用点的 `probes`** ——
+ * 漏了不会报错，只会安静地读到旧表。
+ */
 function probeStamp(probes: readonly string[]): string {
-  const parts: string[] = []
-  for (const probe of probes) {
-    try {
-      const stat = statSync(probe)
-      parts.push(`${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`)
-    } catch {
-      parts.push('-')
+  return probes.map((probe) => pathStamp(probe)).join('|')
+}
+
+/** 单条来源路径的戳（目录 = 逐条目聚合；文件 = 四元组；读不到 = `-`）。 */
+function pathStamp(target: string): string {
+  try {
+    const stat = statSync(target)
+    if (!stat.isDirectory()) return `${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`
+    const names = readdirSync(target).sort()
+    const entries: string[] = [`d${stat.dev}:${stat.ino}:${names.length}`]
+    for (const name of names) {
+      try {
+        const child = statSync(`${target}/${name}`)
+        entries.push(`${name}:${child.size}:${child.mtimeMs}`)
+      } catch {
+        // 竞态（列出来之后被删）：如实记"这个条目现在读不到"，下一次 stat 会把差异显出来
+        entries.push(`${name}:-`)
+      }
     }
+    return entries.join(',')
+  } catch {
+    return '-'
   }
-  return parts.join('|')
 }
 
 /** 丢掉某个台账的派生表（缺省 = 全部）。**换代时自动调**，也可显式调。 */

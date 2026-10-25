@@ -788,6 +788,11 @@ export function pendingReviewBigCards(store: SdoStore, journal: Journal): Pendin
    * **`TASK-220`**：整张判定结果再按 `(台账路径, 代次)` **记忆化** —— 门禁 / 状态块 / `done` 关在一轮
    * 里会重复问它（真账实测三次同价 43.09 / 42.45 / 43.60ms，零记忆化）。代次一变（任何 append /
    * 重解析）或来源 YAML 被动过（探针失配）就整张作废：**同一个代次源**，不各算一套。
+   *
+   * 探针是**内容级**的（`REV-100` 第 1 条 / `DEF-218`）：`tasks/`、`reviews/` 两个目录都**逐条目** stat
+   * （名字 + 尺寸 + mtime），所以"就地改一张已有卡的 `status`"也能看见（`M236-09` 钉住）。
+   * 只 stat 目录本身不够 —— 目录 mtime/size 只在增删改名时变，而 `edit` / `echo >` 是同 inode 就地写。
+   * 边界：写完把 mtime 回拨、或两次写落在同一时间刻度内 ⇒ 看不见（要挡住得做内容哈希，等于取消记忆化）。
    */
   // 一次链里只读一次台账（`M234-05` 的"一次调用只读一次"）：这份事件数组一路传下去，下游不再 stat
   const events = journal.read().events

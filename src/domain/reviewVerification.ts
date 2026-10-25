@@ -53,9 +53,19 @@ const REVIEWS_DIR = 'reviews'
  * 口径（与读层缓存 `TASK-213` **同一个代次源**，不各算一套）：
  *   · 事件索引 / 采纳表：键 = `(路径, 代次)`；代次由 `journal` 单调递增（任何 append / 重解析都换代）；
  *   · 评审表 / 处置表：它们**不是**从 journal 折出来的（真源是 `reviews/*.yml`，手可编辑）⇒
- *     除代次外再加一组**来源探针**（`reviews/` 目录 + `verified.yml` 的 `dev:ino:size:mtimeMs`）。
+ *     除代次外再加一组**来源探针**（`reviews/` 目录 + `verified.yml`）。
  *     产品代码写这两份 YAML 时会同时 append 事件（换代次），但**手改 / 夹具直写**不会 ——
- *     只认代次就会永远读到旧表（= 静默错判采纳）。探针与读层的锚点复算同一路数：便宜、保守、失配就重建。
+ *     只认代次就会永远读到旧表（= 静默错判采纳）。
+ *
+ *     探针是**内容级**的（`REV-100` 第 1 条 / `DEF-218`）：目录**逐条目** stat，聚合 `名字:尺寸:mtimeMs`；
+ *     只 stat 目录本身是不够的 —— 目录的 mtime/size 只在**增删改名**时变，而宿主 `edit` / `echo >` /
+ *     `cp` 覆盖都是**同 inode 就地写**（改一条已有 `REV-xxx.yml` 的内容），目录 stat 一动不动。
+ *     逐文件聚合之后这种"内容被就地改"也能看见（`M236-08` 钉住；反例形态见 `mutant-D`）。
+ *     边界（**不许声称挡住**）：写完把 mtime 回拨、或两次写落在同一时间刻度内 ⇒ 看不见。
+ *
+ *     **扩探针的义务**：本组探针只覆盖 `reviews/`（四张表的 compute 也只读它 + `tasks/` + 事件；
+ *     `roles.yml` / config / 工具分组**都不是**输入）。将来若把 `defects/` / `tests/` / `gates/` 等真源
+ *     拉进任何一张记忆化表，**必须同时把该目录加进 `probes`** —— 漏了不报错，只会安静地读旧表。
  */
 function reviewProbes(store: SdoStore): string[] {
   return [store.path(REVIEWS_DIR), store.path(REVIEWS_DIR, REVIEW_VERIFICATIONS_FILE)]

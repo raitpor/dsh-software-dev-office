@@ -14,13 +14,17 @@
  *   · `M236-03` ③ **同一代次内二次调用命中**：`reviewAdoptions` 调两次、真算**恰好一次**（计数桩实测）；
  *   · `M236-04` ④ **门禁回执与改前逐字节相同**：冷（缓存全清）/ 热两态的判据结果 `JSON.stringify` 全等；
  *   · `M236-05` **只改真源 YAML（不 append 事件）也必须看得见**：来源探针失配即重建（反例：只认代次就会读到旧表）；
+ *     注意它只覆盖 **tmp+rename** 形态（`store.writeYaml`）——「内容被就地改写」是另一档，见 08/09；
  *   · `M236-06` **记忆化按台账路径隔离**：两个工作区的表互不串；
- *   · `M236-07` 真账上冷/热两份读数逐字节相同 + 命中阈值（第二次调用 < 1ms，`pendingReviewBigCards` < 10ms）。
+ *   · `M236-07` 真账上冷/热两份读数逐字节相同 + 命中阈值（第二次调用 < 1ms，`pendingReviewBigCards` < 10ms）；
+ *   · `M236-08` **探针必须看见同 inode 的「就地改写」**（`REV-100` 第 1 条 / `DEF-218`）：用 `writeFileSync`
+ *     改一条**已有**评审的 `verdict`（尺寸变、条目不增不删 ⇒ **目录 stat 一动不动**），记忆化视图必须跟着变；
+ *   · `M236-09` 同一档在**任务卡**上：就地改一张卡的 `status` ⇒ `pendingReviewBigCards` 的考虑集必须跟着变。
  *
  * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`；中文只写在断言之外）。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
@@ -31,6 +35,7 @@ import { REAL_LEDGER_DIR, realLedgerSkip } from './support/real-ledger.js'
 import { CHECKERS } from '../src/domain/gates.js'
 import { pendingReviewBigCards } from '../src/domain/collab.js'
 import { listReviews, recordReview, reviewContentHash } from '../src/domain/records.js'
+import { listTasks } from '../src/domain/plan.js'
 import {
   adoptionTable,
   listDispositionsCached,
@@ -280,6 +285,70 @@ function taskOf(id: string): TaskCard {
     updatedAt: '',
   }
 }
+
+test('M236-08 the probes see a SAME-INODE in-place rewrite of an existing review YAML', () => {
+  /**
+   * `REV-100` 第 1 条（`DEF-218`）：只 stat **目录**的探针看不见"改一条已有文件的内容"——
+   * 目录的 `mtimeMs` / `size` 只在**增删改名**时变，而宿主 `edit` / `echo >` / `cp` 覆盖都是**同 inode 就地写**。
+   * 这一格用 `writeFileSync` 造那一档（**不要**用 `store.writeYaml`：它走 tmp+rename，05 已经覆盖了）。
+   */
+  const review = recordReview(store, journal, {
+    taskId: 'TASK-001',
+    reviewer: 'rev-b',
+    verdict: 'pass',
+    findings: ['one finding'],
+  })
+  const file = store.path('reviews', `${review.id}.yml`)
+  const dir = store.path('reviews')
+  const warm = listReviewsCached(store, journal).find((item) => item.id === review.id)
+  assert.equal(warm?.verdict, 'pass', 'precondition: the memoised table is warm and says pass')
+  const warmTable = adoptionTable(store, journal)
+
+  const before = statSync(file)
+  const dirBefore = statSync(dir)
+  const text = readFileSync(file, 'utf8')
+  // 同 inode 就地改写：verdict 改成 changes-requested + 补一行注释（尺寸变、条目不增不删）
+  writeFileSync(file, `${text.replace('verdict: pass', 'verdict: changes-requested')}# in-place edit (same inode)\n`)
+  const after = statSync(file)
+  const dirAfter = statSync(dir)
+
+  assert.equal(after.ino, before.ino, 'the rewrite must keep the inode (this is what edit/cp/echo > do)')
+  assert.notEqual(after.size, before.size, 'the rewrite must change the file size')
+  // 两态的前提：目录 stat **真的一动不动** —— 只盯目录的探针在这一格必红
+  assert.equal(dirAfter.mtimeMs, dirBefore.mtimeMs, 'the directory mtime must NOT move (that is why a dir-only probe is blind)')
+  assert.equal(dirAfter.size, dirBefore.size, 'the directory size must NOT move either')
+
+  assert.equal(
+    listReviews(store).find((item) => item.id === review.id)?.verdict,
+    'changes-requested',
+    'sanity: the raw reader sees the in-place edit',
+  )
+  assert.equal(
+    listReviewsCached(store, journal).find((item) => item.id === review.id)?.verdict,
+    'changes-requested',
+    'the memoised reviews table must see the in-place edit (dir-only probes would keep serving `pass`)',
+  )
+  assert.notEqual(adoptionTable(store, journal), warmTable, 'the adoption table must be rebuilt as well')
+})
+
+test('M236-09 the same in-place rewrite is caught on a task card (pending set follows)', () => {
+  const warm = pendingReviewBigCards(store, journal)
+  assert.ok(warm.considered.includes('TASK-001'), 'precondition: the done medium card is in the considered set')
+  const file = store.path('tasks', 'TASK-001.yml')
+  const text = readFileSync(file, 'utf8')
+  // 同 inode 就地改写：把卡从 done 改成 in-progress（离开考虑集）
+  writeFileSync(file, text.replace('status: done', 'status: in-progress'))
+  assert.equal(
+    listTasks(store).find((task) => task.id === 'TASK-001')?.status,
+    'in-progress',
+    'sanity: the raw reader sees the in-place edit',
+  )
+  const after = pendingReviewBigCards(store, journal)
+  assert.ok(
+    !after.considered.includes('TASK-001'),
+    'pendingReviewBigCards must follow the in-place rewrite (a dir-only probe would keep the old card status)',
+  )
+})
 
 test('M236-07 (real ledger) cold/warm readings are byte-identical, and the second call is a hit', realLedgerSkip() ?? {}, () => {
   const realStore = new SdoStore(REAL_LEDGER_DIR)

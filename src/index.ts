@@ -18,7 +18,7 @@ import type { Session } from '@deepseek-ai/dsh-session'
 import type { ToolRuntime } from '@deepseek-ai/dsh-tools'
 
 import { boardModelFor, renderBoard } from './board/render.js'
-import {describeExemptions, describeCompactTaskList, describeInflightView, describeRecoverView, describeTaskBrief} from './interface/describe.js'
+import {describeExemptions, describeCompactTaskList, describeInflightView, describeRecoverView, describeTaskBrief, describeToolUsageView} from './interface/describe.js'
 import { exemptionLines } from './domain/construction.js'
 import { ACCEPTANCE_VERDICTS, DEFECT_DISCOVERY_LEVELS, isDefectDiscoveryLevel, ReviewDefectError, ReviewReproError, updateTestCase } from './domain/records.js'
 import type { AcceptanceVerdict, Review } from './domain/records.js'
@@ -1523,6 +1523,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **`TASK-219` 落点二/五**：只读视图（`inflight` / `recover`）。不给 `view` ⇒ 下面每一行与修前逐字相同。
       if (args.view === 'inflight') return describeInflightView(office.inflightView(call))
       if (args.view === 'recover') return describeRecoverView(office.recoverView(call))
+      // **`TASK-221` 落点二**：按角色 × 工具的工具使用统计（`bash` 单列）——「补工具 ⇒ bash 下降」的判据
+      if (args.view === 'tools') return describeToolUsageView(office.toolUsage(call))
       // **DEF-070**：`sdo_status` 的第一行必须是**本会话实际加载的那份构建**（端到端验证最容易验到旧构建）
       const buildLine = buildReadout(call.cwd ?? '')
       // **③b（本轮核实）**：旧实现把 `office.rebuild()` 的返回值**丢掉**了 —— 用户显式 `--rebuild` 之后，
@@ -4865,6 +4867,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
       let roleCacheAt = 0
       let roleClaims: ReturnType<typeof claimsBySession> = []
 
+      /**
+       * **调用流水的耗时基线**（`TASK-221` 落点一）：`callId → 起始时刻`。
+       *
+       * 宿主没有现成的"这一次调用花了多久"字段，只能在 pre-execute 记起点、post-execute 取差。
+       * 键用宿主的 `ToolExecution.callId`（每次调用唯一）。**有界**：被拒的调用不会进 post-execute
+       * （掩码硬拦、阶段纪律拒写），残留项按插入顺序清掉最老的，不让这张表无限长。
+       */
+      const callStartedAt = new Map<string, number>()
+
       toolCtx.effect(() => {
         const off = (
           toolCtx as unknown as {
@@ -4878,6 +4889,16 @@ export function apply(ctx: Context, config: SdoConfig): void {
             const agent = (exec as { agent?: unknown }).agent
             const call = injectionCall(agent)
             const tool = String(exec.name ?? '')
+            // **`TASK-221` 落点一（耗时基线）**：记下这条调用的起点（post-execute 取差）；取不到 `callId` 就不记
+            const callId = typeof (exec as { callId?: unknown }).callId === 'string' ? String((exec as { callId?: unknown }).callId) : ''
+            if (callId !== '') {
+              callStartedAt.delete(callId)
+              callStartedAt.set(callId, Date.now())
+              if (callStartedAt.size > 256) {
+                const oldest = callStartedAt.keys().next().value
+                if (oldest !== undefined) callStartedAt.delete(oldest)
+              }
+            }
             // **执行者禁令**的判据：这个会话是不是**被派发的子会话**（血缘来自会话首部）。
             // 驾驶舱（depth 0 / 无 parentSession）不是执行者 ⇒ 即使认领了卡也仍能派发。
             const sessionHeader = (agent as { session?: { header?: { delegationDepth?: unknown; parentSession?: unknown } } } | undefined)?.session?.header
@@ -5186,6 +5207,34 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // 旧实现不判失败 ⇒ 一次**失败**的 `.sdo` 写入照样记 `truth/file-written`，把 G3 签字作废。
             // fail-open 的方向是"照原样放行结果"，不是"照原样记账"：写失败 = 真源没变 ⇒ 不记。
             const failed = typeof result === 'object' && result !== null && (result as { isError?: unknown }).isError === true
+            // **`TASK-221` 落点一（调用流水）**：子会话每调用一次工具，落一条**精简**行（`DEF-205`）。
+            // 三条边界在这里（域层的硬约束只管"长什么样"，这里管"记谁、记什么"）：
+            //   · 只记**我们自己派发的子会话**（驾驶舱的调用不进子代理观测面）；
+            //   · 参数**整份**交给域层，域层只取路径与命令首词 —— 正文/密钥不落盘（`M237-05` 拿哨兵撞）；
+            //   · 取不到的值**不记**（`exitCode` / `ms` / `role` / `task`），绝不编造。
+            const flowCall = injectionCall(exec.agent)
+            const flowChild = flowCall.sessionId ?? ''
+            if (flowChild !== '') {
+              const mine = office.dispatchedChildren(flowCall).filter((item) => item.childSessionId === flowChild).at(-1)
+              if (mine !== undefined) {
+                const callId = typeof (exec as { callId?: unknown }).callId === 'string' ? String((exec as { callId?: unknown }).callId) : ''
+                const startedAt = callId === '' ? undefined : callStartedAt.get(callId)
+                if (callId !== '') callStartedAt.delete(callId)
+                const rawExit = typeof result === 'object' && result !== null
+                  ? (result as { value?: { exitCode?: unknown } }).value?.exitCode
+                  : undefined
+                office.noteChildToolCall(flowCall, {
+                  childSessionId: flowChild,
+                  role: mine.role,
+                  task: mine.taskId,
+                  tool,
+                  args: exec.arguments,
+                  ok: !failed,
+                  ...(typeof rawExit === 'number' && Number.isFinite(rawExit) ? { exitCode: rawExit } : {}),
+                  ...(startedAt === undefined ? {} : { ms: Math.max(0, Date.now() - startedAt) }),
+                })
+              }
+            }
             if ((tool === 'write' || tool === 'edit') && !failed) {
               // **D1**：同上 —— 宿主真实键是 `file_path`（post 记账这一处以前也恒空）
               const raw = (exec.arguments ?? {}) as { file_path?: unknown; path?: unknown; file?: unknown; paths?: unknown }
