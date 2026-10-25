@@ -2276,8 +2276,18 @@ export function apply(ctx: Context, config: SdoConfig): void {
          * 修前这里**先**落 `dispatch/decided`、**再**去起会话：起会话失败（宿主没服务/没 provider/
          * 抛错）时只留下一条"决定了但没发生"的决定，**没有任何收口事件** ⇒ 台账上它与「正在派发」
          * 长得一样（`DEF-214` 的病根）。现在顺序反过来：**先尝试、后落账**，并把结果写进**同一笔**
-         * 事件（`outcome`），于是悬空决定在结构上进不了台账 ——
-         * `inline`（就地执行，没有子会话可起）也当场收口，不留悬空。
+         * 事件（`outcome: 'started' | 'failed' | 'inline'`，`failed` 另带 `failureReason`）；
+         * `inline`（就地执行，没有子会话可起）同样当场收口。
+         *
+         * ⚠️ **这段顺序不等于一次事务**（`TASK-248` / 本族第 15 次纠偏）：生产路径是**三段 append** ——
+         * ① `await startDispatch`（尝试）→ ② `recordDispatch`（落 `dispatch/decided`）→
+         * ③ `recordDispatchStarted`（落 `dispatch/started`，是**另一次**留痕）。
+         * ②与③之间崩溃，台账里就留下「`decided.outcome='started'` 说起来了、`dispatch/started` 却没有」
+         * 的一条悬空决定 —— 也就是说**悬空决定进得了台账**，只是它现在**带得动一句自我说明**
+         * （`outcome` 记的是这一次尝试的结果，不等于台账已经自洽）。
+         *
+         * 兜底靠**判据**而不是靠顺序：同卡 `started` 等不到、年龄又过了
+         * `DECIDED_SETTLE_SECONDS` ⇒ `danglingDecisions` 判红点名（`dispatchDecisionHealth` 是一次调用出口）。
          */
         lastBackend = { backend: decision.backend, iteration: iteration?.number }
         if (decision.backend === 'inline') {
