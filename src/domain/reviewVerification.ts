@@ -30,7 +30,7 @@ import { fmt, t } from './i18n.js'
 import { pushShapeNote, recordListOf, textOf } from '../infra/scalar.js'
 import { findingHashOf, listDefects, listReviews, listTestResults, reviewContentHash } from './records.js'
 import { listTasks } from './plan.js'
-import type { Journal } from '../infra/journal.js'
+import type { EventIndex, Journal } from '../infra/journal.js'
 import type { SdoStore } from '../infra/store.js'
 import type { JournalEvent } from '../types.js'
 import type { Review } from './records.js'
@@ -38,6 +38,67 @@ import type { FieldShapeNote } from '../infra/scalar.js'
 
 /** 核实台账（放在 `reviews/` 下；`listReviews` 只认 `REV-*.yml`，不会被它干扰）。 */
 export const REVIEW_VERIFICATIONS_FILE = 'verified.yml'
+
+/** 评审真源所在目录（评审表 / 处置表 / 采纳表的来源探针都盯它）。 */
+const REVIEWS_DIR = 'reviews'
+
+/**
+ * **派生表记忆化**（`TASK-220`）—— 评审表 / 处置表 / 采纳表，键 = `(台账绝对路径, journal 代次)`。
+ *
+ * 病根（本卡实测，真账 `.sdo/journal.jsonl` 近 7.6k 事件 / 98 条评审）：
+ *   · `reviewAdoptions` 连测 **37.62 / 33.64 / 30.62ms**、`pendingReviewBigCards` **43.09 / 42.45 / 43.60ms** ——
+ *     **三次同价**就是"零记忆化"的指纹：同一个参数每问一次都从头折一遍；
+ *   · 其中主项是"按 type 的全文重扫"：98 条评审 ×（recorded / hashed / verified）各扫一遍七千多事件。
+ *
+ * 口径（与读层缓存 `TASK-213` **同一个代次源**，不各算一套）：
+ *   · 事件索引 / 采纳表：键 = `(路径, 代次)`；代次由 `journal` 单调递增（任何 append / 重解析都换代）；
+ *   · 评审表 / 处置表：它们**不是**从 journal 折出来的（真源是 `reviews/*.yml`，手可编辑）⇒
+ *     除代次外再加一组**来源探针**（`reviews/` 目录 + `verified.yml` 的 `dev:ino:size:mtimeMs`）。
+ *     产品代码写这两份 YAML 时会同时 append 事件（换代次），但**手改 / 夹具直写**不会 ——
+ *     只认代次就会永远读到旧表（= 静默错判采纳）。探针与读层的锚点复算同一路数：便宜、保守、失配就重建。
+ */
+function reviewProbes(store: SdoStore): string[] {
+  return [store.path(REVIEWS_DIR), store.path(REVIEWS_DIR, REVIEW_VERIFICATIONS_FILE)]
+}
+
+/**
+ * **采纳表的计数器**（`TASK-220` 的可测面：本卡的判据必须是**实测**，不是估算）。
+ *
+ *   · `calls`：`reviewAdoptions(...)` 被**请求**了几次（门禁一次检查里 ≤ 1 就是读它）；
+ *   · `computes`：其中**真的逐条算**了几次（命中记忆化不计）。
+ *
+ * 只累加、不进任何回执（与 `journalReadStats` 同一路数）。
+ */
+export const reviewAdoptionStats = {
+  calls: 0,
+  computes: 0,
+}
+
+/** 清零采纳表计数器（守卫与复现脚本用；不影响记忆化内容）。 */
+export function resetReviewAdoptionStats(): void {
+  reviewAdoptionStats.calls = 0
+  reviewAdoptionStats.computes = 0
+}
+
+/**
+ * **评审表**（`reviews/REV-*.yml`）的**只读**记忆化视图 —— 键 = `(台账路径, 代次)` + 来源探针。
+ *
+ * 这是 `listReviews`（真源读取）的批量形态：门禁、状态块、`done` 关读的都是同一批 YAML，
+ * 修前各自 `listReviews` 一遍（真账 98 个文件 ~5.4ms）。返回的是**共享只读视图**：要排序/改就先拷。
+ */
+export function listReviewsCached(store: SdoStore, journal: Journal): Review[] {
+  return journal.memoDerived('reviews-table', reviewProbes(store), () => listReviews(store))
+}
+
+/**
+ * **核实留痕整表**（`reviews/verified.yml`）的只读记忆化视图 —— 同 `listReviewsCached` 的口径。
+ *
+ * 修前 `listDispositions(store)` 单次 ~8.5ms，而 `verifyReviewFinding` 一次要问两遍、采纳判定
+ * 每条评审还要各问一遍（`TASK-213` 已经收到"批量只读一次"，本卡再把**单次形态**也记忆化）。
+ */
+export function listDispositionsCached(store: SdoStore, journal: Journal): ReviewFindingDisposition[] {
+  return journal.memoDerived('dispositions-table', reviewProbes(store), () => listDispositions(store))
+}
 
 export type ReviewFindingOutcome = 'reproduced' | 'refuted'
 
@@ -312,11 +373,11 @@ export function listDispositions(store: SdoStore): ReviewFindingDisposition[] {
  *
  * 返回 `released`：卡是否存在"认领之后又被释放"（供 `ownerChecked` 如实标注，不把它混成 `no-claim`）。
  */
-function currentClaim(log: readonly JournalEvent[], taskId: string): { sessionId: string | undefined; released: boolean } {
-  const events = log.filter(
-    (event) =>
-      (event.type === 'task/claimed' || event.type === 'task/released') && String(event.data['id'] ?? '') === taskId,
-  )
+function currentClaim(index: EventIndex, taskId: string): { sessionId: string | undefined; released: boolean } {
+  // **`TASK-220`**：只在该 type 的分组里扫（修前每次 `filter` 整个七千多事件数组）
+  const events = [...index.of('task/claimed'), ...index.of('task/released')]
+    .sort((a, b) => a.seq - b.seq)
+    .filter((event) => String(event.data['id'] ?? '') === taskId)
   let sessionId: string | undefined
   let released = false
   for (const event of events) {
@@ -348,28 +409,29 @@ function normalizeOwnerChecked(value: string): 'session' | 'no-claim' | 'owner-t
  * **`TASK-213` 落点二**：参数从 `Journal` 换成**一次读出来的事件数组** —— 采纳判定对同一份台账
  * 要问四件事（recorded / hashed / verified / dispatch），修前每问一次都 `journal.read()` 一次，
  * 一叠就是 N+1（实测 `pendingReviewBigCards` 一次调用 279 次读）。判据一个字都没改，只是**别重复读**。
+ * **`TASK-220`**：参数再进一步收成**按 type 分组的事件索引** —— 不再全文重扫（判据仍然一字未改）。
  */
-function dispatchState(events: readonly JournalEvent[], childSessionId: string | undefined): 'none' | 'live' | 'settled' {
+function dispatchState(index: EventIndex, childSessionId: string | undefined): 'none' | 'live' | 'settled' {
   if (childSessionId === undefined || childSessionId === '') return 'none'
-  const started = events.some(
-    (event) => event.type === 'dispatch/started' && String(event.data['childSessionId'] ?? '') === childSessionId,
+  const started = index.of('dispatch/started').some(
+    (event) => String(event.data['childSessionId'] ?? '') === childSessionId,
   )
   if (!started) return 'none'
-  const finished = events.some(
-    (event) => event.type === 'dispatch/finished' && String(event.data['childSessionId'] ?? '') === childSessionId,
+  const finished = index.of('dispatch/finished').some(
+    (event) => String(event.data['childSessionId'] ?? '') === childSessionId,
   )
   return finished ? 'settled' : 'live'
 }
 
-/** 某条评审最近一条 `review/recorded`（吃**一次读出来**的事件数组，见 `dispatchState` 的说明）。 */
-function recordedEvent(events: readonly JournalEvent[], reviewId: string): JournalEvent | undefined {
-  const hits = events.filter((event) => event.type === 'review/recorded' && String(event.data['id'] ?? '') === reviewId)
+/** 某条评审最近一条 `review/recorded`（吃**按 type 分组的索引**，见 `dispatchState` 的说明）。 */
+function recordedEvent(index: EventIndex, reviewId: string): JournalEvent | undefined {
+  const hits = index.of('review/recorded').filter((event) => String(event.data['id'] ?? '') === reviewId)
   return hits[hits.length - 1]
 }
 
 /** 最新一条**补记指纹**（`review/hashed`）的内容哈希；没有则 `undefined`。 */
-function latestHashEvent(events: readonly JournalEvent[], reviewId: string): string | undefined {
-  const hits = events.filter((event) => event.type === 'review/hashed' && String(event.data['id'] ?? '') === reviewId)
+function latestHashEvent(index: EventIndex, reviewId: string): string | undefined {
+  const hits = index.of('review/hashed').filter((event) => String(event.data['id'] ?? '') === reviewId)
   const value = hits[hits.length - 1]?.data['contentHash']
   return typeof value === 'string' && value !== '' ? value : undefined
 }
@@ -390,10 +452,11 @@ export function rehashReview(store: SdoStore, journal: Journal, input: { reviewI
   if (review === undefined) return { ok: false, code: 'no-review', detail: fmt('uiReview.noReview', { p1: input.reviewId }) }
   const current = reviewContentHash(review)
   // **`TASK-213`**：两条判定读同一份台账 ⇒ 读一次（修前这里读两次）
-  const log = journal.read().events
-  const recorded = recordedEvent(log, review.id)
+  // **`TASK-220`**：这一份换成记忆化的**按 type 分组索引**（两条判定各取一组，不再重扫整份台账）
+  const index = journal.eventsIndex()
+  const recorded = recordedEvent(index, review.id)
   const recordedHash = typeof recorded?.data['contentHash'] === 'string' ? recorded.data['contentHash'] : undefined
-  const existing = recordedHash ?? latestHashEvent(log, review.id)
+  const existing = recordedHash ?? latestHashEvent(index, review.id)
   if (existing !== undefined) {
     if (existing === current) return { ok: true, review, contentHash: current, alreadySealed: true }
     return {
@@ -407,12 +470,15 @@ export function rehashReview(store: SdoStore, journal: Journal, input: { reviewI
   return { ok: true, review, contentHash: current, alreadySealed: false }
 }
 
-function verifiedEvents(events: readonly JournalEvent[], reviewId: string): JournalEvent[] {
-  return events.filter((event) => event.type === 'review/verified' && String(event.data['id'] ?? '') === reviewId)
+function verifiedEvents(index: EventIndex, reviewId: string): JournalEvent[] {
+  return index.of('review/verified').filter((event) => String(event.data['id'] ?? '') === reviewId)
 }
 
 /**
  * 一条评审的**采纳状态**（唯一的判定入口：门禁、`done` 关、回执都读它，不各写一份）。
+ *
+ * **`TASK-220`**：内部收成 `adoptionOf(review, index, dispositions)` —— 事件视图换成**按 type 分组的
+ * 索引**、核实留痕整表换成**记忆化视图**。判据一个字都没改，改的只是"别把同一份台账重扫一遍"。
  */
 export function reviewAdoption(
   store: SdoStore,
@@ -421,34 +487,44 @@ export function reviewAdoption(
   /**
    * **已经读出来的事件数组**（`TASK-213` 落点二）。
    *
-   * 不传 ⇒ 本函数自己 `journal.read().events` 一次（**对外签名与语义与修前一致**）；
-   * 传了 ⇒ 用调用方那一份。批量路径（`reviewAdoptions` / `blockingReview` / `pendingReviewBigCards`）
-   * 必须传，否则每条评审都各读一次台账 —— 那正是本卡要消灭的 N+1。
+   * 不传 ⇒ 走本台账**当次代次**的记忆化索引（`journal.eventsIndex()`）；传了 ⇒ 用调用方那一份
+   * （三指纹与规范视图相同就直接复用记忆化的索引，否则现建一份，语义仍以调用方给的为准）。
    */
   events?: readonly JournalEvent[] | undefined,
   /**
    * **已经读出来的核实留痕整表**（`TASK-213` 落点二，第二个 N+1）。
    *
-   * 实测：`listDispositions(store)` 单次 ~7.3ms（读目录 + 解析），而采纳判定**每条评审读一次**
-   * ⇒ 真账 93 条评审 = 679ms，比台账那 279 次读还贵。批量路径必须只读一次、逐条传下去。
-   * 不传 ⇒ 自己读一次（对外签名不变）。
+   * 不传 ⇒ `listDispositionsCached`（记忆化，命中 ~0.02ms）。批量路径必须只读一次、逐条传下去。
    */
   dispositions?: readonly ReviewFindingDisposition[] | undefined,
 ): ReviewAdoption {
+  const index = events === undefined ? journal.eventsIndex() : journal.indexOf(events)
+  return adoptionOf(review, index, dispositions ?? listDispositionsCached(store, journal))
+}
+
+/**
+ * 采纳判定的**实心实现**（不经记忆化的唯一形态：索引 + 留痕整表都由调用方给）。
+ *
+ * 为什么要把"取数据"和"判定"分开：批量路径必须先取一次、再逐条判 —— 否则又回到 N+1（`TASK-213` 的教训）。
+ */
+function adoptionOf(
+  review: Review,
+  index: EventIndex,
+  dispositions: readonly ReviewFindingDisposition[],
+): ReviewAdoption {
   const base = { review, tamperGuard: 'none-legacy' as TamperGuard, pending: [] as number[], stale: [] as number[], forged: [] as number[], examined: false }
-  const log = events ?? journal.read().events
-  const recorded = recordedEvent(log, review.id)
+  const recorded = recordedEvent(index, review.id)
   if (recorded === undefined) return { ...base, state: 'unrecorded' }
   const recordedHash = typeof recorded.data['contentHash'] === 'string' ? recorded.data['contentHash'] : undefined
   // **G-2**：老事件没有 `contentHash` ⇒ 允许 `sdo_review action=rehash` 补记一条 `review/hashed`。
   // 两者都没有 ⇒ `none-legacy`（不静默：门禁与 list 会标注"该条不具备防篡改保护"）。
-  const sealedHash = latestHashEvent(log, review.id)
+  const sealedHash = latestHashEvent(index, review.id)
   const expected = recordedHash ?? sealedHash
   const tamperGuard: TamperGuard = expected === undefined ? 'none-legacy' : 'content-hash'
   if (expected !== undefined && expected !== reviewContentHash(review)) return { ...base, state: 'tampered', tamperGuard }
 
-  const mine = (dispositions ?? listDispositions(store)).filter((item) => item.reviewId === review.id)
-  const backed = verifiedEvents(log, review.id)
+  const mine = dispositions.filter((item) => item.reviewId === review.id)
+  const backed = verifiedEvents(index, review.id)
   const findings = (review.findings ?? []).map((item) => textOf(item))
   const pending: number[] = []
   const stale: number[] = []
@@ -484,7 +560,62 @@ export function reviewAdoption(
   return { review, tamperGuard, state, pending, stale, forged, examined: true }
 }
 
-/** 全部评审的采纳状态（按 id 序，回执与门禁共用）。 */
+/**
+ * **采纳表**（全部评审的采纳态，按 id 序）的**记忆化视图** —— 键 = `(台账路径, 代次)` + 来源探针。
+ *
+ * 为什么要有这一层（`TASK-220`）：门禁 / `done` 关 / 状态块 / 报告都要"全部评审的采纳态"，
+ * 修前每处各折一遍（实测 37.62 / 33.64 / 30.62ms，三次同价 = 零记忆化）。代次没变时它们问的是
+ * **同一张表**；代次一变（任何 append / 重解析）这张表整批作废（`bumpGeneration` 调的
+ * `invalidateDerivedTables`，与读层缓存同一个源）。
+ *
+ * 返回的是**共享只读表**：调用方要改先自己拷一份（判据不改、只是别重算）。
+ */
+export function adoptionTable(
+  store: SdoStore,
+  journal: Journal,
+  /**
+   * **已经读出来的事件数组**（可选）。
+   *
+   * 不传 ⇒ 本函数自己 `read()` 一次（命中 0.04ms）；传了 ⇒ **不再读盘**（调用方刚读过，
+   * 用 `journal.indexOf` 复用它那一份建索引）。`M234-05` 的"一次 `pendingReviewBigCards` 只读一次台账"
+   * 就是靠这条守住的：一次调用链里只 stat 一次，其余全部走记忆化。
+   */
+  events?: readonly JournalEvent[] | undefined,
+): ReadonlyMap<string, ReviewAdoption> {
+  const log = events ?? journal.read().events
+  // 调用方给的若不是**规范全量视图**（子集），现算但**不进记忆化**：否则子集结果会被记成"全量采纳表"
+  if (events !== undefined && !journal.isCanonicalView(events)) {
+    reviewAdoptionStats.computes += 1
+    return adoptionsOf(store, journal, log)
+  }
+  return journal.memoDerived('review-adoptions', reviewProbes(store), () => {
+    reviewAdoptionStats.computes += 1
+    return adoptionsOf(store, journal, log)
+  })
+}
+
+/** 采纳表的实心实现（只在记忆化未命中时跑一次）。 */
+function adoptionsOf(
+  store: SdoStore,
+  journal: Journal,
+  events: readonly JournalEvent[],
+): Map<string, ReviewAdoption> {
+  const index = journal.eventsIndex(events)
+  const dispositions = listDispositionsCached(store, journal)
+  const items = listReviewsCached(store, journal)
+    .slice()
+    .sort((a, b) => a.id.localeCompare(b.id))
+    .map((review) => adoptionOf(review, index, dispositions))
+  return new Map(items.map((item) => [item.review.id, item]))
+}
+
+/**
+ * 全部评审的采纳状态（按 id 序，回执与门禁共用）。
+ *
+ * **`TASK-220`**：不带 `events` / `reviews` 时走 {@link adoptionTable}（记忆化，第二次调用实测 <1ms）；
+ * 调用方自带的视图若就是**当次代次的规范全量视图**（三指纹），也复用同一张表 —— 语义相同，
+ * 只是不再重算。带**非规范视图**（子集）时才现算，判据仍以调用方给的那一份为准。
+ */
 export function reviewAdoptions(
   store: SdoStore,
   journal: Journal,
@@ -493,18 +624,26 @@ export function reviewAdoptions(
   /**
    * 已经读出来的评审清单（可选）。
    *
-   * 调用方往往**已经**读过一遍（例如 `pendingReviewBigCards`），不传就会再读一遍 93 个 YAML
-   * —— 真账实测单次 ~17.8ms。判据不变，只是别重复读同一批文件。
+   * 调用方往往**已经**读过一遍（例如 `pendingReviewBigCards`），不传就会再读一遍 98 个 YAML
+   * —— 真账实测单次 ~5.4ms。判据不变，只是别重复读同一批文件。
    */
   reviews?: readonly Review[] | undefined,
 ): ReviewAdoption[] {
-  const log = events ?? journal.read().events
-  // 核实留痕整表**只读一次**（修前每条评审各读一次：真账 93 条 × 7.3ms ≈ 679ms）
-  const dispositions = listDispositions(store)
-  return (reviews ?? listReviews(store))
+  reviewAdoptionStats.calls += 1
+  if (reviews === undefined) {
+    // 一次链里只读一次台账：这里读，下面全部复用（`adoptionTable` 命中记忆化时连读都省不了这一次
+    // stat —— 那正是读层"新鲜度"的责任，不能因为记忆化就跳过）
+    const log = events ?? journal.read().events
+    return [...adoptionTable(store, journal, log).values()]
+  }
+  reviewAdoptionStats.computes += 1
+  // 调用方自带**评审清单**（可能只是子集）⇒ 现算；索引与留痕整表仍走记忆化视图（与视图无关）
+  const index = events === undefined ? journal.eventsIndex() : journal.indexOf(events)
+  const dispositions = listDispositionsCached(store, journal)
+  return reviews
     .slice()
     .sort((a, b) => a.id.localeCompare(b.id))
-    .map((review) => reviewAdoption(store, journal, review, log, dispositions))
+    .map((review) => adoptionOf(review, index, dispositions))
 }
 
 /** 某张卡的评审（按 id 序 = 记录顺序）。 */
@@ -517,11 +656,19 @@ export function reviewsOfCard(store: SdoStore, taskId: string): Review[] {
 /** 某张卡**已被采纳**的 `pass` 评审（C-42 / C-52 的覆盖判据只认它）。 */
 export function adoptedPassReviews(store: SdoStore, journal: Journal, taskId: string): Review[] {
   // **`TASK-213`**：同一批评审判定用的是同一份台账 ⇒ 读一次（修前每条评审各读一次）
-  const log = journal.read().events
-  const dispositions = listDispositions(store)
-  return reviewsOfCard(store, taskId).filter(
-    (review) => review.verdict === 'pass' && reviewAdoption(store, journal, review, log, dispositions).state === 'adopted',
+  // **`TASK-220`**：索引与留痕整表都走记忆化视图（同一次判定里不再各读一遍）
+  const index = journal.eventsIndex()
+  const dispositions = listDispositionsCached(store, journal)
+  return reviewsOfCardCached(store, journal, taskId).filter(
+    (review) => review.verdict === 'pass' && adoptionOf(review, index, dispositions).state === 'adopted',
   )
+}
+
+/** 某张卡的评审（**记忆化评审表**上过滤，按 id 序）—— `reviewsOfCard` 的批量形态。 */
+function reviewsOfCardCached(store: SdoStore, journal: Journal, taskId: string): Review[] {
+  return listReviewsCached(store, journal)
+    .filter((review) => review.taskId === taskId)
+    .sort((a, b) => a.id.localeCompare(b.id))
 }
 
 /**
@@ -539,7 +686,15 @@ export function adoptedPassReviews(store: SdoStore, journal: Journal, taskId: st
  *     每条 finding 都被实现方核实过，所以"已采纳"就是"核实过"）；
  *   · **只看评审的 `defects` 声明**，不解析散文 —— 结构化真源是这条判据成立的前提。
  */
-export function fixedDefectsWithoutAdoptedReview(store: SdoStore, journal: Journal): string[] {
+export function fixedDefectsWithoutAdoptedReview(
+  store: SdoStore,
+  journal: Journal,
+  /**
+   * 已经算好的采纳表（可选）。门禁一次检查里它已经有这张表了 —— 传下来就不会再问一遍
+   * （`TASK-220`：同一参数重复调用在门禁里一处都不留）。不传 ⇒ 走记忆化视图（命中也只是 0.02ms）。
+   */
+  adoptions?: ReadonlyMap<string, ReviewAdoption> | undefined,
+): string[] {
   const passing = new Set<string>()
   for (const result of listTestResults(store)) {
     if (result.status !== 'pass') continue
@@ -549,7 +704,7 @@ export function fixedDefectsWithoutAdoptedReview(store: SdoStore, journal: Journ
     }
   }
   const reviewed = new Set<string>()
-  for (const adoption of reviewAdoptions(store, journal)) {
+  for (const adoption of (adoptions ?? adoptionTable(store, journal)).values()) {
     if (adoption.state !== 'adopted' || adoption.review.verdict !== 'pass') continue
     for (const raw of adoption.review.defects ?? []) {
       const id = textOf(raw).trim()
@@ -569,8 +724,14 @@ export function fixedDefectsWithoutAdoptedReview(store: SdoStore, journal: Journ
  * （`sdo_review action=record` 也不允许这种空壳，见那边的守卫）。
  */
 export function unverifiedReviewsOfCard(store: SdoStore, journal: Journal, taskId: string): ReviewAdoption[] {
-  return reviewsOfCard(store, taskId)
-    .map((review) => reviewAdoption(store, journal, review))
+  /**
+   * **`TASK-220`**：修前是「每条评审各读一次台账 + 各读一次留痕整表」的 N+1（一条卡有 k 条评审就是
+   * 2k 次读盘）。现在三样各取一次、逐条判 —— 判据（`findings.length > 0 && state !== 'adopted'`）一字未改。
+   */
+  const index = journal.eventsIndex()
+  const dispositions = listDispositionsCached(store, journal)
+  return reviewsOfCardCached(store, journal, taskId)
+    .map((review) => adoptionOf(review, index, dispositions))
     .filter((item) => item.review.findings.length > 0 && item.state !== 'adopted')
 }
 
@@ -582,10 +743,11 @@ export function unverifiedReviewsOfCard(store: SdoStore, journal: Journal, taskI
  */
 export function blockingReview(store: SdoStore, journal: Journal, taskId: string): ReviewAdoption | undefined {
   // **`TASK-213`**：一张卡的多条评审读同一份台账 ⇒ 读一次
-  const log = journal.read().events
-  const dispositions = listDispositions(store)
-  const all = reviewsOfCard(store, taskId)
-    .map((review) => reviewAdoption(store, journal, review, log, dispositions))
+  // **`TASK-220`**：索引 / 留痕整表 / 评审表都取记忆化视图（各一次，不再每条评审各读一遍）
+  const index = journal.eventsIndex()
+  const dispositions = listDispositionsCached(store, journal)
+  const all = reviewsOfCardCached(store, journal, taskId)
+    .map((review) => adoptionOf(review, index, dispositions))
   const latest = all[all.length - 1]
   if (latest === undefined) return undefined
   if (latest.review.verdict === 'pass') return undefined
@@ -599,7 +761,8 @@ export function verifyReviewFinding(
   journal: Journal,
   input: VerifyInput,
 ): VerifyResult {
-  const review = listReviews(store).find((item) => item.id === input.reviewId)
+  // **`TASK-220`**：评审表走记忆化视图（同一次核实里它被问一次；门禁/回执那边已经热了）
+  const review = listReviewsCached(store, journal).find((item) => item.id === input.reviewId)
   if (review === undefined) return { ok: false, code: 'no-review', detail: fmt('uiReview.noReview', { p1: input.reviewId }) }
   const findings = (review.findings ?? []).map((item) => textOf(item))
   if (!Number.isInteger(input.index) || input.index < 0 || input.index >= findings.length) {
@@ -629,15 +792,18 @@ export function verifyReviewFinding(
   // **不能自己核实自己**：记录这条评审的会话不许给自己发"已核实"（拿得到记录会话时才做）
   // **`TASK-213` 落点二**：这个函数要问台账四件事（recorded / 认领状态 / 派发角色 / 派发是否结算），
   // 修前每件都各读一次；现在读一次、四处共用（判据一字未改）。
-  const log = journal.read().events
-  const recorded = recordedEvent(log, review.id)
+  // **`TASK-220`**：`log` 换成记忆化的**按 type 分组索引**（recorded / claimed / dispatch 各取一组，
+  // 不再对整份台账重扫三遍）；留痕整表也只取一次、两处共用（修前这里读两遍 8.5ms/遍）。
+  const index = journal.eventsIndex()
+  const dispositions = listDispositionsCached(store, journal)
+  const recorded = recordedEvent(index, review.id)
   const recordedSession = typeof recorded?.data['sessionId'] === 'string' ? recorded.data['sessionId'] : undefined
   if (input.sessionId !== undefined && recordedSession !== undefined && input.sessionId === recordedSession) {
     return { ok: false, code: 'self-verify', detail: fmt('uiReview.selfVerify', { p1: review.id, p2: recordedSession }) }
   }
   // **实现方才能核实**：该卡最新认领会话。拿不到认领、或实现方**已经不可达**（任期结束／派发已结算）
   // ⇒ 放行并**如实标注**（G-1：否则一次性子代理退役后，它留下的评审**永久**不可采纳）。
-  const claimed = currentClaim(log, review.taskId)
+  const claimed = currentClaim(index, review.taskId)
   const claimSession = claimed.sessionId
   const card = listTasks(store).find((item) => item.id === review.taskId)
   // 核实者的角色：从"这个会话被派发成什么角色"现算（拿不到就是 unknown，编不出来）
@@ -650,7 +816,7 @@ export function verifyReviewFinding(
     // 卡已离开 in-progress（或卡不存在）⇒ 实现方对这张卡的任期已结束
     if (card === undefined || card.status !== 'in-progress') return 'owner-tenure-over'
     // 卡还在进行中，但那个子会话的派发已结算 ⇒ 看不到活的执行者
-    if (dispatchState(log, claimSession) === 'settled') return 'owner-settled'
+    if (dispatchState(index, claimSession) === 'settled') return 'owner-settled'
     return 'session'
   })()
   if (ownerChecked === 'session' && claimSession !== undefined && input.sessionId !== undefined && claimSession !== input.sessionId) {
@@ -684,7 +850,7 @@ export function verifyReviewFinding(
   const roleMatch: 'same-role' | 'cross-role' | 'unknown' =
     verifierRole === '' || card === undefined ? 'unknown' : verifierRole === card.role ? 'same-role' : 'cross-role'
   // **R-19 A**：同一 `(评审, 发现)` 已有核实 ⇒ 默认拒绝（回执说清"已由谁、什么时候、判成什么"）
-  const previous = listDispositions(store).find((item) => item.reviewId === review.id && item.index === input.index)
+  const previous = dispositions.find((item) => item.reviewId === review.id && item.index === input.index)
   if (previous !== undefined && input.revise !== true) {
     return {
       ok: false,
@@ -726,7 +892,7 @@ export function verifyReviewFinding(
     ...(revised === undefined ? {} : { revisedFrom: revised }),
     at: new Date().toISOString(),
   }
-  const existing = listDispositions(store).filter(
+  const existing = dispositions.filter(
     (item) => !(item.reviewId === disposition.reviewId && item.index === disposition.index),
   )
   store.writeYaml(['reviews', REVIEW_VERIFICATIONS_FILE], { verifications: [...existing, disposition] })

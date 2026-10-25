@@ -138,14 +138,19 @@ import {
   blockerBreakdown,
   deliveryCompleteness,
   listDefects,
-  listReviews,
   listTestCases,
   listTestResults,
   verificationStats,
   fixedDefectsWithoutTestResult,
 } from './records.js'
 import type { Review } from './records.js'
-import { fixedDefectsWithoutAdoptedReview, reviewAdoptionLabel, reviewAdoptions } from './reviewVerification.js'
+import {
+  adoptionTable,
+  fixedDefectsWithoutAdoptedReview,
+  listReviewsCached,
+  reviewAdoptionLabel,
+} from './reviewVerification.js'
+import type { ReviewAdoption } from './reviewVerification.js'
 import { unfrozenFullGreenState } from './unfrozen.js'
 import { producesProductArtifacts } from './plan.js'
 
@@ -214,11 +219,27 @@ function na(id: string, reason: string): GateCriterionResult {
   return { id, ok: false, na: true, naReason: reason, detail: reason }
 }
 
+/**
+ * **门禁里的采纳表**（`TASK-220`）：三条判据读到的都是**同一张记忆化表**（`adoptionTable`，键 = 代次）。
+ *
+ * 病根（修前实测）：`review.independent` 对**同一个参数**调了两次 `reviewAdoptions`（自评独立性 +
+ * 已采纳 pass 评审各一遍），`review.required` 又把 `pendingReviewBigCards` 内部算过的那张表**再算一遍**
+ * —— 一次门禁检查里同一份台账被折三遍（真账 98 条评审时 ~30-38ms/遍）。
+ *
+ * 现在三条判据（`review.independent` / `review.required` / `defects.fixed-reviewed`）都直接向
+ * `adoptionTable` 要表：**真算 ≤ 1 次**（`reviewAdoptionStats.computes` 实测），`reviewAdoptions(...)`
+ * 的调用次数在门禁里降到 **0**。表的新鲜度由代次 + 来源探针负责（`bumpGeneration` 一写就作废），
+ * 不再需要"一次检查一个临时缓存"那种作用域状态 —— 也就没有"同一个 ctx 复用导致读到旧表"的坑。
+ */
+function gateAdoptions(ctx: GateContext): ReadonlyMap<string, ReviewAdoption> {
+  return adoptionTable(ctx.store, ctx.journal)
+}
+
 /** 被采纳、但**没有内容指纹**（老格式）的 `pass` 评审 id（G-2 的可见性标注）。 */
 function adoptedPassIds(
   taskIds: string[],
   reviews: Review[],
-  adoptions: Map<string, { state: string; tamperGuard?: string }>,
+  adoptions: ReadonlyMap<string, { state: string; tamperGuard?: string }>,
 ): string[] {
   const wanted = new Set(taskIds)
   return reviews
@@ -2721,7 +2742,8 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   // 不塞 G7 —— 那会与 `DEF-075` 一样把历史缺陷一次性变成交付阻塞（历史缺陷的补评审是**驾驶舱的活**）。
   'defects.fixed-reviewed': (ctx) => {
     // 作用域过滤同 `C-65`：口径不变，只收窄名单（`C-71` 的外层过滤）。
-    const missing = inScopeByVersion(ctx, fixedDefectsWithoutAdoptedReview(ctx.store, ctx.journal), (id) => id)
+    // **`TASK-220`**：把门禁里**已经算好**的采纳表传下去（修前它会自己再折一遍整张表）
+    const missing = inScopeByVersion(ctx, fixedDefectsWithoutAdoptedReview(ctx.store, ctx.journal, gateAdoptions(ctx)), (id) => id)
     if (missing.length === 0) return ok('defects.fixed-reviewed', t('uiGates.kFixedReviewedOk'))
     return fail(
       'defects.fixed-reviewed',
@@ -2936,7 +2958,8 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
   },
 
   'review.independent': (ctx) => {
-    const reviews = listReviews(ctx.store)
+    // **`TASK-220`**：评审表走记忆化视图（与门禁里其它判据读的是同一批 YAML）
+    const reviews = listReviewsCached(ctx.store, ctx.journal)
     const tasks = listTasks(ctx.store)
     // **DEF-042**：判据按**会话 uuid** —— 材料是 `task/claimed` 事件里的会话（不看卡当前状态）。
     // **2026-10-21 收窄两条**（用户裁定）：只有「`pass` 自评 + 这张卡没有可依据的独立面」才判红；
@@ -2944,11 +2967,13 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
     // 两个桶一起拿（`DEF-044` 的教训：同一概念两处判据必然分叉）。
     /**
      * **`TASK-213` 落点二**：本判据要两次「全部评审的采纳态」（自评独立性 + 已采纳 pass 评审），
-     * 修前各算一遍 ⇒ 同一份台账被解析两遍。现在读一次、两次判定共用这一份。
+     * 修前各算一遍 ⇒ 同一份台账被解析两遍。
+     * **`TASK-220`**：现在**只请求一次**（`gateAdoptions`：一次 `evaluateGate` 里至多一次真算），
+     * 两次判定共用同一张表 —— 判据与文案一字未改。
      */
-    const gateLog = ctx.journal.read().events
+    const adoptions = gateAdoptions(ctx)
     const adoptedPassReviewIds = new Set(
-      reviewAdoptions(ctx.store, ctx.journal, gateLog)
+      [...adoptions.values()]
         .filter((item) => item.state === 'adopted' && item.review.verdict === 'pass')
         .map((item) => item.review.id),
     )
@@ -2967,7 +2992,7 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
         && task.role !== 'reviewer'
         && producesProductArtifacts(task),
     )
-    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal, gateLog).map((item) => [item.review.id, item]))
+    // **`TASK-220`**：修前这里还有一次**同参** `reviewAdoptions(...)`（与上面那次完全一样）—— 合并掉
     const unreviewed: string[] = []
     const unadopted: string[] = []
     for (const task of doneTasks) {
@@ -3030,13 +3055,13 @@ export const CHECKERS: Record<string, (ctx: GateContext) => GateCriterionResult>
      * 完成点拦了、门禁却绿（或反之），真机上就会演变成"按哪条算"的争论。
      * 本文件只负责**渲染**（i18n 棘轮基线 0，一个中文字面量都不许加）。
      */
-    // **`TASK-213` 落点二**：`pendingReviewBigCards` 内部已读一次台账；这里再算采纳表时把那一份读出来
-    // 复用（修前是"一次 + 每条评审各一次"）
-    const requiredLog = ctx.journal.read().events
+    // **`TASK-213` 落点二**：`pendingReviewBigCards` 内部已读一次台账。
+    // **`TASK-220`**：修前这里还会「再读一次重算采纳表」（`:3035-3039`）—— 现在改用`gateAdoptions`里
+    // 那一张表（同一代次、同一探针；一次门禁检查里至多真算一次），评审表也走记忆化视图。
     const set = pendingReviewBigCards(ctx.store, ctx.journal)
     if (set.considered.length === 0) return ok('review.required', t('uiGates.kWorkReviewNone'))
-    const reviews = listReviews(ctx.store)
-    const adoptions = new Map(reviewAdoptions(ctx.store, ctx.journal, requiredLog).map((item) => [item.review.id, item]))
+    const reviews = listReviewsCached(ctx.store, ctx.journal)
+    const adoptions = gateAdoptions(ctx)
     const missing = set.missing
     const unadopted = set.unadopted.map(
       (row) => `${row.id}（${row.reviews.map((item) => `${item.id}：${reviewAdoptionLabel(item.state as never)}`).join('，')}）`,

@@ -11,7 +11,7 @@ import { dirname } from 'node:path'
 import type { Journal } from '../infra/journal.js'
 import { textOf } from '../infra/scalar.js'
 import type { SdoStore } from '../infra/store.js'
-import type { EvidenceItem, MitigatesWaiver, TaskCard } from '../types.js'
+import type { EvidenceItem, JournalEvent, MitigatesWaiver, TaskCard } from '../types.js'
 import { listTasks, producesProductArtifacts, scopeIntersections, writeTask } from './plan.js'
 import { orphanLocks } from './dispatchHealth.js'
 import { normalizeScopePath, scopeOverlaps, scopePathWithin } from './scopePaths.js'
@@ -26,7 +26,15 @@ import type { Review } from './records.js'
 import { auditDoneEvidence } from './evidence.js'
 import { changedFilesSince } from './workspaceChanges.js'
 import { describeTestFirstGaps, testFirstGaps } from './testFirst.js'
-import { blockingReview, reviewAdoption, reviewAdoptionLabel, reviewAdoptions, reviewsOfCard } from './reviewVerification.js'
+import {
+  adoptionTable,
+  blockingReview,
+  listReviewsCached,
+  reviewAdoption,
+  reviewAdoptionLabel,
+  reviewAdoptions,
+  reviewsOfCard,
+} from './reviewVerification.js'
 import type { ReviewAdoption } from './reviewVerification.js'
 import { describeUndigestedChanges, undigestedChanges } from './change.js'
 import { loadProcess } from './process.js'
@@ -776,11 +784,29 @@ export function pendingReviewBigCards(store: SdoStore, journal: Journal): Pendin
    * 修前这句注释写着"读一次台账"，但 `reviewAdoptions` 内部**每条评审各读一次**（每条还要读 4 次：
    * recorded / hashed / verified / dispatch）⇒ 实测一次调用 **279 次 `read()` / 3706ms / 解析 166 万行**。
    * 现在把这一份事件数组交给下游，下游不再自己去读。
+   *
+   * **`TASK-220`**：整张判定结果再按 `(台账路径, 代次)` **记忆化** —— 门禁 / 状态块 / `done` 关在一轮
+   * 里会重复问它（真账实测三次同价 43.09 / 42.45 / 43.60ms，零记忆化）。代次一变（任何 append /
+   * 重解析）或来源 YAML 被动过（探针失配）就整张作废：**同一个代次源**，不各算一套。
    */
+  // 一次链里只读一次台账（`M234-05` 的"一次调用只读一次"）：这份事件数组一路传下去，下游不再 stat
   const events = journal.read().events
-  const reviews = listReviews(store)
-  // **评审清单也只读一次**：`reviewAdoptions` 自己会再读一遍 93 个 YAML（真账 ~17.8ms），把它传进去
-  const adoptions = new Map(reviewAdoptions(store, journal, events, reviews).map((item) => [item.review.id, item]))
+  return journal.memoDerived(
+    'pending-review-big-cards',
+    [store.path('tasks'), store.path('reviews'), store.path('reviews', 'verified.yml')],
+    () => computePendingReviewBigCards(store, journal, events),
+  )
+}
+
+/** {@link pendingReviewBigCards} 的实心实现（只在记忆化未命中时跑一次）。 */
+function computePendingReviewBigCards(
+  store: SdoStore,
+  journal: Journal,
+  events: readonly JournalEvent[],
+): PendingReviewBigCards {
+  const reviews = listReviewsCached(store, journal)
+  // 采纳表与下面逐张卡的判定是**同一张**（记忆化视图）：不传就会再读一遍 98 个 YAML 与整张留痕表
+  const adoptions = adoptionTable(store, journal, events)
   const considered: string[] = []
   const missing: string[] = []
   const unadopted: { id: string; reviews: { id: string; state: string }[] }[] = []

@@ -115,6 +115,181 @@ export const journalReadStats = {
   appendParsedLines: 0,
 }
 
+/**
+ * **台账代次**（`TASK-220`）：每个台账**绝对路径**一份单调递增的计数。
+ *
+ * 为什么键必须是「代次」而不是「字节」：折表层（按 type 分组的事件索引 / 评审表 / 处置表 / 采纳表）
+ * 吃的是 `read()` 交出来的**事件数组**，而 `read()` 每次都给一份**浅拷贝**（`copyEvents`）——
+ * 内容一样、引用不同 ⇒ 拿引用或字节当键等于**永远不命中**（实测三次同价 62.5/64.4/68.7ms 就是这么来的）。
+ * 代次只回答一个问题：**这份台账比上次见到的那一份变了吗**；变一次就 +1。
+ *
+ * 换代的三类入口（都在 {@link bumpGeneration} 里收口，**不许各算一套**）：
+ *   ① **写**：`append()` 落盘（`markWritten`）、`invalidate()` / `invalidateJournalCache()` 显式失效；
+ *   ② **读时发现变了**：全量重解析 / 续读尾部 / 截断（`commit` / `truncateAt`）；
+ *   ③ **缓存被丢掉**：台账不见了（`read()` 的 miss 分支）。
+ *
+ * 与读层缓存的关系：**同一个源**。读层条目换了（任何一条解析路径），代次就换；读层零解析命中，
+ * 代次就不动 —— 两者不会各算一套（这正是本卡 DoD 的硬要求）。
+ */
+const JOURNAL_GENERATION = new Map<string, number>()
+
+/** 某个台账**当前代次**（从没读过 = 0；只读，不换代）。 */
+export function journalGeneration(path: string): number {
+  return JOURNAL_GENERATION.get(path) ?? 0
+}
+
+/** 换代：代次 +1，并把该台账的**派生表整批失效**（同一口，别处不许自己清）。 */
+function bumpGeneration(path: string): void {
+  JOURNAL_GENERATION.set(path, journalGeneration(path) + 1)
+  invalidateDerivedTables(path)
+}
+
+/**
+ * **派生表记忆化**（`TASK-220`）：键 = `(台账绝对路径, 代次)`，**另加一组来源探针**。
+ *
+ * 为什么还要探针：评审表 / 处置表 / 任务卡表不是从 journal 折出来的，而是 `reviews/*.yml`、`tasks/*.yml`
+ * （手可编辑的真源）。产品代码写它们时会同时 append 一条事件（⇒ 换代次），但**手改**与**测试夹具直写
+ * YAML** 不会 —— 只认代次就会永远读到旧表（= 静默错判采纳）。探针是对这些路径的一次 `stat`
+ * （`dev:ino:size:mtimeMs`，不存在记 `-`），与读层的锚点复算同一路数：**便宜、保守、失配就重建**。
+ * 代价实测：2 个 stat ≈ 0.02ms，而记忆化的收益是毫秒级。
+ *
+ * 三条纪律：
+ *   · **计算期间又换代/又改探针 ⇒ 只交结果、不登记**（宁可下次重算，也不留一条陈旧条目）；
+ *   · 换代时该台账的条目**整批删掉**（`bumpGeneration` 调的 `invalidateDerivedTables`）；
+ *   · 命中/重算都计数（{@link derivedTableStats}），本卡的判据必须是**实测**而不是估算。
+ */
+interface DerivedMemoEntry {
+  generation: number
+  stamp: string
+  value: unknown
+}
+
+const DERIVED_MEMO = new Map<string, DerivedMemoEntry>()
+const DERIVED_MEMO_LIMIT = 64
+
+/**
+ * **派生表计数器**（只累加、不进任何回执；与 `journalReadStats` 同一路数）。
+ *
+ * 键是记忆化的**名字**（`events-by-type` / `reviews-table` / `dispositions-table` / `review-adoptions`
+ * / `pending-review-big-cards`），值是次数：
+ *   · `computes`：真的重算了多少次（门禁一次检查里「采纳表 ≤ 1 次真算」读它）；
+ *   · `hits`：命中记忆化多少次；
+ *   · `probeMisses`：因**来源文件被改**（或代次变了）而重建多少次。
+ */
+export const derivedTableStats = {
+  computes: {} as Record<string, number>,
+  hits: {} as Record<string, number>,
+  probeMisses: {} as Record<string, number>,
+}
+
+/** 清零派生表计数器（守卫与复现脚本用；不影响记忆化内容）。 */
+export function resetDerivedTableStats(): void {
+  derivedTableStats.computes = {}
+  derivedTableStats.hits = {}
+  derivedTableStats.probeMisses = {}
+}
+
+function tally(bucket: Record<string, number>, key: string): void {
+  bucket[key] = (bucket[key] ?? 0) + 1
+}
+
+/** 探针戳：每个来源路径的 `dev:ino:size:mtimeMs`（读不到记 `-`）。 */
+function probeStamp(probes: readonly string[]): string {
+  const parts: string[] = []
+  for (const probe of probes) {
+    try {
+      const stat = statSync(probe)
+      parts.push(`${stat.dev}:${stat.ino}:${stat.size}:${stat.mtimeMs}`)
+    } catch {
+      parts.push('-')
+    }
+  }
+  return parts.join('|')
+}
+
+/** 丢掉某个台账的派生表（缺省 = 全部）。**换代时自动调**，也可显式调。 */
+export function invalidateDerivedTables(path?: string): void {
+  if (path === undefined) {
+    DERIVED_MEMO.clear()
+    return
+  }
+  const prefix = `${path}\u0000`
+  for (const key of [...DERIVED_MEMO.keys()]) {
+    if (key.startsWith(prefix)) DERIVED_MEMO.delete(key)
+  }
+}
+
+/** {@link memoDerived} 的实现（对外只经 `Journal.memoDerived` 用 —— 键里的路径由 `Journal` 给）。 */
+export function memoDerivedValue<T>(
+  path: string,
+  name: string,
+  probes: readonly string[],
+  compute: () => T,
+): T {
+  const key = `${path}\u0000${name}`
+  const generation = journalGeneration(path)
+  const stamp = probeStamp(probes)
+  const cached = DERIVED_MEMO.get(key)
+  if (cached !== undefined) {
+    if (cached.generation === generation && cached.stamp === stamp) {
+      tally(derivedTableStats.hits, name)
+      return cached.value as T
+    }
+    tally(derivedTableStats.probeMisses, name)
+  }
+  tally(derivedTableStats.computes, name)
+  const value = compute()
+  // 计算期间台账又变了（或来源文件又被动过）⇒ 只交结果、不登记：宁可不缓存，也不留陈旧条目。
+  if (journalGeneration(path) === generation && probeStamp(probes) === stamp) {
+    DERIVED_MEMO.set(key, { generation, stamp, value })
+    if (DERIVED_MEMO.size > DERIVED_MEMO_LIMIT) {
+      const oldest = DERIVED_MEMO.keys().next()
+      if (!oldest.done) DERIVED_MEMO.delete(oldest.value)
+    }
+  }
+  return value
+}
+
+/**
+ * **按 type 分组的事件索引**（`TASK-220` 的第一张派生表）。
+ *
+ * 病根：采纳判定对每条评审要问三件事（recorded / hashed / verified），修前每次都 `filter` **整个**
+ * 事件数组；真账 98 条评审 × 7454 事件 × 3 遍 ≈ 220 万次带字符串强转的比较 —— 这就是
+ * `reviewAdoptions` 那 35ms 的主项。分组之后每次只看该 type 的那一小撮，判据一个字都没改。
+ */
+export interface EventIndex {
+  /** 建索引时的那一份事件数组（`of()` 的分组都来自它） */
+  readonly events: readonly JournalEvent[]
+  /** 某个 type 的事件（保持台账顺序；没有就是同一个空数组） */
+  of(type: string): readonly JournalEvent[]
+  /** 这一份视图与 `other` 是否**同一视图**（长度 + 首尾 seq 三个指纹，挡"调用方传了子集"）。 */
+  sameViewAs(other: readonly JournalEvent[]): boolean
+}
+
+const EMPTY_EVENT_GROUP: readonly JournalEvent[] = []
+
+/** 两份事件数组是否**同一视图**（便宜的三指纹：长度 + 首 seq + 末 seq）。 */
+function sameEventsView(a: readonly JournalEvent[], b: readonly JournalEvent[]): boolean {
+  if (a === b) return true
+  if (a.length !== b.length) return false
+  if (a.length === 0) return true
+  return a[0]?.seq === b[0]?.seq && a[a.length - 1]?.seq === b[b.length - 1]?.seq
+}
+
+function buildEventIndex(events: readonly JournalEvent[]): EventIndex {
+  const groups = new Map<string, JournalEvent[]>()
+  for (const event of events) {
+    const group = groups.get(event.type)
+    if (group === undefined) groups.set(event.type, [event])
+    else group.push(event)
+  }
+  return {
+    events,
+    of: (type) => groups.get(type) ?? EMPTY_EVENT_GROUP,
+    sameViewAs: (other) => sameEventsView(events, other),
+  }
+}
+
 /** 清零计数器（守卫与复现脚本用；不影响缓存内容）。 */
 export function resetJournalReadStats(): void {
   journalReadStats.readCalls = 0
@@ -125,10 +300,21 @@ export function resetJournalReadStats(): void {
   journalReadStats.appendParsedLines = 0
 }
 
-/** 丢掉某个台账的缓存（缺省 = 全部）。**显式失效入口**，`append` 之后也会自动调它。 */
+/**
+ * 丢掉某个台账的缓存（缺省 = 全部）。**显式失效入口**，`append` 之后也会自动调它。
+ *
+ * `TASK-220`：失效**同时换代次** —— 否则派生表会看着"代次没变"继续交旧表（陈旧读的第一道缺口）。
+ */
 export function invalidateJournalCache(path?: string): void {
-  if (path === undefined) JOURNAL_CACHE.clear()
-  else JOURNAL_CACHE.delete(path)
+  if (path === undefined) {
+    JOURNAL_CACHE.clear()
+    for (const known of [...JOURNAL_GENERATION.keys()]) bumpGeneration(known)
+    // 没有代次记录的路径也一起清（新路径第一次读就从 0 开始，不需要留条目）
+    invalidateDerivedTables()
+    return
+  }
+  JOURNAL_CACHE.delete(path)
+  bumpGeneration(path)
 }
 
 /** 把一条 `read` 结果里的事件做**浅拷贝**再交出去：调用方排序/切片都不会污染缓存数组。 */
@@ -212,6 +398,69 @@ export class Journal {
     return this.store.path(JOURNAL_FILE)
   }
 
+  /** 本台账的**代次**（单调递增；任何写盘 / 解析 / 截断 / 丢弃都会换代。只读）。 */
+  generation(): number {
+    return journalGeneration(this.journalPath())
+  }
+
+  /**
+   * **派生表记忆化**（键 = 本台账绝对路径 + 代次，另加 `probes` 探针）：见 {@link memoDerivedValue}。
+   *
+   * 用法纪律：`compute` 里**不许写盘**（写盘换代次 ⇒ 这次结果不会被登记，得下次重算）；
+   * 返回的数组/Map 是**共享只读视图**，调用方要改就先自己拷一份。
+   */
+  memoDerived<T>(name: string, probes: readonly string[], compute: () => T): T {
+    return memoDerivedValue(this.journalPath(), name, probes, compute)
+  }
+
+  /**
+   * **按 type 分组的事件索引**（记忆化；键 = 代次）。
+   *
+   * 两种吃法：
+   *   · 不给 `events` ⇒ 先 `read()` 让代次落定，再建索引（**一次读**；命中缓存 0.04ms）；
+   *   · 给了 `events` ⇒ 见 {@link indexOf}（**不再读**：调用方刚读过，别为了查一次索引又 stat 一遍 ——
+   *     `M234-05` 的"一次 `pendingReviewBigCards` 只读一次台账"就是靠这条守住的）。
+   */
+  eventsIndex(events?: readonly JournalEvent[]): EventIndex {
+    if (events !== undefined) return this.indexOf(events)
+    const fresh = this.read().events
+    return memoDerivedValue(this.journalPath(), 'events-by-type', [], () => buildEventIndex(fresh))
+  }
+
+  /**
+   * 给**调用方自带的事件数组**配一份索引（**不读盘**）。
+   *
+   * 三指纹（长度 + 首末 seq）与读层缓存里那一份相同 ⇒ 直接用按代次记忆化的索引；
+   * 不同（调用方传了子集 / 别的台账 / 本进程还没读过）⇒ **现建、不缓存**（判据仍以调用方给的那一份为准）。
+   * 为什么拿读层缓存条目而不是再 `read()` 一次：`read()` 会顺手 stat + 可能续读，而这条路上
+   * 调用方**刚刚**读过；再读一遍既浪费，又会让"一次调用只读一次台账"的守卫（`M234-05`）变红。
+   */
+  indexOf(events: readonly JournalEvent[]): EventIndex {
+    const cached = this.settledEntry()
+    if (cached !== undefined && sameEventsView(cached.events, events)) {
+      return memoDerivedValue(this.journalPath(), 'events-by-type', [], () => buildEventIndex(events))
+    }
+    return buildEventIndex(events)
+  }
+
+  /** 这份事件数组是不是**本台账当次代次的规范全量视图**（三指纹；**不读盘**，口径见 {@link indexOf}）。 */
+  isCanonicalView(events: readonly JournalEvent[]): boolean {
+    const cached = this.settledEntry()
+    return cached !== undefined && sameEventsView(cached.events, events)
+  }
+
+  /**
+   * **结算过的**缓存条目（`size >= 0`）—— 写者刻意记成 `-1` 表示"已知长度作废"（{@link markWritten}）。
+   *
+   * 为什么要这一道：`append()` 之后缓存里的 `events` 还停在**写之前**那一份（写路径不重读），
+   * 若拿它当"规范视图"去登记派生表，就会把**旧事件集**的索引记到**新代次**名下。
+   * 判据只需一个字段比较：`-1` ⇒ 不认（现建不缓存，宁可下次重算）。
+   */
+  private settledEntry(): JournalCacheEntry | undefined {
+    const entry = JOURNAL_CACHE.get(this.journalPath())
+    return entry !== undefined && entry.size >= 0 ? entry : undefined
+  }
+
   /**
    * **写者侧的失效**：保留已解析前缀，只把「已知长度」记成未知。
    *
@@ -222,8 +471,9 @@ export class Journal {
    */
   private markWritten(): void {
     const entry = JOURNAL_CACHE.get(this.journalPath())
-    if (entry === undefined) return
-    entry.size = -1
+    if (entry !== undefined) entry.size = -1
+    // **`TASK-220`**：写盘即换代次（派生表必须立刻失效 —— 哪怕缓存条目本来就不存在）
+    bumpGeneration(this.journalPath())
   }
 
   /**
@@ -246,7 +496,10 @@ export class Journal {
       stat = undefined
     }
     if (stat === undefined) {
-      JOURNAL_CACHE.delete(path)
+      // **`TASK-220`**：台账**不见了**也是"变了"（空视图）⇒ 换代次，派生表不许继续按旧代次交旧表。
+      // 但"本来就没有这个文件"不是变化：只有真的删掉了一条缓存条目才换代 ——
+      // 否则每次读一份不存在的台账都会换代次，派生表就永远登记不上（空工作区会退化成零记忆化）。
+      if (JOURNAL_CACHE.delete(path)) bumpGeneration(path)
       return { events: [], truncated: false }
     }
     /**
@@ -398,6 +651,9 @@ export class Journal {
       head,
       headEnd,
     })
+    // **`TASK-220`**：交出去的是**截断视图**（与全量慢路径一致的要求不变）⇒ 换代次，
+    // 派生表按这一份重建（否则"截断前缀"会被缓存的派生表当成完整台账）
+    bumpGeneration(this.journalPath())
     return { events, truncated: true, badLine }
   }
 
@@ -426,6 +682,9 @@ export class Journal {
       head,
       headEnd,
     })
+    // **`TASK-220`**：这是"真的解析过"的唯一收口（全量重解析 / 续读尾部都经过这里）⇒ 换代次。
+    // 零解析命中在上面就 return 了，所以"没变就不换代"是自动成立的。
+    bumpGeneration(path)
     if (JOURNAL_CACHE.size > JOURNAL_CACHE_LIMIT) {
       const oldest = JOURNAL_CACHE.keys().next()
       if (!oldest.done) JOURNAL_CACHE.delete(oldest.value)
