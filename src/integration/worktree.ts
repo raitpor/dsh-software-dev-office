@@ -19,23 +19,36 @@
  * （`AC-304` 要的那条事件带卡 id / 副本标识 / 变更文件清单，属于台账层；本模块把这三样现算好交出去）。
  * 这样切的好处：合并语义可以**脱离台账**独立暴力验证（临时仓库里造冲突即可），而落事件的位置只有一处。
  *
- * 三条硬边界（写在这里，免得下一个调用点各猜一套）：
- *   ① 副本根缺省是**仓库父目录**下的 `.sdo-worktrees/`（`<repo>/../.sdo-worktrees/<task-id>`）——
+ * 五条硬边界（写在这里，免得下一个调用点各猜一套）：
+ *   ① 副本根缺省在**仓库内**的 `.worktrees/`（`<repo>/.worktrees/<task-id>`，`AC-310`）。
+ *      修前它在仓库**父目录**下（`<repo>/../.sdo-worktrees/`）—— 那个落点在本机落在 `/home` 的
+ *      `ro` 挂载上：副本建得出来、写不进去（宿主的沙箱按**会话工作区**放行，落点在工作区外就一律拒），
+ *      隔离等于零。搬进仓库内不会污染索引：根名同时进项目的 `.gitignore`，建副本时还往该仓库的
+ *      `info/exclude` 补一行（**本地**忽略：不改工作树、不进提交、不进 `git diff`）；
+ *   ② 显式给的根仍要过 `inside-repo` 这道闸（`ADR-025` 明写"不是 .sdo 下"）：在仓库内、又不在
+ *      被忽略的副本根下的写法照样拒绝；两道理由并列，旧写法的下场不变 ——
  *      不在仓库内 ⇒ 结构上不可能进索引；`inside-repo` 是**拒绝**码，把 `.sdo/drafts/worktrees/`
  *      这类旧写法挡在门外（`ADR-025` 明写"不是 .sdo 下"）；
- *   ② 工作副本里**未提交**的改动不会被 `git merge` 带走 ⇒ 合并前必须先 `commitWorktree`
+ *   ③ 工作副本里**未提交**的改动不会被 `git merge` 带走 ⇒ 合并前必须先 `commitWorktree`
  *      （子代理写完文件不提交，合并出来是**零变更**——这是最容易静默出错的一步，故单列一个函数）；
- *   ③ 合回的目标必须是**分支**：detached HEAD 下没有"主干"可言，`mergeWorktree` 会拒绝而不是猜一个。
+ *   ④ 合回的目标必须是**分支**：detached HEAD 下没有"主干"可言，`mergeWorktree` 会拒绝而不是猜一个；
+ *   ⑤ 合并成功 ⇒ 副本必须清掉（`AC-310` 落点三，`removeWorktree` 在"分支已合进主干"这一支里带
+ *      `--force`）；合并失败/冲突 ⇒ 副本目录与分支**原样保留**（与 `AC-305`「冲突不得自动解决、
+ *      现场保留」同一条口径）。
  *
  * git 调用的失败一律返回 `ok: false` + 可读原因（与 `src/infra/git.ts` 的 `readDirtyWorktree`
  * 同一套失败口径）：**绝不假装合并成功**。
  */
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync } from 'node:fs'
+import { appendFileSync, existsSync, mkdirSync, readFileSync, symlinkSync } from 'node:fs'
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path'
 
-/** 副本根目录名（仓库**父目录**下，不在仓库内）。 */
-export const WORKTREE_ROOT_NAME = '.sdo-worktrees'
+/**
+ * 副本根目录名（**仓库内**的 `.worktrees`，靠忽略表不进索引）。
+ *
+ * 修前叫 `.sdo-worktrees` 且落在仓库**父目录**下（`AC-310` 搬进仓库内，理由见 {@link worktreeRootOf}）。
+ */
+export const WORKTREE_ROOT_NAME = '.worktrees'
 
 /** 分支前缀：`sdo/<task-id>`。 */
 export const WORKTREE_BRANCH_PREFIX = 'sdo/'
@@ -104,12 +117,26 @@ export function repoTopOf(dir: string): string {
   return run.ok ? run.stdout.trim() : ''
 }
 
-/** 副本根：**仓库父目录**下的 `.sdo-worktrees`（不在仓库内 ⇒ 不可能进索引）。 */
+/**
+ * 副本根：**仓库内**的 `.worktrees`（`AC-310` 的落点）。
+ *
+ * 为什么从仓库**父目录**搬进来：父目录那个落点在本机是 `/home` 的 `ro` 挂载 —— 副本建得出来、
+ * 却写不进任何文件（宿主的写权限按**会话工作区**给），于是"各写各的副本"这条口径等于没落地。
+ * 为什么不放 `.sdo/`（它也可写）：① `M220-10` 在量 `.sdo/` 的体积（现盘 56 MB），副本进去会把
+ * 那个读数搅乱；② 台账读取扫 `LEDGER_TRUTH_DIRS`，副本会被当成台账读进去；③ 备份/脱敏的边界以
+ * `.sdo/` 为单位 ⇒ 副本落进去就被卷进那两条链路。这三条都不适用于 `.worktrees/`。
+ */
 export function worktreeRootOf(repoRoot: string): string {
-  return join(dirname(resolve(repoRoot)), WORKTREE_ROOT_NAME)
+  return join(resolve(repoRoot), WORKTREE_ROOT_NAME)
 }
 
-/** 该路径是否落在仓库内（`true` ⇒ 拒绝：会进索引）。 */
+/** 该路径是否落在**被忽略的副本根**下（`<repo>/.worktrees/…`）。 */
+export function isUnderWorktreeRoot(repoRoot: string, path: string): boolean {
+  const rel = relative(resolve(worktreeRootOf(repoRoot)), resolve(path))
+  return rel !== '' && !rel.startsWith('..') && !isAbsolute(rel)
+}
+
+/** 该路径是否落在仓库内（`true` ⇒ 除非它同时在 {@link isUnderWorktreeRoot} 之下，否则拒绝：会进索引）。 */
 export function isInsideRepo(repoRoot: string, path: string): boolean {
   const rel = relative(resolve(repoRoot), resolve(path))
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
@@ -117,23 +144,33 @@ export function isInsideRepo(repoRoot: string, path: string): boolean {
 
 export interface WorktreeRef {
   taskId: string
-  /** 副本目录（**主仓库之外**）。 */
+  /** 副本目录（缺省落在 **`<repo>/.worktrees/<卡>`**，被忽略表挡在索引之外；`AC-310`）。 */
   path: string
   branch: string
   /** 基底（分支名或提交 sha） */
   base: string
   /** 建副本那一刻的头部提交 */
   head: string
+  /** `node_modules` 软链的结果（{@link linkWorktreeDeps}）：副本**能不能构建**看这一项，不看"建成功" */
+  deps: WorktreeDeps
 }
 
 export interface WorktreeCreateInput {
   /** 主仓库工作树（`git rev-parse --show-toplevel` 的发现口径由本模块自己做） */
   repoRoot: string
   taskId: string
-  /** 副本根（缺省 {@link worktreeRootOf}）；给什么都不许落在仓库内 */
+  /** 副本根（缺省 {@link worktreeRootOf}）；在仓库内的根必须落在被忽略的副本根之下 */
   root?: string | undefined
   /** 基底分支/提交（缺省 = 仓库当前 HEAD） */
   base?: string | undefined
+}
+
+/** `node_modules` 软链的结果（**不拷贝**：现盘 650 MB × N 不可接受）。 */
+export interface WorktreeDeps {
+  linked: boolean
+  /** `linked: true` ⇒ `''`；否则是跳过的理由（回执要能照着办） */
+  reason: '' | 'absent' | 'present' | 'not-ignored' | 'failed'
+  detail: string
 }
 
 export type WorktreeCreateCode = 'not-a-repo' | 'inside-repo' | 'exists' | 'branch-exists' | 'no-base' | 'failed'
@@ -156,7 +193,63 @@ function currentBranchOf(repoRoot: string): string {
 }
 
 /**
- * **建工作副本**：`git worktree add <path> -b sdo/<task-id> <base>`。
+ * 让"仓库内的副本根"不进索引：往该仓库的 `info/exclude` 补一行（**本地**忽略）。
+ *
+ * 为什么建副本时还要写这一处 —— 项目的 `.gitignore` 只对**本仓**生效；落点搬进仓库内之后，
+ * 任何一个没写这条的仓库都会在 `git status` 里看见 `.worktrees/`，而"哪些文件被改了"正是本模块
+ * 唯一的读数。`info/exclude` 不进版本控制、不改工作树、不进 `git diff` —— 它是 git 给"本地忽略"
+ * 留的那一格。写不进去只影响这道保险，副本本身照样可用 ⇒ 失败不判死，理由带出去。
+ */
+function ensureLocalIgnore(repoRoot: string, pattern: string): { ok: boolean; detail: string } {
+  const query = git(repoRoot, ['rev-parse', '--git-path', 'info/exclude'])
+  if (!query.ok) return { ok: false, detail: `定位 info/exclude 失败：${query.stderr.trim()}` }
+  const file = resolve(repoRoot, query.stdout.trim())
+  const line = pattern
+  try {
+    const current = existsSync(file) ? readFileSync(file, 'utf8') : ''
+    if (current.split('\n').some((item) => item.trim() === line)) return { ok: true, detail: `${line} 已在 info/exclude` }
+    mkdirSync(dirname(file), { recursive: true })
+    appendFileSync(file, `${current === '' || current.endsWith('\n') ? '' : '\n'}${line}\n`, 'utf8')
+    return { ok: true, detail: `${line} 已写入 info/exclude` }
+  } catch (error) {
+    return { ok: false, detail: `写 info/exclude 失败：${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
+/**
+ * 把主树的 `node_modules` **软链**进副本（**不拷贝**：现盘 650 MB × N 不可接受）。
+ *
+ * 三条前提，任一不成立就**跳过**并如实给理由（跳过 ≠ 失败：副本照样建得出来，只是"副本里能不能
+ * 构建"这件事没被保证 —— 调用方要照实报，不许把"建成功"当成"可用"）：
+ *   ① 主树里有 `node_modules`；
+ *   ② 副本里还没有（重跑/复用的情况不覆盖）；
+ *   ③ 它在主仓库里是**被忽略**的 —— 否则一次 `commitWorktree` 会把这条链接提交进副本分支，
+ *      合并后主树凭空多一个 `node_modules` 链接。
+ *
+ * 建好之后还要往该仓库的 `info/exclude` 补一行**裸的** `node_modules`：项目的 `.gitignore` 里那条
+ * 通常写作 `node_modules/`（带斜杠 ⇒ 只匹配**目录**），而这里的链接不是目录 ⇒ 光靠它挡不住
+ * `git add -A`（实测：不带这一行时，副本提交里就多了一条 `node_modules`）。只写本地忽略表，
+ * 不改项目文件、不影响已被跟踪的路径。
+ */
+export function linkWorktreeDeps(repoRoot: string, worktreePath: string): WorktreeDeps {
+  const source = join(resolve(repoRoot), 'node_modules')
+  const target = join(resolve(worktreePath), 'node_modules')
+  if (!existsSync(source)) return { linked: false, reason: 'absent', detail: `主树没有 node_modules：${source}` }
+  if (existsSync(target)) return { linked: false, reason: 'present', detail: `副本里已有 node_modules：${target}` }
+  if (!git(repoRoot, ['check-ignore', '-q', 'node_modules']).ok) {
+    return { linked: false, reason: 'not-ignored', detail: `node_modules 未被主仓库忽略 ⇒ 不建链接（会进索引）：${source}` }
+  }
+  try {
+    symlinkSync(source, target, 'dir')
+    ensureLocalIgnore(repoRoot, 'node_modules')
+    return { linked: true, reason: '', detail: `${target} → ${source}` }
+  } catch (error) {
+    return { linked: false, reason: 'failed', detail: `建软链失败：${error instanceof Error ? error.message : String(error)}` }
+  }
+}
+
+/**
+ * **建工作副本**：`git worktree add <path> -b sdo/<task-id> <base>`，随后把 `node_modules` 软链进去。
  *
  * 只建副本，**不**替子代理写任何文件（写入路由是子代理自己的事）。
  */
@@ -169,14 +262,17 @@ export function createWorktree(input: WorktreeCreateInput): WorktreeCreateOutcom
   if (id === '') return { ok: false, code: 'failed', detail: '卡 id 折成安全形态后为空，无法命名副本' }
   const root = resolve(input.root ?? worktreeRootOf(repoRoot))
   const path = join(root, id)
-  if (isInsideRepo(repoRoot, path)) {
-    // **`ADR-025`**：副本不许落在主仓库内（`.sdo/drafts/worktrees/` 那种旧写法在这里被挡下）——
-    // 落进去就会进索引：`git status` 被副本自己的文件污染，"这次合并改了哪些文件"再也读不准。
+  const insideRepo = isInsideRepo(repoRoot, path)
+  if (insideRepo && !isUnderWorktreeRoot(repoRoot, path)) {
+    // **`ADR-025`**：副本不许落进主仓库索引。`AC-310` 之后缺省根就在仓库内（`<repo>/.worktrees/`），
+    // 它靠忽略表（`.gitignore` + `info/exclude`）留在索引之外；除此之外的仓库内路径一律拒绝 ——
+    // `.sdo/drafts/worktrees/` 那种旧写法在这里被挡下：落进去 `git status` 就被副本自己的文件污染，
+    // "这次合并改了哪些文件"再也读不准。
     return {
       ok: false,
       code: 'inside-repo',
-      detail: `副本路径落在主仓库内（会进索引）：${path}；副本必须建在仓库之外（缺省 ${worktreeRootOf(repoRoot)}）`,
-      ref: { taskId: id, path, branch: `${WORKTREE_BRANCH_PREFIX}${id}`, base: '', head: '' },
+      detail: `副本路径落在主仓库内、且不在被忽略的副本根下（会进索引）：${path}；仓库内的副本只许放在 ${worktreeRootOf(repoRoot)}`,
+      ref: { taskId: id, path, branch: `${WORKTREE_BRANCH_PREFIX}${id}`, base: '', head: '', deps: { linked: false, reason: 'absent', detail: '未建副本' } },
     }
   }
   const base = (input.base ?? '').trim() === '' ? '' : String(input.base).trim()
@@ -197,12 +293,15 @@ export function createWorktree(input: WorktreeCreateInput): WorktreeCreateOutcom
   } catch (error) {
     return { ok: false, code: 'failed', detail: `副本根不可创建：${root}（${error instanceof Error ? error.message : String(error)}）` }
   }
+  // 仓库内的根先登记进本地忽略表（在 `worktree add` 之前写：add 之后 `git status` 就已经能看见它）
+  if (insideRepo) ensureLocalIgnore(repoRoot, `${WORKTREE_ROOT_NAME}/`)
   const add = git(repoRoot, ['worktree', 'add', path, '-b', branch, resolvedBase])
   if (!add.ok) return { ok: false, code: 'failed', detail: `git worktree add 失败：${add.stderr.trim() || add.stdout.trim()}` }
   const head = git(path, ['rev-parse', 'HEAD'])
+  const deps = linkWorktreeDeps(repoRoot, path)
   return {
     ok: true,
-    ref: { taskId: id, path, branch, base: resolvedBase, head: head.ok ? head.stdout.trim() : '' },
+    ref: { taskId: id, path, branch, base: resolvedBase, head: head.ok ? head.stdout.trim() : '', deps },
   }
 }
 
@@ -372,10 +471,12 @@ export type WorktreeRemoveOutcome =
   | { ok: false; code: WorktreeRemoveCode; detail: string; path: string }
 
 /**
- * **移除工作副本**：合并成功后清场；`drop` 的卡用 `force` 清场。
+ * **移除工作副本**：合并成功后清场（`AC-310` 落点三）；`drop` 的卡用 `force` 清场。
  *
- * 两种"不许删"的情形必须红：① 分支**没合进主干**（含冲突未解决）—— 删了等于毁掉现场；
- * ② 副本里有**未提交改动**（`git worktree remove` 自己会拒，这里把原因翻成人话）。
+ * 双态口径（与 `AC-305` 的"冲突不自动解决、现场保留"同一条）：
+ *   · 分支**已合进主干**且副本里没有未提交的活 ⇒ 删（这一步带 `--force`，理由见函数内的实测注释）；
+ *   · 分支**没合进主干**（含冲突未解决）或副本里**还有未提交文件** ⇒ 保留现场并如实报原因。
+ * 两种"不许删"的情形都必须红 —— 删了等于毁掉现场。
  */
 export function removeWorktree(input: WorktreeRemoveInput): WorktreeRemoveOutcome {
   const repoRoot = repoTopOf(input.repoRoot)
@@ -387,20 +488,30 @@ export function removeWorktree(input: WorktreeRemoveInput): WorktreeRemoveOutcom
   const branch = `${WORKTREE_BRANCH_PREFIX}${id}`
   const base = (input.base ?? '').trim() === '' ? currentBranchOf(repoRoot) : String(input.base).trim()
   const force = input.force === true
-  if (!force && branchExists(repoRoot, branch) && base !== '') {
-    const merged = git(repoRoot, ['merge-base', '--is-ancestor', branch, base]).ok
-    if (!merged) {
-      return {
-        ok: false,
-        code: 'unmerged',
-        detail: `分支未合并进 ${base}（冲突未解决或工作还没合并）⇒ 现场必须保留：${branch}`,
-        path,
-      }
+  const branchPresent = branchExists(repoRoot, branch)
+  const merged = branchPresent && base !== '' ? git(repoRoot, ['merge-base', '--is-ancestor', branch, base]).ok : false
+  if (!force && branchPresent && base !== '' && !merged) {
+    return {
+      ok: false,
+      code: 'unmerged',
+      detail: `分支未合并进 ${base}（冲突未解决或工作还没合并）⇒ 现场必须保留：${branch}`,
+      path,
     }
   }
-  const remove = git(repoRoot, ['worktree', 'remove', ...(force ? ['--force'] : []), path])
+  // **合并成功 ⇒ 副本必须清掉**（`AC-310` 落点三）。带 `--force` 是实测出来的需要，不是图省事：
+  // 副本里那条 `node_modules` 软链即便被忽略，`git worktree remove` 仍报"包含修改或未跟踪的文件"
+  // 并拒绝（现盘读数）⇒ 不带 `--force`，装好依赖的副本就删不掉、永远堆在 `.worktrees/` 里。
+  // 但 `--force` 不许顺手抹掉**没提交的活**：那一步先看 `pendingWorkOf`，非空就保留现场、如实报。
+  const pending = pendingWorkOf(path)
+  const dirty = pending.ok && pending.files.length > 0
+  const forced = force || (merged && !dirty)
+  let remove = git(repoRoot, ['worktree', 'remove', ...(forced ? ['--force'] : []), path])
+  if (!remove.ok && !forced && merged && !dirty) {
+    remove = git(repoRoot, ['worktree', 'remove', '--force', path])
+  }
   if (!remove.ok) {
-    return { ok: false, code: 'failed', detail: `git worktree remove 失败：${remove.stderr.trim() || remove.stdout.trim()}`, path }
+    const why = dirty ? `（副本里还有 ${String(pending.files.length)} 个未提交文件 ⇒ 现场保留）` : ''
+    return { ok: false, code: 'failed', detail: `git worktree remove 失败${why}：${remove.stderr.trim() || remove.stdout.trim()}`, path }
   }
   let branchDeleted = false
   if (branchExists(repoRoot, branch)) {

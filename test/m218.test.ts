@@ -19,7 +19,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -33,6 +33,7 @@ import {
   commitWorktree,
   createWorktree,
   isInsideRepo,
+  isUnderWorktreeRoot,
   listWorktrees,
   mergeWorktree,
   removeWorktree,
@@ -117,7 +118,9 @@ function makeRepo(dir: string, file = 'base.txt', body = 'line1\nline2\nline3\nl
   writeFileSync(join(dir, file), body, 'utf8')
   git(dir, ['add', '-A'])
   git(dir, ['commit', '-q', '-m', 'base'])
-  return dir
+  // 返回**物理**路径：夹具根落在 `node_modules/.sdo-test/` 下，而 `node_modules` 在副本里是软链
+  // ⇒ `git rev-parse --show-toplevel` 会把它解开；两边不折算就会出现"同一仓库两个字符串"的假红。
+  return realpathSync(dir)
 }
 
 async function callTool(name: string, args: Record<string, unknown>): Promise<string> {
@@ -247,9 +250,11 @@ test('M218-02 T3-04 worktree 生命周期：建 → 写 → 提交 → 合并 �
   const ref = created.ref
   assert.equal(safeTaskId('TASK-21801'), 'task-21801', '卡 id 折成安全形态（分支/目录名）')
   assert.equal(ref.branch, 'sdo/task-21801')
-  // **ADR-025**：副本在**主仓库之外**（不是 `.sdo/` 下）⇒ 结构上进不了索引
-  assert.equal(isInsideRepo(repo, ref.path), false, `副本必须在主仓库之外：${ref.path}`)
-  assert.equal(ref.path.startsWith(worktreeRootOf(repo)), true, '缺省副本根 = 仓库父目录下的 .sdo-worktrees')
+  // **ADR-025**：副本不进索引（`AC-310` 起缺省根搬进仓库内的 `.worktrees/`，靠忽略表做到这一点）
+  assert.equal(worktreeRootOf(repo), join(repo, '.worktrees'), 'AC-310：缺省副本根搬到了仓库内的 .worktrees/')
+  assert.equal(isInsideRepo(repo, ref.path), true, `AC-310 之后副本在仓库内：${ref.path}`)
+  assert.equal(isUnderWorktreeRoot(repo, ref.path), true, `但它落在被忽略的副本根下：${ref.path}`)
+  assert.equal(ref.path.startsWith(worktreeRootOf(repo)), true, '缺省副本根 = 仓库内的 .worktrees/')
   assert.equal(git(repo, ['status', '--porcelain']).trim(), '', '主仓库 git status 必须干净（副本不污染索引）')
 
   // 写 → 提交（子代理"写完了"那一步：不提交 ⇒ 合并出来是零变更假绿）
@@ -367,7 +372,9 @@ test('M218-05 合并由插件在子代理侧完成并**留事件**（不需要�
   // ① 建副本
   const prepared = office.prepareWorktree(call, 'TASK-21805')
   assert.equal(prepared.state, 'created', `派发时建副本：${JSON.stringify(prepared).slice(0, 200)}`)
-  assert.equal(isInsideRepo(WORKSPACE, prepared.path), false, '副本在主仓库之外（ADR-025：不是 .sdo 下）')
+  // 工作区根按 `git rev-parse --show-toplevel` 的**物理**形态取值（`WORKSPACE` 这条夹具路径在副本里会穿过软链）
+  assert.equal(isInsideRepo(repoTopOf(WORKSPACE), prepared.path), true, 'AC-310 之后副本在仓库内（.worktrees/ 下）')
+  assert.equal(isUnderWorktreeRoot(repoTopOf(WORKSPACE), prepared.path), true, '但它被忽略表挡在索引之外（ADR-025：不是 .sdo 下）')
   // ② 副本里写，完成时由**插件**提交 + 合并 + 清场，并留事件
   writeFileSync(join(prepared.path, 'feature-w.txt'), 'w\n', 'utf8')
   const finished = office.finishWorktree(call, { taskId: 'TASK-21805', message: 'sdo: merge TASK-21805 work' })

@@ -1105,7 +1105,8 @@ function describeCommandWriteRisks(shapes: readonly string[]): string {
 /**
  * **把"工作副本里的写入"折回工作区坐标**（`REQ-066` / `AC-304`，`TASK-172`）。
  *
- * 副本是**同一棵树的另一个工作树**（`<仓库父目录>/.sdo-worktrees/<卡>`），而卡的写范围是
+ * 副本是**同一棵树的另一个工作树**（`AC-310` 起落在 `<仓库>/.worktrees/<卡>`；修前在仓库**父目录**下，
+ * 那个落点在本机是 `ro` 挂载 ⇒ 副本建得出来、写不进文件），而卡的写范围是
  * **工作区相对**的声明（`src/domain/plan.ts`）。不折算 ⇒ 执行者在自己的副本里写一条**本来允许**的路径，
  * 会被判「工作区之外 ⇒ 判不了归属 ⇒ 拒写」（`write-scope-outside-workspace`）—— 那正好废掉本批的意义。
  *
@@ -2606,7 +2607,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
           /**
            * **`REQ-066` / `AC-304`：派发时建工作副本**（子代理在**自己的** worktree 里写 `src`/`test`，
            * 不写别人的树）。非 git 仓库 / `git worktree add` 失败 ⇒ `skipped` 并**如实说**（不假装有副本）。
-           * 副本路径在**主仓库之外**（`<仓库父目录>/.sdo-worktrees/<卡>`），插不进主仓库索引。
+           * 副本路径在**仓库内**的 `<仓库>/.worktrees/<卡>`（`AC-310`），靠 `.gitignore` 与该仓库的
+           * `info/exclude` 挡在索引之外（本地忽略，不改工作树）⇒ 仍不插进主仓库索引。
            */
           const worktree = office.prepareWorktree(call, task.id)
           const worktreeLine = worktree.state === 'created'
@@ -3073,6 +3075,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
           if (!result.ok) return fmt('uiIndex.k35', { p1: result.code, p2: result.detail })
           const taskText = describeTask(result.task, office.shapeNotes(call))
           // **SDO-58**：结算后量一下子代理报告 —— 异常短/缺失就显式告警（真机 235 字节的残片报告
+           * `AC-310` 落点三：合并成功 ⇒ 副本由 `removeWorktree` 删掉（`git worktree remove --force`，
+           * 带 `--force` 是因为副本里那条 `node_modules` 软链会让不带它的 remove 自己拒删）；
+           * 合并失败/冲突 ⇒ 副本目录与分支原样保留，回执照实说"现场在 `<副本路径>`"。
           // 是事后才被复评员发现的，审计链断在这里）
           const health = args.action === 'done' ? office.childReportHealth(call, args.id) : { state: 'none' as const }
           const reportWarning = health.state === 'short'
@@ -5330,7 +5335,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
               /**
                * **工作副本里的写入要折回工作区坐标**（`REQ-066` / `AC-304`，`TASK-172`）。
                *
-               * 副本是同一棵树的另一个工作树（`<仓库父目录>/.sdo-worktrees/<卡>`），卡写范围却都是
+               * 副本是同一棵树的另一个工作树（`AC-310` 起在 `<仓库>/.worktrees/<卡>`），卡写范围却都是
                * **工作区相对**的声明（`src/domain/plan.ts`）。不折算 ⇒ 执行者在**自己的**副本里写
                * 一样命中的路径会被判「工作区之外 ⇒ 判不了归属 ⇒ 拒写」—— 那正好废掉本批的全部意义。
                * 折算只做**前缀剥离**（`<副本>/x` ⇒ `x`），判定语义仍由 `evaluateWriteScope` 那**一处**决定；
