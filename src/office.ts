@@ -270,7 +270,7 @@ import {
   toolUsageOf,
   writeChildToolCall,
 } from './domain/dispatchFace.js'
-import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, isProcessOfficerRole, listRoleCards, maskFingerprint, publicWritePathsFor, toolAllowList } from './domain/roles.js'
+import { EXECUTOR_DENIED_TOOLS, READ_ONLY_INSPECTION_TOOLS, attributeRole, capabilityGaps, claimedSessionsByCard, claimsBySession, isProcessOfficerRole, listRoleCards, maskFingerprint, toolAllowList, writeExemptPathsFor } from './domain/roles.js'
 import { isRole } from './domain/plan.js'
 import { readChildReportAt, writeChildReport, CHILD_REPORT_MIN_BYTES} from './domain/dispatchReports.js'
 import { listDispositions, rehashReview, reviewAdoptions, verifyReviewFinding } from './domain/reviewVerification.js'
@@ -3902,14 +3902,19 @@ export class SoftwareDevOffice {
   }
 
   /**
-   * **按角色裁过的公共写面**（`TASK-189`：`office` 只留 `.sdo/` 与 `docs/`）。
+   * **闸门的豁免面** = 按角色裁过的公共写面（`TASK-189`：`office` 只留 `.sdo/` 与 `docs/`）
+   * ∪ 临时验证面（`TASK-232` / `DEF-211`：`.verify/`）。
    *
-   * 为什么在门面开一个方法而不是让调用点自己判断：公共面是**闸门的输入**，
+   * 为什么在门面开一个方法而不是让调用点自己判断：豁免面是**闸门的输入**，
    * 两处各裁一次必然分叉（`DEF-044`）。判定本体仍在 `domain/roles.ts` 的
-   * {@link publicWritePathsFor}（一处实现），这里只把它接到"这次调用是谁"上。
+   * `writeExemptPathsFor`（一处实现：公共面按角色裁、临时面不裁），这里只把它接到"这次调用是谁"上。
+   *
+   * 方法名沿用历史（调用点是 `index.ts` 那一处），返回的**不止**「公共面」：`.verify/` 与公共面是
+   * 两个概念（差别写在 `domain/roles.ts` 的 `SCRATCH_WRITE_PATHS`）。判定没有另起一套 ——
+   * 命中仍由 `domain/writeScope.ts` 的 `evaluateWriteScope` 在同一个分支里判，这里只准备输入面。
    */
   publicWritePaths(role: string, configured: readonly string[]): string[] {
-    return publicWritePathsFor(role, configured)
+    return writeExemptPathsFor(role, configured)
   }
 
   /**

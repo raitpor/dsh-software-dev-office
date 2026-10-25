@@ -169,6 +169,38 @@ export function publicWritePathsFor(role: string, configured: readonly string[])
   return isProcessOfficerRole(role) ? [...OFFICE_PUBLIC_WRITE_PATHS] : [...configured]
 }
 
+/**
+ * **临时验证面**（`DEF-211` 的落点一；与 `DEF-140` 是同一族口径）—— 与「公共面」是**两个概念**。
+ *
+ * 公共面（`disciplineAllowPaths`，默认 `.sdo/` `docs/` `test/`）是一份**可配置的跨卡共用放行面**，
+ * 而且会按角色裁一次（`office` 不写 `test/`，见 {@link OFFICE_PUBLIC_WRITE_PATHS}）。
+ * 这里是**对照读数的落地处**：`.verify/` 在本仓 `.gitignore` 里、内容随时可删、不跨卡共用，
+ * 也不该随角色变窄 —— 把两者并成一份清单，`office` 的收窄会把临时面一起收掉，
+ * 而「取改前对照无处可落」正是 `DEF-211` 的现场（此前那些副本靠闸门 fail-open 才写得进去，
+ * 「临时换回 HEAD 去取读数」那条捷径也是同一处空缺逼出来的）。
+ *
+ * 为什么放在插件源码里、而不是项目的 `.sdo/config.yml`：本仓今天**没有读者**能读到那样一份项目声明
+ * —— `ProjectConfig` 没有 `discipline` 段，`discipline.*` 里被读的只有 `codePaths`
+ * ⇒ 写进配置只会得到一份死声明（`DEF-140` 记的「声明了却没人读」）。
+ * 与 `config.ts` 里 `disciplineAllowPaths` 的默认值是同一性质：**通用目录约定**，不是本仓独有的路径清单。
+ *
+ * 判定**不在这里发生**：本常量只把路径并进闸门的输入面，命中与否仍由
+ * `domain/writeScope.ts` 的 `evaluateWriteScope` 按同一套目录边界语义（`scopePathWithin`，`ADR-009`）判，
+ * 所以公共面与临时面在那一处走的是同一个分支，也没有并列的第二套前缀匹配。
+ */
+export const SCRATCH_WRITE_PATHS: readonly string[] = ['.verify/']
+
+/**
+ * **闸门的豁免面**（`TASK-232` 落点一）：按角色裁过的公共面 ∪ 临时验证面（去重保序）。
+ *
+ * 为什么另开一个函数而不是直接改 {@link publicWritePathsFor}：那份返回值有既有消费方当成「公共面」用
+ * （`M225-R4` 逐项钉住 `office` 的 `['.sdo/', 'docs/']`），把临时面塞进去会让「公共面」这个读数失真。
+ * 两个概念各留一个入口，合流只发生在**交给闸门的那一步**（`SoftwareDevOffice.publicWritePaths`）。
+ */
+export function writeExemptPathsFor(role: string, configured: readonly string[]): string[] {
+  return [...new Set([...publicWritePathsFor(role, configured), ...SCRATCH_WRITE_PATHS])]
+}
+
 /** 某角色的工具白名单（派发时作为 `toolFilter` 的 allow 部分）。 */
 /**
  * **只读检视类工具 = 所有角色的基础工具面**（真机缺陷的机制化修复）。
