@@ -207,8 +207,8 @@ function tally(bucket: Record<string, number>, key: string): void {
  *
  * **边界（如实，别声称挡住）**：下面这些都挡得住 —— tmp+rename（产品写路径 / `sed -i`）、同 inode 的
  * 就地改写（尺寸变或不变，`writeFileSync` 会推进 `mtime`）、新增 / 删除 / 改名；
- * **挡不住**「写完之后再把 `mtime` 回拨到原值」（`utimes` / `touch -r`），也挡不住"两次写落在同一个
- * 时间刻度内"—— 那需要内容哈希，而每读一次就哈希整目录等于取消记忆化。
+ * **挡不住**「写完之后再用系统调用把 `mtime` 回拨到原值」（`touch -r` 一类），也挡不住"两次写落在
+ * 同一个时间刻度内" —— 那需要内容哈希，而每读一次就哈希整目录等于取消记忆化。
  *
  * **扩探针的义务**：四张表当前的 compute 只读 `tasks/*.yml`、`reviews/*.yml`、`reviews/verified.yml`
  * 与 journal 事件（`roles.yml` / config / 工具分组**都不是**输入，已逐条核过）。将来若把
