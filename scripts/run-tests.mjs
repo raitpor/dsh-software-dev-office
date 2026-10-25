@@ -10,6 +10,15 @@
  *   · **不加参数**让测试运行器自动发现也不行 ✗：它会把 `test/*.test.ts`（TypeScript 源文件）
  *     也当测试跑 → 实测多出 26 个"测试"、13 个失败 ✗。
  * 因此这里自己列出**编译产物**里的测试文件，显式交给 `node --test`（v18+ 都支持多文件参数 ✓）。
+ *
+ * **新增守卫格的接线点就是这里**（`TASK-263` 记一笔）：新守卫 = 新的 `test/mNNN.test.ts`，
+ * 编译成 `lib/test/mNNN.test.js` 后**被本脚本按目录自动发现**，运行器不需要为它加一行；
+ * 本文件只负责"跑哪些文件"，**不替**守卫判绿（`M145-02`：子进程输出原样透传，不许自拼"全绿"）。
+ * 两个随包脚本的口径差别也写在这里，免得下次又猜：
+ *   · `scripts/check-number-provenance.mjs`（数字必须带口径）的**载体是项目数据**
+ *     （`.sdo/reviews/verified.yml`）⇒ 载体缺失时它打印 `carrier: absent` 并 exit 0，
+ *     守卫格跟着走"没有台账就不判红"那一支（插件包被单独 checkout 时全量照样可跑）；
+ *   · `scripts/refresh-prose-gap.mjs` 有 `--write`，**全量里只许跑检查模式**（写盘会改 `test/m189.test.ts`）。
  */
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
