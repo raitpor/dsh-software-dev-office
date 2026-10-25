@@ -41,7 +41,12 @@ import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
+import { admitDispatch, foldPoolChildren, rolePools } from '../src/domain/pool.js'
+import { describePoolBlock } from '../src/interface/describe.js'
 import { realLedgerSkip } from './support/real-ledger.js'
+
+import type { PoolEvent } from '../src/domain/pool.js'
+import type { TaskCard } from '../src/types.js'
 
 /** 编译后本文件落在 `lib/test/`，仓库根是上两级。 */
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
@@ -350,4 +355,178 @@ test('M250-12 重生成打印差集：新增 / 减少 / 变化三类都认得出
   // 现算登记表 = 回读登记表（对现盘载体成立时不产生假差集）
   const stable = api.registryDelta(api.KNOWN_UNMARKED, api.KNOWN_UNMARKED)
   assert.equal(stable.added.length + stable.removed.length + stable.changed.length, 0, 'regenerating from the same input must produce an empty delta')
+})
+
+/* ——————————————————————————————————————————————————————————————————————————————
+ * 读数口径（第三面，`TASK-245` / `DEF-229`）：**准入是计划，`dispatch/started` 是事实**。
+ *
+ * 同一份 mandate（数字离了口径就不是读数）落在「在飞 N」这一个计数上：它的口径**只有**台账里真的
+ * 有一笔 `dispatch/started`。池准入（`admitDispatch`）在**复用支**把挑中的空闲会话连本张卡的 id
+ * 一起写进 `pool.busy`，那一刻它还是**计划** —— 被 `limit=N` 截掉、或被容量挤进 `queued` 时，
+ * 那张卡零 `dispatch/started`，却以「在飞」形态出现在回执的角色池段（真机读数见 `DEF-229`）。
+ * 同一函数下面 15 行（新起支）早已按这条纪律修过一遍，本段守的就是把那条规则**补齐到复用支**。
+ *
+ * 落位说明：本卡的写范围是 `src/domain/pool.ts` + 本文件 + `test/m189.test.ts`，没有新建守卫文件的
+ * 余量 ⇒ 三格落在这里（与本文件前 12 格同一条 mandate，不是另立一套口径）。
+ * 措辞：本文件不在 `KNOWN_PROSE_GAP`（`test/m189.test.ts`）里 ⇒ 断言消息一律英文、中文只写在断言之外。
+ * —————————————————————————————————————————————————————————————————————————————— */
+
+/** 池夹具统一用的掩码指纹（`rolePools` 与 `admitDispatch` 拿同一个 ⇒ 判据只有一处）。 */
+const POOL_MASK = 'mask-250'
+
+/** 「在飞定位」那行的轮次形态 —— 只许由**折叠事实**（真 started）印出来。 */
+const BUSY_ROUND = /第 \d+ 轮/u
+
+/** 一张最小可派的卡。 */
+function poolCard(id: string, role: 'developer' | 'tester' = 'developer'): TaskCard {
+  return {
+    id,
+    title: id,
+    goal: 'g',
+    inputs: [],
+    outputs: [],
+    dod: ['d'],
+    evidenceRequired: ['command'],
+    blockedBy: [],
+    writeScopes: [`src/${id}/`],
+    role,
+    size: 'small',
+    revision: 1,
+    status: 'ready',
+    requirements: [],
+    evidence: [],
+    createdAt: '',
+    updatedAt: '',
+  }
+}
+
+/** 一笔真的派发（`reused: true` = 投给已有的空闲会话，不是新起）。 */
+function dispatchStarted(task: string, child: string, at: string, reused = true): PoolEvent {
+  return {
+    type: 'dispatch/started',
+    data: { task, childSessionId: child, role: 'developer', mode: 'continuable', maskHash: POOL_MASK, reused },
+    at,
+  }
+}
+
+/** 一轮结算（把孩子退回空闲）。 */
+function dispatchFinished(task: string, child: string, at: string): PoolEvent {
+  return { type: 'dispatch/finished', data: { childSessionId: child, task, role: 'developer' }, at }
+}
+
+/**
+ * `DEF-229` 的复现账态：池 `cap=3`、**0 在飞**、1 个空闲可复用孩子（已接过 3 轮 3 张）。
+ *
+ * 两张候选卡一起进准入，**顺序与真机一致**（真机那份回执里 2 个幽灵都绑在**后面**的卡上）：
+ *   · 第 1 张是 `tester`（那个池空着）⇒ 走新起支，被 `limit=1` 真的派出去；
+ *   · 第 2 张是 `developer` ⇒ 走**复用支**（挑走 c-old），被 `limit=1` 挡下 —— 而那一支修前会往
+ *     `pool.busy` 塞一行 `{...c-old, task: 第 2 张}`。
+ * 为什么要跨角色：复用支对**每张卡**都先于新起支被尝试，同角色两张卡时复用必然落在第 1 张上，
+ * 而 `DEF-229` 的真机形状是幽灵绑在**被挡下**的那张卡上（TASK-240 / TASK-231 都不是本轮派出的那张）。
+ * 于是「准入通过 2 张、真派 1 张」这一态正好把幽灵摆在第 2 张卡上。
+ */
+function admissionFixture(): {
+  admission: ReturnType<typeof admitDispatch>
+  ledger: PoolEvent[]
+  picked: string
+  held: string
+} {
+  const ledger: PoolEvent[] = []
+  for (const round of [1, 2, 3]) {
+    ledger.push(dispatchStarted(`TASK-OLD-${String(round)}`, 'c-old', `2026-10-25T0${String(round)}:00:00Z`))
+    ledger.push(dispatchFinished(`TASK-OLD-${String(round)}`, 'c-old', `2026-10-25T0${String(round)}:30:00Z`))
+  }
+  const pools = rolePools({
+    children: foldPoolChildren(ledger).values(),
+    roles: ['developer', 'tester'],
+    caps: { developer: 3, tester: 3 },
+    defaultCap: 3,
+    maskHashOf: () => POOL_MASK,
+  })
+  const admission = admitDispatch({
+    ready: [poolCard('TASK-FRESH', 'tester'), poolCard('TASK-REUSE')],
+    pools,
+    globalRoom: 4,
+    reuseIdle: true,
+    maskHashOf: () => POOL_MASK,
+    reuseBlockedOf: () => undefined,
+  })
+  return { admission, ledger, picked: 'TASK-FRESH', held: 'TASK-REUSE' }
+}
+
+test('M250-13 准入写下的复用位子不许进 busy（DEF-229：被 limit 挡下的卡不得以「在飞」出现）', () => {
+  const { admission, ledger, picked, held } = admissionFixture()
+  // 前置（否则测不到「被 limit 挡下」那一支）：准入真的处理到第 2 张 —— 先新起、后复用
+  const reuseRow = admission.dispatch.map((entry) => entry.reuseChildId ?? '-').join(',')
+  assert.equal(reuseRow, '-,c-old', `admission must reach the second card (fresh first, reuse second), got ${reuseRow}`)
+  // 工具层 `limit=1` 的真实形状：只派第 1 张，第 2 张被 held（`slice(take)`，既没派发也没排队）
+  const heldRow = admission.dispatch.slice(1).map((entry) => entry.task.id).join(',')
+  assert.equal(heldRow, held, `limit=1 holds back exactly the reuse card, got ${heldRow}`)
+  // 台账事实：只有第 1 张真的有一笔 started，被挡下的那张零笔
+  const dispatched: PoolEvent[] = [...ledger, dispatchStarted(picked, 'c-new', '2026-10-25T07:19:00Z', false)]
+  const startedOf = (taskId: string): number =>
+    dispatched.filter((event) => event.type === 'dispatch/started' && event.data['task'] === taskId).length
+  assert.equal(startedOf(picked), 1, 'the dispatched card carries exactly one started event')
+  assert.equal(startedOf(held), 0, 'the held card carries zero started events')
+  // ① 事实面：准入返回的池里，`busy` 只许有**真的** started 的那一张（这一态里一张都不该有 ——
+  //    第 1 张的 started 是准入之后才写的，池块读的是准入前那份快照，见 R-5A 的既有口径）
+  const dev = admission.pools.find((pool) => pool.role === 'developer')
+  const busyTasks = (dev?.busy ?? []).map((child) => child.task).join(',')
+  assert.equal(busyTasks, '', `busy must hold folded facts only (a plan seat is not in-flight), got: ${busyTasks}`)
+  // ② 渲染面：回执的角色池段（池块只有这一个渲染器）不得把被挡下的卡印进「在飞定位」
+  const block = describePoolBlock(admission.pools, [], true, 0)
+  const phantom = block.indexOf(held)
+  assert.equal(phantom, -1, `the held card (0 started events) must not be printed as in-flight: ${block}`)
+  // ③ 计划面：这次复用分配仍然可读（信息不丢），但它是一个**独立结构**，不是在飞那一桶
+  const planRows = admission.reuseAdmissions.map((row) => `${row.task}->${row.childSessionId}`).join(',')
+  assert.equal(planRows, `${held}->c-old`, `the plan seat must stay readable on its own: ${planRows}`)
+  const inFlightRows = (admission.pools.find((pool) => pool.role === 'developer')?.busy ?? []).length
+  assert.equal(admission.reuseAdmissions.length, 1, 'exactly one reuse seat was admitted this round')
+  assert.equal(inFlightRows, 0, 'the plan seat must not be copied into the in-flight bucket')
+})
+
+test('M250-14 反例：真的复用派发成功 ⇒ 该会话必须出现在 busy（别修成「永远不写 busy」）', () => {
+  const pools = rolePools({
+    children: foldPoolChildren([dispatchStarted('TASK-A', 'c-old', '2026-10-25T07:19:00Z')]).values(),
+    roles: ['developer'],
+    caps: { developer: 3 },
+    defaultCap: 3,
+    maskHashOf: () => POOL_MASK,
+  })
+  const dev = pools.find((pool) => pool.role === 'developer')
+  const row = (dev?.busy ?? []).map((child) => `${child.task}->${child.childSessionId}`).join(',')
+  assert.equal(row, 'TASK-A->c-old', `a successful reuse must be folded as in-flight, got ${row}`)
+  const block = describePoolBlock(pools, [], true, 0)
+  const printed = block.indexOf('TASK-A→c-old') >= 0
+  assert.equal(printed, true, `the in-flight identity must be printed for a real dispatch: ${block}`)
+  // 同一条在飞读数也不许被准入再复用出去（卡不能被派两遍）
+  const admission = admitDispatch({
+    ready: [poolCard('TASK-C')],
+    pools,
+    globalRoom: 4,
+    reuseIdle: true,
+    maskHashOf: () => POOL_MASK,
+    reuseBlockedOf: () => undefined,
+  })
+  assert.equal(admission.dispatch[0]?.reuseChildId, undefined, 'a busy child must never be handed a second card')
+})
+
+test('M250-15 同源症状：角色池段不许印「准入时的轮次快照」（比同参复用依据行差一轮）', () => {
+  const { admission, ledger, held } = admissionFixture()
+  // 真值：那一轮复用真的派出去之后（`limit=2` 的那一态），c-old 是第 4 轮 / 第 4 张
+  const after = rolePools({
+    children: foldPoolChildren([...ledger, dispatchStarted(held, 'c-old', '2026-10-25T07:19:00Z')]).values(),
+    roles: ['developer'],
+    caps: { developer: 3 },
+    defaultCap: 3,
+    maskHashOf: () => POOL_MASK,
+  })
+  const truth = after.find((pool) => pool.role === 'developer')?.busy[0]
+  assert.equal(truth?.rounds, 4, 'the truthful reading after this round is round 4')
+  assert.equal(truth?.cards, 4, 'and 4 distinct cards')
+  // 准入那一刻的读数是第 3 轮 —— 它**还没发生**，不许被印成轮次（旧实现正是这样差一轮：
+  // 池块印「第 3 轮/3 张」，同一份回执的复用依据行印「第 4 轮、已承接 4 张」）
+  const block = describePoolBlock(admission.pools, [], true, 0)
+  const snapshotPrinted = BUSY_ROUND.test(block)
+  assert.equal(snapshotPrinted, false, `the block must not print an unbacked rounds snapshot: ${block}`)
 })

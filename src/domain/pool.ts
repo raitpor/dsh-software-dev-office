@@ -184,7 +184,9 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
         applyDeliverySkips(children, event.data['reuseSkipped'], undefined)
         continue
       }
-      if (retired.has(id)) continue; const previous = children.get(id) // **先减退役集**（`TASK-228` 落点一）：已退役的候选不进折叠（池视图/准入/`reuseSkippedOf` 都看不到它）
+      // **先减退役集**（`TASK-228` 落点一）：已退役的候选不进折叠（池视图/准入/`reuseSkippedOf` 都看不到它）
+      if (retired.has(id)) continue
+      const previous = children.get(id)
       const mergedCardIds = [...new Set([...(previous?.cardIds ?? []), text(event.data['task'])])].filter((item) => item !== '')
       const reused = event.data['reused'] === true
       children.set(id, {
@@ -1137,6 +1139,24 @@ export interface PoolAdmission {
    * 投递层（`startDispatch`）按这个顺序**逐条试**：成功即采用，失败逐条留痕，全部失败才新起。
    */
   dispatch: { task: TaskCard; reuseChildId?: string | undefined; reuseCandidates?: string[] | undefined }[]
+  /**
+   * **本次准入把哪个空闲会话分配给了哪张卡**（`TASK-245` / `DEF-229`）—— **计划面，不是在飞**。
+   *
+   * 为什么必须单独一个结构（而不是写进 `RolePool.busy`）：准入发生在**派发之前**，而真正"起来了"
+   * 只有一笔 `dispatch/started` 才算数。旧实现（修前 `pool.busy.push({ ...taken, state: 'busy',
+   * task: task.id })`）把这张**计划**写成 busy，于是「准入通过、但本轮没派」的卡会以「在飞」形态
+   * 印在回执的角色池段 —— 被 `limit=N` 截掉时它在台账里**零** `dispatch/started`（`DEF-229` 的真机
+   * 形状：一次 `next limit=1` 印出 3 行「在飞定位」，其中 2 张从未派发）。
+   *
+   * 同函数 15 行之下的 **R-5A** 已经为**新起支**修过同一种病（原话：「在飞」是事实，「本次准入 N 张」
+   * 是计划，两者必须分开讲）—— 本字段是把那条规则**补齐到复用支**，不另立第三套口径：
+   *   · **事实** = `RolePool.busy`（只由 `dispatch/started` 折叠出来）；
+   *   · **计划** = `dispatch`（谁上）与 `reuseAdmissions`（哪张卡拿走了哪个空闲会话）。
+   *
+   * 渲染层要显示「本轮准入的复用分配」时**读这个结构**，并**明确标注它不是「在飞」**；
+   * 谁也不许拿它去增删 `busy`（`DEF-229` 的回归守卫是 `test/m250.test.ts` 的 M250-13/14/15）。
+   */
+  reuseAdmissions: { task: string; childSessionId: string; role: string }[]
   /** **被闸门拒的空闲子代理**（掩码/观测/持卡/余量四类，判据只有 `rolePools` 那一处）：回执与事件靠它答"为什么没复用" */
   reuseSkipped: { childSessionId: string; role: string; reason: string }[]
   /* ———————————————————— 定案面（`DEF-139` 落点一/二） ———————————————————— */
@@ -1265,8 +1285,16 @@ export function admitDispatch(input: {
   const byRole = new Map(pools.map((pool) => [pool.role, pool]))
   const dispatch: PoolAdmission['dispatch'] = []
   const reuseSkipped: PoolAdmission['reuseSkipped'] = []
+  /**
+   * **本次准入的复用分配**（计划面，`TASK-245` / `DEF-229`）：谁把哪个空闲会话拿走了。
+   *
+   * 它**不进** `pool.busy` —— 那里只放由 `dispatch/started` 折叠出来的事实（见字段注释）。
+   */
+  const reuseAdmissions: PoolAdmission['reuseAdmissions'] = []
   /** 每个角色**本次准入新建**了几张（R-5A：`在飞` 只报真实在飞，新建数另说，不再塞占位孩子） */
   const admittedByRole = new Map<string, number>()
+  /** 每个角色**本次准入复用**了几张（`TASK-245`：与上面同一口径 —— 计划数只进回执文案，不进 `busy`） */
+  const reusedByRole = new Map<string, number>()
   const queued: TaskCard[] = []
   const blocked: PoolAdmission['blocked'] = []
   let room = Math.max(0, Math.floor(input.globalRoom))
@@ -1392,7 +1420,25 @@ export function admitDispatch(input: {
       if (taken !== undefined) {
         const index = pool.idle.findIndex((child) => child.childSessionId === taken.childSessionId)
         if (index >= 0) pool.idle.splice(index, 1)
-        pool.busy.push({ ...taken, state: 'busy', task: task.id })
+        /**
+         * **`TASK-245`（`DEF-229`）：这里**不再**往 `pool.busy` 里塞这一行。**
+         *
+         * 修前的形状是 `pool.busy.push({ ...taken, state: 'busy', task: task.id })` —— 把一张**已空闲**
+         * 的会话连同**本张卡**的 id 一起写成"在飞"。这一步发生在**准入**时刻，而 `dispatch/started`
+         * 是准入之后才写的（且完全可能不写：被 `limit=N` 挡下、或被容量挤进 `queued`）⇒ 于是
+         * 「准入成功但本轮没派」的卡会以「在飞」形态印出来，台账里**零** `dispatch/started`
+         * （真机一次 `next limit=1` 印 3 行「在飞定位」，其中 2 张从未派发）。
+         *
+         * 这正是上面 **R-5A** 为新起支修过的同一种病（「在飞」是事实，「本次准入 N 张」是计划），
+         * 修前只修了新起那一支 —— 本行是把那条规则**补齐到复用支**，不另立第三套口径：
+         * 计划进 `reuseAdmissions`，事实只由 `busy`（折叠 `dispatch/started`）说。
+         *
+         * 连带的同源症状也一并消失：`busy` 里那一行是**准入时的快照**（`{ ...taken }` 的 `rounds` /
+         * `cards` 不含本轮），回执的角色池段因此会比同一份回执的复用依据行**差一轮**
+         * （真机：池段印「第 9 轮/8 张」而复用依据行印「第 10 轮、已承接 9 张」）。
+         */
+        reuseAdmissions.push({ task: task.id, childSessionId: taken.childSessionId, role: pool.role })
+        reusedByRole.set(pool.role, (reusedByRole.get(pool.role) ?? 0) + 1)
         dispatch.push({
           task,
           reuseChildId: taken.childSessionId,
@@ -1417,13 +1463,30 @@ export function admitDispatch(input: {
     }
     queued.push(task)
     const admittedNow = admittedByRole.get(pool.role) ?? 0
+    const reusedNow = reusedByRole.get(pool.role) ?? 0
+    /**
+     * **容量读数与被占用的位子分开讲**（`TASK-245` / `DEF-229`；同一句纪律见 R-5A）。
+     *
+     * 修前这一句印的是「池满（在飞 4/4）」—— 那个 4 里混着"本次准入"的**计划**。现在：
+     *   · **位子** = `cap − freeSlots`：准入循环自己维护的那份容量账（复用支从 `idle` 摘一个、
+     *     新起支 `freeSlots -= 1`），于是"还剩几个位子"与"这轮准入用掉几个"可以同时成立；
+     *   · **在飞** = `busy.length`：只数台账里真的有一笔 `dispatch/started` 的（事实）；
+     *   · **本次已先准入 N 张** = 计划（复用 / 新建分开报，别混成一句）。
+     * 三者分开之后，「在飞 0/3 却池满」不再是自相矛盾，而是"这一轮的位子已经许出去了"。
+     */
+    const seats = Math.max(0, pool.cap - pool.freeSlots)
+    const admittedText = reusedNow === 0
+      ? `${admittedNow} 张新建`
+      : admittedNow === 0
+        ? `${reusedNow} 张复用`
+        : `${reusedNow + admittedNow} 张（复用 ${reusedNow} / 新建 ${admittedNow}）`
     const forced = input.forceNew === true && pool.idle.length > 0
       ? `，本轮 freshChild=true（强制新起）⇒ 池内 ${pool.idle.length} 个空闲可复用会话**不参与容量计算**`
       : ''
     blocked.push({
       task,
       reason: 'pool-full',
-      detail: `${pool.role} 池满（在飞 ${pool.busy.length}/${pool.cap}${pool.idle.length > 0 ? `，空闲可复用 ${pool.idle.length}` : ''}${admittedNow > 0 ? `，本次已先准入 ${admittedNow} 张新建` : ''}${forced}）`,
+      detail: `${pool.role} 池满（位子 ${seats}/${pool.cap}：在飞 ${pool.busy.length}${reusedNow + admittedNow > 0 ? ` + 本次已先准入 ${admittedText}` : ''}${pool.idle.length > 0 ? `，空闲可复用 ${pool.idle.length}` : ''}${forced}）`,
     })
   }
   // **R-5B**：`reuseSkipped` 以前在"逐候选卡"的循环里 push ⇒ **候选卡 × 不可复用会话**的笛卡尔积
@@ -1435,7 +1498,17 @@ export function admitDispatch(input: {
     seenSkipped.add(item.childSessionId)
     return true
   })
-  return { reuseIdle: input.reuseIdle, forceNew: input.forceNew === true, dispatch, reuseSkipped: dedupedSkipped, queued, blocked, pools }
+  return {
+    reuseIdle: input.reuseIdle,
+    forceNew: input.forceNew === true,
+    dispatch,
+    // **`TASK-245`**：计划面的复用分配（`pools` 的 `busy` 里一格都不许有它 —— 那里只放折叠事实）
+    reuseAdmissions,
+    reuseSkipped: dedupedSkipped,
+    queued,
+    blocked,
+    pools,
+  }
 }
 
 /* —————————————————————— 派发现场的**可读读数**（`TASK-163` / `DEF-139`） —————————————————————— */

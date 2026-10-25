@@ -286,11 +286,26 @@ test('M231-01 落点三① 真装配链：老会话排在前、同父孩子在�
   assert.equal(reading.freeSlots, view.freeSlots, `落点一：freeSlots 两边同源（读数 ${String(reading.freeSlots)} / 池 ${String(view.freeSlots)}）`)
   assert.equal(reading.cap, view.cap, '落点一：cap 两边同源')
   assert.equal(reading.childrenSource, 'journal', '口径名必须写清（孩子从 append-only 台账折叠而来）')
-  // **决策消费的就是读数报的那一份**：恰好 1 个孩子从 `idle` 挪进 `busy`（不是从别的桶里挑的）
+  // **决策消费的就是读数报的那一份**：恰好 1 个孩子从 `idle` 挪进**计划面**（`TASK-245` / `DEF-229`：
+  // 准入是计划、`dispatch/started` 才是事实 ⇒ 它**不**进 `busy`），而且挪走的正是读数在 `idle` 里报的
+  // 那一个（不是从别的桶里挑的）。修前这里断言的是「准入后 busy 必须 +1」—— 那条恰好编码了本卡要修的
+  // 行为（把准入写成在飞），所以它被换成下面三条：同一条意图（决策消费读数报的那一份）在三处同时成立。
   const after = plan.pools.find((pool) => pool.role === 'developer')
   assert.ok(after !== undefined, '准入后的池必须在场')
   assert.equal(after.idle.length, view.idle.length - 1, `可复用候选恰好被摘走 1 个（准入前 ${String(view.idle.length)} ⇒ 准入后 ${String(after.idle.length)}）`)
-  assert.equal(after.busy.length, view.busy.length + 1, `它必须落在"在飞"里（准入前 ${String(view.busy.length)} ⇒ 准入后 ${String(after.busy.length)}）`)
+  const seat = plan.reuseAdmissions.find((row) => row.task === 'TASK-23102')
+  assert.equal(
+    seat?.childSessionId,
+    picked,
+    `准入的复用分配必须落在计划面（reuseAdmissions）且与 dispatch 同一份：${JSON.stringify(plan.reuseAdmissions)}`,
+  )
+  const consumedFromIdle = view.idle.some((row) => row.childSessionId === seat?.childSessionId)
+  assert.equal(consumedFromIdle, true, 'consumed candidate must be the one the readings reported in idle')
+  assert.equal(
+    after.busy.length,
+    view.busy.length,
+    `busy must hold folded facts only (a plan seat is not in-flight): 准入前 ${String(view.busy.length)} ⇒ 准入后 ${String(after.busy.length)}`,
+  )
 
   // 真派发路径：走 `sdo_plan action=next`（宿主桩），真的复用同一个孩子
   const tools = mount([LEGACY])
