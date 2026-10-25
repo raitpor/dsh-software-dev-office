@@ -67,7 +67,8 @@ import type { FieldShapeNote } from './infra/scalar.js'
 import { readAssessment, listScenarios, recordScenario, writeAssessment } from './domain/quality.js'
 import type { RecordScenarioInput } from './domain/quality.js'
 import { linkMany, renderTraceReport, report, unlink } from './domain/trace.js'
-import { capacityPlan, independenceViolations } from './integration/orchestrator.js'
+import { capacityPlan, independenceViolations, seatReading } from './integration/orchestrator.js'
+import type { SeatReading } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
 import { addErrata, claim, pendingReviewBigCards, reassign, release, report as reportTask, staleClaims, unblock, updateTask } from './domain/collab.js'
@@ -136,8 +137,21 @@ import {
 // （`release/written` / `release/deferred`），手写 YAML 的 `frozenBy: human` 核不到任何东西。
 import { HUMAN_APPROVER, currentRelease, deferredIdsOf, listReleases, packageVersionOf, writeRelease } from './domain/release.js'
 import { textOf } from './infra/scalar.js'
-import { admitDispatch, foldPoolChildren, isStaleDispatch, rolePoolReadings, rolePools, unresolvedBlock as findUnresolvedBlock, lastReuseSkippedReference, planReuseSkippedEvents } from './domain/pool.js'
-import type { PoolAdmission, PoolChild, PoolReading, RolePool } from './domain/pool.js'
+import {
+  DECIDED_SETTLE_SECONDS,
+  admitDispatch,
+  danglingDecisionLine,
+  danglingDecisions,
+  dispatchDecisionRows,
+  foldPoolChildren,
+  liveDispatchReading,
+  rolePoolReadings,
+  rolePools,
+  unresolvedBlock as findUnresolvedBlock,
+  lastReuseSkippedReference,
+  planReuseSkippedEvents,
+} from './domain/pool.js'
+import type { DispatchDecisionRow, LiveDispatchReading, PoolAdmission, PoolChild, PoolReading, RolePool } from './domain/pool.js'
 import type { UndigestedChange } from './domain/change.js'
 import { renderHeader } from './infra/render.js'
 import type { CreateChangeInput } from './domain/change.js'
@@ -560,6 +574,18 @@ export interface DispatchPlan extends PoolAdmission {
    * 所以"回执说谁上、实际派谁"不可能分叉（`DEF-174` 的病灶）。
    */
   queue: QueueEntry[]
+  /**
+   * **真在飞的卡**（`TASK-231` 落点二）：只由 `dispatch/started`（未 `finished`、未超 TTL、未被
+   * `task/released` 覆盖）推导。`dispatch/decided` **永不**出现在这里 —— 「决定了」不等于「发生了」。
+   */
+  liveDispatches?: string[] | undefined
+  /** **全局预算的占位读数**（`TASK-231` 落点二）：占位 = `in-progress` ∪ 真在飞，去重；悬空决定不占位 */
+  seats?: SeatReading | undefined
+  /**
+   * **悬空的派发决定**（`TASK-231` 落点三）：决定了却既没 `started` 也没 `failed`，且已过收口窗口。
+   * 回执必须点名（卡 + 决定锚点 + 角色的声明面），否则这个中间态永远无人发现（`DEF-214`）。
+   */
+  danglingDecisions?: DispatchDecisionRow[] | undefined
 }
 
 /**
@@ -4328,19 +4354,42 @@ export class SoftwareDevOffice {
     return appended
   }
 
-  /** 容量预算内的派发计划。 */
+  /**
+   * 容量预算内的派发计划。
+   *
+   * **`TASK-231` 落点二**：占位走唯一出口 {@link seatReading}（`in-progress` ∪ **真在飞**，去重）——
+   * 修前这里只数卡状态 `in-progress`，于是"派发还活着但卡没认领"这件事在预算里**一个位子都不占**，
+   * 而池视图却把它算成 `busy`：同一份台账两种容量读数。
+   */
   dispatchPlan(call: OfficeCall, maxParallel = this.settings.maxParallelDispatch): { dispatch: TaskCard[]; queued: TaskCard[]; held: ScopeHold[] } {
     const tasks = this.tasks(call)
-    const inProgress = tasks.filter((task) => task.status === 'in-progress').length
+    const inProgress = tasks.filter((task) => task.status === 'in-progress').map((task) => task.id)
     // **DEF-067 落点一**：写范围与在飞卡相交的卡**不派**（派了也认领失败）—— 判定走 `scopeHeldTasks`。
     const held = scopeHeldTasks(tasks)
     const heldIds = new Set(held.map((row) => row.task.id))
+    const live = this.liveDispatch(call)
+    const seats = seatReading({ inProgress, liveDispatches: live.taskIds, budget: maxParallel })
     const plan = capacityPlan(
       readyTasks(tasks, 64, this.staleEntryGate(call)).filter((task) => !heldIds.has(task.id)),
-      inProgress,
+      seats.occupied,
       maxParallel,
     )
     return { ...plan, held }
+  }
+
+  /**
+   * **真在飞的卡**（`TASK-231` 落点二）：唯一出口 {@link liveDispatchReading}。
+   *
+   * 只认 `dispatch/started`（未 `finished`、未超孤儿 TTL、且卡在派发之后没被 `task/released`）。
+   * `dispatch/decided` **永远不进这个集合** —— 决定了不等于发生了（`DEF-214` 的第一层危害）。
+   */
+  liveDispatch(call: OfficeCall, options: { orphanTtlMinutes?: number | undefined; nowMs?: number | undefined } = {}): LiveDispatchReading {
+    const { journal } = this.contextFor(call)
+    const ttlMinutes = options.orphanTtlMinutes ?? this.settings.dispatchOrphanTtlMinutes
+    return liveDispatchReading(
+      journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at, seq: event.seq })),
+      { ttlMs: ttlMinutes * 60_000, ...(options.nowMs === undefined ? {} : { nowMs: options.nowMs }) },
+    )
   }
 
   /**
@@ -4352,6 +4401,17 @@ export class SoftwareDevOffice {
    * 于是"medium 先于 small"到底是候选集不同还是排序被覆盖，只能靠猜（并猜错过）。
    * 现在同一笔事件里带上 {@link DispatchDecisionTrace}：候选有序全表（含每张的规模秩）、
    * 排序键名字、以及"这一张为什么被选中"。三个键**缺省不落**（老调用点形状不变）。
+   *
+   * **`TASK-231` 落点一：`outcome` 是收口（`DEF-214`）。**
+   *
+   * 病根：修前派发路径**先**落 `dispatch/decided`（决策：这张卡交给谁），**再**尝试起会话落
+   * `dispatch/started`；「起会话」这一步失败时**没有任何收口事件** ⇒ 台账里留下一条「决议了但没发生」
+   * 的中间态，而下游读数无从分辨它与「正在派发」。现在两条口径一起落：
+   *   · **生产路径**（`index.ts` 的 `sdo_plan next`）**先尝试、后落账**，并把结果写进同一笔事件：
+   *     `outcome: 'started' | 'failed' | 'inline'`（`failed` 另带 `failureReason`）——
+   *     于是**悬空的决定在结构上不可能进入台账**（崩溃在尝试期间 ⇒ 连 decided 都没有，不留中间态）；
+   *   · **老调用点**（不传 `outcome`）保持既有形状，由守卫 {@link danglingDecisions} 按"之后有没有
+   *     `started`"判定悬空并判红点名。
    */
   recordDispatch(call: OfficeCall, input: {
     taskId: string
@@ -4361,6 +4421,16 @@ export class SoftwareDevOffice {
     overrideNote?: string | undefined
     /** 决策输入（`TASK-185`）：不传 ⇒ 老形状，不落这三个键 */
     trace?: DispatchDecisionTrace | undefined
+    /**
+     * **这一笔决定的收口**（`TASK-231` 落点一）：`started` = 子会话真的起来了；`failed` = 起会话
+     * 这一步失败（必须同时给 `failureReason`）；`inline` = 降级就地执行（**没有**子会话可起）。
+     *
+     * 不传 ⇒ 老形状（不落这个键）—— 于是读侧能区分「没记」与「记了」，
+     * 而守卫会把"老形状且之后没有 started"的那批判成悬空。
+     */
+    outcome?: 'started' | 'failed' | 'inline' | undefined
+    /** 收口是 `failed` 时的**原因原话**（宿主/适配层给的，不加工） */
+    failureReason?: string | undefined
   }): void {
     const { journal } = this.contextFor(call)
     journal.append('dispatch/decided', {
@@ -4370,6 +4440,8 @@ export class SoftwareDevOffice {
       degradedReason: input.degradedReason ?? '',
       // **D-15**：与 `degradedReason` 分开记 —— 降级 = 结果不等于请求；覆盖 = 结果等于请求（锁让路）。
       overrideNote: input.overrideNote ?? '',
+      ...(input.outcome === undefined ? {} : { outcome: input.outcome }),
+      ...(input.outcome === 'failed' ? { failureReason: input.failureReason ?? '' } : {}),
       ...(input.trace === undefined
         ? {}
         : {
@@ -4378,6 +4450,44 @@ export class SoftwareDevOffice {
             selectedWhy: input.trace.selectedWhy,
           }),
     })
+  }
+
+  /**
+   * **派发决定的收口体检**（`TASK-231` 落点三）：一次调用列出**所有**悬空的 `dispatch/decided`
+   * —— 收口既不是 `started` / `failed` / `inline`，也没等到同卡的后一笔 `dispatch/started`，
+   * 且年龄已过收口窗口（缺省 {@link DECIDED_SETTLE_SECONDS} 秒）。
+   *
+   * 为什么必须有它：`DEF-214` 的第 ⑶ 层危害是「决议了但没发生」**没有任何判据能发现** ——
+   * 于是那两笔历史悬空决定只能在被人顺手 grep 到时才暴露。现在它是**一次调用**给出的清单，
+   * 每行点名卡、决定锚点（序号）、声明面与年龄；`ok=false` 即判红。
+   *
+   * 反例面同样机械：**真在飞的卡不算悬空**（它们在 `settled` 里），因此"有卡在飞"不会误报。
+   */
+  dispatchDecisionHealth(call: OfficeCall, options: { settleSeconds?: number | undefined } = {}): {
+    ok: boolean
+    rows: DispatchDecisionRow[]
+    settled: number
+    failed: number
+    inline: number
+    pending: DispatchDecisionRow[]
+    settleSeconds: number
+    lines: string[]
+  } {
+    const { journal } = this.contextFor(call)
+    const settleSeconds = options.settleSeconds ?? DECIDED_SETTLE_SECONDS
+    const events = journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at, seq: event.seq }))
+    const all = dispatchDecisionRows(events)
+    const pending = danglingDecisions(events, { settleSeconds })
+    return {
+      ok: pending.length === 0,
+      rows: all,
+      settled: all.filter((row) => row.closure === 'started').length,
+      failed: all.filter((row) => row.closure === 'failed').length,
+      inline: all.filter((row) => row.closure === 'inline').length,
+      pending,
+      settleSeconds,
+      lines: pending.map((row) => danglingDecisionLine(row)),
+    }
   }
 
   /**
@@ -4813,40 +4923,49 @@ export class SoftwareDevOffice {
     const staleGate = snapshot.staleGate
     const { journal } = this.contextFor(call)
     const tasks = this.tasks(call)
-    const inProgress = tasks.filter((task) => task.status === 'in-progress').length
+    const inProgressIds = tasks.filter((task) => task.status === 'in-progress').map((task) => task.id)
+    const inProgress = inProgressIds.length
     // **一张卡不许同时在两个子代理里**：已有"在飞"派发（started 未 finished）的卡不重复派 ——
     // 队列语义是"每张卡只入队一次"。代价要如实说：派发丢了的卡会一直算在飞，直到结算或人工处置。
     const ttlMinutes = options.orphanTtlMinutes ?? this.settings.dispatchOrphanTtlMinutes
-    const orphanTtlMs = ttlMinutes * 60_000
     const nowMs = Date.now()
-    // 只有**活着的**在飞才挡住同一张卡的重复派发；超时未结算（孤儿）不挡（否则那张卡永远派不出去）
+    // **`TASK-231` 落点二：在飞口径只剩一个出口。**
     //
-    // **R-9（sdo-test-new 2026-10-08，major）**：判据还要看"卡是不是**被显式放回来**过" ——
-    // 真机：4 张卡的子会话被停（`dispatch/started` 有、`finished` 无 ⇒ 孤儿），操作者把卡 `release`
-    // 回 `ready` 之后再派，回执却是"没有可派发的任务卡"：因为这里只看**派发记录**、不看卡状态，
-    // 卡被冻结到孤儿 TTL（默认 60 分钟），而 TTL 只能从 preset 改。
-    // 现在：该卡的 `task/released` 事件若**晚于**它的 `dispatch/started`，就说明操作者已判定那个子会话没了
-    // ⇒ **不再冻结**（"一张卡不许同时在两个子代理里"防的是并行，而 release 就是操作者的显式判定）。
-    const releasedAfterDispatch = new Set<string>()
-    {
-      const lastDispatch = new Map<string, number>()
-      const lastRelease = new Map<string, number>()
-      for (const event of journal.read().events) {
-        const id = String(event.data['id'] ?? event.data['task'] ?? '')
-        if (id === '') continue
-        if (event.type === 'dispatch/started') lastDispatch.set(id, event.seq)
-        if (event.type === 'task/released') lastRelease.set(id, event.seq)
-      }
-      for (const [id, seq] of lastRelease) {
-        if ((lastDispatch.get(id) ?? -1) < seq) releasedAfterDispatch.add(id)
-      }
-    }
-    const liveChildren = snapshot.children.filter((child) => child.state === 'busy' && !isStaleDispatch(child, nowMs, orphanTtlMs))
-    const inFlight = new Set(
-      liveChildren.map((child) => child.task).filter((taskId) => !releasedAfterDispatch.has(taskId)),
+    // 修前这里自己折了一遍：`busy`（来自 `dispatch/started` 折叠）→ 剔掉超 TTL 的 → 再剔掉
+    // "派发之后被 `task/released` 的"（R-9）。逻辑没错，但它与池视图、与容量预算**各算一遍**，
+    // 而"在飞"恰恰是要靠一份读数说话的东西（`DEF-214` 的病灶就有这一条：回执说在飞、卡是 planned）。
+    // 现在三处（池视图 / 冻结判定 / 容量预算）读**同一个** `liveDispatchReading`：
+    // 只有 `dispatch/started`（未 finished、未超 TTL、未被 release 覆盖）算在飞，`decided` 永不算。
+    const live = liveDispatchReading(
+      journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at, seq: event.seq })),
+      { ttlMs: ttlMinutes * 60_000, nowMs },
     )
+    const inFlight = new Set(live.taskIds)
+    /**
+     * **占位读数（`TASK-231` 落点二）**：`in-progress` ∪ 真在飞，去重。
+     *
+     * 修前 `globalRoom = maxParallelDispatch − inProgress` 只数字卡状态 ⇒ "子会话在跑、卡还没认领"
+     * 这一态在预算里一个位子都不占，而在池视图里它是 `busy`（占着池位）—— 同一份台账两个容量读数。
+     * 反过来，**悬空的 `decided` 两个都不占**（它压根不在 `live.taskIds` 里），这就是"幽灵卡虚占名额"的反证。
+     */
+    /**
+     * 悬空决定**只算一次**：占位读数与回执交回的清单读的是**同一份**。
+     *
+     * 为什么刻意写在一处：本卡的病根就是"同一件事各算一遍"（在飞、容量、判据三处口径分叉），
+     * 同一个函数里再算两遍会让"回执说的"与"算术用的"在并发追加下重新分叉。
+     */
+    const decidedEvents = journal.read().events.map((event) => ({
+      type: event.type, data: event.data, at: event.at, seq: event.seq,
+    }))
+    const danglingRows = danglingDecisions(decidedEvents, { nowMs })
+    const seats = seatReading({
+      inProgress: inProgressIds,
+      liveDispatches: live.taskIds,
+      danglingDecisions: danglingRows.map((row) => row.taskId),
+      budget: this.settings.maxParallelDispatch,
+    })
     // **R-9**：把"被谁冻着、冻了多久"交回给回执（否则 `k30` 那句"都已认领/完成"是假话）
-    const heldByDispatch = liveChildren
+    const heldByDispatch = live.children
       .filter((child) => inFlight.has(child.task))
       .map((child) => ({
         taskId: child.task,
@@ -4915,7 +5034,8 @@ export class SoftwareDevOffice {
       ready: fairReady.filter((task) =>
         !inFlight.has(task.id) && !serialScopeIds.has(task.id) && !dirtyScopeIds.has(task.id)),
       pools: snapshot.pools,
-      globalRoom: Math.max(0, this.settings.maxParallelDispatch - inProgress),
+      // **`TASK-231` 落点二**：预算按**占位**放行（`in-progress` ∪ 真在飞、去重、悬空决定不占位）
+      globalRoom: seats.free,
       // **R-5 症状 D**：全局预算拒收回执要报**真实**的"进行中"张数（旧实现硬编码 0）
       inProgress,
       reuseIdle: options.reuseIdle === true,
@@ -4977,8 +5097,17 @@ export class SoftwareDevOffice {
     const poolOf = new Map(snapshot.pools.map((pool) => [pool.role, pool] as const))
     const blockedDetail = new Map(admission.blocked.map((row) => {
       const pool = poolOf.get(row.task.role)
+      /**
+       * **`TASK-231` 落点二**：容量拒收回执里的 `budget=` 必须与**占位读数同源**。
+       *
+       * 修前这里写的是 `inProgress`（只数卡状态 `in-progress`），而准入用的是 `seats.free` ——
+       * 同一份回执里于是可能出现「`dispatch-seats: occupied=4/4`」与「`budget=3/4`」并存
+       * （`TASK-231` 的读数就是这么抓出来的：4 个位子被 3 张在飞卡 + 1 笔未认领的真派发占满）。
+       * 两套容量口径并存正是本卡要消灭的形状，所以这里读同一个 `seats`。
+       */
       const refs = row.reason === 'global-budget'
-        ? [`budget=${String(inProgress)}/${String(this.settings.maxParallelDispatch)}`]
+        ? [`budget=${String(seats.occupied)}/${String(seats.budget)}`,
+          ...(seats.liveDispatches.length === 0 ? [] : [`live=${seats.liveDispatches.join(' ')}`])]
         : [`role=${row.task.role}`]
           .concat(pool === undefined ? [] : [`cap=${String(pool.cap)}`, `busy=${String(pool.busy.length)}`, `idle=${String(pool.idle.length)}`])
       return [row.task.id, {
@@ -5016,6 +5145,10 @@ export class SoftwareDevOffice {
       }),
       heldByDispatch,
       infeasible,
+      // **`TASK-231`**：在飞 / 占位 / 悬空决定 —— 三份读数都交回给回执（同一份 `live` 与 `seats`）
+      liveDispatches: live.taskIds,
+      seats,
+      danglingDecisions: danglingRows,
       ...(heldByScope.length === 0 ? {} : { heldByScope }),
       ...(dirtyByScope.length === 0 ? {} : { dirtyByScope }),
       ...(dirtyHints.length === 0 ? {} : { dirtyHints }),

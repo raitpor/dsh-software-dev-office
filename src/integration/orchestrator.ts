@@ -125,6 +125,91 @@ export function capacityPlan(
   return { dispatch: ready.slice(0, room), queued: ready.slice(room) }
 }
 
+/**
+ * **全局并行预算的占位读数**（`TASK-231` 落点二）：一个位子最多被一张卡占一次。
+ *
+ * 三条口径，全部可机械核对：
+ *   ① **占位 = 卡在 `in-progress` ∪ 真在飞**（`started` 之后未 `finished`、未超 TTL、未被 release）。
+ *      前者是"有人在干活"（认领过），后者是"有子会话在跑"（哪怕它还没认领）—— 任一成立就占一个位子；
+ *   ② **去重**：两边都有的卡只算一次（修前 `inProgress` 一个数就把"已认领但派发已结算"与
+ *      "派发还活着但卡没认领"两种不同事实压成同一个数）；
+ *   ③ **悬空的 `decided` 一个位子都不占**（`danglingDecisions` 只用于点名，不参与算术）——
+ *      这正是"幽灵在飞卡虚占真实名额"的机械反证（`DEF-214` 的第 ⑷ 层危害）。
+ */
+export interface SeatReading {
+  /** 真正占掉几个位子（去重后） */
+  occupied: number
+  budget: number
+  /** 还能收几张（`budget − occupied`，不小于 0） */
+  free: number
+  /** 卡状态是 `in-progress` 的那批 */
+  inProgress: string[]
+  /** 真在飞的那批（唯一出口：`liveDispatchReading`） */
+  liveDispatches: string[]
+  /** 两边都出现过的卡（只占一个位子） */
+  both: string[]
+  /** 悬空的派发决定（**不占位**，只点名） */
+  danglingDecisions: string[]
+}
+
+export function seatReading(input: {
+  inProgress: readonly string[]
+  liveDispatches: readonly string[]
+  danglingDecisions?: readonly string[] | undefined
+  budget: number
+}): SeatReading {
+  const inProgress = [...new Set(input.inProgress.filter((id) => id !== ''))].sort()
+  const live = [...new Set(input.liveDispatches.filter((id) => id !== ''))].sort()
+  const liveSet = new Set(live)
+  const occupiedIds = new Set([...inProgress, ...live])
+  return {
+    occupied: occupiedIds.size,
+    budget: input.budget,
+    free: Math.max(0, input.budget - occupiedIds.size),
+    inProgress,
+    liveDispatches: live,
+    both: inProgress.filter((id) => liveSet.has(id)),
+    danglingDecisions: [...new Set(input.danglingDecisions ?? [])].filter((id) => id !== '').sort(),
+  }
+}
+
+/**
+ * 占位读数的一行投影（回执/诊断用）。**字段名用 ASCII**：与 `poolReadingLine` 同口径
+ * （语言包键不在本卡写范围内，且这一行是给复验者的读数）。
+ *
+ * **为什么不逐张列 `in-progress`**（`TASK-231` 返工，按 `TASK-218` 的回执预算口径收窄）：
+ * 那一批就是"卡状态计数"本身，读者拿 `inProgress=3` 就能与卡表对上；真正需要**点名**的是
+ * 「**卡不是 `in-progress`、但子会话在跑**」那批（`live`）—— 它才是本卡新增的解释力，
+ * 也是修前**完全不占位**的那个缺口。于是这一行**有界**：卡号只随真在飞的张数增长，
+ * 而那张数本身受预算与孤儿 TTL 约束（不会随候选数或卡数线性膨胀）。
+ */
+export function seatLine(reading: SeatReading): string {
+  const ids = (list: readonly string[]): string => (list.length === 0 ? '-' : list.join(' '))
+  return `dispatch-seats: occupied=${String(reading.occupied)}/${String(reading.budget)} free=${String(reading.free)}`
+    + ` inProgress=${String(reading.inProgress.length)} live=${ids(reading.liveDispatches)}`
+    + ` both=${ids(reading.both)} dangling=${ids(reading.danglingDecisions)}`
+}
+
+/**
+ * 这一份占位读数**是否值得单独占一行 `sdo_plan next` 回执**（`TASK-231` 返工）。
+ *
+ * 判据只有一条：**照着卡表算出来的数，与这份读数不一致**。两种不一致：
+ *   · 有卡**不在 `in-progress`、但子会话在跑**（真在飞 ⊄ 卡状态计数）—— 这正是修前**完全不占位**
+ *     的那个缺口，也是本卡新增的解释力；
+ *   · 有**悬空决定**（决定了却没发生，读者从卡表上完全看不到它）。
+ *
+ * 两边一致时（例如"1 张在飞卡也就是那 1 张 `in-progress` 卡"）**一字不印**：那种行只是把读者
+ * 已经知道的事再说一遍，却会白吃 `TASK-218` 建立的体积余量（实测：冻结夹具回执 7,192 → 7,295，
+ * 而 `M232-06` 的余量只有 105 字符 —— 一格新读数就吃掉 98%）。
+ *
+ * `sdo_status` 不受这条约束（它不是被体积守卫盯着的那一面）：那里**每轮都印**。
+ */
+export function seatNeedsLine(reading: SeatReading): boolean {
+  if (reading.danglingDecisions.length > 0) return true
+  const claimed = new Set(reading.inProgress)
+  return reading.liveDispatches.some((id) => !claimed.has(id))
+}
+
 /** 角色 → persona 名（与 `presets/sdo-office.patch.yml` 里的 persona 对齐）。 */
 export const PERSONA_BY_ROLE: Record<string, string> = {
   analyst: 'sdo-analyst',

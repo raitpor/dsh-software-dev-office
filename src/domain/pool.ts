@@ -429,6 +429,224 @@ export function isStaleDispatch(child: PoolChild, nowMs: number, ttlMs: number):
   return Number.isFinite(started) && nowMs - started > ttlMs
 }
 
+/* —————————————————————— ② 真实在飞：唯一口径（`TASK-231` / `DEF-214`） —————————————————————— */
+
+/** 台账事件的最小读形状（带序号：点名要能引到可复算锚点）。 */
+export interface DispatchLedgerEvent extends PoolEvent {
+  seq?: number | undefined
+}
+
+/**
+ * 「真在飞」的一份读数（`TASK-231` 落点二）：只由 `dispatch/started` 推导，**永不**由 `decided` 推导。
+ */
+export interface LiveDispatchReading {
+  /** 真在飞的卡 id（去重、按首次出现排序） */
+  taskIds: string[]
+  /** 真在飞的孩子（`busy` 且未超 TTL、且卡未被 release 覆盖）—— 回执「在飞定位」就是它的投影 */
+  children: PoolChild[]
+  /** 被 `task/released` 覆盖掉的卡（派发之后操作者已判定那个子会话没了）—— 如实交回，别静默丢 */
+  releasedAfterDispatch: string[]
+  /** `started` 有、`finished` 无、且已超 TTL 的（孤儿：不占位，也**不**当空闲可复用） */
+  stale: PoolChild[]
+}
+
+/**
+ * 现算「真在飞的卡」（`TASK-231` 落点二 / 落点三的唯一出口）。
+ *
+ * 一张卡算**在飞**的充要条件：`dispatch/started` 之后既没有 `dispatch/finished`、也没超孤儿 TTL，
+ * 且该卡在那笔派发之后**没有**被 `task/released`（R-9：那是操作者的显式判定）。
+ *
+ * 为什么必须只有一处：`DEF-214` 的真机形状是「回执说在飞、卡却是 planned、`owner` 空」——
+ * 读数与容量各算一遍时必然分叉。判据只看 `started`：**`decided` 是"决定了"，不是"发生了"**，
+ * 它永远不进这个集合（哪怕它一条 `started` 都没有）。
+ *
+ * 折叠与 `foldPoolChildren` 完全同源（不新增真源、不另立一遍状态机），只多做两步：
+ *   ① 超 TTL 的 `busy` 是**孤儿**（`isStaleDispatch`）⇒ 进 `stale`，不进 `children`；
+ *   ② 卡在派发之后被 `task/released` ⇒ 不进 `children`，进 `releasedAfterDispatch`。
+ */
+export function liveDispatchReading(
+  events: readonly DispatchLedgerEvent[],
+  options: { ttlMs?: number | undefined; nowMs?: number | undefined } = {},
+): LiveDispatchReading {
+  const ttl = options.ttlMs ?? 0
+  const now = options.nowMs ?? Date.now()
+  const children = [
+    ...foldPoolChildren(events.map((event) => ({ type: event.type, data: event.data, at: event.at }))).values(),
+  ]
+  // R-9：`task/released` 晚于该卡的 `dispatch/started` ⇒ 操作者已判定那个子会话没了
+  const lastStarted = new Map<string, number>()
+  const lastRelease = new Map<string, number>()
+  for (const [index, event] of events.entries()) {
+    const seq = event.seq ?? index
+    const id = text(event.data['id'] ?? event.data['task'])
+    if (id === '') continue
+    if (event.type === 'dispatch/started') lastStarted.set(id, seq)
+    if (event.type === 'task/released') lastRelease.set(id, seq)
+  }
+  const releasedAfterDispatch = new Set<string>()
+  for (const [id, seq] of lastRelease) if ((lastStarted.get(id) ?? Number.POSITIVE_INFINITY) < seq) releasedAfterDispatch.add(id)
+  const stale = children.filter((child) => child.state === 'busy' && isStaleDispatch(child, now, ttl))
+  const live = children.filter((child) =>
+    child.state === 'busy' && !isStaleDispatch(child, now, ttl) && !releasedAfterDispatch.has(child.task))
+  const seen = new Set<string>()
+  const taskIds: string[] = []
+  for (const child of live) {
+    if (child.task === '' || seen.has(child.task)) continue
+    seen.add(child.task)
+    taskIds.push(child.task)
+  }
+  return { taskIds, children: live, stale, releasedAfterDispatch: [...releasedAfterDispatch].sort() }
+}
+
+/* —————————————————— ③ 派发决定的收口（`TASK-231` 落点一 / 落点三） —————————————————— */
+
+/** 一笔派发决定的**收口**。`pending` = 悬空（决定了却既没 started 也没 failed）。 */
+export type DispatchDecisionClosure = 'started' | 'failed' | 'inline' | 'pending'
+
+/**
+ * 缺省收口窗口（秒）：`dispatch/decided` 之后多久仍无 `started` / `failed` 就判红。
+ *
+ * 为什么是 300 而不是几秒：真账 204 笔决定的「决定 → started」延迟实测中位数 3.3 秒、最大 36.6 秒
+ * （本仓 `.sdo/journal.jsonl` 现算，`TASK-231` 的复现读数）⇒ 窗口必须远大于最长真实延迟，
+ * 否则守卫会把每一次正常派发都判红。**它只判"悬空"，不判"慢"**。
+ */
+export const DECIDED_SETTLE_SECONDS = 300
+
+/** 一笔派发决定的收口读数（`TASK-231` 落点三的判据面）。 */
+export interface DispatchDecisionRow {
+  /** `dispatch/decided` 的序号（可复算锚点） */
+  seq: number
+  at: string
+  taskId: string
+  backend: string
+  /** 决定里声明的**角色面**（不是可定位身份 —— 身份要等派发之后才知道） */
+  owner: string
+  /** 行上自带的收口（新口径写进同一笔事件）；老台账没有这个字段 ⇒ `undefined` */
+  outcome: 'started' | 'failed' | 'inline' | undefined
+  /** `failed` 收口的原因原话（只有 `failed` 才有） */
+  failureReason: string
+  /** 现算的收口（老台账靠"后来有没有 `started`"兜底） */
+  closure: DispatchDecisionClosure
+  /** 若收口是 `started`：那一笔的序号 */
+  startedSeq: number | undefined
+  /** 距"现在"多少秒；`at` 读不出 ⇒ `-1`（**判不了**，见 {@link danglingDecisions}） */
+  ageSeconds: number
+}
+
+/**
+ * 折叠出**每一笔派发决定**的收口状态（`TASK-231` 落点一 / 落点三的唯一出口）。
+ *
+ * 收口的两条来源，**行上自带**优先：
+ *   ① 同一笔 `dispatch/decided` 上的 `outcome`（`started` / `failed` / `inline`）—— 新口径：
+ *      决定与收口**同生同死**，悬空在结构上不可能；
+ *   ② 老台账没有 `outcome` ⇒ 看它之后**同一张卡**有没有 `dispatch/started`（有 ⇒ `started`；
+ *      若先又出现一笔新的 `decided` ⇒ 前一笔判 **`pending`**，不会被后一笔的 started 洗白）。
+ *
+ * 老 `inline` 决定（降级就地执行）**天然没有** started ⇒ 按 `inline` 收口（它的收口就在回执里）。
+ */
+export function dispatchDecisionRows(
+  events: readonly DispatchLedgerEvent[],
+  options: { nowMs?: number | undefined } = {},
+): DispatchDecisionRow[] {
+  const now = options.nowMs ?? Date.now()
+  const rows: DispatchDecisionRow[] = []
+  for (const [index, event] of events.entries()) {
+    if (event.type !== 'dispatch/decided') continue
+    const seq = event.seq ?? index
+    const taskId = text(event.data['task'])
+    const backend = text(event.data['backend'])
+    const raw = text(event.data['outcome'])
+    const outcome = raw === 'started' || raw === 'failed' || raw === 'inline' ? raw : undefined
+    const at = event.at ?? ''
+    const parsed = Date.parse(at)
+    const ageSeconds = Number.isFinite(parsed) ? Math.max(0, Math.round((now - parsed) / 1000)) : -1
+    let closure: DispatchDecisionClosure = outcome ?? 'pending'
+    let startedSeq: number | undefined
+    if (outcome === undefined) {
+      if (backend === 'inline') {
+        closure = 'inline'
+      } else {
+        // 只看"下一笔同卡的 dispatch 事件"：出现新的 decided 就说明这一笔被**覆盖**了，不许被它洗白
+        for (let cursor = index + 1; cursor < events.length; cursor += 1) {
+          const later = events[cursor]
+          if (later === undefined) break
+          if (text(later.data['task']) !== taskId) continue
+          if (later.type === 'dispatch/started') {
+            closure = 'started'
+            startedSeq = later.seq ?? cursor
+            break
+          }
+          if (later.type === 'dispatch/decided') break
+        }
+      }
+    }
+    rows.push({
+      seq, at, taskId, backend, owner: text(event.data['owner']),
+      outcome, failureReason: text(event.data['failureReason']), closure, startedSeq, ageSeconds,
+    })
+  }
+  return rows
+}
+
+/**
+ * **悬空的派发决定**（`TASK-231` 落点三的守卫）：收口是 `pending` 且已过 {@link DECIDED_SETTLE_SECONDS}。
+ *
+ * 判据刻意**保守**：`at` 读不出（`ageSeconds < 0`）时直接算悬空 —— "判不了年龄"不等于"它没问题"。
+ * 返回的每一行都点名**卡**（`taskId`）、**决定锚点**（`seq`）与**声明的角色面**（`owner`），
+ * 于是"决定了却没发生"这件事不可能再静默躺着（`DEF-214` 的第 ⑶ 层危害）。
+ */
+export function danglingDecisions(
+  events: readonly DispatchLedgerEvent[],
+  options: { nowMs?: number | undefined; settleSeconds?: number | undefined } = {},
+): DispatchDecisionRow[] {
+  const settle = options.settleSeconds ?? DECIDED_SETTLE_SECONDS
+  return dispatchDecisionRows(events, options)
+    .filter((row) => row.closure === 'pending' && (row.ageSeconds < 0 || row.ageSeconds >= settle))
+}
+
+/**
+ * 「悬空决定」的一行投影（回执/诊断用）。**字段名用 ASCII**：理由与 {@link poolReadingLine} 同
+ * （语言包键不在本卡写范围，且这一行是给复验者的读数）。
+ */
+export function danglingDecisionLine(row: DispatchDecisionRow): string {
+  return `dangling-decided: task=${row.taskId} decidedSeq=${String(row.seq)}`
+    + ` owner=${row.owner === '' ? '-' : row.owner} at=${row.at === '' ? '-' : row.at}`
+    + ` ageSeconds=${String(row.ageSeconds)} closure=${row.closure}`
+    + ` reason=${row.closure === 'pending' ? 'no-dispatch-started-and-no-dispatch-failed' : '-'}`
+}
+
+/**
+ * 回执里**逐行点名**的悬空决定上限（`TASK-231` 返工：进回执预算）。
+ *
+ * 为什么是 3：这一行是**判红的点名**，一条就足以让人去修；3 条能看出"是不是同一批卡"，
+ * 再多的边际信息远小于它吃掉的预算（一条约 150 字符，10 张悬空卡就是 1500 —— 足以把
+ * `TASK-218` 建立的 7000 预算与宿主 8000 上限顶穿）。**全量清单不丢**：折叠行给出总数与卡#锚点，
+ * 逐条读数走 `dispatchDecisionHealth`（一次性列表，不在回执预算里）。
+ */
+export const DANGLING_LINES_SHOWN = 3
+
+/**
+ * 悬空决定的**有界**逐行投影：前 {@link DANGLING_LINES_SHOWN} 条 + 一条折叠计数行。
+ *
+ * 计数行同样是 ASCII 投影（与逐行同一口径），带 `+N more` 与卡#锚点 ——
+ * 于是"判红不静默"与"回执体积有界"不再冲突（修前它俩在 `TASK-218` 那场官司里是对立的两头：
+ * 体积压到 8000 以内，而新读数若无条件追加就会把它顶回去）。
+ */
+export function danglingDecisionLines(
+  rows: readonly DispatchDecisionRow[],
+  max = DANGLING_LINES_SHOWN,
+): string[] {
+  if (rows.length === 0) return []
+  const shown = rows.slice(0, Math.max(0, max)).map((row) => danglingDecisionLine(row))
+  const rest = rows.length - shown.length
+  if (rest <= 0) return shown
+  const folded = rows.slice(shown.length).map((row) => `${row.taskId}#${String(row.seq)}`)
+  return [
+    ...shown,
+    `dangling-decided: +${String(rest)} more (${folded.slice(0, 10).join(' ')}${folded.length > 10 ? ' …' : ''}; full list: dispatchDecisionHealth)`,
+  ]
+}
+
 /**
  * 「挂起后**原样重派**」判定：该卡最近一次"实质事件"是 `task/blocked` ⇒ 之后只被 release/reassign，
  * 卡内容一个字没改就又被派出去 —— 等于让它再撞一次同一堵墙（真机教训，见设计文档）。

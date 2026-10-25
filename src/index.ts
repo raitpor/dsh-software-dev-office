@@ -104,7 +104,7 @@ import { disciplineOrAllow } from './domain/discipline.js'
 import { describeLang } from './interface/describe.js'
 import { LANGUAGES, baseKeyCount, coveredBaseKeys, extraKeys, fmt, gateLabel, locale, setLocale, t } from './domain/i18n.js'
 import { initGaps, renderInitQuestions } from './domain/onboarding.js'
-import { buildDispatch, pickBackend } from './integration/orchestrator.js'
+import { buildDispatch, pickBackend, seatLine, seatNeedsLine } from './integration/orchestrator.js'
 import type { UsageRow } from './integration/cost.js'
 import type { BackendProbe, BackendKind } from './integration/orchestrator.js'
 import type {
@@ -178,7 +178,7 @@ function buildReadout(cwd: string): string {
 import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
-import { DELIVERY_FAILED_PREFIX, poolReadingLine, readingOfRole, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
+import { DELIVERY_FAILED_PREFIX, danglingDecisionLines, poolReadingLine, readingOfRole, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
 import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
@@ -1572,7 +1572,20 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // **R-6**：掩码指纹判据收敛到 office 内部（`maskFingerprint` 是纯函数，池视图与准入共用一处）
       const poolPlan = office.poolPlan(call, { reuseIdle: poolReuse })
       const poolText = describePoolBlock(poolPlan.pools, poolPlan.queued.map((task) => task.id), poolReuse, settings.dispatchOrphanTtlMinutes)
-      const poolBlock = poolText === '' ? '' : '\n' + poolText + '\n'
+      /**
+       * **`TASK-231` 落点二/三（状态面同源）**：容量占位与悬空决定在 `sdo_status` 里也读得到。
+       *
+       * 为什么两处都要有：`sdo_plan next` 是"派发那一刻"的读数，而"谁占着位子"是**持续事实** ——
+       * 只在派发回执里印，读者想知道"现在还能不能派"就得先真派一次（那正是 `DEF-214` 的误判方式：
+       * 回执说在飞、卡却是 planned）。两处读的是**同一份** `plan.seats` / `dispatchDecisionHealth`。
+       */
+      // **`TASK-231` 返工**：`sdo_status` 不是被体积守卫盯着的那一面 ⇒ 占位行**每轮都印**；
+      // 而悬空点名仍走同一个**有界**渲染（`danglingDecisionLines`），免得一张坏账把状态面顶爆。
+      const poolSeatLine = poolPlan.seats === undefined ? '' : '\n' + seatLine(poolPlan.seats) + '\n'
+      const decisionHealthLines = danglingDecisionLines(office.dispatchDecisionHealth(call).pending)
+      const poolBlock = poolText === '' && poolSeatLine === '' && decisionHealthLines.length === 0
+        ? ''
+        : '\n' + [poolText, poolSeatLine, decisionHealthLines.join('\n')].filter((item) => item !== '').join('\n') + '\n'
       /**
        * **权威状态快照**（`TASK-185` 落点一）：在飞 / 本轮已交付 / 有序队列前 N 张 / 下一张 + 为什么 /
        * 阻塞项，一次五行，体积钉在 `SNAPSHOT_CHAR_BUDGET` 以内。
@@ -1978,6 +1991,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
             p4: row.messageReceipt === '' ? t('uiIndex.kReuseReceiptMissing') : row.messageReceipt,
             p5: String(row.startedSeq),
           })),
+        /**
+         * **`TASK-231` 落点二/三：两条读数都**进回执预算**（返工，按 `TASK-218` 的口径）。**
+         *
+         * 体积纪律（实测，本卡返工的起因）：`TASK-218` 把整份 `next` 回执压在 `RECEIPT_BUDGET=7000`
+         * 与宿主 8000 以内，冻结夹具的余量只剩两百来字符；新读数若**无条件**追加，
+         * 就会把那份余量吃光（实测占位行 103 字符 ⇒ 7,192 → 7,295）。所以：
+         *   · **占位行只在需要解释时才印**（`seatNeedsLine`：有真在飞、卡却没认领，或有悬空决定）——
+         *     那时读者照着卡表**算不出**这个数，读数才有价值；其余时候它一字不印；
+         *   · **悬空行有硬上限**（`DANGLING_LINES_SHOWN` 条 + 一行折叠计数），最坏情况也是常数级，
+         *     不随账态里的悬空卡数线性膨胀。
+         */
+        ...(plan.seats !== undefined && seatNeedsLine(plan.seats) ? [seatLine(plan.seats)] : []),
+        ...danglingDecisionLines(office.dispatchDecisionHealth(call).pending),
       ]
       const healthSection = healthLines.length === 0 ? '' : '\n' + healthLines.join('\n') + '\n'
       // **DEF-059**：认领被拒的次数要**看得见**（真机 TASK-106 被拒两次却无人知晓）。
@@ -2215,27 +2241,39 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // **真实注册名**（见 `officeToolNames` 注释）：算 deny 面必须按它来，绝不硬编码
           sdoNames: officeToolNames,
         })
-        office.recordDispatch(call, {
-          taskId: task.id,
-          backend: decision.backend,
-          owner,
-          ...(decision.degradedReason === undefined ? {} : { degradedReason: decision.degradedReason }),
-          // **D-15**：显式指定覆盖了本迭代锁 —— 与降级一样必须留痕（同一份事件里两个不同语义的字段）
-          ...(decision.overrideNote === undefined ? {} : { overrideNote: decision.overrideNote }),
-          /**
-           * **决策输入也落账**（`TASK-185` / `DEF-174`）：候选有序全表（带规模秩）+ 排序键名字 +
-           * 这一张为什么被选中。修前这三样**一个字都不记** ⇒ 从台账复现不出"为什么派的是 183"，
-           * 驾驶舱只能猜（并猜错过）。用 ASCII 投影（`orderKeyLabel` 的 `id size(rank)` 形态）：
-           * 台账是跨版本 append-only 的，读数不该随语言包变。
-           */
-          trace: {
-            orderBasis: ORDER_BASIS_LABEL,
-            candidates: plan.queue.map((entry) => orderKeyLabel(entry)),
-            selectedWhy: selectedWhyLabel(picked.findIndex((item) => item.task.id === task.id) + 1, picked.length),
-          },
-        })
+        /**
+         * **决策输入**（`TASK-185` / `DEF-174`）：候选有序全表（带规模秩）+ 排序键名字 +
+         * 这一张为什么被选中。修前这三样**一个字都不记** ⇒ 从台账复现不出"为什么派的是 183"，
+         * 驾驶舱只能猜（并猜错过）。用 ASCII 投影（`orderKeyLabel` 的 `id size(rank)` 形态）：
+         * 台账是跨版本 append-only 的，读数不该随语言包变。
+         */
+        const decisionTrace = {
+          orderBasis: ORDER_BASIS_LABEL,
+          candidates: plan.queue.map((entry) => orderKeyLabel(entry)),
+          selectedWhy: selectedWhyLabel(picked.findIndex((item) => item.task.id === task.id) + 1, picked.length),
+        }
+        /**
+         * **`TASK-231` 落点一（`DEF-214`）：`dispatch/decided` 之后必须在同一笔里落到收口。**
+         *
+         * 修前这里**先**落 `dispatch/decided`、**再**去起会话：起会话失败（宿主没服务/没 provider/
+         * 抛错）时只留下一条"决定了但没发生"的决定，**没有任何收口事件** ⇒ 台账上它与「正在派发」
+         * 长得一样（`DEF-214` 的病根）。现在顺序反过来：**先尝试、后落账**，并把结果写进**同一笔**
+         * 事件（`outcome`），于是悬空决定在结构上进不了台账 ——
+         * `inline`（就地执行，没有子会话可起）也当场收口，不留悬空。
+         */
         lastBackend = { backend: decision.backend, iteration: iteration?.number }
         if (decision.backend === 'inline') {
+          office.recordDispatch(call, {
+            taskId: task.id,
+            backend: decision.backend,
+            owner,
+            ...(decision.degradedReason === undefined ? {} : { degradedReason: decision.degradedReason }),
+            // **D-15**：显式指定覆盖了本迭代锁 —— 与降级一样必须留痕（同一份事件里两个不同语义的字段）
+            ...(decision.overrideNote === undefined ? {} : { overrideNote: decision.overrideNote }),
+            trace: decisionTrace,
+            // 收口 = `inline`：降级就地执行，**没有**子会话可起 ⇒ 不许被守卫判成悬空
+            outcome: 'inline',
+          })
           out.push(describeInlineHandoff(request, decision.degradedReason, decision.overrideNote))
           continue
         }
@@ -2262,6 +2300,24 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // **`TASK-208` 落点一**：把整条**有序候选队列**交给投递层逐条试（修前只传一个 id，
           // 投递失败即降级新起 ⇒ `DEF-185` 的"每轮都挑同一个投不进去的候选"）。
           ...(entry.reuseCandidates === undefined ? {} : { reuseCandidates: entry.reuseCandidates }),
+        })
+        /**
+         * **收口落账**（`TASK-231` 落点一）：决定与它的结局写进**同一笔** `dispatch/decided`。
+         *
+         * `started` = 子会话真的起来了（随后另落 `dispatch/started`，与修前顺序一致：decided 在前）；
+         * `failed` = 起会话这一步失败，**原因原话**一并落账（修前这种情况台账上零痕迹，
+         * 于是"决定了却没发生"无从判定）。守卫 `danglingDecisions` 读的正是这个字段。
+         */
+        office.recordDispatch(call, {
+          taskId: task.id,
+          backend: decision.backend,
+          owner,
+          ...(decision.degradedReason === undefined ? {} : { degradedReason: decision.degradedReason }),
+          // **D-15**：显式指定覆盖了本迭代锁 —— 与降级一样必须留痕（同一份事件里两个不同语义的字段）
+          ...(decision.overrideNote === undefined ? {} : { overrideNote: decision.overrideNote }),
+          trace: decisionTrace,
+          outcome: outcome.started ? 'started' : 'failed',
+          ...(outcome.started ? {} : { failureReason: `${outcome.reason}: ${outcome.detail}` }),
         })
         if (held.length > 0) {
           out.push(fmt('uiDescribe.kDispatchLimitHeld', {
