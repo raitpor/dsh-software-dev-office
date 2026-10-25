@@ -42,6 +42,7 @@ import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 import { admitDispatch, foldPoolChildren, rolePools } from '../src/domain/pool.js'
+import { fmt } from '../src/domain/i18n.js'
 import { describePoolBlock } from '../src/interface/describe.js'
 import { realLedgerSkip } from './support/real-ledger.js'
 
@@ -374,6 +375,9 @@ test('M250-12 重生成打印差集：新增 / 减少 / 变化三类都认得出
 /** 池夹具统一用的掩码指纹（`rolePools` 与 `admitDispatch` 拿同一个 ⇒ 判据只有一处）。 */
 const POOL_MASK = 'mask-250'
 
+/** 观察者（派发器）会话 id：只有它起的子代理才是「本会话可投」的那一桶。 */
+const POOL_VIEWER = 'session-0000m250-0000-4000-8000-00000000250a'
+
 /** 「在飞定位」那行的轮次形态 —— 只许由**折叠事实**（真 started）印出来。 */
 const BUSY_ROUND = /第 \d+ 轮/u
 
@@ -400,11 +404,16 @@ function poolCard(id: string, role: 'developer' | 'tester' = 'developer'): TaskC
   }
 }
 
-/** 一笔真的派发（`reused: true` = 投给已有的空闲会话，不是新起）。 */
-function dispatchStarted(task: string, child: string, at: string, reused = true): PoolEvent {
+/**
+ * 一笔真的派发（`reused: true` = 投给已有的空闲会话，不是新起）。
+ *
+ * `parent` = 起它的那个会话：给本会话（{@link POOL_VIEWER}）起的才算「派发器真能投」的一桶，
+ * 留空 = 老事件形态（父会话未知，`idleUnknownParent`）。
+ */
+function dispatchStarted(task: string, child: string, at: string, reused = true, parent = ''): PoolEvent {
   return {
     type: 'dispatch/started',
-    data: { task, childSessionId: child, role: 'developer', mode: 'continuable', maskHash: POOL_MASK, reused },
+    data: { task, childSessionId: child, role: 'developer', mode: 'continuable', maskHash: POOL_MASK, reused, parentSessionId: parent },
     at,
   }
 }
@@ -424,6 +433,12 @@ function dispatchFinished(task: string, child: string, at: string): PoolEvent {
  * 为什么要跨角色：复用支对**每张卡**都先于新起支被尝试，同角色两张卡时复用必然落在第 1 张上，
  * 而 `DEF-229` 的真机形状是幽灵绑在**被挡下**的那张卡上（TASK-240 / TASK-231 都不是本轮派出的那张）。
  * 于是「准入通过 2 张、真派 1 张」这一态正好把幽灵摆在第 2 张卡上。
+ *
+ * **两个候选而不是一个**（`REV-119` #1）：池里再躺一个「父会话未知的老会话」`c-legacy`，且它在
+ * 台账折叠顺序里**排在前**、`c-old` 排在后（本会话起的那个 ⇒ `idleSameParent`）。于是
+ * `reuseCandidateOrder` 挑的是 `c-old`，而「下标 0」是 `c-legacy` —— 把 `findIndex(...)` 换成
+ * `splice(0, 1)` 时**摘走的是另一个孩子**，身份判据（`dev.idle` 里不再有 `c-old`）当场红。
+ * 单候选夹具做不到这一点（摘谁都一样绿）。
  */
 function admissionFixture(): {
   admission: ReturnType<typeof admitDispatch>
@@ -432,8 +447,12 @@ function admissionFixture(): {
   held: string
 } {
   const ledger: PoolEvent[] = []
+  // ① 老会话一个（父会话未知 ⇒ 在 idle 顺序里排在前，但它不是「本会话可投」的那个）
+  ledger.push(dispatchStarted('TASK-LEGACY', 'c-legacy', '2026-10-24T23:00:00Z'))
+  ledger.push(dispatchFinished('TASK-LEGACY', 'c-legacy', '2026-10-24T23:30:00Z'))
+  // ② 本会话起的那个（跨 3 轮 3 张 ⇒ 轮次/卡数的真值有得比）
   for (const round of [1, 2, 3]) {
-    ledger.push(dispatchStarted(`TASK-OLD-${String(round)}`, 'c-old', `2026-10-25T0${String(round)}:00:00Z`))
+    ledger.push(dispatchStarted(`TASK-OLD-${String(round)}`, 'c-old', `2026-10-25T0${String(round)}:00:00Z`, true, POOL_VIEWER))
     ledger.push(dispatchFinished(`TASK-OLD-${String(round)}`, 'c-old', `2026-10-25T0${String(round)}:30:00Z`))
   }
   const pools = rolePools({
@@ -442,6 +461,8 @@ function admissionFixture(): {
     caps: { developer: 3, tester: 3 },
     defaultCap: 3,
     maskHashOf: () => POOL_MASK,
+    // 观察者 = 本会话：`idleSameParent` 只含 c-old ⇒ 复用候选顺序把它排到 c-legacy 前面
+    viewerSessionId: POOL_VIEWER,
   })
   const admission = admitDispatch({
     ready: [poolCard('TASK-FRESH', 'tester'), poolCard('TASK-REUSE')],
@@ -483,6 +504,11 @@ test('M250-13 准入写下的复用位子不许进 busy（DEF-229：被 limit �
   const inFlightRows = (admission.pools.find((pool) => pool.role === 'developer')?.busy ?? []).length
   assert.equal(admission.reuseAdmissions.length, 1, 'exactly one reuse seat was admitted this round')
   assert.equal(inFlightRows, 0, 'the plan seat must not be copied into the in-flight bucket')
+  // ④ **消费身份**（`REV-119` #1）：被摘走的必须是 `c-old` 这一个 —— 摘走之后 `idle` 里不再有它，
+  //    而另一个候选 `c-legacy` 仍然在（单候选夹具在这里天然分不出「摘对了」与「摘了别人」）。
+  const idleIds = (dev?.idle ?? []).map((child) => child.childSessionId)
+  assert.equal(idleIds.includes('c-old'), false, `the consumed candidate must be gone from idle: ${JSON.stringify(idleIds)}`)
+  assert.equal(idleIds.includes('c-legacy'), true, `the other candidate must still be idle (identity, not membership): ${JSON.stringify(idleIds)}`)
 })
 
 test('M250-14 反例：真的复用派发成功 ⇒ 该会话必须出现在 busy（别修成「永远不写 busy」）', () => {
@@ -499,6 +525,13 @@ test('M250-14 反例：真的复用派发成功 ⇒ 该会话必须出现在 bus
   const block = describePoolBlock(pools, [], true, 0)
   const printed = block.indexOf('TASK-A→c-old') >= 0
   assert.equal(printed, true, `the in-flight identity must be printed for a real dispatch: ${block}`)
+  // **正向的轮次判据**（`REV-119` #4）：块里印的「第 N 轮/M 张」必须**等于折叠真值**（这里 N=1、M=1）。
+  // 没有这一格，`M250-15` 的 `/第 \d+ 轮/` 就只能证明「块里没有在飞行」，证明不了它是**真值投影**。
+  const truthPair = fmt('uiDescribe.kPoolBusyLoad', {
+    p1: String(dev?.busy[0]?.rounds ?? -1),
+    p2: String(dev?.busy[0]?.cards ?? -1),
+  })
+  assert.equal(block.indexOf(truthPair) >= 0, true, `the printed rounds must equal the folded truth (${truthPair}): ${block}`)
   // 同一条在飞读数也不许被准入再复用出去（卡不能被派两遍）
   const admission = admitDispatch({
     ready: [poolCard('TASK-C')],
@@ -511,6 +544,12 @@ test('M250-14 反例：真的复用派发成功 ⇒ 该会话必须出现在 bus
   assert.equal(admission.dispatch[0]?.reuseChildId, undefined, 'a busy child must never be handed a second card')
 })
 
+/**
+ * **负向守卫**（`REV-119` #4 的诊断）：本格的账态里**一笔 `dispatch/started` 都没有**（只有历史那几轮），
+ * 所以「块里不出现轮次」与「块里没有在飞行」在这一格等价 —— 这条判据只有在**夹具证明 busy 恒空**时
+ * 才合法。正向那一半（真在飞 ⇒ 印出的轮次必须等于折叠真值）由 `M250-14` 承担；`/第 \d+ 轮/` 单独用
+ * 会被合法在飞顶成假红，因此这里再加一条**不依赖轮次字形**的判据：在飞身份行（`卡→子会话`）整行不存在。
+ */
 test('M250-15 同源症状：角色池段不许印「准入时的轮次快照」（比同参复用依据行差一轮）', () => {
   const { admission, ledger, held } = admissionFixture()
   // 真值：那一轮复用真的派出去之后（`limit=2` 的那一态），c-old 是第 4 轮 / 第 4 张
@@ -529,4 +568,8 @@ test('M250-15 同源症状：角色池段不许印「准入时的轮次快照」
   const block = describePoolBlock(admission.pools, [], true, 0)
   const snapshotPrinted = BUSY_ROUND.test(block)
   assert.equal(snapshotPrinted, false, `the block must not print an unbacked rounds snapshot: ${block}`)
+  // 同一条结论的**字形无关**版本：这一态没有真在飞 ⇒ 「在飞定位」那行（`卡→子会话前缀`）整行都不该有。
+  // 它不依赖轮次文案，因此将来有人改语言包也不会把这条判据改瞎。
+  const identityRow = block.indexOf('→') >= 0
+  assert.equal(identityRow, false, `no in-flight identity row may be printed in this state: ${block}`)
 })

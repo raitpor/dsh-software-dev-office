@@ -1163,8 +1163,9 @@ export interface PoolAdmission {
   /**
    * **本轮各角色的现场读数**（`TASK-163` 落点一）：由 `office.poolPlan` 用**准入前**的池快照填
    * （`rolePoolReadings`）。为什么用准入前那一份：读数要回答的是"**做决定时**池里长什么样"
-   * —— 准入过程会把复用的孩子从 `idle` 挪进 `busy`、把 `freeSlots` 减掉，那是**决定的结果**，
-   * 拿结果当原因就永远答不了「为什么没复用」（真机反推错过两次的病根）。
+   * —— 准入**不写** `busy`（那里只放由 `dispatch/started` 折叠出来的事实；`TASK-245` / `DEF-229`）：
+   * 复用的那个孩子只从 `idle` 摘走、记进 `reuseAdmissions`；新起的那张则把 `freeSlots` 减 1。
+   * 那些都是**决定的结果**，拿结果当原因就永远答不了「为什么没复用」（真机反推错过两次的病根）。
    *
    * 派发路径把它按卡的角色取一条并进 `dispatch/started`（{@link PoolReading} 五件 + 八桶）。
    */

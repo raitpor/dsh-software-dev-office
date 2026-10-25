@@ -252,7 +252,8 @@ test('M231-01 落点三① 真装配链：老会话排在前、同父孩子在�
   // 决策面：准入必须挑**本会话起的**那个候选（池视图自己标注它「派发器真的能投」），
   // 而不是 `pool.idle[0]` 那个老会话（真机上它一投就被宿主拒 ⇒ 每次都新起、且台账不解释）。
   const plan = office.poolPlan(call, { reuseIdle: true })
-  // **准入前**那份池：`plan.pools` 是准入**之后**的（复用会把它从 `idle` 挪进 `busy`，那是决定的结果），
+  // **准入前**那份池：`plan.pools` 是准入**之后**的（复用支只把它从 `idle` 摘走、记进 `reuseAdmissions`，
+  // **不写** `busy`，那是决定的结果 —— `TASK-245` / `DEF-229`），
   // 所以"池里有几个候选"必须读准入前的那一份 —— 拿结果当原因就是循环论证。
   const view = office.poolView(call).find((pool) => pool.role === 'developer')
   assert.ok(view !== undefined, '夹具前提：developer 池必须在场（否则下面全是空断言）')
@@ -301,6 +302,11 @@ test('M231-01 落点三① 真装配链：老会话排在前、同父孩子在�
   )
   const consumedFromIdle = view.idle.some((row) => row.childSessionId === seat?.childSessionId)
   assert.equal(consumedFromIdle, true, 'consumed candidate must be the one the readings reported in idle')
+  // **消费身份**（`REV-119` #1）：上一条只判「这个 id 当初在 idle 名单里」、且 `seat` 与 `picked` 同源赋值
+  // ⇒ 摘错人时两边一起错也照样绿。这里补上「摘走的是它、不是别人」：准入之后 `idle` 里**不再有它**
+  // （夹具的 idle 顺序是老会话 LEGACY 在前 ⇒ 把 `findIndex(...)` 换成 `splice(0, 1)` 会被这条抓住）。
+  const stillIdle = (after.idle ?? []).some((row) => row.childSessionId === seat?.childSessionId)
+  assert.equal(stillIdle, false, `the consumed candidate must be gone from idle (identity, not membership): ${JSON.stringify((after.idle ?? []).map((row) => row.childSessionId))}`)
   assert.equal(
     after.busy.length,
     view.busy.length,
@@ -316,6 +322,17 @@ test('M231-01 落点三① 真装配链：老会话排在前、同父孩子在�
   assert.equal(started['reused'], true, '`dispatch/started.reused` 必须为 true（`DEF-139` 的关闭条件：developer 真的被复用一次）')
   assert.equal(started['reuseIdle'], true, '定案键：这一轮**试过**复用')
   assert.equal(started['forceNew'], false, '定案键：不是强制新起')
+
+  // **DoD ②（`REV-119` #2）**：真派发**之后**回头读池视图 —— 复用成功的那一个必须**真的**出现在 busy 里。
+  // 为什么必须在这一格：`M250-14` 用的是手写事件、零真派发，抓不住「真复用派发成功后 busy 没有它」
+  // （那正是本卡把 busy 停写之后最可能踩的坑）。
+  const afterDispatch = office.poolView(call).find((pool) => pool.role === 'developer')
+  const busyIds = (afterDispatch?.busy ?? []).map((row) => row.childSessionId)
+  assert.equal(
+    busyIds.includes(OWN),
+    true,
+    `真复用派发之后该会话必须出现在 busy（投递 ${JSON.stringify(delivered)} / busy ${JSON.stringify(busyIds)}）`,
+  )
 
   // 事件上的读数与计划里的读数一致（同一份快照写进台账，不是另算一次）
   const eventBuckets = (started['buckets'] ?? {}) as Record<string, unknown>
