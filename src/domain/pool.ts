@@ -96,7 +96,7 @@ function namesOf(value: unknown): string[] {
 }
 
 /** 一个角色池的现状。 */
-export interface RolePool {
+export interface RolePool extends RetiredBuckets {
   role: string
   /** 该角色的并行上限（配置没写就用全局上限） */
   cap: number
@@ -170,7 +170,7 @@ function text(value: unknown): string {
  *   · `deliveryFailedReason` —— 最近一次**投递被宿主拒**的原话（落点二：让它进 `unusable` 桶）。
  */
 export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, PoolChild> {
-  const children = new Map<string, PoolChild>()
+  const children = new Map<string, PoolChild>(); const retired = retiredSetOf(events) // **先减退役集再折叠**（`TASK-228` 落点一；顺序与复活规则见 `retiredSetOf`）
   for (const event of events) {
     if (event.type === 'dispatch/started') {
       const id = text(event.data['childSessionId'])
@@ -179,7 +179,7 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
         applyDeliverySkips(children, event.data['reuseSkipped'], undefined)
         continue
       }
-      const previous = children.get(id)
+      if (retired.has(id)) continue; const previous = children.get(id) // **先减退役集**（`TASK-228` 落点一）：已退役的候选不进折叠（池视图/准入/`reuseSkippedOf` 都看不到它）
       const mergedCardIds = [...new Set([...(previous?.cardIds ?? []), text(event.data['task'])])].filter((item) => item !== '')
       const reused = event.data['reused'] === true
       children.set(id, {
@@ -410,7 +410,7 @@ export function rolePools(input: {
       idleUnknownParent,
       stale,
       retired,
-      unusable,
+      unusable, permanent: permanentCandidatesOf(continuable.filter((child) => unusableIds.has(child.childSessionId)), input.viewerSessionId),
       freeSlots: Math.max(0, cap - busy.length - idle.length),
     }
   })
@@ -502,6 +502,336 @@ export function liveDispatchReading(
     taskIds.push(child.task)
   }
   return { taskIds, children: live, stale, releasedAfterDispatch: [...releasedAfterDispatch].sort() }
+}
+
+/* ——————————————— ④ 池候选的**一次性退役**（`TASK-228` / `DEF-210` 同族） ——————————————— */
+
+/**
+ * **退役事件**（`pool/retired`）：某个候选被判定为**永久**不可复用 ⇒ 落一条事件、此后移出池。
+ *
+ * 为什么需要它（真账两时点都量过，读数在本卡回报里）：`reuse-skipped` 里**同一个候选的同一句话**
+ * 被**每一轮派发**重记一遍 —— 本轮现算 **2379 条事件 / 3179 条候选行**，其中 **3149 条**是同一句
+ * 「旧口径指纹没有版本号」。那些候选**不会**再变回可用（指纹在会话创建时定死），却每轮都被重新
+ * 判定、重新落账 ⇒ 台账噪音随派发次数线性长，而"为什么没复用"这个读数反而被死账淹没。
+ *
+ * 三条口径（都写在这里，免得读侧各猜一遍）：
+ *   ① **谁写**：`index.ts` 在**真派发**那一轮写（`why=true` 是纯诊断面，不写台账）；
+ *   ② **写几条**：本轮判成永久的候选**一次性**落盘（写入端按 `POOL_RETIRED_CHUNK` 分片），
+ *      此后每轮 **0 条** —— {@link foldPoolChildren} 先减退役集，它们根本不再进折叠；
+ *   ③ **怎么读**：{@link retiredCandidatesOf}（按角色点名）/ {@link retiredSinceOf}（刀口位置，读侧据此只砍死账），
+ *      只认事件字形，不新立真源。
+ *
+ * ⚠️ **append-only 的后果必须一起读**：退役**不会**改写历史事件 ⇒ 历史读数里那 3149 条仍然在账上
+ * （它们记的是"当年每一轮为什么没复用"，那是**事实**）。所以"退役之后历史计数没变小"是**对的**，
+ * 不是没修好；变的是**此后每一轮**（新增 0 条 + 不再重判）。
+ */
+export const POOL_RETIRED_EVENT = 'pool/retired'
+
+/**
+ * 一个被退役的候选（`pool/retired` 的读侧投影）。
+ *
+ * `basis` 是**机器可读**的永久性分类，`reason` 是**人读原话**：两者由**同一个**判定
+ * （{@link permanentUnreusableReason}）产出 ⇒ 写侧不必再各判一遍（判据两处必然分叉）。
+ */
+export interface RetiredCandidate {
+  childSessionId: string
+  role: string
+  /** 人读原话（与池视图 `unusable.reason` 同一形态） */
+  reason: string
+  /** `mask-not-comparable` / `host-unreachable`（空串 = 老事件没写这一格，如实留空） */
+  basis: string
+  /** 那笔退役事件的 `at`（空串 = 事件没带时间） */
+  at: string
+}
+
+/** 从一笔事件的数据面里取出退役行（两种形态都认：批量的 `retired[]` 与单条的 `childSessionId`）。 */
+function retiredRowsOf(data: Record<string, unknown>): { childSessionId: string; role: string; reason: string; basis: string }[] {
+  const out: { childSessionId: string; role: string; reason: string; basis: string }[] = []
+  const single = text(data['childSessionId'])
+  if (single !== '') {
+    out.push({ childSessionId: single, role: text(data['role']), reason: text(data['reason']), basis: text(data['basis']) })
+  }
+  const rows = data['retired']
+  if (!Array.isArray(rows)) return out
+  for (const item of rows) {
+    const row = item as { childSessionId?: unknown; role?: unknown; reason?: unknown; basis?: unknown }
+    const id = text(row.childSessionId)
+    if (id === '') continue
+    out.push({ childSessionId: id, role: text(row.role), reason: text(row.reason), basis: text(row.basis) })
+  }
+  return out
+}
+
+/**
+ * **当前仍处于退役态**的候选（按台账顺序，同一孩子取**最后一次**退役那一笔）。
+ *
+ * 复活规则（唯一的例外，必须一起读）：一个孩子退役之后**又出现** `dispatch/started` ⇒ 它重新算活
+ * （有人真的把它投起来了）。**没有**这条规则，一次误判会把这个会话永久钉死在账外 —— 退役要可逆，
+ * 代价是每笔末尾多一次比较（线性，不额外读盘）。
+ */
+export function retiredCandidatesOf(events: readonly PoolEvent[]): RetiredCandidate[] {
+  const latest = new Map<string, RetiredCandidate>()
+  events.forEach((event) => {
+    if (event.type !== POOL_RETIRED_EVENT) return
+    for (const row of retiredRowsOf(event.data)) {
+      latest.set(row.childSessionId, { ...row, at: event.at ?? '' })
+    }
+  })
+  const live = retiredSetOf(events)
+  return [...latest.values()].filter((row) => live.has(row.childSessionId))
+}
+
+/**
+ * **退役位置表**（`childSessionId` → 它"最后一次退役"在台账里的位置）：读侧的**分界线**。
+ *
+ * 为什么要位置而不只是集合：append-only 台账里"退役"是一**刀**。刀**之前**写下的
+ * `reuse-skipped` 行是死账（那个候选当年每一轮都被重记一遍），刀**之后**写下的行是新事实
+ * （例如运维手工补的一笔探查）。读侧（`reuseSkippedOf`）据此只砍死账、不砍新事实 ——
+ * 于是"退役之后回执不再念死账"与"退役那一轮的行仍可核对"两件事能同时成立。
+ *
+ * 口径：同一孩子"最后一次退役的位置"必须**晚于**它"最后一次 `dispatch/started` 的位置"
+ * （之后又起来了 = 复活 ⇒ 不在表里）。顺序取自事件在数组里的位置（台账顺序 = append 顺序；
+ * 缺 `seq` 的老调用方也照样可判）。
+ */
+export function retiredSinceOf(events: readonly PoolEvent[]): Map<string, number> {
+  const retiredAt = new Map<string, number>()
+  const startedAt = new Map<string, number>()
+  events.forEach((event, index) => {
+    if (event.type === POOL_RETIRED_EVENT) {
+      for (const row of retiredRowsOf(event.data)) retiredAt.set(row.childSessionId, index)
+      return
+    }
+    if (event.type !== 'dispatch/started') return
+    const id = text(event.data['childSessionId'])
+    if (id !== '') startedAt.set(id, index)
+  })
+  const out = new Map<string, number>()
+  for (const [id, index] of retiredAt) {
+    if (index > (startedAt.get(id) ?? -1)) out.set(id, index)
+  }
+  return out
+}
+
+/**
+ * **可以退役的候选**（"出生满一轮"那一批）：最后一笔 `dispatch/started` **不是**台账里最新的一笔。
+ *
+ * 为什么要这道门（`TASK-228`）：退役是**不可逆**的一次判定，而"永久不可复用"读的是会话创建时
+ * 留下的字段 —— 一个**刚诞生**的候选可能还没观测满一轮（掩码/deny/观测面正在落），此时就判死刑
+ * 没有二次机会。规则只有一条：**最新那一笔 `dispatch/started` 对应的孩子本轮不退役**，其余都算
+ * "已经活过至少一轮"（下一轮它就出现在更旧的位置上了）。
+ *
+ * 边界（如实登记）：这是**顺序**判据，不是时间判据 —— 台账里只有位置（append 顺序）可判，
+ * 而"刚诞生"在顺序上恰好就是"最后一笔 started"。
+ */
+export function establishedChildrenOf(events: readonly PoolEvent[]): Set<string> {
+  const lastStarted = new Map<string, number>()
+  let newest = -1
+  events.forEach((event, index) => {
+    if (event.type !== 'dispatch/started') return
+    const id = text(event.data['childSessionId'])
+    if (id === '') return
+    lastStarted.set(id, index)
+    newest = index
+  })
+  const out = new Set<string>()
+  for (const [id, index] of lastStarted) {
+    if (index < newest) out.add(id)
+  }
+  return out
+}
+
+/**
+ * 退役集（`childSessionId` 的集合）：**先减退役集再折叠**用的那一份（= {@link retiredSinceOf} 的键）。
+ */
+export function retiredSetOf(events: readonly PoolEvent[]): Set<string> {
+  return new Set(retiredSinceOf(events).keys())
+}
+
+
+/**
+ * **这个候选为什么是「永久」不可复用** —— 本层（`domain/pool.ts`）**唯一判定点**：池视图的
+ * `permanent` 桶、退役事件的 `basis` / `reason`、以及 `index.ts` 的退役预告都读它（不各写一份）。
+ *
+ * 四类形状，两个方向（`TASK-228` 的判定表；判错的代价是不对称的 —— 误退役永久丢掉一个可能可用的
+ * 会话，误不退役只是多记几行账，所以**判不准的一律不退役**）：
+ *
+ *   · **口径不可比 ⇒ 永久**：该会话记下的掩码指纹**没有版本号**（`TASK-208` 之前的口径），或压根没有
+ *     指纹 ⇒ 与今天的现算值**不可比**，而指纹在会话创建时定死 ⇒ 它不会再变得可比
+ *     （回溯能证成「面没变过」的那一档不算永久，见下）；
+ *   · **宿主不可达 ⇒ 永久**：跨父会话（宿主只允许父会话复用自己起的子代理）—— 这一条**只对观察到
+ *     的那个父会话成立**，所以观察者身份由调用方给（不给 ⇒ 不判，宁可留账）；
+ *   · **有在飞卡 ⇒ 临时**：卡结算之后这个会话就又能用了（`idle` 都还不是，见第一行）；
+ *   · **投递失败 ⇒ 临时**：宿主这一次拒了不代表下一次也拒（`DEF-185` 的真机形状里它就是"下一轮再试"）。
+ *
+ * ⚠️ **刻意不退役的第三档**：指纹同版本但**与当前值不等**（`maskBlockedReason` 的
+ * 「掩码已变更（该会话的工具面是创建时的旧面）」）—— 角色面**改回去**它就会重新可比，属可逆 ⇒
+ * 不按永久处理。这一档的真账读数（本轮现算 25 条）在回报的判定表里单列。
+ */
+export interface PermanentUnreusable {
+  /** 机器可读的永久性分类（进事件的 `basis`；只这两种，别在这里加第三类而不改判定表） */
+  basis: 'mask-not-comparable' | 'host-unreachable'
+  /** 人读原话（进事件的 `reason` 与回执；与 `unusable.reason` 同一形态） */
+  reason: string
+}
+
+export function permanentUnreusableReason(
+  child: PoolChild,
+  options: {
+    /**
+     * **观察者（本侧父会话）**：只有它知道"跨父会话"是不是真的不可达（`DEF-066`）。
+     * 不给 = 不做这一层判定（不判 ≠ 可复用，只是**不在这里退役**）。
+     */
+    viewerSessionId?: string | undefined
+  } = {},
+): PermanentUnreusable | undefined {
+  // ① 有在飞卡 ⇒ 临时（连 `idle` 都不是：这一档压根没资格被讨论）
+  if (child.state !== 'idle') return undefined
+  // ② 投递失败 ⇒ 临时：宿主原话在 `deliveryFailedReason`，下一轮该再试
+  if ((child.deliveryFailedReason ?? '') !== '') return undefined
+  // ③ 口径不可比 ⇒ 永久
+  const actual = child.maskHash ?? ''
+  if (actual === '') {
+    return { basis: 'mask-not-comparable', reason: '旧子代理没有掩码指纹（旧口径没有版本号 ⇒ 与今天的现算值不可比）' }
+  }
+  if (maskHashVersion(actual) !== MASK_FINGERPRINT_VERSION) {
+    const backtrack = maskBacktrack(child.role, { sdoAllow: child.sdoAllow, deny: child.deny })
+    // 回溯**能证成**「面没变过」⇒ 还可复用 ⇒ 不退役（否则会把 `DEF-194` 反对的那种整池作废做回去）
+    if (backtrack.reusable) return undefined
+    return {
+      basis: 'mask-not-comparable',
+      reason: `掩码口径不可比（旧口径指纹没有版本号，且回溯判不了：${backtrack.detail}）`,
+    }
+  }
+  // ④ 宿主不可达 ⇒ 永久（只对调用方给的那一侧成立，见 `options.viewerSessionId`）
+  const viewer = options.viewerSessionId ?? ''
+  const parent = child.parentSessionId ?? ''
+  if (viewer !== '' && parent !== '' && parent !== viewer) {
+    return {
+      basis: 'host-unreachable',
+      reason: `跨父会话（宿主只允许父会话复用自己起的子代理；观察者 ${viewer.slice(0, 8)} 投不进去）`,
+    }
+  }
+  return undefined
+}
+
+/**
+ * **池视图里与「退役」有关的两桶**（`TASK-228`）。
+ *
+ * 为什么单独一个接口（而不是直接写进 {@link RolePool} 的字段区）：本仓 `m249` 把 `pool.ts` 里
+ * `liveDispatchReading` 注释的某一行**按行号**钉住（那份守卫不在本卡的写范围，改不了），
+ * 把新字段塞进上半段会让那一行的行号漂移 ⇒ 判据当场红。接口合并（`extends`）是**同一份类型面**
+ * 的等价写法：`RolePool` 仍然带这两桶，读侧一个字都不用改。
+ */
+export interface RetiredBuckets {
+  /**
+   * `unusable` 里被判成**永久**不可复用的那部分（`TASK-228`；判据是
+   * {@link permanentUnreusableReason}，**本层唯一判定点**，见 {@link permanentCandidatesOf}）。
+   *
+   * 它们是**下一批退役对象**：`index.ts` 在真派发那一轮把它们一次性落成 `pool/retired`（分片写入），
+   * 此后 `foldPoolChildren` **先减退役集** ⇒ 它们根本不再进池 —— 于是这一桶在退役之后变成空，
+   * 而它们出现在台账的退役事件里（读数那一侧由 {@link poolTriageRows} 补回来）。
+   */
+  permanent: { childSessionId: string; reason: string; basis: string }[]
+}
+
+/**
+ * 把「过不了闸门」的那批孩子里**永久**不可复用的挑出来（`rolePools` 的 `permanent` 桶）。
+ *
+ * 三条口径：
+ *   ① **只在这批里判**：调用方交进来的已经是"过不了闸门"的那批（候选池 `unusable`），
+ *      一个过得了闸门的孩子不参与讨论（否则"可复用"与"永久不可用"会同时成立）；
+ *   ② **判据只有一处**：`permanentUnreusableReason`（本层唯一判定点）—— 本函数只做投影，
+ *      不重新分类（两处各判一遍必然分叉，`R-6` 的教训）；
+ *   ③ **不编造**：`basis` / `reason` 一律来自那个判定，缺什么就留空（空串 = 老事件没写这一格）。
+ */
+export function permanentCandidatesOf(
+  children: Iterable<PoolChild>,
+  viewerSessionId?: string | undefined,
+): { childSessionId: string; reason: string; basis: string }[] {
+  const out: { childSessionId: string; reason: string; basis: string }[] = []
+  for (const child of children) {
+    const verdict = permanentUnreusableReason(child, { viewerSessionId: viewerSessionId ?? '' })
+    if (verdict === undefined) continue
+    out.push({ childSessionId: child.childSessionId, reason: verdict.reason, basis: verdict.basis })
+  }
+  return out
+}
+
+/* ——————————————— 池摘要的**三分**（`TASK-228` 落点三） ——————————————— */
+
+/**
+ * 一个角色池的**三分读数**：`reusable / temp-unusable / retired`（三者相加 = `total`，恒等式由构造给出）。
+ *
+ * 为什么要三分而不只是"空闲几个"：`TASK-228` 的真账读数里"空闲可复用"是 0，而"为什么没复用"那一栏
+ * 有 3149 条**永久**不可复用的候选 + 25 条可逆的 + 4 条临时不可达 —— 一个桶装不下三种东西，
+ * 读数就会被**永久**那一档淹没（读者以为"再等等就好了"，其实那批等不来）。
+ *
+ * 三档的边界（写死在这里，别处不再各解一遍）：
+ *   · `reusable`：`idle`（过完闸门、本会话真能投的那批）；
+ *   · `tempUnusable`：`unusable` 里**不是永久**的那部分（持卡 / 投递失败 / 可逆的口径变化 / 没有观测证据）；
+ *   · `retired`：**永久**不可复用的 —— 台账里**已退役**的那批 ＋ 本轮已判成永久、还没落盘的那批
+ *     `permanent`。退役那个动作**不改变**这个数（左边进右边出）—— 于是同一份台账在退役前后读到
+ *     同一个 `retired`，读者不会以为"退役把候选藏起来了"。
+ */
+export interface PoolTriage {
+  role: string
+  reusable: number
+  tempUnusable: number
+  retired: number
+  /** `reusable + tempUnusable + retired`（= `idle + unusable + retiredOfRole`，算式见 {@link poolTriage}） */
+  total: number
+}
+
+/**
+ * 算一个角色池的三分读数（纯函数）。
+ *
+ * 算式（`permanent` 是 `unusable` 的子集，所以两条加起来才不重复）：
+ *   `reusable = idle`；`tempUnusable = unusable − permanent`；
+ *   `retired = retiredOfRole + permanent`；`total = reusable + tempUnusable + retired`。
+ * 展开即 `idle + unusable + retiredOfRole` —— 与"退役前后 `retired` 不变"是同一条恒等式的两面。
+ *
+ * @param retiredOfRole 该角色**已退役**的候选数（台账口径的那一份：{@link retiredCandidatesOf}）。
+ *   缺省 `0` = 不把已退役那批算进来（只读单池时用）；逐角色出读数请走 {@link poolTriageRows}。
+ */
+export function poolTriage(pool: RolePool, retiredOfRole = 0): PoolTriage {
+  const reusable = pool.idle.length
+  const tempUnusable = pool.unusable.length - pool.permanent.length
+  const retired = retiredOfRole + pool.permanent.length
+  return { role: pool.role, reusable, tempUnusable, retired, total: reusable + tempUnusable + retired }
+}
+
+/**
+ * **逐角色的三分读数**（回执/诊断入口）：把"已退役"那一桶也算进角色清单里。
+ *
+ * 为什么要单独一个入口而不是让调用方自己 `map(poolTriage)`：退役之后那些候选**已经不在池里**
+ * （`foldPoolChildren` 先减退役集），所以一个"候选全被退役"的角色可能连池条目都没有 ——
+ * 只按池条目出读数，那一批就会**凭空消失**（读者看到的 `total=0` 与台账里的 3149 条对不上）。
+ *
+ * @param input.retired **权威退役清单**（{@link retiredCandidatesOf} 的结果）。给了就用它算每个角色的
+ *   退役数，并补出"只有退役候选、没有池条目"的角色；不给 = 只按池自身的 `permanent` 出读数。
+ */
+export function poolTriageRows(input: {
+  pools: readonly RolePool[]
+  retired?: readonly RetiredCandidate[] | undefined
+}): PoolTriage[] {
+  const counts = new Map<string, number>()
+  for (const row of input.retired ?? []) counts.set(row.role, (counts.get(row.role) ?? 0) + 1)
+  const rows = input.pools.map((pool) => poolTriage(pool, counts.get(pool.role) ?? 0))
+  const known = new Set(input.pools.map((pool) => pool.role))
+  const extra = [...counts.entries()]
+    .filter(([role, count]) => role !== '' && count > 0 && !known.has(role))
+    .sort(([left], [right]) => (left < right ? -1 : 1))
+    .map(([role, count]) => ({ role, reusable: 0, tempUnusable: 0, retired: count, total: count }))
+  return [...rows, ...extra]
+}
+
+/**
+ * 三分读数的一行投影（回执/诊断用）。**字段名用 ASCII**：与 {@link poolReadingLine} 同一理由
+ * —— 本行会进回执，而语言包键不在本卡写范围内。
+ */
+export function poolTriageLine(triage: PoolTriage): string {
+  return `pool-triage: role=${triage.role} reusable=${triage.reusable}`
+    + ` temp-unusable=${triage.tempUnusable} retired=${triage.retired} total=${triage.total}`
 }
 
 /* —————————————————— ③ 派发决定的收口（`TASK-231` 落点一 / 落点三） —————————————————— */
@@ -893,6 +1223,7 @@ export function admitDispatch(input: {
         stale: [],
         retired: 0,
         unusable: [],
+        permanent: [],
         freeSlots: 0,
       }
       byRole.set(task.role, created)

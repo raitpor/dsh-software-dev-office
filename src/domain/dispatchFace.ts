@@ -12,9 +12,10 @@ import { existsSync } from 'node:fs'
 
 import type { Journal } from '../infra/journal.js'
 // **`TASK-224`**：聚合/引用/老形状的展开只有一处实现（`pool.reuseSkippedRowsFromEvents`）
-import { reuseSkippedRowsFromEvents } from './pool.js'
+import { POOL_RETIRED_EVENT, retiredSinceOf, reuseSkippedRowsFromEvents } from './pool.js'
 import type { SdoStore } from '../infra/store.js'
 import type { PoolReading } from './pool.js'
+import type { SdoEventType } from '../types.js'
 
 export const CHILD_FACE_SEGMENTS = ['evidence', 'child-tools.jsonl'] as const
 
@@ -239,10 +240,26 @@ export interface ReuseSkippedRecord {
  * 读回**没被复用**的留痕（两种承载都认，见 {@link REUSE_SKIPPED_EVENT}）。
  *
  * 记录顺序 = 台账顺序；同一 `childSessionId` 出现多次时**不去重**（历史读数照实回放，去重是渲染层的事）。
+ *
+ * ⚠️ **退役那一刀之前的死账不再回放**（`TASK-228` 落点四）：`pool/retired` 落过之后，那个候选在
+ * **退役之前**写下的 `reuse-skipped` 行是死账 —— append-only 不改写它（历史事实），但把它继续当
+ * "现在的读数"回放就是在**念死账**，于是每一份"为什么没复用"的报告都被那一堆永久不可复用的会话淹没。
+ * 判据只有一个：`pool.retiredSinceOf`（与 `foldPoolChildren` 先减退役集的那一份**同一个函数**）。
+ *
+ * **边界（写清楚，别让下一个人以为漏了）**：只砍"退役之前"的行。退役**之后**写下的行照旧回放 ——
+ * 那是新事实（运维手工补的一笔探查、或退役那一轮自己的账），不是死账。
+ * 于是"不再念死账"与"退役那一轮的行仍可核对"两件事同时成立。
  */
 export function reuseSkippedOf(journal: Journal): ReuseSkippedRecord[] {
   const out: ReuseSkippedRecord[] = []
-  for (const event of journal.read().events) {
+  const events = journal.read().events
+  const retiredSince = retiredSinceOf(events.map((event) => ({ type: event.type, data: event.data, at: event.at })))
+  /** 这一行是不是"退役之前的死账"（`carrier` 是承载它的那笔事件在台账里的位置）。 */
+  const deadRow = (childSessionId: string, carrier: number): boolean => {
+    const cut = retiredSince.get(childSessionId)
+    return cut !== undefined && carrier < cut
+  }
+  for (const [carrier, event] of events.entries()) {
     // **读侧按字符串比**（不是漏了类型）：`SdoEventType` 是**闭合联合**，`dispatch/reuse-skipped`
     // 还没登记进去（登记点在 `src/types.ts`，不在本卡写范围）；而台账是 append-only 的跨版本真源 ——
     // 别的构建写过的事件，本构建**照样要读得回来**，读侧因此只认**字形**，不认类型声明。
@@ -262,6 +279,7 @@ export function reuseSkippedOf(journal: Journal): ReuseSkippedRecord[] {
        */
       const expanded = reuseSkippedRowsFromEvents([{ seq: event.seq, type: String(event.type), data: event.data }])
       for (const row of expanded.rows) {
+        if (deadRow(row.childSessionId, carrier)) continue
         out.push({
           childSessionId: row.childSessionId,
           role: row.role,
@@ -280,6 +298,7 @@ export function reuseSkippedOf(journal: Journal): ReuseSkippedRecord[] {
       const row = item as { childSessionId?: unknown; role?: unknown; reason?: unknown }
       const childSessionId = textOfValue(row.childSessionId)
       if (childSessionId === '') continue
+      if (deadRow(childSessionId, carrier)) continue
       out.push({
         childSessionId,
         role: textOfValue(row.role),
@@ -291,6 +310,66 @@ export function reuseSkippedOf(journal: Journal): ReuseSkippedRecord[] {
     }
   }
   return out
+}
+
+/* ——————————————— 池候选的**一次性退役**：写侧（`TASK-228` 落点一） ——————————————— */
+
+/**
+ * 一片退役事件最多装几个候选（**字节与耗时的双重上界**，不是风格）。
+ *
+ * 真账里第一批会一次性退役 3149 个候选；如果把它们写成**一行** JSON，那行约 500KB —— 而
+ * `Journal.append` 每写一次都要对盘上文本逐行 `JSON.parse` 算 seq（`maxSeqOfText`）⇒ 一行巨物会让
+ * **此后每次写入**都变慢。分片之后每片约 25KB，总共十来条事件，账本体积与单行体积都还是有界的。
+ */
+export const POOL_RETIRED_CHUNK = 200
+
+/** 一条待落盘的退役行（`basis` 由 `pool.permanentUnreusableReason` 产出，写侧不重新判）。 */
+export interface PoolRetireRow {
+  childSessionId: string
+  role: string
+  reason: string
+  basis: string
+}
+
+/**
+ * 把本轮判成**永久**不可复用的候选项**一次性**落成 `pool/retired`（`TASK-228`）。
+ *
+ * 三条纪律：
+ *   ① **幂等的前提在外层**：本函数不知道谁已经退役过（那是 `retiredSetOf` 的事），所以调用方必须
+ *      只把**还没退役**的行交进来（`rolePools` 的 `permanent` 天然满足：退役之后它们已不在池里）；
+ *   ② **一次一条事件、装 {chunk} 个候选**（见 {@link POOL_RETIRED_CHUNK}）；
+ *   ③ **不写空事件**：`rows` 为空 ⇒ 返回零条（"这一轮没有新退役"不该在台账上留痕）。
+ *
+ * 事件类型**不在这张卡的写范围里登记**（`SdoEventType` 是 `src/types.ts` 的闭合联合）：这里按字形写入，
+ * 与 `dispatch/reuse-skipped` 当初的处置完全一样（读侧认字形、写侧等登记者）。回报里已列为
+ * **范围申请**：把 `'pool/retired'` 加进 `src/types.ts` 的联合之后，这处断言即可删掉。
+ */
+export function recordPoolRetired(
+  journal: Journal,
+  rows: readonly PoolRetireRow[],
+  options: { decidedAt?: string | undefined; chunk?: number | undefined } = {},
+): { events: number; rows: number } {
+  const decidedAt = options.decidedAt ?? new Date().toISOString()
+  const chunk = Math.max(1, Math.floor(options.chunk ?? POOL_RETIRED_CHUNK))
+  let events = 0
+  let written = 0
+  for (let at = 0; at < rows.length; at += chunk) {
+    const slice = rows.slice(at, at + chunk).map((row) => ({
+      childSessionId: row.childSessionId,
+      role: row.role,
+      reason: row.reason,
+      basis: row.basis,
+    }))
+    if (slice.length === 0) continue
+    journal.append(POOL_RETIRED_EVENT as SdoEventType, {
+      retired: slice,
+      count: slice.length,
+      decidedAt,
+    })
+    events += 1
+    written += slice.length
+  }
+  return { events, rows: written }
 }
 
 /** 一次派发的现场读数（读侧：`dispatch/started` 里带的那一份）。 */

@@ -178,13 +178,14 @@ function buildReadout(cwd: string): string {
 import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
-import { DELIVERY_FAILED_PREFIX, danglingDecisionLines, poolReadingLine, readingOfRole, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
+import { DELIVERY_FAILED_PREFIX, POOL_RETIRED_EVENT, danglingDecisionLines, establishedChildrenOf, poolReadingLine, poolTriageLine, poolTriageRows, readingOfRole, retiredCandidatesOf, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
+import type { PoolTriage } from './domain/pool.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
 import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
 import type { MitigatesWaiver } from './types.js'
 import { sessionIdOf } from './interface/scope.js'
-import { toolCallNameOf, toolNamesOfHeader } from './domain/dispatchFace.js'
+import { recordPoolRetired, toolCallNameOf, toolNamesOfHeader } from './domain/dispatchFace.js'
 import { reviewAdoptionLabel } from './domain/reviewVerification.js'
 import { excerpt as excerptOf } from './domain/dispatchReports.js'
 import type { DispatchFinished } from './domain/dispatchReports.js'
@@ -206,6 +207,23 @@ export const name = 'dsh-software-dev-office'
 
 /** 需要会话存储来定位工作目录（设计 §11.6 的依赖清单）。 */
 export const inject = ['sessions']
+
+/**
+ * 派发回执里**池三分**最多点名几个角色（`TASK-228` 落点三）。
+ *
+ * 为什么有上限：这一行是"池里现在怎么分的"读数，角色通常 1–3 个（真账里只有 developer 有候选），
+ * 但别的项目可能有 8 个角色 ⇒ 无上限就变成"按角色数膨胀"的第二维噪音（`DEF-175` 的同族病）。
+ * 折叠时**明写还有几个角色没展开**（不静默省略），全量走 `sdo_status` 的池块。
+ */
+const POOL_TRIAGE_ROLES_SHOWN = 4
+
+/**
+ * 退役预告里最多**点名**几个候选（`TASK-228` 落点三的"点名哪个条目变了"）。
+ *
+ * 3 与 `DANGLING_LINES_SHOWN` 同口径：一条就够人去查，3 条能看出"是不是同一批"，
+ * 再多只是把本轮的派发结论挤出预算。全量清单在台账的 `pool/retired` 事件里逐条写着。
+ */
+const POOL_RETIRED_NAMED = 3
 
 export { Config }
 export type { SdoConfig }
@@ -2178,6 +2196,90 @@ export function apply(ctx: Context, config: SdoConfig): void {
         return lines.filter((line) => line !== '').join('\n') + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + roleBlockedSection + queueSection + structuralSection
       }
 
+      /**
+       * **`TASK-228` 落点三：池摘要三分 + 永久候选的**一次性**退役。**
+       *
+       * 三分（`reusable / temp-unusable / retired`，三者相加 = `total`）修的是"一个桶装三件事"：
+       * 真账里"空闲可复用"是 0，而"为什么没复用"那一栏里**3149 条是永久**、25 条可逆、4 条临时 ——
+       * 混在一起读，人会以为"再等等就好了"，而永久那一批等不来。
+       *
+       * 退役修的是"同一句话被每轮重抄"：那 3149 个候选"旧口径指纹不可比"这件事在会话创建时就定了，
+       * 不会变。把它们一次性落成 `pool/retired` 之后，`foldPoolChildren` **先减退役集** ⇒
+       * 此后每轮这类记账 **0 条**（不再每轮重新判定、重新落账）。
+       *
+       * 三条边界：
+       *   · **只在真派发这条路写**：`why=true` 的纯诊断面在上面已经 return（诊断不许改台账）；
+       *   · **口径变更要预告**：这一行同时给"N 条被退役"与**点名的前几条**（角色 + 会话前 8 位 + 依据），
+       *     让人当场看得出"是哪一批条目变了"，而不是等下一轮发现池子突然瘦了；
+       *   · **行文用 ASCII**：语言包键不在本卡写范围（i18n 棘轮把本文件的硬编码中文字面量钉在 0）。
+       *
+       * **退役清单从台账读一份**（`retiredCandidatesOf`）：`office.poolSnapshot` 没有把退役清单接进
+       * 池视图（那处接线在 `src/office.ts`，不在本卡写范围），所以这里显式读一次并与
+       * {@link poolTriageRows} 的权威口径合起来 —— 数量与"先减退役集再折叠"的那一份**同源**
+       * （同一个 `retiredSetOf`），不会出现"折掉了但读数里还在"或反过来。
+       */
+      const journalEvents = office.journalFor(office.requireWorkspace(call)).read().events
+        .map((event) => ({ type: event.type, data: event.data, at: event.at }))
+      const retiredSoFar = retiredCandidatesOf(journalEvents)
+      const triageAll = poolTriageRows({ pools: plan.pools, retired: retiredSoFar })
+      const triageByRole = new Map<string, PoolTriage>(triageAll.map((row) => [row.role, row]))
+      const triageRows = triageAll.filter((row) => row.tempUnusable + row.retired > 0)
+      /**
+       * **一次性落盘**（`TASK-228` 落点三的"预告 N + 点名"）：本轮判成永久的候选**一次**写完，
+       * 不做分轮确认 —— 判定读的是会话创建时定死的字段（`permanentUnreusableReason`）；
+       * 拿"上一轮记过它"当确认材料反而会让**被聚合形状截断掉样本**的那批候选永远等不到确认
+       * （那就把本卡要停的每轮重记又请回来了）。
+       *
+       * 唯一的门是"出生满一轮"（`pool.establishedChildrenOf`）：**最新那一笔 `dispatch/started`
+       * 对应的孩子本轮不退役** —— 刚诞生的候选可能还没观测满一轮，不判死刑；它们进
+       * `awaiting-first-round`（**预告**，下一轮就退）。误判的代价另由**可逆的复活规则**兜
+       * （退役之后又出现 `dispatch/started` 的会话重新算活，见 `pool.retiredSinceOf`）。
+       */
+      const established = establishedChildrenOf(journalEvents)
+      const permanentRows = plan.pools.flatMap((pool) => pool.permanent.map((row) => ({ ...row, role: pool.role })))
+      const retireRows = permanentRows.filter((row) => established.has(row.childSessionId))
+      const awaitingRows = permanentRows.filter((row) => !established.has(row.childSessionId))
+      const retiredNow = retireRows.length === 0
+        ? { events: 0, rows: 0 }
+        : recordPoolRetired(office.journalFor(office.requireWorkspace(call)), retireRows)
+      /**
+       * **新起的两档**（`TASK-228` 落点三后半）：同一个"新起一个子代理"有两种完全不同的原因，
+       * 混在一起念会让读者把一个**池的问题**当成"池里没人可用"。
+       *   · `no-candidate` —— 本角色池里**一个候选都没有**（池子确实空着）；
+       *   · `pool-unusable` —— 有候选，但**一个能用的都没有**（三分读数一并给出，读者照着就能追）。
+       * 只在新起（未复用）那一格印，且行文是 ASCII（同上：语言包不在写范围）。
+       */
+      const freshBasisLine = (role: string): string => {
+        const triage = triageByRole.get(role)
+        if (triage === undefined) return `fresh-child-basis: no-pool-readout role=${role}`
+        if (triage.total === 0) return `fresh-child-basis: no-candidate role=${role}`
+        return `fresh-child-basis: pool-unusable role=${role} candidates=${String(triage.total)}`
+          + ` reusable=${String(triage.reusable)} temp-unusable=${String(triage.tempUnusable)} retired=${String(triage.retired)}`
+      }
+      const poolTriageSection = ((): string => {
+        const lines = triageRows.slice(0, POOL_TRIAGE_ROLES_SHOWN).map((row) => poolTriageLine(row))
+        if (triageRows.length > lines.length) {
+          lines.push(`pool-triage: +${String(triageRows.length - lines.length)} role(s) not shown`)
+        }
+        if (retiredNow.rows > 0 || awaitingRows.length > 0) {
+          const basis = new Map<string, number>()
+          for (const row of retireRows) {
+            const key = row.basis === '' ? 'unspecified' : row.basis
+            basis.set(key, (basis.get(key) ?? 0) + 1)
+          }
+          const named = (retireRows.length > 0 ? retireRows : awaitingRows).slice(0, POOL_RETIRED_NAMED)
+            .map((row) => `${row.role}:${row.childSessionId.slice(0, 8)}[${row.basis === '' ? 'unspecified' : row.basis}]`)
+          const shown = retireRows.length > 0 ? retireRows : awaitingRows
+          const more = shown.length - named.length
+          lines.push(`pool-retire: ${String(retiredNow.rows)} permanently-unreusable candidate(s)`
+            + ` -> recorded once as ${POOL_RETIRED_EVENT} (${String(retiredNow.events)} event(s));`
+            + ` basis ${[...basis.entries()].map(([key, count]) => `${key}=${String(count)}`).join(' ') || 'none'};`
+            + ` awaiting-first-round=${String(awaitingRows.length)} (the newest dispatch/started; recorded next round);`
+            + ` 'retired' here = moved out of the pool (the one-shot column of the pool line is a different thing);`
+            + ` named ${named.join(' ')}${more > 0 ? ` +${String(more)}` : ''}`)
+        }
+        return lines.length === 0 ? '' : '\n' + lines.join('\n')
+      })()
       const preference = args.backend === 'subagent' || args.backend === 'native-team' || args.backend === 'inline' ? args.backend : 'auto'
       const iteration = office.iteration(call)
       const decision = pickBackend(preference, backendProbe(), lastBackend, iteration?.number)
@@ -2542,6 +2644,15 @@ export function apply(ctx: Context, config: SdoConfig): void {
             worktreeLine,
             outcome.reuseFailed === undefined ? '' : fmt('uiDescribe.kReuseFailed', { p1: outcome.reuseFailed }),
             outcome.continuableFailed === undefined ? '' : fmt('uiDescribe.kContinuableFailed', { p1: outcome.continuableFailed }),
+            /**
+             * **`TASK-228` 落点三后半：新起的两种原因分开念。**
+             *
+             * 修前"新起一个"只有一句话，于是「池里一个候选都没有」与「有候选但一个都不能用」
+             * 在回执上**长得一样** —— 而后者是池子的问题（掩码/观测/持卡），前者根本不是问题。
+             * 现在补一行 ASCII 读数（语言包键不在本卡写范围）：`no-candidate` / `pool-unusable`，
+             * 后者带三分计数（`candidates / reusable / temp-unusable / retired`）。
+             */
+            outcome.reused ? '' : freshBasisLine(task.role),
           ].filter((line) => line !== '')
           out.push(
             describeDispatchStarted(
@@ -2609,7 +2720,11 @@ export function apply(ctx: Context, config: SdoConfig): void {
        * 修前回声夹在每张卡的派发块里、队列与池块在结论**之前** ⇒ 8000 截断先吃掉结论之后的一切，
        * 而结论本身又被队列挤到后面（`DEF-175` 的用户级症状）。
        */
-      const receiptRest = `${out.join('\n\n')}${infeasibleBlock}${roleBlockedSection}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      /**
+       * **`TASK-228` 落点三**：三分读数与退役预告紧跟池块（同一件事的两个面），且在回声**之前**
+       * —— 按 `TASK-218` 的牺牲顺序，回声先被吃。
+       */
+      const receiptRest = `${out.join('\n\n')}${infeasibleBlock}${roleBlockedSection}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${poolTriageSection}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
       // **`M137-03`**（源码级判据）：回执必须由 `dispatchSummary` 起头 —— 这一行就是那个形状。
       // `head` 只用于**量长度**（与返回值的前半段逐字相同），回声按预算取舍后追加在最后。
       const head = `${dispatchSummary}\n${receiptRest}`
