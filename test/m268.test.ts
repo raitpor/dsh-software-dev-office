@@ -32,6 +32,15 @@ import type { TaskCard } from '../src/types.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 
+/**
+ * **路径形态**：至少一段 `a/b` 的斜杠分段（两侧都不是空白）。
+ *
+ * `REV-120` #4 的教训：只认 `src/` 前缀等于只钉住一种写法 —— `test/…` / `docs/…` 形态的编造路径会漏网。
+ * 这一支只用于**反例断言**（"文案里不该有路径"），判断的是**形状**而不是"哪棵树下面"。
+ * 不含空白是关键：中文行文里「写范围 / 写范围为空」这种以空格隔开的斜杠不该被算成路径。
+ */
+const PATH_SHAPE_RE = /[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)+/u
+
 /** 一张最小卡（字段齐、其余留默认）—— 与 `test/m160.test.ts` 的夹具同形，便于两处读数对读。 */
 function card(
   id: string,
@@ -146,11 +155,18 @@ test('M268-04 一方写范围为空 ⇒ unknown-scope 必须出；且文案里**
     fmt('uiPlan.t15UnknownScope', { p1: 'TASK-A', p2: 'TASK-B' }),
     '文案必须就是那一支的键与占位符（p1/p2 = 两张卡；此档**没有** p3 = 路径）',
   )
+  // 上面那条等值断言以**同一个键**为基准 ⇒ 若键值本身被塞进硬编码路径，它会照样绿。所以这一格必须配一条
+  // **与键无关**的反例断言。`REV-120` #4：旧版只认 `src/` 形态（`/\bsrc\/[\w./-]+/u`），`test/…` / `docs/…`
+  // 形态的编造路径会漏网 ⇒ 这里放宽成「**任何**路径形态」：至少一段 `a/b` 的斜杠分段，且两侧都不是空白。
   assert.doesNotMatch(
     issues[0]?.detail ?? '',
-    /\bsrc\/[\w./-]+/u,
-    '这一档没有路径可比 ⇒ 文案里**不许**出现路径（`scopeOverlaps` 此档给空数组，拼路径就是编造）',
+    PATH_SHAPE_RE,
+    '这一档没有路径可比 ⇒ 文案里**不许**出现任何路径形态（`test/…` / `docs/…` 与 `src/…` 一视同仁）',
   )
+  // 反例基准：证明上面那条 `doesNotMatch` **不是恒真**（正则确实抓得住各类路径形态）
+  for (const probe of ['src/a.ts', 'test/m45.test.ts', 'docs/design/ADR-025.md', 'src/domain/']) {
+    assert.match(probe, PATH_SHAPE_RE, `反例基准：这个正则必须抓得住路径形态 ${probe}`)
+  }
 
   // 双态：把写范围补上 ⇒ 变成 merge ⇒ 转绿（证明那条红是"无法判定"给的，不是"空范围"本身给的）
   assert.deepEqual(disjoint([card('TASK-A', 'ready', ['src/a.ts']), card('TASK-B', 'planned', ['src/a.ts'])]), [], '补上写范围 ⇒ merge ⇒ 转绿')
@@ -160,6 +176,15 @@ test('M268-04 一方写范围为空 ⇒ unknown-scope 必须出；且文案里**
   assert.equal(rows.length > 0, true, '判据二**也要**把 unknown-scope 列出来，否则两面不同口径')
   assert.deepEqual(rows.map((row) => row.kind), rows.map(() => 'unknown-scope'), '行上的 kind 一律是 unknown-scope')
   assert.deepEqual(rows.map((row) => row.overlap), rows.map(() => []), '这一档的 overlap 是空数组（不是"补出来的路径"）')
+
+  // 判据三（派发面）同一档：`kind` 与 `overlap` 必须**同时**是 unknown-scope / 空数组。
+  // `REV-120` #3 点名的就是这个组合：修前「是否无法判定」在 `scopeIntersections` 里另写了一份
+  // `writeScopes.length === 0`（函数的复写），函数一改口径就会出现"kind 说 unknown、overlap 却非空"。
+  const dispatchRows = scopeIntersections([card('TASK-H', 'in-progress', []), card('TASK-N', 'ready', ['src/a.ts'])])
+  assert.equal(dispatchRows.length, 1, '派发面必须看见这一档（fail-closed）')
+  assert.equal(dispatchRows[0]?.kind, 'unknown-scope', '派发面的 kind 由同一支函数给')
+  assert.deepEqual(dispatchRows[0]?.overlap, [], 'kind = unknown-scope ⟺ overlap 恒空（两者必须同源，不许一处一套）')
+  assert.equal(scopeHeldTasks([card('TASK-H', 'in-progress', []), card('TASK-N', 'ready', ['src/a.ts'])]).length, 1, 'unknown-scope ⇒ 必须挡住派发（fail-closed）')
 })
 
 // ————————————————————— ④ 既有依赖序判定不回归（`'*'` 与传递依赖） —————————————————————
@@ -240,8 +265,16 @@ test('M268-07 两处调的是**同一个函数**（文本锚定，不按行号�
   for (const call of [
     'const kind = scopeSerialKindOf(a, b)',
     'const kind = scopeSerialKindOf(task, other)',
-    'kind: scopeSerialKindOf(task, holder)',
+    // 派发面（`scopeIntersections`）：`REV-120` #3 之后它把结论**取到局部变量**再判"无法判定"，
+    // 而不再在函数外复写一份 `writeScopes.length === 0` —— 所以钉的是这个取值形态。
+    'const kind = scopeSerialKindOf(task, holder)',
   ]) {
     assert.equal(plan.split(call).length - 1, 1, `调用点必须逐字存在且只出现一次：${call}`)
   }
+  // `REV-120` #3：`unknown-scope` 的**判定**只许有一处 —— **含** `writeScopes.length === 0` 的行只剩 1 行
+  // （就是 `scopeSerialKindOf` 的第一条分支；那一行里两侧各出现一次，所以数**行**不数字符串）。
+  // 多一行就是"同一件事两处各写一份"（`DEF-044` / `DEF-239`）：函数一改口径，调用点那份不跟着改，
+  // 就会出现「`kind` 说 unknown、`overlap` 却非空」的自相矛盾行。
+  const unknownJudgeLines = plan.split('\n').filter((line) => line.includes('writeScopes.length === 0'))
+  assert.equal(unknownJudgeLines.length, 1, '「无法判定」的判定只许有一行（不许在调用点复写）')
 })

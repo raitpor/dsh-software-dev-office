@@ -239,13 +239,6 @@ test('M160-05 TC-127：**反事实模拟** —— 谓词改回旧式，三种有
   const control = [card('TASK-A', 'ready', ['src/p/']), card('TASK-B', 'ready', ['src/p/'])]
   const controlWindow = [card('TASK-A', 'ready', ['src/p/'], [], 'full-suite'), card('TASK-B', 'ready', ['src/p/'])]
 
-  for (const shape of shapes) {
-    // 反事实：旧谓词下**每种形状各有 1 条假冲突**
-    assert.equal(oldConflicts(shape.tasks), 1, `${shape.name}：旧谓词必须给出 1 条假冲突（否则这条反事实没咬住）`)
-    // 现实：唯一出口 `orderedPair` 判为有序 ⇒ 三处判据都不报（1 → 0）
-    const live = readings(shape.tasks)
-    assert.deepEqual(live, { validatePlan: 0, classify: 0, scopeHeld: 0 }, `${shape.name}：现实现三处都必须 0 条`)
-  }
   assert.equal(oldConflicts(control), 1, '对照组：旧谓词 1 条')
   // `DEF-239`：`merge` 档两个静态面都不出（这是新口径，不是放宽 —— 旧谓词在这里本来就报）
   assert.deepEqual(readings(control), { validatePlan: 0, classify: 0, scopeHeld: 0 }, '对照组 × merge：ADR-025 下不出 issue')

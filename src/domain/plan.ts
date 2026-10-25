@@ -1615,12 +1615,17 @@ export function scopeIntersections(tasks: readonly TaskCard[]): ScopeIntersectio
       if (orderedPair(task, holder, tasks)) continue
       // **无法判定（fail-closed）**：任一方写范围为空/缺失 ⇒ 按"整仓"处理。旧实现拿
       // `scopeOverlaps([], …)` 得空集 ⇒ 空范围卡**永远**判不相交（"判不了"被静默当成"没事"）。
-      const unknown = task.writeScopes.length === 0 || holder.writeScopes.length === 0
+      //
+      // **`DEF-239`（`REV-120` #3）**：这一档由 `scopeSerialKindOf` 那**一处**说了算 —— 不在这行另写
+      // 一份 `length === 0` 的判定。那是函数第一条分支在函数外的复写：函数一改口径这里就分叉，
+      // 于是会出现「行上的 `kind` 说 unknown、`overlap` 却非空」这种自相矛盾的行。
+      const kind = scopeSerialKindOf(task, holder)
+      const unknown = kind === 'unknown-scope'
       const overlap = unknown ? [] : scopeOverlaps(task.writeScopes, holder.writeScopes)
       if (!unknown && overlap.length === 0) continue
       // **唯一出口**：认领面（`collab.claim`）与这里共用 `scopeSerialKindOf` —— 两面分叉就会出现
       // "派得出去、认领不了"（白烧一轮会话，`DEF-067` 的病）。
-      out.push({ task, holder, overlap, kind: scopeSerialKindOf(task, holder) })
+      out.push({ task, holder, overlap, kind })
       break
     }
   }
