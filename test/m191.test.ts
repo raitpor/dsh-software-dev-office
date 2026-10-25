@@ -114,8 +114,12 @@ export function citationFaces(root: string): string[] {
  *     那是冻结的历史任务书，里面记着**旧名字** ⇒ 把它当见证面等于让旧名字给新悬空背书）、根配置文件；
  *   · **已装依赖的类型面**：`node_modules/**\/*.d.ts`（第三方/语言的标识符在这里解析 —— 这是"误报控制"
  *     的**机制**，不是一张名字白名单）；
- *   · 台账与证据（`.sdo/`）与编译产物（`lib/`）**都不在**见证面里：前者会让"写在报告里的错名字"自我背书，
- *     后者是同一份源码的副本（会把"已删掉的名字"永远喂饱）。
+ *   · 台账与证据（`.sdo/`）、编译产物（`lib/`）、**以及 `node_modules/.sdo-test/` 这个夹具暂存根**
+ *     **都不在**见证面里：前两者会让"写在报告里的错名字"与"已删掉的名字"自我背书；
+ *     而 `.sdo-test/` 是**本仓自己的夹具/变异副本暂存地** —— 它底下常常是这个仓 `lib/` 的整树拷贝
+ *     （`<卡>-mut/lib/src/*.d.ts` 这类），按同一条理由必须排除：它是同一份源码的副本，会把已删掉的名字
+ *     永远喂饱（`TASK-265` 复核轮实测：`node_modules/.sdo-test/task-245-mut/lib/src/types.d.ts` 这份
+ *     遗留副本让 `src/types.ts` 的两条登记当场变 `stale` ⇒ 假红。详见 `DEF-246`）。
  */
 export function witnessFaces(root: string): string[] {
   const rootFiles = ['README.md', 'CHANGELOG.md', 'package.json', 'tsconfig.json', 'client.js', 'client.d.ts']
@@ -128,7 +132,17 @@ export function witnessFaces(root: string): string[] {
     ...walkInto(join(root, 'docs'), (name) => name.endsWith('.md')).filter((file) => !rel(file).startsWith('docs/plan/')),
     ...walkInto(join(root, 'node_modules'), (name) => /\.d\.(?:ts|mts|cts)$/u.test(name)),
     ...rootFiles.map((name) => join(root, name)),
-  ].filter((file) => { try { return readFileSync(file).length >= 0 } catch { return false } })
+  ].filter(isWitnessFace).filter((file) => { try { return readFileSync(file).length >= 0 } catch { return false } })
+}
+
+/**
+ * 见证面的**准入谓词**（一处判定，好给双态）：`node_modules/.sdo-test/` 下的文件一律不进面。
+ *
+ * 为什么不整棵 `node_modules` 排除：第三方/语言的类型面正是"误报控制"的机制（见上），
+ * 只排除**本仓自己的夹具暂存根**这一个子树 —— 它装的是本仓 `lib/` 与夹具项目的副本。
+ */
+export function isWitnessFace(file: string): boolean {
+  return !rel(file).startsWith('node_modules/.sdo-test/')
 }
 
 /** 注释文本里的**反引号标识符**（只取整个跨度都是标识符的那些）。 */
@@ -335,6 +349,24 @@ test('M191-02 §3.5 DoD②（误报控制）：外部约定/第三方/语言的�
     resolvesIn(ghost, { path: join(ROOT, 'test', 'm191.test.ts'), line: 0, token: ghost, note: '' }, witnesses),
     false,
     '不存在的标识符必须判"解析不到"（否则这一格恒真）',
+  )
+  // ④ 见证面的**准入谓词**双态（`TASK-265` 复核轮 / `DEF-246`）：夹具暂存根不进面，第三方类型面照进。
+  //    病根：`.sdo-test/` 底下是本仓 `lib/` 与夹具项目的整树拷贝，把那里的 `.d.ts` 当见证面
+  //    ⇒ 已删掉的名字被副本永远喂饱 ⇒ 登记变 `stale`（今天真机上就是 `task-245-mut` 那份遗留副本干的）。
+  assert.equal(
+    isWitnessFace(join(ROOT, 'node_modules', '.sdo-test', 'task-245-mut', 'lib', 'src', 'types.d.ts')),
+    false,
+    '夹具/变异副本（本仓 lib 的拷贝）不许进见证面',
+  )
+  assert.equal(
+    isWitnessFace(join(ROOT, 'node_modules', '@types', 'node', 'index.d.ts')),
+    true,
+    '反例：已装依赖的类型面必须照进（不许把整棵 node_modules 排除）',
+  )
+  assert.equal(
+    witnessFaces(ROOT).some((path) => rel(path).startsWith('node_modules/.sdo-test/')),
+    false,
+    '现盘见证面里不许有夹具暂存根（node_modules/.sdo-test/）的文件',
   )
 })
 

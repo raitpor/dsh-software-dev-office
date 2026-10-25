@@ -488,7 +488,7 @@ export const KNOWN_STRONG_CLAIMS: StrongClaimEntry[] = [
   // 锚与基线不会各写一份然后分叉（`TASK-265`）。
   { ...ANCHOR_REQUIRES_PROJECTION, why: "历史陈述，不是对现机制的声称：说的是 DEF-056 写侧落地**之前**的形状（读端白名单给 `[]` ⇒ 没有写入通路 ⇒ 谁也声明不了 `requires`）。修法就在同文件那段「DEF-056：写侧落地」。本卡只是把它从漏抓登记进基线，没有放宽判据（文件头边界 ①）。" },
   { ...ANCHOR_LIVE_SET, why: "「这个集合」= 同文件 `liveDispatchReading` 的 `live`：它只收 `foldPoolChildren` 里 `state === 'busy'` 的子项，而 `busy` 只由 `dispatch/started` 建立；该函数内 `dispatch/decided` 没有任何入集路径 ⇒ 在本函数范围内「永远不进」成立。（原文曾按行号点名，`TASK-265` 起按文本锚定位、不再引用行号。）" },
-  { file: "src/domain/records.ts", text: "* 每份交付都带一串必然出现、且**没有任何动作可做**的告警（报警疲劳，正是本项目反复警惕的那种）。", why: "后果陈述，主语是**漏改的那一半**：同段 804-806 行点名 `evidenceFreshness` 未跟着 `verificationStats` 改成 latest-wins（平铺遍历全部历史 ⇒ 旧记录被永久算过期），并给了真机读数「9 条过期告警里 7 条属这种」。修法是统一走 `latestResultPerCase`，不是声称现在还会必然出现。" },
+  { file: "src/domain/records.ts", text: "* 每份交付都带一串必然出现、且**没有任何动作可做**的告警（报警疲劳，正是本项目反复警惕的那种）。", why: "后果陈述，主语是**漏改的那一半**：同一段注释（`latestResultPerCase` 的文档块）点名 `evidenceFreshness` 未跟着 `verificationStats` 改成 latest-wins（平铺遍历全部历史 ⇒ 旧记录被永久算过期），并给了真机读数「9 条过期告警里 7 条属这种」。修法是统一走 `latestResultPerCase`，不是声称现在还会必然出现。（原文按行号点名那一段，`TASK-265` 收尾改成按内容引用 —— 行号会漂，这段注释自己就是那么说的。）" },
   { file: "src/office.ts", text: "* `dispatch/decided` **永远不进这个集合** —— 决定了不等于发生了（`DEF-214` 的第一层危害）。", why: "「这个集合」由本方法转调的域层 `liveDispatchReading` 构造（域层读数见该函数：只收 `busy` 子项，`busy` 只来自 `dispatch/started`）⇒ `decided` 无入集路径，「永远不进」在本方法范围内成立。（原文曾按行号点名，`TASK-265` 起按文本锚定位、不再引用行号。）" },
   { file: "src/domain/releaseTool.ts", text: "/** 一次调用要用的台账入口（域层不自己拼绝对路径：`SdoStore` 才是路径沙箱的唯一出口）。 */", why: "grandfathered: 2026-10-25 存量快照，未审" },
   { file: "src/domain/reviewDoc.ts", text: "* 两处用的是**同一个** `metaLines`，所以摘要永远不会和全文的总览对不上。", why: "grandfathered: 2026-10-25 存量快照，未审（扩轴后新捕获，仍未审）" },
