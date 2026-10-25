@@ -4427,8 +4427,13 @@ export class SoftwareDevOffice {
    * `dispatch/started`；「起会话」这一步失败时**没有任何收口事件** ⇒ 台账里留下一条「决议了但没发生」
    * 的中间态，而下游读数无从分辨它与「正在派发」。现在两条口径一起落：
    *   · **生产路径**（`index.ts` 的 `sdo_plan next`）**先尝试、后落账**，并把结果写进同一笔事件：
-   *     `outcome: 'started' | 'failed' | 'inline'`（`failed` 另带 `failureReason`）——
-   *     于是**悬空的决定在结构上不可能进入台账**（崩溃在尝试期间 ⇒ 连 decided 都没有，不留中间态）；
+   *     `outcome: 'started' | 'failed' | 'inline'`（`failed` 另带 `failureReason`）。
+   *     但这**不是一次事务**：生产路径是**三段 append** —— `startDispatch`（尝试）→ `recordDispatch`
+   *     （落 `dispatch/decided`，就是本函数）→ `recordDispatchStarted`（落 `dispatch/started`；它是
+   *     **另一次留痕**，见本类同名方法的注释）。后两笔之间崩溃，台账就长成「`outcome: 'started'` 说起来了、
+   *     `started` 事件却没有」—— 这正是 `REV-104` #2 的原形：`outcome` 记的是**这一次尝试的结果**，
+   *     不等于**台账已经自洽**。这一行由守卫 {@link danglingDecisions} 兜：等同卡 `started` 等不到、
+   *     年龄又过了 {@link DECIDED_SETTLE_SECONDS}，就判红点名（`dispatchDecisionHealth` 是一次调用出口）；
    *   · **老调用点**（不传 `outcome`）保持既有形状，由守卫 {@link danglingDecisions} 按"之后有没有
    *     `started`"判定悬空并判红点名。
    */
