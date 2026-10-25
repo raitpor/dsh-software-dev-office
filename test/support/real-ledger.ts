@@ -38,8 +38,40 @@ export function hasRealLedger(): boolean {
  */
 export function realLedgerSkip(): { skip: string } | undefined {
   if (hasRealLedger()) return undefined
+  skipCount += 1
   return {
     skip: '本仓 .sdo/ 不入库（.gitignore）⇒ 干净检出（CI）里没有真账；'
       + '本守卫断言的是**真账的不变性**，无对象可断言。本地有 .sdo 时照常执行（不是永久跳过）。',
   }
+}
+
+/**
+ * **跳过次数计数器**（`TASK-227` 落点：skip 必须在回执里**可见且有数量**）。
+ *
+ * 为什么不是"跳过就算了"：CI 上"全绿"有两种截然不同的含义 —— 真跑过了，或**一条都没跑**
+ * （全部 skip）。不把次数印出来，读者分不清"零缺陷"与"零覆盖"。所以：
+ *   · 每个守卫走 `realLedgerSkip()` 时 +1（本模块内计数，跨文件共享同一份模块实例）；
+ *   · `scripts/run-tests.mjs` 在末尾把总数印成一行固定读数；
+ *   · 计数为 0 而 `hasRealLedger()` 为真 ⇒ 说明这一轮没有真账守卫（或它们悄悄失效了）。
+ */
+let skipCount = 0
+
+/** 本轮已跳过多少条真账守卫（`scripts/run-tests.mjs` 收尾时读它）。 */
+export function realLedgerSkipCount(): number {
+  return skipCount
+}
+
+/**
+ * **一行可读的收尾读数**（给 runner 用；纯函数，便于守卫断言）。
+ *
+ * 三种状态必须区分得开：有真账 ⇒ 没有跳过；无真账且跳过过 ⇒ 印出条数；无真账但**一条都没跳**
+ * ⇒ 说明这套守卫没被跑到（那才是最该报警的形状，不是"全绿"）。
+ */
+export function describeRealLedgerSkip(count: number, ledgerPresent: boolean): string {
+  if (ledgerPresent) return `[real-ledger] ledger present (.sdo/journal.jsonl) — ${String(count)} guard(s) skipped this run`
+  if (count === 0) {
+    return '[real-ledger] ⚠ no ledger in this checkout AND zero guards declared it — '
+      + 'either the real-ledger guards did not run at all, or they lost their declaration'
+  }
+  return `[real-ledger] no ledger in this checkout — ${String(count)} guard(s) skipped (assertions kept, not deleted)`
 }
