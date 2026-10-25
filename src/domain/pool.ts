@@ -926,15 +926,108 @@ export function poolReadingLine(reading: PoolReading): string {
 }
 
 /**
- * **被闸门拒的空闲孩子逐条摊开**（`DEF-139` 落点二）：`childSessionId` / `role` / `reason` **三个字段
- * 每条都列**，不许只打一个数量。
+ * 未复用候选的列示档位（`DEF-175` 落点一；与 `interface/describe.ts` 的 {@link ReadoutOptions} 同口径）。
  *
- * 为什么必须逐条：真机回执只印「有 12 个空闲子代理没有被复用」—— 那个数还是**笛卡尔积去重前**的
- * （`R-5B`），于是"为什么没复用"在回执上永远答不了；回执里现在也缺了 `role` 这一列，
- * 而跨角色混在一起正是看不清的主因。
+ * `verbose: true` 才**逐条**展开；缺省档走**按原因归并**（见 {@link reuseSkippedLines}）。
  */
-export function reuseSkippedLines(rows: readonly { childSessionId: string; role: string; reason: string }[]): string[] {
-  return rows.map((row) => `childSessionId=${row.childSessionId} role=${row.role} reason=${row.reason}`)
+export interface ReuseSkipOptions {
+  /** `true` = 每个候选一行（人手排查用，一字不少）；缺省 = 按原因原话归并的有界汇总。 */
+  verbose?: boolean | undefined
+}
+
+/**
+ * 一组原因里最多点几个子会话（列**完整** uuid：回执上的 `childSessionId=` 一直是可反查的定位串，
+ * 逐条清单另有 `verbose` 档）。
+ */
+export const REUSE_SKIP_IDS_PER_REASON = 3
+
+/**
+ * 原因原话的**硬上限**（字符）：只防「宿主原话无界」这一种极端，归并才是主要手段。
+ *
+ * 定 200 的依据与 `describe.ts` 的 `POOL_UNUSABLE_REASON_CHARS` 同源（现盘最长的原因原话 168 字符：
+ * 掩码回溯判不了时点名缺哪几条禁令）—— 上限必须**大于真实形状**，否则默认档会把"缺哪几条禁令"
+ * 这句最有价值的话切掉。
+ */
+export const REUSE_SKIP_REASON_CHARS = 200
+
+/**
+ * 缺省档**整块**的字符预算（所有原因分组之和）。与 `describe.ts` 的 `POOL_UNUSABLE_CHARS` 同一手法：
+ * 按原因出现顺序累加到预算为止 ⇒ 常见形状（几种原因、每种一句原话）一定全部印全，只有"又多又长"时才折叠，
+ * 且折叠时明写「还有 K 种原因没展开」（**种数**必须说出来 —— 读者至少知道"原因被折叠了"这件事）。
+ */
+export const REUSE_SKIP_CHARS = 700
+
+/** 折叠时的**指路**（ASCII）：被折叠原因的原话在台账里逐条写着 —— 回执不教读者一个不存在的参数。 */
+export const REUSE_SKIP_REASON_SOURCE = '.sdo/journal.jsonl dispatch/reuse-skipped'
+
+/** 一个原因分组的理想形态：`原因原话×条数（样本 id … +其余）`，字段名沿用回执行的三个 ASCII 名。 */
+function reuseSkipGroupLine(
+  role: string,
+  reason: string,
+  ids: readonly string[],
+): string {
+  const why = reason.length > REUSE_SKIP_REASON_CHARS ? `${reason.slice(0, REUSE_SKIP_REASON_CHARS)}…` : reason
+  const sample = ids.slice(0, REUSE_SKIP_IDS_PER_REASON)
+  const more = ids.length > sample.length ? ` +${String(ids.length - sample.length)}` : ''
+  return `childSessionId=${sample.join(' ')}${more} role=${role} reason=${why}×${String(ids.length)}`
+}
+
+/**
+ * **被闸门拒的空闲孩子**（`DEF-139` 落点二）：`childSessionId` / `role` / `reason` 三个字段一个都不许少。
+ *
+ * 为什么这三个字段必须留着：真机回执只印「有 12 个空闲子代理没有被复用」—— 那个数还是**笛卡尔积去重前**的
+ * （`R-5B`），于是"为什么没复用"在回执上永远答不了；回执里以前也缺 `role` 这一列，
+ * 而跨角色混在一起正是看不清的主因。
+ *
+ * **有界（`DEF-175` 落点一，`TASK-218`）**：修前是"一个候选一整行"，而历史子会话有上百个
+ * （真账 80 条 ⇒ **17419 字符**、被宿主截到 8000，派发结论落在截断之外）。缺省档改成
+ * **按（角色, 原因原话）归并**：一个分组一行、样本给前 {@link REUSE_SKIP_IDS_PER_REASON} 个、
+ * 原因原话整句保留（只受 {@link REUSE_SKIP_REASON_CHARS} 硬上限约束）、整块受
+ * {@link REUSE_SKIP_CHARS} 预算约束 ⇒ 文本长度与候选个数**脱钩**，只剩"原因种数"这一维
+ *（真账 3 种）。砍的是**数量**，不是原因 —— 原因原话是这条读数今天最有价值的部分。
+ *
+ * 逐条清单仍然要得回来：走**函数级** `options.verbose`（那条路与修前逐字相同）。
+ * ⚠️ **`verbose` 不是 `sdo_plan` 的参数**（工具面在 `src/interface/tools.ts`，它的参数表里没有这一项）
+ * ⇒ 回执正文**不许**教读者去传它（`REV-093#2` 的教训）；被折叠时改指一条**真有的**出路：
+ * 原话逐条躺在台账的 `dispatch/reuse-skipped` 事件里（{@link REUSE_SKIP_REASON_SOURCE}）。
+ */
+export function reuseSkippedLines(
+  rows: readonly { childSessionId: string; role: string; reason: string }[],
+  options: ReuseSkipOptions = {},
+): string[] {
+  if (rows.length === 0) return []
+  if (options.verbose === true) {
+    // 逐条档：与修前逐字相同（一个候选一行、三字段齐全、原因不截断）
+    return rows.map((row) => `childSessionId=${row.childSessionId} role=${row.role} reason=${row.reason}`)
+  }
+  // 缺省档：按（角色, 原因）归并 —— 跨角色混在一组会让"是哪个角色被拒"重新看不见（`DEF-139` 的原病根）
+  const groups = new Map<string, { role: string; reason: string; ids: string[] }>()
+  for (const row of rows) {
+    const key = `${row.role}\u0000${row.reason}`
+    const group = groups.get(key) ?? { role: row.role, reason: row.reason, ids: [] }
+    group.ids.push(row.childSessionId)
+    groups.set(key, group)
+  }
+  const lines: string[] = []
+  let spent = 0
+  let index = 0
+  const entries = [...groups.values()]
+  for (; index < entries.length; index += 1) {
+    const entry = entries[index]
+    if (entry === undefined) break
+    const line = reuseSkipGroupLine(entry.role, entry.reason, entry.ids)
+    // 第一组**无条件印**：一组都不印，那块读数就等于没解释"为什么没复用"。
+    if (lines.length > 0 && spent + line.length + 1 > REUSE_SKIP_CHARS) break
+    lines.push(line)
+    spent += line.length + 1
+  }
+  const folded = entries.slice(index)
+  if (folded.length > 0) {
+    // 折叠时**把被折叠的规模与种数都现算着说出来**（种数用 ASCII：语言包不在本卡写范围）
+    const count = folded.reduce((sum, entry) => sum + entry.ids.length, 0)
+    lines.push(`…[reasons-not-shown=${String(folded.length)} candidates-not-shown=${String(count)} (full text: ${REUSE_SKIP_REASON_SOURCE})]`)
+  }
+  return lines
 }
 
 /** 满池排队的人读说明（回执用；点名角色与上限，并指向"等谁结算"）。 */
