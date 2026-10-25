@@ -33,10 +33,24 @@
  */
 import { locale } from './i18n.js'
 import { textOf } from '../infra/scalar.js'
+import { DISPATCH_REPORTED_EVENT, DISPATCH_TERMINAL_EVENTS } from '../types.js'
 import type { JournalEvent } from '../types.js'
 
-/** 子会话的**终态**事件：出现在某笔派发之后 ⇒ 那笔派发已结算。 */
-const TERMINAL_DISPATCH_EVENTS: readonly string[] = ['dispatch/finished', 'dispatch/reported']
+/**
+ * 子会话的**终态**事件：出现在某笔派发之后 ⇒ 那笔派发已结算。
+ *
+ * `TASK-240` 起这张表从 `src/types.ts` 派生（`DISPATCH_TERMINAL_EVENTS` 的 `card` 档 =
+ * `dispatch/finished` + `dispatch/aborted`），再加一档 {@link DISPATCH_REPORTED_EVENT}。
+ *
+ * **改后与改前的两处差别，都是对账过的事实**：
+ *   · 多收 `aborted`：修前它**没有**在这张表里，靠 `unsettledDispatches` 另一条判据
+ *     （同一张卡的 `task/released` / `task/dropped`）顺带盖住 —— 而 `release` 是 `aborted` 在本仓
+ *     的写者、同一笔里还会落 `task/released`，所以现盘读数不变；差别只在"只有 `aborted`、没有
+ *     `task/released`"的台账（合成夹具里能造出来），修后它与 `dispatchHealth.ts` 的口径一致。
+ *   · `reported` **故意与 `card` 档不同**：它记的是"子会话把报告交回来了"，写者已经交差，本轮不该
+ *     再当"未结算"报一遍。两处（本文件与 `dispatchHealth.ts`）都多收它，反例见 `test/m248.test.ts`。
+ */
+const TERMINAL_DISPATCH_EVENTS: readonly string[] = [...DISPATCH_TERMINAL_EVENTS.card, DISPATCH_REPORTED_EVENT]
 
 /** 调用方给的起点（原样回声 + 折算后的 seq，便于核对"工具没猜起点"）。 */
 export interface ChangeFeedQuery {

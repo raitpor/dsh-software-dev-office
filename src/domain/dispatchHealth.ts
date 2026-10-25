@@ -40,8 +40,20 @@
  *
  * **"派发前检查候选会话空闲"不在本卡交付**（`REV-103` 裁定 ①）：它要接进 `office.ts` 的会话选择与
  * `pool.ts` 的 busy 折叠（都不在 `TASK-237` 写范围）⇒ 已降级为**另立补线卡**，判据用**口径乙**。
+ *
+ * **`TASK-240`：两档终态表搬进 `src/types.ts`**（`DISPATCH_TERMINAL_EVENTS` + `isTerminalDispatch`），
+ * 本模块的表**从它派生**，不再各写一份；`pool.ts` 的 busy 折叠也改成读同一处（`session` 档）。
+ * 同时补上口径乙那个**方向正确**的会话谓词 {@link sessionIdleByFinished}（按 `dispatch/finished` 判，
+ * `dispatch/aborted` 不参与），旧的口径甲谓词 {@link sessionHasNoUnsettledDispatch} 标 `@deprecated`
+ * 并写明它为什么不能当空闲判定。三个读侧的改前/改后对账与两态读数在 `test/m248.test.ts`。
  */
 import { textOf } from '../infra/scalar.js'
+import {
+  DISPATCH_ABORTED_EVENT,
+  DISPATCH_REPORTED_EVENT,
+  DISPATCH_TERMINAL_EVENTS,
+  isTerminalDispatch,
+} from '../types.js'
 import type { JournalEvent, TaskCard } from '../types.js'
 
 /**
@@ -49,8 +61,10 @@ import type { JournalEvent, TaskCard } from '../types.js'
  *
  * 为什么要一个常量而不是两处各写一个字符串：写侧与读侧对不上时**不会有任何报错**
  * —— 事件照写、读数照旧"未结算"，那种不一致只能在很久以后被人发现。
+ * `TASK-240` 起字符串的真源搬进 `src/types.ts`（`DISPATCH_TERMINAL_EVENTS` 的 `card` 档要用它），
+ * 本模块**再导出**：`domain/collab.ts` 与 `test/m247.test.ts` 的导入路径因此不用改。
  */
-export const DISPATCH_ABORTED_EVENT = 'dispatch/aborted'
+export { DISPATCH_ABORTED_EVENT }
 
 /**
  * **口径甲**的终态：这一轮派发在台账里**不再悬着**了。
@@ -59,21 +73,28 @@ export const DISPATCH_ABORTED_EVENT = 'dispatch/aborted'
  * 是唯一写者）。它进这张表之后，`claimMissing` 的那一行会从"不知道后来怎样了"变成"已作废、理由在此"
  * （`ended: true` + `reason`）。
  *
+ * **`TASK-240`：这张表从 `src/types.ts` 派生**（`DISPATCH_TERMINAL_EVENTS` 的 `card` 档），
+ * 再加一档 {@link DISPATCH_REPORTED_EVENT}。多收 `reported` 是**故意与 `card` 档不同**：
+ * 它记的是"子会话把报告交回来了"—— 写者已经交差，这一轮不必再收口；`claimMissing` 与
+ * `reuseDeliveries` 问"后来怎样了"时必须认它。反例见 `test/m248.test.ts` 的那一格
+ * 「只有一条 dispatch/reported 的派发」。
+ *
  * **诚实的边界（`REV-103` F7）：它 ≠ 噪声已消。** `claimMissing` 不按终态过滤 —— `ended` 翻真之后
  * **仍然 push 一行候选**；`office.noteClaimMissing` 也照旧把它写成 `dispatch/claim-missing` 事件，
  * 回执仍印"⇒ 视为静默失败"。真消掉这条噪声要动 `office.ts` / `index.ts` / 语言包（都不在本卡写范围）
  * ⇒ 另立卡。本卡只做"把这一轮标成已收口 + 带上理由"，**不声称更多**。
  */
-const SETTLED_DISPATCH_EVENTS: readonly string[] = ['dispatch/finished', 'dispatch/reported', DISPATCH_ABORTED_EVENT]
+const SETTLED_DISPATCH_EVENTS: readonly string[] = [...DISPATCH_TERMINAL_EVENTS.card, DISPATCH_REPORTED_EVENT]
 
 /**
- * **口径乙**：把子会话从"忙"里释放出来的**唯一**事件。
+ * **口径乙**的终态表：把子会话从"忙"里释放出来的那一档 —— 就是 `session` 档
+ * （`src/types.ts` 的一份真源，本模块从它派生，不再各写一份）。
  *
- * 与 `pool.ts` 的 busy 折叠**同一档**（那里也只认 `dispatch/finished`）。为什么**不**含 `aborted`：
+ * 与 `pool.ts` 的 busy 折叠**同一档**（那里也读 `session` 档）。为什么**不**含 `aborted`：
  * 收口只说明写者放弃了这张卡，会话本身可能还在跑；把它当"空闲"就会把第二张卡投给一个仍在干活的会话。
  * 为什么**不**含 `dispatch/reported`：那条只说明"交回了报告"，`pool.ts` 同样不拿它释放位子。
  */
-const SESSION_FREEING_EVENTS: readonly string[] = ['dispatch/finished']
+const SESSION_FREEING_EVENTS: readonly string[] = DISPATCH_TERMINAL_EVENTS.session
 
 /** 参与"这张卡由谁在做"时间线的全部事件（用于取**最后一条**）。 */
 const TIMELINE_EVENTS: readonly string[] = [
@@ -429,6 +450,12 @@ export function unsettledCardsBySession(
  * **不**意味着"这个会话可以再派一张卡"。真机教训：`dispatch/aborted` 把这里翻成 `true` 之后，
  * 若拿它当派发前检查，就会把第二张卡投给一个仍在跑上一张卡的会话（`DEF-224` 的形态）。
  * 派发前的判据见 {@link doubleStartedSessions} 的口径乙与补线卡的说明。
+ *
+ * @deprecated **不可用作"会话空闲"判定**（`TASK-240`）。它建在口径甲上：`dispatch/aborted`
+ * 一出栈它就翻成 `true`，而 `release` 收口一张卡**不说明会话停了** —— 拿它判空闲，就会把第二张卡
+ * 投给一个仍在跑上一张卡的会话（`DEF-224` 重演）。会话空闲请用 {@link sessionIdleByFinished}
+ * （按 `dispatch/finished` 判，`aborted` 不参与）；两档口径的真源是 `src/types.ts` 的
+ * {@link isTerminalDispatch}。本函数保留给**只回答口径甲**的读数（回执/体检里的"还有没有悬空决定"）。
  */
 export function sessionHasNoUnsettledDispatch(
   events: readonly JournalEvent[],
@@ -438,6 +465,37 @@ export function sessionHasNoUnsettledDispatch(
   const id = textOf(childSessionId)
   if (id === '') return true
   return !unsettledCardsBySession(events, options).has(id)
+}
+
+/**
+ * **这个子会话空闲吗** —— 按 `finished` 口径判（`TASK-240` 落点二，口径乙的会话级谓词）。
+ *
+ * 判据（从**台账事件**现算，不读卡上的 `owner`）：该 `sessionId` 的**最近一笔** `dispatch/started`
+ * 之后还没有 `dispatch/finished` ⇒ **忙**。`dispatch/aborted` / `dispatch/reported` 都**不参与**：
+ * 它们说明的是"卡不归它了 / 报告交回了"，**不**说明会话停了。
+ *
+ * 与 {@link sessionHasNoUnsettledDispatch} 的区别就是**口径**（那一档含 `aborted`），所以两个函数
+ * 对同一份台账可以给出相反的答案 —— 那正是它存在的理由：被 `release` 收口、但仍在跑上一张卡的会话，
+ * 这里判**忙**（`DEF-224` 重演的那条防线）。
+ *
+ * 为什么按"最近一笔"比而不是"有 `started` 且没有 `finished`"的字面实现：`sessionId` 会**复用**
+ * （同一子会话接多轮卡），第一轮留下的 `finished` 会把第二轮正在跑的 `started` 洗成空闲。
+ * 单轮会话下两种写法等价；`test/m248.test.ts` 三格逐格钉住（含"已 `aborted` 但未 `finished` ⇒ 忙"）。
+ *
+ * **接驳状态（如实写）**：本卡只交付**判据**，零生产调用点 —— 派发前"哪个候选会话空闲"的接线在
+ * `office.ts` 的会话选择里，那个文件不在本卡写范围（`REV-103` 裁定 ① 已降级为补线卡）。
+ */
+export function sessionIdleByFinished(events: readonly JournalEvent[], childSessionId: string): boolean {
+  const id = textOf(childSessionId)
+  if (id === '') return true
+  let lastStarted = -1
+  let lastFinished = -1
+  for (const event of events) {
+    if (textOf(event.data['childSessionId']) !== id) continue
+    if (event.type === 'dispatch/started') lastStarted = Math.max(lastStarted, event.seq)
+    else if (isTerminalDispatch(event.type, 'session')) lastFinished = Math.max(lastFinished, event.seq)
+  }
+  return !(lastStarted >= 0 && lastStarted > lastFinished)
 }
 
 /** "同一会话在飞卡 ≤ 1"被违反的**那一刻**：两张卡同时挂在一个子会话上（口径乙）。 */

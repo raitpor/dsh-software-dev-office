@@ -67,20 +67,122 @@ const fakeJournal = (events: ReadonlyArray<{ seq: number; type: string; data?: u
 
 // —————————————————————— F-2 中性表 ——————————————————————
 
-test('F-2：记账类事件不得作废设计签字（且必须真的进了中性表）', () => {
-  const bookkeeping = [
-    'dispatch/finished',
-    'dispatch/reported',
-    'dispatch/observe-failed',
-    'plan/profile-decided',
-    'test/mutation-recorded',
-    'test/contract-test-recorded',
-  ]
-  for (const type of bookkeeping) {
-    assert.equal((SIGNATURE_NEUTRAL_EVENTS as readonly string[]).includes(type), true, `${type} 应进 SIGNATURE_NEUTRAL_EVENTS`)
-    assert.equal(isSignatureInvalidatingEvent('G3', type), false, `${type} 是记账，不得作废 G3 签字`)
+/**
+ * **中性表的身份快照**（`TASK-240` 落点三）。
+ *
+ * 修前的写法是"手挑六条记账事件写成清单"，而那份清单**漏了** `dispatch/aborted`：G3 走**黑名单**
+ * 口径（不在中性表里即失效）⇒ 把 `src/types.ts` 里那一行删掉，`isSignatureInvalidatingEvent` 会翻成
+ * `true`（每次 `release` 都把 G3 签字判失效），而修前**一条用例都不红**（`REV-103` F6 的洞）。
+ *
+ * 现在两个方向都钉住（两态都红）：
+ *   · **派生方向** —— 中性表里写着什么，判定就必须说"不失效"。整表逐条 ⇒ 新增一条中性事件自动被覆盖
+ *     （不用改这份用例）。
+ *   · **对账方向** —— 表的**成员身份**必须与下面这份快照逐条相等：表里多一条、少一条都红并**点名**。
+ *     只靠派生方向对"少一条"是瞎的（表变了、判定跟着变，两边仍然自洽）。
+ * 增删是**显式动作**：改 `src/types.ts` 之后同步这份快照，并在提交说明里写清为什么。
+ */
+const NEUTRAL_TABLE_SNAPSHOT = [
+  'design/rendered',
+  'doc/rendered',
+  'project/environment',
+  'gate/result',
+  'gate/signed',
+  'gate/sign-rejected',
+  'gate/sign-unavailable',
+  'phase/entered',
+  'phase/exited',
+  'phase/rolled-back',
+  'plan/mode',
+  'plan/review-blocked',
+  'plan/review-approved',
+  'plan/review-waived',
+  'dispatch/decided',
+  'dispatch/started',
+  'dispatch/finished',
+  'dispatch/claim-missing',
+  'dispatch/aborted',
+  'task/claim-rejected',
+  'dispatch/reported',
+  'dispatch/observe-failed',
+  'dispatch/observed',
+  'dispatch/reuse-skipped',
+  'worktree/created',
+  'worktree/merged',
+  'worktree/conflict',
+  'worktree/removed',
+  'plan/profile-decided',
+  'iteration/updated',
+  'task/created',
+  'task/updated',
+  'task/claimed',
+  'task/released',
+  'task/errata',
+  'task/reopened',
+  'task/restored',
+  'task/done',
+  'task/blocked',
+  'task/unblocked',
+  'task/claim-blocked',
+  'task/dropped',
+  'review/recorded',
+  'review/verified',
+  'review/hashed',
+  'review/appended',
+  'test/recorded',
+  'test/case-updated',
+  'test/mutation-recorded',
+  'test/contract-test-recorded',
+  'defect/recorded',
+  'defect/updated',
+  'delivery/packaged',
+  'delivery/run-recorded',
+  'evidence/recorded',
+  'cost/updated',
+  'cost/sample',
+  'budget/decision',
+  'change/requested',
+  'change/decided',
+  'change/noop',
+  'feasibility/assessed',
+  'redteam/mode',
+  'redteam/attack',
+  'redteam/propose',
+  'redteam/model-proposed',
+  'redteam/file',
+  'issue/opened',
+  'issue/closed',
+  'quality/recorded',
+] as const
+
+test('F-2 派生方向：中性表里写什么，G3 就判"不失效"（整表逐条，新增一条自动被覆盖）', () => {
+  for (const type of SIGNATURE_NEUTRAL_EVENTS) {
+    assert.equal(
+      isSignatureInvalidatingEvent('G3', type),
+      false,
+      `${type} 在中性表里 ⇒ G3 必须判"不失效"（黑名单口径的读侧与表各说各话，只能在很久以后被发现）`,
+    )
   }
 })
+
+test('F-2 对账方向：中性表的成员身份与快照逐条相等（多一条/少一条都红并点名）', () => {
+  const table = new Set<string>(SIGNATURE_NEUTRAL_EVENTS)
+  const snapshot = new Set<string>(NEUTRAL_TABLE_SNAPSHOT)
+  const added = [...table].filter((type) => !snapshot.has(type)).sort()
+  const removed = [...NEUTRAL_TABLE_SNAPSHOT].filter((type) => !table.has(type)).sort()
+  assert.deepEqual(
+    { added, removed },
+    { added: [], removed: [] },
+    '中性表成员身份变了：新增 [' + added.join(' ') + '] / 删除 [' + removed.join(' ') + ']'
+      + '（增删都要同步 test/m37.test.ts 的快照，并说明为什么）',
+  )
+})
+
+test('F-2 身份锚：`dispatch/aborted` 必须留在中性表（删了它 ⇒ 每次 release 都让 G3 签字失效）', () => {
+  // 这条就是 `REV-103` F6 点名的那一行：上面对账已在"删掉它"时红，这里再把**为什么**钉在同处。
+  assert.equal((SIGNATURE_NEUTRAL_EVENTS as readonly string[]).includes('dispatch/aborted'), true, 'dispatch/aborted 必须中性（release 每次都会落它，而它不改设计真源）')
+  assert.equal(isSignatureInvalidatingEvent('G3', 'dispatch/aborted'), false, '它是纯记账 ⇒ 不得作废 G3 签字')
+})
+
 
 test('F-2 反向：改设计文档/设计承诺的事件仍必须失效（口径不许改宽）', () => {
   const stillInvalidating = [

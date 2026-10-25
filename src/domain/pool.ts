@@ -20,7 +20,7 @@
 import { fmt } from './i18n.js'
 import { REUSE_SKIPPED_EVENT } from './dispatchFace.js'
 import { MASK_FINGERPRINT_VERSION, maskBacktrack, maskHashVersion } from './roles.js'
-import type { TaskCard } from '../types.js'
+import { isTerminalDispatch, type TaskCard } from '../types.js'
 
 /** 一轮派发（`dispatch/started` + 其结算）。 */
 export interface PoolChild {
@@ -213,7 +213,7 @@ export function foldPoolChildren(events: readonly PoolEvent[]): Map<string, Pool
     }
     const id = text(event.data['childSessionId'])
     if (id === '') continue
-    if (event.type !== 'dispatch/finished') continue
+    if (!isTerminalDispatch(event.type, 'session')) continue // 口径乙（`session` 档：只有 dispatch/finished）
     const child = children.get(id)
     if (child === undefined) continue
     // 结算只认"当前这一轮"：已经 idle 的孩子再收一条 finished 不重复计数（幂等）

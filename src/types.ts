@@ -2215,6 +2215,60 @@ export function isSignatureInvalidatingEvent(gate: string, type: string, data?: 
 }
 
 /**
+ * **派发被主动收口的事件名**（写侧与读侧共用一份；`DEF-224` 落点二 / `TASK-240`）。
+ *
+ * 本仓的写者是 `domain/collab.ts` 的 `release`：把一张"已派发但未结算"的卡放回 `ready` 时，
+ * 它同时落这一条，否则台账里那笔 `dispatch/started` 就没有终态。字符串只写在这里；
+ * `domain/dispatchHealth.ts` 从这里再导出一次（沿用旧的导入路径，调用点不用改）。
+ */
+export const DISPATCH_ABORTED_EVENT = 'dispatch/aborted'
+
+/**
+ * **交接报告已交回**的事件名。
+ *
+ * 它比"会话停了"弱、比"写者收口了"也弱：只说明子会话把报告交回来了。读"这一轮派发还算不算悬着"
+ * 的两处（`domain/dispatchHealth.ts` / `domain/changeFeed.ts`）把它额外收进自己的终态表，
+ * 理由写在各自的定义处、反例在 `test/m248.test.ts`；**它不属** {@link DISPATCH_TERMINAL_EVENTS}
+ * 的任何一档（两档的口径见下）。
+ */
+export const DISPATCH_REPORTED_EVENT = 'dispatch/reported'
+
+/** 派发终态的两档口径名（见 {@link isTerminalDispatch}）。 */
+export type DispatchTerminalScope = 'session' | 'card'
+
+/**
+ * **派发终态的两档口径**（`TASK-240` / `REV-103` 的卡外三项之一）—— 本仓的一份真源。
+ *
+ * 为什么要分成两档（`DEF-224` 的修法就栽在把两档混成一份表上）：
+ *   · `session` —— **会话真的停了**：这一档只有 `dispatch/finished`。`release` 把卡从子会话手上拿走
+ *     （落 `dispatch/aborted`）**不说明它停了**：一个被 release 收口、可能还在跑上一张卡的会话，
+ *     在本档照旧是忙的。派发前的候选筛选与"忙不忙"的读数只能读本档。
+ *   · `card` —— **写者已收口这张卡**：`dispatch/finished` **或** `dispatch/aborted`。
+ *     台账体检（"这一轮派发还算不算悬着"）读本档。
+ *
+ * 本卡改动的三个读侧各读哪一档：`domain/pool.ts` 的 busy 折叠读 `session`；
+ * `domain/dispatchHealth.ts` 的 `unsettledDispatch` 一族与 `domain/changeFeed.ts` 的
+ * `unsettledDispatches` 读 `card`，两处各多收一档 {@link DISPATCH_REPORTED_EVENT}（理由写在定义处）。
+ * `domain/reviewVerification.ts` 的 `dispatchState` 也只用 `dispatch/finished`（即 `session` 档），
+ * 但那个文件不在本卡写范围 ⇒ 本卡只核对、不改。
+ */
+export const DISPATCH_TERMINAL_EVENTS = {
+  session: ['dispatch/finished'],
+  card: ['dispatch/finished', DISPATCH_ABORTED_EVENT],
+} as const
+
+/**
+ * 该事件类型是否算某档口径下的**派发终态**（两档见 {@link DISPATCH_TERMINAL_EVENTS}）。
+ *
+ * 单独成函数、而不是让每个调用点各写一份表：三处各写一份时，差一份**不会**报错 —— 事件照写、
+ * 读数各说各话，那种不一致只能在很久以后被人发现（`REV-103` 的 F6 是同族）。
+ * 守卫在 `test/m248.test.ts`：逐档对账真值表与三个调用点的行为读数，增删任一档都会红。
+ */
+export function isTerminalDispatch(type: string, scope: DispatchTerminalScope): boolean {
+  return (DISPATCH_TERMINAL_EVENTS[scope] as readonly string[]).includes(type)
+}
+
+/**
  * **`DESIGN.md` 的真源路径**（SDO-19 复审，2026-10-05）。
  *
  * 为什么需要它：`truth/file-written` 会被记在**任意** `.sdo/` 真源写入上，而 C-25（文档新鲜度）
