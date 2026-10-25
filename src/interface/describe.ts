@@ -26,8 +26,8 @@ import type { FieldShapeNote } from '../infra/scalar.js'
 import { defectLinksExemptionLines, describeDefectLinks, readDefectLinksOf } from '../domain/trace.js'
 import { planStats } from '../domain/plan.js'
 import type { PlanIssue } from '../domain/plan.js'
-import type { RolePool } from '../domain/pool.js'
 import type { DispatchRequest } from '../integration/orchestrator.js'
+import type { PoolAdmission, RolePool } from '../domain/pool.js'
 import type { ToolUsage } from '../domain/dispatchFace.js'
 
 /** `sdo_init` 的回执。 */
@@ -871,6 +871,28 @@ export interface ReadoutOptions {
   verbose?: boolean | undefined
 }
 
+/**
+ * **池块的入参**（`TASK-271`）：在显示档位之外，另外把**计划面**那一桶交进来。
+ *
+ * 为什么这里会出现**数据**（`reuseAdmissions`）而不只是显示档位：池块要回答两个不同的问题 ——
+ * 「有谁**真的**在飞」（事实，`pools[].busy`，由 `dispatch/started` 折叠）与「这一轮**准入**把哪个
+ * 空闲会话许给了哪张卡」（计划，`PoolAdmission.reuseAdmissions`）。两者在 `TASK-245` 的数据面已经拆开
+ * （`busy` 里一格都不许有计划位子），显示面这次跟上：**计划只从这条入参读**，事实仍只从 `pools` 读。
+ *
+ * 为什么挂在 options 上而不另加位置参数：既有五个调用点里四个是 4 参调用
+ * （`test/m36` / `m74` / `m128` / `m230` / `m250` 都是这么调的），加位置参数要么逼它们全部改签名，
+ * 要么在中间塞一个 `undefined` 占位 —— 前者是本卡范围外的噪音，后者把"这里少一个参数"写进版面。
+ */
+export interface PoolBlockOptions extends ReadoutOptions {
+  /**
+   * 本次准入的**复用分配**（`PoolAdmission['reuseAdmissions']` 同一形状）—— **计划面，不是在飞**。
+   *
+   * 空/未给 = 这一轮没有复用准入（或调用方是**探针**：`sdo_status` 会为读数跑一次准入，但那次
+   * 并没有派发任何东西，把它的计划印成"本次准入"就等于替一次不存在的派发立说法）。
+   */
+  reuseAdmissions?: readonly PoolAdmission['reuseAdmissions'][number][] | undefined
+}
+
 /** 一个原因分组的一段文本：`原因原话×条数（样本 前8位 … +其余）`。 */
 function unusableGroupPiece(reason: string, ids: readonly string[]): string {
   const why = reason.length > POOL_UNUSABLE_REASON_CHARS ? `${reason.slice(0, POOL_UNUSABLE_REASON_CHARS)}…` : reason
@@ -976,7 +998,7 @@ export function describePoolBlock(
   queued: string[],
   reuseSupported: boolean,
   orphanTtlMinutes = 0,
-  options: ReadoutOptions = {},
+  options: PoolBlockOptions = {},
 ): string {
   if (pools.length === 0) return ''
   const lines = [t('uiDescribe.kPoolHeader')]
@@ -991,6 +1013,34 @@ export function describePoolBlock(
         p6: String(pool.stale.length),
       }),
     )
+  }
+  /**
+   * **本次准入的复用分配**（`TASK-271`，承接 `TASK-245` DoD 第 2 条）：读 `reuseAdmissions`，**不读 `busy`**。
+   *
+   * 修前这一块**只说事实**（`在飞 N/M` 只数 `busy`），而准入那一刻的计划位子在数据面上已经单独一桶
+   * —— 于是回执会出现"在飞 0/3、空闲可复用 0、却准入了 1 张复用"的读者困境：三行读数都在，**没有一行
+   * 说这一轮的位子已经许出去了**。这一行补的就是它，并且**逐字说明它不是在飞**（两桶口径不同，
+   * 混读会把「准入通过、被 `limit` 挡下」理解成「已经派了」）。
+   *
+   * 三条版面纪律（本卡 DoD 落点二/三）：
+   *   · **只加行、不改既有字形**：`kPoolLine` / `kPoolBusyMap` 一个字节不动（`test/m36` 与 `m77`
+   *     的既有断言依赖「在飞 N/M」这个字形）；
+   *   · **不印卡号**：这一行是计数，不是定位。卡号只出现在 `busy` 的定位行与逐卡的复用依据行里，
+   *     被挡下的卡因此不会因为在计划面出现就被读成在飞（`test/m250` 的 M250-13 ② 盯的就是这个）；
+   *   · **零准入不印**：没有复用准入时这一块的行数与加这个特性之前逐字节相同（零准入不许多一行空话）。
+   */
+  const reuseAdmissions = options.reuseAdmissions ?? []
+  for (const pool of pools) {
+    const admitted = reuseAdmissions.filter((row) => row.role === pool.role).length
+    if (admitted === 0) continue
+    // 「不是在飞」这句话走**独立键**（`kPoolAdmissionNotInFlight`）而不是写在模板里：
+    // 它是本行**唯一**要读者记住的那半句，单独一个键才能被两份语言包各自承接、也才能被
+    // 用例按键（而不是按整句）核对 —— 整句核对会把「参数替换对不对」和「这句话说没说」混成一条判据。
+    lines.push(fmt('uiDescribe.kPoolAdmissionPlan', {
+      p1: pool.role,
+      p2: String(admitted),
+      p3: t('uiDescribe.kPoolAdmissionNotInFlight'),
+    }))
   }
   // **DEF-066**：把"空闲可复用"按**宿主会不会拒**如实分栏 —— 真机矛盾：`sdo_status` 报
   // 「空闲可复用 31」而派发器**永远新起**（那 31 个是上一任驾驶舱派的，宿主一律拒 `belongs to

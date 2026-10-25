@@ -805,6 +805,8 @@ uiDescribe:
   changeRollbackSteps: '接下来必须按顺序做完才能继续开发：① 更新受影响需求（`sdo_requirement action=update`）→ ② 重新冻结 G2（`sdo_requirement action=baseline`）→ ③ 重走设计并重过 G3；在此之前 `sdo_task action=claim` 会被 `change-not-digested` 拒绝'
   kPoolHeader: '**角色池（子代理复用，投递由你触发）**'
   kPoolLine: '　{p1}：在飞 {p2}/{p3}｜空闲可复用 {p4}｜已退役(one-shot) {p5}｜未结算超时 {p6}'
+  kPoolAdmissionPlan: '　{p1}：本次已先准入 {p2} 张（复用）—— {p3}：准入那一刻位子就许出去了，被 `limit` 挡下也照样是这一行；「在飞」只数台账里真有一笔 `dispatch/started` 的'
+  kPoolAdmissionNotInFlight: '**不是在飞**'
   kPoolQueued: '　排队 {p1} 张：{p2}（上限挡住时**不丢卡**，下次 `sdo_plan action=next` 会再派）'
   kPoolNoReuse: '　宿主没暴露可续聊入口 ⇒ 池退化为**并发上限**（每次派发都是新会话，无法复用子代理）'
   kReusedChild: '　♻️ 复用：{p1} 交给**已有**子代理 {p2}（角色 {p3}，该子代理第 {p4} 轮、已承接 {p5} 张卡）'

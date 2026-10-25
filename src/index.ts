@@ -1589,6 +1589,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // （真机：同一状态下 `queued/blocked=pool-full` 而派发路径 `dispatch=[TASK-9/复用]`）。
       // **R-6**：掩码指纹判据收敛到 office 内部（`maskFingerprint` 是纯函数，池视图与准入共用一处）
       const poolPlan = office.poolPlan(call, { reuseIdle: poolReuse })
+      /**
+       * ⚠️ **状态面不传 `reuseAdmissions`**（`TASK-271` 落点一的边界）：这一段的 `poolPlan` 是**探针**
+       * —— 它为读数跑了一次准入，但这次调用**没有派发任何东西**。把它的计划位子印成「本次已先准入 N 张」
+       * 就是替一次不存在的派发立说法，正是 `DEF-229` 那类混淆的镜像。只有在**真的走了一次派发决定**
+       * 的两处（`why` 诊断面与派发回执）才把这份计划交进池块。
+       */
       const poolText = describePoolBlock(poolPlan.pools, poolPlan.queued.map((task) => task.id), poolReuse, settings.dispatchOrphanTtlMinutes)
       /**
        * **`TASK-231` 落点二/三（状态面同源）**：容量占位与悬空决定在 `sdo_status` 里也读得到。
@@ -2112,7 +2118,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           + roleBlockedSection + nonDispatchableNote
           + '\n' + heldByScopeSection + healthSection + rejectedSection
           + '\n' + queueSection
-          + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
+          + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
           + structuralSection
       }
 
@@ -2711,7 +2717,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const tail = plan.queued.length === 0 ? '' : fmt('uiIndex.k32', { p1: plan.queued.length })
       // 池视图（在飞/空闲可复用/已退役）+ 还在排队的卡：一次派发之后"池子长什么样"要能看见
       const freshNote = freshChild ? '\n' + t('uiIndex.kFreshChild') : ''
-      const poolBlock = describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes)
+      // **`TASK-271`**：**计划面**（本次准入的复用分配）也交给池块 —— 它读 `reuseAdmissions` 并逐字标注
+      // 「不是在飞」；`busy`（在飞）那一路照旧只由 `dispatch/started` 折叠，一个字节不改。
+      const poolBlock = describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
       // **DEF-067 落点一**：真正派发这条回执同样要带上「暂不可派」段 —— 否则某张卡没派出去这件事
       // 只在诊断面（`why=true`）可见，而 `why` 恰恰**不派发**（TASK-078 的设计）⇒ 主路径上看不见。
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。
