@@ -524,6 +524,16 @@ export function liveDispatchReading(
  * ⚠️ **append-only 的后果必须一起读**：退役**不会**改写历史事件 ⇒ 历史读数里那 3149 条仍然在账上
  * （它们记的是"当年每一轮为什么没复用"，那是**事实**）。所以"退役之后历史计数没变小"是**对的**，
  * 不是没修好；变的是**此后每一轮**（新增 0 条 + 不再重判）。
+ *
+ * ⚠️ **「一次」是"每一轮不重复"，不是"可逆"**（`REV-116` 必核二① 附带 / 必核二②，本卡的正式承认）：
+ *   · **复活**（退役之后又出现 `dispatch/started`）只让该候选**重新进折叠**、并把它从
+ *     {@link retiredCandidatesOf} 里**拿掉**（见 {@link retiredSinceOf} 的位置判据）；
+ *   · 它**不撤销判定**：判据读的是**创建时**定死的字段（`maskHash` 在复用那几笔里刻意不被覆盖，
+ *     见 {@link foldPoolChildren} 头注释），所以复活的孩子下一轮会被**再判永久、再写一条**
+ *     `pool/retired`（同一孩子两条事件）。
+ *   · 于是「误退役的代价」= **一个可被外部补写救回来、但救回来仍会被再退一次**的循环，而不是
+ *     干净的撤销。要真正可逆，得让退役事件带 `parentSessionId` / `viewerScope` 并有
+ *     `pool/unretire` 一类带人工签字的推翻通道 —— 那是**另一张卡**（本卡不假装它已经存在）。
  */
 export const POOL_RETIRED_EVENT = 'pool/retired'
 
@@ -566,8 +576,10 @@ function retiredRowsOf(data: Record<string, unknown>): { childSessionId: string;
  * **当前仍处于退役态**的候选（按台账顺序，同一孩子取**最后一次**退役那一笔）。
  *
  * 复活规则（唯一的例外，必须一起读）：一个孩子退役之后**又出现** `dispatch/started` ⇒ 它重新算活
- * （有人真的把它投起来了）。**没有**这条规则，一次误判会把这个会话永久钉死在账外 —— 退役要可逆，
- * 代价是每笔末尾多一次比较（线性，不额外读盘）。
+ * （有人真的把它投起来了）⇒ **从本清单里被拿掉**（不是"改写一条事件"：append-only 里没有撤销写法）。
+ * **没有**这条规则，一次误判会把这个会话永久钉死在账外；**有**这条规则也不等于判定可逆 ——
+ * 复活的孩子下一轮会被**再判永久、再写一条**（判据读创建时字段），代价写在
+ * {@link POOL_RETIRED_EVENT} 的「一次 ≠ 可逆」那段里。
  */
 export function retiredCandidatesOf(events: readonly PoolEvent[]): RetiredCandidate[] {
   const latest = new Map<string, RetiredCandidate>()
@@ -592,6 +604,10 @@ export function retiredCandidatesOf(events: readonly PoolEvent[]): RetiredCandid
  * 口径：同一孩子"最后一次退役的位置"必须**晚于**它"最后一次 `dispatch/started` 的位置"
  * （之后又起来了 = 复活 ⇒ 不在表里）。顺序取自事件在数组里的位置（台账顺序 = append 顺序；
  * 缺 `seq` 的老调用方也照样可判）。
+ *
+ * ⚠️ 反向**没有**留痕（`REV-116` 必核二②）：复活不写任何计数事件，读者只看见某条从
+ * {@link retiredCandidatesOf} 里消失；能追回去的只有那笔 `dispatch/started` 本身。这条是**已知取舍**，
+ * 不是漏 —— 要补就得给事件族加一种"推翻"事件（与 `viewerScope` 同一批做）。
  */
 export function retiredSinceOf(events: readonly PoolEvent[]): Map<string, number> {
   const retiredAt = new Map<string, number>()
@@ -613,31 +629,35 @@ export function retiredSinceOf(events: readonly PoolEvent[]): Map<string, number
 }
 
 /**
- * **可以退役的候选**（"出生满一轮"那一批）：最后一笔 `dispatch/started` **不是**台账里最新的一笔。
+ * **可以退役的候选**：从**同一份事件数组**里投影出来的「永久」那一批（`TASK-228` 落点一的**唯一入口**）。
  *
- * 为什么要这道门（`TASK-228`）：退役是**不可逆**的一次判定，而"永久不可复用"读的是会话创建时
- * 留下的字段 —— 一个**刚诞生**的候选可能还没观测满一轮（掩码/deny/观测面正在落），此时就判死刑
- * 没有二次机会。规则只有一条：**最新那一笔 `dispatch/started` 对应的孩子本轮不退役**，其余都算
- * "已经活过至少一轮"（下一轮它就出现在更旧的位置上了）。
+ * 三条口径（`REV-116` 返工后定稿，`index.ts` 只调这一个函数）：
+ *   ① **一份读、两件产出**：退役清单（{@link retiredCandidatesOf}）与本轮待退役的行都由调用方交进来的
+ *      **同一个** `events` 数组算出 ⇒ 不会出现「快照里的 `permanent`」与「台账里的 `retiredOfRole`」
+ *      两份读数（那正是 `REV-116` 必核四② 点名的 `DEF-185` 形态：同一次决定读两遍，并发追加下两份不等，
+ *      于是同一候选会被算两遍、并被再退役一次）。
+ *   ② **判据只有一处**：{@link permanentUnreusableReason}（本层唯一判定点），本函数只做投影。
+ *   ③ **刻意不判「跨父会话」**：不传观察者 ⇒ `host-unreachable` 这一档**不进退役**。原因是语义冲突
+ *      （`REV-116` 必核四③）：退役是**台账全局**的，而 `host-unreachable` 是**观察者相对**的
+ *      （见 {@link permanentUnreusableReason} 的 `viewerSessionId`）⇒ 若接进来，观察者 A 就能把
+ *      B 自己起的子代理从**所有**池里删掉。要接它，退役事件必须先带 `parentSessionId` / `viewerScope`
+ *      （另一张卡）。真账读数：这一档 0 条（101 条退役 basis 全是 `mask-not-comparable`）。
  *
- * 边界（如实登记）：这是**顺序**判据，不是时间判据 —— 台账里只有位置（append 顺序）可判，
- * 而"刚诞生"在顺序上恰好就是"最后一笔 started"。
+ * **没有「出生满一轮」那道门**（`REV-116` 必核三②，本卡删掉了它）：那道门按「最后一笔
+ * `dispatch/started` 是不是最新的」排序，而判据**只读创建时定死的字段**（`maskHash` / `sdoAllow` /
+ * `deny` / `parentSessionId`，见 `foldPoolChildren` 头注释与 `permanentUnreusableReason`）⇒ 等一轮
+ * 结论**一个字都不会变**，唯一效果是延迟一轮。留下的实质门是**内容**判据（「有在飞卡 ⇒ 临时」
+ * 「投递失败 ⇒ 临时」，都在 `permanentUnreusableReason` ①②，有真实理由：那两态会变）。
  */
-export function establishedChildrenOf(events: readonly PoolEvent[]): Set<string> {
-  const lastStarted = new Map<string, number>()
-  let newest = -1
-  events.forEach((event, index) => {
-    if (event.type !== 'dispatch/started') return
-    const id = text(event.data['childSessionId'])
-    if (id === '') return
-    lastStarted.set(id, index)
-    newest = index
-  })
-  const out = new Set<string>()
-  for (const [id, index] of lastStarted) {
-    if (index < newest) out.add(id)
-  }
-  return out
+export function permanentCandidatesFromEvents(
+  events: readonly PoolEvent[],
+): { childSessionId: string; role: string; reason: string; basis: string }[] {
+  // `foldPoolChildren` **先减退役集** ⇒ 已退役的候选根本不会出现在这里（幂等由结构给出，不靠调用方）
+  const continuable = [...foldPoolChildren(events).values()]
+    .filter((child) => child.role !== '' && child.mode === 'continuable')
+  const rows = permanentCandidatesOf(continuable)
+  const roleOf = new Map(continuable.map((child) => [child.childSessionId, child.role]))
+  return rows.map((row) => ({ ...row, role: roleOf.get(row.childSessionId) ?? '' }))
 }
 
 /**
@@ -823,6 +843,50 @@ export function poolTriageRows(input: {
     .sort(([left], [right]) => (left < right ? -1 : 1))
     .map(([role, count]) => ({ role, reusable: 0, tempUnusable: 0, retired: count, total: count }))
   return [...rows, ...extra]
+}
+
+/**
+ * **本轮的三分读数**（回执入口；`TASK-228` 返工后 `index.ts` 只调这一个）：把三份读数**同源化**。
+ *
+ * 为什么需要这一层（`REV-116` 必核四② / 必核一②）：一份回执里，"本轮待退役的候选"来自准入快照
+ * （`plan.pools[*].permanent`），而"已退役"来自台账（`retiredCandidatesOf`）。两份读数**不是同一次
+ * 读**（快照先读、台账后读）⇒ 若两次之间落了别的 `pool/retired`，同一候选会同时出现在两边，
+ * `poolTriage` 就会把它**算两遍**（`retired` 多 1、`tempUnusable` 也不会少 → 恒等式仍然"成立"却
+ * 与事实不符），并且它还会被**再退役一次**。
+ *
+ * 口径（写死在这里，回执不再各解一遍）：
+ *   · **退役集是权威**：本块读到的 `retired` 是最新的一份，快照里仍在 `permanent` 的那些（已经被
+ *     退役过）从 `permanent` 桶里**剔掉**，并且**同时**从 `unusable` 桶里剔掉 —— 否则
+ *     `tempUnusable = unusable − permanent`（{@link poolTriage} 的算式）会把它改判成"临时不可用"，
+ *     读数就从"双计"变成"错桶"，而恒等式照样成立（那才是最坏的一种错）；
+ *   · **本轮新退役的按已退役算**（`retiring`）：退役动作**不改变** `retired`/`total`（左边进右边出，
+ *     这是三分的本意）⇒ 回执在退役前后读到同一个数；
+ *   · **不重不漏**：一个 `childSessionId` 只会被数一次（`counted` 集合），`poolTriage` 的恒等式
+ *     `reusable + tempUnusable + retired = total` 照旧成立。
+ *
+ * @param input.pools 准入快照里的池（`plan.pools`）
+ * @param input.retired 台账口径的已退役清单（{@link retiredCandidatesOf}）
+ * @param input.retiring 本轮刚落盘的退役行（{@link permanentCandidatesFromEvents} 的结果）
+ */
+export function poolTriageForRound(input: {
+  pools: readonly RolePool[]
+  retired?: readonly RetiredCandidate[] | undefined
+  retiring?: readonly { childSessionId: string; role: string; reason: string; basis: string }[] | undefined
+}): PoolTriage[] {
+  const counted = new Set<string>()
+  for (const row of input.retired ?? []) counted.add(row.childSessionId)
+  for (const row of input.retiring ?? []) counted.add(row.childSessionId)
+  const pools = input.pools.map((pool) => ({
+    ...pool,
+    unusable: pool.unusable.filter((row) => !counted.has(row.childSessionId)),
+    permanent: pool.permanent.filter((row) => !counted.has(row.childSessionId)),
+  }))
+  const retired: RetiredCandidate[] = [
+    ...(input.retired ?? []),
+    // 本轮刚落盘的按"已退役"算：`at` 留空 —— 它只用于人读，不参与任何判据
+    ...(input.retiring ?? []).map((row) => ({ ...row, at: '' })),
+  ]
+  return poolTriageRows({ pools, retired })
 }
 
 /**

@@ -14,8 +14,14 @@
  *   · `M242-03` `reuseSkippedOf` **不再回放退役之前写下的死账**（只砍刀口之前那一段，
  *     刀口之后的行是新事实 —— 这条边界写在那格里，别当成漏）；
  *   · `M242-04` 池摘要**三分**的恒等式（`reusable + temp-unusable + retired = total`）+ **一次性**：
- *     第一轮落一条事件、第二轮 **0 条**（这就是"不再每次派发重评估重写 82 条"的机制面），
- *     外加"**刚诞生的候选本轮不退役**"那道门（`establishedChildrenOf`）的两态。
+ *     第一轮落一条事件、第二轮 **0 条**（这就是"不再每次派发重评估重写 82 条"的机制面）。
+ *   · `M242-05`（`REV-116` 必核一① 缺口的修法）**接线有断言**：走真装配链（`sdo_plan action=next`）
+ *     断言回执里**真的印出** `pool-retire:` 那一行、且台账里**真的**落了 1 条 `pool/retired`；
+ *     第二轮**不再印、不再写**。双态：把接线整块拿掉 ⇒ 这一格必红（变异读数见回报）。
+ *   · `M242-06`（`REV-116` 必核三③）**逐轮时序**：走**真实写路径**（`retirePermanentCandidates`，
+ *     `index.ts` 调的就是它）看一个候选「第 1 轮在飞不判 → 第 2 轮结算即判即落盘 → 第 3 轮 0 条」。
+ *   · `M242-07`（`REV-116` 必核四②）**两份读数同源**：快照里的 `permanent` 与本轮退役清单重叠时，
+ *     三分只数一次（不双计），且不会出现"同一候选两条退役事件"。
  *
  * 断言消息一律用英文（本文件不进 `m189` 的读散文棘轮；口径与 `m232` / `m243` 同）——
  * **注释**照旧用中文（抽取器只认断言行里的字面量）。
@@ -41,11 +47,12 @@ import {
 } from '../src/domain/roles.js'
 import {
   POOL_RETIRED_EVENT,
-  establishedChildrenOf,
   foldPoolChildren,
+  permanentCandidatesFromEvents,
   permanentCandidatesOf,
   permanentUnreusableReason,
   poolTriage,
+  poolTriageForRound,
   poolTriageLine,
   poolTriageRows,
   retiredCandidatesOf,
@@ -56,10 +63,18 @@ import {
   POOL_RETIRED_CHUNK,
   REUSE_SKIPPED_EVENT,
   recordPoolRetired,
+  retirePermanentCandidates,
   reuseSkippedEventData,
   reuseSkippedOf,
 } from '../src/domain/dispatchFace.js'
 import type { PoolChild, PoolEvent } from '../src/domain/pool.js'
+import type { Context } from '@deepseek-ai/cordis'
+import { Config, resolveSettings } from '../src/config.js'
+import { SoftwareDevOffice } from '../src/office.js'
+import { apply } from '../src/index.js'
+import type { SdoConfig } from '../src/config.js'
+import type { OfficeCall } from '../src/office.js'
+import type { TaskCard } from '../src/types.js'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = join(ROOT, 'node_modules', '.sdo-test', 'm242')
@@ -272,18 +287,11 @@ test('M242-04 the three-way readout keeps its identity across retirement, and th
   const journal = new Journal(store)
   journal.append('dispatch/started', { childSessionId: 'm242-once', role: 'developer', task: 'TASK-24203', parentSessionId: VIEWER, mode: 'continuable', maskHash: LEGACY })
   journal.append('dispatch/finished', { childSessionId: 'm242-once' })
-  // **出生满一轮那道门**：`m242-once` 的 started 是**最新那一笔** ⇒ 它刚刚诞生 ⇒ 本轮不退役（预告）
-  const newestOnly = establishedChildrenOf(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at })))
-  assert.equal(newestOnly.has('m242-once'), false, 'a child created in the newest round must not be retired yet (it has not lived through one full round)')
-  // 另起一笔 `dispatch/started`（另一个孩子）⇒ `m242-once` 不再是最新 ⇒ 它算"出生满一轮"
-  journal.append('dispatch/started', { childSessionId: 'm242-newer', role: 'developer', task: 'TASK-24204', parentSessionId: VIEWER, mode: 'continuable', maskHash: CURRENT })
-  const afterNewer = establishedChildrenOf(journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at })))
-  assert.equal(afterNewer.has('m242-once'), true, 'once a newer dispatch exists the candidate counts as established and becomes eligible for retirement')
-  assert.equal(afterNewer.has('m242-newer'), false, 'the newest child itself stays protected (the rule is order-based, not time-based)')
+  // **没有「出生满一轮」那道门**（`REV-116` 必核三②：判据只读创建时定死的字段 ⇒ 等一轮结论一字不变）：
+  // 逐轮时序在 `M242-06` 用**真实写路径**（`retirePermanentCandidates`）看，这里只保留"一次性"这一面
   const round = (): ReturnType<typeof recordPoolRetired> => {
     const events = journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))
-    const now = poolOf([...foldPoolChildren(events).values()])
-    return recordPoolRetired(journal, now.permanent.map((row) => ({ ...row, role: now.role })))
+    return retirePermanentCandidates(journal, events).written
   }
   assert.deepEqual(round(), { events: 1, rows: 1 }, 'round 1: the permanently unreusable candidate is recorded once')
   assert.deepEqual(round(), { events: 0, rows: 0 }, 'round 2: zero candidates left to judge, so zero events (the per-dispatch rewrite stops here)')
@@ -302,4 +310,213 @@ test('M242-04 the three-way readout keeps its identity across retirement, and th
   // 判据自证（防恒真）：把一个**有在飞卡**的孩子喂给判定 ⇒ 必须不退役（它是临时档）
   assert.deepEqual(permanentCandidatesOf([child('m242-busy2', { state: 'busy', maskHash: LEGACY })], VIEWER), [], 'the projection must drop the temporary ones (otherwise this grid would pass on any input)')
   assert.equal(maskHashVersion(CURRENT), MASK_FINGERPRINT_VERSION, 'fixture premise: the current fingerprint carries the version prefix (the legacy one does not)')
+})
+
+/* ———————————— M242-05 接线有断言：真装配链里回执**真的**印出那一行 ———————————— */
+
+/**
+ * **这一格守的是 `REV-116` 必核一① 的缺口**（"建好了没消费者"）：落点③（`src/index.ts` 的接线）
+ * 此前零覆盖 —— `grep -rn "pool-retire:" test/` ⇒ 0 命中，把接线整块删掉全量仍绿（本卡返工现跑：
+ * 变异 C 后 1816 条仍 1815 pass / 0 fail）。所以这里走**真装配链**（`sdo_plan action=next` 的真工具），
+ * 断言三件事同时在：① 台账**真的**多一条 `pool/retired`；② 回执里**真的**印出 `pool-retire:` 那一行；
+ * ③ 三分读数（含恒等式）也在回执里。第二轮断言"不再印、不再写"。
+ */
+const CHAIN_SESSION = 's-m242-chain'
+const chainCall = (): OfficeCall => ({ sessionId: CHAIN_SESSION, cwd: WORKSPACE } as unknown as OfficeCall)
+
+/** 一张 ready 卡（真源形状：`store/tasks/<id>.yml`）。 */
+function chainCard(id: string): TaskCard {
+  return {
+    id, title: id, goal: 'g', inputs: [], outputs: [], dod: ['d'], evidenceRequired: ['command'],
+    blockedBy: [], writeScopes: [`src/m242/${id}.ts`], role: 'developer', size: 'small', revision: 1,
+    status: 'ready', requirements: [], evidence: [], createdAt: '', updatedAt: '',
+  } as unknown as TaskCard
+}
+
+/** 真装配链的宿主桩（`m206` 同形：`apply()` 注册真工具 + `subagents` 桩）。 */
+function mountChain(): { name: string; parameters: unknown; execute: (args: unknown, ctx: { agent?: unknown }) => unknown }[] {
+  const tools: { name: string; parameters: unknown; execute: (args: unknown, ctx: { agent?: unknown }) => unknown }[] = []
+  const services: Record<string, unknown> = {}
+  const makeCtx = (): Record<string, unknown> => ({
+    logger: () => ({ debug: () => {}, info: () => {}, warn: () => {}, error: () => {} }),
+    plugin: () => {},
+    on: () => () => {},
+    get: (name: string) => services[name],
+    inject: (names: string[], cb: (sub: unknown) => void) => { if (names.every((name) => name in services)) cb(makeCtx()) },
+    effect: (fn: () => unknown) => { fn(); return () => {} },
+  })
+  services['tools'] = { register: (tool: unknown) => { tools.push(tool as (typeof tools)[number]); return () => {} } }
+  services['subagents'] = {
+    list: () => ['spawn'],
+    start: async () => ({ id: 'child-oneshot-m242' }),
+    startContinuable: async () => ({ childId: 'child-fresh-m242' }),
+    sendMessage: async () => ({ messageId: 'msg-m242' }),
+    getProvider: () => ({ capabilities: { toolFilter: true } }),
+    listDescendants: async () => [],
+  }
+  apply(makeCtx() as unknown as Context, Config({} as unknown as SdoConfig))
+  return tools
+}
+
+/** 调真工具（只保留 schema 里声明过的键，与真机一致）。 */
+async function callChainTool(
+  tools: { name: string; parameters: unknown; execute: (args: unknown, ctx: { agent?: unknown }) => unknown }[],
+  args: Record<string, unknown>,
+): Promise<string> {
+  const tool = tools.find((item) => item.name === 'sdo_plan')
+  assert.ok(tool !== undefined, 'fixture: the real sdo_plan tool must be registered')
+  const properties = (tool.parameters as { properties?: Record<string, unknown> }).properties ?? {}
+  const filtered: Record<string, unknown> = {}
+  for (const [key, value] of Object.entries(args)) if (key in properties) filtered[key] = value
+  const agentStub = { id: CHAIN_SESSION, session: { header: { id: CHAIN_SESSION, cwd: WORKSPACE, delegationDepth: 0 } } }
+  return String(await tool.execute(filtered, { agent: agentStub }))
+}
+
+test('M242-05 the real assembly chain really prints the pool-retire line and really writes the event (and stops after round 1)', async () => {
+  const office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
+  office.noteSession(CHAIN_SESSION, WORKSPACE)
+  office.init(chainCall(), { name: 'M242 真装配链', scale: 'normal', stakeholders: ['业务方'] })
+  // 一个「派过、结算了、旧口径掩码」的候选（真账里那 101 个的形态）+ 两张 ready 卡（两轮各派一张）
+  office.recordDispatchStarted(chainCall(), {
+    taskId: 'TASK-24205', provider: 'spawn', childSessionId: 'm242-chain-legacy', parentSessionId: CHAIN_SESSION,
+    tools: 3, role: 'developer', mode: 'continuable', maskHash: LEGACY,
+  })
+  office.journalFor(WORKSPACE).append('dispatch/finished', { task: 'TASK-24205', childSessionId: 'm242-chain-legacy' })
+  for (const id of ['TASK-24250', 'TASK-24251']) {
+    office.storeFor(WORKSPACE).writeYaml(['tasks', `${id}.yml`], { task: chainCard(id) })
+  }
+  const journal = office.journalFor(WORKSPACE)
+  const retiredEvents = (): { seq: number; data: Record<string, unknown> }[] =>
+    journal.read().events.filter((event) => String(event.type) === POOL_RETIRED_EVENT)
+  assert.equal(retiredEvents().length, 0, 'state 0 (before any dispatch): nothing is retired yet')
+
+  const tools = mountChain()
+  // —— 第 1 轮（真装配链）——
+  const receipt = await callChainTool(tools, { action: 'next', limit: 1 })
+  const written = retiredEvents()
+  assert.equal(written.length, 1, `the wiring must really write ONE pool/retired event (receipt: ${receipt.slice(0, 400)})`)
+  const rows = (written[0]?.data['retired'] ?? []) as { childSessionId?: string; role?: string; basis?: string }[]
+  assert.deepEqual(rows.map((row) => row.childSessionId), ['m242-chain-legacy'], 'the retired row is exactly the permanently unreusable candidate')
+  assert.equal(rows[0]?.role, 'developer', 'the event carries the role (the readout groups by it)')
+  assert.equal(rows[0]?.basis, 'mask-not-comparable', 'the event carries the machine-readable basis (same criterion, not a second judgement)')
+  // ② 回执里**真的**印出那一行（这一句就是"接线有消费者"的机械面）
+  assert.match(receipt, /pool-retire: 1 permanently-unreusable candidate\(s\)/u, `the receipt must print the retirement line: ${receipt.slice(0, 800)}`)
+  assert.match(receipt, new RegExp(`recorded once as ${POOL_RETIRED_EVENT} \\(1 event\\(s\\)\\)`, 'u'), 'the line must name the event type and the event count')
+  assert.match(receipt, /basis mask-not-comparable=1/u, 'the line must break the batch down by basis')
+  assert.match(receipt, /developer:m242-cha\[mask-not-comparable\]/u, 'the line must name the first few candidates (role + first 8 chars + basis)')
+  assert.doesNotMatch(receipt, /awaiting-first-round/u, 'the deleted "one full round" gate must leave no counter behind (a permanent 0 would suggest "next round will retire it")')
+  // ③ 三分读数在回执里，且恒等式成立（现算那两个数，不比对写死的）
+  const triage = receipt.match(/pool-triage: role=developer reusable=(\d+) temp-unusable=(\d+) retired=(\d+) total=(\d+)/u)
+  assert.ok(triage !== null, `the triage line must be in the receipt: ${receipt.slice(0, 800)}`)
+  const [, reusable, tempUnusable, retired, total] = triage
+  assert.equal(Number(reusable) + Number(tempUnusable) + Number(retired), Number(total), `the three-way identity must hold in the receipt: ${triage[0]}`)
+  assert.equal(Number(retired) >= 1, true, 'the retired candidate is reported as retired (it must not vanish from the readout)')
+
+  // —— 第 2 轮：同一份台账再派一张 ⇒ **0 条新事件、回执不再印那一行**（"一次性"的接线面）——
+  const second = await callChainTool(tools, { action: 'next', limit: 1 })
+  assert.equal(retiredEvents().length, 1, 'round 2 must add no retirement event at all')
+  assert.doesNotMatch(second, /pool-retire:/u, `round 2 must not print the retirement line: ${second.slice(0, 600)}`)
+  // 反例（防"这一格恒真"）：判据仍能判出**别的**候选 ⇒ 下一轮还会印（不是被静默关掉了）
+  office.recordDispatchStarted(chainCall(), {
+    taskId: 'TASK-24251', provider: 'spawn', childSessionId: 'm242-chain-legacy2', parentSessionId: CHAIN_SESSION,
+    tools: 3, role: 'developer', mode: 'continuable', maskHash: LEGACY,
+  })
+  office.journalFor(WORKSPACE).append('dispatch/finished', { task: 'TASK-24251', childSessionId: 'm242-chain-legacy2' })
+  for (const id of ['TASK-24252', 'TASK-24253']) {
+    office.storeFor(WORKSPACE).writeYaml(['tasks', `${id}.yml`], { task: chainCard(id) })
+  }
+  const third = await callChainTool(tools, { action: 'next', limit: 1 })
+  assert.match(third, /pool-retire: 1 permanently-unreusable candidate\(s\)/u, `a NEW permanently unreusable candidate must still be retired and printed: ${third.slice(0, 800)}`)
+  assert.equal(retiredEvents().length, 2, 'the new candidate is written too (the mechanism is alive, not switched off)')
+})
+
+/* ———————————— M242-06 逐轮时序（真实写路径） ———————————— */
+
+/**
+ * **`REV-116` 必核三③ 要的那份时序**，而且走**真实写路径** `retirePermanentCandidates`（`src/index.ts`
+ * 调的就是它：一份读 → 判据 → 落盘）。修前 `round()` 绕过那道门、写路径上一格都没有。
+ *
+ * 逐轮：① 刚派发（busy）⇒ **不判**（内容门：有在飞卡 ⇒ 临时）；② 宿主结算（idle）⇒ **同一轮**判成
+ * 永久并落盘（没有"等一轮"那道门了）；③ 之后每轮 **0 条**（结构幂等：先减退役集）；④ 新候选照样能判
+ * （防"一律 0"的恒真）。
+ */
+test('M242-06 the per-round timeline through the real write path: not judged while busy, retired in the very round it settles, zero afterwards', () => {
+  const store = new SdoStore(join(BASE, 'timeline', '.sdo'))
+  store.ensureLayout()
+  const journal = new Journal(store)
+  const read = (): PoolEvent[] => journal.read().events.map((event) => ({ type: event.type, data: event.data, at: event.at }))
+  const retiredCount = (): number => retiredCandidatesOf(read()).length
+
+  // —— 轮 1：刚派发，未结算 ⇒ busy ⇒ 不进判据（不改台账）——
+  journal.append('dispatch/started', {
+    childSessionId: 'm242-timeline', role: 'developer', task: 'TASK-24260', parentSessionId: VIEWER,
+    mode: 'continuable', maskHash: LEGACY,
+  })
+  const round1 = retirePermanentCandidates(journal, read())
+  assert.deepEqual(round1.written, { events: 0, rows: 0 }, 'round 1: a busy child is TEMPORARY (content gate), so nothing is written')
+  assert.deepEqual(round1.rows, [], 'round 1: the projection is empty (it is not merely "delayed by a guard")')
+  assert.equal(retiredCount(), 0, 'round 1: the ledger has no retirement yet')
+
+  // —— 轮 2：宿主结算 ⇒ idle ⇒ **同一轮**判成永久并落盘 ——
+  journal.append('dispatch/finished', { childSessionId: 'm242-timeline' })
+  const round2 = retirePermanentCandidates(journal, read())
+  assert.deepEqual(round2.written, { events: 1, rows: 1 }, 'round 2: the candidate settles and is retired in the SAME round (no waiting round exists)')
+  assert.deepEqual(round2.rows.map((row) => row.childSessionId), ['m242-timeline'], 'round 2: exactly that candidate, with the role attached (the receipt groups by role)')
+  assert.deepEqual(round2.rows.map((row) => row.basis), ['mask-not-comparable'], 'round 2: the basis comes from the single judgement point')
+  assert.equal(retiredCount(), 1, 'round 2: the read side folds it back (one event, one candidate)')
+  // 时序的"位置"也要对：退役事件写在 finished **之后**（那就是"真被退役"的那一刻）
+  const events = read()
+  const finishedAt = events.findIndex((event) => event.type === 'dispatch/finished')
+  const retiredAt = events.findIndex((event) => event.type === POOL_RETIRED_EVENT)
+  assert.equal(retiredAt > finishedAt, true, `the retirement event must land AFTER the settling event (finished=${String(finishedAt)}, retired=${String(retiredAt)})`)
+
+  // —— 轮 3 / 4：**0 条**（幂等由结构给出：折叠先减退役集）——
+  assert.deepEqual(retirePermanentCandidates(journal, read()).written, { events: 0, rows: 0 }, 'round 3: nothing left to judge, so zero events')
+  assert.deepEqual(retirePermanentCandidates(journal, read()).written, { events: 0, rows: 0 }, 'round 4: still zero (structurally, not by a counter)')
+
+  // —— 反例的反面（防恒真）：一个**新的**永久候选照样会被判 ——
+  journal.append('dispatch/started', {
+    childSessionId: 'm242-timeline2', role: 'developer', task: 'TASK-24261', parentSessionId: VIEWER,
+    mode: 'continuable', maskHash: LEGACY,
+  })
+  journal.append('dispatch/finished', { childSessionId: 'm242-timeline2' })
+  const round5 = retirePermanentCandidates(journal, read())
+  assert.deepEqual(round5.written, { events: 1, rows: 1 }, 'round 5: a new permanently unreusable candidate is still retired (the projection is not "always empty")')
+  assert.deepEqual(retiredCandidatesOf(read()).map((row) => row.childSessionId).sort(), ['m242-timeline', 'm242-timeline2'], 'both candidates are in the retired list')
+})
+
+/* ———————————— M242-07 两份读数同源：只数一次、不退两次 ———————————— */
+
+/**
+ * **`REV-116` 必核四② 的机械面**：修前「快照里的 `permanent`」与「台账里的 `retiredOfRole`」来自**两次读**
+ * ⇒ 两次之间若落了别的 `pool/retired`，同一候选会同时出现在两边：三分**双计**，且被**再退役一次**。
+ *
+ * 本格钉三件事：① 修前那个错法（直接相加）**确实**会双计（作为对照组断言，不是描述）；
+ * ② `poolTriageForRound` 把它们同源化之后只数一次；③ 判据入口吃的是**折过退役集**的数组
+ * ⇒ 同一候选不可能被退两次。
+ */
+test('M242-07 the snapshot bucket and the retired ledger are reconciled: counted once, and never retired twice', () => {
+  const pool = poolOf([child('m242-same-ok'), child('m242-same-x', { maskHash: LEGACY })])
+  assert.deepEqual(pool.permanent.map((row) => row.childSessionId), ['m242-same-x'], 'fixture premise: the legacy child sits in the snapshot permanent bucket')
+  const retiredRow = { childSessionId: 'm242-same-x', role: 'developer', reason: 'legacy mask', basis: 'mask-not-comparable' }
+  const retired = [{ ...retiredRow, at: '' }]
+
+  // ① 修前的错法（对照组）：两份读数直接相加 ⇒ 同一候选被数两遍（retired 2，而实际只有 1 个）
+  const naive = poolTriage(pool, retired.length)
+  assert.equal(naive.retired, 2, 'the pre-fix shape double counts (control group: this is the defect, asserted on purpose)')
+
+  // ② 正解：同源化之后只数一次
+  const rows = poolTriageForRound({ pools: [pool], retired, retiring: [] })
+  assert.deepEqual(rows, [{ role: 'developer', reusable: 1, tempUnusable: 0, retired: 1, total: 2 }], 'the retired candidate is counted exactly once')
+
+  // ③ 本轮新退役按"已退役"算 ⇒ 退役前后读数一字不变（左边进右边出）
+  const before = poolTriageForRound({ pools: [pool], retiring: [] })
+  const after = poolTriageForRound({ pools: [{ ...pool, unusable: [], permanent: [] }], retiring: [retiredRow] })
+  assert.deepEqual(after, before, 'retiring must not change the readout (a candidate leaves permanent and enters the retired list)')
+
+  // ④ 判据入口折过退役集 ⇒ 同一候选不可能被写第二条（"一次"是结构，不是调用方的自律）
+  const events = [...seedChildEvents('m242-same-x', LEGACY)]
+  assert.deepEqual(permanentCandidatesFromEvents(events).map((row) => row.childSessionId), ['m242-same-x'], 'state 1: before retirement it is in the projection')
+  const afterRetirement = [...events, retireEvent([{ childSessionId: 'm242-same-x', role: 'developer', basis: 'mask-not-comparable' }])]
+  assert.deepEqual(permanentCandidatesFromEvents(afterRetirement), [], 'state 2: after retirement the projection is empty — the same array cannot produce a second retirement')
 })

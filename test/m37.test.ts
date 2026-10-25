@@ -106,6 +106,11 @@ const NEUTRAL_TABLE_SNAPSHOT = [
   'dispatch/observe-failed',
   'dispatch/observed',
   'dispatch/reuse-skipped',
+  // **`TASK-228`（`REV-116` 必核四①）**：池候选的一次性退役（`pool/retired`）。纯记账：它只记
+  // "谁被移出池"，不改任何设计真源（需求/设计/契约/追溯边一概不动）⇒ 与 `dispatch/reuse-skipped`
+  // 同类，**不得**作废 G3 签字。加进中性表的同一批把它登记进 `SdoEventType` 联合并删掉写侧的
+  // `as SdoEventType` 断言 —— 三件事必须一起做（联合是"写过哪些事件"的唯一枚举）。
+  'pool/retired',
   'worktree/created',
   'worktree/merged',
   'worktree/conflict',

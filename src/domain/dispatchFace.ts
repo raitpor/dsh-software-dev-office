@@ -12,10 +12,9 @@ import { existsSync } from 'node:fs'
 
 import type { Journal } from '../infra/journal.js'
 // **`TASK-224`**：聚合/引用/老形状的展开只有一处实现（`pool.reuseSkippedRowsFromEvents`）
-import { POOL_RETIRED_EVENT, retiredSinceOf, reuseSkippedRowsFromEvents } from './pool.js'
+import { POOL_RETIRED_EVENT, permanentCandidatesFromEvents, retiredSinceOf, reuseSkippedRowsFromEvents } from './pool.js'
 import type { SdoStore } from '../infra/store.js'
-import type { PoolReading } from './pool.js'
-import type { SdoEventType } from '../types.js'
+import type { PoolEvent, PoolReading } from './pool.js'
 
 export const CHILD_FACE_SEGMENTS = ['evidence', 'child-tools.jsonl'] as const
 
@@ -195,9 +194,9 @@ export function dispatchReadingFields(reading: PoolReading, admitted?: { reuseId
  *
  * 读侧（{@link reuseSkippedOf}）两种承载都认：
  *   ① 挂在 `dispatch/started.reuseSkipped` 上（今天就能落地，**不需要新事件类型**）；
- *   ② 独立事件 {@link REUSE_SKIPPED_EVENT}（`dispatch/reuse-skipped`）—— **需先在 `src/types.ts` 的
- *      `SdoEventType` 里登记**（那是闭合联合类型，本卡写范围不含它）；登记之后把
- *      {@link reuseSkippedEventData} 交给 `journal.append(REUSE_SKIPPED_EVENT, …)` 即可。
+ *   ② 独立事件 {@link REUSE_SKIPPED_EVENT}（`dispatch/reuse-skipped`）—— 已登记进 `src/types.ts` 的
+ *      `SdoEventType`（`TASK-172` 那批做的；`REV-116` 必核四① 复核过：同表 `:2094` 与联合里都有）
+ *      ⇒ 直接 `journal.append(REUSE_SKIPPED_EVENT, …)`。
  *
  * 为什么两种都认：真源是 append-only 的，历史读数不会因为今天选了哪条承载而变；
  * 读侧认两种，回执就能在任何一侧先落地时**立刻**说得清"谁没被复用、为什么"。
@@ -335,14 +334,14 @@ export interface PoolRetireRow {
  * 把本轮判成**永久**不可复用的候选项**一次性**落成 `pool/retired`（`TASK-228`）。
  *
  * 三条纪律：
- *   ① **幂等的前提在外层**：本函数不知道谁已经退役过（那是 `retiredSetOf` 的事），所以调用方必须
- *      只把**还没退役**的行交进来（`rolePools` 的 `permanent` 天然满足：退役之后它们已不在池里）；
+ *   ① **幂等由结构给出，不由调用方保证**：判据入口 {@link permanentCandidatesFromEvents} 喂的是
+ *      **折过退役集**的孩子（`foldPoolChildren` 先减退役集）⇒ 已退役的候选根本不在输入里；
  *   ② **一次一条事件、装 {chunk} 个候选**（见 {@link POOL_RETIRED_CHUNK}）；
  *   ③ **不写空事件**：`rows` 为空 ⇒ 返回零条（"这一轮没有新退役"不该在台账上留痕）。
  *
- * 事件类型**不在这张卡的写范围里登记**（`SdoEventType` 是 `src/types.ts` 的闭合联合）：这里按字形写入，
- * 与 `dispatch/reuse-skipped` 当初的处置完全一样（读侧认字形、写侧等登记者）。回报里已列为
- * **范围申请**：把 `'pool/retired'` 加进 `src/types.ts` 的联合之后，这处断言即可删掉。
+ * 事件类型**已登记**进 `src/types.ts` 的闭合联合 `SdoEventType`（`REV-116` 必核四①）：写侧不再挂
+ * `as SdoEventType` 断言 —— 断言会让"写过哪些事件"的唯一枚举**看不见**这一族，
+ * 与 `dispatch/reuse-skipped` 当初"等登记者"的处置不同（那条先例已经登记过，不能留「以后」）。
  */
 export function recordPoolRetired(
   journal: Journal,
@@ -361,7 +360,7 @@ export function recordPoolRetired(
       basis: row.basis,
     }))
     if (slice.length === 0) continue
-    journal.append(POOL_RETIRED_EVENT as SdoEventType, {
+    journal.append(POOL_RETIRED_EVENT, {
       retired: slice,
       count: slice.length,
       decidedAt,
@@ -370,6 +369,24 @@ export function recordPoolRetired(
     written += slice.length
   }
   return { events, rows: written }
+}
+
+/**
+ * **一轮退役**（写侧唯一入口，`TASK-228` 返工后 `index.ts` 只调它）：判据 + 落盘一次做完。
+ *
+ * 为什么把两件事绑在一个函数里（`REV-116` 必核四②）：`events` 必须是**调用方那一次读**的结果 ——
+ * 判据（{@link permanentCandidatesFromEvents}）与读侧（`retiredCandidatesOf`）由此**同源**，
+ * 于是"同一候选既在 `permanent` 又在 `retiredOfRole`"在结构上不可能（不是靠事后对账），
+ * 也不会被再退役一次。本函数**自己不读台账**（除 `Journal.append` 内部算 seq 那一次）。
+ *
+ * `why=true` 诊断面**不许调它**（诊断不改台账）：那条边界在调用方（`src/index.ts` 的 `why` 分支先返回）。
+ */
+export function retirePermanentCandidates(
+  journal: Journal,
+  events: readonly PoolEvent[],
+): { rows: PoolRetireRow[]; written: { events: number; rows: number } } {
+  const rows = permanentCandidatesFromEvents(events)
+  return { rows, written: rows.length === 0 ? { events: 0, rows: 0 } : recordPoolRetired(journal, rows) }
 }
 
 /** 一次派发的现场读数（读侧：`dispatch/started` 里带的那一份）。 */

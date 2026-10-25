@@ -391,7 +391,24 @@ test('M206-06 ③ 被闸门拒的孩子：`reason` 逐条（三字段）落进 `
   const readings = readDispatchReadings(journal).filter((row) => row.task === 'TASK-16304')
   assert.equal(readings.length, 1, '读数必须能回读（否则"为什么没复用"仍然要反推）')
   assert.equal(readings[0]?.childrenSource, 'journal')
-  assert.equal(readings[0]?.buckets['unusable'], 1, '桶读数回读后仍是那个数（不是只剩一个总数）')
+  /**
+   * **`TASK-228`（`REV-116` 必核三② 的连带）之后这一格必须换个桶。**
+   *
+   * 夹具里那个孩子的掩码是**旧口径**（`stale-mask-0000`）⇒ 本轮真派发时它被判成**永久**不可复用并
+   * 一次性退役（`pool/retired`，本卡落点一）⇒ 它已经**不在池里**了，所以 `unusable` 桶现在是 **0**
+   * （修前是 1：那时没有退役，它一直躺在"过不了闸门"那一桶里，每轮被重判重记）。
+   *
+   * 这条断言原本守的是**机制面**——"桶读数能原样穿过台账往返，不是只剩一个总数"——那个机制面一个字
+   * 没变，只是要钉**还在池里**的那个桶（真派发新起的那个孩子在飞 ⇒ `busy`），并把"退役真的发生了"
+   * 一起钉住（否则"桶变成 0"与"读数坏了"两种现象分不开，正是本卡返工要防的那一类）。
+   */
+  assert.equal(readings[0]?.buckets['unusable'], 0, 'the legacy-mask candidate is retired in this very round, so it is OUT of the pool (the unusable bucket is 0, not 1)')
+  assert.equal(readings[0]?.buckets['busy'], 1, 'the bucket readback still carries a number (the freshly started child is busy) — it is not reduced to a single total')
+  assert.equal(
+    journal.read().events.filter((event) => String(event.type) === 'pool/retired').length,
+    1,
+    'and exactly one retirement event records it once (otherwise "bucket is 0" cannot be told apart from "the reading broke")',
+  )
   assert.equal(readings[0]?.cap, 4)
   assert.equal(readings[0]?.reuseIdle, true, '定案键回读：这一轮试过复用')
   // 老事件没有这两个键 ⇒ 读出 `undefined`（**"没记" ≠ "记了 false"**，不许静默补默认值）

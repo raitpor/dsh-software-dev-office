@@ -2093,6 +2093,18 @@ export const SIGNATURE_NEUTRAL_EVENTS = [
   // 与 `dispatch/*` 同族、纯记账（不改任何真源）⇒ 不得作废 G3 签字。
   'dispatch/reuse-skipped',
   /**
+   * **`TASK-228` 落点一：池候选的一次性退役**（`pool/retired`，纯记账）。
+   *
+   * 判成**永久**不可复用的候选一次性落一条事件，此后 `foldPoolChildren` 先减退役集 ⇒ 不再进池、
+   * 不再每轮重判重写（真账：7901 行「为什么没复用」里 7899 行属于那 101 个候选）。
+   *
+   * 为什么必须在黑名单表里（本表 = `SIGNATURE_NEUTRAL_EVENTS`）：它只记"谁被移出池"，不改任何
+   * 设计真源（需求/设计/契约/追溯边一概不动）⇒ 与 `dispatch/reuse-skipped` 同类，不得作废 G3 签字。
+   * **`REV-116` 必核四①**：它此前既不在本表、也不在 `SdoEventType` 联合里 ⇒ 写侧只能挂
+   * `as SdoEventType` 断言，闭合联合（"写过哪些事件"的唯一枚举）里根本看不见它。现已登记。
+   */
+  'pool/retired',
+  /**
    * **工作副本的轻量 git 事件族**（`REQ-066` / `AC-304` / `AC-305` / `TASK-172`）。
    *
    * `AC-304` 要求"合并**由子代理自己**调用插件的轻量 git 能力完成，并留事件含卡 id、副本标识、
@@ -2498,6 +2510,15 @@ export type SdoEventType =
   | 'dispatch/observed'
   // **TASK-163 落点二**：派发时「谁没被复用、为什么」逐条落事件（回执与读侧共用同一份读数）
   | 'dispatch/reuse-skipped'
+  /**
+   * **`TASK-228` 落点一**：池候选的**一次性退役**（`domain/dispatchFace.recordPoolRetired` 写的唯一形态；
+   * 读侧 `domain/pool.retiredCandidatesOf` / `retiredSinceOf`）。
+   *
+   * 登记在这里不是形式主义（`REV-116` 必核四①）：本联合是"**写过哪些事件**"的唯一枚举 ——
+   * 不登记时写侧只能 `as SdoEventType` 绕过类型检查，于是任何穷举/审计都**看不见**这族事件；
+   * 先例 `dispatch/reuse-skipped` 已登记（同表 :2094 与这里），"照当初处置"那个借口已过期。
+   */
+  | 'pool/retired'
   // **REQ-066 / TASK-172**：工作副本的轻量 git 事件族（建副本 / 合并 / 冲突 / 清场）
   | 'worktree/created'
   | 'worktree/merged'

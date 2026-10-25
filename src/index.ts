@@ -178,14 +178,14 @@ function buildReadout(cwd: string): string {
 import type { RoleAttribution } from './domain/roles.js'
 import { reuseCapability, startDispatch } from './integration/dispatch.js'
 import type { SubagentRuntimeLike } from './integration/dispatch.js'
-import { DELIVERY_FAILED_PREFIX, POOL_RETIRED_EVENT, danglingDecisionLines, establishedChildrenOf, poolReadingLine, poolTriageLine, poolTriageRows, readingOfRole, retiredCandidatesOf, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
+import { DELIVERY_FAILED_PREFIX, POOL_RETIRED_EVENT, danglingDecisionLines, poolReadingLine, poolTriageForRound, poolTriageLine, readingOfRole, retiredCandidatesOf, reuseSkippedLines, lastReuseSkippedWriteCount } from './domain/pool.js'
 import type { PoolTriage } from './domain/pool.js'
 import { isRole, mitigatesWaiverOf } from './domain/plan.js'
 import { ownerFormOf, ownerOf } from './domain/claimCoverage.js'
 import type { NonDispatchablePlan } from './domain/plan.js'
 import type { MitigatesWaiver } from './types.js'
 import { sessionIdOf } from './interface/scope.js'
-import { recordPoolRetired, toolCallNameOf, toolNamesOfHeader } from './domain/dispatchFace.js'
+import { retirePermanentCandidates, toolCallNameOf, toolNamesOfHeader } from './domain/dispatchFace.js'
 import { reviewAdoptionLabel } from './domain/reviewVerification.js'
 import { excerpt as excerptOf } from './domain/dispatchReports.js'
 import type { DispatchFinished } from './domain/dispatchReports.js'
@@ -2213,35 +2213,37 @@ export function apply(ctx: Context, config: SdoConfig): void {
        *     让人当场看得出"是哪一批条目变了"，而不是等下一轮发现池子突然瘦了；
        *   · **行文用 ASCII**：语言包键不在本卡写范围（i18n 棘轮把本文件的硬编码中文字面量钉在 0）。
        *
-       * **退役清单从台账读一份**（`retiredCandidatesOf`）：`office.poolSnapshot` 没有把退役清单接进
-       * 池视图（那处接线在 `src/office.ts`，不在本卡写范围），所以这里显式读一次并与
-       * {@link poolTriageRows} 的权威口径合起来 —— 数量与"先减退役集再折叠"的那一份**同源**
-       * （同一个 `retiredSetOf`），不会出现"折掉了但读数里还在"或反过来。
+       * **一份读、两件产出**（`REV-116` 必核四② 的修法）：本块**只读一次台账** —— 同一个 `poolEvents`
+       * 既喂判据（`retirePermanentCandidates` → `pool.permanentCandidatesFromEvents`），也喂读侧
+       * （`retiredCandidatesOf`）。修前这里是「`plan.pools[*].permanent` 来自 `poolPlan` 内部那次读，
+       * `retiredSoFar` 再读一遍」：两份读数在并发追加下可以不等（本仓禁令见 `src/office.ts`：
+       * 「同一次决定里读两遍会重演 `DEF-185` 的形态」）⇒ 两次读之间若落了别的 `pool/retired`，
+       * 那个候选会同时进 `permanent` 与 `retiredOfRole`：三分**双计**、且**再退役一次**。
+       *
+       * 为什么不是「把退役清单接进 `office.poolSnapshot`」（评审给的正解）：那处接线在
+       * `src/office.ts`，**不在本卡写范围**（卡面明列 7 个可写路径，`src/office.ts` 不在其中；
+       * 本卡只拿到 `src/types.ts` 这一个例外）。所以这里用**同源**代替**同一次**：
+       * 判据与读侧共用**这一个数组**，`permanent` 与 `retiredOfRole` 因此结构上互斥（不是事后对账）。
+       *
+       * **判据的输入面也一起改了**：不再读 `plan.pools[*].permanent`（那是另一次读的快照），而是
+       * 用本数组折叠 + `permanentUnreusableReason` 现算。这不是第二处判据（判定仍是那一处），
+       * 但**故意不判跨父会话**（`host-unreachable` 是观察者相对的，退役是全局的，见
+       * `pool.permanentCandidatesFromEvents` 的口径③）。
+       *
+       * **没有「出生满一轮」那道门**（`REV-116` 必核三②）：判据只读创建时定死的字段 ⇒ 等一轮结论
+       * 一字不变，唯一效果是延迟；删掉后「某候选这一轮判成永久 ⇒ 同一轮落盘」，逐轮时序见
+       * `test/m242.test.ts` 的 `M242-06`。留下的实质门是内容判据（有在飞卡 / 投递失败 ⇒ 临时）。
        */
-      const journalEvents = office.journalFor(office.requireWorkspace(call)).read().events
+      const journalForPool = office.journalFor(office.requireWorkspace(call))
+      const poolEvents = journalForPool.read().events
         .map((event) => ({ type: event.type, data: event.data, at: event.at }))
-      const retiredSoFar = retiredCandidatesOf(journalEvents)
-      const triageAll = poolTriageRows({ pools: plan.pools, retired: retiredSoFar })
+      const retiredSoFar = retiredCandidatesOf(poolEvents)
+      const retirePass = retirePermanentCandidates(journalForPool, poolEvents)
+      const retireRows = retirePass.rows
+      const retiredNow = retirePass.written
+      const triageAll = poolTriageForRound({ pools: plan.pools, retired: retiredSoFar, retiring: retireRows })
       const triageByRole = new Map<string, PoolTriage>(triageAll.map((row) => [row.role, row]))
       const triageRows = triageAll.filter((row) => row.tempUnusable + row.retired > 0)
-      /**
-       * **一次性落盘**（`TASK-228` 落点三的"预告 N + 点名"）：本轮判成永久的候选**一次**写完，
-       * 不做分轮确认 —— 判定读的是会话创建时定死的字段（`permanentUnreusableReason`）；
-       * 拿"上一轮记过它"当确认材料反而会让**被聚合形状截断掉样本**的那批候选永远等不到确认
-       * （那就把本卡要停的每轮重记又请回来了）。
-       *
-       * 唯一的门是"出生满一轮"（`pool.establishedChildrenOf`）：**最新那一笔 `dispatch/started`
-       * 对应的孩子本轮不退役** —— 刚诞生的候选可能还没观测满一轮，不判死刑；它们进
-       * `awaiting-first-round`（**预告**，下一轮就退）。误判的代价另由**可逆的复活规则**兜
-       * （退役之后又出现 `dispatch/started` 的会话重新算活，见 `pool.retiredSinceOf`）。
-       */
-      const established = establishedChildrenOf(journalEvents)
-      const permanentRows = plan.pools.flatMap((pool) => pool.permanent.map((row) => ({ ...row, role: pool.role })))
-      const retireRows = permanentRows.filter((row) => established.has(row.childSessionId))
-      const awaitingRows = permanentRows.filter((row) => !established.has(row.childSessionId))
-      const retiredNow = retireRows.length === 0
-        ? { events: 0, rows: 0 }
-        : recordPoolRetired(office.journalFor(office.requireWorkspace(call)), retireRows)
       /**
        * **新起的两档**（`TASK-228` 落点三后半）：同一个"新起一个子代理"有两种完全不同的原因，
        * 混在一起念会让读者把一个**池的问题**当成"池里没人可用"。
@@ -2261,20 +2263,28 @@ export function apply(ctx: Context, config: SdoConfig): void {
         if (triageRows.length > lines.length) {
           lines.push(`pool-triage: +${String(triageRows.length - lines.length)} role(s) not shown`)
         }
-        if (retiredNow.rows > 0 || awaitingRows.length > 0) {
+        /**
+         * **退役那一行只在真落盘时印**（`REV-116` 必核一① 缺口 / 必核二① 措辞）：
+         *   · 「N 条被退役 + 一声明式依据 + 点名前几条」—— 口径变更要能当场看出"哪一批条目变了"；
+         *   · **不再有 `awaiting-first-round`**：那道「出生满一轮」的门已删（判据读创建时字段 ⇒
+         *     等一轮结论一字不变）。留一个恒为 0 的字段只会让人以为"下一轮还会退"。
+         *   · **不再声称"误判由可逆的复活规则兜"**：复活只让候选重新进折叠并从退役清单里被拿掉，
+         *     它**不撤销判定**（判据输入是创建时的 `maskHash`）⇒ 下一轮会被再判永久、再写一条。
+         *     要真可逆得有 `pool/unretire` 那种带人工签字的推翻通道（另一张卡，见
+         *     `pool.POOL_RETIRED_EVENT` 的「一次 ≠ 可逆」那段）。
+         */
+        if (retiredNow.rows > 0) {
           const basis = new Map<string, number>()
           for (const row of retireRows) {
             const key = row.basis === '' ? 'unspecified' : row.basis
             basis.set(key, (basis.get(key) ?? 0) + 1)
           }
-          const named = (retireRows.length > 0 ? retireRows : awaitingRows).slice(0, POOL_RETIRED_NAMED)
+          const named = retireRows.slice(0, POOL_RETIRED_NAMED)
             .map((row) => `${row.role}:${row.childSessionId.slice(0, 8)}[${row.basis === '' ? 'unspecified' : row.basis}]`)
-          const shown = retireRows.length > 0 ? retireRows : awaitingRows
-          const more = shown.length - named.length
+          const more = retireRows.length - named.length
           lines.push(`pool-retire: ${String(retiredNow.rows)} permanently-unreusable candidate(s)`
             + ` -> recorded once as ${POOL_RETIRED_EVENT} (${String(retiredNow.events)} event(s));`
             + ` basis ${[...basis.entries()].map(([key, count]) => `${key}=${String(count)}`).join(' ') || 'none'};`
-            + ` awaiting-first-round=${String(awaitingRows.length)} (the newest dispatch/started; recorded next round);`
             + ` 'retired' here = moved out of the pool (the one-shot column of the pool line is a different thing);`
             + ` named ${named.join(' ')}${more > 0 ? ` +${String(more)}` : ''}`)
         }
