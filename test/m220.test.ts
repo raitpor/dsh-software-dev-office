@@ -18,7 +18,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -34,6 +34,8 @@ import {
   EVIDENCE_ARCHIVED_EVENT, EVIDENCE_PROTECTED, applyEvidenceArchive, evidenceBytes, planEvidenceArchive,
 } from '../src/domain/evidence.js'
 import { REAL_LEDGER_DIR, realLedgerSkip } from './support/real-ledger.js'
+/** 仓库根（冻结副本要落在 `node_modules/.sdo-test/` 下，不能落 `.sdo/` 或 `test/`）。 */
+const REPO_ROOT_FOR_M220 = fileURLToPath(new URL('../../', import.meta.url))
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m220/', import.meta.url))
@@ -386,9 +388,36 @@ test('M220-10 real ledger rehearsal is reproducible and read-only; the scan-surf
   const journalBefore = sha256Hex(readFileSync(journalPath))
   const secrets = scrubSecretsOf(join(REAL_LEDGER_DIR, '..'))
   const first = planLedgerScrub(store, { secrets, journal: new Journal(store), now: '2026-01-01T00:00:00.000Z' })
-  const second = planLedgerScrub(store, { secrets, journal: new Journal(store), now: '2026-01-01T00:00:00.000Z' })
-  assert.deepEqual(second.report, first.report, 'two rehearsals on the same ledger are byte-identical (reproducible reading)')
   assert.equal(sha256Hex(readFileSync(journalPath)), journalBefore, 'the rehearsal did not touch the real journal')
+  /**
+   * **可复现性必须在一份`冻结副本`上判，不能在活台账上判**（`TASK-250` / `REV-111` 后续）。
+   *
+   * 病灶（本轮实测）：原来这里在**真账**上连跑两次再 `deepEqual` 两份 report。而真账是
+   * **并发写的** —— 两次演练之间别的会话只要落一笔事件，两份 report 就必然不同 ⇒ 这条断言
+   * 在单跑时绿、在全量并发时红（本轮 672ms 绿 / 1434ms 红，且**预算离红还有 22.7 MB**）。
+   * 也就是说原来那格测的不是"演练是否可复现"，而是"期间有没有人写台账"。
+   *
+   * 现在：先把真账的**真源面**（`LEDGER_TRUTH_DIRS` + `LEDGER_TRUTH_FILES`，即脱敏面覆盖的那部分）
+   * 复制到 `node_modules/.sdo-test/` 下的冻结副本，再在副本上连跑两次 —— 判据还是"逐字相同"，
+   * 但输入被冻住了 ⇒ 它重新只测可复现性。
+   */
+  const frozen = join(REPO_ROOT_FOR_M220, 'node_modules', '.sdo-test', 'm220-frozen')
+  rmSync(frozen, { recursive: true, force: true })
+  mkdirSync(frozen, { recursive: true })
+  for (const dir of ['changes', 'construction', 'contracts', 'decisions', 'defects', 'design', 'gates', 'issues',
+    'quality', 'questions', 'releases', 'requirements', 'reviews', 'risks', 'tasks', 'testing', 'tests', 'trace']) {
+    const from = join(REAL_LEDGER_DIR, dir)
+    if (existsSync(from)) cpSync(from, join(frozen, dir), { recursive: true })
+  }
+  for (const file of ['config.yml', 'feasibility.yml', 'HANDOFF.md', 'journal.jsonl']) {
+    const from = join(REAL_LEDGER_DIR, file)
+    if (existsSync(from)) cpSync(from, join(frozen, file))
+  }
+  const frozenStore = new SdoStore(frozen)
+  const f1 = planLedgerScrub(frozenStore, { secrets, journal: new Journal(frozenStore), now: '2026-01-01T00:00:00.000Z' })
+  const f2 = planLedgerScrub(frozenStore, { secrets, journal: new Journal(frozenStore), now: '2026-01-01T00:00:00.000Z' })
+  assert.deepEqual(f2.report, f1.report, 'two rehearsals on the SAME FROZEN copy are byte-identical (reproducible reading)')
+  rmSync(frozen, { recursive: true, force: true })
   const serialized = JSON.stringify(first.report)
   assert.equal(serialized.includes('/home/'), false, 'the rehearsal report itself carries no machine home prefix')
   /**
