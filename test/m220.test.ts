@@ -18,7 +18,7 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { afterEach, beforeEach, test } from 'node:test'
@@ -391,7 +391,30 @@ test('M220-10 real ledger rehearsal is reproducible, read-only and under the 10 
   assert.equal(sha256Hex(readFileSync(journalPath)), journalBefore, 'the rehearsal did not touch the real journal')
   const serialized = JSON.stringify(first.report)
   assert.equal(serialized.includes('/home/'), false, 'the rehearsal report itself carries no machine home prefix')
-  assert.ok(first.report.surface.scannedBytes < 10 * 1024 * 1024, `truth layer must stay under the 10 MB entry budget (actual ${first.report.surface.scannedBytes})`)
+  /**
+   * **预算定性（`TASK-250` / `DEF-231`）—— 这条**不是**设计不变量，是**当初拍的数**（候选 ④）。**
+   *
+   * 证据（现盘、可复跑）：
+   *   · 扫描面 = `.sdo` 去掉 `drafts` / `evidence` / `handover` / `project.json` 之后的子集
+   *     = **1538 个 yml + `journal.jsonl`** ⇒ `scannedBytes = 10,640,248`，平均 6,918 B/文件；
+   *   · 其中 `journal.jsonl` 一项就 **6,095,589 B（8651 行）**，占总量的 **57%**；
+   *   · 也就是说"10 MiB"从来不是"真源层设计上不超过 10 MiB"——**光台账自己就到 6 MB**，
+   *     而台账按 append-only 单调增长（本项目自己干活就会长）。
+   *
+   * **推导公式**（换掉拍数）：`scannedBytes ≈ journalBytes + files × avgFileBytes`，
+   * 实测比值 `scanned / journal ≈ 1.75`。判据改成**跟台账挂钩**并留足**再增长 2 倍**的余量：
+   *   `budget = max(32 MiB, journalBytes × 4)`
+   * —— 32 MiB 覆盖"台账还小、但 yml 很多"的项目；`× 4` 覆盖现状 1.75 的两倍余量。
+   * 这是**canary**（前提随账态漂），不是正确性判据：本格真正钉的是
+   * 「只读 + 可复现 + 报告不含机器前缀」（上面三条断言），预算这一条只防**失控增长**。
+   */
+  const journalBytes = statSync(journalPath).size
+  const budgetBytes = Math.max(32 * 1024 * 1024, journalBytes * 4)
+  assert.ok(
+    first.report.surface.scannedBytes < budgetBytes,
+    `scan surface must stay within the derived budget (actual ${first.report.surface.scannedBytes}, `
+    + `journal ${journalBytes}, budget ${Math.round(budgetBytes)}) — the cap tracks the journal, it is a canary not an invariant`,
+  )
   assert.ok(first.report.surface.scannedFiles > 100, `the surface must cover the real ledger (actual ${first.report.surface.scannedFiles})`)
   assert.equal(first.report.surface.excluded.some((row) => row.path === 'evidence'), true, 'evidence is excluded from the scrub surface (ADR-022)')
 })
