@@ -33,7 +33,10 @@
  * （`t(key)` 去掉占位符之后的前缀），不在本文件里内联中文字面量。
  */
 import assert from 'node:assert/strict'
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  cpSync, existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, realpathSync, rmSync, statSync,
+  symlinkSync, unlinkSync, writeFileSync,
+} from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { after, test } from 'node:test'
@@ -105,9 +108,7 @@ interface Fixture {
 function realLedgerFixture(): Fixture {
   rmSync(BASE, { recursive: true, force: true })
   mkdirSync(WORKSPACE, { recursive: true })
-  cpSync(join(ROOT, '.sdo'), join(WORKSPACE, '.sdo'), { recursive: true })
-  assert.ok(existsSync(join(WORKSPACE, '.sdo', 'journal.jsonl')), 'fixture: the real ledger must be copied')
-  const tasksDir = join(WORKSPACE, '.sdo', 'tasks')
+  const tasksDir = join(copyLedgerIntoWorkspace(WORKSPACE), 'tasks')
   for (const name of readdirSync(tasksDir)) {
     const path = join(tasksDir, name)
     const text = readFileSync(path, 'utf8')
@@ -174,6 +175,61 @@ function countsOf(lines: readonly string[]): { visible: number; folded: number }
 }
 
 /**
+ * **`DEF-261` 事故防线**：真账拷贝必须「按值」，且必须落在夹具工作区内。
+ *
+ * 事故现场（2026-10-26 真实数据损坏）：`cpSync` **默认不解引用**符号链接（`dereference:false`）。
+ * 在 `ROOT/.sdo` 本身是指向真账的符号链接的沙箱/副本树里，拷进来的**还是那条链接**；紧接着
+ * `rmSync(join(ws,'.sdo','tasks'))` 顺着它删掉了**真账的整个 `tasks/`**。
+ *
+ * 两条防线（**都不许 `dereference: true`**：真账 `.sdo/evidence` 里有 23 条指向 `node_modules` 的软链，
+ * 解引用会连成环 —— 实测 ELOOP，每格 ~60s 后失败）：
+ *   ① **拷前核源**：`lstat(ROOT/.sdo)` 不许是符号链接（是就当场抛，别等到删除动作才显形）；
+ *   ② **拷后核目的地**：`lstat` 非软链 + `realpath` 落在 `realpath(workspace)` 内、且不回到真账。
+ */
+function assertLedgerCopyIsIsolated(workspace: string): void {
+  const target = join(workspace, '.sdo')
+  assert.equal(
+    lstatSync(target).isSymbolicLink(),
+    false,
+    `fixture: the ledger copy must be a real directory, not a symlink (a symlink here deletes the REAL .sdo/tasks on the next rmSync): ${target}`,
+  )
+  const self = realpathSync(workspace)
+  const resolved = realpathSync(target)
+  assert.notEqual(resolved, realpathSync(join(ROOT, '.sdo')), `fixture: the copy must not resolve back to the real ledger: ${resolved}`)
+  assert.ok(resolved.startsWith(self), `fixture: the ledger copy must resolve inside the fixture workspace: ${resolved} vs ${self}`)
+}
+
+/** 真账 → 夹具工作区（按值拷；两条防线见 {@link assertLedgerCopyIsIsolated}）。 */
+function copyLedgerIntoWorkspace(workspace: string): string {
+  const source = join(ROOT, '.sdo')
+  assert.equal(
+    lstatSync(source).isSymbolicLink(),
+    false,
+    `fixture: ROOT/.sdo itself must be a real directory -- if it is a symlink the copy keeps the link and the next rmSync deletes the REAL ledger: ${source}`,
+  )
+  const target = join(workspace, '.sdo')
+  cpSync(source, target, { recursive: true })
+  assertLedgerCopyIsIsolated(workspace)
+  assert.ok(existsSync(join(target, 'journal.jsonl')), 'fixture: the real ledger must be copied')
+  return target
+}
+
+/**
+ * **`DEF-262`：夹具自带 journal（与真账脱钩）。**
+ *
+ * 病灶：冻结夹具只接管 `tasks/`，**journal 仍是真账副本** ⇒ 池/候选/跳过原因的读数跟真账走
+ * （主树实测 200 卡回执 8,551、`limit=3` 8,413，都 > 8,000；而候选=0 的账态下同一份代码 0 红）。
+ * 三轮「子会话绿、主树红」全是这一条。
+ *
+ * ① **清空副本 journal**（`.sdo` 其余部分照旧拷：design/contracts 在对比两态里抵消）；
+ * ② **注入夹具自己的候选**：两个不可复用的空闲子会话 ⇒ 「跳过复用的原因」这一块必然渲染且内容固定。
+ */
+function replaceJournalWithFixtureEvents(office: SoftwareDevOffice, workspace: string): void {
+  writeFileSync(join(workspace, '.sdo', 'journal.jsonl'), '')
+  manufactureUnusableChildren(office, workspace, 2, 'cab0ffee')
+}
+
+/**
  * **冻结夹具**（`M232-06`）：真账副本 + **把卡集换成一张固定的卡**。
  *
  * 为什么必须冻结：真账每次落笔都会长大（候选 79 → 82 → …、队列表增减、被派卡的 DoD 也换人），
@@ -199,10 +255,11 @@ function frozenFixture(
   // 一张都进不来）。设计元素用「标题 marker」一次性全部覆盖（见 `markers`）⇒ 结构通道的读数也固定，
   // 不随真账的 des-task 边/卡标题漂。**没被接管的只有 journal（池候选/池读数）**—— 那部分由
   // `M232-07` 用预算钉住（2/100/2000 个候选 ⇒ 231/233/235 字符），所以它也进不了"随账态漂移"。
-  cpSync(join(ROOT, '.sdo'), join(workspace, '.sdo'), { recursive: true })
-  assert.ok(existsSync(join(workspace, '.sdo', 'journal.jsonl')), 'fixture: the real ledger must be copied')
+  copyLedgerIntoWorkspace(workspace)
   const office = new SoftwareDevOffice(resolveSettings(Config({} as unknown as SdoConfig)))
   office.noteSession(SESSION, workspace)
+  // **`DEF-262`**：把事件流换成夹具自己的（池/候选/跳过原因的读数从此与真账脱钩，见上）
+  replaceJournalWithFixtureEvents(office, workspace)
   const call = { sessionId: SESSION, cwd: workspace } as unknown as OfficeCall
   /**
    * **`TASK-254`：冻结夹具也要结算掉副本里的悬空派发。**
@@ -222,6 +279,8 @@ function frozenFixture(
     .flatMap((name) => [...readFileSync(join(designDir, name), 'utf8').matchAll(/DES-\d+/gu)].map((match) => match[0])))]
   const markers = designIds.map((id) => `\uFF08${id}\uFF09`).join('')
   const tasksDir = join(workspace, '.sdo', 'tasks')
+  // 删除**之前**再核一次物理隔离：这是本文件唯一的破坏性动作
+  assertLedgerCopyIsIsolated(workspace)
   rmSync(tasksDir, { recursive: true, force: true })
   const card = (id: string, status: string, extra: Record<string, unknown> = {}): void => {
     office.storeFor(workspace).writeYaml(['tasks', `${id}.yml`], {
@@ -642,6 +701,40 @@ test('M232-14 [frozen fixture] limit is bounded by admission and the whole recei
   console.log(`[M232-14] ${lines.join(' | ')}`)
   // 自证：`limit: 99` 与 `limit: 3` 在准入只有 3 张时必须派同样多（多派的每一张都是没有准入的）
   assert.ok(lines.length === 3, 'self-proof: all three limit states must have been measured')
+})
+
+/**
+ * **`M232-15`（`DEF-261` 事故防线的双向格）**：把「出事现场的形态」（`.sdo` 只是指向真账的一条符号链接）
+ * 交给隔离判据必须**当场判红**；正常的按值拷贝必须判绿。
+ *
+ * 本文件在 2026-10-26 真的删过一次真账的 `tasks/` —— 拷贝留下的是链接、随后 `rmSync` 顺着链接删到真账。
+ * 所以这里既钉「坏形态判红」，也钉「好形态判绿」，并**自证那条链接真的够到真账**（`stat` 同 inode）。
+ */
+test('M232-15 the fixture refuses a symlinked .sdo (the shape that deleted the real ledger once)', realLedgerSkip() ?? {}, () => {
+  const workspace = join(BASE, 'isolation-probe')
+  rmSync(workspace, { recursive: true, force: true })
+  mkdirSync(workspace, { recursive: true })
+  const scenario = join(workspace, '.sdo')
+  // 1) 出事现场的形态：`.sdo` 只是指向真账的一条链接 ⇒ 必须在**任何删除动作之前**被判红
+  symlinkSync(join(ROOT, '.sdo'), scenario)
+  assert.equal(lstatSync(scenario).isSymbolicLink(), true, 'fixture: the probe must build the hazardous shape (a symlinked .sdo)')
+  assert.throws(
+    () => assertLedgerCopyIsIsolated(workspace),
+    /symlink|real ledger|inside the fixture workspace/u,
+    'a symlinked .sdo must be rejected before anything removes files through it',
+  )
+  // 2) 这条链接**确实够到真账**（判据不是靠"路径字符串长得像"才过的）
+  assert.equal(
+    statSync(scenario).ino,
+    statSync(join(ROOT, '.sdo')).ino,
+    'self-proof: the symlink really does resolve to the real ledger (otherwise this grid proves nothing)',
+  )
+  unlinkSync(scenario)
+  // 3) 好形态（按值拷贝）必须判绿，且拷进来的必须带台账正文
+  copyLedgerIntoWorkspace(workspace)
+  assert.equal(lstatSync(scenario).isSymbolicLink(), false, 'the by-value copy must be a real directory')
+  assert.ok(existsSync(join(scenario, 'journal.jsonl')), 'the by-value copy must carry the ledger body')
+  rmSync(workspace, { recursive: true, force: true })
 })
 
 test('M232-07 candidate count 2 -> 100 -> 2000 must not grow the merged block linearly (function-level three states)', () => {
