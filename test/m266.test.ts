@@ -267,7 +267,20 @@ test('M266-07 the project declares .worktrees/ in .gitignore (the invariants ADR
   const text = readFileSync(join(REPO, '.gitignore'), 'utf8')
   const lines = text.split('\n').map((line) => line.trim())
   assert.equal(lines.includes('.worktrees/'), true, 'the project .gitignore must declare .worktrees/')
-  assert.equal(lines.includes('.sdo/'), true, 'sanity: .sdo/ is still ignored (the copy must not land there)')
+  /**
+   * **`TASK-192`：这条 sanity 已退休（原样：`assert.equal(lines.includes('.sdo/'), true, ...)`）。**
+   *
+   * 为什么退休：原句用「**`.sdo/` 整目录**被忽略」去**代理**「副本别落进 `.sdo/`」。`TASK-192` 让真源层
+   * 入库之后这个代理就失效了 —— 留着它等于要求「`.sdo/` 永远不能被跟踪」，与"台账可复核可追溯"
+   * 直接对撞。**代理换成事实 + 边界**两件事：
+   *   ① 事实：副本根就是 `<repo>/.worktrees`（下面那条 `worktreeRootOf` 断言，原本就在）；
+   *   ② 边界：`TASK-192` 保留的四类排除面**仍然**被忽略（可再生的 / 派生的层不许进仓库）。
+   * 没有写「保留一行 `.sdo/` + `!.sdo/` 再放开」那种两头讨好的形态：那会让"整目录被忽略"字面成立、
+   * 语义反转，属于糊闸门。
+   */
+  for (const excluded of ['.sdo/evidence/', '.sdo/drafts/', '.sdo/handover/', '.sdo/project.json']) {
+    assert.equal(lines.includes(excluded), true, `the regrowable/derived layer must stay ignored: ${excluded}`)
+  }
   assert.equal(worktreeRootOf(REPO), join(REPO, '.worktrees'), 'this repo resolves its copy root to <repo>/.worktrees')
 })
 

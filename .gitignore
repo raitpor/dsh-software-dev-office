@@ -25,9 +25,16 @@ tmp/
 *.head.ts
 
 # ── 本插件在自身仓库里跑 SDO 时的项目台账 ──
-# 若把本仓库当成 SDO 的项目工作区，`.sdo/` 是**项目数据**而非插件源码。
-# 需要把它作为示例数据提交时，删掉这一行即可。
-.sdo/
+# **`TASK-192`（入库边界）**：`.sdo/` **不再整体忽略** —— 真源层（journal / tasks / reviews /
+# defects / requirements / design / tests / contracts / gates / …）**入主仓库**，因为它们正是
+# 本插件"可复核、可追溯"的那一半；只把这些**可再生/按需**的层挡在外面：
+#   · `evidence/`（演练与大段日志，现盘 36 MB）、`drafts/`（草稿，11 MB）、`handover/`（交接件）
+#   · `project.json`（派生视图：由 journal 重建，入库只会制造冲突）
+# 体积上界：排除这四类之后现盘 ≈18 MB（卡面写的 5.9 MB 是立卡时读数，已过期）。
+.sdo/evidence/
+.sdo/drafts/
+.sdo/handover/
+.sdo/project.json
 
 # ── 子代理的工作副本（`git worktree`，`AC-310` 起落在仓库内）──
 # 副本根是 `<仓库>/.worktrees/<卡>`：它**必须在仓库内**（本机的工作区父目录是 `ro` 挂载，
