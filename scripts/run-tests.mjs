@@ -23,7 +23,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
 import { hostname } from 'node:os'
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), '..')
@@ -152,18 +152,100 @@ if (entries.length === 0) {
   process.exit(1)
 }
 
-const files = entries.map((name) => join('lib', 'test', name))
-console.log(`[run-tests] node --test ${files.length} 个文件（${entries[0]} … ${entries[entries.length - 1]}）`)
-// **`GIT_CEILING_DIRECTORIES`**：夹具内的 git 不许向上爬到真实仓库（`DEF-219` 的根因就在这一步）
-const result = spawnSync(process.execPath, ['--test', ...files], {
+/**
+ * **`--only=<名字>`：只跑一个（或几个，逗号分隔）文件** —— 给守卫用（`M266-09`）。
+ *
+ * 为什么这个开关必须有：收尾那道「真账跳过读数」如果只拿**源码文本**去守（"脚本里出现过
+ * `describeRealLedgerSkip` 这个词"），正是本仓反复判红的「锚在构建处、不在使用处」假绿 ——
+ * 已经见 `REV-097` #1 与 `m80`。要让守卫**真跑一次**，就必须能跑子集（跑全量要几分钟）。
+ * 缺省（不带这个开关）行为**一字不变**：还是整目录。
+ *
+ * 匹配面：文件名（`m242.test.js`）或去掉扩展名的卡号（`m242`），只认 `lib/test/` 下真实存在的条目。
+ */
+const only = argOf('only')
+const selected = only === undefined
+  ? entries
+  : entries.filter((name) => only.split(',').map((item) => item.trim()).includes(name)
+    || only.split(',').map((item) => item.trim()).includes(name.replace(pattern, '')))
+if (selected.length === 0) {
+  console.error(`[run-tests] ✗ --only=${String(only)} 没有匹配到任何测试文件（可选：${entries.slice(0, 5).join(' / ')} …）`)
+  process.exit(1)
+}
+
+const files = selected.map((name) => join('lib', 'test', name))
+const scope = only === undefined ? '' : `（--only=${String(only)}）`
+console.log(`[run-tests] node --test ${files.length} 个文件${scope}（${selected[0]} … ${selected[selected.length - 1]}）`)
+/* ————————————————————————————————————————————————————————————————————————————————
+ * **`TASK-266`：把「真账守卫跳过了几条」这道读数接到收尾（`DEF-153` / `TASK-227` 的落点）**
+ *
+ * `test/support/real-ledger.ts` 里计数器与三种状态的可读串早就写好了，但 `realLedgerSkipCount()`
+ * 此前**全仓零调用** ⇒ 干净检出里"全绿"到底是"跑过了"还是"一条都没跑"，读者仍然分不清（CI 上这两件事
+ * 的含义天差地别）。这里把最后一米接上，三条都不许省：
+ *   · **stdio 仍然继承**（`M145-03` / `TC-140` 的口径：跳过条数与逐条理由必须人眼可见；`M145-02`：
+ *     运行器不许自拼"全绿"）。**不**把 stdout 改成管道再转写 —— 那既多一层失真，也把"看得见的进度"押后；
+ *   · 计数走**第二份 reporter**：同一轮再挂一个 `tap` 写到夹具区的临时文件，只为读 `# skipped N`
+ *     这行机器可读的汇总（人看的那份一字不变）。两份 reporter 是 Node 自带能力，不是这里发明的；
+ *   · 状态串用**产品自己的**纯函数 `describeRealLedgerSkip`（不在这里另写一份口径 —— `DEF-044`：
+ *     同一概念两处判据必然分叉）。
+ * ———————————————————————————————————————————————————————————————————————————————— */
+async function realLedgerReading(skipped) {
+  try {
+    const helper = await import(new URL('../lib/test/support/real-ledger.js', import.meta.url).href)
+    return helper.describeRealLedgerSkip(skipped, helper.hasRealLedger())
+  } catch (error) {
+    // 兜底也要**如实**：读不到计数器就说读不到，不许静默当作"零跳过"
+    return `[real-ledger] reading unavailable (${String(error?.message ?? error).slice(0, 120)}); runner-reported skipped: ${String(skipped)}`
+  }
+}
+
+/** 从运行器输出里取跳过条数（`ℹ skipped N` / `# skipped N` 两种 reporter 形状都认）。 */
+function skippedFrom(output) {
+  const matches = [...String(output).matchAll(/(?:ℹ|#)\s*skipped\s+(\d+)/gu)]
+  return matches.length === 0 ? 0 : Math.max(...matches.map((match) => Number(match[1])))
+}
+
+/** 机器可读那份 reporter 的落点（夹具区内 + 跑前清掉，免得读到上一轮的读数）。 */
+const TAP_REPORT = join(FIXTURE_ROOT, '.run-tests-report.tap')
+rmSync(TAP_REPORT, { force: true })
+
+const child = spawn(process.execPath, [
+  '--test', ...files,
+  '--test-reporter=spec', '--test-reporter-destination=stdout',
+  '--test-reporter=tap', `--test-reporter-destination=${TAP_REPORT}`,
+], {
   cwd: root,
+  // **继承**下来：跳过条数与逐条理由照旧人眼可见（`M145-03`）
   stdio: 'inherit',
   env: {
     ...process.env,
+    // **`GIT_CEILING_DIRECTORIES`**：夹具内的 git 不许向上爬到真实仓库（`DEF-219` 的根因就在这一步）
     GIT_CEILING_DIRECTORIES: FIXTURE_ROOT,
     // 让夹具内的 git 连"全局/系统配置"都读不到：身份与行尾等行为只由夹具自己决定
     GIT_CONFIG_NOSYSTEM: '1',
   },
 })
-releaseLock()
-process.exit(result.status ?? 1)
+child.on('exit', (code) => {
+  releaseLock()
+  let tap = ''
+  try {
+    tap = readFileSync(TAP_REPORT, 'utf8')
+  } catch {
+    tap = ''
+  }
+  try {
+    rmSync(TAP_REPORT, { force: true })
+  } catch {
+    /* 删不掉不影响读数 */
+  }
+  realLedgerReading(skippedFrom(tap))
+    .then((line) => {
+      console.log(line)
+      process.exit(code ?? 1)
+    })
+    .catch(() => process.exit(code ?? 1))
+})
+child.on('error', (error) => {
+  releaseLock()
+  console.error(`[run-tests] ✗ 起不了子进程：${String(error?.message ?? error)}`)
+  process.exit(1)
+})

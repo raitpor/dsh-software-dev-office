@@ -42,6 +42,7 @@ import {
   isUnderWorktreeRoot,
   listWorktrees,
   mergeWorktree,
+  pendingWorkOf,
   removeWorktree,
   repoTopOf,
   worktreeRootOf,
@@ -262,4 +263,108 @@ test('M266-07 the project declares .worktrees/ in .gitignore (the invariants ADR
   assert.equal(lines.includes('.worktrees/'), true, 'the project .gitignore must declare .worktrees/')
   assert.equal(lines.includes('.sdo/'), true, 'sanity: .sdo/ is still ignored (the copy must not land there)')
   assert.equal(worktreeRootOf(REPO), join(REPO, '.worktrees'), 'this repo resolves its copy root to <repo>/.worktrees')
+})
+
+/**
+ * **`M266-08`：副本里「被忽略的产物」必须**单独清点**（`TASK-266` 的收口格）。**
+ *
+ * 为什么要有这一格：清场那一步带 `--force`（副本里那条 `node_modules` 软链会让不带 `--force` 的
+ * `git worktree remove` 直接拒绝），而缺省 `git status` 对**忽略面一个字都不说** ⇒ 读者分不清
+ * "删了个空副本"与"删掉了一整棵构建产物"。两账必须分开记：
+ *   · 真·没提交的活（`files`）⇒ 非空就**保留现场**（`M266-06` 已经钉住这一半）；
+ *   · 被忽略的产物（`ignored`）⇒ **不拦清场**（都可重建），但要清点着说出来，回执里带条数。
+ * 反向对照（这条别删）：**未跟踪但未忽略**的文件必须落在 `files` 里 —— 否则"ignored 恒有值"就把
+ * 这一格变成空断言了。
+ */
+test('M266-08 ignored products are inventoried separately and never silently swept by --force', () => {
+  const repo = addDeps(makeRepo(), true)
+  const work = createWorktree({ repoRoot: repo, taskId: 'task-ignored1' })
+  assert.equal(work.ok, true, `fixture: the copy must be created (${JSON.stringify(work)})`)
+  if (!work.ok) return
+  // ① 只有被忽略的产物 ⇒ files 必须为空（它们不是"没提交的活"），ignored 必须点名
+  const clean = pendingWorkOf(work.ref.path)
+  assert.equal(clean.ok, true, 'the copy status must be readable')
+  assert.deepEqual(clean.files, [], 'ignored products must not be counted as uncommitted work (they are rebuildable)')
+  assert.ok(
+    clean.ignored.some((name) => name.startsWith('node_modules')),
+    `the ignored inventory must name the deps link: ${JSON.stringify(clean.ignored)}`,
+  )
+  // ② 真·未提交的活 + 被忽略的产物：两账分开记，互不吞并
+  writeFileSync(join(work.ref.path, 'base.txt'), 'changed\n', 'utf8')
+  const both = pendingWorkOf(work.ref.path)
+  assert.deepEqual(both.files, ['base.txt'], 'a modified tracked file must land in files')
+  assert.ok(both.ignored.length >= 1, 'the ignored bucket must survive alongside real work')
+  // ③ 反向对照：未跟踪且未忽略 ⇒ 是"活"，不是"产物"
+  writeFileSync(join(work.ref.path, 'untracked.txt'), 'x\n', 'utf8')
+  const more = pendingWorkOf(work.ref.path)
+  assert.ok(more.files.includes('untracked.txt'), 'an untracked-but-not-ignored file must count as pending work')
+  assert.equal(more.ignored.includes('untracked.txt'), false, 'untracked files must never be counted as ignored products')
+  // ④ 清场回执必须说出被 `--force` 抹掉的产物（条数 + 至少一个名字）
+  const removed = removeWorktree({ repoRoot: repo, taskId: 'task-ignored1', force: true })
+  assert.equal(removed.ok, true, `force removal must succeed (${JSON.stringify(removed)})`)
+  if (removed.ok) {
+    assert.ok(removed.ignored.some((name) => name.startsWith('node_modules')), `the removal outcome must carry the swept products: ${JSON.stringify(removed.ignored)}`)
+    assert.match(removed.detail, /\d+/u, `the removal receipt must state how many ignored products were swept: ${removed.detail}`)
+    assert.equal(removed.detail.includes('node_modules'), true, `the receipt must name at least one swept product: ${removed.detail}`)
+  }
+})
+
+/**
+ * **`M266-09`：收尾那道「真账守卫跳过了几条」的读数真的接上了（`TASK-266` 的另一半）。**
+ *
+ * 背景：`test/support/real-ledger.ts` 把计数器与三种状态的可读串写好了，`realLedgerSkipCount()`
+ * 却**全仓零调用** ⇒ 干净检出里"全绿"分不清"跑过了"与"一条都没跑"。
+ *
+ * ⚠️ **这一格刻意不用源码文本锚**（"脚本里出现过 `describeRealLedgerSkip` 这个词"就是本仓反复判红的
+ * 「锚在构建处、不在使用处」——`REV-097` #1 与 `m80` 同一个病）。做法是**真跑一次子集**
+ * （`scripts/run-tests.mjs --only=m242.test.js`，走私有夹具根与私有锁 ⇒ 全量正在跑时也挡不住它），
+ * 然后断言：① 收尾最后一行就是读数；② 读数来自产品口径（`[real-ledger]` 前缀 + 条数）；
+ * ③ 反向对照：`--only` 指不到文件时**必须非 0**（不许把"什么都没跑"读成绿）。
+ */
+test('M266-09 the runner really prints the real-ledger reading at the end (behavioural, not a source-text anchor)', async () => {
+  const fixtureRoot = join(BASE, 'runner-fixture')
+  const lockFile = join(fixtureRoot, '.run-tests.lock')
+  const run = (extra: readonly string[]) => execFileSync(process.execPath, ['scripts/run-tests.mjs', ...extra], {
+    cwd: REPO,
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+    env: { ...process.env, GIT_CEILING_DIRECTORIES: fixtureRoot, GIT_CONFIG_NOSYSTEM: '1' },
+  })
+  // ⚠️ `--only` 用 `find()` 取**第一个**匹配 ⇒ 共享参数里不许再带一条 `--only`（否则反向对照会跑成正向）
+  const shared = [`--fixture-root=${fixtureRoot}`, `--lock-file=${lockFile}`]
+  const out = run(['--only=m242.test.js', ...shared])
+  const lines = out.trimEnd().split('\n')
+  const last = lines[lines.length - 1] ?? ''
+  // ① 读数是**最后一行**（收尾），不是中途某句
+  assert.equal(last.startsWith('[real-ledger]'), true, `the reading must be the last line of a green run: ${JSON.stringify(last)}`)
+  /**
+   * ② 它必须是**产品自己的那句话**（不是脚本里另写一份），而且**两种台账状态都要成立**：
+   * 本仓有 `.sdo/`，而副本树（`git worktree`）里**没有**（`.sdo/` 在忽略表里）⇒ 只断言"含 skipped"
+   * 会在副本里假红（实测：副本里那句是"⚠ no ledger in this checkout AND zero guards declared it"）。
+   * `m242` 没有真账守卫 ⇒ 这一轮的跳过条数恒为 0，所以期望值就是产品函数在 0 上的两个取值。
+   */
+  const helper = await import('./support/real-ledger.js')
+  const zeroWithLedger = helper.describeRealLedgerSkip(0, true)
+  const zeroWithoutLedger = helper.describeRealLedgerSkip(0, false)
+  assert.equal(
+    last === zeroWithLedger || last === zeroWithoutLedger,
+    true,
+    `the reading must be the product's own sentence for zero skips (ledger present or not): ${JSON.stringify(last)}`,
+  )
+  // ③ 反向对照：`--only` 匹配不到任何文件 ⇒ 必须非 0（"什么都没跑"绝不许看起来像绿）
+  let failed = ''
+  let exitCode = 0
+  try {
+    run(['--only=m266-no-such-file.test.js', ...shared])
+  } catch (error) {
+    const thrown = error as { status?: unknown; stderr?: unknown }
+    exitCode = Number(thrown.status ?? 0)
+    failed = String(thrown.stderr ?? '')
+  }
+  assert.notEqual(exitCode, 0, 'a subset that matches nothing must never look green')
+  assert.equal(failed.includes('--only='), true, `the refusal must name the switch it could not honour: ${failed.slice(0, 200)}`)
+  // ④ 三种状态的句子本身也得区分得开（产品口径本体，不在本脚本里另写一份 —— DEF-044）
+  const absentSkip = helper.describeRealLedgerSkip(7, false)
+  assert.equal(new Set([zeroWithLedger, zeroWithoutLedger, absentSkip]).size, 3, 'the three states must not collapse into one sentence')
+  assert.equal(absentSkip.includes('7'), true, `the skip count must appear in the reading: ${absentSkip}`)
 })

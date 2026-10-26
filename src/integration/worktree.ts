@@ -467,7 +467,7 @@ export interface WorktreeRemoveInput {
 export type WorktreeRemoveCode = 'not-a-repo' | 'absent' | 'unmerged' | 'failed'
 
 export type WorktreeRemoveOutcome =
-  | { ok: true; path: string; branchDeleted: boolean; detail: string }
+  | { ok: true; path: string; branchDeleted: boolean; detail: string; ignored: string[] }
   | { ok: false; code: WorktreeRemoveCode; detail: string; path: string }
 
 /**
@@ -502,8 +502,11 @@ export function removeWorktree(input: WorktreeRemoveInput): WorktreeRemoveOutcom
   // 副本里那条 `node_modules` 软链即便被忽略，`git worktree remove` 仍报"包含修改或未跟踪的文件"
   // 并拒绝（现盘读数）⇒ 不带 `--force`，装好依赖的副本就删不掉、永远堆在 `.worktrees/` 里。
   // 但 `--force` 不许顺手抹掉**没提交的活**：那一步先看 `pendingWorkOf`，非空就保留现场、如实报。
+  // `--force` 会顺手抹掉**被忽略**的产物（`lib/`、`node_modules` 链接）—— 那些可重建、不拦清场，
+  // 但**必须清点着说出来**（`TASK-266`）：否则读者无法区分"只删了个空副本"与"删掉了一整棵构建产物"。
   const pending = pendingWorkOf(path)
   const dirty = pending.ok && pending.files.length > 0
+  const swept = pending.ok ? pending.ignored : []
   const forced = force || (merged && !dirty)
   let remove = git(repoRoot, ['worktree', 'remove', ...(forced ? ['--force'] : []), path])
   if (!remove.ok && !forced && merged && !dirty) {
@@ -518,7 +521,11 @@ export function removeWorktree(input: WorktreeRemoveInput): WorktreeRemoveOutcom
     // 合并过的分支与 `force` 路径都可以删；删不掉不算失败（副本已经清了），但如实回报
     branchDeleted = git(repoRoot, ['branch', '-D', branch]).ok
   }
-  return { ok: true, path, branchDeleted, detail: `副本已移除${branchDeleted ? '，分支已删' : ''}` }
+  // 被忽略的产物：列前几个（全量可能上千条），条数照实说
+  const sweptNote = swept.length === 0
+    ? ''
+    : `，连带清掉 ${String(swept.length)} 个被忽略的产物（${swept.slice(0, 3).join(' / ')}${swept.length > 3 ? ' …' : ''}）`
+  return { ok: true, path, branchDeleted, ignored: swept, detail: `副本已移除${branchDeleted ? '，分支已删' : ''}${sweptNote}` }
 }
 
 /** `git worktree list --porcelain` 的一行式投影（诊断/回执用）。 */
@@ -555,15 +562,42 @@ export function listWorktrees(repoRoot: string): WorktreeEntry[] {
  *
  * 读的是副本的**状态**而不是与基底的差异：`git status --porcelain -z` 同时覆盖
  * "改了没提交"与"新建未跟踪"两类 —— 这两类都不会被 `git merge` 带走，正是零变更假绿的来源。
+ *
+ * **被忽略的产物单独清点（`TASK-266`）**：缺省 `git status` 对忽略面**一个字都不说**，而副本里
+ * 恰恰总有几样被忽略的东西 —— `lib/`（构建产物）与建副本时软链进来的 `node_modules`。它们
+ * **不该拦住清场**（都是可重建的），但**也不许装作不存在**：清场那一步带 `--force`，读者有权知道
+ * `--force` 抹掉的是什么。所以这里把两类分开报：{@link PendingWork.files} 是真·没提交的活
+ * （非空 ⇒ 保留现场），{@link PendingWork.ignored} 是被忽略的产物（只清点、不拦、如实写进回执）。
+ *
+ * `--ignored=matching` 是刻意的：裸 `--ignored` 会把 `node_modules/` 里几万个文件逐条列出
+ * （一次调用几十 MB 输出），`matching` 只报**被忽略的那个目录本身**（实测一条 `!! node_modules/`）。
  */
-export function pendingWorkOf(path: string): { ok: boolean; files: string[]; detail: string } {
+export interface PendingWork {
+  ok: boolean
+  /** 真·没提交的活（改过的 + 未跟踪的）：非空 ⇒ 清场必须保留现场。 */
+  files: string[]
+  /** 被忽略的产物（`lib/` / `node_modules` 链接…）：只清点，不拦清场。 */
+  ignored: string[]
+  detail: string
+}
+
+export function pendingWorkOf(path: string): PendingWork {
   const inside = git(path, ['rev-parse', '--is-inside-work-tree'])
-  if (!inside.ok || inside.stdout.trim() !== 'true') return { ok: false, files: [], detail: `不是 git 工作树：${path}` }
-  const run = git(path, ['status', '--porcelain', '-z', '--untracked-files=all'])
-  if (!run.ok) return { ok: false, files: [], detail: `读状态失败：${run.stderr.trim()}` }
-  // porcelain 每条是 `XY <path>`（改名条目会多一段旧路径）⇒ 取状态码之后的路径段
-  const files = splitZ(run.stdout)
-    .map((entry) => entry.slice(3).trim())
-    .filter((entry) => entry !== '')
-  return { ok: true, files, detail: `${files.length} 个未提交文件` }
+  if (!inside.ok || inside.stdout.trim() !== 'true') return { ok: false, files: [], ignored: [], detail: `不是 git 工作树：${path}` }
+  const run = git(path, ['status', '--porcelain', '-z', '--untracked-files=all', '--ignored=matching'])
+  if (!run.ok) return { ok: false, files: [], ignored: [], detail: `读状态失败：${run.stderr.trim()}` }
+  // porcelain 每条是 `XY <path>`（改名条目会多一段旧路径）⇒ 取状态码之后的路径段。
+  // `!!` = 被忽略；其余（`??` / ` M` / `A ` …）= 真·没提交的活。
+  const files: string[] = []
+  const ignored: string[] = []
+  for (const entry of splitZ(run.stdout)) {
+    const name = entry.slice(3).trim()
+    if (name === '') continue
+    if (entry.startsWith('!!')) ignored.push(name)
+    else files.push(name)
+  }
+  const detail = files.length === 0
+    ? `${String(ignored.length)} 个被忽略的产物（可重建）`
+    : `${String(files.length)} 个未提交文件${ignored.length === 0 ? '' : ` + ${String(ignored.length)} 个被忽略的产物`}`
+  return { ok: true, files, ignored, detail }
 }
