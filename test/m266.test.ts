@@ -21,6 +21,12 @@
  *   M266-06 合并后副本里仍有**未提交的活** ⇒ 不许被顺手抹掉（`--force` 只对"已合并且干净"生效）；
  *   M266-07 项目侧声明（`.gitignore` 收录 `.worktrees/`）—— 这是"落点在仓库内还不进索引"的那一半。
  *
+ * 收尾读数那半边（`REV-134` 之后补的三格）：
+ *   M266-08 副本里**被忽略的产物**单独清点（`--force` 清掉的要说出来，真·没提交的活仍拦清场）；
+ *   M266-09 收尾行**是**产品那句读数（行为态：真跑一次子集，不是源码文本锚）；
+ *   M266-10 收尾数字**从 TAP 报告读出来**（等于同轮人眼那句 `ℹ skipped N`，且绝不是兜底句）；
+ *   M266-11 TAP 落点建不出来 ⇒ 收尾行说"读不到"，**不许**印 `0 guard(s) skipped`。
+ *
  * ⚠️ **写作约束（别改回去）**：`m189` 的读散文棘轮按「文件 + 读散文站点数」**按身份**登记，
  * 新文件不在那张表里 ⇒ 本文件**不许**出现内联中文判据或中文断言消息（否则会多出一个未登记的站点）。
  * 中文一律写在**注释**里，断言消息用英文。
@@ -323,18 +329,9 @@ test('M266-08 ignored products are inventoried separately and never silently swe
  */
 test('M266-09 the runner really prints the real-ledger reading at the end (behavioural, not a source-text anchor)', async () => {
   const fixtureRoot = join(BASE, 'runner-fixture')
-  const lockFile = join(fixtureRoot, '.run-tests.lock')
-  const run = (extra: readonly string[]) => execFileSync(process.execPath, ['scripts/run-tests.mjs', ...extra], {
-    cwd: REPO,
-    encoding: 'utf8',
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, GIT_CEILING_DIRECTORIES: fixtureRoot, GIT_CONFIG_NOSYSTEM: '1' },
-  })
-  // ⚠️ `--only` 用 `find()` 取**第一个**匹配 ⇒ 共享参数里不许再带一条 `--only`（否则反向对照会跑成正向）
-  const shared = [`--fixture-root=${fixtureRoot}`, `--lock-file=${lockFile}`]
-  const out = run(['--only=m242.test.js', ...shared])
-  const lines = out.trimEnd().split('\n')
-  const last = lines[lines.length - 1] ?? ''
+  const out = runRunner(['--only=m242.test.js'], fixtureRoot)
+  assert.equal(out.code, 0, `the subset run must be green: ${out.stderr.slice(-300)}`)
+  const last = lastLineOf(out.stdout)
   // ① 读数是**最后一行**（收尾），不是中途某句
   assert.equal(last.startsWith('[real-ledger]'), true, `the reading must be the last line of a green run: ${JSON.stringify(last)}`)
   /**
@@ -355,7 +352,9 @@ test('M266-09 the runner really prints the real-ledger reading at the end (behav
   let failed = ''
   let exitCode = 0
   try {
-    run(['--only=m266-no-such-file.test.js', ...shared])
+    const bad = runRunner(['--only=m266-no-such-file.test.js'], fixtureRoot)
+    exitCode = bad.code
+    failed = bad.stderr
   } catch (error) {
     const thrown = error as { status?: unknown; stderr?: unknown }
     exitCode = Number(thrown.status ?? 0)
@@ -367,4 +366,122 @@ test('M266-09 the runner really prints the real-ledger reading at the end (behav
   const absentSkip = helper.describeRealLedgerSkip(7, false)
   assert.equal(new Set([zeroWithLedger, zeroWithoutLedger, absentSkip]).size, 3, 'the three states must not collapse into one sentence')
   assert.equal(absentSkip.includes('7'), true, `the skip count must appear in the reading: ${absentSkip}`)
+})
+
+/**
+ * 跑一次 `scripts/run-tests.mjs`（**子集** + 私有夹具根/私有锁 ⇒ 全量正在跑时也挡不住它），
+ * 把 stdout 抓回来 —— **退出码非 0 也要抓**：`M266-11` 要构造"这一轮根本跑不成"的态，那时它会抛。
+ *
+ * ⚠️ **两个环境陷阱，缺一条这几格就是假绿**：
+ *   ① **`NODE_TEST_CONTEXT` 必须丢掉**：从测试进程里再起 `node --test` 会被 node 的"递归调用"防呆拦下，
+ *      子进程印一句 `node:test run() is being called recursively … skipping running files` 就 **exit 0**，
+ *      **一条测试都不跑**、也不产出 TAP ⇒ 旧口径读到空串折成 `0`，守卫仍然绿（这就是实测发现的第二处假绿，
+ *      与 `m145` ⑧ 记录的是同一个坑）。为什么在**夹具侧**丢而不是在产品里丢：这条防呆同时保护"运行器被
+ *      某个守卫无 `--only` 地再起一次"这种真递归，产品不该替调用方拆掉它；
+ *   ② **锁与落点分目录**：`M266-11` 的 TAP 落点要落在一棵**不存在**的树下，而运行器会
+ *      `mkdirSync(dirname(LOCK_FILE), { recursive: true })` —— 锁和落点共用一个目录的话，那棵树会被
+ *      顺手建出来，那一格就变成恒绿了。
+ */
+function runRunner(
+  extra: readonly string[],
+  fixtureRoot: string,
+  lockFile: string = join(fixtureRoot, '.run-tests.lock'),
+): { code: number; stdout: string; stderr: string } {
+  const env: NodeJS.ProcessEnv = { ...process.env, GIT_CEILING_DIRECTORIES: fixtureRoot, GIT_CONFIG_NOSYSTEM: '1' }
+  delete env['NODE_TEST_CONTEXT']
+  try {
+    const stdout = execFileSync(
+      process.execPath,
+      ['scripts/run-tests.mjs', ...extra, `--fixture-root=${fixtureRoot}`, `--lock-file=${lockFile}`],
+      {
+        cwd: REPO,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        maxBuffer: 32 * 1024 * 1024,
+        env,
+      },
+    )
+    return { code: 0, stdout, stderr: '' }
+  } catch (error) {
+    const thrown = error as { status?: unknown; stdout?: unknown; stderr?: unknown }
+    return { code: Number(thrown.status ?? 1), stdout: String(thrown.stdout ?? ''), stderr: String(thrown.stderr ?? '') }
+  }
+}
+
+/** 一段输出的最后一行（收尾读数就长在那里）。 */
+function lastLineOf(text: string): string {
+  const lines = String(text).trimEnd().split('\n')
+  return lines[lines.length - 1] ?? ''
+}
+
+/**
+ * **`M266-10`：收尾那个数字必须是**从 TAP 报告里读出来的**（`REV-134` 必修①的守卫）。**
+ *
+ * 病灶：`node --test <文件…> --test-reporter=tap --test-reporter-destination=X` 里，写在**文件后面**的
+ * reporter 标志被 node **静默忽略** ⇒ X 从不生成 ⇒ `readFileSync` 抛错 ⇒ 读到的是一段空串 ⇒ 旧口径把
+ * "没读到"折成 `0`。台账上现形过：同一份回执里 `ℹ skipped 1` 与 `… 0 guard(s) skipped this run` 并排
+ * （`REV-136`）。守卫 M266-09 咬不到它 —— 它挑的 `m242` 恰好一轮零跳过，`0 == 0` 恒成立。
+ *
+ * 本格的判据是**同一次运行里两个读数的对照**（不是抄一个常量）：人眼那条 `ℹ skipped N` 与收尾行的数字
+ * 必须一致，且收尾行**不许**是 `reading unavailable` 那句兜底。主牙口就是后者：reporter 标志一旦挪回
+ * 文件后面（TAP 不生成）收尾行必然变成兜底句 ⇒ **红**，与这一轮跳过几条无关（实测变异：改回旧顺序
+ * ⇒ 本格红，见本卡回执）。第二道牙口（"读不到就折成 `0`"回来 ⇒ 有跳过的那一轮数字对不上）随本轮
+ * 跳过条数走：现盘这一账态下 `m232` 的 `M232-12` 会自 skip，但**不能**拿它当本格的子集 ——
+ * `m232` 的夹具目录是写死的共享路径（`node_modules/.sdo-test/m232`），全量里再起一份必然与正在跑的
+ * 那一份互删（实测 `ENOTEMPTY`）。所以子集固定挑**不用夹具**的 `m54`：跑得快、无共享目录，
+ * 而"真的有一条跳过时数字对不对"由 `M266-11` 与人工读数（`--only=m232.test.js` ⇒ `1 guard(s) skipped`）各自负责。
+ */
+test('M266-10 the closing count is read out of the TAP report: it equals the human-visible skipped line and is never the fallback sentence', async () => {
+  const res = runRunner(['--only=m54.test.js'], join(BASE, 'runner-tap'))
+  const specSkipped = /^ℹ\s*skipped\s+(\d+)\s*$/mu.exec(res.stdout)
+  assert.notEqual(specSkipped, null, `the human-visible run must report a skipped count: ${res.stdout.slice(-400)}`)
+  const reported = Number((specSkipped as RegExpExecArray)[1])
+  const last = lastLineOf(res.stdout)
+  assert.equal(last.startsWith('[real-ledger]'), true, `the reading must close the run: ${JSON.stringify(last)}`)
+  assert.equal(
+    last.includes('reading unavailable'),
+    false,
+    `a normal run must read its TAP report (the fallback sentence means the reporter never took effect): ${JSON.stringify(last)}`,
+  )
+  const helper = await import('./support/real-ledger.js')
+  assert.equal(
+    last,
+    helper.describeRealLedgerSkip(reported, helper.hasRealLedger()),
+    `the closing count must equal the runner-reported skipped count ${String(reported)}: ${JSON.stringify(last)}`,
+  )
+})
+
+/**
+ * **`M266-11`：TAP 落点建不出来 ⇒ 收尾行说"读不到"，**不许**印 `0 guard(s) skipped`。**
+ *
+ * 这是 `REV-134` 必修②的守卫（旧口径 `matches.length === 0 ? 0`）。构造态的办法：把 TAP 落点
+ * （`<fixture-root>/.run-tests-report.tap`）指到一棵**不存在**的树下 —— 运行器只建**锁文件所在的目录**，
+ * 不建 fixture root（锁文件因此单独给）。`node` 建不出报告就退出（`ENOENT`，exit≠0，这一轮测试没跑到），
+ * 于是脚本读到的仍是"没有报告"。
+ *
+ * 为什么明写"这一轮测试没跑到"也不妨碍它是一条真判据：要守的正是**读数不可用时收尾行的行为** ——
+ * 不可用就说不可用，**任何**形状的"读不到"（落点建不出、reporter 没生效、文件被删）都走同一条分支。
+ * 反向对照：读得到的那一轮**不许**出现这句兜底（否则这一格是恒真）。
+ */
+test('M266-11 an unreadable TAP landing spot makes the closing line say the reading is unavailable, never a zero', async () => {
+  const landing = join(BASE, 'no-such-root', 'runner')
+  const lockFile = join(BASE, 'landing-lock', '.run-tests.lock')
+  const res = runRunner(['--only=m54.test.js'], landing, lockFile)
+  assert.notEqual(res.code, 0, 'a run whose TAP report cannot be created must be red (nothing was executed)')
+  const last = lastLineOf(res.stdout)
+  assert.equal(
+    last.startsWith('[real-ledger] reading unavailable'),
+    true,
+    `an unreadable report must be reported as unreadable: ${JSON.stringify(last)}`,
+  )
+  assert.equal(
+    /guard\(s\) skipped/u.test(last),
+    false,
+    `an unreadable report must never be dressed up as a count: ${JSON.stringify(last)}`,
+  )
+  assert.equal(last.includes('unknown'), true, `the unknown count must be named as unknown: ${JSON.stringify(last)}`)
+  assert.equal(last.includes(landing), true, `the unreadable landing spot must be named: ${JSON.stringify(last)}`)
+  // 反向对照：读得到的那一轮不许出现这句兜底
+  const readable = lastLineOf(runRunner(['--only=m54.test.js'], join(BASE, 'landing-ok')).stdout)
+  assert.equal(readable.includes('reading unavailable'), false, `a readable run must not print the fallback: ${JSON.stringify(readable)}`)
 })

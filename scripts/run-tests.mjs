@@ -185,23 +185,44 @@ console.log(`[run-tests] node --test ${files.length} 个文件${scope}（${selec
  *     运行器不许自拼"全绿"）。**不**把 stdout 改成管道再转写 —— 那既多一层失真，也把"看得见的进度"押后；
  *   · 计数走**第二份 reporter**：同一轮再挂一个 `tap` 写到夹具区的临时文件，只为读 `# skipped N`
  *     这行机器可读的汇总（人看的那份一字不变）。两份 reporter 是 Node 自带能力，不是这里发明的；
+ *     这两个标志必须排在**位置参数（测试文件）之前**：`node` 把 `--test` 之后的位置参数当文件列表，
+ *     写在文件后面的 reporter 标志会被**静默忽略**（现盘实测，见 `spawn` 处注释）—— 那会让整道读数空转；
  *   · 状态串用**产品自己的**纯函数 `describeRealLedgerSkip`（不在这里另写一份口径 —— `DEF-044`：
  *     同一概念两处判据必然分叉）。
  * ———————————————————————————————————————————————————————————————————————————————— */
+
+/**
+ * 一行收尾读数。**读不到就说读不到，绝不折成零**（`REV-134` 必修；`REV-136` 在台账上现形过一次）。
+ *
+ * `skipped === undefined` ⇒ 这一轮**没拿到** TAP 汇总行（报告没建起来，或 reporter 没生效）。旧口径
+ * 在这条分支上返回 `0`，于是真账上出现过 `ℹ skipped 1` 与 `… 0 guard(s) skipped this run` 并排的假读数；
+ * **零必须是读出来的零**。两支都落进同一句 `reading unavailable`，只是理由不同。
+ */
 async function realLedgerReading(skipped) {
+  const tail = `runner-reported skipped: ${skipped === undefined ? 'unknown' : String(skipped)}`
+  if (skipped === undefined) {
+    // 落点本身也印出来：只写"读不到"会把"哪份报告没读到"留给读者猜
+    return `[real-ledger] reading unavailable (no "# skipped N" line in the TAP report: ${TAP_REPORT}); ${tail}`
+  }
   try {
     const helper = await import(new URL('../lib/test/support/real-ledger.js', import.meta.url).href)
     return helper.describeRealLedgerSkip(skipped, helper.hasRealLedger())
   } catch (error) {
-    // 兜底也要**如实**：读不到计数器就说读不到，不许静默当作"零跳过"
-    return `[real-ledger] reading unavailable (${String(error?.message ?? error).slice(0, 120)}); runner-reported skipped: ${String(skipped)}`
+    return `[real-ledger] reading unavailable (${String(error?.message ?? error).slice(0, 120)}); ${tail}`
   }
 }
 
-/** 从运行器输出里取跳过条数（`ℹ skipped N` / `# skipped N` 两种 reporter 形状都认）。 */
+/**
+ * 从 TAP 报告里取跳过条数：只认**汇总行**（顶格 `# skipped N`，兼容 `ℹ skipped N` 形状）。
+ *
+ * **取不到返回 `undefined`**（不是 `0`）—— 这就是上面那句"零必须是读出来的零"的落点。顶格锚定是必要的：
+ * TAP 里逐条的跳过理由以缩进注释出现（`# SKIP reason`），不该被当成计数；取最大值是防"同一份报告里
+ * 出现多份汇总"时取小值把真跳过数压低。
+ */
 function skippedFrom(output) {
-  const matches = [...String(output).matchAll(/(?:ℹ|#)\s*skipped\s+(\d+)/gu)]
-  return matches.length === 0 ? 0 : Math.max(...matches.map((match) => Number(match[1])))
+  const matches = [...String(output).matchAll(/^(?:#|ℹ)\s*skipped\s+(\d+)\s*$/gmu)]
+  if (matches.length === 0) return undefined
+  return Math.max(...matches.map((match) => Number(match[1])))
 }
 
 /** 机器可读那份 reporter 的落点（夹具区内 + 跑前清掉，免得读到上一轮的读数）。 */
@@ -209,9 +230,14 @@ const TAP_REPORT = join(FIXTURE_ROOT, '.run-tests-report.tap')
 rmSync(TAP_REPORT, { force: true })
 
 const child = spawn(process.execPath, [
-  '--test', ...files,
+  // ⚠️ **顺序是判据，不是风格**：reporter 标志必须排在位置参数（测试文件）**之前**。`node` 把 `--test`
+  // 之后的位置参数收进文件列表，而**写在文件后面**的 `--test-reporter*` 会被**静默忽略** ⇒ TAP 落点
+  // 根本不生成 ⇒ 收尾读数退回"读不到"（旧口径则退回假的 `0`）。现盘实测对照（`REV-134` 必修）：
+  //   · `node --test-reporter=tap --test-reporter-destination=X --test a.test.js` ⇒ X 生成，真 TAP；
+  //   · `node --test a.test.js --test-reporter=tap --test-reporter-destination=X` ⇒ 仍打 spec，X 不生成。
   '--test-reporter=spec', '--test-reporter-destination=stdout',
   '--test-reporter=tap', `--test-reporter-destination=${TAP_REPORT}`,
+  '--test', ...files,
 ], {
   cwd: root,
   // **继承**下来：跳过条数与逐条理由照旧人眼可见（`M145-03`）

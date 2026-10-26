@@ -282,9 +282,10 @@ test('M218-02 T3-04 worktree 生命周期：建 → 写 → 提交 → 合并 �
   assert.equal(existsSync(ref.path), false, '副本目录要消失')
   assert.deepEqual(listWorktrees(repo).map((entry) => entry.path), [repoTopOf(repo)], '只剩主工作树（没有 worktree 残留）')
 
-  // 反向格：副本**不许**落在仓库内（`.sdo/drafts/worktrees/` 那种旧写法）
+  // 反向格：仓库内的副本**只许**落在被忽略的副本根（`.worktrees/`）之下 —— `.sdo/drafts/worktrees/`
+  // 那种旧写法照样被拒；被拒的理由是"会进索引"，不是"在仓库内"（`AC-310` 之后缺省根就在仓库内）。
   const inside = createWorktree({ repoRoot: repo, taskId: 'TASK-21802', root: join(repo, '.sdo', 'drafts', 'worktrees') })
-  assert.equal(inside.ok, false, '落在仓库内必须拒绝（会进索引）')
+  assert.equal(inside.ok, false, '落在仓库内、但不在被忽略的副本根下的路径必须拒绝（会进索引）')
   if (inside.ok) return
   assert.equal(inside.code, 'inside-repo')
 })

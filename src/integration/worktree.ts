@@ -508,10 +508,11 @@ export function removeWorktree(input: WorktreeRemoveInput): WorktreeRemoveOutcom
   const dirty = pending.ok && pending.files.length > 0
   const swept = pending.ok ? pending.ignored : []
   const forced = force || (merged && !dirty)
-  let remove = git(repoRoot, ['worktree', 'remove', ...(forced ? ['--force'] : []), path])
-  if (!remove.ok && !forced && merged && !dirty) {
-    remove = git(repoRoot, ['worktree', 'remove', '--force', path])
-  }
+  // **只有一条清场路径**（`REV-132` / `REV-134` 的建议，两轮都点到同一处）：`forced` 已经涵盖
+  // "已合并且不脏 ⇒ 自动强删"，所以这里没有"先不带 force 试一次、失败了再来硬的"那种兜底 ——
+  // 那种写法看起来是两条路径，其实条件恒假（`!forced` 蕴含 `!(merged && !dirty)`）。留着它只会让
+  // 下一个改这段的人以为存在重试分支。
+  const remove = git(repoRoot, ['worktree', 'remove', ...(forced ? ['--force'] : []), path])
   if (!remove.ok) {
     const why = dirty ? `（副本里还有 ${String(pending.files.length)} 个未提交文件 ⇒ 现场保留）` : ''
     return { ok: false, code: 'failed', detail: `git worktree remove 失败${why}：${remove.stderr.trim() || remove.stdout.trim()}`, path }
