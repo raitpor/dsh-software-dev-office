@@ -225,6 +225,54 @@ const POOL_TRIAGE_ROLES_SHOWN = 4
  */
 const POOL_RETIRED_NAMED = 3
 
+/**
+ * **`REV-097` #5（`TASK-280`）：`next` 回执的逐卡派发结论**整块**预算。**
+ *
+ * 修前 `head` 没有任何总上界：`out` 里每张卡的派发块 ≈ 2,072 字符（实测，见下），
+ * 而 `take` 只受 `args.limit` 约束 ⇒ `limit: 3` 的批量派发整份就 9,352 字符（`8` 张卡的冻结夹具），
+ * 超过宿主 8000 ⇒ 队列/池/结构读数被截掉。`RECEIPT_BUDGET` 只管**回声**，管不到这一块。
+ *
+ * 现在两条一起收（`REV-097` #5 给的两种修法都做，理由是它们管的是两个不同的维度）：
+ *   · **逐字重复的行只印一次**（`DEDUPE_MIN_CHARS`）：同一批里「下发 deny 面 30 个」「工具面免责」
+ *     「白名单」「公告面读数」是**批不变量**，修前每张卡重抄一遍 ≈ 1,038 字符/张；
+ *   · **整块总预算**：超出之后**只留第一行结论** + 一行折叠指路（全块在 `dispatch/decided` 事件与
+ *     子会话里，可查）。**第一张卡永远整块保留** —— 结论被折叠才是真事故。
+ *
+ * 数值来源（每个数都与产生它的命令成对 —— 本卡交付报告里给了探针脚本与读数）：实测 `limit=1` 一块 2,072 字符、
+ * 去重后每多一张 ≈ 1,034 字符 ⇒ 3,500 能装下「2 张整块」，第 3 张起折叠。
+ */
+const DISPATCH_CONCLUSION_BUDGET = 3500
+
+/** 去重只对**长行**生效：短行（`- 写范围：…`、`evidence:`）逐卡本就不同，且折掉会看不清归属。 */
+const DEDUPE_MIN_CHARS = 60
+
+/**
+ * **`REV-097` #5：`take`（本轮派几张）的硬上限。**
+ *
+ * 今天它**不改变行为**：准入已经把 `plan.dispatch.length` 钉在 `maxParallelDispatch`（默认 4、
+ * schema 上界 8）以内。留着它是给"将来把准入放宽"留的机械兜底 —— 取 8 就是那个 schema 上界，
+ * 于是这条上限在现口径下永不生效，也不会悄悄少派卡（真少派时 `held` 那行如实点名）。
+ */
+const DISPATCH_TAKE_MAX = 8
+
+/**
+ * **`REV-097` #5/#2：逐卡一行**的段落的显示上限（写范围相交 / 未提交改动两类）。
+ *
+ * 修前这几块**没有上限**：200 张卡与一张在飞卡写范围相交 ⇒ 199 行 × 184 字符 = 36,616 字符
+ * （实测），整份 42,691 —— 这是"队列/回执随卡数线性膨胀"最大的一块，比 `out` 还大。
+ * 折叠掉的行不是消失：队列表**逐卡**给出同一条结论（`verdict` + 具体路径），完整清单在 `.sdo/tasks/`。
+ */
+const RECEIPT_ROW_CAP = 3
+
+/**
+ * **`REV-097` #5（`TASK-280`）：池块里"排队 N 张"最多列几个卡号。**
+ *
+ * 修前它把**全部**排队卡号一字排开：61 张 = 779 字符（实测，200 张卡的冻结夹具）⇒ 这是整份回执里
+ * 第二大的 O(卡数) 块。卡号只用来认"是我的哪几张"；完整的排队清单在 `dispatch queue` 表里（有界 24 行）
+ * 与 `.sdo/tasks/*.yml` 里。折叠成 `…+N` 之后条数**不静默消失**（`{p1}` 仍是真实总数）。
+ */
+const POOL_QUEUED_IDS_SHOWN = 8
+
 export { Config }
 export type { SdoConfig }
 
@@ -1954,6 +2002,93 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // 它同时是"没派出去"时的解释面：真机上被结构卡堵住时，先看得到"这批卡是什么、写范围多大"。
       const structuralBlock = describeStructuralPlan(office.structuralPlan(call))
       const structuralSection = structuralBlock === '' ? '' : '\n' + structuralBlock
+      /**
+       * **`REV-097` #1 / #10（`TASK-280`）：`next` 回执的**必带段**只有这一个拼装入口。**
+       *
+       * 两段都是**"安静地消失"最贵的那种读数**：
+       *   · `infeasibleBlock`（R-14）：这张卡的**要求 ∩ 当前角色的能力**矛盾 —— 派出去只会让子会话动手失败；
+       *   · `roleBlockedSection`（TASK-189）：`role: office` 的卡**永不派发**，但必须点名。
+       *
+       * 修前它们在 `next` 的 **7 条**出口里缺了 4 条：`TASK-218` 重排派发主路径时把这两段从
+       * `receiptRest` 里漏掉（其余分支都还在，所以**没有任何守卫会红** —— `m80` 锚的是**构建处**源码文本，
+       * `m225` 测的是 `roleBlockedLine()` 方法本身，不是回执）；而 R-9 的"冻结"分支自 `TASK-189` 起
+       * 就只拼 `queueSection + kDispatchFrozen`。
+       *
+       * 现在两条纪律：**每条出口都调这个函数**（不是各写一遍字面量），且 `test/m232.test.ts` 的
+       * `M232-13` 用**真回执**逐条走这 5 类分支断言两段都在 —— 谁再漏一次，那一格当场红。
+       */
+      const mustSections = (): string => infeasibleBlock + roleBlockedSection
+      /**
+       * **`REV-097` #5（`TASK-280`）：本轮派几张 —— `next` 的几条出口共用**这一个**算式。**
+       *
+       * 修前两处各写一遍 `Math.max(1, Math.min(args.limit ?? 1, plan.dispatch.length))`，
+       * `args.limit` **没有上限**；而且两处一旦漂开，`why=true` 的"被 limit 挡下 N 张"就会与
+       * 真派发那轮的取数不一致（同一件事两张脸各说一套，正是本仓反复判红的形状）。
+       */
+      const takeOf = (dispatchLength: number): number =>
+        Math.max(1, Math.min(Math.floor(args.limit ?? 1), DISPATCH_TAKE_MAX, dispatchLength))
+      /**
+       * **`REV-097` #5（`TASK-280`）：逐卡派发结论块的两条结构性上界**（去重 + 预算）。
+       *
+       * 为什么必须在这里做：`out` 是**唯一**随 `picked.length` 线性增长、且当时**完全不受**
+       * `RECEIPT_BUDGET` 约束的一块。实测（`limit: 3`、8 张卡的冻结夹具）整份 9,352 字符 ⇒ 超宿主
+       * 8000：结论保得住（它在最前），但队列/池/结构读数被截掉。
+       *
+       * 两条上界的分工：
+       *   ① **去重**：同一批里「下发 deny 面 30 个」「工具面免责」「白名单」「公告面读数」逐字相同
+       *      （它们是**批不变量**，与卡无关）⇒ 只印一次，省 ≈ 1,038 字符/张。只折**长行**
+       *      （`DEDUPE_MIN_CHARS`）：短行（`- 写范围：…`）逐卡本就不同，折掉反而看不清归属；
+       *   ② **总预算**：`DISPATCH_CONCLUSION_BUDGET` 用完之后**只留第一行**（结论句：派给谁 / 没派成的原因）
+       *      + 一行折叠指路 —— 全块在 `dispatch/decided` 事件与子会话里，指名可查。
+       *
+       * **第一张卡永远整块保留**：预算再紧也不许把唯一的结论折成一句索引（那正是 `DEF-175` 的症状）。
+       */
+      const boundedOut = (items: readonly string[]): string[] => {
+        const seen = new Set<string>()
+        const deduped = items.map((item) => item.split('\n').filter((line) => {
+          if (line.length < DEDUPE_MIN_CHARS) return true
+          if (seen.has(line)) return false
+          seen.add(line)
+          return true
+        }).join('\n'))
+        const kept: string[] = []
+        let used = 0
+        for (const [index, item] of deduped.entries()) {
+          if (index === 0 || used + item.length <= DISPATCH_CONCLUSION_BUDGET) {
+            kept.push(item)
+            used += item.length
+            continue
+          }
+          const folded = `${item.split('\n')[0] ?? ''}\n`
+            + `dispatch-detail: folded (per-batch budget ${String(DISPATCH_CONCLUSION_BUDGET)} chars)`
+            + ' — the full block is in .sdo/journal.jsonl (dispatch/decided + dispatch/started) and in the child session'
+          kept.push(folded)
+          used += folded.length
+        }
+        return kept
+      }
+      /**
+       * **`REV-097` #5（`TASK-280`）：逐卡一行的读数**有界**（修前一块能到 36,616 字符）。**
+       *
+       * 折叠掉的行**不是消失**：队列表对每一张卡都给同一条结论（`verdict` + 具体路径），
+       * 完整清单在 `.sdo/tasks/*.yml`。行文**ASCII**（语言包键不在本卡写范围，且本文件不写中文字面量）。
+       */
+      /** 池块的"排队 N 张"只列前 `POOL_QUEUED_IDS_SHOWN` 个卡号 + `…+N`（`REV-097` #5）。 */
+      const poolQueuedIds = ((): string[] => {
+        const ids = plan.queued.map((task) => task.id)
+        return ids.length <= POOL_QUEUED_IDS_SHOWN
+          ? ids
+          : [...ids.slice(0, POOL_QUEUED_IDS_SHOWN), `+${String(ids.length - POOL_QUEUED_IDS_SHOWN)}`]
+      })()
+      const capRows = (lines: readonly string[], what: string): string[] =>
+        lines.length <= RECEIPT_ROW_CAP
+          ? [...lines]
+          : [
+              ...lines.slice(0, RECEIPT_ROW_CAP),
+              `${what}: +${String(lines.length - RECEIPT_ROW_CAP)} more card(s) not listed`
+                + ` (cap ${String(RECEIPT_ROW_CAP)}); every card's verdict is in the dispatch queue table above,`
+                + ' the full list is .sdo/tasks/*.yml',
+            ]
       // **DEF-067 落点一**：写范围被在飞卡挡住的卡**不派**，但必须在回执里**单列一行**点名
       // （卡 id、挡路的卡与其 owner、**重叠的那个路径**）—— 否则复现 DEF-058 的误判：
       // 首屏看不到派发行就以为"没派"。（判定与两条派发路径共用 `scopeHeldTasks`，不另写一套。）
@@ -1987,20 +2122,20 @@ export function apply(ctx: Context, config: SdoConfig): void {
       }))
       const heldByScopeSection = serialLines.length + mergeLines.length === 0
         ? ''
-        : '\n' + [...serialLines, ...mergeLines].join('\n') + '\n'
+        : '\n' + capRows([...serialLines, ...mergeLines], 'scope-intersection lines').join('\n') + '\n'
       // **DEF-080 F1（第七批 §3.1）**：因**未提交改动**压在写范围上而**本轮不派**的卡 —— 与
       // `heldByScopeSection` 同一形状、同一位置。上一批这一类只在诊断面可见 ⇒ 派发主路径
       // （`sdo_plan action=next`）既不停卡也不提示（F1 的真机读数）。
       const dirtyRows = plan.dirtyByScope ?? []
-      const dirtyByScopeSection = dirtyRows.length === 0 ? '' : '\n' + dirtyRows.map((row) => fmt('uiIndex.kDispatchDirtyScopeLine', {
+      const dirtyByScopeSection = dirtyRows.length === 0 ? '' : '\n' + capRows(dirtyRows.map((row) => fmt('uiIndex.kDispatchDirtyScopeLine', {
         p1: row.taskId,
         p2: row.over.join(t('uiCollab.kListSep')),
-      })).join('\n') + '\n'
+      })), 'dirty-scope lines').join('\n') + '\n'
       const hintRows = plan.dirtyHints ?? []
-      const dirtyHintSection = hintRows.length === 0 ? '' : '\n' + hintRows.map((row) => fmt('uiIndex.kDispatchDirtyHintLine', {
+      const dirtyHintSection = hintRows.length === 0 ? '' : '\n' + capRows(hintRows.map((row) => fmt('uiIndex.kDispatchDirtyHintLine', {
         p1: row.taskId,
         p2: row.over.join(t('uiCollab.kListSep')),
-      })).join('\n') + '\n'
+      })), 'dirty-hint lines').join('\n') + '\n'
       const dirtyUnjudgedSection = plan.dirtyUnjudgeable === undefined
         ? ''
         : '\n' + fmt('uiIndex.kDispatchDirtyUnjudged', { p1: plan.dirtyUnjudgeable.reason }) + '\n'
@@ -2088,7 +2223,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const diagnostics = issues
             .map((issue) => fmt('uiIndex.kPlanIssueLine', { p1: issue.code, p2: issue.taskId, p3: issue.detail, p4: issue.remedy }))
             .join('\n')
-          if (args.why === true) return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
+          if (args.why === true) return verdict + '\n' + queueSection + mustSections() + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
           /**
            * **`REV-104` #6**：这一支（「没有派发 + 计划有问题」）修前**没有**健康区 ⇒
            * 悬空的派发决定在这里**一个字都不印**（评审也是在这一点上推翻了我上一版「所有分支可见」的
@@ -2097,7 +2232,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
            */
           const danglingHere = danglingDecisionLines(office.dispatchDecisionHealth(call).pending)
           const danglingSection = danglingHere.length === 0 ? '' : '\n' + danglingHere.join('\n') + '\n'
-          return verdict + '\n' + queueSection + roleBlockedSection + '\n' + diagnostics + danglingSection + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
+          return verdict + '\n' + queueSection + mustSections() + '\n' + diagnostics + danglingSection + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
         }
         if (plan.queued.length === 0) {
           // **R-9**：真机在这里印「没有可派发的任务卡（都已认领/完成）」，而实际上是 4 张 ready 卡
@@ -2107,6 +2242,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             // **`REV-104` #6**：这一支修前同样没有健康区 —— 补有界的悬空点名（理由同上）。
             const danglingHere = danglingDecisionLines(office.dispatchDecisionHealth(call).pending)
             const danglingSection = danglingHere.length === 0 ? '' : '\n' + danglingHere.join('\n')
+            // **`REV-097` #10（`TASK-280`）**：这一支自 `TASK-189` 起**只拼** `queueSection + kDispatchFrozen`
+            // ⇒ 一张 `role: office` 的卡与一张「能力缺口」卡在这里一起消失（而其余四条分支都印）。
+            // 现在走同一个入口 `mustSections()`：`next` 的五类出口一个都不能漏。
             return queueSection + '\n' + fmt('uiIndex.kDispatchFrozen', {
               p1: String(frozen.length),
               p2: frozen
@@ -2117,10 +2255,10 @@ export function apply(ctx: Context, config: SdoConfig): void {
                 }))
                 .join(' '),
               p3: String(settings.dispatchOrphanTtlMinutes),
-            }) + danglingSection
+            }) + mustSections() + danglingSection
           }
           // **`TASK-218`**：结论（为什么一张都没派）在前，队列在后
-          return describeNonDispatchable(office.nonDispatchable(call)) + '\n' + infeasibleBlock + roleBlockedSection
+          return describeNonDispatchable(office.nonDispatchable(call)) + '\n' + mustSections()
             + '\n' + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection
         }
         // **DEF-049 / TASK-078 落点二**：走队列分支时也把分类带上 —— "排队"是"池满"，
@@ -2128,18 +2266,19 @@ export function apply(ctx: Context, config: SdoConfig): void {
         // "这一轮为什么没派到那张卡"）。真机症状：ready 卡被 blocked 卡占着范围，回执却只说容量。
         const nonDispatchableNote = describeNonDispatchable(office.nonDispatchable(call))
         // 排队不是"没卡"，而是**被上限挡住**：必须说清是哪个池满，否则用户会以为流程卡住了
-        const blocked = plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })).join('\n')
+        // **`REV-097` #5**：这一块也是**逐卡一行**，同样有界（修前 O(卡数)）。
+        const blocked = capRows(plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })), 'pool-blocked lines').join('\n')
         // **`TASK-218`**：**不派发的裁决排最前**（逐张 blocked + 角色/暂不可派），队列与池读数在后
         // —— 宿主截断只会吃掉排在后面的读数，不会吃掉"为什么没派"。
         return blocked
           + '\n' + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
-          + roleBlockedSection + nonDispatchableNote
+          + mustSections() + nonDispatchableNote
           + '\n' + heldByScopeSection + healthSection + rejectedSection
           + '\n' + queueSection
           // **`TASK-271`**：这一支是 `plan.dispatch.length === 0`（一张卡都没通过准入）⇒ 准入自然没有许出
           // 任何位子 ⇒ 交进去的计划面**必然为空**，这一行不会出现。保留接线只为两处口径一致（同一份快照、
           // 同一个参数形状）；**不要**在这里声称「准入已经把位子许出去了」—— 那是 `REV-127#1` 那一类假话。
-          + '\n' + describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
+          + '\n' + describePoolBlock(plan.pools, poolQueuedIds, reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
           + structuralSection
       }
 
@@ -2184,7 +2323,12 @@ export function apply(ctx: Context, config: SdoConfig): void {
       // 把 blocked 卡的原因整个吞掉 —— 真机上驾驶舱连问两轮都没看见"有卡被 block 住了"）。
       if (args.why === true) {
         const nonDispatchable = office.nonDispatchable(call)
-        const take = Math.max(1, Math.min(args.limit ?? 1, plan.dispatch.length))
+        /**
+         * **`REV-097` #5（`TASK-280`）：`take` 有**硬上限**（`DISPATCH_TAKE_MAX`）。**
+         * 诊断面与主路径**必须**用同一个上限 —— 否则 `why=true` 说"被 limit 挡下 2 张"、
+         * 真派发那轮却按另一个数派，两张脸的读数互相打脸。
+         */
+        const take = takeOf(plan.dispatch.length)
         const held = plan.queued.map((task) => task.id)
         const lines = [
           fmt('uiIndex.kWhyNoDispatch', { p1: String(plan.dispatch.length), p2: String(plan.queued.length) }),
@@ -2220,7 +2364,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }))
         }
         // **`TASK-218`**：诊断行（为什么这一轮派不出去）在前，队列/结构在后
-        return lines.filter((line) => line !== '').join('\n') + infeasibleBlock + heldByScopeSection + healthSection + rejectedSection + roleBlockedSection + queueSection + structuralSection
+        return lines.filter((line) => line !== '').join('\n') + mustSections() + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection
       }
 
       /**
@@ -2320,7 +2464,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const preference = args.backend === 'subagent' || args.backend === 'native-team' || args.backend === 'inline' ? args.backend : 'auto'
       const iteration = office.iteration(call)
       const decision = pickBackend(preference, backendProbe(), lastBackend, iteration?.number)
-      const take = Math.max(1, Math.min(args.limit ?? 1, plan.dispatch.length))
+      const take = takeOf(plan.dispatch.length)
       const picked = plan.dispatch.slice(0, take)
       // **DEF-041**：回执必须**自述复用判定** —— 池内计数与"每个未复用候选的原因"都要看得见，
       // 否则默认路径（每次新起）与池化口径长期背离而无人察觉（真机连续 22 次不复用）。
@@ -2752,7 +2896,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
       const heldReuseSeats = held.flatMap((entry) => (entry.reuseChildId === undefined
         ? []
         : [{ task: entry.task.id, childSessionId: entry.reuseChildId, role: entry.task.role }]))
-      const poolBlock = describePoolBlock(plan.pools, plan.queued.map((task) => task.id), reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: heldReuseSeats })
+      const poolBlock = describePoolBlock(plan.pools, poolQueuedIds, reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: heldReuseSeats })
       // **DEF-067 落点一**：真正派发这条回执同样要带上「暂不可派」段 —— 否则某张卡没派出去这件事
       // 只在诊断面（`why=true`）可见，而 `why` 恰恰**不派发**（TASK-078 的设计）⇒ 主路径上看不见。
       // **DEF-053**：静默失败（派发后窗口内没有认领）在这里落一条**可审计**事件（同一笔派发只落一次）。
@@ -2775,7 +2919,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
        * **`TASK-228` 落点三**：三分读数与退役预告紧跟池块（同一件事的两个面），且在回声**之前**
        * —— 按 `TASK-218` 的牺牲顺序，回声先被吃。
        */
-      const receiptRest = `${out.join('\n\n')}${infeasibleBlock}${roleBlockedSection}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${poolTriageSection}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      const receiptRest = `${boundedOut(out).join('\n\n')}${mustSections()}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${poolTriageSection}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
       // **`M137-03`**（源码级判据）：回执必须由 `dispatchSummary` 起头 —— 这一行就是那个形状。
       // `head` 只用于**量长度**（与返回值的前半段逐字相同），回声按预算取舍后追加在最后。
       const head = `${dispatchSummary}\n${receiptRest}`

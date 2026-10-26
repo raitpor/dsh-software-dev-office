@@ -21,6 +21,14 @@
  *   · `M232-09` 缺省档**原因整句在**、条数对得上（可见 + 折叠 = 总数）；`verbose` 档**逐条全在**；
  *   · `M232-10` 结构通道同理：同因 35 条 → 一行 + 计数，整块有界，`created` 行不受影响。
  *
+ * `REV-097` 之后补的三件事（`TASK-280` 核实时补的格，不是"事后解释"）：
+ *   · `M232-06` 的「与卡数脱钩」那一维**换成会被渲染的那一维**（`planned` ⇒ 队列表）：修前补的是
+ *     `blocked` 卡，而派发主路径不渲染 blocked ⇒ 实测增幅 0.00% 恒真（`REV-097` #2）；
+ *   · `M232-13` **五类 `next` 出口的遍历断言**：`role: office` 点名（`TASK-189`）与「能力缺口」
+ *     （R-14）在**每一支**真回执里都在（`REV-097` #1 / #10 —— 修前 R-9 冻结分支与派发主路径各漏一段）；
+ *   · `M232-14` **`limit` 的硬上限与整份上界**：`limit: 3 / 99` 时整份仍 < 宿主 8000（`REV-097` #5 ——
+ *     修前没有总上界：逐卡结论文本 × 无条件数 + 逐卡一行的相交/改动读数都是 O(卡数)）。
+ *
  * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`）；回执里的中文标记**从语言包取**
  * （`t(key)` 去掉占位符之后的前缀），不在本文件里内联中文字面量。
  */
@@ -172,7 +180,19 @@ function countsOf(lines: readonly string[]): { visible: number; folded: number }
  * 于是"整份体积"这一格会**随账态漂移**（实测 7,713 / 8,772 两读数）。判据必须能在**同一个输入**上复跑，
  * 所以这里固定：一张卡（固定 id / 固定 DoD / 固定写范围）+ 真账的**子会话与池**（候选数照真账，不参与体积）。
  */
-function frozenFixture(cardCount = 4, workspace = join(BASE, `frozen-${String(cardCount)}`)): Fixture {
+/** 一张固定卡的形状（`M232-13` 的遍历断言需要逐支自己点卡集）。 */
+interface CardSpec {
+  id: string
+  status: string
+  extra?: Record<string, unknown> | undefined
+}
+
+function frozenFixture(
+  cardCount = 4,
+  workspace = join(BASE, `frozen-${String(cardCount)}`),
+  extras: readonly CardSpec[] = [],
+  specs?: readonly CardSpec[],
+): Fixture {
   rmSync(workspace, { recursive: true, force: true })
   mkdirSync(workspace, { recursive: true })
   // ⚠️ 本夹具**接管卡集**：`.sdo/tasks/` 整目录被下面这几张固定卡覆盖（真账里后来新增/流转的卡
@@ -227,13 +247,47 @@ function frozenFixture(cardCount = 4, workspace = join(BASE, `frozen-${String(ca
       },
     })
   }
-  // 固定卡集：1 ready（会被派）+ 1 blocked + 1 planned + 1 in-progress，其余按需补 blocked
-  card('TASK-2180', 'ready')
-  card('TASK-2181', 'blocked', { blockReason: 'frozen blocked reason' })
-  card('TASK-2182', 'planned')
-  card('TASK-2183', 'in-progress', { owner: 'developer-frozen1' })
-  for (let index = 4; index < cardCount; index += 1) card(`TASK-218${String(index)}`, 'blocked', { blockReason: 'frozen blocked reason' })
+  // 固定卡集：1 ready（会被派）+ 1 blocked + 1 planned + 1 in-progress
+  if (specs === undefined) {
+    card('TASK-2180', 'ready')
+    card('TASK-2181', 'blocked', { blockReason: 'frozen blocked reason' })
+    card('TASK-2182', 'planned')
+    card('TASK-2183', 'in-progress', { owner: 'developer-frozen1' })
+    /**
+     * **`REV-097` #2：4 → 8 那一轮补的卡必须是**会被渲染**的那一维。**
+     *
+     * 修前补的是 `blocked` 卡，而派发主路径**根本不渲染 blocked 卡**（`describeNonDispatchable` 只在
+     * 三条"没派出去"的分支里）⇒ 两张回执必然同长，实测增幅 **0.00%** 是**隐形**的：
+     * 那条「< 5%」的阈值断言在这条路径上**恒真** = 空断言。`planned` 卡会进队列表（硬上限 24 行），
+     * 于是这条断言才真的在测"体积与卡数脱钩"。
+     */
+    for (let index = 4; index < cardCount; index += 1) card(`TASK-218${String(index)}`, 'planned')
+  } else {
+    for (const item of specs) card(item.id, item.status, item.extra ?? {})
+  }
+  for (const item of extras) card(item.id, item.status, item.extra ?? {})
   return { office, call, run: mounter(workspace) }
+}
+
+/**
+ * 在**副本台账**里给一张卡写一笔"未结算派发"（⇒ R-9 冻结分支的唯一入口）。
+ *
+ * 为什么必须写盘而不是改夹具变量：`heldByDispatch` 读的是 `dispatch/started` 折叠出来的在飞子会话，
+ * 夹具没法用"改一个字段"假装（那正是 `M232-06` 那条注释里"座位也跟账态走"的同一个读数面）。
+ */
+function freezeDispatch(office: SoftwareDevOffice, workspace: string, taskId: string): void {
+  office.journalFor(workspace).append('dispatch/started', {
+    childSessionId: 'frozen0f-0000-4000-8000-000000000280',
+    role: 'developer',
+    task: taskId,
+    mode: 'continuable',
+    parentSessionId: SESSION,
+  })
+}
+
+/** 模板里**最长的一段字面量**（去掉 `{pN}`）：拿它当锚点才不会被占位符切碎。 */
+function longestLiteral(template: string): string {
+  return template.split(/\{[^}]*\}/u).map((part) => part.trim()).sort((a, b) => b.length - a.length)[0] ?? ''
 }
 
 /** 真实工具通道（`apply()` 装配 + 按 schema 过滤入参）：两个夹具共用。 */
@@ -284,13 +338,45 @@ test('M232-06 [frozen fixture] the whole receipt stays under 8000 chars and does
   // 结构性有界：结论 + 各块上限 + 回声取舍之后，整份不超过总预算 + 那一行指路
   assert.ok(receipt.length <= RECEIPT_BUDGET + 400, `the receipt must be bounded by the total budget: ${String(receipt.length)} chars (budget ${String(RECEIPT_BUDGET)})`)
 
-  // **与卡数脱钩**（流程官复核要求）：同一夹具只把卡集 4 张换成 8 张 ⇒ 体积增幅 < 5%
-  const eight = frozenFixture(8)
+  /**
+   * **与卡数脱钩**（`REV-097` #2 改的这一维）：4 张 → 8 张，补的卡是**会被渲染**的 `planned`。
+   *
+   * 两条断言缺一不可：
+   *   ① **非空性**：8 张的回执必须与 4 张**不同** —— 否则"增幅 < 5%"证明的是"这一维不渲染"，
+   *      而不是"体积与卡数脱钩"（修前补 `blocked` 卡就是这个坑：实测增幅 0.00%）；
+   *   ② **有界**：8 张时仍 < 宿主 8000。
+   */
+  const eight = frozenFixture(8, join(BASE, 'frozen-8'))
   const receiptEight = await eight.run({ action: 'next', limit: 1 })
-  const growth = (receiptEight.length - receipt.length) / receipt.length
-  console.log(`[M232-06] frozen receipt: 4 cards -> ${String(receipt.length)} chars, 8 cards -> ${String(receiptEight.length)} chars (growth ${(growth * 100).toFixed(2)}%)`)
+  console.log(`[M232-06] frozen receipt: 4 cards -> ${String(receipt.length)} chars, 8 cards -> ${String(receiptEight.length)} chars`)
+  assert.ok(
+    receiptEight.length !== receipt.length,
+    `the cards added for the 4 -> 8 round must be rendered, otherwise the growth assertion proves nothing: both receipts are ${String(receipt.length)} chars`,
+  )
   assert.ok(receiptEight.length < HOST_LIMIT, `even with 8 fixed cards the receipt must stay under ${String(HOST_LIMIT)}: ${String(receiptEight.length)}`)
-  assert.ok(growth < 0.05, `the receipt must be decoupled from the card count (4 -> 8 cards grew ${(growth * 100).toFixed(2)}%, limit 5%)`)
+  /**
+   * **饱和**（真正的"脱钩"面）：队列表有硬上限 `QUEUE_TABLE_ROWS = 24`，所以卡数过了 24 之后
+   * 这一维**不再增长**（只剩"另有 N 张"那几个字符）。24 → 200 张的增幅就是这条上限的读数。
+   */
+  const twentyFour = frozenFixture(24, join(BASE, 'frozen-24'))
+  const receiptTwentyFour = await twentyFour.run({ action: 'next', limit: 1 })
+  const twoHundred = frozenFixture(200, join(BASE, 'frozen-200'))
+  const receiptTwoHundred = await twoHundred.run({ action: 'next', limit: 1 })
+  const saturated = (receiptTwoHundred.length - receiptTwentyFour.length) / receiptTwentyFour.length
+  console.log(`[M232-06] queue-table saturation: 24 cards -> ${String(receiptTwentyFour.length)} chars, 200 cards -> ${String(receiptTwoHundred.length)} chars (growth ${(saturated * 100).toFixed(2)}%)`)
+  assert.ok(
+    saturated < 0.05,
+    `past the queue-table cap the receipt must stop growing with the card count (24 -> 200 cards grew ${(saturated * 100).toFixed(2)}%, limit 5%)`,
+  )
+  assert.ok(receiptTwoHundred.length < HOST_LIMIT, `200 fixed cards must still fit the host limit: ${String(receiptTwoHundred.length)} chars`)
+  /**
+   * **上限真的生效了**（非空性）：200 张卡里有 196 张与在飞卡写范围相交 ⇒ 那一段必须印出折叠行。
+   * 只断言"总量没超"会被"恰好还没超"蒙过去 —— 折叠行在不在，是"这一段真的有上限"的机械读数。
+   */
+  assert.ok(
+    receiptTwoHundred.includes('more card(s) not listed'),
+    `the per-card scope-intersection rows must be capped once there are far more of them than the cap: ${String(receiptTwoHundred.length)} chars`,
+  )
   // 「跳过复用的原因」整句可读：每种原因的原话（≤ 硬上限）都逐字在回执里
   for (const reason of new Set(plan.reuseSkipped.map((row) => row.reason))) {
     assert.ok(receipt.includes(reason.slice(0, REUSE_SKIP_REASON_CHARS)), 'every skip reason must stay readable in the receipt')
@@ -334,6 +420,13 @@ test('M232-11 [frozen fixture] the conclusion comes first, the prompt echo comes
  * 只有池读数跟着真账走，而池读数由 `M232-07` 用预算钉在 2/100/2000 个候选 ⇒ 231/233/235 字符），
  * 它已在同一份输入上钉住 `receipt.length < HOST_LIMIT`、总预算上界与「4 → 8 张卡的增幅 < 5%」。
  *
+ * **两条"上界"的来源不同，别再混着读**（`REV-097` #6 要补的就是这一句）：
+ *   · `<= RECEIPT_BUDGET + 400`（7,400）—— **产品自己的**回声取舍预算（`describe.ts` 的 `RECEIPT_BUDGET`）
+ *     加上那一行 ASCII 指路；它管的是"回声要不要整段给"，不是宿主截断；
+ *   · `< HOST_LIMIT`（8,000）—— **宿主的**工具回执截断线（`src/interface/clamp.ts` 的 `TOOL_RESULT_CHARS`）；
+ *     越过它，宿主会截掉尾巴并追加「原文 N 字符」，那时**可见文本**才是读者拿到的东西。
+ * 前者是设计意图，后者是外部约束；两条都要守，但**红在不同东西上**（预算松了 ⇒ 回声太长；越过宿主线 ⇒ 真丢读数）。
+ *
  * 本格留下两条**与账态无关**的判据：`truncated` 读数自洽（被截断时结论仍落在**可见部分内**）
  * 与「结论 idx < 400」。前提不成立（这一轮根本没走到派发结论）⇒ **显式 skip 并印出理由与读数**，
  * 不静默绿。判据不许退化成恒真，所以末尾带一条自证：同一个标记被挪到 500 位之后必须判红。
@@ -359,6 +452,196 @@ test('M232-12 [real ledger] receipt size is reported at the current account stat
   // 判据自证（防止被改成恒真）：同一个标记被放到 500 位之后，上面那两条必须判红
   const lateConclusion = `${'x'.repeat(500)}${conclusionMarker}`
   assert.ok(lateConclusion.indexOf(conclusionMarker) >= 400, 'self-proof: the retained index criterion still rejects a conclusion that sits past 400')
+})
+
+/**
+ * **`M232-13`：`next` 五类出口的**遍历断言**（`REV-097` #1 / #10，`TASK-280` 补的格）。**
+ *
+ * 修前两段读数会在**某些分支**里静默消失，而没有任何守卫抓得到：
+ *   · `roleBlockedSection`（`TASK-189`：`role: office` 的卡永不派发，但必须点名）—— R-9 的"冻结"分支
+ *     自 `TASK-189` 起就只拼 `queueSection + kDispatchFrozen`；
+ *   · `infeasibleBlock`（R-14：卡的要求 ∩ 当前角色能力）—— `TASK-218` 重排派发主路径时从 `receiptRest`
+ *     里漏掉了它（其余四条分支都还在）。
+ * 两道旧守卫为什么放过去了：`test/m80.test.ts` 锚的是 `kCapabilityGap` 的**构建处**源码文本（构建处还在
+ * ⇒ 绿），`test/m225.test.ts` 测的是 `roleBlockedLine()` **方法本身**（不是回执）。这正是本仓反复判红的
+ * 「锚在构建处、不在使用处」假绿。
+ *
+ * 本格的口径：**逐支造真回执**（走 `apply()` 装配的真工具通道），每支都断言
+ * ① 这一支**真的**是这一支（用 `poolPlan` / `planIssues` 的现算读数按调度器的 if 链复算，不猜）；
+ * ② `role: office` 那一行**逐字在**回执里；③ 有 ready/planned 卡时能力缺口**逐字在**；
+ * ④ 两段都排在提示词回声**之前**（宿主 8000 截断先吃回声 ⇒ 排在它之前的读数不会被吃）。
+ */
+test('M232-13 [frozen fixtures] every next branch names role:office cards and capability gaps (REV-097 #1/#10)', realLedgerSkip() ?? {}, async () => {
+  const gapMarker = t('uiIndex.kGap_needs-bash')
+  const conclusionMarker = markerOf('uiDescribe.k199DispatchStarted')
+  const frozenMarker = longestLiteral(t('uiIndex.kDispatchFrozen'))
+  const issueMarker = longestLiteral(t('uiIndex.kPlanIssueLine'))
+  const queueMarker = 'dispatch queue (ordered'
+  const echoOf = (text: string): number => Math.max(text.indexOf('[prompt echo for'), text.indexOf('[prompt echo omitted'))
+
+  interface Row {
+    name: string
+    specs: readonly CardSpec[]
+    freeze?: string | undefined
+    /** 这一行**必须**走的那一支 */
+    branch: 'issues' | 'frozen' | 'none' | 'queued' | 'main'
+    /** 这一支的回执锚点（证明回执真的来自那一支，而不是夹具漂到别处） */
+    anchor: string
+    /** 有 ready/planned 卡 ⇒ `plan.infeasible` 非空 ⇒ 能力缺口段必在场 */
+    gap: boolean
+  }
+  /** 与调度器同一套 if 链（`plan.dispatch.length === 0` 之后依次判 issues / frozen / queued）。 */
+  const branchOf = (readings: { dispatch: number; queued: number; frozen: number; issues: number }): Row['branch'] => {
+    if (readings.dispatch > 0) return 'main'
+    if (readings.issues > 0) return 'issues'
+    if (readings.queued === 0) return readings.frozen > 0 ? 'frozen' : 'none'
+    return 'queued'
+  }
+  const rows: readonly Row[] = [
+    {
+      name: 'main',
+      branch: 'main',
+      anchor: conclusionMarker,
+      gap: true,
+      specs: [
+        { id: 'TASK-2180', status: 'ready' },
+        { id: 'TASK-2181', status: 'blocked', extra: { blockReason: 'frozen blocked reason' } },
+        { id: 'TASK-2182', status: 'planned' },
+        { id: 'TASK-2183', status: 'in-progress', extra: { owner: 'developer-frozen1' } },
+        { id: 'TASK-2188', status: 'ready', extra: { role: 'office' } },
+        { id: 'TASK-2189', status: 'planned', extra: { role: 'reviewer' } },
+      ],
+    },
+    {
+      name: 'issues',
+      branch: 'issues',
+      anchor: issueMarker,
+      gap: true,
+      specs: [
+        { id: 'TASK-2189', status: 'planned', extra: { role: 'reviewer', dod: [] } },
+        { id: 'TASK-2188', status: 'ready', extra: { role: 'office' } },
+        { id: 'TASK-2183', status: 'in-progress', extra: { owner: 'developer-a' } },
+        { id: 'TASK-2184', status: 'in-progress', extra: { owner: 'developer-b' } },
+        { id: 'TASK-2185', status: 'in-progress', extra: { owner: 'developer-c' } },
+        { id: 'TASK-2186', status: 'in-progress', extra: { owner: 'developer-d' } },
+      ],
+    },
+    {
+      name: 'frozen',
+      branch: 'frozen',
+      anchor: frozenMarker,
+      gap: true,
+      freeze: 'TASK-2180',
+      specs: [
+        { id: 'TASK-2180', status: 'ready', extra: { role: 'reviewer' } },
+        { id: 'TASK-2183', status: 'in-progress', extra: { owner: 'developer-frozen1' } },
+        { id: 'TASK-2188', status: 'ready', extra: { role: 'office' } },
+      ],
+    },
+    {
+      name: 'none',
+      branch: 'none',
+      anchor: queueMarker,
+      gap: false,
+      specs: [
+        { id: 'TASK-2181', status: 'blocked', extra: { blockReason: 'frozen blocked reason' } },
+        { id: 'TASK-2183', status: 'in-progress', extra: { owner: 'developer-frozen1' } },
+        { id: 'TASK-2188', status: 'ready', extra: { role: 'office' } },
+      ],
+    },
+    {
+      name: 'queued',
+      branch: 'queued',
+      anchor: queueMarker,
+      gap: true,
+      specs: [
+        { id: 'TASK-2180', status: 'ready' },
+        { id: 'TASK-2189', status: 'ready', extra: { role: 'reviewer' } },
+        { id: 'TASK-2188', status: 'ready', extra: { role: 'office' } },
+        { id: 'TASK-2183', status: 'in-progress', extra: { owner: 'developer-a' } },
+        { id: 'TASK-2184', status: 'in-progress', extra: { owner: 'developer-b' } },
+        { id: 'TASK-2185', status: 'in-progress', extra: { owner: 'developer-c' } },
+        { id: 'TASK-2186', status: 'in-progress', extra: { owner: 'developer-d' } },
+      ],
+    },
+  ]
+
+  const seen: string[] = []
+  for (const row of rows) {
+    const workspace = join(BASE, `branch-${row.name}`)
+    const fixture = frozenFixture(0, workspace, [], row.specs)
+    if (row.freeze !== undefined) freezeDispatch(fixture.office, workspace, row.freeze)
+    const plan = fixture.office.poolPlan(fixture.call, { reuseIdle: true })
+    const issues = fixture.office.planIssues(fixture.call)
+    const frozen = (plan.heldByDispatch ?? []).length
+    const readings = { dispatch: plan.dispatch.length, queued: plan.queued.length, frozen, issues: issues.length }
+    assert.equal(
+      branchOf(readings),
+      row.branch,
+      `fixture premise for "${row.name}": the receipt must come from the "${row.branch}" branch, got readings ${JSON.stringify(readings)}`,
+    )
+    const roleLine = fixture.office.roleBlockedLine(fixture.call)
+    assert.ok(roleLine !== '', `fixture premise for "${row.name}": the frozen card set must contain a role:office card (otherwise the section is legitimately empty)`)
+
+    const receipt = await fixture.run({ action: 'next', limit: 1 })
+    seen.push(`${row.name}:${String(receipt.length)}`)
+    // ① 这一支真的走对了（回执里有那一支的锚点）
+    assert.ok(receipt.includes(row.anchor), `"${row.name}" receipt must carry the branch anchor (${row.anchor.slice(0, 40)})`)
+    // ② `role: office` 那一行逐字在（`REV-097` #1/#10 的核心断言）
+    const at = receipt.indexOf(roleLine)
+    assert.ok(at >= 0, `"${row.name}" receipt must name the role:office card verbatim: ${roleLine}`)
+    // ③ 能力缺口段（R-14）—— 有 ready/planned 卡的支才该有
+    if (row.gap) {
+      const gapAt = receipt.indexOf(gapMarker)
+      assert.ok(gapAt >= 0, `"${row.name}" receipt must carry the capability-gap section (R-14): ${gapMarker}`)
+      assert.ok(gapAt < HOST_LIMIT, `"${row.name}": the capability gap must survive a host truncation, got index ${String(gapAt)}`)
+    }
+    // ④ 两段都在回声之前 ⇒ 宿主截断先吃回声（`TASK-218` 的牺牲顺序），吃不掉它们
+    const echo = echoOf(receipt)
+    if (echo >= 0) assert.ok(at < echo, `"${row.name}": the role:office line must come before the prompt echo (${String(at)} < ${String(echo)})`)
+  }
+  console.log(`[M232-13] branch receipts: ${seen.join(' ')}`)
+})
+
+/**
+ * **`M232-14`：`limit` 的硬上限 + 整份回执的上界（`REV-097` #5，`TASK-280` 补的格）。**
+ *
+ * 修前那条路径**只有各块自己的上限之和**，没有任何总上界；而两块是 O(卡数)、一块是 O(派遣张数)：
+ *   · `out`（逐卡派发结论）≈ 2,072 字符/张 —— 只受 `args.limit` 约束（`take` 当时**没有上限**）；
+ *   · 写范围相交 / 未提交改动那几段**逐卡一行，无上限**（200 张卡 199 行 = 36,616 字符，实测）；
+ *   · 池块的"排队 N 张"把全部卡号一字排开（61 张 = 779 字符，实测）。
+ * ⇒ `limit: 3` 的批量派发整份 9,352 字符，超宿主 8000：结论保得住（它在最前），但队列/池/结构读数被截掉。
+ *
+ * 本格在**同一份冻结夹具**上把 `limit` 推到 1 / 3 / 99，逐条断言：
+ * ① 宿主**没有**截断（`原文 N 字符` 后缀不出现）；② 整份 < 8000；③ 派发张数 = `min(limit, 准入张数)`。
+ */
+test('M232-14 [frozen fixture] limit is bounded by admission and the whole receipt stays under the host limit (REV-097 #5)', realLedgerSkip() ?? {}, async () => {
+  const conclusionMarker = markerOf('uiDescribe.k199DispatchStarted')
+  const lines: string[] = []
+  for (const limit of [1, 3, 99]) {
+    const fixture = frozenFixture(8, join(BASE, `limit-${String(limit)}`))
+    const plan = fixture.office.poolPlan(fixture.call, { reuseIdle: true })
+    const receipt = await fixture.run({ action: 'next', limit })
+    const dispatched = receipt.split(conclusionMarker).length - 1
+    lines.push(`limit=${String(limit)} -> ${String(receipt.length)} chars, dispatched ${String(dispatched)}/${String(plan.dispatch.length)}`)
+    assert.equal(
+      originalLength(receipt),
+      receipt.length,
+      `limit=${String(limit)}: the receipt must not be truncated by the host (原文 N 字符 suffix must be absent)`,
+    )
+    assert.ok(receipt.length < HOST_LIMIT, `limit=${String(limit)}: the whole receipt must stay under ${String(HOST_LIMIT)}, got ${String(receipt.length)} chars`)
+    assert.ok(dispatched >= 1, `limit=${String(limit)}: at least one card must be dispatched in this fixture (otherwise the grid is vacuous)`)
+    // `take = min(limit, DISPATCH_TAKE_MAX(8), dispatch.length)`；而 `dispatch.length <= maxParallelDispatch(4)`
+    // ⇒ 硬上限那一项在现口径下永不生效。这条断言把"到底派了几张"钉在准入读数上（不是随手写的 3）。
+    assert.equal(
+      dispatched,
+      Math.min(limit, plan.dispatch.length),
+      `limit=${String(limit)}: dispatched ${String(dispatched)} must equal min(limit, admitted ${String(plan.dispatch.length)})`,
+    )
+  }
+  console.log(`[M232-14] ${lines.join(' | ')}`)
+  // 自证：`limit: 99` 与 `limit: 3` 在准入只有 3 张时必须派同样多（多派的每一张都是没有准入的）
+  assert.ok(lines.length === 3, 'self-proof: all three limit states must have been measured')
 })
 
 test('M232-07 candidate count 2 -> 100 -> 2000 must not grow the merged block linearly (function-level three states)', () => {
