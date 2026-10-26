@@ -33,7 +33,7 @@ import { updateTask } from '../src/domain/collab.js'
 import { renderChangeFeed } from '../src/domain/changeFeed.js'
 import type { ChangeFeed } from '../src/domain/changeFeed.js'
 import { setLocale } from '../src/domain/i18n.js'
-import { classifyNonDispatchable, createTask, listTasks, readyTasks, writeTask } from '../src/domain/plan.js'
+import { candidateQueue, classifyNonDispatchable, createTask, listTasks, readyTasks, writeTask } from '../src/domain/plan.js'
 import { attributeRole, listRoleCards, officeAllowFace, publicWritePathsFor, toolAllowList } from '../src/domain/roles.js'
 import { evaluateWriteScope } from '../src/domain/writeScope.js'
 import { renderStatusBlock } from '../src/interface/inject.js'
@@ -498,6 +498,41 @@ test('M225-R2 (dispatch face, two-state) a role:office card never enters the rea
   const clean = fixture('office-dispatch-clean')
   createTask(clean.store, clean.journal, { title: 'w', goal: 'g', dod: ['d'], role: 'developer', size: 'small', writeScopes: ['src/x.ts'] } as never)
   assert.equal(clean.office.roleBlockedLine(clean.call), '', 'without such a card the line must be empty')
+})
+
+/**
+ * **`M225-R2b`（`DEF-273`，`REV-142` 必修一）：直打 `candidateQueue`，不绕 `sdo_plan` 回执。**
+ *
+ * 为什么单独要这一格：`M225-R2` 断言的是 `readyTasks` + `classifyNonDispatchable` + `roleBlockedLine`
+ * 三条 —— 都是**别处**的判据；而 `plan.ts` 里 `candidateQueue` 的 office 过滤（有序候选表的最后一道）
+ * 此前**全仓没有任何测试直接打过**（`grep -rn candidateQueue test/` 只命中 `m224` 的一句注释）⇒
+ * 把那行过滤删掉，全量照样全绿，而派发回执的 `queued` 表会重新把 office 卡印成"下一轮会派它"
+ * （卡面把这个点写成"关键：不回执误印 queued"）。间接断言**定位不到是哪一行在挡**，所以这里直接调它。
+ *
+ * 双态 + 反向自证：office 卡**不在**结果里；普通 developer 卡**在**；把同一张卡的角色改成 developer
+ * 之后它**必须出现**（否则这一格就是恒真）。
+ */
+test('M225-R2b (candidateQueue, direct) a role:office card never enters the ordered candidate table', () => {
+  const f = fixture('office-candidate-queue')
+  const officeCard = createTask(f.store, f.journal, {
+    title: 'process officer card', goal: 'g', dod: ['d'], role: 'office', size: 'small', writeScopes: ['docs/'],
+  } as never)
+  const workCard = createTask(f.store, f.journal, {
+    title: 'work card', goal: 'g', dod: ['d'], role: 'developer', size: 'small', writeScopes: ['src/x.ts'],
+  } as never)
+  const tasks = listTasks(f.store)
+
+  const queued = candidateQueue(tasks).map((task) => task.id)
+  assert.equal(queued.includes(officeCard.id), false, 'the ordered candidate table must not list a role:office card as queued')
+  assert.equal(queued.includes(workCard.id), true, 'an ordinary card must stay in the ordered candidate table')
+
+  // 反向自证：同一张卡换成 developer 角色 ⇒ 必须出现（把过滤删掉这格就红）
+  const flipped = tasks.map((task) => (task.id === officeCard.id ? ({ ...task, role: 'developer' } as unknown as (typeof tasks)[number]) : task))
+  assert.equal(
+    candidateQueue(flipped).map((task) => task.id).includes(officeCard.id),
+    true,
+    'self-proof: flipping the same card to role=developer must put it back into the table (otherwise this grid is vacuous)',
+  )
 })
 
 test('M225-R3 (status block) the role line says office, in both languages', () => {
