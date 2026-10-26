@@ -82,6 +82,7 @@ import {
   describeDispatchStarted,
   dispatchPromptEcho,
   receiptEchoSuffix,
+  RECEIPT_BUDGET,
   childFaceLines,
   describePoolBlock,
 } from './interface/describe.js'
@@ -2019,6 +2020,28 @@ export function apply(ctx: Context, config: SdoConfig): void {
        */
       const mustSections = (): string => infeasibleBlock + roleBlockedSection
       /**
+       * **`REV-097` #5（`TASK-290`）：`next` 的**每一条**出口都收进同一个预算。**
+       *
+       * 修前每一块各有硬上限，但**各块上限之和没有上限**，且「一张卡都没派出去」那几支各自拼串、
+       * 根本不经过任何总预算：实测那一支整份 **56,051** 字符（宿主 8,000 就截，尾巴上的读数全丢；
+       * 主派发路径同一夹具实测 **8,062**、`truncated=true`）。`M232-06` / `M232-14` 就是按这条红的。
+       *
+       * 一条判据、**所有**出口共用：超 `RECEIPT_BUDGET` 就**保头截尾** —— 头部是结论（派给谁 /
+       * 为什么一张都没派），尾部是读数；截断点上补一行 ASCII 指路，明写完整读数在哪
+       * （截断**不许**静默）。优先按行切分（`lastIndexOf('\n')`），避免半行。
+       *
+       * ⚠️ 主派发路径**收在 `receiptRest` 上**、不去包那条 `return` —— `M137-03` 是**源码文本锚**，
+       * 钉 `return \`${dispatchSummary}` 的逐字形状（实测：包 return 立刻红）。
+       */
+      const boundedReceipt = (text: string): string => {
+        if (text.length <= RECEIPT_BUDGET) return text
+        const cut = text.lastIndexOf('\n', RECEIPT_BUDGET)
+        const keep = cut > 0 ? text.slice(0, cut) : text.slice(0, RECEIPT_BUDGET)
+        return keep
+          + `\n…[receipt truncated at ${String(RECEIPT_BUDGET)} chars: conclusion kept, tail readings dropped`
+          + ' — full text in .sdo/journal.jsonl + sdo_plan action=next why=true]'
+      }
+      /**
        * **`REV-097` #5（`TASK-280`）：本轮派几张 —— `next` 的几条出口共用**这一个**算式。**
        *
        * 修前两处各写一遍 `Math.max(1, Math.min(args.limit ?? 1, plan.dispatch.length))`，
@@ -2223,7 +2246,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           const diagnostics = issues
             .map((issue) => fmt('uiIndex.kPlanIssueLine', { p1: issue.code, p2: issue.taskId, p3: issue.detail, p4: issue.remedy }))
             .join('\n')
-          if (args.why === true) return verdict + '\n' + queueSection + mustSections() + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection
+          if (args.why === true) return boundedReceipt(verdict + '\n' + queueSection + mustSections() + '\n' + diagnostics + heldByScopeSection + healthSection + rejectedSection + structuralSection)
           /**
            * **`REV-104` #6**：这一支（「没有派发 + 计划有问题」）修前**没有**健康区 ⇒
            * 悬空的派发决定在这里**一个字都不印**（评审也是在这一点上推翻了我上一版「所有分支可见」的
@@ -2232,7 +2255,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
            */
           const danglingHere = danglingDecisionLines(office.dispatchDecisionHealth(call).pending)
           const danglingSection = danglingHere.length === 0 ? '' : '\n' + danglingHere.join('\n') + '\n'
-          return verdict + '\n' + queueSection + mustSections() + '\n' + diagnostics + danglingSection + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection
+          return boundedReceipt(verdict + '\n' + queueSection + mustSections() + '\n' + diagnostics + danglingSection + '\n' + describePlan(office.tasks(call), [], office.shapeNotes(call)) + structuralSection)
         }
         if (plan.queued.length === 0) {
           // **R-9**：真机在这里印「没有可派发的任务卡（都已认领/完成）」，而实际上是 4 张 ready 卡
@@ -2258,8 +2281,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
             }) + mustSections() + danglingSection
           }
           // **`TASK-218`**：结论（为什么一张都没派）在前，队列在后
-          return describeNonDispatchable(office.nonDispatchable(call)) + '\n' + mustSections()
-            + '\n' + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection
+          return boundedReceipt(describeNonDispatchable(office.nonDispatchable(call)) + '\n' + mustSections()
+            + '\n' + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection)
         }
         // **DEF-049 / TASK-078 落点二**：走队列分支时也把分类带上 —— "排队"是"池满"，
         // 与"卡是 blocked / 依赖未满足"是**不同**的原因，不能只报前者（否则读者仍分不清
@@ -2270,7 +2293,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
         const blocked = capRows(plan.blocked.map((item) => fmt('uiIndex.kPoolBlockedLine', { p1: item.task.id, p2: item.task.role, p3: item.detail })), 'pool-blocked lines').join('\n')
         // **`TASK-218`**：**不派发的裁决排最前**（逐张 blocked + 角色/暂不可派），队列与池读数在后
         // —— 宿主截断只会吃掉排在后面的读数，不会吃掉"为什么没派"。
-        return blocked
+        return boundedReceipt(blocked
           + '\n' + fmt('uiIndex.k31', { p1: plan.queued.length, p2: settings.maxParallelDispatch })
           + mustSections() + nonDispatchableNote
           + '\n' + heldByScopeSection + healthSection + rejectedSection
@@ -2279,7 +2302,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           // 任何位子 ⇒ 交进去的计划面**必然为空**，这一行不会出现。保留接线只为两处口径一致（同一份快照、
           // 同一个参数形状）；**不要**在这里声称「准入已经把位子许出去了」—— 那是 `REV-127#1` 那一类假话。
           + '\n' + describePoolBlock(plan.pools, poolQueuedIds, reuse.supported, settings.dispatchOrphanTtlMinutes, { reuseAdmissions: plan.reuseAdmissions })
-          + structuralSection
+          + structuralSection)
       }
 
       /**
@@ -2364,7 +2387,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
           }))
         }
         // **`TASK-218`**：诊断行（为什么这一轮派不出去）在前，队列/结构在后
-        return lines.filter((line) => line !== '').join('\n') + mustSections() + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection
+        return boundedReceipt(lines.filter((line) => line !== '').join('\n') + mustSections() + heldByScopeSection + healthSection + rejectedSection + queueSection + structuralSection)
       }
 
       /**
@@ -2919,7 +2942,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
        * **`TASK-228` 落点三**：三分读数与退役预告紧跟池块（同一件事的两个面），且在回声**之前**
        * —— 按 `TASK-218` 的牺牲顺序，回声先被吃。
        */
-      const receiptRest = `${boundedOut(out).join('\n\n')}${mustSections()}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${poolTriageSection}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      const receiptRestRaw = `${boundedOut(out).join('\n\n')}${mustSections()}${reuseSkipBlock === '' ? '' : `\n\n${reuseSkipBlock}`}\n${queueSection}${tail}${freshNote}${poolBlock === '' ? '' : `\n${poolBlock}`}${poolTriageSection}${buildNote}${denyDriftNote}${heldByScopeSection}${dirtyByScopeSection}${dirtyHintSection}${dirtyUnjudgedSection}${healthSection}${rejectedSection}${structuralSection}`
+      // 主派发路径同样收进预算；**不改**下一条 return 的逐字形状（`M137-03` 源码锚）
+      const receiptRest = boundedReceipt(receiptRestRaw)
       // **`M137-03`**（源码级判据）：回执必须由 `dispatchSummary` 起头 —— 这一行就是那个形状。
       // `head` 只用于**量长度**（与返回值的前半段逐字相同），回声按预算取舍后追加在最后。
       const head = `${dispatchSummary}\n${receiptRest}`
