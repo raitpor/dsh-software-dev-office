@@ -72,14 +72,14 @@ import { capacityPlan, independenceViolations, seatReading } from './integration
 import type { SeatReading } from './integration/orchestrator.js'
 import { budgetAdvice, crossingTier, defaultBudget, describeBudgetLine, describeBudgetLineNoUsage, readCostSnapshot, summarize, usedRatio } from './integration/cost.js'
 import type { Budget, BudgetChoice, CostSnapshot, UsageRow, UsageSummary } from './integration/cost.js'
-import { addErrata, claim, dropDeclarationOf, dropDeclarationVerdict, dropDispositionTally, landingPointerOf, pendingReviewBigCards, reassign, release, report as reportTask, staleClaims, unblock, updateTask, withDropDeclaration, withLandingPointer } from './domain/collab.js'
+import { LANDING_UNMERGED_FIELD, addErrata, claim, dropDeclarationOf, dropDeclarationVerdict, dropDispositionTally, landingPointerOf, pendingReviewBigCards, reassign, release, report as reportTask, staleClaims, unblock, updateTask, withDropDeclaration, withLandingPointer } from './domain/collab.js'
 import { staleEntryGateOf } from './domain/entryGate.js'
 import type { DropDeclaration, DropDeclareVerdict, DropDispositionTally, LandingReachability, UnblockResult } from './domain/collab.js'
 import type { ClaimInput, ClaimResult, ReportInput, ReportResult } from './domain/collab.js'
 import { orphanLocks, claimMissing, reuseDeliveries as reuseDeliveriesOf, suspendedDispatches } from './domain/dispatchHealth.js'
 import type { ClaimMissing, OrphanLock, ReuseDelivery, SuspendedDispatch } from './domain/dispatchHealth.js'
 import type { ScopeHold } from './domain/plan.js'
-import { blockedTasks, candidateQueue, classifyNonDispatchable, closeIteration, compareDispatchOrder, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTask, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
+import { blockedTasks, candidateQueue, classifyNonDispatchable, closeIteration, compareDispatchOrder, scopeHeldTasks, scopeIntersections, decompose, dropDependents, dirtyScopeHolds, dropTaskChecked, listTasks, producesProductArtifacts, readIteration, readyTasks, reopenTask, restoreTask, startIteration, structuralPlanOf, textPathsOf, validatePlan, writeTask  } from './domain/plan.js'
 import type { DropOutcome, LifecycleOutcome } from './domain/plan.js'
 import { queueEntriesOf } from './domain/snapshot.js'
 import { changeFeedOf } from './domain/changeFeed.js'
@@ -3989,13 +3989,14 @@ export class SoftwareDevOffice {
     return readyTasks(this.tasks(call), limit, this.staleEntryGate(call))
   }
 
-  /** 认领（CAS）。 */
-  /** D3-3：把卡置为 dropped（回收路径）。 */
-  dropTask(call: OfficeCall, taskId: string, reason: string): TaskCard | undefined {
-    const { store, journal } = this.contextFor(call)
-    return dropTask(store, journal, taskId, reason)
-  }
-
+  /**
+   * **`DEF-260`（`TASK-270`）：无档 drop 的旁路已删除。**
+   *
+   * 修前这里有一个 `dropTask(call, taskId, reason)` —— 不判档、不校凭据，直接把卡置 dropped。
+   * `test/m4.test.ts` 的三个调用点就走这条路 ⇒ `DEF-244` 的"四档可分辨"在**代码面**上仍有一条绕过口。
+   * 现在唯一入口是 {@link dropTaskDeclared}（无 `disposition` 一律拒收），删掉这个方法就等于
+   * 让旁路在**类型面**也走不通 —— 谁再想凭空 drop，编译期就红。
+   */
   /** **`DEF-118`**：带判定细节的 drop（已完成卡会被拒并给出路）。工具面走这一个。 */
   dropTaskChecked(call: OfficeCall, taskId: string, reason: string): DropOutcome {
     const { store, journal } = this.contextFor(call)
@@ -4012,7 +4013,7 @@ export class SoftwareDevOffice {
    * 不自己遍历提交图、不解析 reflog，因此与"这条提交真的在这个仓库里、且 HEAD 走得到"同宽。
    * 不可判定（不是仓库 / git 不可用 / 工作区都取不到）**一律不放行**：这一档的全部内容就是那个事实。
    */
-  landingReachabilityOf(workspace: string, hash: string): LandingReachability {
+  landingReachabilityOf(workspace: string, hash: string, opts: { allowUnmerged?: boolean } = {}): LandingReachability {
     const run = (args: readonly string[]): boolean => {
       try {
         execFileSync('git', [...args], { cwd: workspace, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] })
@@ -4025,12 +4026,19 @@ export class SoftwareDevOffice {
     if (target === '') return { ok: false, code: 'unverifiable' }
     if (!run(['rev-parse', '--is-inside-work-tree'])) return { ok: false, code: 'unverifiable' }
     if (!run(['rev-parse', '--verify', '--quiet', `${target}^{commit}`])) return { ok: false, code: 'unresolvable' }
-    if (!run(['merge-base', '--is-ancestor', target, 'HEAD'])) return { ok: false, code: 'unreachable' }
-    return { ok: true }
+    if (!run(['merge-base', '--is-ancestor', target, 'HEAD'])) {
+      // **`DEF-259`**：`allowUnmerged`（`done` 的那一路）—— 提交**解析得出**就接受，但如实标 `merged: false`；
+      // `drop` 的 `delivered-deferred` 不走这条（那一档的全部内容就是"已在历史里"，判否即拒）。
+      if (opts.allowUnmerged === true) return { ok: true, merged: false }
+      return { ok: false, code: 'unreachable' }
+    }
+    return { ok: true, merged: true }
   }
 
   /**
-   * **`DEF-244` 落点一/二：带「分档 + 凭据」的 drop**（工具面走这一个）。
+   * **`DEF-244` 落点一/二：带「分档 + 凭据」的 drop**（工具面走这一个）。   *
+   * 本方法是**唯一**入口：`DEF-260` 指出的那条无档旁路（`dropTask`）已删除 —— 谁再想凭空 drop，
+   * 在类型面上就走不通（`test/m4.test.ts` 的三个调用点已改走这里并带档）。
    *
    * 顺序有意如此：**先判档与凭据、再动台账**。判不过 ⇒ `dropTaskChecked` 一次都没被调，
    * 卡面与事件**零写盘**（"本次没有写盘"那句话在回执里是真的）。
@@ -4108,13 +4116,15 @@ export class SoftwareDevOffice {
    * 只写卡面、不追加事件：这一笔不是状态迁移（卡早已 done），`task/done` 事件的体量与形状
    * 不动 —— 与 `errata`（追加式勘误）同一个理由：历史正文不改，只补一行可复核的指针。
    */
-  noteLandingPointer(call: OfficeCall, taskId: string, commit: string): string {
+  noteLandingPointer(call: OfficeCall, taskId: string, commit: string, unmerged = false): string {
     const { store } = this.contextFor(call)
     const task = this.tasks(call).find((item) => item.id === taskId)
     if (task === undefined) return ''
     const pointer = String(commit ?? '').trim()
     if (pointer === '') return ''
-    writeTask(store, withLandingPointer(task, pointer))
+    // **`DEF-259`**：未合并的指针照记，但状态落在**独立字段**（`landingUnmerged`），不污染哈希本身
+    const withPointer = withLandingPointer(task, pointer)
+    writeTask(store, unmerged ? ({ ...withPointer, [LANDING_UNMERGED_FIELD]: true } as TaskCard) : withPointer)
     return pointer
   }
 

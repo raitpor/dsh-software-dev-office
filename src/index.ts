@@ -3262,6 +3262,8 @@ export function apply(ctx: Context, config: SdoConfig): void {
            * 而豁免不产生任何可追溯性。给了一句警告，至少让「已交付」不再只是一句话。
            */
           const landingCommit = args.action === 'done' ? singleTextArg(args.landing) : ''
+          /** **`DEF-259`**：这一笔指针是否「提交存在、但还没并进 HEAD」（`done` 允许，回执如实标注）。 */
+          let doneLandingUnmerged = false
           if (args.action === 'done' && landingCommit !== '') {
             let pointerWorkspace = ''
             try {
@@ -3271,7 +3273,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
             }
             const reach = pointerWorkspace === ''
               ? { ok: false, code: 'unverifiable' as const }
-              : office.landingReachabilityOf(pointerWorkspace, landingCommit)
+              : office.landingReachabilityOf(pointerWorkspace, landingCommit, { allowUnmerged: true })
             if (!reach.ok) {
               const why = reach.code === 'unresolvable'
                 ? t('uiIndex.kDoneLandingUnresolvable')
@@ -3280,6 +3282,7 @@ export function apply(ctx: Context, config: SdoConfig): void {
                   : t('uiIndex.kDoneLandingUnverifiable')
               return fmt('uiIndex.kDoneLandingRejected', { p1: landingCommit, p2: why })
             }
+            doneLandingUnmerged = reach.merged === false
           }
           if (args.action === 'done') {
             const merge = office.finishWorktree(call, { taskId: args.id, message: `sdo: merge ${args.id} work` })
@@ -3332,7 +3335,9 @@ export function apply(ctx: Context, config: SdoConfig): void {
             ? ''
             : landingCommit === ''
               ? '\n' + t('uiIndex.kDoneLandingNoPointer')
-              : '\n' + fmt('uiIndex.kDoneLandingPointer', { p1: office.noteLandingPointer(call, args.id, landingCommit) || landingCommit })
+              : '\n' + (doneLandingUnmerged === true
+                ? fmt('uiIndex.kDoneLandingUnmerged', { p1: office.noteLandingPointer(call, args.id, landingCommit, true) || landingCommit })
+                : fmt('uiIndex.kDoneLandingPointer', { p1: office.noteLandingPointer(call, args.id, landingCommit) || landingCommit }))
           // **SDO-58**：结算后量一下子代理报告 —— 异常短/缺失就显式告警（真机 235 字节的残片报告
           // 是事后才被复评员发现的，审计链断在这里）
           const health = args.action === 'done' ? office.childReportHealth(call, args.id) : { state: 'none' as const }

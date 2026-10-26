@@ -2127,6 +2127,14 @@ export const DROP_DECLARATION_FIELD = 'dropDeclaration'
 /** 卡片真源上的落地指针键（`done` 给了 `landing` 才落；与 `landing`（DEF-018 的路径声明）不是一回事）。 */
 export const LANDING_POINTER_FIELD = 'landingCommit'
 
+/**
+ * **`DEF-259`**：落地指针「存在但尚未合并」的独立字段。
+ *
+ * 为什么要单开一个字段而不是往 `landingCommit` 里写后缀：`landingCommit` 的消费方（追溯、脚本）
+ * 期望它是一个**能直接 `git` 用的哈希**；把状态塞进同一个字符串会让每个消费方都得解析一次。
+ */
+export const LANDING_UNMERGED_FIELD = 'landingUnmerged'
+
 /** 一条 `drop` 的分档声明。**只带该档自己的凭据**（别的档的键不落，免得台账里出现无主字段）。 */
 export interface DropDeclaration {
   disposition: DropDisposition
@@ -2145,6 +2153,17 @@ export interface DropDeclaration {
 /** 一份判定器结果：`ok` 之外必须说清**为什么不是**（回执要能点名那个哈希）。 */
 export interface LandingReachability {
   ok: boolean
+  /**
+   * `ok: true` 时：该提交**是否已可由 HEAD 到达**。
+   *
+   * `false` = 提交存在、但还没并进当前 HEAD —— 副本工作流下的常态：`done` 发生在**合并之前**，
+   * 诚实指针那一刻必然"到不了 HEAD"（`DEF-259`）。这种情形**不该**被判红（否则诚实必被拒，
+   * 反过来把"随手填个历史哈希"变成唯一合法写法），但也**不许**当成"已交付"：
+   * 调用方接受它、在回执里如实标注「未合并」，并记进卡面的独立字段。
+   *
+   * 缺省（`undefined`）按 `true` 读 —— 既有的"祖先关系判是"那条路行为不变。
+   */
+  merged?: boolean | undefined
   /** 失败码：`unverifiable`（不是仓库 / git 不可用）｜`unresolvable`（解析不出提交）｜`unreachable`（不在 HEAD 历史里） */
   code?: 'unverifiable' | 'unresolvable' | 'unreachable' | undefined
 }

@@ -1332,6 +1332,7 @@ uiIndex:
   kDropTallyRow: "- `{p1}`：{p2} 张"
   kDropTallyUndeclared: "- 未声明分档：{p1} 张（`dropped` 共 {p2} 张，其中带声明 {p3} 张）—— 存量不回填：本轮之后新建的 `drop` 必须带档，历史卡读回来就落在这一行"
   kDoneLandingPointer: "本卡落地指针：提交 `{p1}` —— 已核对**可由 HEAD 到达**，并记进卡面 `landingCommit`（「已交付」不再只是一句话）"
+  kDoneLandingUnmerged: "本卡落地指针：提交 `{p1}` —— 提交**解析得出**，但**尚未合并**（此刻不可由 HEAD 到达）。已记进卡面 `landingCommit`，并单独标了 `landingUnmerged`：合并之后它就是一条普通的已落地指针（`DEF-259`：诚实指针不许因为时序被判红）"
   kDoneLandingNoPointer: "本卡落地指针：（本次**未提供**）—— 只提示不拦：存量完成卡里大量找不到提到它的提交，把「没给指针」判红只会逼人去写豁免；代价是这张卡仍然无法从台账回溯到某一笔提交"
   kDoneLandingUnverifiable: "当前工作区不是可读的 git 仓库（或 git 不可用），「可由 HEAD 到达」这条判据无法机械核对"
   kDoneLandingUnresolvable: "在本仓库里解析不出提交（`git rev-parse --verify` 失败）：拼错了，或者它属于别的仓库"

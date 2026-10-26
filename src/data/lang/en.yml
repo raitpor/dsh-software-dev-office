@@ -2018,6 +2018,7 @@ uiIndex:
   kDropTallyRow: "- `{p1}`: {p2}"
   kDropTallyUndeclared: "- no disposition declared: {p1} (of {p2} `dropped` cards, {p3} carry a declaration) - history is not backfilled: every `drop` created from now on must declare a tier, older cards read back into this row"
   kDoneLandingPointer: "landing pointer for this card: commit `{p1}` - checked to be **reachable from HEAD**, and written into the card face as `landingCommit` (\"delivered\" is no longer just a sentence)"
+  kDoneLandingUnmerged: "landing pointer for this card: commit `{p1}` - the commit **resolves**, but it is **not merged yet** (not reachable from HEAD right now). Written into the card face as `landingCommit` plus a separate `landingUnmerged` flag; once merged it becomes an ordinary landed pointer (`DEF-259`: an honest pointer must not be rejected because of timing)"
   kDoneLandingNoPointer: "landing pointer for this card: (**not provided**) - a hint only, never a block: many completed cards have no commit that mentions them, so failing \"no pointer\" would only push people into writing waivers; the cost is that this card still cannot be traced back to a commit from the ledger"
   kDoneLandingUnverifiable: "the current workspace is not a readable git repository (or git is unavailable), so \"reachable from HEAD\" cannot be checked mechanically"
   kDoneLandingUnresolvable: "no such commit in this repository (`git rev-parse --verify` failed): it is mistyped, or it belongs to another repository"

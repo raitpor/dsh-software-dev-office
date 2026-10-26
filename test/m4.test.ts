@@ -521,7 +521,8 @@ test('D3-1/D3-3/D4-3（依据 sdo-test 诊断修复）：批内去重、卡可�
 
   // D3-3：回收路径 —— 卡可置为 dropped，且不再算作计划问题
   const first = office.tasks(call())[0] as TaskCard
-  const dropped = office.dropTask(call(), first.id, '误拆，作废')
+  const declaredDrop = office.dropTaskDeclared(call(), { taskId: first.id, reason: '误拆，作废', disposition: 'never-done' })
+  const dropped = declaredDrop.ok ? declaredDrop.card : undefined
   assert.equal(dropped?.status, 'dropped')
   assert.equal((office.tasks(call()).find((task) => task.id === first.id))?.status, 'dropped', '留痕：卡仍在，但状态 dropped')
   assert.ok(
@@ -557,7 +558,7 @@ test('D5-1/D5-2（依据 sdo-test 复测修复）：dropped 卡不参与成对�
   const conflict = office.planIssues(call()).filter((issue) => issue.code === 'write-scope-disjoint')
   assert.ok(conflict.length > 0, 'exclusive-window + 同写范围 ⇒ 必须判冲突（用例有判别力）')
   const victim = office.tasks(call()).find((task) => task.title === '冲突乙') as TaskCard
-  office.dropTask(call(), victim.id, '作废后不应再参与成对校验')
+  office.dropTaskDeclared(call(), { taskId: victim.id, reason: '作废后不应再参与成对校验', disposition: 'never-done' })
   const after = office.planIssues(call()).filter((issue) => issue.code === 'write-scope-disjoint')
   assert.deepEqual(after, [], `dropped 的卡不得再造成写范围冲突：${JSON.stringify(after)}`)
 
@@ -673,7 +674,7 @@ test('G-01~G-05（依据 sdo-test 汇总报告修复）：落盘名/建议透传
 
   // G-04：drop 掉结构卡后，再 decompose 不得复活它
   const structural = office.tasks(call()).find((task) => task.title.includes('DES-001')) as TaskCard
-  office.dropTask(call(), structural.id, 'G-04 用例')
+  office.dropTaskDeclared(call(), { taskId: structural.id, reason: 'G-04 用例', disposition: 'never-done' })
   const before = office.tasks(call()).length
   office.planDecompose(call())
   const revived = office.tasks(call()).filter((task) => task.title.includes('DES-001') && task.status !== 'dropped')

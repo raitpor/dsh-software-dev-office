@@ -6,6 +6,9 @@
  * 「被别人取代」四种事实**长得一模一样**。于是驾驶舱只能拿 `git status` 反推，而「工作树干净」
  * 被反读成「没落地」（`DEF-243`）。
  *
+ * **`DEF-260`（`TASK-270`）**：本文件之外还有一条同源纪律 —— `office.dropTask` 这条**无档旁路**已删除，
+ * `test/m4.test.ts` 的三个调用点改走 `dropTaskDeclared`（无 `disposition` 一律拒收），旁路在**类型面**上就走不通。
+ *
  * 本文件的五格（DoD 落点五）+ 两格补充，口径是**可分辨**、不是**更严**：
  *   ① 无 `disposition` 的 drop ⇒ 拒收并点名四档（**不默认 `never-done`**）；
  *   ② `delivered-deferred` 给一个**不在 HEAD 历史上**的哈希 ⇒ 拒收（反例格：防「随便填个 commit 就过」）；
@@ -254,10 +257,12 @@ test('M270-07 `done` 的落地指针：坏哈希 ⇒ 拒收零写盘；不给 �
     const claimed = office.claimTask(call, { taskId: id, owner: 'dev-a', expectedRevision: 1 })
     assert.equal(claimed.ok, true, `夹具前提：${id} 必须认领成功（failed: ${JSON.stringify(claimed).slice(0, 200)}）`)
   }
-  // ① 坏指针 ⇒ 拒收，卡原样留在 in-progress（**先验后写**，不是写完再报）
-  const refused = String(await task.execute({ action: 'done', id: 'TASK-001', owner: 'dev-a', evidence, landing: sideHash }, exec))
-  assert.ok(refused.includes(sideHash), `拒收要点名那个哈希：${refused.slice(0, 400)}`)
-  assert.equal(statusOf('TASK-001'), 'in-progress', '被拒时**零写盘**（不许先落 done 再报指针无效）')
+  // ① **解析不出**的指针 ⇒ 拒收，卡原样留在 in-progress（**先验后写**，不是写完再报）
+  //    ⚠️ `DEF-259`：侧支提交（解析得出、尚未合并）**不再**算坏指针 —— 见 ①b。
+  const ghost = 'f'.repeat(40)
+  const refused = String(await task.execute({ action: 'done', id: 'TASK-001', owner: 'dev-a', evidence, landing: ghost }, exec))
+  assert.ok(refused.includes(ghost), `拒收要点名那个哈希：${refused.slice(0, 400)}`)
+  assert.equal(statusOf('TASK-001'), 'in-progress', 'nothing may be written when the pointer is refused')
   // ② 不给 ⇒ 放行 + 只警告不拦（兄弟卡在飞 ⇒ 按 `DEF-033` 声明未冻结，与本卡无关的那条纪律照旧）
   const warned = String(await task.execute({ action: 'done', id: 'TASK-002', owner: 'dev-a', evidence, unfrozen: '["TASK-001","TASK-003"]' }, exec))
   assert.equal(statusOf('TASK-002'), 'done', `不给指针必须**放行**（存量不可追溯，判红只会逼人写豁免）：${warned.slice(0, 400)}`)
@@ -268,6 +273,14 @@ test('M270-07 `done` 的落地指针：坏哈希 ⇒ 拒收零写盘；不给 �
   assert.ok(pointed.includes(fmt('uiIndex.kDoneLandingPointer', { p1: headHash })), `回执要把这一行单列出来：${pointed.slice(-600)}`)
   const pointer = office.storeFor(WORKSPACE).readYaml<{ task: TaskCard & { landingCommit?: string } }>('tasks', 'TASK-003.yml')?.task?.landingCommit
   assert.equal(pointer, headHash, '落地指针要记进卡面（`landingCommit`），否则「已交付」仍然只是一句话')
+  // ④ **`DEF-259`**：解析得出但**尚未合并**的指针必须放行，并在回执/卡面**如实标注未合并**
+  //    （放在最后：此刻兄弟卡都已收口，没有在飞兄弟，`unfrozen` 为空是如实的）
+  const unmerged = String(await task.execute({ action: 'done', id: 'TASK-001', owner: 'dev-a', evidence, landing: sideHash, unfrozen: '[]' }, exec))
+  assert.equal(statusOf('TASK-001'), 'done', `an honest pointer (commit exists, not merged yet) must be admitted, otherwise honesty is always refused: ${unmerged.slice(0, 500)}`)
+  assert.ok(unmerged.includes(fmt('uiIndex.kDoneLandingUnmerged', { p1: sideHash })), `the receipt must state the unmerged status: ${unmerged.slice(-600)}`)
+  const unmergedCard = office.storeFor(WORKSPACE).readYaml<{ task: TaskCard & { landingCommit?: string; landingUnmerged?: boolean } }>('tasks', 'TASK-001.yml')?.task
+  assert.equal(unmergedCard?.landingCommit, sideHash, 'the pointer itself must still be recorded as landingCommit')
+  assert.equal(unmergedCard?.landingUnmerged, true, 'the unmerged status must live in its own field (landingUnmerged), not inside the hash')
 })
 
 /* —————— ⑧ superseded 的凭据同样机械校验（DoD 落点二最后一块没被钉住的） —————— */

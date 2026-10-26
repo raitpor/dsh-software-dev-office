@@ -266,9 +266,11 @@ child.on('exit', (code) => {
   realLedgerReading(skippedFrom(tap))
     .then((line) => {
       console.log(line)
-      process.exit(code ?? 1)
+      // **`DEF-268`**：`process.exit()` 不等 stdout 异步写完（管道写入是异步的），
+      // 而 `M266-09/10/11` 正是用管道抓这一行 ⇒ 改成设 `exitCode`，让事件循环自然收尾
+      process.exitCode = code ?? 1
     })
-    .catch(() => process.exit(code ?? 1))
+    .catch(() => { process.exitCode = code ?? 1 })
 })
 child.on('error', (error) => {
   releaseLock()
