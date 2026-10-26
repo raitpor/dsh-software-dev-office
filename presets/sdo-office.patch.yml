@@ -40,9 +40,11 @@
                   lang: zh-CN
                   gateLevel: enforce                 # suggest | enforce | strict
                   commandEcho: echo
-                  # 受**写入范围纪律**管辖的工具：带路径的（write/edit）逐路径核对本卡 writeScopes；
-                  # bash 没有路径可判 ⇒ 如实标 unchecked，靠 `done` 的 A2 对账兜底（2026-10-08 起这两个字段真的生效了）
-                  disciplineTools: [write, edit, bash]
+                  # 受**写入范围纪律**管辖的工具：带路径的（write/edit）逐路径核对本卡 writeScopes。
+                  # **`ADR-031` ⑤ / `TASK-190`**：`bash` 已从这里移除 —— office 不跑 bash，
+                  # 所以它既不该被挂载（见下方 `tool-bash` 那一行的删除），也不该留在纪律工具面里
+                  # （留着会让"office 有 bash"这件事从**旁路**重新合法化：纪律面对 bash 只能标 unchecked）。
+                  disciplineTools: [write, edit]
                   # **公共放行面**：不受卡写范围约束（台账 / 派生文档 / 用例）。
                   # ⚠️ **本仓示例，不是通用默认**（`DEF-102`）：别的项目要按自己的布局改这三个前缀；
                   #    插件的**代码内默认值**在 `src/config.ts`（同样是 `.sdo/`/`docs/`/`test/` 这三个，属本项目约定）。
@@ -84,6 +86,9 @@
             # 官方 standard / ptc / cordis 三个 preset 同样给 false（glob 超上限时保留前 N 条、不跨顶层采样）。
             config:
               sampleOverCapGlobResults: false
+          # **`ADR-031` ⑤ / `TASK-190`**：挂载行**必须留**（`test/m28` M28-02：roles.yml 里出现的
+          # 非本插件工具名都要有提供行，而 developer/tester 等角色确实用 bash ⇒ 共享 preset 必须挂它）。
+          # office 拿不到 bash 靠的是 roles.yml 的 `deny: [bash]` + 不在 allow —— `test/m226` M226-10 钉住。
           - id: tool-bash
             name: '@deepseek-ai/dsh-tool-bash'
           - id: tool-ask-user

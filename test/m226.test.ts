@@ -19,7 +19,7 @@
  * 断言只核对结构（`code` / 路径 / 示例）与 ASCII 片段；中文回执原文走 `en` 侧断言。
  */
 import assert from 'node:assert/strict'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
@@ -28,6 +28,7 @@ import { Config, resolveSettings } from '../src/config.js'
 import { checkDeclaration, declarationOverlaps } from '../src/domain/declarationCheck.js'
 import { setLocale } from '../src/domain/i18n.js'
 import { createTask, listTasks, writeTask } from '../src/domain/plan.js'
+import { OFFICE_TOOL_GROUPS } from '../src/domain/roles.js'
 import { apply } from '../src/index.js'
 import { SoftwareDevOffice } from '../src/office.js'
 import type { SdoConfig } from '../src/config.js'
@@ -36,6 +37,7 @@ import type { SdoStore } from '../src/infra/store.js'
 import type { OfficeCall } from '../src/office.js'
 import type { TaskCard } from '../src/types.js'
 
+const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const BASE = fileURLToPath(new URL('../../node_modules/.sdo-test/m226/', import.meta.url))
 
 /** 汉字字形判定（本文件只用来断言"零中文"，不做内容匹配）。 */
@@ -400,3 +402,68 @@ test('M226-09 (landing) accepted declarations are really written and readable ba
   assert.deepEqual(readBack?.landing, ['src/landing.ts'], 'landing must be on the card')
   assert.deepEqual(readBack?.writeScopes, ['src/office.ts', 'test/m226.test.ts'], 'writeScopes must be on the card')
 })
+
+/**
+ * **`M226-10`（`TASK-190` / `ADR-031` ⑤）：`bash` 对 office 的三处封锁，一处都不许被从别处引回来。**
+ *
+ * 真正的风险不是"配置里少了 deny 那一项"（那早在 `TASK-189` 就成立），而是**有人从别处把它加回来**：
+ * presets 的挂载行、presets 的纪律工具面、以及代码侧的工具**分组声明**。
+ *
+ * 三条判据 + 一条反例自证：
+ *   ① `roles.yml`：office 的 `allow` **不含** bash、`deny` **含** bash（现读，不采信注释）；
+ *   ② `presets/sdo-office.patch.yml`：**不挂** `tool-bash`，`disciplineTools` 里**没有** bash；
+ *   ③ 分组声明：`OFFICE_TOOL_GROUPS.bash` 是**空组**（断言在声明上，不只断言 roles.yml —— `TASK-189` 的教训）；
+ *   ④ 反例自证：把一份**故意**在 allow 里写了 bash 的假 roles 表喂给同一个扫描函数 ⇒ 必须**点名**它，
+ *      否则这条判据就是恒真（只证明"现实里没有"，不证明"能抓"）。
+ *
+ * 断言消息全英文（本文件不进 `KNOWN_PROSE_GAP`，中文只写在断言之外）。
+ */
+test('M226-10 (bash, three faces) office never gets bash: roles allow/deny, preset mount + discipline face, group declaration', () => {
+  const rolesText = readFileSync(join(ROOT, 'src', 'data', 'roles.yml'), 'utf8')
+  // ① roles.yml：office 段的 allow / deny（现读，不看注释）
+  const allowOffenders = rolesWithBashInAllow(rolesText)
+  assert.equal(allowOffenders.includes('office'), false, `office must never list bash in allow (offenders: ${allowOffenders.join(',') || 'none'})`)
+  assert.equal(roleDenyOf(rolesText, 'office').includes('bash'), true, 'office must keep bash in deny')
+  // ④ 反例自证：同一扫描函数对一份**故意**犯规的假表必须点名（否则 ① 只是"现实里没有"）
+  const fake = ['roles:', '  - code: office', '    allow: [read, bash]', '    deny: []', ''].join('\n')
+  assert.deepEqual(rolesWithBashInAllow(fake), ['office'], 'self-proof: the same scan must catch a role that puts bash in allow')
+
+  // ② presets：不许挂 tool-bash、纪律工具面里不许有 bash
+  const preset = readFileSync(join(ROOT, 'presets', 'sdo-office.patch.yml'), 'utf8')
+  // 挂载行**必须留着**：M28-02 要求「roles.yml 里出现的非本插件工具名都要有提供行」，
+  // 而 developer/tester 等角色确实用 bash ⇒ 共享 preset 必须挂它；office 拿不到 bash 靠 deny + 不在 allow。
+  assert.equal(/^\s*-\s*id:\s*tool-bash\s*$/mu.test(preset), true, 'the shared preset must keep the tool-bash mount row (M28-02)')
+  const discipline = /disciplineTools:\s*\[([^\]]*)\]/u.exec(preset)
+  assert.ok(discipline !== null, 'the preset must declare disciplineTools explicitly')
+  assert.equal((discipline[1] ?? '').includes('bash'), false, `bash must not be a discipline tool for office: ${String(discipline[1])}`)
+
+  // ③ 分组声明：bash 组必须是空组
+  assert.deepEqual(OFFICE_TOOL_GROUPS.bash, [], 'the bash group in the office tool face must stay empty')
+})
+
+/** 一份 `roles.yml` 文本里，把 `bash` 写进 `allow` 的角色码（按段现读，不采信注释）。 */
+function rolesWithBashInAllow(text: string): string[] {
+  const offenders: string[] = []
+  let current = ''
+  for (const line of text.split('\n')) {
+    const code = /^\s*-\s*code:\s*(\S+)\s*$/u.exec(line)
+    if (code !== null) { current = code[1] ?? ''; continue }
+    const allow = /^\s+allow:\s*\[([^\]]*)\]/u.exec(line)
+    if (allow === null || current === '') continue
+    if ((allow[1] ?? '').split(',').map((item) => item.trim()).includes('bash')) offenders.push(current)
+  }
+  return offenders
+}
+
+/** 一份 `roles.yml` 文本里某个角色码的 `deny` 列表（空/缺省 ⇒ 空数组）。 */
+function roleDenyOf(text: string, code: string): string[] {
+  let current = ''
+  for (const line of text.split('\n')) {
+    const found = /^\s*-\s*code:\s*(\S+)\s*$/u.exec(line)
+    if (found !== null) { current = found[1] ?? ''; continue }
+    if (current !== code) continue
+    const deny = /^\s+deny:\s*\[([^\]]*)\]/u.exec(line)
+    if (deny !== null) return (deny[1] ?? '').split(',').map((item) => item.trim()).filter((item) => item !== '')
+  }
+  return []
+}
