@@ -269,3 +269,33 @@ test('M270-07 `done` 的落地指针：坏哈希 ⇒ 拒收零写盘；不给 �
   const pointer = office.storeFor(WORKSPACE).readYaml<{ task: TaskCard & { landingCommit?: string } }>('tasks', 'TASK-003.yml')?.task?.landingCommit
   assert.equal(pointer, headHash, '落地指针要记进卡面（`landingCommit`），否则「已交付」仍然只是一句话')
 })
+
+/* —————— ⑧ superseded 的凭据同样机械校验（DoD 落点二最后一块没被钉住的） —————— */
+/**
+ * 落点二对四档的凭据要求是「**机械校验**」，但前七格只钉了 `delivered-deferred`（祖先关系）与
+ * `awaiting-review`（评审存在）两档的拒收：`superseded` 只有**放行**那一格（`M270-04`）。
+ * 实现里它有两条独立判据（指向的卡必须存在 / 不许指向自己），**没有任何格钉住** ——
+ * 谁把这两条删掉，「取代它的卡」就会静默接受一个不存在的编号，而回执仍然写着“已核对台账里存在”。
+ * 所以本格把三条拒绝路径（不存在 / 自指 / 缺凭据）+ 一条正向对照补上。
+ *
+ * 断言消息用英文：`m189` 的读散文棘轮按「文件 + 站点数」**按身份**登记，中文消息会多加未登记站点。
+ */
+test('M270-08 superseded credentials are machine-checked too: unknown card / self-reference / missing all refused', async () => {
+  // ① 指向不存在的卡 ⇒ 拒收，并点名那张卡
+  const unknown = await drop({ id: 'TASK-004', disposition: 'superseded', supersededBy: 'TASK-999' })
+  assert.ok(unknown.includes('TASK-999'), `the refusal must name the missing card: ${unknown.slice(0, 300)}`)
+  assert.equal(statusOf('TASK-004'), 'ready', 'nothing may be written when the credential is refused')
+  assert.equal(declarationOf('TASK-004'), undefined, 'no declaration may be stored when the credential is refused')
+  // ② 指向自己 ⇒ 拒收，且与 ① 的失败理由读得出区别（两句话，不是一句 invalid）
+  const self = await drop({ id: 'TASK-004', disposition: 'superseded', supersededBy: 'TASK-004' })
+  assert.equal(self.includes('TASK-004'), true, `a self-reference must name the card itself: ${self.slice(0, 300)}`)
+  assert.notEqual(self, unknown, 'self-reference and unknown-card must be distinguishable sentences')
+  // ③ 凭据缺省 ⇒ 拒收（这一档不许空着凭据收口）
+  const missing = await drop({ id: 'TASK-004', disposition: 'superseded' })
+  assert.notEqual(missing, unknown, 'missing credential and wrong credential must be distinguishable sentences')
+  assert.equal(statusOf('TASK-004'), 'ready', 'all three refusal paths must leave the card untouched')
+  // ④ 正向对照（不是恒拒）：指向一张**真实存在**的卡 ⇒ 这一档必须放行，凭据落位
+  const admitted = await drop({ id: 'TASK-004', disposition: 'superseded', supersededBy: 'TASK-001' })
+  assert.equal(statusOf('TASK-004'), 'dropped', `an existing card must be admitted (the criterion is "distinguishable", not "stricter"): ${admitted.slice(0, 300)}`)
+  assert.equal(declarationOf('TASK-004')?.supersededBy, 'TASK-001', 'the credential must land in the card source')
+})
