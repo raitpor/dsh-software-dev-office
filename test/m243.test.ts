@@ -35,7 +35,7 @@
  * 断言消息一律用英文（本文件不进 `KNOWN_PROSE_GAP`；中文只写在断言之外）。
  */
 import assert from 'node:assert/strict'
-import { cpSync, mkdirSync, readFileSync, readdirSync, rmSync } from 'node:fs'
+import { lstatSync, mkdirSync, readFileSync, readdirSync, rmSync, symlinkSync, unlinkSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { performance } from 'node:perf_hooks'
 import { fileURLToPath } from 'node:url'
@@ -43,6 +43,7 @@ import { afterEach, beforeEach, test } from 'node:test'
 
 import { Config, resolveSettings } from '../src/config.js'
 import { REAL_LEDGER_DIR, realLedgerSkip } from './support/real-ledger.js'
+import { assertLedgerCopyIsIsolated, copyLedgerIntoWorkspace, dirFingerprint } from './support/ledger-copy.js'
 import { pendingReviewBigCards } from '../src/domain/collab.js'
 import { listReviews, reviewContentHash } from '../src/domain/records.js'
 import {
@@ -156,10 +157,41 @@ function count(bucket: Record<string, number>, key: string): number {
 function realCopy(name: string): { store: SdoStore; journal: Journal } {
   const root = join(BASE, name)
   mkdirSync(root, { recursive: true })
-  cpSync(REAL_LEDGER_DIR, join(root, '.sdo'), { recursive: true })
+  // **`DEF-261`/`TASK-291`**：真账拷贝走共享防线（拷前核源非软链 + 拷后核目的地隔离；**不解引用**）
+  copyLedgerIntoWorkspace(root, REAL_LEDGER_DIR)
   const copied = new SdoStore(join(root, '.sdo'))
   return { store: copied, journal: new Journal(copied) }
 }
+
+/**
+ * **`M243-91`（`DEF-261` 事故防线的双向格）**：本文件的真账副本走共享防线 ——
+ * 事故形态（`root/.sdo` 是指向真账的软链）必须**当场抛错**且**一个文件都不删**；
+ * 正常按值拷贝必须绿，且指纹（文件数 + 总字节）与真账一致。
+ *
+ * 为什么这一格必须在这里：本文件原先直接 `cpSync(REAL_LEDGER_DIR, root/.sdo)` —— 与 10-26
+ * 那次一模一样：源被做成软链时，拷进来的是链接，随后夹具的删除动作会落到真账上。
+ */
+test('M243-91 the ledger copy refuses a symlinked .sdo and never deletes through it', realLedgerSkip() ?? {}, () => {
+  const realTasks = dirFingerprint(join(REAL_LEDGER_DIR, 'tasks'))
+  const root = join(BASE, 'symlink-probe')
+  rmSync(root, { recursive: true, force: true })
+  mkdirSync(root, { recursive: true })
+  // ① 事故形态：`.sdo` 只是指向真账的一条链接 ⇒ 必须在任何删除动作之前被判红
+  symlinkSync(REAL_LEDGER_DIR, join(root, '.sdo'))
+  assert.throws(
+    () => assertLedgerCopyIsIsolated(root, REAL_LEDGER_DIR),
+    /symlink|real ledger|inside the fixture workspace/u,
+    'a symlinked .sdo must be rejected before anything removes files through it',
+  )
+  // ② 判红之后真账**一个文件都没少**（这正是事故的直接读数）
+  assert.deepEqual(dirFingerprint(join(REAL_LEDGER_DIR, 'tasks')), realTasks, 'the real ledger tasks must be untouched after the refusal')
+  unlinkSync(join(root, '.sdo'))
+  // ③ 正常按值拷贝 ⇒ 绿，且指纹与真账一致（不是"拷了个空壳"）
+  copyLedgerIntoWorkspace(root, REAL_LEDGER_DIR)
+  assert.equal(lstatSync(join(root, '.sdo')).isSymbolicLink(), false, 'the by-value copy must be a real directory')
+  assert.deepEqual(dirFingerprint(join(root, '.sdo', 'tasks')), realTasks, 'the copied tasks must match the real ledger (file count + total bytes)')
+  rmSync(root, { recursive: true, force: true })
+})
 
 beforeEach(() => {
   rmSync(BASE, { recursive: true, force: true })

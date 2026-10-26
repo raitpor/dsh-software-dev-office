@@ -16,7 +16,7 @@
  */
 import assert from 'node:assert/strict'
 import { createHash } from 'node:crypto'
-import { cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { spawnSync } from 'node:child_process'
 import { fileURLToPath } from 'node:url'
@@ -65,6 +65,42 @@ function sha256(text: string): string {
 }
 
 /** 把当前 `src/` + `test/` 复制成一棵临时树，并按 `swapStore` 决定用哪一版 testingStore.ts 与模块图。 */
+/**
+ * **`M218-91`（`DEF-261` 同形暴露面的双向格，`TASK-291`）**：本文件 `buildTree` 的拷贝清单
+ * **今天不含 `.sdo`**（只有 `src` / `test` / `tsconfig.json`）——这正是它没出事的原因。
+ *
+ * 但"清单恰好没写它"不是防线：同一句 `cpSync(join(ROOT, entry), join(BASE, entry))` 只要有人把
+ * `.sdo` 加进清单，就会与 10-26 那次同形（源被做成软链 ⇒ 拷进来的是链接 ⇒ 夹具删除动作落到真账）。
+ * 所以这一格钉两件事：
+ *   ① **源码面**：清单里不许出现 `.sdo`；若要拷它，必须走 `test/support/ledger-copy.js` 的
+ *      `copyLedgerIntoWorkspace`（拷前核源、拷后核隔离，**不解引用**）；
+ *   ② **行为面**：跑一次 `buildTree` 之后，真账 `tasks/` 的文件数与总字节**一个都没变**。
+ */
+test('M218-91 the baseline tree never copies .sdo, and building it leaves the real ledger untouched', () => {
+  const source = readFileSync(new URL(import.meta.url), 'utf8')
+  const list = /for \(const entry of \[([^\]]*)\]\)/u.exec(source)
+  assert.ok(list !== null, 'fixture: the copy list must be readable (has it been reshaped?)')
+  assert.equal((list[1] ?? '').includes('.sdo'), false, 'the copy list must not include .sdo (use copyLedgerIntoWorkspace if it ever must be copied)')
+  const realLedger = fileURLToPath(new URL('../../.sdo', import.meta.url))
+  const before = fingerprintOf(join(realLedger, 'tasks'))
+  buildTree('current')
+  assert.deepEqual(fingerprintOf(join(realLedger, 'tasks')), before, 'building the baseline tree must leave the real ledger untouched')
+})
+
+/** 目录指纹（文件数 + 总字节）：守卫用，证明"真账一个文件都没被碰"。 */
+function fingerprintOf(dir: string): { files: number; bytes: number } {
+  let files = 0
+  let bytes = 0
+  for (const name of readdirSync(dir)) {
+    const path = join(dir, name)
+    const info = statSync(path)
+    if (!info.isFile()) continue
+    files += 1
+    bytes += info.size
+  }
+  return { files, bytes }
+}
+
 function buildTree(variant: 'before-fix' | 'current'): { build: ReturnType<typeof spawnSync> } {
   rmSync(BASE, { recursive: true, force: true })
   mkdirSync(BASE, { recursive: true })
