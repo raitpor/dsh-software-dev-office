@@ -1,53 +1,11 @@
+# v2 起步的最小忽略清单
 node_modules/
 lib/
-*.tsbuildinfo
-.dsh-test/
-.pnpm-store/
-.verify/
-dist/
-.pack-cache/
-
-# ── 本地缓存与临时产物（不入库）──
-.npm-cache/
+.obsidian/
 *.log
-tmp/
-.tmp/
-
-# ── 迁移/抽取器的备份文件 ──
-# `scripts/extract-lang.mjs` 每次改写源文件前会留下 `<file>.lang-bak`，
-# 它不参与构建（`.ts` 之外的后缀不会被 tsc 收），属**死件**，不应入库。
-*.lang-bak
-
-# ── 一次性临时文件 ──
-# 排查/重建源码时可能生成的中间文件（例如从 HEAD 取出的骨架 `.plan.head.ts`）。
-# 注意：这类备份必须写在**工作区内**才有意义（写 /tmp 会被沙箱拦下，且我曾因此丢掉备份）。
-.backup/
-*.head.ts
-
-# ── 本插件在自身仓库里跑 SDO 时的项目台账 ──
-# **`TASK-192`（入库边界）**：`.sdo/` **不再整体忽略** —— 真源层（journal / tasks / reviews /
-# defects / requirements / design / tests / contracts / gates / …）**入主仓库**，因为它们正是
-# 本插件"可复核、可追溯"的那一半；只把这些**可再生/按需**的层挡在外面：
-#   · `evidence/`（演练与大段日志，现盘 36 MB）、`drafts/`（草稿，11 MB）、`handover/`（交接件）
-#   · `project.json`（派生视图：由 journal 重建，入库只会制造冲突）
-# 体积上界：排除这四类之后现盘 ≈18 MB（卡面写的 5.9 MB 是立卡时读数，已过期）。
-.sdo/
-docs/
-
-# ── 子代理的工作副本（`git worktree`，`AC-310` 起落在仓库内）──
-# 副本根是 `<仓库>/.worktrees/<卡>`：它**必须在仓库内**（本机的工作区父目录是 `ro` 挂载，
-# 副本建在仓库外就写得进目录、写不进文件），又**必须不进索引**（`git status` 是"哪些文件
-# 被改了"的唯一读数）。这一行就是后者：`.worktrees/` 收进来，副本照旧进不了索引。
-# 建副本时还会往该仓库的 `.git/info/exclude` 补同一行 —— 那一步是给"没写这条的仓库"兜底的
-# 本地忽略（不改工作树、不进提交），见 `src/integration/worktree.ts` 的 `ensureLocalIgnore`。
-.worktrees/
-
-# ── CI 的离线依赖闭包（**要入库**，别加到这里；此处仅忽略它的临时产物）──
-.ci-scratch/
-.ci-unpack/
-
-# ── 评审报告（**不进仓库**）──
-# 评审是过程产物：它描述的是「某个构建 + 某个台账」下的事实，会随被评对象失效，
-# 因此与 `.verify/` 同类，只留在本机。外部测试工作区的复审报告在
-# `plugins-test/sdo-test/docs/`；在本仓库内做的独立核实写 `.review/`。
-.review/
+.DS_Store
+# 台账（v2 的 DB 放在工作区之外，但本地副本也不入库）
+*.db
+*.db-wal
+*.db-shm
+sdo.db*
