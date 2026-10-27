@@ -4,18 +4,21 @@
  * 病灶：`.gitignore` 里一条 `.sdo/` 把**整本台账**挡在仓库外 —— 而台账正是本插件"可复核、可追溯"
  * 的那一半（评审记录、缺陷账、门禁、需求/设计真源都在里面）。于是"能不能查"只能靠本机那台机器。
  *
- * 本文件钉三件事，判据都落在**机制**上（`git check-ignore` 与 `git ls-files` 的真实行为），不是读注释：
- *   ① **真源层不被忽略**：`journal.jsonl` 与 `tasks/`、`reviews/`、`defects/`、`requirements/` 下的
- *      路径必须 `git check-ignore` **判否**（退出码非 0）；
- *   ② **可再生的层仍被排除**：`evidence/`、`drafts/`、`handover/` 下的路径与 `project.json` 必须判**是**；
+ * 本文件钉四件事，判据都落在**机制**上（`git check-ignore`、`git ls-files`、`.gitignore` 的模式集），不是读注释：
+ *   ① **真源层不被忽略**：`.sdo/` 下**每一个真源面**（`TRUTH_FACES`，逐面枚举，不是抽 5 个样本）都必须
+ *      `git check-ignore` **判否**（退出码非 0）；
+ *   ② **可再生的层仍被排除**：`evidence/`、`drafts/`、`handover/` 与 `project.json`（`EXCLUDED`）必须判**是**；
  *   ③ **已入库面**：`git ls-files .sdo` 非空，且其中不得出现 `evidence/`、`drafts/`、`handover/`、
  *      `project.json` —— 这一条**只有在驾驶舱把真源层加入索引之后才有对象**（本卡不 `git add`），
- *      所以在"尚未入库"的现场里它**显式 skip 并印读数**，不静默绿、也不假装红。
+ *      所以在"尚未入库"的现场里它**显式 skip 并印读数**，不静默绿、也不假装红；
+ *   ④ **排除面恰好这四个**：`.gitignore` 里与 `.sdo` 相关的**非注释**模式必须正好是那四条 —— 多一条
+ *      就是"过度忽略"，而过度忽略**不会让读数变红，只会让读数变好看**（被挡掉的文件从体积读数与将来的
+ *      索引里一起消失），必须机械挡住。
  *
  * 体积判据的**本意**（口径写清，别当绝对预算读）：防的是「把**可再生 / 体积型**的层塞进仓库」
- * （`evidence/` 36M、`drafts/` 11M 那一类），**不是**卡死一个绝对字节数。`journal.jsonl`（8.3M）是
+ * （`evidence/` 34M、`drafts/` 8.3M 那一类），**不是**卡死一个绝对字节数。`journal.jsonl`（8.34 MiB）是
  * **真源**、必须跟踪 ⇒ 它**计入分母**、不豁免。
- * 现盘实算 ≈**13.6 MiB / 1676 文件**；卡面写的「约 5.9 MB / 目标 <10 MB」是**旧账态**读数，**不作基线**
+ * 现盘实算 ≈**13.67 MiB / 1681 文件**；卡面写的「约 5.9 MB / 目标 <10 MB」是**旧账态**读数，**不作基线**
  * （<10 MB 在现账态下只能用"排除 journal"换，那等于掏空真源 —— 比超预算严重得多）。上界取 **20 MiB**，
  * 实算值打进日志（本文件每个 skip/日志都带读数）。
  *
@@ -23,13 +26,53 @@
  */
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { statSync } from 'node:fs'
+import { readFileSync, statSync } from 'node:fs'
 import { join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { test } from 'node:test'
 
 const ROOT = fileURLToPath(new URL('../../', import.meta.url))
 const MIB = 1024 * 1024
+
+/**
+ * **排除面**（可再生 / 按需 / 派生视图）：`TASK-192` 之后只允许这四类留在仓库外。
+ * 判据比的是**磁盘上的真实忽略行为**（`git check-ignore`），不是读注释。
+ */
+const EXCLUDED = ['.sdo/evidence', '.sdo/drafts', '.sdo/handover', '.sdo/project.json'] as const
+
+/**
+ * **真源面**（`.sdo/` 顶层逐面枚举）：每一面都必须能入库。
+ *
+ * 为什么列全而不是抽 5 个样本：**过度忽略**会让读数反而更好看 —— 谁往 `.gitignore` 加一条
+ * `.sdo/tests/`，那 736 个文件就同时从 `M228-03` 的体积读数（少算 ⇒ 更"达标"）与将来的索引里
+ * 一起消失。抽样抓不到这种回归，逐面枚举能。
+ *
+ * `.sdo/HANDOFF.md` **不在本表**：它是交接件（与 `.sdo/handover/` 同类）。现在虽未被排除，
+ * 但要不要排除是驾驶舱的裁定，守卫不替它拍板 —— 所以既不钉"必须入库"，也不假装它不存在。
+ */
+const TRUTH_FACES = [
+  '.sdo/changes',
+  '.sdo/config.yml',
+  '.sdo/construction',
+  '.sdo/contracts',
+  '.sdo/decisions',
+  '.sdo/defects',
+  '.sdo/design',
+  '.sdo/feasibility.yml',
+  '.sdo/gates',
+  '.sdo/issues',
+  '.sdo/journal.jsonl',
+  '.sdo/quality',
+  '.sdo/questions',
+  '.sdo/releases',
+  '.sdo/requirements',
+  '.sdo/reviews',
+  '.sdo/risks',
+  '.sdo/tasks',
+  '.sdo/testing',
+  '.sdo/tests',
+  '.sdo/trace',
+] as const
 
 /** 在仓库根跑一条 git（**不抛**：退出码本身就是判据）。 */
 function git(args: readonly string[]): { ok: boolean; out: string } {
@@ -48,12 +91,17 @@ function isIgnored(path: string): boolean {
 }
 
 test('M228-01 (boundary, two-state) the truth layer is not ignored while evidence/drafts/handover/project.json still are', () => {
-  // ① 真源层必须**不被**忽略
-  for (const path of ['.sdo/journal.jsonl', '.sdo/tasks', '.sdo/reviews', '.sdo/defects', '.sdo/requirements']) {
-    assert.equal(isIgnored(path), false, `the truth layer must be storable in the repo (not ignored): ${path}`)
+  // ① 真源层必须**不被**忽略：**逐面枚举**（抽样抓不到"过度忽略"，见 TRUTH_FACES 的注释）
+  for (const path of TRUTH_FACES) {
+    assert.equal(isIgnored(path), false, `this truth face must be storable in the repo (not ignored): ${path}`)
   }
+  // 棘轮：清单被削短 ⇒ 判据静默变弱（把"逐面"缩回"抽样"最容易这么发生）
+  assert.ok(
+    TRUTH_FACES.length >= 21,
+    `the truth-face list shrank to ${String(TRUTH_FACES.length)} (was 21) — the boundary guard got weaker`,
+  )
   // ② 可再生/按需的层必须**仍被**排除
-  for (const path of ['.sdo/evidence', '.sdo/drafts', '.sdo/handover', '.sdo/project.json']) {
+  for (const path of EXCLUDED) {
     assert.equal(isIgnored(path), true, `this layer must stay out of the repo: ${path}`)
   }
   // ③ 反向自证：判据本身能抓到"被忽略"这件事（否则上面 ① 可能只是 check-ignore 恒假）
@@ -71,9 +119,24 @@ test('M228-02 (already-stored face) the stored .sdo face is non-empty and holds 
       + `untracked-but-storable => ${String(git(['status', '--porcelain', '--untracked-files=all', '--', '.sdo']).out.split('\n').filter((line) => line.trim() !== '').length)} files`)
     return
   }
-  for (const banned of ['.sdo/evidence/', '.sdo/drafts/', '.sdo/handover/', '.sdo/project.json']) {
+  // 目录面按前缀比、文件面按全等比（`project.json` 不是目录，别拿 `'<file>/'` 去比）
+  for (const banned of EXCLUDED.map((path) => (path.endsWith('.json') ? path : `${path}/`))) {
     assert.equal(files.some((file) => file.startsWith(banned)), false, `the index must not carry ${banned}`)
   }
+})
+
+test('M228-04 (pattern set) .gitignore carries exactly the four .sdo exclusions and nothing else', () => {
+  const patterns = readFileSync(join(ROOT, '.gitignore'), 'utf8')
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line !== '' && !line.startsWith('#') && line.includes('.sdo'))
+  // **过度忽略不会让读数变红，只会让读数变好看**：多一条 `.sdo/tests/`，那 736 个文件就从
+  // `M228-03` 的分母里、以及将来的索引里一起消失。所以这里比的是**模式集本身**。
+  assert.deepEqual(
+    [...patterns].sort(),
+    EXCLUDED.map((path) => (path.endsWith('.json') ? path : `${path}/`)).sort(),
+    'the .sdo boundary in .gitignore must be exactly the four excluded faces (an extra ignore silently makes the size reading look better)',
+  )
 })
 
 test('M228-03 (size bound) the storable truth layer stays under 20 MiB (the card\'s 5.9 MB is stale)', (t) => {
