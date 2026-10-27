@@ -67,8 +67,8 @@ try:
     sec = s02[s02.index('## 4.'):s02.index('## 5.')]
     mrows = len(re.findall(r'^\| \*\*([^*]+)\*\* \|', sec, flags=re.M))
     prows = len(re.findall(r'^\| ([^|*][^|]*) \| [^|]+ \|', sec[sec.index('### 4.1'):sec.index('### 4.2')], flags=re.M))
-    zh = {'十一': 11, '十二': 12, '十三': 13, '十四': 14}.get(
-        (re.search(r'这(十[一二三四])个数字', s02) or [None, None])[1], None)
+    zh = {'十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15}.get(
+        (re.search(r'这(十[一二三四五])个数字', s02) or [None, None])[1], None)
     if not (mrows == prows == zh):
         bad.append(f'R6 02: 度量行 {mrows} / 配对行 {prows} / 文案 {zh} 不一致')
 except (ValueError, AttributeError) as e:
