@@ -6,7 +6,7 @@
 
 规则：
   R1 H2 编号连续（1..N）
-  R2 H3 编号必须归属当前 H2（### 7.2 只能在 §7 里）
+  R2 H3 编号必须归属当前 H2，且子号连续（### 7.2 只能在 §7 里，且是第 2 个）
   R3 相对 .md 链接必须可解析
   R4 docs/README.md 必须收录 sdonew 下每一篇
   R5 不许残留占位符（{N} / TMPX / 3bis）
@@ -32,12 +32,17 @@ for p in files():
     if h2 and h2 != list(range(1, len(h2)+1)):
         bad.append(f'R1 {name}: H2 编号不连续 {h2}')
     cur = None
+    sub = 0
     for line in s.split('\n'):
         m = re.match(r'^## (\d+)\. ', line)
-        if m: cur = int(m.group(1)); continue
+        if m: cur = int(m.group(1)); sub = 0; continue
         m3 = re.match(r'^### (\d+)\.(\d+) ', line)
-        if m3 and cur is not None and int(m3.group(1)) != cur:
+        if not m3: continue
+        if cur is not None and int(m3.group(1)) != cur:
             bad.append(f'R2 {name}: §{cur} 里出现 ### {m3.group(1)}.{m3.group(2)}')
+        sub += 1
+        if int(m3.group(2)) != sub:
+            bad.append(f'R2 {name}: §{cur} 的子号不连续（应为 {cur}.{sub}，实为 {m3.group(1)}.{m3.group(2)}）')
     for ph in ('{N}', '{N2}', 'TMPX', '3bis'):
         if ph in s: bad.append(f'R5 {name}: 残留占位符 {ph}')
 
