@@ -4,6 +4,21 @@
 # names:   库名/工具名/文件名
 
 fields:
+  - evidence.commit
+  - work_unit.spec_id
+  - evidence.criterion_id
+  - work_unit.criterion_id
+  - work_unit.evidence_id
+  - design_lock.design_sha256
+  - design_lock.spec_version_hash
+  - spec.design_artifact_sha256
+  - stage_run.criteria
+  - spec.risk_flags
+  - spec.code_artifact_sha256
+  - redteam.criterion_fixture_id
+  - stage_run.gate_id
+  - stage_run.baseline_hash
+  - review_round.baseline_hash
   - spec.content_hash
   - scope_decl.stage
   - redteam.use_case
@@ -35,6 +50,9 @@ fields:
   - task.status
 
 objects:
+  - code_artifact_ref.commit
+  - code_artifact_ref.design_sha256
+  - assurance.na_stages
   - adapter.version
   - artifact.kind
   - assurance.db_confidentiality
