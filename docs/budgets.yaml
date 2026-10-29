@@ -1,0 +1,39 @@
+# 预算常量（唯一定义处，机器可读；check.py 按此对账）
+# 每项：name（用于报告）、home（定义所在文档）、forms（文中出现的写法）、expect（允许出现的总次数）
+# 规矩：新增预算先加到这里，再写进 home 指的那一篇；别处只许引用，不许复述数值。
+
+- name: receipt_max_bytes
+  home: 05-观测与交互.md
+  forms: ["8 KB"]
+  expect: 1
+
+- name: inject_max_chars
+  home: 05-观测与交互.md
+  forms: ["1500 字符"]
+  expect: 2
+  also: 01-理论与边界.md    # 第二处是 v1 历史证据引用，不是定义
+
+- name: query_max_rows
+  home: 05-观测与交互.md
+  forms: ["≤ 500"]
+  expect: 1
+
+- name: p95_read_ms
+  home: 02-真源-存储事件与折叠.md
+  forms: ["< 50 ms"]
+  expect: 1
+
+- name: p95_write_ms
+  home: 02-真源-存储事件与折叠.md
+  forms: ["< 10 ms"]
+  expect: 1
+
+- name: fold_rebuild_s
+  home: 02-真源-存储事件与折叠.md
+  forms: ["< 5 s"]
+  expect: 1
+
+- name: path_max_chars
+  home: 10-语言与平台.md
+  forms: ["240 字符"]
+  expect: 1
