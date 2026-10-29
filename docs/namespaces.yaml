@@ -1,54 +1,102 @@
-# 精确 token 白名单（check.py R12 读取）。
-# 规则：文档里所有反引号 `x.y` 必须属于 {02 事件表登记的事件 kind} ∪ {判据 code} ∪ {本文件精确列出的 token}。
-# **按 token 豁免，不按域豁免**——否则 decision/evidence/intent 这些事件域里的改名与拼写错误会漏检。
-# 新增一条前先问：它是事件吗？是 ⇒ 去 02 登记；不是 ⇒ 在这里精确登记。
+# token 白名单（check.py R12/R17 读取）
+# fields:  形如 table.column —— R17 核对“表存在、列存在”
+# objects: 非表对象的字段（seed/inputs/state/…）—— 只作 R12 放行，不做表校验
+# names:   库名/工具名/文件名
 
-tokens:
-  # 字段（表列）
+fields:
+  - spec.content_hash
+  - scope_decl.stage
+  - redteam.use_case
+  - review_round.verdict
+  - review.subject_hash
+  - review.subject_producer
+  - task.created_by
+  - spec.created_by
+  - spec.producer
+  - task.subject_id
+  - task.subject_kind
+  - claim.actor
   - claim.as_of_frontier
   - claim.derived_by
-  - intent.id
-  - intent.approved_by
   - criterion.spec_id
-  - defect.criterion_id
   - evidence.artifact_sha256
+  - evidence.output_digest
+  - intent.approved_by
+  - intent.id
+  - restatement.at
+  - restatement.inputs
+  - review.reviewer
+  - review.task_id
+  - spec.at
+  - spec.kind
+  - task.kind
+  - task.owner
+  - task.producer
+  - task.status
+
+objects:
+  - adapter.version
+  - artifact.kind
+  - assurance.db_confidentiality
+  - assurance.independence
+  - baseline.hash
+  - bench.export_snapshot
+  - bench.fold_rebuild
+  - bench.read_status
+  - bench.review_queue
+  - bench.write_event
+  - card.scope
   - decision.frontier
+  - decision.signature
+  - decision.signer
   - decision.status
+  - defect.criterion_id
+  - events.slice
+  - gate.core
+  - inputs.hash
+  - last_task.files
   - lease.actor
   - lock.path_prefix
-  - baseline.hash
-  - artifact.kind
-  - adapter.version
-
-  # 判据 code（未出现在表格首列的）
   - metrics.not_gate
+  - miss.reason
   - perf.n_plus_one
   - perf.ui_compute
   - perf.unbounded_select
-  - security.no_proxy_sign
-  - security.no_blind_sign
-  - security.window_bound
-  - security.redaction_bypass
+  - process.platform
+  - redact.patterns
+  - release.artifact_sha256
+  - release.deprecation_window
+  - release.evidence_valid
+  - release.gaps_match
+  - release.independence_satisfied
+  - release.out_signed
+  - release.snapshot_verified
+  - release.status
+  - remedy.trim
   - security.backup_encrypted
-  - security.no_secret_in_store
   - security.db_perms
   - security.dep_change_reviewed
-  - security.tenant_isolation
+  - security.no_blind_sign
+  - security.no_proxy_sign
+  - security.no_secret_in_store
+  - security.redaction_bypass
   - security.store_client_auth
   - security.store_fail_closed
-  - redact.patterns
+  - security.tenant_isolation
+  - security.window_bound
+  - seed.hash
+  - state.cursor
 
-  # assurance 字段
-  - assurance.db_confidentiality
-  - assurance.independence
-
-  # 基准名
-  - bench.write_event
-  - bench.fold_rebuild
-
-  # 平台探针与库/工具名
-  - process.platform
+names:
+  - check.py
   - core.autocrlf
-  - path.join
   - foo.ts
+  - i18n.fallback
   - index.ts
+  - journal.jsonl
+  - node_modules
+  - office.ts
+  - os.tmpdir
+  - path.join
+  - schema.sql
+  - semver.major

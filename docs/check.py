@@ -185,27 +185,48 @@ try:
     # 判据 code：任何文档中“表格首列”的 `x.y`，以及 06/09 判据小节里的
     crit = set()
     for q in files():
-        for line in read(q).split('\n'):
-            m = re.match(r'^\|\s*`([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`', line)
-            if m:
-                crit.add(m.group(1))
+        if not os.path.basename(q).startswith(('04-', '06-')):
+            continue          # 判据 code 只能由 04/06 的注册表产生
+        lines = read(q).split('\n')
+        col = None
+        for i, line in enumerate(lines):
+            if not line.startswith('|'):
+                col = None
+                continue
+            cells = [c.strip() for c in line.strip('|').split('|')]
+            if col is None:
+                # 表头行：找含“判据”的那一列
+                for j, c in enumerate(cells):
+                    if '判据' in c:
+                        col = j
+                        break
+                continue
+            if col < len(cells):
+                crit |= set(re.findall(r'`([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`', cells[col]))
 
     # 精确 token 白名单：docs/namespaces.yaml（按 token，不按域）
     nsp = os.path.join(ROOT, 'namespaces.yaml')
     if not os.path.exists(nsp):
         raise FileNotFoundError('docs/namespaces.yaml 缺失')
-    allowed = set()
+    allowed = set()      # fields + objects + names 都放行 R12
+    flds = []            # 只有 fields 参与 R17
+    sect = None
     for line in read(nsp).split('\n'):
         t = line.strip()
+        if t in ('fields:', 'objects:', 'names:'):
+            sect = t[:-1]; continue
         if t.startswith('- '):
-            allowed.add(t[2:].split()[0].strip())
+            tok = t[2:].split()[0].strip()
+            allowed.add(tok)
+            if sect == 'fields':
+                flds.append(tok)
     allow = {'node_modules', 'path.join', 'schema.sql', 'core.autocrlf', 'foo.ts',
              'office.ts', 'index.ts', 'semver.major', 'i18n.fallback'}
     for q in files():
-        for m in re.finditer(r'`([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`', read(q)):
-            tok = m.group(1)
-            if tok in kinds or tok in crit or tok in allowed or tok in allow: continue
-            bad.append(f'R12 {os.path.basename(q)}: 未登记的事件 kind `{tok}`（02 事件表里没有）')
+        for span in re.findall(r'`([^`\n]+)`', read(q)):
+            for tok in re.findall(r'\b([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)\b', span):
+                if tok in kinds or tok in crit or tok in allowed or tok in allow: continue
+                bad.append(f'R12 {os.path.basename(q)}: 未登记的事件 kind `{tok}`（02 事件表里没有）')
 except Exception as e:
     bad.append(f'R12 校验失败：{e}')
 
@@ -270,8 +291,39 @@ try:
 except Exception as e:
     bad.append(f'R16 校验失败：{e}')
 
+# R17 字段归属：namespaces.yaml 的 fields（table.column）必须对应真实定义过的表与列
+try:
+    tables = {}
+    for q in files():
+        lines = read(q).split('\n')
+        in_tbl = False
+        for line in lines:
+            if line.startswith('|') and '关键列' in line:
+                in_tbl = True; continue
+            if not in_tbl:
+                continue
+            if not line.startswith('|'):
+                in_tbl = False; continue
+            cells = [c.strip() for c in line.strip('|').split('|')]
+            if len(cells) < 2:
+                continue
+            m = re.match(r'^`?([a-z][a-z0-9_]*)`?$', cells[0].replace('`', ''))
+            if not m:
+                continue
+            cols = {c for c in re.findall(r'[a-z_][a-z0-9_]*', cells[1].replace('*', '').replace('`', ''))}
+            if cols:
+                tables.setdefault(m.group(1), set()).update(cols)
+    for tok in flds:
+        table, col = tok.split('.', 1)
+        if table not in tables:
+            bad.append(f'R17 字段「{tok}」指的表 `{table}` 没有定义（缺「关键列」表）')
+        elif col not in tables[table]:
+            bad.append(f'R17 字段「{tok}」的列 `{col}` 不在 `{table}` 的定义里')
+except Exception as e:
+    bad.append(f'R17 校验失败：{e}')
+
 if bad:
     print('✗ 发现漂移 %d 处：' % len(bad))
     for b in bad: print('   -', b)
     sys.exit(1)
-print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16 全过（%d 篇）' % len(files()))
+print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17 全过（%d 篇）' % len(files()))
