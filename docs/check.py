@@ -190,25 +190,21 @@ try:
             if m:
                 crit.add(m.group(1))
 
-    # 非事件命名空间（显式声明，不是“猜”）：字段、判据 code、基准、库/工具名
-    non_event_ns = {'perf','security','release','metrics','bench','redact','process',
-                    'claim','decision','evidence','intent','criterion','lease','baseline',
-                    'state','core','adapter','artifact','contract','defect','assurance',
-                    'lock','node','path','schema','semver','i18n','restore'}
+    # 精确 token 白名单：docs/namespaces.yaml（按 token，不按域）
+    nsp = os.path.join(ROOT, 'namespaces.yaml')
+    if not os.path.exists(nsp):
+        raise FileNotFoundError('docs/namespaces.yaml 缺失')
+    allowed = set()
+    for line in read(nsp).split('\n'):
+        t = line.strip()
+        if t.startswith('- '):
+            allowed.add(t[2:].split()[0].strip())
     allow = {'node_modules', 'path.join', 'schema.sql', 'core.autocrlf', 'foo.ts',
              'office.ts', 'index.ts', 'semver.major', 'i18n.fallback'}
     for q in files():
         for m in re.finditer(r'`([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`', read(q)):
             tok = m.group(1)
-            tail = tok.split('.')[-1]
-            fieldish_exact = {'id','by','hash','at','status','prefix','sha256','digest',
-                              'kind','count','actor','name','type','list','set','ms','bytes',
-                              'frontier','payload','signature','remedy'}
-            fieldish_suffix = ('_id','_by','_hash','_at','_status','_prefix','_sha256',
-                               '_digest','_kind','_count','_actor','_name','_type','_ms','_bytes')
-            if tok in kinds or tok in crit or tok in allow: continue
-            if tok.split('.')[0] in non_event_ns: continue
-            if tail in fieldish_exact or tail.endswith(fieldish_suffix): continue
+            if tok in kinds or tok in crit or tok in allowed or tok in allow: continue
             bad.append(f'R12 {os.path.basename(q)}: 未登记的事件 kind `{tok}`（02 事件表里没有）')
 except Exception as e:
     bad.append(f'R12 校验失败：{e}')
@@ -238,9 +234,10 @@ try:
         titles |= {t.strip() for t in re.findall(r'^## \d+\. (.*)$', read(q), flags=re.M)}
         titles |= {t.strip() for t in re.findall(r'^### \d+\.\d+ (.*)$', read(q), flags=re.M)}
     for q in files():
-        for m in re.finditer(r'(?:见|参见)\s*[「“]([^」”]{2,40})[」”]', read(q)):
+        for m in re.finditer(r'(?:见|参见)\s*(?:\[[^\]]*\]\([^)]*\)\s*)?[「“]([^」”]{2,40})[」”]', read(q)):
             r = m.group(1)
-            if r not in titles and not any(t.startswith(r) for t in titles):
+            ok = r in titles or any(t.startswith(r) or (len(r) >= 4 and r in t) for t in titles)
+            if not ok:
                 bad.append(f'R15 {os.path.basename(q)}: 锚点「{r}」对不上任何标题')
 except Exception as e:
     bad.append(f'R15 校验失败：{e}')
@@ -255,7 +252,9 @@ try:
         for line in read(hp).split('\n'):
             t = line.strip()
             if t.startswith('- concept:'):
-                cur = {'concept': t.split(':', 1)[1].strip().strip('"')}
+                cur = {'concept': t.split(':', 1)[1].strip().strip('"'), 'aliases': []}
+            elif t.startswith('aliases:'):
+                cur['aliases'] = [x.strip().strip('"') for x in t.split(':', 1)[1].strip('[]').split(',') if x.strip()]
             elif t.startswith('home:'):
                 cur['home'] = t.split(':', 1)[1].strip().strip('"')
                 if 'concept' in cur and 'home' in cur:
@@ -263,7 +262,8 @@ try:
                     for q in files():
                         if os.path.basename(q) == 'README.md':
                             continue
-                        if cur['concept'] in [tt.strip() for tt in re.findall(r'^##\s*\d+\. (.*)$', read(q), flags=re.M)]:
+                        names = {cur['concept']} | set(cur.get('aliases', []))
+                        if names & {tt.strip() for tt in re.findall(r'^##\s*\d+\. (.*)$', read(q), flags=re.M)}:
                             homes.append(os.path.basename(q))
                     if homes != [cur['home']]:
                         bad.append(f"R16 概念「{cur['concept'][:20]}…」的标题出现在 {homes or '无'}，应为 ['{cur['home']}']")

@@ -1,0 +1,54 @@
+# 精确 token 白名单（check.py R12 读取）。
+# 规则：文档里所有反引号 `x.y` 必须属于 {02 事件表登记的事件 kind} ∪ {判据 code} ∪ {本文件精确列出的 token}。
+# **按 token 豁免，不按域豁免**——否则 decision/evidence/intent 这些事件域里的改名与拼写错误会漏检。
+# 新增一条前先问：它是事件吗？是 ⇒ 去 02 登记；不是 ⇒ 在这里精确登记。
+
+tokens:
+  # 字段（表列）
+  - claim.as_of_frontier
+  - claim.derived_by
+  - intent.id
+  - intent.approved_by
+  - criterion.spec_id
+  - defect.criterion_id
+  - evidence.artifact_sha256
+  - decision.frontier
+  - decision.status
+  - lease.actor
+  - lock.path_prefix
+  - baseline.hash
+  - artifact.kind
+  - adapter.version
+
+  # 判据 code（未出现在表格首列的）
+  - metrics.not_gate
+  - perf.n_plus_one
+  - perf.ui_compute
+  - perf.unbounded_select
+  - security.no_proxy_sign
+  - security.no_blind_sign
+  - security.window_bound
+  - security.redaction_bypass
+  - security.backup_encrypted
+  - security.no_secret_in_store
+  - security.db_perms
+  - security.dep_change_reviewed
+  - security.tenant_isolation
+  - security.store_client_auth
+  - security.store_fail_closed
+  - redact.patterns
+
+  # assurance 字段
+  - assurance.db_confidentiality
+  - assurance.independence
+
+  # 基准名
+  - bench.write_event
+  - bench.fold_rebuild
+
+  # 平台探针与库/工具名
+  - process.platform
+  - core.autocrlf
+  - path.join
+  - foo.ts
+  - index.ts
