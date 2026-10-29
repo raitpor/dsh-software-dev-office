@@ -10,7 +10,7 @@
   R3 相对 .md 链接必须可解析
   R4 docs/README.md 必须收录 sdonew 下每一篇
   R5 不许残留占位符（{N} / TMPX / 3bis）
-  R6 02 的度量行数 == 反指标配对行数 == 文案里的中文数字
+  R6 01 的度量行数 == 反指标配对行数 == 文案里的中文数字
   R7 若存在 lang/*.lang：两包键集必须恰好相等、占位符集合相同
   R9 关键预算常量只许出现在定义处（白名单计数）
 """
@@ -144,7 +144,7 @@ try:
     if not (mrows == prows == zh):
         bad.append(f'R6 01: 度量行 {mrows} / 配对行 {prows} / 文案 {zh} 不一致')
 except (ValueError, AttributeError) as e:
-    bad.append(f'R6 02: 结构不符（{e}）')
+    bad.append(f'R6 01: 结构不符（{e}）')
 
 # R9 预算常量（唯一定义处，读 budgets.yaml 对账；变更日志不参与）
 def count_constant(pat):
@@ -173,7 +173,10 @@ else:
 #     判据 code（`perf.*` / `release.*` / `security.*` 等）与字段名不算事件，跳过。
 try:
     s02k = read(os.path.join(ROOT, '02-真源-存储事件与折叠.md'))
-    sec = s02k[s02k.index('## 10. 事件类型'):]
+    m_ev = re.search(r'^## \d+\. 事件类型', s02k, flags=re.M)
+    if not m_ev:
+        raise ValueError('02 里找不到「事件类型」一节')
+    sec = s02k[m_ev.start():]
     nxt = re.search(r'^## ', sec[2:], flags=re.M)
     sec = sec[:nxt.start() + 2] if nxt else sec
     kinds = set(re.findall(r'`([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`', sec))
@@ -228,8 +231,47 @@ for p in files():
         if re.match(r'^\s*(\d+\.|-)\s*---\s*$', ln):
             bad.append(f'R14 {name}: 第 {i+1} 行列表项是分隔线')
 
+# R15 显式锚点：`见「X」` 里的 X 必须是某个标题（或标题前缀）
+try:
+    titles = set()
+    for q in files():
+        titles |= {t.strip() for t in re.findall(r'^## \d+\. (.*)$', read(q), flags=re.M)}
+        titles |= {t.strip() for t in re.findall(r'^### \d+\.\d+ (.*)$', read(q), flags=re.M)}
+    for q in files():
+        for m in re.finditer(r'(?:见|参见)\s*[「“]([^」”]{2,40})[」”]', read(q)):
+            r = m.group(1)
+            if r not in titles and not any(t.startswith(r) for t in titles):
+                bad.append(f'R15 {os.path.basename(q)}: 锚点「{r}」对不上任何标题')
+except Exception as e:
+    bad.append(f'R15 校验失败：{e}')
+
+# R16 概念唯一家：homes.yaml 里的概念只许在 home 文件里当标题
+try:
+    hp = os.path.join(ROOT, 'homes.yaml')
+    if not os.path.exists(hp):
+        bad.append('R16 docs/homes.yaml 缺失')
+    else:
+        cur = {}
+        for line in read(hp).split('\n'):
+            t = line.strip()
+            if t.startswith('- concept:'):
+                cur = {'concept': t.split(':', 1)[1].strip().strip('"')}
+            elif t.startswith('home:'):
+                cur['home'] = t.split(':', 1)[1].strip().strip('"')
+                if 'concept' in cur and 'home' in cur:
+                    homes = []
+                    for q in files():
+                        if os.path.basename(q) == 'README.md':
+                            continue
+                        if cur['concept'] in [tt.strip() for tt in re.findall(r'^##\s*\d+\. (.*)$', read(q), flags=re.M)]:
+                            homes.append(os.path.basename(q))
+                    if homes != [cur['home']]:
+                        bad.append(f"R16 概念「{cur['concept'][:20]}…」的标题出现在 {homes or '无'}，应为 ['{cur['home']}']")
+except Exception as e:
+    bad.append(f'R16 校验失败：{e}')
+
 if bad:
     print('✗ 发现漂移 %d 处：' % len(bad))
     for b in bad: print('   -', b)
     sys.exit(1)
-print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14 全过（%d 篇）' % len(files()))
+print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16 全过（%d 篇）' % len(files()))
