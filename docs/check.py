@@ -66,7 +66,7 @@ else:
     bad.append('R4 docs/README.md 不存在')
 
 # R6
-p02 = os.path.join(ROOT, '02-总览与边界.md')
+p02 = os.path.join(ROOT, '01-理论与边界.md')
 s02 = read(p02)
 try:
     sec = s02[s02.index('## 4.'):s02.index('## 5.')]
