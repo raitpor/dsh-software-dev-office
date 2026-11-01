@@ -4,7 +4,10 @@
 # names:   库名/工具名/文件名
 
 fields:
-  - evidence.commit
+  - snapshot.external_ref
+  - snapshot.git_oid
+  - evidence.snapshot_id
+  - snapshot.parent_ids
   - work_unit.spec_id
   - evidence.criterion_id
   - work_unit.criterion_id
@@ -50,7 +53,7 @@ fields:
   - task.status
 
 objects:
-  - code_artifact_ref.commit
+  - code_artifact_ref.snapshot_id
   - code_artifact_ref.design_sha256
   - assurance.na_stages
   - adapter.version

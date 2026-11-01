@@ -322,8 +322,16 @@ try:
 except Exception as e:
     bad.append(f'R17 校验失败：{e}')
 
+# R18 禁回流：git 机制不得作为依赖出现（版本/快照/祖先由 snapshot 自证）
+BANNED_GIT = ['worktree', 'merge --no-ff', 'base_commit']
+for q in files():
+    text = read(q)
+    for tok in BANNED_GIT:
+        if tok in text:
+            bad.append(f'R18 {os.path.basename(q)}: 出现旧写法「{tok}」（统一用工作副本/快照/内嵌库）')
+
 if bad:
     print('✗ 发现漂移 %d 处：' % len(bad))
     for b in bad: print('   -', b)
     sys.exit(1)
-print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17 全过（%d 篇）' % len(files()))
+print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17、R18 全过（%d 篇）' % len(files()))

@@ -37,3 +37,7 @@
   home: 10-语言与平台.md
   forms: ["240 字符"]
   expect: 1
+- name: vcs_op_p95
+  home: 10-语言与平台.md
+  forms: ["单次 VCS 操作 ≤ 2 s"]
+  expect: 1
