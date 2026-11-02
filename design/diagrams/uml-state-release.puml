@@ -1,9 +1,9 @@
 @startuml
 hide empty description
 [*] --> draft
-draft --> frozen : freeze(缺口=差集) + 签字
-frozen --> delivered : 产物发布
-delivered --> rolled_back : decision(kind=rollback)
+draft --> frozen : release.frozen（前置五条 + decision.signed）
+frozen --> delivered : release.delivered（绑 package_sha256 + snapshot_id）
+delivered --> rolled_back : decision(kind=rollback) + release.superseded
 rolled_back --> [*] : 原记录保留，另开新 release
 delivered --> [*]
 @enduml

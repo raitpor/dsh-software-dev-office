@@ -1,34 +1,35 @@
 @startuml
 start
 :verify（全量对账）;
-:重算派生列 code_artifact_sha256;
-if (与存储值一致?) then (否)
-  :红：derived_mismatch;
+note right: 条目定义在 docs/02 §14（十项）+ docs/14 两条兜底；这里只分组与失败码
+:A 事件链：hash 链连续、prev 存在、cursor 与事件数一致;
+if (A 全过?) then (否)
+  :红：chain_broken;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
 else (是)
 endif
-:校验 snapshot 父链存在性;
-if (有悬空父) then (是)
-  :红：dangling_parent;
+:B 引用：subject 外键可解析、claim.derived_by 已注册、snapshot_parent 无悬空、kind ⊆ event_kind;
+if (B 全过?) then (否)
+  :红：reference_dangling;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
-else (否)
+else (是)
 endif
-:抽查判据注册绕过（无负例的 active）;
-if (发现绕过) then (是)
-  :红：registry_bypass;
+:C 判定：派生列 = 重算值、判据有正例且负例、baseline.hash 一致、签名可验且 signer ≠ producer;
+if (C 全过?) then (否)
+  :红：judgement_mismatch;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
-else (否)
+else (是)
 endif
-:对账 event.kind ⊆ event_kind;
-if (有未知 kind) then (是)
-  :红：unknown_kind;
+:D 运行态：busy 卡有未过期 lease 且 actor 一致、库加密状态与 assurance 一致;
+if (D 全过?) then (否)
+  :红：runtime_inconsistent;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
-else (否)
+else (是)
 endif
-:写 verify.passed（含读数）;
+:写 verify.passed（含四组读数）;
 stop
 @enduml

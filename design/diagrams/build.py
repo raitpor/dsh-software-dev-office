@@ -112,6 +112,7 @@ admission --> gate
 review --> core
 exec --> core
 release --> gate
+release --> sign
 sign --> core
 
 fold --> DBPort
@@ -123,6 +124,7 @@ review --> DBPort
 exec --> DBPort
 release --> DBPort
 verify --> DBPort
+sign --> DBPort
 DBPort --> ST
 VcsPort --> VCS
 admission --> VcsPort
@@ -185,22 +187,22 @@ plantuml("p4-admission", """
 start
 :admission.evaluate(task);
 if (lease 有效?) then (否)
-  :拒绝 no_lease;
+  :拒绝 no_lease ⇒ admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
 if (workcopy 基于基线?) then (否)
-  :拒绝 stale_workcopy;
+  :拒绝 stale_workcopy ⇒ admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
 if (diff ⊆ scope?) then (否)
-  :拒绝 + boundary.violation;
+  :拒绝 ⇒ boundary.violation + admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
 if (判据全绿?) then (否)
-  :拒绝 criteria_red;
+  :拒绝 criteria_red ⇒ admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
@@ -216,14 +218,29 @@ stop
 plantuml("p8-release", """
 start
 :确定 in/out 集合;
-:缺口 = 差集（out 每项 reason + approved_by）;
+:缺口 = 差集（release.gaps_match）;
+if (冻结前置四条全过（见 03 §9）？) then (否)
+  :拒绝 freeze_blocked(reason_code);
+  stop
+else (是)
+endif
+if (证据在冻结 frontier 内有效、弃用窗口未过期？) then (否)
+  :拒绝 release.evidence_valid / release.deprecation_window;
+  stop
+else (是)
+endif
 :生成审计快照 JSONL（frozen_at_frontier）;
-:签字 decision.valid;
+if (审计快照 verify 通过？) then (否)
+  :拒绝 release.snapshot_verified;
+  stop
+else (是)
+endif
+:签字：decision.valid + decision.signed;
 :写 release.frozen（status='frozen' 的唯一生产者）;
 :checkout(snapshot_id);
 :build + pack;
 :记 package_sha256 + snapshot_id;
-if (产物与证据对得上?) then (否)
+if (产物与证据对得上？) then (否)
   :拒绝 artifact_mismatch（停在 frozen，不落 delivered）;
   stop
 else (是)
@@ -236,9 +253,9 @@ stop
 plantuml("uml-state-release", """
 hide empty description
 [*] --> draft
-draft --> frozen : freeze(缺口=差集) + 签字
-frozen --> delivered : 产物发布
-delivered --> rolled_back : decision(kind=rollback)
+draft --> frozen : release.frozen（前置五条 + decision.signed）
+frozen --> delivered : release.delivered（绑 package_sha256 + snapshot_id）
+delivered --> rolled_back : decision(kind=rollback) + release.superseded
 rolled_back --> [*] : 原记录保留，另开新 release
 delivered --> [*]
 """)
@@ -256,35 +273,36 @@ note right of draft : 退休候选是 gaps 行，不是状态
 plantuml("p9-verify", """
 start
 :verify（全量对账）;
-:重算派生列 code_artifact_sha256;
-if (与存储值一致?) then (否)
-  :红：derived_mismatch;
+note right: 条目定义在 docs/02 §14（十项）+ docs/14 两条兜底；这里只分组与失败码
+:A 事件链：hash 链连续、prev 存在、cursor 与事件数一致;
+if (A 全过?) then (否)
+  :红：chain_broken;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
 else (是)
 endif
-:校验 snapshot 父链存在性;
-if (有悬空父) then (是)
-  :红：dangling_parent;
+:B 引用：subject 外键可解析、claim.derived_by 已注册、snapshot_parent 无悬空、kind ⊆ event_kind;
+if (B 全过?) then (否)
+  :红：reference_dangling;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
-else (否)
+else (是)
 endif
-:抽查判据注册绕过（无负例的 active）;
-if (发现绕过) then (是)
-  :红：registry_bypass;
+:C 判定：派生列 = 重算值、判据有正例且负例、baseline.hash 一致、签名可验且 signer ≠ producer;
+if (C 全过?) then (否)
+  :红：judgement_mismatch;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
-else (否)
+else (是)
 endif
-:对账 event.kind ⊆ event_kind;
-if (有未知 kind) then (是)
-  :红：unknown_kind;
+:D 运行态：busy 卡有未过期 lease 且 actor 一致、库加密状态与 assurance 一致;
+if (D 全过?) then (否)
+  :红：runtime_inconsistent;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
-else (否)
+else (是)
 endif
-:写 verify.passed（含读数）;
+:写 verify.passed（含四组读数）;
 stop
 """)
 
@@ -293,12 +311,12 @@ start
 :请求签字（模型只说 request_sign）;
 :组成 payload（命题 + 证据 + frontier + content_hash）;
 if (payload/frontier 与 preview 一致?) then (否)
-  :拒绝 payload_moved;
+  :拒绝 payload_moved ⇒ 写 decision.rejected;
   stop
 else (是)
 endif
 if (signer ≠ producer?) then (否)
-  :拒绝 self_sign;
+  :拒绝 self_sign ⇒ 写 decision.rejected;
   stop
 else (是)
 endif
@@ -351,8 +369,10 @@ graphviz("p3-two-phase-pad", """
   s3 [shape=box, label="4 校验 frontier"];
   s3a [shape=box, style=filled, fillcolor="#fde2e1", label="已移动 ⇒ frontier_moved"];
   s3g [shape=box, label="5 权限/影响面（grant × scope）"];
-  s3ga [shape=box, style=filled, fillcolor="#fff4d6", label="未覆盖/超 max_impact ⇒ requires=human_sign（进待审队列）"];
-  s3gb [shape=box, label="覆盖 ⇒ requires=delegated"];
+  s3h [shape=box, style=filled, fillcolor="#f5f7fa", label="5.1 本 preview 已有有效签字？按 payload_hash + frontier 匹配 decision(status=valid)"];
+  s3ha [shape=box, style=filled, fillcolor="#e3f5e1", label="有 ⇒ 视为已授权，继续"];
+  s3ga [shape=box, style=filled, fillcolor="#fff4d6", label="无且未覆盖/超 max_impact ⇒ requires=human_sign：返回 pending_sign，不消费 preview"];
+  s3gb [shape=box, label="无且覆盖 ⇒ requires=delegated"];
   s35 [shape=box, label="6 baseline 方向：收紧自动 / 放宽需人签"];
   s35a [shape=box, style=filled, fillcolor="#fde2e1", label="放宽但无签名 ⇒ baseline_loosened"];
   s4 [shape=box, label="7 领域校验 invariants"];
@@ -366,7 +386,10 @@ graphviz("p3-two-phase-pad", """
   s52 -> s52a; s52 -> s2;
   s2 -> s2a; s2 -> s3;
   s3 -> s3a; s3 -> s3g;
-  s3g -> s3ga; s3g -> s3gb; s3gb -> s35;
+  s3g -> s3h;
+  s3h -> s3ha; s3h -> s3gb;
+  s3ha -> s35;
+  s3gb -> s3ga; s3gb -> s35;
   s35 -> s35a; s35 -> s4;
   s4 -> s4a; s4 -> s51;
   s51 -> s51a; s51 -> s5;
@@ -526,7 +549,10 @@ class Release {
   + id : ReleaseId
   + inSet : Set
   + outSet : Set
+  + status : Status
   + freeze()
+  + deliver(packageSha256, snapshotId)
+  + rollback(newReleaseId)
 }
 interface IntentRepository
 interface EventStore {
@@ -706,7 +732,7 @@ participant "EventStore" as E
 R -> S : 取目标快照
 S --> B : 工作目录
 R -> Sig : sign(缺口清单 + frozen_at_frontier)
-Sig -> E : decision.valid
+Sig -> E : decision.valid + decision.signed
 R -> E : release.frozen（status='frozen' 的唯一生产者）
 B --> R : 产物
 note right of R : 缺口计算/校验/打包细节见 03 · P8（唯一处）

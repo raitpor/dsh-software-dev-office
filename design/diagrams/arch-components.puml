@@ -51,6 +51,7 @@ admission --> gate
 review --> core
 exec --> core
 release --> gate
+release --> sign
 sign --> core
 
 fold --> DBPort
@@ -62,6 +63,7 @@ review --> DBPort
 exec --> DBPort
 release --> DBPort
 verify --> DBPort
+sign --> DBPort
 DBPort --> ST
 VcsPort --> VCS
 admission --> VcsPort

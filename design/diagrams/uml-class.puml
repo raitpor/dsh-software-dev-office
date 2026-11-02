@@ -107,7 +107,10 @@ class Release {
   + id : ReleaseId
   + inSet : Set
   + outSet : Set
+  + status : Status
   + freeze()
+  + deliver(packageSha256, snapshotId)
+  + rollback(newReleaseId)
 }
 interface IntentRepository
 interface EventStore {

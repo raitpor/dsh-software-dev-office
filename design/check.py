@@ -12,7 +12,9 @@
   R22 组件图分层依赖：L3→L2→L1→L0/端口，L1 不得直连实现（VCS/DB/signerd）；
   R23 计数一致：`N 张表` / `N 张图` / `N 条判据` 与真实数量相等（跨 docs/design/probe）；
   R24 P3 无旁路边（四道校验必须串联）；
-  R25 不变量矩阵的守卫点可落地（类/模块/03 P 号），表约束行写具体约束名。
+  R25 不变量矩阵的守卫点可落地（类/模块/03 P 号，Class.method 必须存在），表约束行写具体约束名；
+  R26 模块依赖列 → 组件图必须有对应边（store→DBPort、vcs→VcsPort，core 不查）；
+  R27 每个登记事件要么在 design 里有生产者，要么在 EXTERNAL_EVENTS 里逐条点名。
 
 退出码：0 通过；1 有漂移。
 """
@@ -76,13 +78,18 @@ if not registry_block:
     bad.append("[R0c] docs/02 找不到事件登记表（表头 `| 域 | kind | 何时写 |`）")
 registered = set(re.findall(r"`([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`", registry_block))
 
-# 判据 code 不是事件（`stage.gate_bound` 这类）
-criteria = set(re.findall(r"^\| `([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)`",
-                          read_doc("04-判据-门禁与负例.md"), flags=re.M))
+# 判据 code 不是事件（`stage.gate_bound`、`release.gaps_match` 这类）——从 docs 的判据表里抓
+criteria: set[str] = set()
+for doc_name in os.listdir(DOCS):
+    if doc_name.endswith(".md"):
+        criteria |= set(re.findall(r"^\| `([a-z][a-z0-9_]*\.[a-z][a-z0-9_]*)` \|",
+                                   read_doc(doc_name), flags=re.M))
 # 字段 / 方法 / 错误码，长得像事件但不是
 NON_EVENTS = {
     "intent.baseline_hash", "intent.strength", "spec.content_hash", "spec.kind", "spec.risk_flags",
     "event.kind", "release.freeze", "admission.evaluate", "criterion.spec_id", "work_unit.id",
+    "baseline.hash", "decision.signature", "lease.actor", "lease.expires_at",
+    "snapshot.git_oid", "decision.frontier", "task.status", "agent.watermark",
 }
 EVENT_PREFIX = {
     "intent", "spec", "task", "goal", "report", "attention", "workcopy", "snapshot",
@@ -113,6 +120,7 @@ module_doc = read(os.path.join(DESIGN, "01-结构化设计.md"))
 mods = set(re.findall(r"^\| \*\*([a-z][a-z0-9_]*)\*\*", module_doc, flags=re.M))
 arch = diagram_sources().get("arch-components.puml", "")
 comps = set(re.findall(r'component "([a-z][a-z0-9_]*)"', arch))
+comps_for_depths = comps | set(re.findall(r'(?:component|node)\s+"[^"]+"\s+as\s+(\w+)', arch))
 labels = set(re.findall(r'(?:component|node)\s+"([^"]+)"', arch))
 # 两个模块在图上不叫模块名，而是"承载它的进程/对象"；仍然必须出现在图里，不许无声跳过
 MODULE_LABEL = {"store": "stored", "vcs": "内嵌 git 对象库"}
@@ -165,9 +173,10 @@ STATE_SOURCES: dict[str, tuple[set[str], str, str]] = {
                         "12-代理池与生命周期.md", r"state\s+TEXT NOT NULL,\s*--\s*([^\n]+)"),
     "uml-state-release": ({"draft", "frozen", "delivered", "rolled_back"},
                           "09-交付与迁移.md", r"status\s+TEXT NOT NULL,\s*--\s*([^\n]+)"),
-    # 这两张的状态是设计层命名（docs 里以事件与结论描述），没有列枚举，故只校验图本身
-    "uml-state-stagerun": ({"running", "closed"}, "", ""),
-    "uml-state-review": ({"open", "closed"}, "", ""),
+    "uml-state-stagerun": ({"running", "closed"},
+                           "03-链条-意图到声明.md", r"\*\*stage_run\*\*：`([^`]+)`"),
+    "uml-state-review": ({"open", "closed"},
+                         "03-链条-意图到声明.md", r"\*\*review_round\*\*：`([^`]+)`"),
 }
 
 for name, (expected, doc, pattern) in STATE_SOURCES.items():
@@ -189,7 +198,11 @@ for name, (expected, doc, pattern) in STATE_SOURCES.items():
         if not m:
             bad.append(f"[R21] 在 {doc} 找不到状态枚举（模式 {pattern}），无法双向核对")
         else:
-            doc_states = set(re.findall(r"[a-z_]+", m.group(1)))
+            doc_states = set()
+            for seg in re.split(r"[→|]", m.group(1)):
+                word = re.match(r"[^a-zA-Z_]*([a-z_]+)", seg)
+                if word:
+                    doc_states.add(word.group(1))
             if doc_states != expected:
                 bad.append(f"[R21] {doc} 的状态枚举与 {name} 期望值不一致：{sorted(doc_states)}")
 
@@ -252,7 +265,7 @@ for folder in ("docs", "design", "probe"):
 p3 = diagram_sources().get("p3-two-phase-pad.dot", "")
 if p3:
     # 校验链的顺序（与 docs/11 §9 的四行一致）：payload → frontier → grant/scope → baseline → 不变量 → will_change → 事务
-    chain = ["s2", "s3", "s3g", "s3gb", "s35", "s4", "s51", "s5"]
+    chain = ["s2", "s3", "s3g", "s3h", "s3ha", "s35", "s4", "s51", "s5"]
     edges = set(re.findall(r"\b(\w+)\s*->\s*(\w+)\b", p3))
     for i, a in enumerate(chain[:-1]):
         if (a, chain[i + 1]) not in edges:
@@ -265,26 +278,119 @@ if p3:
 
 # ---------- R25 不变量矩阵的守卫点必须可落地 ----------
 oom = read(os.path.join(DESIGN, "02-面向对象模型.md"))
-classes = set(re.findall(r"^class (\w+)", diagram_sources().get("uml-class.puml", ""), flags=re.M))
-matrix_start = oom.find("| 不变量 | 唯一守卫点 | 类型 |")
+class_puml = diagram_sources().get("uml-class.puml", "")
+classes = set(re.findall(r"^class (\w+)", class_puml, flags=re.M))
+methods: dict[str, set[str]] = {}
+for m in re.finditer(r"^class (\w+) \{(.*?)^\}", class_puml, flags=re.M | re.S):
+    methods[m.group(1)] = set(re.findall(r"^\s*[+\-~#]\s*(\w+)\s*\(", m.group(2), flags=re.M))
+matrix_start = oom.find("| 不变量 | 唯一守卫点 |")
 matrix_end = oom.find("## 6.", matrix_start)
 matrix_rows = 0
+seen_invariants: set[str] = set()
 for line in oom[matrix_start:matrix_end].splitlines():
     cells = [c.strip() for c in line.strip().strip("|").split("|")]
-    if len(cells) != 3 or not cells[1] or "---" in cells[0]:
+    if len(cells) != 4 or not cells[1] or "---" in cells[0]:
         continue
-    guard, kind = cells[1], cells[2]
+    invariant, guard, audit, kind = cells
     matrix_rows += 1
+    if invariant in seen_invariants:
+        bad.append(f"[R25] 矩阵出现重复不变量：{invariant}")
+    seen_invariants.add(invariant)
+    if re.search(r"[+/]", guard):
+        bad.append(f"[R25] 一行写了多个守卫点：{invariant} → {guard}（拆成多行，或只留真正拦得住的那个）")
+    if "verify" in guard.lower():
+        bad.append(f"[R25] 守卫点写了 verify：{guard}——verify 是事后对账，不是守卫，应放进“审计”列")
     if "领域" in kind:
         words = set(re.findall(r"[A-Za-z_][A-Za-z0-9_]*", guard))
         cited = re.search(r"03\s*P\d+|P\d+", guard)
         if not (words & classes) and not (words & mods) and not cited:
             bad.append(f"[R25] 矩阵守卫点不可落地：{guard}（不在类图、不是模块、也没引 03 的 P 号）")
+        for cls, meth in re.findall(r"\b([A-Z]\w*)\.(\w+)", guard):
+            if cls not in classes:
+                bad.append(f"[R25] 矩阵守卫点引用了不存在的类：{cls}.{meth}")
+            elif meth not in methods.get(cls, set()):
+                bad.append(f"[R25] 矩阵守卫点引用了不存在的方法：{cls}.{meth}")
     elif "表约束" in kind:
         if not re.search(r"UNIQUE|外键|CHECK|NOT NULL", guard):
             bad.append(f"[R25] 矩阵守卫点声明为表约束但没写具体约束：{guard}")
 if matrix_rows < 20:
     bad.append(f"[R25] 不变量矩阵只有 {matrix_rows} 行，疑似被合并回'一行多不变量'")
+
+# ---------- R26 模块依赖列 ↔ 组件图（双向） ----------
+# `store`/`vcs` 依赖落到端口（DBPort/VcsPort），`core` 是隐含基座不画全，`ports(...)` 单列。
+DEP_ALIAS = {"store": "DBPort", "vcs": "VcsPort", "handlers": "h", "execution": "exec",
+             "query": "q", "views": "views"}
+PORT_DEP = {"DBPort": "store", "VcsPort": "vcs", "SignerPort": "signer"}
+
+
+def module_rows(doc: str):
+    for line in doc.splitlines():
+        m = re.match(r"^\| \*\*([a-z][a-z0-9_]*)\*\* \|[^|]*\| ([^|]*) \|", line)
+        if m:
+            yield m.group(1), m.group(2)
+
+
+if arch:
+    edges = set(re.findall(r"^\s*(\w+)\s*-->\s*(\w+)\s*$", arch, flags=re.M))
+    known_targets = comps_for_depths | set(DEP_ALIAS.values()) | {"DBPort", "VcsPort", "SignerPort"}
+    for mod, deps in module_rows(module_doc):
+        for raw in deps.split(","):
+            dep = raw.replace("**", "").replace("`", "").replace("L1 服务", "").replace("L2 ", "").strip()
+            if not dep or dep == "core" or dep.startswith("ports(") or dep == "无":
+                continue
+            target = DEP_ALIAS.get(dep, dep)
+            if target not in known_targets:
+                bad.append(f"[R26] 依赖列写了未知模块/端口：{mod} -> {dep}（拼错？或没在组件图/别名表里）")
+                continue
+            source = DEP_ALIAS.get(mod, mod)
+            if (source, target) not in edges:
+                bad.append(f"[R26] 依赖列写了 {dep}，组件图缺边 {mod}->{target}")
+    # 反向：图里画了模块→端口，依赖列必须写出对应能力
+    for mod, deps in module_rows(module_doc):
+        deps_text = deps.replace("**", "").replace("`", "")
+        source = DEP_ALIAS.get(mod, mod)
+        for port, capability in PORT_DEP.items():
+            if (source, port) in edges and capability not in deps_text:
+                bad.append(f"[R26] 组件图有 {mod}->{port}，依赖列却没写 {capability}（图与表必有一边错）")
+
+# ---------- R27 每个登记事件要么有生产者，要么显式登记为"过程外" ----------
+# 只认"过程侧"的出处：03（过程逻辑）+ 图（状态图/顺序图/流程图）。
+# 散文里提一句"消费了 X"不算有生产者。
+EXTERNAL_EVENTS = {
+    "actor.enrolled": "sign", "auth.login": "sign", "auth.unlock": "sign", "auth.failed": "sign",
+    "store.unlocked": "store", "store.open_suspected": "store",
+    "schema.migrated": "store", "backup.taken": "store", "restore.done": "store",
+    "agent.spawned": "dispatch", "agent.reused": "dispatch", "agent.pick_declined": "dispatch",
+    "agent.compaction_attempted": "dispatch", "agent.report_compaction": "dispatch",
+    "agent.parked": "dispatch", "agent.retired": "dispatch", "agent.handoff": "dispatch",
+    "lock.acquired": "dispatch", "lock.released": "dispatch",
+    "lease.issued": "dispatch", "lease.expired": "dispatch",
+    "workcopy.created": "dispatch", "workcopy.removed": "dispatch",
+    "change.proposed": "workflow", "change.applied": "workflow",
+    "node.reset": "workflow", "act.cancelled": "workflow",
+    "goal.declared": "workflow", "goal.integrated": "workflow", "goal.reparented": "workflow",
+    "intent.proposed": "workflow", "intent.signed": "workflow",
+    "spec.defined": "workflow", "contract.defined": "workflow", "scope.declared": "workflow",
+    "design.locked": "workflow", "criterion.revised": "criteria",
+    "restatement.recorded": "workflow", "restatement.diff_dispositioned": "workflow",
+    "restatement.invalidated": "workflow",
+    "task.created": "execution", "task.dropped": "execution", "orphan.expired": "dispatch",
+    "snapshot.taken": "vcs",
+    "redteam.recorded": "review", "redteam.disposed": "review",
+    "baseline.frozen": "gate", "baseline.amended": "gate", "baseline.loosened": "gate",
+    "decision.revoked": "sign", "redaction.applied": "store", "i18n.fallback": "store",
+    "attention.answered": "execution",
+}
+producer_text = read(os.path.join(DESIGN, "03-过程逻辑.md")) + "".join(diagram_sources().values())
+for kind in sorted(registered):
+    if kind in producer_text:
+        continue
+    if kind in EXTERNAL_EVENTS:
+        owner = EXTERNAL_EVENTS[kind]
+        if owner not in mods:
+            bad.append(f"[R27] {kind} 的登记生产者 {owner} 不在模块表里")
+        continue
+    bad.append(f"[R27] 事件 {kind} 在 03/图里没有生产者，也没登记为过程外（docs/02 有、design 无人写）")
 
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
@@ -293,4 +399,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点")
+      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者")

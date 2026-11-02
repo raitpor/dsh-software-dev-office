@@ -2,22 +2,22 @@
 start
 :admission.evaluate(task);
 if (lease 有效?) then (否)
-  :拒绝 no_lease;
+  :拒绝 no_lease ⇒ admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
 if (workcopy 基于基线?) then (否)
-  :拒绝 stale_workcopy;
+  :拒绝 stale_workcopy ⇒ admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
 if (diff ⊆ scope?) then (否)
-  :拒绝 + boundary.violation;
+  :拒绝 ⇒ boundary.violation + admission.rejected + 卡 blocked;
   stop
 else (是)
 endif
 if (判据全绿?) then (否)
-  :拒绝 criteria_red;
+  :拒绝 criteria_red ⇒ admission.rejected + 卡 blocked;
   stop
 else (是)
 endif

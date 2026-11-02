@@ -1,14 +1,29 @@
 @startuml
 start
 :确定 in/out 集合;
-:缺口 = 差集（out 每项 reason + approved_by）;
+:缺口 = 差集（release.gaps_match）;
+if (冻结前置四条全过（见 03 §9）？) then (否)
+  :拒绝 freeze_blocked(reason_code);
+  stop
+else (是)
+endif
+if (证据在冻结 frontier 内有效、弃用窗口未过期？) then (否)
+  :拒绝 release.evidence_valid / release.deprecation_window;
+  stop
+else (是)
+endif
 :生成审计快照 JSONL（frozen_at_frontier）;
-:签字 decision.valid;
+if (审计快照 verify 通过？) then (否)
+  :拒绝 release.snapshot_verified;
+  stop
+else (是)
+endif
+:签字：decision.valid + decision.signed;
 :写 release.frozen（status='frozen' 的唯一生产者）;
 :checkout(snapshot_id);
 :build + pack;
 :记 package_sha256 + snapshot_id;
-if (产物与证据对得上?) then (否)
+if (产物与证据对得上？) then (否)
   :拒绝 artifact_mismatch（停在 frozen，不落 delivered）;
   stop
 else (是)
