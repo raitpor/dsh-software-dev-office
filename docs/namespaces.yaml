@@ -4,6 +4,11 @@
 # names:   库名/工具名/文件名
 
 fields:
+  - report.evidence_id
+  - integration.evidence_id
+  - intent.strength
+  - intent.baseline_hash
+  - task.inputs
   - snapshot.external_ref
   - snapshot.git_oid
   - evidence.snapshot_id
