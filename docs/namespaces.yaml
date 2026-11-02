@@ -4,6 +4,9 @@
 # names:   库名/工具名/文件名
 
 fields:
+  - snapshot_parent.parent_id
+  - snapshot_parent.snapshot_id
+  - event_kind.kind
   - report.evidence_id
   - integration.evidence_id
   - intent.strength
@@ -12,7 +15,6 @@ fields:
   - snapshot.external_ref
   - snapshot.git_oid
   - evidence.snapshot_id
-  - snapshot.parent_ids
   - work_unit.spec_id
   - evidence.criterion_id
   - work_unit.criterion_id

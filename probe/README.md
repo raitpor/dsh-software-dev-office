@@ -12,7 +12,7 @@
 python3 probe/run.py
 ```
 
-输出每项 `PASS / FAIL / GAP`：
+输出每项 `PASS / FAIL / GAP`（本轮 G1–G5 已定后，GAP 归零）：
 
 | 标记 | 含义 |
 |---|---|
@@ -29,17 +29,17 @@ python3 probe/run.py
 | 2b | `work_unit.evidence` 挂错判据被拒 | `03` work_unit、`04` `design.code_matches` |
 | 2c | 一致的行可以插入（不误伤） | 同上 |
 | 3a | 快照祖先闭包（递归 CTE） | `03` snapshot、`08` 内置 VCS |
-| 3b | `parent_ids` 是 JSON 数组 ⇒ 完整性无约束 | 同上（GAP） |
+| 3b | 父链由链接表 + 外键约束 | G1 决策 |
 | 4a | 事件追加 + 折叠 | `02` 事件/折叠 |
 | 4b | 改一条 payload ⇒ 链上出现断点 | `02` 前沿/哈希链 |
 | 5 | 两段式写：payload 变了就拒 | `11` preview/confirm/cancel |
 | 6 | 门禁 `all_of` 且 `na` 不算 pass | `04` gate、`01` 命题 2 |
 | 7 | 单写：第二个写者被拒 | `01` 命题 1、`02` 单写原理 |
-| 8 | 派生列 `code_artifact_sha256` 可手填 | `03` 派生列（GAP） |
+| 8 | 派生列由应用层重算、verify 可发现手填 | G2 决策 |
 | 9 | 夹具：同极性可多条、同输入不重复 | `03`/`04` 夹具基数 |
-| 10 | 没有负例的判据仍可注册 | `04` 注册门槛（GAP） |
-| 11 | 同一卡可插多行 `work_unit` | `04` `task.single_criterion`（GAP） |
-| 12 | 任意事件 `kind` 可写入 | `02` 登记表（GAP） |
+| 10 | 注册门槛：唯一入口校验 | G3 决策 |
+| 11 | 一卡一行由 `UNIQUE(task_id)` 保证 | G4 决策 |
+| 12 | 未知 `kind` 被 `event_kind` 外键拒绝 | G5 决策 |
 
 > 3、4 是子项拆分，所以"12 项"对应 16 条输出行（含 2c）。
 

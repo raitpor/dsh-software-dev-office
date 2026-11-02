@@ -97,7 +97,7 @@ class ClockPort {
 Intent "1" --> "1" GoalNode : 根
 GoalNode --> GoalNode : 分解
 GoalNode --> Criterion : 叶验收
-Task "1" --> "1..*" WorkUnit : G4 待定
+Task "1" --> "1" WorkUnit
 WorkUnit --> Criterion
 Criterion "1" --> "1..*" Fixture
 Gate --> Criterion

@@ -186,6 +186,7 @@ CREATE TABLE work_unit (
   spec_id      TEXT NOT NULL,
   evidence_id  TEXT NOT NULL,
   at           TEXT NOT NULL,
+  UNIQUE (task_id),                      -- G4 已定：一卡一行
   -- 两个复合外键：副本不可偏离（docs 的"受约束副本"）
   FOREIGN KEY (criterion_id, spec_id)     REFERENCES criterion (id, spec_id),
   FOREIGN KEY (evidence_id, criterion_id) REFERENCES evidence  (id, criterion_id)
@@ -194,9 +195,15 @@ CREATE TABLE work_unit (
 CREATE TABLE snapshot (
   id           TEXT PRIMARY KEY,
   git_oid      TEXT NOT NULL UNIQUE,
-  parent_ids   TEXT NOT NULL DEFAULT '[]',   -- JSON
   external_ref TEXT,
   at           TEXT NOT NULL
+);
+
+-- G1 已定：父链用链接表（两个外键都指向 snapshot）
+CREATE TABLE snapshot_parent (
+  snapshot_id TEXT NOT NULL REFERENCES snapshot(id),
+  parent_id   TEXT NOT NULL REFERENCES snapshot(id),
+  PRIMARY KEY (snapshot_id, parent_id)
 );
 
 CREATE TABLE stage_run (
@@ -240,19 +247,18 @@ CREATE TABLE report (
 );
 
 -- ---------- 事件（过程真源） ----------
+CREATE TABLE event_kind (
+  kind  TEXT PRIMARY KEY,
+  since TEXT NOT NULL,
+  note  TEXT
+);
+
 CREATE TABLE event (
   id             INTEGER PRIMARY KEY AUTOINCREMENT,
-  kind           TEXT NOT NULL,
+  kind           TEXT NOT NULL REFERENCES event_kind(kind),
   payload        TEXT NOT NULL,
   frontier       TEXT NOT NULL,
   prev_hash      TEXT NOT NULL,
   hash           TEXT NOT NULL UNIQUE,
   at             TEXT NOT NULL
-);
-
--- ---------- 探针专用：快照父链（docs 用 JSON 数组，这里额外建链接表测祖先闭包） ----------
-CREATE TABLE snapshot_parent (
-  snapshot_id TEXT NOT NULL REFERENCES snapshot(id),
-  parent_id   TEXT NOT NULL REFERENCES snapshot(id),
-  PRIMARY KEY (snapshot_id, parent_id)
 );
