@@ -137,8 +137,11 @@ p02 = os.path.join(ROOT, '01-理论与边界.md')
 s02 = read(p02)
 try:
     sec = s02[s02.index('## 4.'):s02.index('## 5.')]
-    mrows = len(re.findall(r'^\| \*\*([^*]+)\*\* \|', sec, flags=re.M))
-    prows = len(re.findall(r'^\| ([^|*][^|]*) \| [^|]+ \|', sec[sec.index('### 4.1'):sec.index('### 4.2')], flags=re.M))
+    # 度量表在 「### 4.2 护栏指标」段，配对表在「### 4.3 反指标」段；4.1 是主指标（返工/对齐），不参与这条计数
+    guard = sec[sec.index('### 4.2'):sec.index('### 4.3')]
+    pairs = sec[sec.index('### 4.3'):sec.index('### 4.4')]
+    mrows = len(re.findall(r'^\| \*\*([^*]+)\*\* \|', guard, flags=re.M))
+    prows = len(re.findall(r'^\| ([^|*][^|]*) \| [^|]+ \|', pairs, flags=re.M))
     zh = {'十一': 11, '十二': 12, '十三': 13, '十四': 14, '十五': 15}.get(
         (re.search(r'这(十[一二三四五])个数字', s02) or [None, None])[1], None)
     if not (mrows == prows == zh):

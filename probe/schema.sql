@@ -20,7 +20,7 @@ CREATE TABLE spec (
   id                    TEXT PRIMARY KEY,
   intent_id             TEXT NOT NULL REFERENCES intent(id),
   clause                TEXT NOT NULL,
-  kind                  TEXT NOT NULL CHECK (kind IN ('requirement','design','contract','impact')),
+  kind                  TEXT NOT NULL CHECK (kind IN ('requirement','design','contract','impact','assumption')),
   mech_checkable        INTEGER NOT NULL DEFAULT 0 CHECK (mech_checkable IN (0,1)),
   scenario_id           TEXT,
   created_by            TEXT NOT NULL,
