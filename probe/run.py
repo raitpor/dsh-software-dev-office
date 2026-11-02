@@ -63,8 +63,8 @@ def probe_schema() -> None:
         return
     names = [r[0] for r in conn.execute(
         "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name")]
-    design = [n for n in names if n not in ('snapshot_parent', 'sqlite_sequence')]
-    helper = [n for n in names if n in ('snapshot_parent',)]
+    design = [n for n in names if n != 'sqlite_sequence']
+    helper = []
     internal = [n for n in names if n == 'sqlite_sequence']
     record("PASS", "1. 建表",
            f"设计表 {len(design)} + 探针辅助 {len(helper)} + SQLite 内部 {len(internal)}")

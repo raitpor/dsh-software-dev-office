@@ -1,0 +1,34 @@
+@startuml
+start
+:verify（全量对账）;
+:重算派生列 code_artifact_sha256;
+if (与存储值一致?) then (否)
+  :红：derived_mismatch;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (是)
+endif
+:校验 snapshot 父链存在性;
+if (有悬空父) then (是)
+  :红：dangling_parent;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (否)
+endif
+:抽查判据注册绕过（无负例的 active）;
+if (发现绕过) then (是)
+  :红：registry_bypass;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (否)
+endif
+:对账 event.kind ⊆ event_kind;
+if (有未知 kind) then (是)
+  :红：unknown_kind;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (否)
+endif
+:写 verify.passed（含读数）;
+stop
+@enduml

@@ -24,7 +24,7 @@ python3 probe/run.py
 
 | # | 探针 | 对应设计 |
 |---|---|---|
-| 1 | 24 张设计表 + 1 张探针表能一次建起来 | `03` 表清单、`02` 部署 |
+| 1 | 26 张设计表能一次建起来 | `03` 表清单、`02` 部署 |
 | 2a | `work_unit.spec_id` 偏离 `criterion.spec_id` 被拒 | `03` work_unit |
 | 2b | `work_unit.evidence` 挂错判据被拒 | `03` work_unit、`04` `design.code_matches` |
 | 2c | 一致的行可以插入（不误伤） | 同上 |

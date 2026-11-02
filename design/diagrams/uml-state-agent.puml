@@ -7,8 +7,9 @@ busy --> compacting : watermark ≥ 阈值
 compacting --> idle : report_compaction
 idle --> parked : 停泊
 parked --> idle : 唤醒
-parked --> dead : 7 天未唤醒
+parked --> parked : 7 天未唤醒 ⇒ 标 stale（不杀、不唤醒，进 gaps）
 busy --> dead : unwakeable
 idle --> dead : unwakeable
+parked --> dead : unwakeable（探测失败）
 dead --> [*]
 @enduml

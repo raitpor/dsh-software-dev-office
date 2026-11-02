@@ -13,4 +13,5 @@ A -> E : review.finding_verified(verdict)
 note right of R : 收口条件见 02 · 状态图 ReviewRound（唯一处）
 R -> D : close(verdict)
 D -> E : decision.valid
+R -> E : review.round_closed(verdict, findings)
 @enduml

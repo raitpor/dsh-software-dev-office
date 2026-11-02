@@ -1,5 +1,5 @@
 -- 可执行性探针用的 DDL 草案（不是最终实现）
--- 目标：验证 docs/03 的 23 张表能否在 SQLite 上建起来，以及关键约束是否真的拦人。
+-- 目标：验证 docs/ 的设计表能否在 SQLite 上建起来，以及关键约束是否真的拦人（表数以 run.py 输出为准）。
 -- 约定：JSON 列用 TEXT；数组用 JSON；跨表一致性尽量用外键，SQLite 表达不了的写进 REPORT.md 的 GAP。
 
 PRAGMA foreign_keys = ON;

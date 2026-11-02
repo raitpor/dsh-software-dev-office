@@ -334,4 +334,4 @@ if bad:
     print('✗ 发现漂移 %d 处：' % len(bad))
     for b in bad: print('   -', b)
     sys.exit(1)
-print('✓ 无漂移：R1、R1+、R2、R3、R4、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17、R18 全过（%d 篇）' % len(files()))
+print('✓ 无漂移：已实现的规则全过（R1、R1+、R2、R3、R4、R5、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17、R18；R7 仅在有 lang/*.lang 时运行；无 R8）——%d 篇' % len(files()))

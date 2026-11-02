@@ -1,9 +1,8 @@
 @startuml
 hide empty description
 [*] --> open
-open --> verified : 全部 finding 已核实
-verified --> closed : close(verdict)
-open --> changes_requested : 未核实 / 判据红
-changes_requested --> open : 作者修完
+open --> open : finding 追加 / 逐条核实
+open --> closed : close(verdict)
+note right of closed : verdict ∈ {pass, changes_requested} 是属性，不是状态
 closed --> [*]
 @enduml

@@ -1,0 +1,8 @@
+@startuml
+hide empty description
+[*] --> defined
+defined --> revised : spec.revised（必带 reason 与影响面）
+revised --> revised : 再次修订（旧版本保留）
+defined --> [*]
+revised --> [*]
+@enduml

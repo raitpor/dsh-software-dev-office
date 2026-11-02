@@ -5,17 +5,24 @@ digraph G {
 
 node [shape=box, style=filled, fillcolor="#f5f7fa"];
 n0 [label="取 baseline 与当前 frontier"];
-n1 [shape=diamond, fillcolor=white, label="frontier 不一致?"];
-s1 [fillcolor="#fde2e1", label="verdict = stale_fail"];
+n1 [shape=diamond, fillcolor=white, label="frontier 或 baseline_hash 不一致?"];
+s1 [fillcolor="#fde2e1", label="verdict = fail（reason_code=stale_fail）"];
 n2 [label="逐条判据：不适用当前 stage ⇒ na；否则 run(c)"];
 n3 [shape=diamond, fillcolor=white, label="policy = all_of?"];
 v1 [label="verdict = 全部 ∈ {pass, na} ? pass : fail"];
 v2 [fillcolor="#fff4d6", label="verdict = 存在 pass ? pass : fail"];
-n4 [label="写 gate.judged（含每条读数与 data）"];
+map [shape=box, label="stage_run.verdict：pass→pass；fail→changes_requested；na→na"];
+n4 [label="写 gate.judged（含每条读数、data 里的 elapsed_ms）"];
+n5 [shape=diamond, fillcolor=white, label="整组耗时 ≥ 2s?"];
+n6 [fillcolor="#fff4d6", label="记一行 gaps（拆门/加索引）；不改变 verdict"];
 n0 -> n1;
 n1 -> s1 [label="是"]; n1 -> n2 [label="否"];
+s1 -> map;
 n2 -> n3;
 n3 -> v1 [label="是"]; n3 -> v2 [label="否"];
-v1 -> n4; v2 -> n4;
+v1 -> map; v2 -> map;
+map -> n5;
+n5 -> n6 [label="是"]; n5 -> n4 [label="否"];
+n6 -> n4;
 
 }

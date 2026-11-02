@@ -7,6 +7,9 @@ probe:
 design:
 	python3 design/diagrams/build.py
 
-all: check probe design
+design-check:
+	python3 design/check.py
 
-.PHONY: check probe design all
+all: check probe design design-check
+
+.PHONY: check probe design design-check all

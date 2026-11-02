@@ -1,8 +1,8 @@
 @startuml
 hide empty description
-[*] --> entered
-entered --> judged : gate.judged
-judged --> exited : stage.exited(verdict)
-entered --> exited : na（该 policy 下无此阶段）
-exited --> [*]
+[*] --> running : stage.entered
+running --> closed : stage.exited（exited_at 非空）
+running --> closed : na（该 policy 下无此阶段）
+note right of closed : verdict 是属性：pass / changes_requested / na
+closed --> [*]
 @enduml

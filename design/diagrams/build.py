@@ -6,19 +6,27 @@
 - **Graphviz**：N-S 图、PAD 图、判定树 —— PlantUML 没有对应的原生图形。
 
 输出：design/diagrams/<name>.svg 与 .png；源文件 <name>.puml / <name>.dot。
-用法：python3 design/diagrams/build.py
+用法：
+  python3 design/diagrams/build.py            # 重建全部产物
+  python3 design/diagrams/build.py --check    # 只在临时目录重建，比对产物是否已过期
 """
 from __future__ import annotations
 
+import filecmp
 import os
 import subprocess
+import sys
+import tempfile
 import textwrap
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+CHECK = "--check" in sys.argv[1:]
+OUT = tempfile.mkdtemp(prefix="sdo-diagrams-") if CHECK else HERE
+RENDERED: list[str] = []
 
 
 def write(name: str, suffix: str, body: str) -> str:
-    path = os.path.join(HERE, f"{name}.{suffix}")
+    path = os.path.join(OUT, f"{name}.{suffix}")
     with open(path, "w", encoding="utf-8") as f:
         f.write(body)
     return path
@@ -29,7 +37,9 @@ def plantuml(name: str, body: str) -> None:
     for fmt in ("png", "svg"):
         subprocess.run(["plantuml", f"-t{fmt}", src], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    print("ok(plantuml)", name)
+    RENDERED.append(name)
+    if not CHECK:
+        print("ok(plantuml)", name)
 
 
 def graphviz(name: str, body: str) -> None:
@@ -39,9 +49,11 @@ def graphviz(name: str, body: str) -> None:
                                  + textwrap.dedent(body) + "\n}\n")
     for fmt in ("svg", "png"):
         subprocess.run(["dot", f"-T{fmt}", src, "-o",
-                        os.path.join(HERE, f"{name}.{fmt}")], check=True,
+                        os.path.join(OUT, f"{name}.{fmt}")], check=True,
                        stdout=subprocess.DEVNULL)
-    print("ok(graphviz)", name)
+    RENDERED.append(name)
+    if not CHECK:
+        print("ok(graphviz)", name)
 
 
 
@@ -59,6 +71,11 @@ package "L2 应用层" {
   component "workflow" as wf
   component "query" as q
 }
+package "端口（L1 只通过它访问外部）" {
+  component "DatabasePort" as DBPort
+  component "VcsPort" as VcsPort
+  component "SignerPort" as SignerPort
+}
 package "L1 领域层" {
   component "fold" as fold
   component "criteria" as criteria
@@ -67,6 +84,7 @@ package "L1 领域层" {
   component "dispatch" as dispatch
   component "review" as review
   component "execution" as exec
+  component "verify" as verify
   component "release" as release
   component "sign" as sign
 }
@@ -91,23 +109,28 @@ fold --> core
 criteria --> core
 gate --> criteria
 admission --> gate
-admission --> VCS
-dispatch --> VCS
 review --> core
 exec --> core
 release --> gate
-release --> VCS
 sign --> core
 
-fold --> ST
-criteria --> ST
-gate --> ST
-admission --> ST
-dispatch --> ST
-review --> ST
-exec --> ST
-release --> ST
-sign --> SG
+fold --> DBPort
+criteria --> DBPort
+gate --> DBPort
+admission --> DBPort
+dispatch --> DBPort
+review --> DBPort
+exec --> DBPort
+release --> DBPort
+verify --> DBPort
+DBPort --> ST
+VcsPort --> VCS
+admission --> VcsPort
+dispatch --> VcsPort
+release --> VcsPort
+verify --> VcsPort
+sign --> SignerPort
+SignerPort --> SG
 ST --> DB
 """)
 
@@ -133,13 +156,28 @@ if (有负例夹具?) then (否)
   stop
 else (是)
 endif
-if (输入重复?) then (是)
-  :拒绝 duplicate_fixture;
+if (正例实跑 = pass?) then (否)
+  :拒绝 positive_fixture_failed;
+  stop
+else (是)
+endif
+if (负例实跑 = fail?) then (否)
+  :拒绝 negative_fixture_not_red;
+  stop
+else (是)
+endif
+if (单次执行 < 200ms?) then (否)
+  :拒绝 budget_exceeded;
+  stop
+else (是)
+endif
+:事务：写 criterion + fixtures + criterion.registered;
+if (UNIQUE 冲突（同输入已存在）?) then (是)
+  :回滚 ⇒ 映射 duplicate_fixture;
   stop
 else (否)
 endif
-:写 criterion + fixtures;
-:发 criterion.registered;
+:提交 ⇒ 返回 criterion_id;
 stop
 """)
 
@@ -177,19 +215,20 @@ stop
 
 plantuml("p8-release", """
 start
-:release.freeze;
 :确定 in/out 集合;
-:缺口 = 差集;
-:checkout 目标 snapshot;
+:缺口 = 差集（out 每项 reason + approved_by）;
+:生成审计快照 JSONL（frozen_at_frontier）;
+:签字 decision.valid;
+:写 release.frozen（status='frozen' 的唯一生产者）;
+:checkout(snapshot_id);
 :build + pack;
 :记 package_sha256 + snapshot_id;
-if (与证据对得上?) then (否)
-  :拒绝 artifact_mismatch;
+if (产物与证据对得上?) then (否)
+  :拒绝 artifact_mismatch（停在 frozen，不落 delivered）;
   stop
 else (是)
 endif
-:生成审计快照 JSONL;
-:签字;
+:写 release.delivered（status='delivered' 的唯一生产者）;
 stop
 """)
 
@@ -213,23 +252,90 @@ retired --> [*]
 note right of draft : 退休候选是 gaps 行，不是状态
 """)
 
+
+plantuml("p9-verify", """
+start
+:verify（全量对账）;
+:重算派生列 code_artifact_sha256;
+if (与存储值一致?) then (否)
+  :红：derived_mismatch;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (是)
+endif
+:校验 snapshot 父链存在性;
+if (有悬空父) then (是)
+  :红：dangling_parent;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (否)
+endif
+:抽查判据注册绕过（无负例的 active）;
+if (发现绕过) then (是)
+  :红：registry_bypass;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (否)
+endif
+:对账 event.kind ⊆ event_kind;
+if (有未知 kind) then (是)
+  :红：unknown_kind;
+  :写 verify.failed + blocked(verify_failed) + attention.raised;
+  stop
+else (否)
+endif
+:写 verify.passed（含读数）;
+stop
+""")
+
+plantuml("p10-sign", """
+start
+:请求签字（模型只说 request_sign）;
+:组成 payload（命题 + 证据 + frontier + content_hash）;
+if (payload/frontier 与 preview 一致?) then (否)
+  :拒绝 payload_moved;
+  stop
+else (是)
+endif
+if (signer ≠ producer?) then (否)
+  :拒绝 self_sign;
+  stop
+else (是)
+endif
+if (独立性满足（dual_human 或冷却）?) then (否)
+  :blocked(awaiting_signature) + attention;
+  stop
+else (是)
+endif
+:signerd 签名（私钥不出进程）;
+:落 decision.valid + decision.signed;
+stop
+""")
+
 # ============ 过程逻辑：N-S / PAD / 判定树（Graphviz） ============
 
 graphviz("p2-gate-ns", """
   node [shape=box, style=filled, fillcolor="#f5f7fa"];
   n0 [label="取 baseline 与当前 frontier"];
-  n1 [shape=diamond, fillcolor=white, label="frontier 不一致?"];
-  s1 [fillcolor="#fde2e1", label="verdict = stale_fail"];
+  n1 [shape=diamond, fillcolor=white, label="frontier 或 baseline_hash 不一致?"];
+  s1 [fillcolor="#fde2e1", label="verdict = fail（reason_code=stale_fail）"];
   n2 [label="逐条判据：不适用当前 stage ⇒ na；否则 run(c)"];
   n3 [shape=diamond, fillcolor=white, label="policy = all_of?"];
   v1 [label="verdict = 全部 ∈ {pass, na} ? pass : fail"];
   v2 [fillcolor="#fff4d6", label="verdict = 存在 pass ? pass : fail"];
-  n4 [label="写 gate.judged（含每条读数与 data）"];
+  map [shape=box, label="stage_run.verdict：pass→pass；fail→changes_requested；na→na"];
+  n4 [label="写 gate.judged（含每条读数、data 里的 elapsed_ms）"];
+  n5 [shape=diamond, fillcolor=white, label="整组耗时 ≥ 2s?"];
+  n6 [fillcolor="#fff4d6", label="记一行 gaps（拆门/加索引）；不改变 verdict"];
   n0 -> n1;
   n1 -> s1 [label="是"]; n1 -> n2 [label="否"];
+  s1 -> map;
   n2 -> n3;
   n3 -> v1 [label="是"]; n3 -> v2 [label="否"];
-  v1 -> n4; v2 -> n4;
+  v1 -> map; v2 -> map;
+  map -> n5;
+  n5 -> n6 [label="是"]; n5 -> n4 [label="否"];
+  n6 -> n4;
 """)
 
 graphviz("p3-two-phase-pad", """
@@ -238,18 +344,33 @@ graphviz("p3-two-phase-pad", """
   s1 [shape=box, label="1 读 preview"];
   s1a [shape=box, style=filled, fillcolor="#fde2e1", label="不存在 ⇒ stale_preview"];
   s1b [shape=box, style=filled, fillcolor="#fde2e1", label="过期 ⇒ expired_preview"];
-  s2 [shape=box, label="2 校验 payload_hash"];
+  s52 [shape=box, label="2 幂等：preview 已消费？"];
+  s52a [shape=box, style=filled, fillcolor="#e3f5e1", label="是 ⇒ 返回首次结果（不再校验、不再写）"];
+  s2 [shape=box, label="3 校验 payload_hash"];
   s2a [shape=box, style=filled, fillcolor="#fde2e1", label="不一致 ⇒ payload_changed"];
-  s3 [shape=box, label="3 校验 frontier"];
+  s3 [shape=box, label="4 校验 frontier"];
   s3a [shape=box, style=filled, fillcolor="#fde2e1", label="已移动 ⇒ frontier_moved"];
-  s4 [shape=box, label="4 领域校验 invariants"];
+  s3g [shape=box, label="5 权限/影响面（grant × scope）"];
+  s3ga [shape=box, style=filled, fillcolor="#fff4d6", label="未覆盖/超 max_impact ⇒ requires=human_sign（进待审队列）"];
+  s3gb [shape=box, label="覆盖 ⇒ requires=delegated"];
+  s35 [shape=box, label="6 baseline 方向：收紧自动 / 放宽需人签"];
+  s35a [shape=box, style=filled, fillcolor="#fde2e1", label="放宽但无签名 ⇒ baseline_loosened"];
+  s4 [shape=box, label="7 领域校验 invariants"];
   s4a [shape=box, style=filled, fillcolor="#fde2e1", label="失败 ⇒ invariant_violated"];
-  s5 [shape=box, style=filled, fillcolor="#e3f5e1", label="5 事务：追加事件 + 更新投影 + 标记 preview 已消费"];
-  s6 [shape=box, style=filled, fillcolor="#e3f5e1", label="6 返回 {id, frontier}"];
-  root -> s1; s1 -> s1a; s1 -> s1b; s1 -> s2;
+  s51 [shape=box, label="8 will_change 与 preview 逐条一致"];
+  s51a [shape=box, style=filled, fillcolor="#fde2e1", label="不一致 ⇒ will_change_drift"];
+  s5 [shape=box, style=filled, fillcolor="#e3f5e1", label="9 事务：追加事件 + 更新投影 + 标记 preview 已消费"];
+  s6 [shape=box, style=filled, fillcolor="#e3f5e1", label="返回 {id, frontier}"];
+  root -> s1;
+  s1 -> s1a; s1 -> s1b; s1 -> s52;
+  s52 -> s52a; s52 -> s2;
   s2 -> s2a; s2 -> s3;
-  s3 -> s3a; s3 -> s4;
-  s4 -> s4a; s4 -> s5; s5 -> s6;
+  s3 -> s3a; s3 -> s3g;
+  s3g -> s3ga; s3g -> s3gb; s3gb -> s35;
+  s35 -> s35a; s35 -> s4;
+  s4 -> s4a; s4 -> s51;
+  s51 -> s51a; s51 -> s5;
+  s5 -> s6;
 """)
 
 graphviz("p5-dispatch-tree", """
@@ -373,6 +494,34 @@ class Agent {
   + state : State
   + watermark : number
 }
+class Spec {
+  + id : SpecId
+  + intent : IntentId
+  + kind : Kind
+  + contentHash : ContentHash
+  + riskFlags : list
+}
+class Evidence {
+  + id : EvidenceId
+  + artifactSha256 : string
+  + snapshot : SnapshotId
+  + commit : string
+}
+class Lease {
+  + id : LeaseId
+  + agent : AgentId
+  + task : TaskId
+  + expiresAt : Timestamp
+}
+class WorkCopy {
+  + id : WorkCopyId
+  + task : TaskId
+  + base : SnapshotId
+}
+class SnapshotParent {
+  + snapshot : SnapshotId
+  + parent : SnapshotId
+}
 class Release {
   + id : ReleaseId
   + inSet : Set
@@ -392,16 +541,22 @@ class ClockPort {
   + now()
 }
 
-Intent "1" --> "1" GoalNode : 根
+Intent "1" ..> "1..*" Spec : 跨聚合
+Spec "1" ..> "1..*" Criterion : 跨聚合
+WorkUnit ..> Evidence
+Task ..> Lease
+Task ..> WorkCopy
+Snapshot "1" --> "1..*" SnapshotParent
+Intent "1" ..> "1" GoalNode : 根（跨聚合）
 GoalNode --> GoalNode : 分解
-GoalNode --> Criterion : 叶验收
+GoalNode ..> Criterion : 叶验收（跨聚合）
 Task "1" --> "1" WorkUnit
-WorkUnit --> Criterion
+WorkUnit ..> Criterion : 跨聚合
 Criterion "1" --> "1..*" Fixture
-Gate --> Criterion
-StageRun --> Gate
-Release --> Snapshot : 交付绑快照
-Task --> Agent : 认领者
+Gate ..> Criterion : 引用（跨聚合）
+StageRun ..> Gate : 引用
+Release ..> Snapshot : 交付绑快照（跨聚合）
+Task ..> Agent : 认领者（跨聚合）
 Intent ..> IntentRepository
 Task ..> EventStore
 Snapshot ..> SnapshotRepo
@@ -435,28 +590,48 @@ busy --> compacting : watermark ≥ 阈值
 compacting --> idle : report_compaction
 idle --> parked : 停泊
 parked --> idle : 唤醒
-parked --> dead : 7 天未唤醒
+parked --> parked : 7 天未唤醒 ⇒ 标 stale（不杀、不唤醒，进 gaps）
 busy --> dead : unwakeable
 idle --> dead : unwakeable
+parked --> dead : unwakeable（探测失败）
 dead --> [*]
 """)
 
 plantuml("uml-state-stagerun", """
 hide empty description
-[*] --> entered
-entered --> judged : gate.judged
-judged --> exited : stage.exited(verdict)
-entered --> exited : na（该 policy 下无此阶段）
-exited --> [*]
+[*] --> running : stage.entered
+running --> closed : stage.exited（exited_at 非空）
+running --> closed : na（该 policy 下无此阶段）
+note right of closed : verdict 是属性：pass / changes_requested / na
+closed --> [*]
+""")
+
+plantuml("uml-state-intent", """
+hide empty description
+[*] --> draft
+draft --> proposed : 提交
+proposed --> signed : 人签（approved_by + content_hash）
+signed --> proposed : statement 变 ⇒ content_hash 变（必须重签）
+signed --> superseded : 被新意图取代
+superseded --> [*]
+signed --> [*]
+""")
+
+plantuml("uml-state-spec", """
+hide empty description
+[*] --> defined
+defined --> revised : spec.revised（必带 reason 与影响面）
+revised --> revised : 再次修订（旧版本保留）
+defined --> [*]
+revised --> [*]
 """)
 
 plantuml("uml-state-review", """
 hide empty description
 [*] --> open
-open --> verified : 全部 finding 已核实
-verified --> closed : close(verdict)
-open --> changes_requested : 未核实 / 判据红
-changes_requested --> open : 作者修完
+open --> open : finding 追加 / 逐条核实
+open --> closed : close(verdict)
+note right of closed : verdict ∈ {pass, changes_requested} 是属性，不是状态
 closed --> [*]
 """)
 
@@ -517,6 +692,7 @@ A -> E : review.finding_verified(verdict)
 note right of R : 收口条件见 02 · 状态图 ReviewRound（唯一处）
 R -> D : close(verdict)
 D -> E : decision.valid
+R -> E : review.round_closed(verdict, findings)
 """)
 
 plantuml("uml-seq-release", """
@@ -529,10 +705,12 @@ participant "EventStore" as E
 
 R -> S : 取目标快照
 S --> B : 工作目录
+R -> Sig : sign(缺口清单 + frozen_at_frontier)
+Sig -> E : decision.valid
+R -> E : release.frozen（status='frozen' 的唯一生产者）
 B --> R : 产物
 note right of R : 缺口计算/校验/打包细节见 03 · P8（唯一处）
-R -> Sig : sign(交付证据)
-Sig -> E : decision.valid
+R -> E : release.delivered（绑 package_sha256 + snapshot_id）
 """)
 
 plantuml("uml-seq-change", """
@@ -552,4 +730,25 @@ M --> C : 结论
 C -> E : task.reopened 或 attention.raised
 """)
 
-print("done")
+if not CHECK:
+    print("done")
+
+if CHECK:
+    stale = []
+    exts = (".svg", ".png", ".puml", ".dot")
+    for name in sorted(os.listdir(OUT)):
+        ext = os.path.splitext(name)[1]
+        if ext not in exts:
+            continue
+        fresh = os.path.join(OUT, name)
+        kept = os.path.join(HERE, name)
+        if not os.path.exists(kept) or not filecmp.cmp(kept, fresh, shallow=False):
+            stale.append(name)
+    total = sum(1 for n in os.listdir(OUT) if os.path.splitext(n)[1] in (".svg", ".png"))
+    if stale:
+        print(f"✗ 图文件与模板不一致 {len(stale)} 个：")
+        for s in sorted(stale):
+            print("   -", s)
+        print("  修法：python3 design/diagrams/build.py（产物与源文件都只由模板生成，不许手改）")
+        sys.exit(1)
+    print(f"✓ 图产物与模板一致（{total} 个产物文件，{len(RENDERED)} 张图）")

@@ -10,6 +10,11 @@ package "L2 应用层" {
   component "workflow" as wf
   component "query" as q
 }
+package "端口（L1 只通过它访问外部）" {
+  component "DatabasePort" as DBPort
+  component "VcsPort" as VcsPort
+  component "SignerPort" as SignerPort
+}
 package "L1 领域层" {
   component "fold" as fold
   component "criteria" as criteria
@@ -18,6 +23,7 @@ package "L1 领域层" {
   component "dispatch" as dispatch
   component "review" as review
   component "execution" as exec
+  component "verify" as verify
   component "release" as release
   component "sign" as sign
 }
@@ -42,22 +48,27 @@ fold --> core
 criteria --> core
 gate --> criteria
 admission --> gate
-admission --> VCS
-dispatch --> VCS
 review --> core
 exec --> core
 release --> gate
-release --> VCS
 sign --> core
 
-fold --> ST
-criteria --> ST
-gate --> ST
-admission --> ST
-dispatch --> ST
-review --> ST
-exec --> ST
-release --> ST
-sign --> SG
+fold --> DBPort
+criteria --> DBPort
+gate --> DBPort
+admission --> DBPort
+dispatch --> DBPort
+review --> DBPort
+exec --> DBPort
+release --> DBPort
+verify --> DBPort
+DBPort --> ST
+VcsPort --> VCS
+admission --> VcsPort
+dispatch --> VcsPort
+release --> VcsPort
+verify --> VcsPort
+sign --> SignerPort
+SignerPort --> SG
 ST --> DB
 @enduml

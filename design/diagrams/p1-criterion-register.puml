@@ -16,12 +16,27 @@ if (有负例夹具?) then (否)
   stop
 else (是)
 endif
-if (输入重复?) then (是)
-  :拒绝 duplicate_fixture;
+if (正例实跑 = pass?) then (否)
+  :拒绝 positive_fixture_failed;
+  stop
+else (是)
+endif
+if (负例实跑 = fail?) then (否)
+  :拒绝 negative_fixture_not_red;
+  stop
+else (是)
+endif
+if (单次执行 < 200ms?) then (否)
+  :拒绝 budget_exceeded;
+  stop
+else (是)
+endif
+:事务：写 criterion + fixtures + criterion.registered;
+if (UNIQUE 冲突（同输入已存在）?) then (是)
+  :回滚 ⇒ 映射 duplicate_fixture;
   stop
 else (否)
 endif
-:写 criterion + fixtures;
-:发 criterion.registered;
+:提交 ⇒ 返回 criterion_id;
 stop
 @enduml
