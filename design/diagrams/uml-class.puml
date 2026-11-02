@@ -1,0 +1,112 @@
+@startuml
+skinparam classAttributeIconSize 0
+hide circle
+class Intent {
+  + id : IntentId
+  + statement : string
+  + strength : Strength
+  + baseline : BaselineHash
+  + approve(by)
+  + reaffirm(baseline)
+}
+class GoalNode {
+  + id : NodeId
+  + parent : NodeId
+  + scope : ScopePaths
+  + acceptance : CriterionRef
+  + declare()
+  + acceptViaIntegration()
+}
+class Task {
+  + id : TaskId
+  + status : Status
+  + lease : LeaseRef
+  + block : BlockCode
+  + claim(lease)
+  + complete(evidence)
+  + reopen(reason)
+}
+class WorkUnit {
+  + id : WorkUnitId
+  + criterion : CriterionId
+  + spec : SpecId
+  + evidence : EvidenceId
+}
+class Criterion {
+  + id : CriterionId
+  + remedy : Remedy
+  + register()
+}
+class Fixture {
+  + polarity : Polarity
+  + input : string
+  + expected : Verdict
+}
+class Gate {
+  + id : GateId
+  + policy : Policy
+  + judge(readings) : Verdict
+}
+class StageRun {
+  + id : StageRunId
+  + baseline : BaselineHash
+  + verdict : Verdict
+}
+class Snapshot {
+  + id : SnapshotId
+  + oid : GitOid
+  + take(parents)
+  + checkout(to)
+}
+class Decision {
+  + id : DecisionId
+  + payload : PayloadHash
+  + frontier : Frontier
+  + sign(signer)
+}
+class ReviewRound {
+  + id : RoundId
+  + verdict : Verdict
+  + open()
+  + close()
+}
+class Agent {
+  + id : AgentId
+  + state : State
+  + watermark : number
+}
+class Release {
+  + id : ReleaseId
+  + inSet : Set
+  + outSet : Set
+  + freeze()
+}
+interface IntentRepository
+interface EventStore {
+  + append(event)
+  + readTo(frontier)
+}
+interface SnapshotRepo
+interface SignerPort {
+  + sign(payload)
+}
+class ClockPort {
+  + now()
+}
+
+Intent "1" --> "1" GoalNode : 根
+GoalNode --> GoalNode : 分解
+GoalNode --> Criterion : 叶验收
+Task "1" --> "1..*" WorkUnit : G4 待定
+WorkUnit --> Criterion
+Criterion "1" --> "1..*" Fixture
+Gate --> Criterion
+StageRun --> Gate
+Release --> Snapshot : 交付绑快照
+Task --> Agent : 认领者
+Intent ..> IntentRepository
+Task ..> EventStore
+Snapshot ..> SnapshotRepo
+Decision ..> SignerPort
+StageRun ..> ClockPort
+@enduml

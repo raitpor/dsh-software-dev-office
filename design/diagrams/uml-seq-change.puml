@@ -1,0 +1,16 @@
+@startuml
+autonumber
+participant "ChangeService" as C
+participant "FoldService" as F
+participant "Task" as T
+participant "Mandate" as M
+participant "EventStore" as E
+
+C -> F : 求影响集
+F --> C : 受影响对象
+C -> T : 处置已完成卡
+C -> M : 重验授权依据
+note right of C : 分支（重开/重签）见 03 · P7（唯一处）
+M --> C : 结论
+C -> E : task.reopened 或 attention.raised
+@enduml

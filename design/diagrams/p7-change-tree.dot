@@ -1,0 +1,20 @@
+digraph G {
+  graph [bgcolor=white, pad=0.3];
+  node [fontname="Noto Sans CJK SC", fontsize=11];
+  edge [fontname="Noto Sans CJK SC", fontsize=10];
+
+rankdir=TB;
+a [shape=diamond, label="受影响对象类型?"];
+b [shape=box, label="spec(requirement)：重渲染下游 design；旧 claim 标记 stale"];
+c [shape=diamond, label="实现卡状态?"];
+c1 [shape=box, label="未开工 ⇒ 回 ready，被阻断"];
+c2 [shape=box, label="在飞 ⇒ blocked(upstream_changed)，保留工作副本"];
+c3 [shape=diamond, label="重验 intent.baseline_hash"];
+c3a [shape=box, style=filled, fillcolor="#e3f5e1", label="成立 ⇒ reopened + 重新举证"];
+c3b [shape=box, style=filled, fillcolor="#fff4d6", label="不成立 ⇒ 需人重签（attention）"];
+d [shape=box, label="release：冻结前必须处理（进/出本版）"];
+a -> b [label="requirement"]; a -> c [label="task"]; a -> d [label="release"];
+c -> c1; c -> c2; c -> c3;
+c3 -> c3a [label="是"]; c3 -> c3b [label="否"];
+
+}

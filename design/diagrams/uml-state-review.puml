@@ -1,0 +1,9 @@
+@startuml
+hide empty description
+[*] --> open
+open --> verified : 全部 finding 已核实
+verified --> closed : close(verdict)
+open --> changes_requested : 未核实 / 判据红
+changes_requested --> open : 作者修完
+closed --> [*]
+@enduml

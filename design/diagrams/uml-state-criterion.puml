@@ -1,0 +1,8 @@
+@startuml
+hide empty description
+[*] --> draft
+draft --> active : 注册门槛通过（remedy + 正负例）
+active --> retired : 连续 3 迭代 caught=0 ⇒ 退休候选 → 退休
+retired --> [*]
+note right of draft : 退休候选是 gaps 行，不是状态
+@enduml

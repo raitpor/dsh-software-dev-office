@@ -1,0 +1,21 @@
+digraph G {
+  graph [bgcolor=white, pad=0.3];
+  node [fontname="Noto Sans CJK SC", fontsize=11];
+  edge [fontname="Noto Sans CJK SC", fontsize=10];
+
+node [shape=box, style=filled, fillcolor="#f5f7fa"];
+n0 [label="取 baseline 与当前 frontier"];
+n1 [shape=diamond, fillcolor=white, label="frontier 不一致?"];
+s1 [fillcolor="#fde2e1", label="verdict = stale_fail"];
+n2 [label="逐条判据：不适用当前 stage ⇒ na；否则 run(c)"];
+n3 [shape=diamond, fillcolor=white, label="policy = all_of?"];
+v1 [label="verdict = 全部 ∈ {pass, na} ? pass : fail"];
+v2 [fillcolor="#fff4d6", label="verdict = 存在 pass ? pass : fail"];
+n4 [label="写 gate.judged（含每条读数与 data）"];
+n0 -> n1;
+n1 -> s1 [label="是"]; n1 -> n2 [label="否"];
+n2 -> n3;
+n3 -> v1 [label="是"]; n3 -> v2 [label="否"];
+v1 -> n4; v2 -> n4;
+
+}

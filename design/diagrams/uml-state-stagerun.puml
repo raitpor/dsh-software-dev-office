@@ -1,0 +1,8 @@
+@startuml
+hide empty description
+[*] --> entered
+entered --> judged : gate.judged
+judged --> exited : stage.exited(verdict)
+entered --> exited : na（该 policy 下无此阶段）
+exited --> [*]
+@enduml

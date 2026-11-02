@@ -1,0 +1,16 @@
+@startuml
+autonumber
+participant "ReviewRound" as R
+participant "Reviewer" as V
+participant "Author" as A
+participant "Decision" as D
+participant "EventStore" as E
+
+R -> V : open(subject, subject_hash, subject_producer)
+V -> E : review.recorded(finding)
+E --> A : 待核实
+A -> E : review.finding_verified(verdict)
+note right of R : 收口条件见 02 · 状态图 ReviewRound（唯一处）
+R -> D : close(verdict)
+D -> E : decision.valid
+@enduml

@@ -1,0 +1,27 @@
+@startuml
+start
+:register(request);
+if (字段齐全?) then (否)
+  :拒绝 invalid_field;
+  stop
+else (是)
+endif
+if (remedy 非空?) then (否)
+  :拒绝 remedy_required;
+  stop
+else (是)
+endif
+if (有负例夹具?) then (否)
+  :拒绝 negative_fixture_required;
+  stop
+else (是)
+endif
+if (输入重复?) then (是)
+  :拒绝 duplicate_fixture;
+  stop
+else (否)
+endif
+:写 criterion + fixtures;
+:发 criterion.registered;
+stop
+@enduml

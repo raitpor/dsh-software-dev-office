@@ -1,0 +1,18 @@
+@startuml
+autonumber
+participant "Admission" as A
+participant "Lease" as L
+participant "SnapshotService" as S
+participant "GateEvaluator" as G
+participant "EventStore" as E
+
+A -> L : 校验 lease
+A -> S : 取 workcopy 与基线
+A -> S : diff(workcopy, base)
+A -> G : 复跑判据
+G --> A : 读数
+note right of A : 判定与分支见 03 · P4（唯一处）
+A -> S : 合并卡快照
+A -> S : 主树重检出
+A -> E : 落库（admission 结果）
+@enduml

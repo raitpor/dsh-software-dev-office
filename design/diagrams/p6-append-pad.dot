@@ -1,0 +1,17 @@
+digraph G {
+  graph [bgcolor=white, pad=0.3];
+  node [fontname="Noto Sans CJK SC", fontsize=11];
+  edge [fontname="Noto Sans CJK SC", fontsize=10];
+
+rankdir=TB;
+r [shape=box, label="append(event)"];
+s1 [shape=box, label="1 BEGIN IMMEDIATE"];
+s1a [shape=box, style=filled, fillcolor="#fff4d6", label="拿不到锁 ⇒ busy"];
+s2 [shape=box, label="2 计算 frontier′ = closure(frontier ∪ {new})"];
+s3 [shape=box, label="3 hash = sha256(prev_hash + canonical(payload))"];
+s4 [shape=box, label="4 insert event + 更新受影响投影（同一事务）"];
+s5 [shape=box, style=filled, fillcolor="#e3f5e1", label="5 commit ⇒ 返回 id"];
+s5b [shape=box, style=filled, fillcolor="#fde2e1", label="失败 ⇒ 回滚（事件与投影一起）"];
+r -> s1; s1 -> s1a; s1 -> s2; s2 -> s3; s3 -> s4; s4 -> s5; s4 -> s5b;
+
+}

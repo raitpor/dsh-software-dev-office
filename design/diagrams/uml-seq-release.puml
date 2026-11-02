@@ -1,0 +1,15 @@
+@startuml
+autonumber
+participant "Release" as R
+participant "SnapshotService" as S
+participant "Build" as B
+participant "SignService" as Sig
+participant "EventStore" as E
+
+R -> S : 取目标快照
+S --> B : 工作目录
+B --> R : 产物
+note right of R : 缺口计算/校验/打包细节见 03 · P8（唯一处）
+R -> Sig : sign(交付证据)
+Sig -> E : decision.valid
+@enduml

@@ -1,0 +1,63 @@
+@startuml
+skinparam componentStyle rectangle
+package "L3 接口层" {
+  component "tools" as tools
+  component "cli" as cli
+  component "views" as views
+}
+package "L2 应用层" {
+  component "handlers" as h
+  component "workflow" as wf
+  component "query" as q
+}
+package "L1 领域层" {
+  component "fold" as fold
+  component "criteria" as criteria
+  component "gate" as gate
+  component "admission" as admission
+  component "dispatch" as dispatch
+  component "review" as review
+  component "execution" as exec
+  component "release" as release
+  component "sign" as sign
+}
+package "L0 内核" {
+  component "core" as core
+}
+node "stored（持库钥）" as ST
+node "signerd（持私钥）" as SG
+component "内嵌 git 对象库" as VCS
+database "SQLite / SQLCipher" as DB
+
+tools --> h
+cli --> h
+views --> q
+q --> fold
+h --> fold
+h --> admission
+wf --> dispatch
+wf --> release
+
+fold --> core
+criteria --> core
+gate --> criteria
+admission --> gate
+admission --> VCS
+dispatch --> VCS
+review --> core
+exec --> core
+release --> gate
+release --> VCS
+sign --> core
+
+fold --> ST
+criteria --> ST
+gate --> ST
+admission --> ST
+dispatch --> ST
+review --> ST
+exec --> ST
+release --> ST
+sign --> SG
+ST --> DB
+@enduml

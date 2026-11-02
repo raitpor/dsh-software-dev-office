@@ -1,0 +1,14 @@
+@startuml
+hide empty description
+[*] --> planned
+planned --> ready : 依赖满足
+ready --> in_progress : claim(lease)
+in_progress --> blocked : 上游变更 / 等输入
+blocked --> in_progress : 解除
+in_progress --> done : complete(判据绿)
+done --> in_progress : reopened(reason)
+ready --> dropped
+done --> dropped : delivered_deferred
+done --> [*]
+dropped --> [*]
+@enduml

@@ -1,0 +1,9 @@
+@startuml
+hide empty description
+[*] --> draft
+draft --> frozen : freeze(缺口=差集) + 签字
+frozen --> delivered : 产物发布
+delivered --> rolled_back : decision(kind=rollback)
+rolled_back --> [*] : 原记录保留，另开新 release
+delivered --> [*]
+@enduml

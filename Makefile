@@ -4,6 +4,9 @@ check:
 probe:
 	python3 probe/run.py
 
-all: check probe
+design:
+	python3 design/diagrams/build.py
 
-.PHONY: check probe all
+all: check probe design
+
+.PHONY: check probe design all

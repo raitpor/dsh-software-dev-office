@@ -1,0 +1,17 @@
+digraph G {
+  graph [bgcolor=white, pad=0.3];
+  node [fontname="Noto Sans CJK SC", fontsize=11];
+  edge [fontname="Noto Sans CJK SC", fontsize=10];
+
+rankdir=TB;
+a [shape=diamond, label="候选集为空?"];
+b [shape=diamond, label="存在可复用候选?"];
+c [shape=diamond, label="new_reason 合法?"];
+y1 [shape=box, style=filled, fillcolor="#e3f5e1", label="复用（不允许新起）"];
+y2 [shape=box, style=filled, fillcolor="#e3f5e1", label="派发新会话"];
+n1 [shape=box, style=filled, fillcolor="#fde2e1", label="拒绝 new_reason_required"];
+a -> b [label="否"]; a -> c [label="是"];
+b -> y1 [label="是"]; b -> c [label="否"];
+c -> y2 [label="是"]; c -> n1 [label="否"];
+
+}

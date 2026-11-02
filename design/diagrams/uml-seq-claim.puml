@@ -1,0 +1,20 @@
+@startuml
+autonumber
+participant "Dispatch" as D
+participant "AgentPool" as P
+participant "Lease" as L
+participant "SnapshotService" as S
+participant "Task" as T
+participant "EventStore" as E
+
+D -> P : pick(card)
+P --> D : 复用候选 / 需新起（new_reason）
+D -> L : issue(lease)
+D -> S : checkout(base)
+D -> T : claim(lease)
+T -> E : task.claimed
+T -> T : 执行中（过程逻辑见 03 P6）
+T -> E : evidence.attached + report.recorded(ready)
+T -> S : take(parent=[base])
+T -> E : task.done
+@enduml

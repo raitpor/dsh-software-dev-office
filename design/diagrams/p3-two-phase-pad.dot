@@ -1,0 +1,24 @@
+digraph G {
+  graph [bgcolor=white, pad=0.3];
+  node [fontname="Noto Sans CJK SC", fontsize=11];
+  edge [fontname="Noto Sans CJK SC", fontsize=10];
+
+rankdir=TB;
+root [shape=box, label="confirm(request)"];
+s1 [shape=box, label="1 读 preview"];
+s1a [shape=box, style=filled, fillcolor="#fde2e1", label="不存在 ⇒ stale_preview"];
+s1b [shape=box, style=filled, fillcolor="#fde2e1", label="过期 ⇒ expired_preview"];
+s2 [shape=box, label="2 校验 payload_hash"];
+s2a [shape=box, style=filled, fillcolor="#fde2e1", label="不一致 ⇒ payload_changed"];
+s3 [shape=box, label="3 校验 frontier"];
+s3a [shape=box, style=filled, fillcolor="#fde2e1", label="已移动 ⇒ frontier_moved"];
+s4 [shape=box, label="4 领域校验 invariants"];
+s4a [shape=box, style=filled, fillcolor="#fde2e1", label="失败 ⇒ invariant_violated"];
+s5 [shape=box, style=filled, fillcolor="#e3f5e1", label="5 事务：追加事件 + 更新投影 + 标记 preview 已消费"];
+s6 [shape=box, style=filled, fillcolor="#e3f5e1", label="6 返回 {id, frontier}"];
+root -> s1; s1 -> s1a; s1 -> s1b; s1 -> s2;
+s2 -> s2a; s2 -> s3;
+s3 -> s3a; s3 -> s4;
+s4 -> s4a; s4 -> s5; s5 -> s6;
+
+}
