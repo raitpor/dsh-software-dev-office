@@ -95,7 +95,63 @@
 | P2 台账把评审会话的工具面写窄了 | 工具面与作者**同构**（含 `write`/`edit`），这几轮**未调用写工具**；独立性靠仓库痕迹，不靠权限声明 | 本文件开头 |
 | P2 "只能收紧、永不放松"对二值判据没意义 | 改为"**只能保留或加强，永不删除或放宽**" | `docs/04` §5.2、`docs/08` §1 |
 
-## 6. 当前状态与未覆盖项
+## 6. 评审六（2026-11-03，复评）
+
+**起点**：`335368f`（stage `kinds`、core 适用性、非 core 清单）之后。**结论**：上一轮 3 个 P1 确认真修好；新指出 **3 个 P1 + 5 个 P2**，全部落在"新引入的配置元数据"上。核实为真，已逐条处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P1-1 `guarantee_delta` 没有推导规则（工具无法判断某条保证是保持还是降级）、校验顺序倒置（第 2 步要 delta、delta 第 4 步才产出）、首次冻结没有"上一版" | 判据加 **`保证` 元数据**（`docs/04` §4 新增一列，`—` = 守机制完整性）；delta 由"该保证下的判据是否**有效绑定**"机械算出；P15 第 2 步**先算 delta 再校 core**；命题句式把"相对上一版"只留给 `will_change`，delta 改**绝对判定**，首次冻结写"首次"；手写 delta 一律忽略（第七轮进一步要求有效绑定：`all_of` + 不可豁免，见 §7） | `docs/04` §4/§5.1、`docs/06` §5、`docs/08` §1、`design/03` P15、`design/02` §5 |
+| P1-2 `prototype` 的 `harden` 缺 `review` kind，与"harden 补评审""harden 全量"自相矛盾；`na_stages` 实际应为 `[review]` | `harden` 补 `review`：`[requirement, design, implement, review]`（五个 kind 齐 ⇒ `na_stages` 为空）；§5.2 里"prototype 不承担 requirement"的过时例子换成**只做实现与交付的 lite** | `docs/08` §1、`docs/13`、`docs/04` §5.2 |
+| P1-3 P15 说"stage DAG 无环"，但 schema 里没有边（`stages[]` 只是列表 ⇒ 必然无环，校验空转）；`incremental` 的 lane 也无处表达 | stage 加 **`after[]`**；P15 ② 校验每条边指向存在、无环、全部可达；`incremental` 的 lane 明确为**派发层并行、不进 policy**；`req+design` 改名 `req_design` | `docs/08` §1、`docs/04` §4.1/§5.1、`docs/05`、`docs/01`、`design/01` §9、`design/03` P15、`design/02` §5 |
+| P2 `req+design` 里的 `+` 容易被读成语义 | 改 `req_design` | `docs/08`、`docs/13` |
+| P2 `na_stages` 名不符实（值是 kind） | 字段名保留，注释写死"元素是 **kind**，不是 stage id"（§4.1 与 P15 ⑨） | `docs/04`、`design/03` |
+| P2 首次冻结的 delta 口径 | delta 改绝对判定；"相对上一版"只用于 `will_change`，首次写"首次" | `docs/06` §5、P15 |
+| P2 轮次少算 | 本轮记为第六轮；README 改六轮、指针 §7 | `design/README`、本文件 |
+| P2 未提交就写"处置完毕" | 上一版已提交（`335368f`）；本轮改动随下一次提交落库后再算收口 | — |
+
+## 7. 评审七（2026-11-03，复评）
+
+**起点**：第六轮之后的改动（`guarantee` 列、delta 推导、`after` 边、prototype 的 `review` kind）。**结论**：上一轮 3 个 P1 确认真修好；新指出 **3 个 P1 + 6 个 P2**，全部是"有效绑定只到 stage 适用"这一层不够。核实为真，已逐条处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P1-1 core 绑在 `any_of` 门或可豁免 gate 上也算"有效"：门里别的一条绿了就放行、一纸 waiver 就过 | 定义 **有效绑定**五条（已注册 / 在 gate 的 `criteria[]` 里 / stage 适用 / `policy_mode='all_of'` / `waivable=false`）；P15 ⑥ 按它拒冻；delta 只把有效绑定算"保持" | `docs/04` §5.2/§6/§4、`design/03` P15、`design/02` §5 |
+| P1-2 `work_unit.evidence_consistent` 是复合外键（P2 不执行）却挂保证 3 ⇒ **任何 policy 的保证 3 都永远降级** | 保证列改 `—`；写明 `—` 有两类：守机制完整性的、**表约束型**的（插入即拦、永远生效，绑不到 gate 上，故不参与判定） | `docs/04` §4 与列说明 |
+| P1-3 preset 只给了 gate id、没给 `criteria[]` ⇒ **三个 preset 原样冻结一个都过不了 P15**（④每 stage 有 gate、⑤每 gate ≥1 判据），保证表没有支撑 | `docs/08` 补 **§1.1 三个 preset 的 gate 目录**（每门 `criteria[]`/`mode`/`waivable`）；并把"每个 preset 都能冻出三条保证全保持 + core 有效绑定"做成**机器规则 R29**（解析 doc 数据复算，已做正反例测试） | `docs/08` §1.1、`design/check.py` R29、`design/README` |
+| P2 `after` 的"入口"没定义（多根时是哪个） | 定义为「`after` 为空的 stage 集合」，允许多个根 | `design/03` P15 ②、`docs/08` §1 |
+| P2 `guarantee_delta_mismatch` 校验的是不存在的输入（`baseline_freeze` payload 里没有 delta） | 删掉该错误码；**手写 delta 一律忽略**，以工具算出的为准 | `docs/04`、`docs/06` §5、`docs/09` M1、P15 |
+| P2 `waivable` 粒度：§6 写"判据不可豁免"，schema 里是 gate 字段 | 明确**gate 级**；§6 的措辞改掉 | `docs/04` §6 |
+| P2 新注册判据不带 `guarantee` 会让 delta 漏项 | 注册门槛 **四→五条**（`guarantee_required`）；P1 判定表加一列，拒码登记 | `docs/04` §2、`docs/03`、`design/03` P1、`design/01` §7 |
+| P2 prototype 保证 3 那行没写"harden 起恢复" | 补上（harden 承担 `review` kind） | `docs/08` §1 保证表 |
+| P2 轮次少算 | 本轮记为第七轮；状态指针改 §8 | `design/README`、本文件 |
+
+## 8. 评审八（2026-11-03，复评）
+
+**起点**：第七轮之后的改动（有效绑定五条、表约束判据改 `—`、preset gate 目录、R29）。**结论**：上轮 3 个 P1 确认真修好；新指出 **2 个 P1 + 5 个 P2**，其中一个是「检查器与错数据互相背书」。核实为真，已逐条处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P1-1 core 与 lite 自相矛盾：一处说「core 没有效绑定就拒冻」，另一处说「缺 kind 的 lite 可在 delta 里写降级、由人签字」，P15 里两条并存（后者那支永远到不了） | **选 A：core 强制**——删掉「写降级就放行」的分支（`core_waived_unstated` 作废）；lite 例子改成 `req[requirement] → build[implement] → deliver[deliver]`：缺 `design/review` ⇒ 保证 1/3 由 delta 算出降级，但 core 三条仍在；`docs/08` 的 core 段同步删掉同一条后门 | `docs/04` §5.2、`docs/08` §1、`design/03` P15 |
+| P1-2 preset gate 写 `mode:`，schema 是 `policy_mode:`；R29 也只认 `mode:` ⇒ **检查器与被检查数据用同一个错字段，互相背书**（比缺字段更危险：它把错的判绿了） | 三份目录全部改 `policy_mode:`；R29 改读 `policy_mode:`，并**拒绝未知键**（只允许 `stage/criteria/policy_mode/waivable`），缺字段单独报；两条都做了反例测试 | `docs/08` §1.1、`design/check.py` R29 |
+| P2 `node.integration_listed` 的 `applies_to` 含 `design`，但判据要「全部 connected + 有 evidence」，design 期不可能成立 | `applies_to` 收窄为 **deliver**（清单设计期就写，连通性只能交付前验）；preset 的绑定本来就在 deliver/integrate | `docs/04` §4.1 |
+| P2 delta 规则仍写「绑在适用的 stage 的 gate 上」，没跟上 §6 的有效绑定 | 三处统一改成「达到 §6 的**有效绑定**」 | `docs/04` §4、`docs/06` §5、`docs/08` §1 |
+| P2 `core_waived_unstated` 是死分支 | 删除（随 P1-1） | `design/03` P15 |
+| P2 R29 没查 `guarantee` 值域与 `—` 的分配 | 加两条：值域强制 `{1,2,3,—}`（写错值不再被静默跳过，因为解析已改为取任意值再校验）；表约束判据 `work_unit.evidence_consistent` 必须 `—` | `design/check.py` R29 |
+| P2 轮次少算 | 本轮记为第八轮；状态指针改 §9 | `design/README`、本文件 |
+
+## 9. 评审九（2026-11-03，复评）
+
+**起点**：第八轮之后的改动（core 强制、`policy_mode` 字段、R29 加固）。**结论**：上轮 2 个 P1 确认真修好；**本轮无 P0/P1**，剩 **2 个 P2 + 2 个流程项**。核实后：P2-1 已在第八轮修掉（报告引的是旧快照），P2-2 属实并已修，另两项按台账纪律处理。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P2-1 `node.integration_listed` 在 design 阶段必然红 | **上一轮已修**：`applies_to` 第八轮就收窄成 `deliver`（清单设计期写、连通性交付前验）；本轮再核一次，当前表里就是 `deliver` | `docs/04` §4.1 |
+| P2-2 `review.required` 的 applies 写成 `review（也在 implement 复查）`，R29 按 `（` 截断 ⇒ implement 被静默丢掉 | `applies_to` 表改成**三列、第二列机器可解析**（只允许五个 kind + ` / `，备注放第三列，这就是漂移源）；`review.required` 明确写成 `review / implement`；`review.round_bound` 单列 `review`；R29 改成严格解析（非 kind 取值直接红），并补「有保证列却没 applies 行」的覆盖检查；另说明 prototype 的 explore 只承接低风险卡（高风险必须在 harden 收口） | `docs/04` §4.1、`docs/08` §1.1、`design/check.py` R29 |
+| P2-3 轮次与提交 | 本轮记为第九轮；状态指针改 §10；"处置完毕"以提交状态为准 | `design/README`、本文件 |
+| P2-4 R29 的反例只靠人跑过 | **写进检查器**：R29 末尾做三组自检（把含 core 的 gate 改成 `any_of`、改成可豁免、删掉一条 core 绑定），复算若仍全绿即报 `[R29-self]`——顺手用「把 `delta_errors` 改成恒返空」验证过：三组自检全部报警。反例从此不再依赖人记得跑 | `design/check.py` R29-self |
+
+## 10. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **25 张**、表 **26 张**；G1–G5 全 A；探针 **17 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：

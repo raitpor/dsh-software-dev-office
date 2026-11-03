@@ -61,7 +61,7 @@
 避免误读，逐条列出：
 
 - **没有证明** isomorphic-git 在并发 checkout 下可用（探针没跑 git，只跑了 SQL）；
-- **没有证明** policy 的 `stages[].kinds` 能被库约束住：`kinds` 是 baseline 里的 JSON，**只能在 P15 校验器里查**（`kind` 枚举、id 唯一、DAG 无环、core 适用性），探针不覆盖；
+- **没有证明** policy 的 `stages[]`（`kinds`/`after`）与 `criteria[].guarantee` 能被库约束住：它们是 baseline 里的 JSON，**只能在 P15 校验器里查**（kind 枚举、id 唯一、`after` 无环可达、core 适用性、`guarantee_delta` 推导），探针不覆盖；
 - **没有证明** 24 条判据能拦住真实缺陷（探针只验证了门禁函数的三态语义）；
 - **没有证明** 性能达标（P95 预算未测）；
 - **没有实现** 任何业务逻辑——`run.py` 只是断言集合。

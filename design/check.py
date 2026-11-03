@@ -16,6 +16,8 @@
   R26 模块依赖列 → 组件图必须有对应边（store→DBPort、vcs→VcsPort，core 不查）；
   R27 每个登记事件要么在 design 里有生产者，要么在 EXTERNAL_EVENTS 里逐条点名；
   R28 每条阶段判据（docs/04）必须在 design/ 里出现（落点表或矩阵），否则红。
+  R29 三个 preset 的 gate 目录必须真的能冻出「三条保证全保持」：按 docs/04 的 guarantee 与
+      applies_to 复算有效绑定（all_of + 不可豁免 + stage 适用），core 三条也必须有效绑定。
 
 退出码：0 通过；1 有漂移。
 """
@@ -413,6 +415,144 @@ for code in criteria_codes:
         bad.append(f"[R28] 判据 {code} 只在映射表/README 出现，过程或矩阵里没有落点"
                    f"（docs/04 有、设计无人接）")
 
+
+# ---------- R29 preset 的 gate 目录必须冻出"三条保证全保持" ----------
+KINDS = ("requirement", "design", "implement", "review", "deliver")
+guarantee = {}
+for m in re.finditer(r"^\| `([a-z][a-z0-9_.]*)` \| ([^|]+) \|", s4, flags=re.M):
+    guarantee[m.group(1)] = m.group(2).strip()   # 值域在下面查（不能只匹配合法值，否则写错值会被静默跳过）
+
+# applies_to 表是机器解析的：第二列只能是「五个 kind，用 / 分隔」，不许带括号备注。
+s41 = doc04[doc04.find("### 4.1"):doc04.find("## 5. ")]
+applies = {}
+for m in re.finditer(r"^\|([^|]+)\|([^|]+)\|([^|]*)\|", s41, flags=re.M):
+    codes = re.findall(r"`([a-z][a-z0-9_.]*)`", m.group(1))
+    if not codes:
+        continue
+    cell = m.group(2).strip()
+    kinds = {k.strip() for k in cell.split("/") if k.strip()}
+    unknown = kinds - set(KINDS)
+    if unknown:
+        bad.append(f"[R29] applies_to 表出现非 kind 取值 {sorted(unknown)}（只允许 {'/'.join(KINDS)}，"
+                   f"备注请放第三列）")
+        continue
+    if not kinds:
+        bad.append(f"[R29] applies_to 表有空的 kind 列：{m.group(1).strip()[:40]}")
+        continue
+    for c in codes:
+        applies[c] = kinds
+for c in sorted(guarantee):
+    # 只有参与降级判定的判据（保证 1/2/3）必须有 applies_to；`—` 里包含表约束型（没有 stage 语义）
+    if guarantee[c] in ("1", "2", "3") and c not in applies:
+        bad.append(f"[R29] 判据 {c} 标了保证 {guarantee[c]} 但 applies_to 表里没有它——delta 会把它静默漏掉")
+
+d08 = read_doc("08-方法论与策略.md")
+preset_stages = {}
+for name in ("waterfall", "prototype", "incremental"):
+    m = re.search(r"^\| `%s` \|.*$" % name, d08, flags=re.M)
+    if not m:
+        bad.append(f"[R29] docs/08 找不到 preset 行 {name}")
+        continue
+    cells = [c.strip() for c in m.group(0).strip().strip("|").split("|")]
+    dag = next((c for c in cells if "[" in c and "]" in c), "")
+    preset_stages[name] = {sid: set(k.strip() for k in kinds.split(","))
+                           for sid, kinds in re.findall(r"(\w+)\[([a-z,\s]+)\]", dag)}
+    if not preset_stages[name]:
+        bad.append(f"[R29] {name} 的 stage DAG 解析不出 kinds")
+
+blocks = re.findall(r"```yaml(.*?)```", d08[d08.find("### 1.1"):d08.find("**什么时候配")], flags=re.S)
+catalogs = []
+for b in blocks:
+    flat = " ".join(b.split())
+    gates = {}
+    for gm in re.finditer(r"(\w+)\s*:\s*\{([^{}]*)\}", flat):
+        inner = gm.group(2)
+        gid = gm.group(1)
+        keys = set(re.findall(r"([A-Za-z_]\w*)\s*:", inner))
+        extra = keys - {"stage", "criteria", "policy_mode", "waivable"}
+        if extra:
+            bad.append(f"[R29] gate {gid} 有未知键 {sorted(extra)}——只允许 stage/criteria/policy_mode/"
+                       f"waivable（写成 mode 之类的错字段名会被当缺省，检查器不能和错数据互相背书）")
+        st = re.search(r"stage:\s*(\w+)", inner)
+        pm = re.search(r"policy_mode:\s*(all_of|any_of)", inner)
+        wv = re.search(r"waivable:\s*(true|false)", inner)
+        cr = re.search(r"criteria:\s*\[([^\]]*)\]", inner)
+        if not (st and pm and wv and cr):
+            missing = [k for k, v in (("stage", st), ("policy_mode", pm),
+                                      ("waivable", wv), ("criteria", cr)) if v is None]
+            bad.append(f"[R29] gate {gid} 缺字段 {missing}")
+            continue
+        gates[gid] = {"stage": st.group(1), "policy_mode": pm.group(1),
+                      "waivable": wv.group(1) == "true",
+                      "criteria": [x.strip() for x in cr.group(1).split(",") if x.strip()]}
+    if gates:
+        catalogs.append(gates)
+
+for c, g in sorted(guarantee.items()):
+    if g not in ("1", "2", "3", "—"):
+        bad.append(f"[R29] 判据 {c} 的「保证」取值 {g!r} 不在 {{1,2,3,—}} 里")
+if guarantee.get("work_unit.evidence_consistent") != "—":
+    bad.append("[R29] work_unit.evidence_consistent 是表约束（P2 不执行、绑不到 gate），保证列必须是 —，"
+               "否则任何 policy 的该条保证都会永远降级")
+
+CORE = ("spec_set.signed", "assumption_set.signed", "provenance.present")
+
+
+def delta_errors(stages, gates):
+    errs, eff = [], set()
+    for gid, g in gates.items():
+        sk = stages.get(g["stage"])
+        if sk is None:
+            errs.append(f"gate {gid} 指向不存在的 stage {g['stage']}")
+            continue
+        for c in g["criteria"]:
+            if c not in applies:
+                errs.append(f"gate {gid} 引用了 docs/04 里没有的判据 {c}")
+                continue
+            if g["policy_mode"] == "all_of" and not g["waivable"] and (applies[c] & sk):
+                eff.add(c)
+    for c in CORE:
+        if c not in eff:
+            errs.append(f"core 判据 {c} 没有有效绑定（要 all_of + 不可豁免 + stage 适用）")
+    for c, g in guarantee.items():
+        if g in ("1", "2", "3") and c not in eff:
+            errs.append(f"保证 {g} 的判据 {c} 没绑定，preset 会冻出降级")
+    return errs
+
+
+resolved = {}
+for name, stages in preset_stages.items():
+    match = [g for g in catalogs if {v["stage"] for v in g.values()} == set(stages)]
+    if not match:
+        bad.append(f"[R29] {name} 没有对应的 gate 目录（docs/08 §1.1 缺块或 stage 名不一致）")
+        continue
+    resolved[name] = match[0]
+    for e in delta_errors(stages, match[0]):
+        bad.append(f"[R29] {name}: {e}")
+
+# R29 自检：三条"该拦"的反例必须真的被拦（否则规则只是看着像在管）
+if "waterfall" in resolved:
+    base = resolved["waterfall"]
+    st = preset_stages["waterfall"]
+    core_gate = next(gid for gid, g in base.items()
+                     if "spec_set.signed" in g["criteria"])
+
+    def mutate(fn):
+        g = {gid: dict(v, criteria=list(v["criteria"])) for gid, v in base.items()}
+        fn(g)
+        return delta_errors(st, g)
+
+    cases = [
+        ("把含 core 的 gate 改成 any_of", lambda g: g[core_gate].update(policy_mode="any_of")),
+        ("把含 core 的 gate 改成可豁免", lambda g: g[core_gate].update(waivable=True)),
+        ("删掉一条 core 判据的绑定",
+         lambda g: g[core_gate].update(criteria=[c for c in g[core_gate]["criteria"]
+                                                 if c != "spec_set.signed"])),
+    ]
+    for label, fn in cases:
+        if not mutate(fn):
+            bad.append(f"[R29-self] {label}，delta 复算却仍然全绿——校验没真正拦住")
+
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
     for b in bad:
@@ -420,4 +560,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点")
+      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证")
