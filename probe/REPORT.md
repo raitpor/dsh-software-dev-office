@@ -56,6 +56,8 @@
 
 ## 四、这轮测试**没有**证明的事
 
+**先声明 assumption 的覆盖边界**：探针 #13 只证明**形状能表达**（`status`/`blast_radius` 与 `kind` 一致、必填被 CHECK 拦），**没有测状态机**——`assumption.disposed`（`open` 挡开工）、`assumption.invalidated`（依赖变更回 `open`）、`assumption_set.signed`（空集也要签）都在应用层，由判据与 `P12` 保证。**17 PASS 不等于"assumption 整套已验证"**。
+
 避免误读，逐条列出：
 
 - **没有证明** isomorphic-git 在并发 checkout 下可用（探针没跑 git，只跑了 SQL）；
