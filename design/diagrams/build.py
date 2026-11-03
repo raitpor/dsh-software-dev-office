@@ -219,7 +219,7 @@ plantuml("p8-release", """
 start
 :确定 in/out 集合;
 :缺口 = 差集（release.gaps_match）;
-if (冻结前置四条全过（见 03 §9）？) then (否)
+if (冻结前置五条全过（见 03 §9）？) then (否)
   :拒绝 freeze_blocked(reason_code);
   stop
 else (是)
