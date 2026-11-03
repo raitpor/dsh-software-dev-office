@@ -1,0 +1,21 @@
+@startuml
+autonumber
+participant "alignment" as A
+participant "store" as E
+participant "dispatch" as P
+participant "sign" as S
+
+A -> E : restatement.recorded（绑 intent + 关键条款 hash）
+A -> A : diff 逐条 disposition
+A -> E : restatement.diff_dispositioned
+A -> E : assumption.recorded（spec(kind='assumption')）
+P -> A : 派发前查假设是否处置
+alt 还有 open 假设
+  A --> P : 不派发
+  A -> E : attention.raised
+else 全部处置
+  S -> E : decision.valid / decision.signed（assumption_set，空集也签）
+  A --> P : 允许派发
+end
+note right of A : 复述作废与假设失效传播见 03 · P11/P12（唯一处）
+@enduml

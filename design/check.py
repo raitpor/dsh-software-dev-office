@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """design/ 的机器校验（不是 docs/check.py 的替代）。
 
-规则（4 条基础 + R19–R24）：
+规则（R0a–R0d + R19–R31）：
   R0a 文档引用的图片都存在；
   R0b 每个 `.puml` / `.dot` 都有对应的 `.svg` 与 `.png`；
   R0c 图与**文档**里出现的事件 kind 都在 `docs/02` 的登记表里（只读登记表，不抓全篇反引号）；
@@ -17,7 +17,10 @@
   R27 每个登记事件要么在 design 里有生产者，要么在 EXTERNAL_EVENTS 里逐条点名；
   R28 每条阶段判据（docs/04）必须在 design/ 里出现（落点表或矩阵），否则红。
   R29 三个 preset 的 gate 目录必须真的能冻出「三条保证全保持」：按 docs/04 的 guarantee 与
-      applies_to 复算有效绑定（all_of + 不可豁免 + stage 适用），core 三条也必须有效绑定。
+      applies_to 复算有效绑定（all_of + 不可豁免 + stage 适用），core 三条也必须有效绑定；
+  R30 每个过程（P1–P15）都必须在 03 §17 表里有模块归属，且名字在 01 模块表里；
+  R31 顺序图里**实线**的 L1→L1 调用必须在源模块依赖列里登记（虚线 `-->` 是返回，不算）。
+      *已知边界*：L2 编排层 `handlers` 的依赖写作「L1 服务」（刻意抽象），L2→L1 不做逐边校验。
 
 退出码：0 通过；1 有漂移。
 """
@@ -181,7 +184,12 @@ STATE_SOURCES: dict[str, tuple[set[str], str, str]] = {
                            "03-链条-意图到声明.md", r"\*\*stage_run\*\*：`([^`]+)`"),
     "uml-state-review": ({"open", "closed"},
                          "03-链条-意图到声明.md", r"\*\*review_round\*\*：`([^`]+)`"),
+    "uml-state-assumption": ({"open", "confirmed", "rejected", "converted"},
+                             "03-链条-意图到声明.md", r"\*\*状态图\*\*：`([^`]+)`"),
 }
+for f in sorted(os.listdir(DIA)):
+    if f.startswith("uml-state-") and f.endswith(".puml") and f[:-5] not in STATE_SOURCES:
+        bad.append(f"[R21] 状态图 {f} 没在 STATE_SOURCES 里登记（新增状态图必须同时给出 docs 枚举）")
 
 for name, (expected, doc, pattern) in STATE_SOURCES.items():
     path = os.path.join(DIA, name + ".puml")
@@ -323,7 +331,7 @@ if matrix_rows < 20:
 # ---------- R26 模块依赖列 ↔ 组件图（双向） ----------
 # `store`/`vcs` 依赖落到端口（DBPort/VcsPort），`core` 是隐含基座不画全，`ports(...)` 单列。
 DEP_ALIAS = {"store": "DBPort", "vcs": "VcsPort", "handlers": "h", "execution": "exec",
-             "query": "q", "views": "views"}
+             "query": "q", "views": "views", "alignment": "align"}
 PORT_DEP = {"DBPort": "store", "VcsPort": "vcs", "SignerPort": "signer"}
 
 
@@ -338,6 +346,9 @@ if arch:
     edges = set(re.findall(r"^\s*(\w+)\s*-->\s*(\w+)\s*$", arch, flags=re.M))
     known_targets = comps_for_depths | set(DEP_ALIAS.values()) | {"DBPort", "VcsPort", "SignerPort"}
     for mod, deps in module_rows(module_doc):
+        if mod == "handlers":
+            # 刻意抽象的 L2 编排层：依赖写作「L1 服务」，不逐条枚举（见 design/01 §3）
+            continue
         for raw in deps.split(","):
             dep = raw.replace("**", "").replace("`", "").replace("L1 服务", "").replace("L2 ", "").strip()
             if not dep or dep == "core" or dep.startswith("ports(") or dep == "无":
@@ -381,7 +392,7 @@ EXTERNAL_EVENTS = {
     "task.created": "execution", "task.dropped": "execution", "orphan.expired": "dispatch",
     "snapshot.taken": "vcs",
     "redteam.recorded": "review", "redteam.disposed": "review",
-    "baseline.frozen": "gate", "baseline.amended": "gate", "baseline.loosened": "gate",
+    # baseline.frozen / amended / loosened 已在 P15 正文里有生产者（收紧/放宽都建新行），不再登记为过程外
     "decision.revoked": "sign", "redaction.applied": "store", "i18n.fallback": "store",
     "attention.answered": "execution",
 }
@@ -396,24 +407,41 @@ for kind in sorted(registered):
         continue
     bad.append(f"[R27] 事件 {kind} 在 03/图里没有生产者，也没登记为过程外（docs/02 有、design 无人写）")
 
-# ---------- R28 每条阶段判据必须在 design 里有落点 ----------
+# ---------- R28 §17.1 的"执行点"必须与实际正文对得上 ----------
 doc04 = read_doc("04-判据-门禁与负例.md")
 s4 = doc04[doc04.find("| 判据 code |"):doc04.find("### 4.1")]
-criteria_codes = re.findall(r"^\| `([a-z][a-z0-9_.]*)` \|", s4, flags=re.M)
-# 落点只认「过程正文（03，排除 §16.1 映射表）」与「不变量矩阵（02）」——
-# 在 README/01 提一句、或只出现在映射表里，都不算落点。
+criteria_codes = set(re.findall(r"^\| `([a-z][a-z0-9_.]*)` \|", s4, flags=re.M))
 d03 = read(os.path.join(DESIGN, "03-过程逻辑.md"))
-_map_at = d03.find("### 16.1")
-if _map_at != -1:
-    d03_body = d03[:_map_at]              # 映射表之前 = 各过程正文
-else:
-    d03_body = d03
 d02 = read(os.path.join(DESIGN, "02-面向对象模型.md"))
-process_text = d03_body + d02
-for code in criteria_codes:
-    if code not in process_text:
-        bad.append(f"[R28] 判据 {code} 只在映射表/README 出现，过程或矩阵里没有落点"
-                   f"（docs/04 有、设计无人接）")
+
+map_start = d03.find("### 17.1")
+if map_start == -1:
+    bad.append("[R28] design/03 找不到 ### 17.1（判据落点表改名了？检查器要跟着改）")
+    map_sec = ""
+else:
+    nxt = re.search(r"\n## \d+\. ", d03[map_start + 10:])
+    map_sec = d03[map_start:map_start + 10 + nxt.start()] if nxt else d03[map_start:]
+
+# P2 正文：从 "## 3. P2" 到下一个二级标题
+p2 = re.search(r"\n## \d+\. P2[^\n]*\n(.*?)(?=\n## \d+\. )", d03, flags=re.S)
+p2_text = p2.group(1) if p2 else ""
+
+claimed = set()
+for line in map_sec.splitlines():
+    m = re.match(r"^\| ([^|]+?) \| (P2|02 矩阵) \|", line)
+    if not m:
+        continue
+    codes = re.findall(r"`([a-z][a-z0-9_.]*)`", m.group(1))
+    target, body = m.group(2), (p2_text if m.group(2) == "P2" else d02)
+    for c in codes:
+        claimed.add(c)
+        if c not in criteria_codes:
+            bad.append(f"[R28] §17.1 写了 docs/04 里没有的判据 {c}")
+        elif c not in body:
+            bad.append(f"[R28] {c} 声称执行点是 {target}，但那儿找不到它"
+                       f"（表里写的和正文对不上）")
+for c in sorted(criteria_codes - claimed):
+    bad.append(f"[R28] 判据 {c} 没出现在 §17.1 的落点表里（一条不少）")
 
 
 # ---------- R29 preset 的 gate 目录必须冻出"三条保证全保持" ----------
@@ -553,6 +581,61 @@ if "waterfall" in resolved:
         if not mutate(fn):
             bad.append(f"[R29-self] {label}，delta 复算却仍然全绿——校验没真正拦住")
 
+# ---------- R30 每个过程都必须有模块归属（P1–P15 一个不落） ----------
+d03_full = read(os.path.join(DESIGN, "03-过程逻辑.md"))
+sec17 = d03_full[d03_full.find("## 17. 与文档的对应"):d03_full.find("### 17.1")]
+proc_rows = {}
+for line in sec17.splitlines():
+    m = re.match(r"^\| (P\d+) [^|]*\|[^|]*\|[^|]*\|\s*([^|]*)\|\s*$", line)
+    if m:
+        proc_rows[m.group(1)] = [x.strip().strip("`") for x in m.group(2).split("/") if x.strip()]
+want = {f"P{i}" for i in range(1, 16)}
+for pid in sorted(want - set(proc_rows)):
+    bad.append(f"[R30] 过程 {pid} 在 §17 表里没有模块归属（过程无家可归）")
+for pid, owners in sorted(proc_rows.items()):
+    if not owners:
+        bad.append(f"[R30] 过程 {pid} 的模块列是空的")
+    for o in owners:
+        if o not in mods:
+            bad.append(f"[R30] 过程 {pid} 指向的模块 {o} 不在 design/01 的模块表里")
+
+# ---------- R31 顺序图里的 L1→L1 调用必须在模块依赖列里登记 ----------
+ARCH = diagram_sources().get("arch-components.puml", "")
+l1_mods = set()
+m = re.search(r'package "L1 领域层" \{(.*?)\}', ARCH, flags=re.S)
+if m:
+    for nm, alias in re.findall(r'component "([a-z][a-z0-9_]*)" as (\w+)', m.group(1)):
+        l1_mods.add(nm)
+deps_by_mod = {mod: [d.replace("**", "").replace("`", "").strip()
+                     for d in deps.split(",") if d.strip()]
+               for mod, deps in module_rows(module_doc)}
+# 已知边界：L2 编排层（handlers）的依赖列写的是「L1 服务」——刻意的抽象，不逐条枚举，
+# 所以 L2→L1 的调用不做逐边校验（这条缝是显式的，见 design/01 §3 的说明）。
+for fname, src in sorted(diagram_sources().items()):
+    if not fname.startswith("uml-seq-"):
+        continue
+    alias2mod = {}
+    for label, alias in re.findall(r'(?:participant|actor)\s+"([^"]+)"\s+as\s+(\w+)', src):
+        mod = None
+        if alias in l1_mods:
+            mod = alias
+        else:
+            for cand in l1_mods:
+                if cand in label:
+                    mod = cand
+                    break
+        if mod:
+            alias2mod[alias] = mod
+    # 只认实线调用 `->`；虚线 `-->` 是返回，不构成依赖
+    for a, b in re.findall(r"^\s*(\w+)\s*->\s*(\w+)\s*:", src, flags=re.M):
+        if a in alias2mod and b in alias2mod:
+            src_mod, dst_mod = alias2mod[a], alias2mod[b]
+            if src_mod == dst_mod:
+                continue
+            if dst_mod not in deps_by_mod.get(src_mod, []):
+                bad.append(f"[R31] {fname}: {src_mod} 调用 {dst_mod}，但模块依赖列没登记"
+                           f"（图里出现了、架构里没登记）")
+
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
     for b in bad:
@@ -560,4 +643,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证")
+      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖")

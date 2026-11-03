@@ -151,11 +151,83 @@
 | P2-3 轮次与提交 | 本轮记为第九轮；状态指针改 §10；"处置完毕"以提交状态为准 | `design/README`、本文件 |
 | P2-4 R29 的反例只靠人跑过 | **写进检查器**：R29 末尾做三组自检（把含 core 的 gate 改成 `any_of`、改成可豁免、删掉一条 core 绑定），复算若仍全绿即报 `[R29-self]`——顺手用「把 `delta_errors` 改成恒返空」验证过：三组自检全部报警。反例从此不再依赖人记得跑 | `design/check.py` R29-self |
 
-## 10. 当前状态与未覆盖项
+## 10. 评审十（2026-11-03，评审会话）
 
-- 判据 **24 条**、过程 **15 个**、图 **25 张**、表 **26 张**；G1–G5 全 A；探针 **17 PASS / 0 GAP**。
+**起点**：作者自查那一版（`alignment` 模块、`Baseline`/`Policy` 类、R30）。**结论**：方向对，但 **OOM 只装了"谁是聚合根"，没装"聚合根里装什么"**；另缺三张协作图。指出 **3 个 P1 + 6 个 P2**，核实为真，已逐条处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P1-1 `Baseline` 类只有 `policy`：`criteria/gates/thresholds/assurance/engine/frozenBy` 都不在类上，`validate(content)` 说不清校验了什么，`hash` 也证明不了覆盖范围 | 加 **`BaselineContent`** 值对象（policy/criteria/gates/thresholds/assurance/engine）+ `CriterionRef`（id/version/params/guarantee）+ `GateSpec`（stage/criteria/policyMode/waivable）；`Baseline *-- BaselineContent`，hash 覆盖后者；`Gate ..> GateSpec` | `design/diagrams/build.py`、`design/02` |
+| P1-2 `Release` 类没有 `baselineHash`，P8 前置⑤ 在类模型里没有落点 | `Release` 加 `baselineHash`/`frontier`/`frozenBy`，`freeze(baselineHash)` | 同上 |
+| P1-3 顺序图缺 P11/P12/P15：`alignment` 是新增模块却没有协作图，`Baseline` 是新增聚合却没有 P15 的协作图 | 新增 **`uml-seq-config`**（校验→preview→人签→freeze→落 amended/loosened）与 **`uml-seq-align`**（复述→假设→派发门→集合签字）；顺序图 5 → **7**，图 25 → **27** | `design/02` §4.6/4.7、`design/README`、`design/check.py` R23 计数 |
+| P2 `Criterion` 缺 `guarantee`/`appliesTo` | 类上补两字段（注册已强制 `guarantee`，R29 按它算 delta） | `design/02` 类图 |
+| P2 `Gate` 缺 `stage/criteria[]/policyMode/waivable` | 四条有效绑定判定的载体补进类（`policy` 字段改为 `GateSpec` 上的定义） | 同上 |
+| P2 `StageRun` 缺 `gateId/criteria[]` | 补 `gateId` 与 `criteria[]`（`docs/03` 的 `stage_run` 本来就有这两列） | 同上 |
+| P2 `Restatement` 与"刻意不是类"自相矛盾 | §2 改为：`restatement_diff` 是值对象/记录，**`Restatement` 有 id 与作废语义，是 Intent 聚合内实体** | `design/02` §2 |
+| P2 `Baseline.prev/direction` 没进 `docs/04` 的 schema | baseline YAML 补 `prev` / `direction`，并注明 hash 覆盖 policy/criteria/gates/thresholds/assurance/engine/artifact_kinds | `docs/04` §5.1 |
+| P2 轮次 | 本轮记为第十轮；状态指针改 §11 | `design/README`、本文件 |
+
+## 11. 评审十一（2026-11-03，评审会话）
+
+**起点**：第十轮之后的 OOM 补充（`BaselineContent`、`Release.baselineHash`、两张新顺序图）。**结论**：3 个 P1 确认真修好；新图暴露 **1 个 P1 + 5 个 P2**——全部是"图里画了、架构里没登记"或"图里画了旧关系"。核实为真，已处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P1 `dispatch → alignment` 在顺序图里出现，但模块表与组件图都没登记（R26 只查"表→图"，抓不到"图→表"的新调用） | 选"登记依赖"：`dispatch` 依赖加 `alignment`、组件图加 `dispatch --> align`；同时把 `design/01` §1 的依赖规则 2 改成"L1 可依赖**已登记的**同层服务"——旧文案"只依赖 L0 与端口"本来就与 `admission→gate`、`release→gate/sign` 矛盾；**新增 R31** 兜住这一类：顺序图里实线 `L1 → L1` 的调用必须在依赖列里登记（已做反例测试） | `design/01` §1/§3、`design/diagrams/build.py`、`design/check.py` R31 |
+| P2 `handlers → gate` 没有组件边 | 加 `h --> gate` | 组件图 |
+| P2 L2 直接写 `baseline.rejected`（`handlers` 无 store 依赖） | 图改成 `H -> G : reject(...)` → `G -> E : baseline.rejected`，写入归 `gate` | `uml-seq-config` |
+| P2 `spec.defined` 挂在 `alignment` 名下（条款写入不是它的职责） | 改成只写 `assumption.recorded`；`decision.signed` 补成 `decision.valid / decision.signed`（P9/P10 要两条） | `uml-seq-align` |
+| P2 `Gate ..> Policy` 成了悬空关系（`Gate` 已无 `policy` 字段） | 删掉，保留 `Gate ..> GateSpec` | 类图 |
+| P2 轮次 | 本轮记为第十一轮；状态指针改 §12 | `design/README`、本文件 |
+
+## 12. 评审十二（2026-11-03，评审会话）
+
+**起点**：第十一轮之后的修补（`dispatch → alignment` 登记、R31、两张顺序图修正）。**结论**：上一轮 P1 确认真修好，**本轮无 P0/P1**，剩 2 个 P2 + 1 个流程项。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P2-1 `handlers` 的依赖列写「L1 服务」，R31 只查 L1→L1，L2→L1 抓不到 | 二选一里选了「显式声明抽象」：`design/01` §3 加注说明这是刻意抽象（L2 编排入口按需调用各 L1）、`R26` 对 `handlers` **显式跳过并写注释**、README 的 R31 行标注这条已知边界。**不假装已覆盖**——缝留在明处，比留一条检查不到的暗缝好 | `design/01` §3、`design/check.py` R26/R31 注释、`design/README` |
+| P2-2 `check.py` 的 docstring 只列到 R30，与 README/实现三处不一致 | docstring 改成 `R0a–R0d + R19–R31`，补 R29/R30/R31 各查什么，并写明 L2 那条已知边界 | `design/check.py` |
+| P2-3 轮次与提交 | README 实际已写十一轮（报告读到的是上一版快照）；本轮记为第十二轮、状态指针改 §13；提交仍待用户指令 | `design/README`、本文件 |
+
+## 13. 评审十三（2026-11-03，**另一个评审会话**，整套设计审）
+
+**起点**：第十二轮之后的树。**结论**：配置面通过、不要再重开；但**假设状态机不闭合是 P0**，另有 4 个 P1（OOM 聚合根字段、`goal_node` 无 `intent_id`、写网关只有 confirm、R28 失配）+ 2 组 P2。逐条核实：**全部属实**。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P0 假设状态机不闭合**：`status` 只从 `assumption.recorded`/`invalidated`/`decision(assumption_set)` 折叠，而集合必须覆盖全部 `open` ⇒ 签集合就等于"全部确认"；`rejected`/`converted` 没有生产者，P12 的"rejected 无后继"分支不可达 | 补 **`assumption.disposed`** 事件（`disposition ∈ {confirmed,rejected,converted}` + `successor_ref`），它是 `status` 的**唯一迁移生产者**；`confirmed` 仍要求进 `assumption_set`；`rejected/converted` 必须带后继；`invalidated` 回 `open` 并重签。补 **Assumption 状态图**（第 28 张图，R21 登记 + "状态图必须登记"检查）；`assumption_set` 的 payload 加工具渲染的 `dispositions[]`；**probe #15** 照抄规则验证三条迁移可达、`open` 拦派发、无后继被拒 | `docs/02/03/04/06`、`design/02` §3.9、`design/03` P12、`design/diagrams/build.py`、`probe/run.py` |
+| P1 OOM 聚合根仍是空壳：`Intent`/`Spec`/`Task`/`ReviewRound`/`GoalNode` 缺 `source_text`/`status`/`blast_radius`/`inputs`/`baseline_hash`/`frontier`/`intent` 等 | 按 `docs/03` 的列补进类图（守卫点 `ReviewRound.close`、`GoalNode.declare`、`Spec` 才有字段可读） | 类图 |
+| P1 `goal_node` 没有 `intent_id`，"根唯一且指向 Intent"没有落点 | 加 `intent_id` 外键 + `CHECK (kind<>'intent' OR intent_id IS NOT NULL)` + **部分唯一索引** `UNIQUE(intent_id) WHERE kind='intent'`；矩阵拆成两行（指向 vs 根唯一）；**probe #14a–c** 验证根唯一、子节点不误伤、根必须有 intent | `docs/03`、`design/02` §5、probe 的建表脚本与 `run.py` |
+| P1 写入协议只有 confirm：preview 的生成与单步写都没有落点 | `handlers` 明确为**写网关三入口**：`preview`（算 `will_change`/`rework_units`/`payload_hash`）、`confirm`、`append`（单步白名单：认领/附证据/narration/加锁/记缺陷）；`docs/11` §8 同步，P3 补"preview 是谁生成的" | `design/01` §1/§3/§5、`docs/11` §8、`design/03` P3 |
+| P1 R28 失配：找 `### 16.1`（实际 17.1）、只做字符串包含（24 条都在 P2 §3.1 里，恒绿）、表里 4 行错位 | §17.1 改成**执行点表**（`P2` / `02 矩阵` + 数据来源列）；R28 改成解析该表、按执行点核对正文、并查覆盖率——**删一行、改错执行点都会红**（已做反例）；P11 补"复述必须早于第一条 `spec`"；P14 的"frontier 不是当前"改成"≠ **被评对象的当前版本** frontier" | `design/03` §15/§17.1、`design/check.py` R28 |
+| P2 schema/hash 三洞 | `decision` 表补 `decision_kind`/`status`（生成列/折叠列 + 索引）；release 不变量补"`baseline_hash` 必须非空"；`prev`/`direction` 进 hash、进 `decision(baseline)` 载荷、P15 组装清单，`verify` 按内容 diff 复算 direction；矩阵里"证据与判据一致"的 `G4` 误标改成表约束 | `docs/04/06/09`、`design/02/03` |
+| P2 台账与状态声明过度 | `REVIEW` 的"未覆盖 1"改为"规则已闭合、只有 probe 的规则级验证，实现仍未测"；`README` 状态改为"配置面可进入实现；假设/派发链规则已闭合（状态机进 probe），运行时未验"；`design/01` §7 的"5 个 GAP 未决期间兜底"改成历史说明 | `design/README`、本文件、`design/01` §7 |
+
+## 14. 当前状态与未覆盖项
+
+- 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
-  1. assumption 状态机（`assumption.disposed` / `assumption.invalidated` / `assumption_set` 空集）只在判据与 P12，未进 probe；
+  1. **假设状态机的规则已闭合，实现未写**：迁移规则、状态图、`disposition` 载荷、`probe #15`（规则级）都有了；但"代码里真的这么跑"、`assumption_set` 空集签字的落库、失效传播的实际执行，仍未验证；
   2. 运行时未验：`stored` / `sign` / isomorphic-git 并发 / P95 / T0 安装；
   3. "必须评审"目前按风险/kind 判定，**抽样强制**（每 N 张卡必抽 1 张）尚未落地——作者仍可只送稳的卡。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
+
+### 14.1 结构与 OOM 覆盖自查（作者自查，非评审）
+
+按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
+
+| 缺口 | 处置 |
+|---|---|
+| `Baseline` / `Policy` 在 OOM 里没有身份：`Gate.policy : Policy` 引用了未定义类型，baseline 只以 `BaselineHash` 出现 | 类图加 `Baseline`（id/hash/prev/direction/freeze/validate）与 `Policy` 值对象；OOM §1 增「配置」上下文；矩阵加 3 条：冻结后不可变（收紧/放宽都建新行）、放宽须 `decision`、`kinds`/`after`/`artifact_kinds` 在 hash 内 |
+| P15 的配置校验没有模块归属（`gate` 只写到"门禁判定 + baseline 冻结"） | `gate` 职责补「P15 配置校验（`kinds`/`after`/`guarantee_delta`/`na_stages`/`artifact_kinds`/`engine`）」；`design/01` §9 写明 `Baseline.validate` 是纯函数、归属 gate |
+| `baseline.amended` / `baseline.loosened` 登记了却**没有语义与生产者** | P15「变更」段定死：收紧落 `amended`、放宽落 `loosened`，二者都是**新行**（`prev` + `direction`），绝不原地改 hash；`docs/04` §5.2 同步 |
+| **P11 对齐/复述与 P12 假设处置两个过程没有任何模块** | 新增 L1 模块 `alignment`；模块数 19→20；**加机器规则 R30**：`design/03` §17 表新增「模块」列，P1–P15 每个过程都必须有归属 |
+| `Attention` 是"在等谁"的唯一源却没有任何对象；`Restatement` 只有过程没有对象 | 类图加 `Attention`、`Restatement`（Intent 聚合内实体）；`Release`/`Decision` 补到 `Baseline` 的跨聚合虚线 |
+
+另有两处**刻意不补**，已写进 `design/02` §2/§3 免得下次被当遗漏：
+
+- `redteam`/`scenario`/`restatement_diff`/`report`/`receipt`/`scope_decl` 是记录或值对象，随聚合写、无独立身份，所以不进核心类图；
+- `Baseline`/`Attention` 没有状态机：前者"当前用哪版"是查询（取最新已冻结行）、后者 `answered_by` 非空即已答——画成状态图会造出第二个状态源。
+
+**这一节是作者自查，不构成独立性证据**；评审口径仍看上面 1–13 轮。

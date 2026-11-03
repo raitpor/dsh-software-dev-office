@@ -4,7 +4,10 @@ hide circle
 class Intent {
   + id : IntentId
   + statement : string
+  + sourceText : string
   + strength : Strength
+  + approvedBy : ActorId
+  + contentHash : ContentHash
   + baseline : BaselineHash
   + approve(by)
   + reaffirm(baseline)
@@ -12,6 +15,9 @@ class Intent {
 class GoalNode {
   + id : NodeId
   + parent : NodeId
+  + intent : IntentId
+  + goal : string
+  + kind : Kind
   + scope : ScopePaths
   + acceptance : CriterionRef
   + declare()
@@ -22,6 +28,7 @@ class Task {
   + status : Status
   + lease : LeaseRef
   + block : BlockCode
+  + inputs : InputRef[]
   + claim(lease)
   + complete(evidence)
   + reopen(reason)
@@ -35,6 +42,8 @@ class WorkUnit {
 class Criterion {
   + id : CriterionId
   + remedy : Remedy
+  + guarantee : Guarantee
+  + appliesTo : list
   + register()
 }
 class Fixture {
@@ -44,12 +53,17 @@ class Fixture {
 }
 class Gate {
   + id : GateId
-  + policy : Policy
+  + stage : StageId
+  + criteria : list
+  + policyMode : Mode
+  + waivable : bool
   + judge(readings) : Verdict
 }
 class StageRun {
   + id : StageRunId
+  + gateId : GateId
   + baseline : BaselineHash
+  + criteria : list
   + verdict : Verdict
 }
 class Snapshot {
@@ -66,7 +80,11 @@ class Decision {
 }
 class ReviewRound {
   + id : RoundId
+  + taskId : TaskId
+  + baselineHash : BaselineHash
+  + frontier : Frontier
   + verdict : Verdict
+  + signer : ActorId
   + open()
   + close()
 }
@@ -79,6 +97,13 @@ class Spec {
   + id : SpecId
   + intent : IntentId
   + kind : Kind
+  + status : Status
+  + blastRadius : string
+  + isCore : bool
+  + alternatives : list
+  + noAlternativeReason : string
+  + createdBy : ActorId
+  + producer : ActorId
   + contentHash : ContentHash
   + riskFlags : list
 }
@@ -108,9 +133,66 @@ class Release {
   + inSet : Set
   + outSet : Set
   + status : Status
-  + freeze()
+  + baselineHash : BaselineHash
+  + frontier : Frontier
+  + frozenBy : list
+  + freeze(baselineHash)
   + deliver(packageSha256, snapshotId)
   + rollback(newReleaseId)
+}
+class Baseline {
+  + id : BaselineId
+  + hash : BaselineHash
+  + prev : BaselineId
+  + direction : Direction
+  + frozenBy : ActorId
+  + content : BaselineContent
+  + freeze(content, prev, direction) : BaselineId
+  + validate(content) : ReasonCode[]
+}
+class BaselineContent {
+  + policy : Policy
+  + criteria : CriterionRef[]
+  + gates : GateSpec[]
+  + thresholds : Map
+  + assurance : Assurance
+  + engine : Engine
+}
+class CriterionRef {
+  + id : CriterionId
+  + version : number
+  + params : Map
+  + guarantee : Guarantee
+}
+class GateSpec {
+  + id : GateId
+  + stage : StageId
+  + criteria : list
+  + policyMode : Mode
+  + waivable : bool
+}
+class Policy {
+  + id : PolicyId
+  + preset : string
+  + stages : StageDef[]
+  + gates : GateBinding
+  + switches : Map
+  + regression : Regression
+  + artifactKinds : Map
+}
+class Restatement {
+  + id : RestatementId
+  + intent : IntentId
+  + inputs : list
+  + at : Timestamp
+  + invalidate()
+}
+class Attention {
+  + id : AttentionId
+  + task : TaskId
+  + question : string
+  + options : list
+  + answeredBy : ActorId
 }
 interface IntentRepository
 interface EventStore {
@@ -131,6 +213,7 @@ WorkUnit ..> Evidence
 Task ..> Lease
 Task ..> WorkCopy
 Snapshot "1" --> "1..*" SnapshotParent
+Intent "1" --> "1..*" Restatement : 复述（聚合内）
 Intent "1" ..> "1" GoalNode : 根（跨聚合）
 GoalNode --> GoalNode : 分解
 GoalNode ..> Criterion : 叶验收（跨聚合）
@@ -140,6 +223,16 @@ Criterion "1" --> "1..*" Fixture
 Gate ..> Criterion : 引用（跨聚合）
 StageRun ..> Gate : 引用
 Release ..> Snapshot : 交付绑快照（跨聚合）
+Baseline "1" *-- "1" BaselineContent
+BaselineContent "1" *-- "1" Policy
+BaselineContent "1" *-- "1..*" CriterionRef
+BaselineContent "1" *-- "1..*" GateSpec
+Gate ..> GateSpec : 定义来自（跨聚合）
+Intent ..> Baseline : 批准时依据（跨聚合）
+StageRun ..> Baseline : 判定绑哪版尺子（跨聚合）
+Release ..> Baseline : 本版按哪把尺子判（跨聚合）
+Decision ..> Baseline : 冻结/放宽签字（跨聚合）
+Task ..> Attention : 等人回答（跨聚合）
 Task ..> Agent : 认领者（跨聚合）
 Intent ..> IntentRepository
 Task ..> EventStore

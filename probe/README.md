@@ -42,7 +42,7 @@ python3 probe/run.py
 | 12 | 未知 `kind` 被 `event_kind` 外键拒绝 | G5 决策 |
 | 13 | 假设条款形状：`status`/`blast_radius` 与 `kind` 一致 | `03` assumption、判别 `assumption.disposed` |
 
-> 3、4 是子项拆分，所以"13 项"对应 17 条输出行（含 2c）。
+> 3、4 是子项拆分，所以"15 项"对应 21 条输出行（含 2c、14a–c）。
 
 ## 结论
 

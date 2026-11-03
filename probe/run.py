@@ -335,6 +335,86 @@ def probe_single_work_unit() -> None:
         record("FAIL", "11. 一卡一行", "同一 task 插入了两行 work_unit")
 
 
+def probe_goal_root() -> None:
+    """goal_node：根必须指向 intent，且每个 intent 至多一个根（部分唯一索引）。"""
+    conn = sqlite3.connect(":memory:")
+    build(conn)
+    conn.execute("INSERT INTO intent (id,statement,owner,approved_by,strength,"
+                 "baseline_hash,content_hash,at) VALUES ('I1','x','u','u','explicit','b','h','t')")
+    conn.execute("INSERT INTO goal_node (id,parent_id,intent_id,goal,kind,at) "
+                 "VALUES ('G1',NULL,'I1','整体','intent','t')")
+    conn.commit()
+
+    def second_root() -> None:
+        conn.execute("INSERT INTO goal_node (id,parent_id,intent_id,goal,kind,at) "
+                     "VALUES ('G2',NULL,'I1','另一个根','intent','t')")
+        conn.commit()
+
+    expect_fail(second_root, "14a. 根唯一（部分唯一索引）", "goal_root")
+
+    def part() -> None:
+        conn.execute("INSERT INTO goal_node (id,parent_id,intent_id,goal,kind,at) "
+                     "VALUES ('G3','G1','I1','子块','part','t')")
+        conn.commit()
+
+    try:
+        part()
+        record("PASS", "14b. 子节点不受唯一索引影响", "同一 intent 下可以挂多个 part")
+    except sqlite3.IntegrityError as e:  # noqa: BLE001
+        record("FAIL", "14b. 子节点不受唯一索引影响", f"误伤子节点：{str(e)[:60]}")
+
+    def root_without_intent() -> None:
+        conn.execute("INSERT INTO goal_node (id,parent_id,intent_id,goal,kind,at) "
+                     "VALUES ('G4',NULL,NULL,'无主的根','intent','t')")
+        conn.commit()
+
+    expect_fail(root_without_intent, "14c. 根必须指向 intent", "goal_root")
+
+
+def probe_assumption_transitions() -> None:
+    """假设状态机：确认 / 拒绝（带后继）/ 未处置，三条投影与判据谓词。
+
+    这不是实现：只把 docs/03 的迁移规则照抄成函数，验证**规则本身闭合**
+    （rejected/converted 可达、open 会拦住派发）。
+    """
+    specs = {}          # spec_id -> dict(clause=..., successor=None)
+
+    def recorded(sid: str) -> None:
+        specs[sid] = {"status": "open", "successor": None}
+
+    def disposed(sid: str, disposition: str, successor: str | None = None) -> None:
+        rec = specs[sid]
+        if disposition in ("rejected", "converted") and not successor:
+            raise ValueError("rejected/converted 必须带 successor_ref")
+        rec["status"] = disposition
+        rec["successor"] = successor
+
+    def invalidated(sid: str) -> None:
+        specs[sid]["status"] = "open"
+
+    def can_dispatch(card_specs: list[str]) -> bool:
+        return all(specs[s]["status"] != "open"
+                   and not (specs[s]["status"] == "rejected" and not specs[s]["successor"])
+                   for s in card_specs)
+
+    recorded("A1"); recorded("A2"); recorded("A3")
+    disposed("A1", "confirmed")                       # 确认：在 assumption_set 里
+    disposed("A2", "rejected", successor="S-9")       # 拒绝 + 后继
+    can_dispatch_ok = can_dispatch(["A1", "A2"])
+    blocked_while_open = not can_dispatch(["A1", "A2", "A3"])
+    try:
+        disposed("A3", "rejected")
+        no_successor_raised = False
+    except ValueError:
+        no_successor_raised = True
+    invalidated("A1")
+    invalidated_blocks = not can_dispatch(["A1", "A2"])
+    ok = can_dispatch_ok and blocked_while_open and no_successor_raised and invalidated_blocks
+    record("PASS" if ok else "FAIL", "15. 假设状态机：三条迁移都可达、open 拦派发",
+           f"confirmed+rejected⇒可派发={can_dispatch_ok}；open⇒拦={blocked_while_open}；"
+           f"rejected 无后继被拒={no_successor_raised}；invalidated 回 open⇒拦={invalidated_blocks}")
+
+
 def probe_event_kind_closure() -> None:
     conn = sqlite3.connect(":memory:")
     build(conn)
@@ -362,6 +442,8 @@ def main() -> int:
     probe_assumption_shape()
     probe_single_work_unit()
     probe_event_kind_closure()
+    probe_goal_root()
+    probe_assumption_transitions()
 
     fails = [r for r in results if r[0] == "FAIL"]
     gaps = [r for r in results if r[0] == "GAP"]

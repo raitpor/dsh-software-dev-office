@@ -1,0 +1,33 @@
+@startuml
+autonumber
+actor 人
+participant "tools" as tools
+participant "handlers" as H
+participant "gate（Baseline）" as G
+participant "store" as E
+participant "sign" as S
+participant "signerd" as D
+
+tools -> H : sdo_act(baseline_freeze, config)
+H -> G : validate(content)
+G --> H : reason_codes[] 或 空
+alt 校验不过
+  H -> G : reject(content, reason_codes)
+  G -> E : baseline.rejected(reason_code)
+  G --> H : reason_code
+  H --> tools : 回执 reason_code
+else 校验通过
+  H -> G : buildPreview(content)
+  G --> H : will_change + guarantee_delta + payload_hash
+  H --> tools : pending_sign(preview_id)
+  人 -> D : 解锁并确认这一版影响面
+  S -> D : sign(payload)
+  D --> S : signature
+  S -> E : decision.valid / decision.signed
+  tools -> H : confirm(preview_id, payload_hash, frontier)
+  H -> G : freeze(content, prev, direction)
+  G -> E : baseline.frozen 或 baseline.amended 或 baseline.loosened
+  H --> tools : {baseline_id, hash}
+end
+note right of G : 收紧落 amended、放宽落 loosened，两者都建新行（03 · P15 唯一处）
+@enduml

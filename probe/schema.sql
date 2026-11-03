@@ -42,12 +42,17 @@ CREATE TABLE spec (
 CREATE TABLE goal_node (
   id                     TEXT PRIMARY KEY,
   parent_id              TEXT REFERENCES goal_node(id),
+  intent_id              TEXT REFERENCES intent(id),
   goal                   TEXT NOT NULL,
   kind                   TEXT NOT NULL CHECK (kind IN ('intent','part')),
   acceptance_criterion_id TEXT,
   scope_paths            TEXT NOT NULL DEFAULT '[]',
-  at                     TEXT NOT NULL
+  at                     TEXT NOT NULL,
+  -- 根必须指向 intent；每个 intent 至多一个根（部分唯一索引，见下）
+  CHECK (kind <> 'intent' OR intent_id IS NOT NULL)
 );
+
+CREATE UNIQUE INDEX ux_goal_root ON goal_node(intent_id) WHERE kind = 'intent';
 
 CREATE TABLE scenario (
   id       TEXT PRIMARY KEY,

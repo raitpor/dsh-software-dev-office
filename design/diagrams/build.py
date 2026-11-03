@@ -80,6 +80,7 @@ package "L1 领域层" {
   component "fold" as fold
   component "criteria" as criteria
   component "gate" as gate
+  component "alignment" as align
   component "admission" as admission
   component "dispatch" as dispatch
   component "review" as review
@@ -102,12 +103,15 @@ views --> q
 q --> fold
 h --> fold
 h --> admission
+h --> align
+h --> gate
 wf --> dispatch
 wf --> release
 
 fold --> core
 criteria --> core
 gate --> criteria
+align --> core
 admission --> gate
 review --> core
 exec --> core
@@ -118,7 +122,9 @@ sign --> core
 fold --> DBPort
 criteria --> DBPort
 gate --> DBPort
+align --> DBPort
 admission --> DBPort
+dispatch --> align
 dispatch --> DBPort
 review --> DBPort
 exec --> DBPort
@@ -451,7 +457,10 @@ hide circle
 class Intent {
   + id : IntentId
   + statement : string
+  + sourceText : string
   + strength : Strength
+  + approvedBy : ActorId
+  + contentHash : ContentHash
   + baseline : BaselineHash
   + approve(by)
   + reaffirm(baseline)
@@ -459,6 +468,9 @@ class Intent {
 class GoalNode {
   + id : NodeId
   + parent : NodeId
+  + intent : IntentId
+  + goal : string
+  + kind : Kind
   + scope : ScopePaths
   + acceptance : CriterionRef
   + declare()
@@ -469,6 +481,7 @@ class Task {
   + status : Status
   + lease : LeaseRef
   + block : BlockCode
+  + inputs : InputRef[]
   + claim(lease)
   + complete(evidence)
   + reopen(reason)
@@ -482,6 +495,8 @@ class WorkUnit {
 class Criterion {
   + id : CriterionId
   + remedy : Remedy
+  + guarantee : Guarantee
+  + appliesTo : list
   + register()
 }
 class Fixture {
@@ -491,12 +506,17 @@ class Fixture {
 }
 class Gate {
   + id : GateId
-  + policy : Policy
+  + stage : StageId
+  + criteria : list
+  + policyMode : Mode
+  + waivable : bool
   + judge(readings) : Verdict
 }
 class StageRun {
   + id : StageRunId
+  + gateId : GateId
   + baseline : BaselineHash
+  + criteria : list
   + verdict : Verdict
 }
 class Snapshot {
@@ -513,7 +533,11 @@ class Decision {
 }
 class ReviewRound {
   + id : RoundId
+  + taskId : TaskId
+  + baselineHash : BaselineHash
+  + frontier : Frontier
   + verdict : Verdict
+  + signer : ActorId
   + open()
   + close()
 }
@@ -526,6 +550,13 @@ class Spec {
   + id : SpecId
   + intent : IntentId
   + kind : Kind
+  + status : Status
+  + blastRadius : string
+  + isCore : bool
+  + alternatives : list
+  + noAlternativeReason : string
+  + createdBy : ActorId
+  + producer : ActorId
   + contentHash : ContentHash
   + riskFlags : list
 }
@@ -555,9 +586,66 @@ class Release {
   + inSet : Set
   + outSet : Set
   + status : Status
-  + freeze()
+  + baselineHash : BaselineHash
+  + frontier : Frontier
+  + frozenBy : list
+  + freeze(baselineHash)
   + deliver(packageSha256, snapshotId)
   + rollback(newReleaseId)
+}
+class Baseline {
+  + id : BaselineId
+  + hash : BaselineHash
+  + prev : BaselineId
+  + direction : Direction
+  + frozenBy : ActorId
+  + content : BaselineContent
+  + freeze(content, prev, direction) : BaselineId
+  + validate(content) : ReasonCode[]
+}
+class BaselineContent {
+  + policy : Policy
+  + criteria : CriterionRef[]
+  + gates : GateSpec[]
+  + thresholds : Map
+  + assurance : Assurance
+  + engine : Engine
+}
+class CriterionRef {
+  + id : CriterionId
+  + version : number
+  + params : Map
+  + guarantee : Guarantee
+}
+class GateSpec {
+  + id : GateId
+  + stage : StageId
+  + criteria : list
+  + policyMode : Mode
+  + waivable : bool
+}
+class Policy {
+  + id : PolicyId
+  + preset : string
+  + stages : StageDef[]
+  + gates : GateBinding
+  + switches : Map
+  + regression : Regression
+  + artifactKinds : Map
+}
+class Restatement {
+  + id : RestatementId
+  + intent : IntentId
+  + inputs : list
+  + at : Timestamp
+  + invalidate()
+}
+class Attention {
+  + id : AttentionId
+  + task : TaskId
+  + question : string
+  + options : list
+  + answeredBy : ActorId
 }
 interface IntentRepository
 interface EventStore {
@@ -578,6 +666,7 @@ WorkUnit ..> Evidence
 Task ..> Lease
 Task ..> WorkCopy
 Snapshot "1" --> "1..*" SnapshotParent
+Intent "1" --> "1..*" Restatement : 复述（聚合内）
 Intent "1" ..> "1" GoalNode : 根（跨聚合）
 GoalNode --> GoalNode : 分解
 GoalNode ..> Criterion : 叶验收（跨聚合）
@@ -587,6 +676,16 @@ Criterion "1" --> "1..*" Fixture
 Gate ..> Criterion : 引用（跨聚合）
 StageRun ..> Gate : 引用
 Release ..> Snapshot : 交付绑快照（跨聚合）
+Baseline "1" *-- "1" BaselineContent
+BaselineContent "1" *-- "1" Policy
+BaselineContent "1" *-- "1..*" CriterionRef
+BaselineContent "1" *-- "1..*" GateSpec
+Gate ..> GateSpec : 定义来自（跨聚合）
+Intent ..> Baseline : 批准时依据（跨聚合）
+StageRun ..> Baseline : 判定绑哪版尺子（跨聚合）
+Release ..> Baseline : 本版按哪把尺子判（跨聚合）
+Decision ..> Baseline : 冻结/放宽签字（跨聚合）
+Task ..> Attention : 等人回答（跨聚合）
 Task ..> Agent : 认领者（跨聚合）
 Intent ..> IntentRepository
 Task ..> EventStore
@@ -646,6 +745,22 @@ signed --> proposed : statement 变 ⇒ content_hash 变（必须重签）
 signed --> superseded : 被新意图取代
 superseded --> [*]
 signed --> [*]
+""")
+
+plantuml("uml-state-assumption", """
+hide empty description
+[*] --> open : assumption.recorded
+open --> confirmed : assumption.disposed(confirmed) + 进 assumption_set
+open --> rejected : assumption.disposed(rejected, successor_ref)
+open --> converted : assumption.disposed(converted, successor_ref=新条款)
+rejected --> converted : 后继条款落地后补记
+confirmed --> open : assumption.invalidated（依赖变了）
+rejected --> open : assumption.invalidated
+converted --> open : assumption.invalidated
+open --> [*]
+confirmed --> [*]
+rejected --> [*]
+converted --> [*]
 """)
 
 plantuml("uml-state-spec", """
@@ -742,6 +857,62 @@ R -> E : release.frozen（status='frozen' 的唯一生产者）
 B --> R : 产物
 note right of R : 缺口计算/校验/打包细节见 03 · P8（唯一处）
 R -> E : release.delivered（绑 package_sha256 + snapshot_id）
+""")
+
+plantuml("uml-seq-config", """
+autonumber
+actor 人
+participant "tools" as tools
+participant "handlers" as H
+participant "gate（Baseline）" as G
+participant "store" as E
+participant "sign" as S
+participant "signerd" as D
+
+tools -> H : sdo_act(baseline_freeze, config)
+H -> G : validate(content)
+G --> H : reason_codes[] 或 空
+alt 校验不过
+  H -> G : reject(content, reason_codes)
+  G -> E : baseline.rejected(reason_code)
+  G --> H : reason_code
+  H --> tools : 回执 reason_code
+else 校验通过
+  H -> G : buildPreview(content)
+  G --> H : will_change + guarantee_delta + payload_hash
+  H --> tools : pending_sign(preview_id)
+  人 -> D : 解锁并确认这一版影响面
+  S -> D : sign(payload)
+  D --> S : signature
+  S -> E : decision.valid / decision.signed
+  tools -> H : confirm(preview_id, payload_hash, frontier)
+  H -> G : freeze(content, prev, direction)
+  G -> E : baseline.frozen 或 baseline.amended 或 baseline.loosened
+  H --> tools : {baseline_id, hash}
+end
+note right of G : 收紧落 amended、放宽落 loosened，两者都建新行（03 · P15 唯一处）
+""")
+
+plantuml("uml-seq-align", """
+autonumber
+participant "alignment" as A
+participant "store" as E
+participant "dispatch" as P
+participant "sign" as S
+
+A -> E : restatement.recorded（绑 intent + 关键条款 hash）
+A -> A : diff 逐条 disposition
+A -> E : restatement.diff_dispositioned
+A -> E : assumption.recorded（spec(kind='assumption')）
+P -> A : 派发前查假设是否处置
+alt 还有 open 假设
+  A --> P : 不派发
+  A -> E : attention.raised
+else 全部处置
+  S -> E : decision.valid / decision.signed（assumption_set，空集也签）
+  A --> P : 允许派发
+end
+note right of A : 复述作废与假设失效传播见 03 · P11/P12（唯一处）
 """)
 
 plantuml("uml-seq-change", """

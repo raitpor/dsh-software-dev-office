@@ -1,7 +1,7 @@
 # 可执行性测试报告
 
 > 目的：把 `docs/` 的设计**当成假设**验证一次——建得起来吗？约束真会拦人吗？
-> 结论先说：**17 PASS / 0 GAP / 0 FAIL**（17 条输出行，13 项探针，3/4 拆子项）。G1–G5 已全部决定（见 [docs/14](../docs/14-待决缺口.md)），本报告按决定后的设计复跑。
+> 结论先说：**21 PASS / 0 GAP / 0 FAIL**（21 条输出行，15 项探针，3/4/14 拆子项）。G1–G5 已全部决定（见 [docs/14](../docs/14-待决缺口.md)），本报告按决定后的设计复跑。
 
 运行：`python3 probe/run.py`（SQLite 3.54，Python 3.14，`:memory:` + 单文件锁测试）
 
@@ -56,7 +56,7 @@
 
 ## 四、这轮测试**没有**证明的事
 
-**先声明 assumption 的覆盖边界**：探针 #13 只证明**形状能表达**（`status`/`blast_radius` 与 `kind` 一致、必填被 CHECK 拦），**没有测状态机**——`assumption.disposed`（`open` 挡开工）、`assumption.invalidated`（依赖变更回 `open`）、`assumption_set.signed`（空集也要签）都在应用层，由判据与 `P12` 保证。**17 PASS 不等于"assumption 整套已验证"**。
+**先声明 assumption 的覆盖边界**：探针 #13 只证明**形状能表达**，**#15 是把 `docs/03` 的迁移规则照抄成函数**验证规则闭合（`rejected`/`converted` 可达、`open` 拦派发、`invalidated` 回 `open`）——它验的是**规则本身**，不是实现；`assumption_set.signed`（空集也要签）与失效传播的落库仍由判据与 P12 保证。**21 PASS 不等于"assumption 整套已验证"**。
 
 避免误读，逐条列出：
 
