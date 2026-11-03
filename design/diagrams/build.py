@@ -229,6 +229,11 @@ if (证据在冻结 frontier 内有效、弃用窗口未过期？) then (否)
   stop
 else (是)
 endif
+if (人执行 scenario 抽样：≥3 条、高风险条款每条款 ≥1？) then (否)
+  :拒绝 scenario_not_run（模型跑的不算）;
+  stop
+else (是)
+endif
 :生成审计快照 JSONL（frozen_at_frontier）;
 if (审计快照 verify 通过？) then (否)
   :拒绝 release.snapshot_verified;
