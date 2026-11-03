@@ -14,7 +14,8 @@
   R24 P3 无旁路边（四道校验必须串联）；
   R25 不变量矩阵的守卫点可落地（类/模块/03 P 号，Class.method 必须存在），表约束行写具体约束名；
   R26 模块依赖列 → 组件图必须有对应边（store→DBPort、vcs→VcsPort，core 不查）；
-  R27 每个登记事件要么在 design 里有生产者，要么在 EXTERNAL_EVENTS 里逐条点名。
+  R27 每个登记事件要么在 design 里有生产者，要么在 EXTERNAL_EVENTS 里逐条点名；
+  R28 每条阶段判据（docs/04）必须在 design/ 里出现（落点表或矩阵），否则红。
 
 退出码：0 通过；1 有漂移。
 """
@@ -90,6 +91,7 @@ NON_EVENTS = {
     "event.kind", "release.freeze", "admission.evaluate", "criterion.spec_id", "work_unit.id",
     "baseline.hash", "decision.signature", "lease.actor", "lease.expires_at",
     "snapshot.git_oid", "decision.frontier", "task.status", "agent.watermark",
+    "task.inputs", "intent.source_text", "spec.alternatives", "restatement.draft_specs",
 }
 EVENT_PREFIX = {
     "intent", "spec", "task", "goal", "report", "attention", "workcopy", "snapshot",
@@ -392,6 +394,25 @@ for kind in sorted(registered):
         continue
     bad.append(f"[R27] 事件 {kind} 在 03/图里没有生产者，也没登记为过程外（docs/02 有、design 无人写）")
 
+# ---------- R28 每条阶段判据必须在 design 里有落点 ----------
+doc04 = read_doc("04-判据-门禁与负例.md")
+s4 = doc04[doc04.find("| 判据 code |"):doc04.find("### 4.1")]
+criteria_codes = re.findall(r"^\| `([a-z][a-z0-9_.]*)` \|", s4, flags=re.M)
+# 落点只认「过程正文（03，排除 §16.1 映射表）」与「不变量矩阵（02）」——
+# 在 README/01 提一句、或只出现在映射表里，都不算落点。
+d03 = read(os.path.join(DESIGN, "03-过程逻辑.md"))
+_map_at = d03.find("### 16.1")
+if _map_at != -1:
+    d03_body = d03[:_map_at]              # 映射表之前 = 各过程正文
+else:
+    d03_body = d03
+d02 = read(os.path.join(DESIGN, "02-面向对象模型.md"))
+process_text = d03_body + d02
+for code in criteria_codes:
+    if code not in process_text:
+        bad.append(f"[R28] 判据 {code} 只在映射表/README 出现，过程或矩阵里没有落点"
+                   f"（docs/04 有、设计无人接）")
+
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
     for b in bad:
@@ -399,4 +420,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者")
+      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点")

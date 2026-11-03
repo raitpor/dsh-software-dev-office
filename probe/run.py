@@ -292,6 +292,33 @@ def probe_fixture_cardinality() -> None:
     record("PASS" if ok else "FAIL", "9. 夹具基数：同极性可多条、同输入不重复", f"{detail}；{dup}")
 
 
+def probe_assumption_shape() -> None:
+    """假设条款的形状约束：status/blast_radius 与 kind 必须一致（DB 兜住）。"""
+    conn = sqlite3.connect(":memory:")
+    conn.execute("PRAGMA foreign_keys = ON")
+    build(conn)
+    seed(conn)
+
+    def ins(sid: str, kind: str, status, radius) -> str:
+        try:
+            conn.execute(
+                "INSERT INTO spec (id,intent_id,clause,kind,mech_checkable,created_by,producer,"
+                "content_hash,status,blast_radius,at) VALUES (?,?,?,?,0,'u','u','h',?,?,'t')",
+                (sid, "I1", "假设", kind, status, radius))
+        except sqlite3.IntegrityError as e:
+            return "rejected:" + str(e).split(":")[0]
+        return "ok"
+
+    no_radius = ins("SA1", "assumption", "open", None)      # 缺 blast_radius
+    no_status = ins("SA2", "assumption", None, "T1")       # 缺 status
+    ok_row = ins("SA3", "assumption", "open", "T1")        # 合法
+    wrong_kind = ins("SA4", "requirement", "open", None)   # 非假设却有 status
+    ok = (no_radius.startswith("rejected") and no_status.startswith("rejected")
+          and ok_row == "ok" and wrong_kind.startswith("rejected"))
+    record("PASS" if ok else "FAIL", "13. 假设条款形状（status/blast_radius 与 kind 一致）",
+           f"缺 blast_radius={no_radius}；缺 status={no_status}；合法={ok_row}；kind 不符={wrong_kind}")
+
+
 def probe_single_work_unit() -> None:
     conn = sqlite3.connect(":memory:")
     conn.execute("PRAGMA foreign_keys = ON")
@@ -332,6 +359,7 @@ def main() -> int:
     probe_derived()
     probe_registry()
     probe_fixture_cardinality()
+    probe_assumption_shape()
     probe_single_work_unit()
     probe_event_kind_closure()
 

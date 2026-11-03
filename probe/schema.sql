@@ -23,6 +23,9 @@ CREATE TABLE spec (
   kind                  TEXT NOT NULL CHECK (kind IN ('requirement','design','contract','impact','assumption')),
   mech_checkable        INTEGER NOT NULL DEFAULT 0 CHECK (mech_checkable IN (0,1)),
   scenario_id           TEXT,
+  is_core               INTEGER NOT NULL DEFAULT 0 CHECK (is_core IN (0,1)),
+  status                TEXT CHECK (status IS NULL OR status IN ('open','confirmed','rejected','converted')),
+  blast_radius          TEXT,
   created_by            TEXT NOT NULL,
   producer              TEXT NOT NULL,
   content_hash          TEXT NOT NULL,
@@ -30,7 +33,10 @@ CREATE TABLE spec (
   code_artifact_sha256   TEXT,
   code_artifact_ref      TEXT,           -- JSON: {snapshot_id, path, design_sha256}
   risk_flags             TEXT NOT NULL DEFAULT '[]',  -- JSON 数组
-  at                     TEXT NOT NULL
+  at                     TEXT NOT NULL,
+  -- 假设条款的完整性：status/blast_radius 与 kind 必须一致（G6 兜底）
+  CHECK ((kind = 'assumption') = (status IS NOT NULL)),
+  CHECK (kind <> 'assumption' OR (blast_radius IS NOT NULL AND length(blast_radius) > 0))
 );
 
 CREATE TABLE goal_node (
