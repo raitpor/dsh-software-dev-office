@@ -343,7 +343,7 @@ graphviz("p2-gate-ns", """
   n1 [shape=diamond, fillcolor=white, label="frontier 或 baseline_hash 不一致?"];
   s1 [fillcolor="#fde2e1", label="verdict = fail（reason_code=stale_fail）"];
   n2 [label="逐条判据：不适用当前 stage ⇒ na；否则 run(c)"];
-  n3 [shape=diamond, fillcolor=white, label="policy = all_of?"];
+  n3 [shape=diamond, fillcolor=white, label="policy_mode = all_of?"];
   v1 [label="verdict = 全部 ∈ {pass, na} ? pass : fail"];
   v2 [fillcolor="#fff4d6", label="verdict = 存在 pass ? pass : fail"];
   map [shape=box, label="stage_run.verdict：pass→pass；fail→changes_requested；na→na"];

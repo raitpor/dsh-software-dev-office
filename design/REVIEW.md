@@ -42,9 +42,30 @@
 | 概念表 `spec` 行漏 `assumption` | 补 kind 列表 | `docs/01` §18 |
 | `design/README` 状态自相矛盾 | 统一为"已通过，可进实现"，并指向本文件 | `design/README.md` |
 
-## 3. 当前状态与未覆盖项
+## 3. 评审三（2026-11-03，独立只读会话）
 
-- 判据 **24 条**、过程 **14 个**、图 **25 张**、表 **26 张**；G1–G5 全 A；探针 **17 PASS / 0 GAP**。
+**起点**：policy 定为 preset、P15 配置冻结、`artifact_kinds` 进 baseline 之后。**结论**：配置面方向正确；指出 1 个 P0 + 5 个 P1，已全部处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P0 空 gate 真空通过（`all_of` 空集为真） | `all_of` 空集 ⇒ `fail`；P15 校验加"每 gate ≥1 判据"（`gate_empty`） | `docs/04` §6、P15 |
+| P1 `freeze` 被 release 与 baseline 共用，`scenarios_run` 必填冲突 | 新增 `decision_kind='baseline'`；P15 签 `baseline`，`freeze` 只用于 release；P9 检查只约束 `freeze` | `docs/06` §5.1/§5、P15、P9 |
+| P1 换 baseline 后历史判定全红（拿判定 hash 与"当前"比） | 改为对"该判定引用的那版"对账；写清在飞卡用旧尺、release 必须声明 `baseline_hash`、旧尺通过的卡进新版本必须重判 | `docs/04` §5.2、P15 |
+| P1 README 说"遗留项收口"但 REVIEW 列了 3 项未覆盖 | README 改为"配置面已通过；3 项未覆盖见 REVIEW §3" | `design/README` |
+| P1 P15 不在里程碑 | `docs/09` M1 加 baseline 冻结 + 校验器 + 判死读数（空 gate 被拒） | `docs/09` §16.2 |
+| P1 "核心不可关"与保证表互相拆台 | 拆成"机制必须记"与"判据可降级"；core 判据必须出现在每个 policy 的 gate 集，P15 校验 | `docs/08` §1 |
+| P2 `engine` 漏在 P15 组 baseline | 补 `engine{version, criteria_manifest_hash}` | P15 |
+| P2 `artifact_kinds` 缺 `throwaway` | 示例补全；覆盖规则改为按**枚举键**校验 | `docs/08` §1、P15 |
+| P2 baseline 视图列不全 | 补 `thresholds/switches/assurance/engine/artifact_kinds` | `docs/05` |
+| P2 图里 `policy = all_of?` | 改为 `policy_mode = all_of?` | `p2-gate-ns.dot` |
+| P2 probe 注释写"G6 兜底" | 改为"DB 兜底；G6 是 gate id" | `probe` 建表脚本 |
+| P2 "十三类漂移" | 改为十四类（R0a–R0d + R19–R28） | `design/README` |
+| P2 `sdo_act` 没有 baseline 冻结动作 | 定义 `action='baseline_freeze'`（非两段式；校验→`baseline.rejected` 或转 `request_sign`） | `docs/05` §1 |
+| P2 冻结失败不落事件（不可追溯） | 落 `baseline.rejected(reason_code)`；登记进事件表 | `docs/02`、P15 |
+
+## 4. 当前状态与未覆盖项
+
+- 判据 **24 条**、过程 **15 个**、图 **25 张**、表 **26 张**；G1–G5 全 A；探针 **17 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
   1. assumption 状态机（`assumption.disposed` / `assumption.invalidated` / `assumption_set` 空集）只在判据与 P12，未进 probe；
   2. 运行时未验：`stored` / `sign` / isomorphic-git 并发 / P95 / T0 安装；

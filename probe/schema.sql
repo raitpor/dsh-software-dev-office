@@ -34,7 +34,7 @@ CREATE TABLE spec (
   code_artifact_ref      TEXT,           -- JSON: {snapshot_id, path, design_sha256}
   risk_flags             TEXT NOT NULL DEFAULT '[]',  -- JSON 数组
   at                     TEXT NOT NULL,
-  -- 假设条款的完整性：status/blast_radius 与 kind 必须一致（G6 兜底）
+  -- 假设条款的完整性：status/blast_radius 与 kind 必须一致（DB 兜底；G1–G5 是缺口编号，G6 是下游 gate id，别混）
   CHECK ((kind = 'assumption') = (status IS NOT NULL)),
   CHECK (kind <> 'assumption' OR (blast_radius IS NOT NULL AND length(blast_radius) > 0))
 );
