@@ -5,7 +5,7 @@
 **谁写的、谁审的（独立性怎么判）**：
 
 - **作者**：本仓库的全部文档改动与 `git` 提交都出自**实现会话**；判口径是"谁实际改写了被评审的内容"。
-- **评审**：各轮由**另一个会话**执行。它的工具面是读/检索/记忆 + `bash`，sandbox 与作者相同（`workspace-write`）——**所以不能说它"没有写权限"**。准确说法是：它只做只读检查与一次性验证（在临时目录重建图表再比对，随后删除），**没有改写任何被评审文档，也没有产生提交**。
+- **评审**：各轮由**另一个会话**执行。它的工具面与作者**同构**——含 `write`/`edit`/`bash`，sandbox 同为 `workspace-write`。所以**不能说它"只读"，也不能说它"没有写权限"**。准确说法是：这些轮里它**一次也没调用写工具**，只做读/检索与一次性验证（在临时目录重建图表再比对，随后删除），**没有改写任何被评审文档，也没有产生提交**。
 - **这条要诚实**：独立性是"事后可核对的痕迹"（仓库里没有它的改动），不是"它在权限上写不了"。要更强的独立性，应当给评审会话真正只读的 sandbox，而不是在台账里写"只读"。
 - 判定口径：**看"谁改了文件"，不看"谁写过记忆"**。记忆节点的会话字段只说明"这条记忆是谁写的"，不能当作者身份用。
 
@@ -80,7 +80,22 @@
 | P2 `stale_fail` 与"在飞卡用旧尺判完"冲突 | 只在"判定用的 baseline ≠ 该 `stage_run` 记录的 baseline"时红；**"存在新 baseline"本身不触发** | `design/03` §3 |
 | P2 `baseline` 的 `proposition` 没定义 | 定死句式：N 个 stage / M 个 gate、收紧 X、放松 Y、保证 1/2/3 各维持或降级 | `docs/06` §5、P15 |
 
-## 5. 当前状态与未覆盖项
+## 5. 评审五（2026-11-03，复评）
+
+**起点**：`d3aa2cd`（4 个 P1 修复）之后。**结论**：上一轮 4 个 P1 确认真修好；新指出 **3 个 P1 + 5 个 P2**，其中 P1-1 是结构性的（配置 schema 缺 `kind`）。全部核实为真，已逐条处置。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| P1-1 policy 的 stage 没有 `kind`：`applies_to` 的词表是 `requirement/design/implement/review/deliver`，preset 的 stage 名是 `req/build/verify/explore/harden`，两套词汇没接缝 ⇒ `na`、`na_stages[]`、保证表"harden 起恢复"全部悬空 | stage 加 **`kinds[]`**（五 kind 的子集，可多值：`harden` 同时承担 requirement/design/implement）；`applies_to` 按 kind 匹配；`na_stages[]` 由"缺哪个 kind"推出；三个 preset 的 DAG 标出每段 kinds；`stage_run.stage` 只存 id、kind 经 baseline 反查；`kinds` 进 hash | `docs/04` §4.1/§5.1、`docs/08` §1、`docs/03` stage_run、`docs/05` baseline 视图、`docs/09` M1、`design/01` §9、`design/03` P15 |
+| P1-2 `assumption_set.signed` 在同一页被写成"非 core（可以不绑）"与"core（必须绑）" | 非 core 例子换成 `assumption.disposed` / `design.alternatives_declared`；保证表那行改成"不绑 `assumption.disposed` ⇒ 保证 2 降级（**签名集合仍由 core 的 `assumption_set.signed` 保**）" | `docs/08` §1 |
+| P1-3 core 判据"绑在 `na` 阶段"也过校验（绑了 ≠ 查了） | P15 ⑥ 改为"必须**各有一个** gate，且 `stage` 的 `kinds` 与判据的 `applies_to` 有交集"（`core_not_effective`）；policy 结构上缺该 kind 时必须在 `guarantee_delta` 里显式降级（`core_waived_unstated`）；矩阵加两行 | `docs/04` §5.2 第 6 条、`design/03` P15、`design/02` §5 |
+| P2 "两处是同一组前置（§3 七条全覆盖）"不准确 | 改成"§3 七项在本文都有落点；**前置五条只覆盖其中五项**，scenario 与快照是步骤 4/5，不在前置里" | `design/03` §9 |
+| P2 release 级判据可能复用旧尺下的判定 | 明确 **7 条 release 判据一律在冻结时点现算**，用 release 声明的 `baseline_hash` | `design/03` §9 |
+| P2 台账少算本轮 | 记为第五轮；结论措辞逐项点名，不写"遗留项已收口" | `design/README`、本文件 |
+| P2 台账把评审会话的工具面写窄了 | 工具面与作者**同构**（含 `write`/`edit`），这几轮**未调用写工具**；独立性靠仓库痕迹，不靠权限声明 | 本文件开头 |
+| P2 "只能收紧、永不放松"对二值判据没意义 | 改为"**只能保留或加强，永不删除或放宽**" | `docs/04` §5.2、`docs/08` §1 |
+
+## 6. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **25 张**、表 **26 张**；G1–G5 全 A；探针 **17 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
