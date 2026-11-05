@@ -450,13 +450,31 @@ def probe_assumption_transitions() -> None:
     reshipped = set_signed()
     revoke("D2")                            # 撤销 → 覆盖的假设回 open
     revoked_cascade = (specs["A1"]["status"] == "open") and (not set_signed())
-    ok = (unsigned and mismatch and after_sign and blocked_open
-          and stale_blocked and reshipped and revoked_cascade)
+    try:                                    # 撤销后不能再用旧签字处置
+        disposed("A3", "confirmed", decision="D2")
+        revoked_write_rejected = False
+    except ValueError:
+        revoked_write_rejected = True
+
+    # 空集：零假设 + 没有任何签字 ⇒ 未签；零假设 + 空集签字 ⇒ 已签
+    empty = {}
+    saved_specs, saved_batches = specs, batches
+    specs, batches = empty, {}
+    empty_unsigned = not set_signed()
+    batches = {"D0": {}}
+    empty_signed = set_signed()
+    specs, batches = saved_specs, saved_batches
+
+    ok = (unsigned and mismatch and after_sign and blocked_open and stale_blocked
+          and reshipped and revoked_cascade and revoked_write_rejected
+          and empty_unsigned and empty_signed)
     record("PASS" if ok else "FAIL",
-           "15. 假设状态机：先签后处置、旧签字过期、撤销级联",
+           "15. 假设状态机：先签后处置、旧签字过期、撤销级联、空集",
            f"无签字被拒={unsigned}；载荷不一致被拒={mismatch}；签后可派发={after_sign}；"
            f"open 拦派发={blocked_open}；invalidated 后旧签字不算={stale_blocked}；"
-           f"重签后恢复={reshipped}；撤销级联回 open={revoked_cascade}")
+           f"重签后恢复={reshipped}；撤销级联回 open={revoked_cascade}；"
+           f"撤销后旧签字写处置被拒={revoked_write_rejected}；"
+           f"空集未签={empty_unsigned}；空集已签={empty_signed}")
 
 
 def probe_event_kind_closure() -> None:

@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """design/ 的机器校验（不是 docs/check.py 的替代）。
 
-规则（R0a–R0d + R19–R31）：
+规则（R0a–R0d + R19–R32）：
   R0a 文档引用的图片都存在；
   R0b 每个 `.puml` / `.dot` 都有对应的 `.svg` 与 `.png`；
   R0c 图与**文档**里出现的事件 kind 都在 `docs/02` 的登记表里（只读登记表，不抓全篇反引号）；
@@ -21,11 +21,14 @@
   R30 每个过程（P1–P15）都必须在 03 §17 表里有模块归属，且名字在 01 模块表里；
   R31 顺序图里**实线**的 L1→L1 调用必须在源模块依赖列里登记（虚线 `-->` 是返回，不算）。
       *已知边界*：L2 编排层 `handlers` 的依赖写作「L1 服务」（刻意抽象），L2→L1 不做逐边校验。
+  R32 已废弃的判据句式不许留在实现面（docs/ 与 design/01–03）：出现「仍为 open 的假设都必须已被…」这类
+      旧谓词即红——它把 freshness 漏了，改一处不改别处就会把洞重开。
 
 退出码：0 通过；1 有漂移。
 """
 from __future__ import annotations
 
+import glob
 import os
 import re
 import subprocess
@@ -636,6 +639,23 @@ for fname, src in sorted(diagram_sources().items()):
                 bad.append(f"[R31] {fname}: {src_mod} 调用 {dst_mod}，但模块依赖列没登记"
                            f"（图里出现了、架构里没登记）")
 
+# ---------- R32 已废弃的判据句式不许留在实现面文档里 ----------
+# 旧谓词"open 被有效签字覆盖"把 freshness 漏掉了，实现照抄会重开这个洞。
+BANNED_PHRASES = (
+    "仍为 `open` 的假设都必须已被",
+    "仍是 `open` 的假设都必须已被",
+    "覆盖当前全部 `open`",
+)
+banned_hits = []
+for path in sorted(glob.glob(os.path.join(DOCS, "*.md"))) + [
+        os.path.join(DESIGN, n) for n in ("01-结构化设计.md", "02-面向对象模型.md", "03-过程逻辑.md")]:
+    text = read(path)
+    for ph in BANNED_PHRASES:
+        if ph in text:
+            banned_hits.append(f"[R32] {os.path.basename(path)} 里还有已废弃的旧谓词：{ph}"
+                               f"（freshness 会漏，改成 docs/04 §4 的三条）")
+bad.extend(banned_hits)
+
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
     for b in bad:
@@ -643,4 +663,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖")
+      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式")

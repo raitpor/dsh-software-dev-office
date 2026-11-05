@@ -41,6 +41,8 @@ python3 probe/run.py
 | 11 | 一卡一行由 `UNIQUE(task_id)` 保证 | G4 决策 |
 | 12 | 未知 `kind` 被 `event_kind` 外键拒绝 | G5 决策 |
 | 13 | 假设条款形状：`status`/`blast_radius` 与 `kind` 一致 | `03` assumption、判别 `assumption.disposed` |
+| 14a–c | 分解树根唯一（部分唯一索引）、子节点不误伤、根必须指向 intent | `03` goal_node |
+| 15 | 假设状态机：先签后处置、旧签字过期、撤销级联、空集 | `03`/`04`/`06` assumption、P12 |
 
 > 3、4 是子项拆分，所以"15 项"对应 21 条输出行（含 2c、14a–c）。
 
