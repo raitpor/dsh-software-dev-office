@@ -204,7 +204,31 @@
 | P2 schema/hash 三洞 | `decision` 表补 `decision_kind`/`status`（生成列/折叠列 + 索引）；release 不变量补"`baseline_hash` 必须非空"；`prev`/`direction` 进 hash、进 `decision(baseline)` 载荷、P15 组装清单，`verify` 按内容 diff 复算 direction；矩阵里"证据与判据一致"的 `G4` 误标改成表约束 | `docs/04/06/09`、`design/02/03` |
 | P2 台账与状态声明过度 | `REVIEW` 的"未覆盖 1"改为"规则已闭合、只有 probe 的规则级验证，实现仍未测"；`README` 状态改为"配置面可进入实现；假设/派发链规则已闭合（状态机进 probe），运行时未验"；`design/01` §7 的"5 个 GAP 未决期间兜底"改成历史说明 | `design/README`、本文件、`design/01` §7 |
 
-## 14. 当前状态与未覆盖项
+## 14. 评审十四（2026-11-03，**另一个评审会话**，复审 `63241ad`）
+
+**起点**：第十三轮之后的提交。**结论**：第十三轮的 4 个 P1 与大部分 P2 确认真修好；但**假设面的 P0 没真闭合**——从"迁移不可达"变成了"可达但无授权、且顺序自相矛盾"。核实：**属实**。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P0 `assumption_set` 与 `assumption.disposed` 的顺序与授权没定**：先处置 ⇒ 不再是 `open` ⇒ 进不了"覆盖全部 open"的集合 ⇒ `confirmed` 永远不成立；先签 ⇒ `dispositions[]` 要求按事件渲染，事件还没发生。且 `rejected`/`converted` 只要求"有后继"、不要求人签——模型可以自己拒绝一条假设，从此它不再 `open`、永不进入人签集合 | **改成「先签后处置」**：`assumption_set` 是**唯一授权**，`assumption.disposed` 只是它的**投影**——事件必须带 `decision_id`（指向覆盖该条的集合签字）、`disposition` 与载荷一致，否则**一律拒**。签名载荷里 `spec_ids[]` = **这一批被审的假设**（preview 时的 `open` 集合）、`dispositions[]` = **人选的结果**（不是事件回填）；`assumption_set.signed` 的完整性改成「**没有未授权的 `open`**」；失效回 `open` 必须重签一批。**probe #15 重写**：无签字处置被拒、载荷与事件不一致被拒、仍在 `open` 拦派发 | `docs/02/03/04/06`、`design/03` P12、probe `run.py` #15 |
+| P2 `Release` 矩阵仍缺「`baseline_hash` 非空」 | 矩阵行改成「**非空**，且与每条发布证据的 baseline 相同」 | `design/02` §5 |
+| P2 README / 检查器说明停在上一版（"十二轮"、"假设未进 probe"、R28 说排除 §16.1） | README 改十四轮、指针 §15、未覆盖项改成「运行时/抽样；假设规则已进 probe #15 但实现未写」；`check.py` 的 R28 说明改成"§17.1 执行点表与正文核对" | `design/README`、`design/check.py` |
+| P2 假设状态图多了一条 `rejected -> converted` 边，`docs/03` 没有这条迁移 | 删掉这条边（拒绝的后继是 `spec.revised`/`change.applied`，不是"转成假设"）；图与 docs 的迁移集合保持一一对应 | `design/diagrams/build.py`、`docs/03` |
+
+## 15. 评审十五（2026-11-05，**另一个评审会话**，续评工作树）
+
+**起点**：第十四轮的未提交改动。**结论**：先签后处置的主体修对了，但 **core 判据的 freshness 没实现**，且同一处留了一条方向相反的旧注释。**2 个 P1 + 4 个 P2**，核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1 `assumption_set.signed` 会放行旧签字**：判据写"没有 open 落在有效签字之外"——`invalidated` 回 `open` 后，该假设仍在旧 `decision` 的 `spec_ids[]` 里 ⇒ 判 PASS；而 `assumption.disposed` 只查 `task.inputs[]`、且是**非 core**（lite 可不绑），所以 core 兜底漏了 | 谓词改成三条**同时**成立：①**没有任何 `open` 假设**（回 `open` 即红，旧签字不算覆盖）；②每条非 `open` 的状态都由**带有效 `decision_id`** 的 `assumption.disposed` 投影；③存在有效集合签字（空集也要签）。**probe #15 补 freshness**：签→处置→invalidate ⇒ 断言 `set_signed=false`；重签→处置 ⇒ `true` | `docs/04`、`probe/run.py` #15 |
+| **P1 `docs/06` 的 payload 注释仍是"事件先于签字"** | 注释改成「按 preview 时的人选结果渲染；签后事件由这份载荷投影」 | `docs/06` §5 |
+| P2 `content_hash` 没写明覆盖 `spec_ids[]` / `dispositions[]` | 覆盖说明补上：集合签字签的是「哪些对象、每条怎么处置」，漏在 hash 外等于签了一个看不见的集合 | `docs/06` §5 |
+| P2 `decision.revoked` 对假设处置没有级联 | 补规则：撤销 `assumption_set` ⇒ 它投影的 `disposed` 失效、覆盖的假设回 `open`，必须重签；`spec_set`/`baseline` 同理 | `docs/06` §5、probe #15 的撤销用例 |
+| P2 `assumption.invalidated` 的检测没算法 | 补 **fold 规则**：`inputs[]` 记 `{kind,id,hash}`，每次 条款修订与变更事件 后比对，任一 hash 变 ⇒ 落一条 `invalidated`；以 `(spec_id,input_id,旧hash)` 幂等，回 `open` 后按新 hash 重建边 | `docs/03` |
+| P2 矩阵还是旧口径（"覆盖全部 open"） | 改成「签字批覆盖 **preview 时**的 open；gate 判据要求全部已处置、无 open」 | `design/02` §5 |
+
+## 16. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
@@ -213,7 +237,7 @@
   3. "必须评审"目前按风险/kind 判定，**抽样强制**（每 N 张卡必抽 1 张）尚未落地——作者仍可只送稳的卡。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
 
-### 14.1 结构与 OOM 覆盖自查（作者自查，非评审）
+### 16.1 结构与 OOM 覆盖自查（作者自查，非评审）
 
 按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
 

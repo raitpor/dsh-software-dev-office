@@ -4,7 +4,6 @@ hide empty description
 open --> confirmed : assumption.disposed(confirmed) + 进 assumption_set
 open --> rejected : assumption.disposed(rejected, successor_ref)
 open --> converted : assumption.disposed(converted, successor_ref=新条款)
-rejected --> converted : 后继条款落地后补记
 confirmed --> open : assumption.invalidated（依赖变了）
 rejected --> open : assumption.invalidated
 converted --> open : assumption.invalidated

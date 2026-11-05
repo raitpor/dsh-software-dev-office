@@ -372,47 +372,91 @@ def probe_goal_root() -> None:
 
 
 def probe_assumption_transitions() -> None:
-    """假设状态机：确认 / 拒绝（带后继）/ 未处置，三条投影与判据谓词。
+    """假设状态机：先签后处置、旧签字会过期、撤销会级联。
 
-    这不是实现：只把 docs/03 的迁移规则照抄成函数，验证**规则本身闭合**
-    （rejected/converted 可达、open 会拦住派发）。
+    照抄 docs/03 + docs/04 + docs/06 的规则，验证四件事：
+    ①没有集合签字的处置必须被拒；②载荷与事件不一致必须被拒；
+    ③`invalidated` 回 `open` 后旧签字不再算覆盖（`assumption_set.signed` 变假）；
+    ④撤销集合签字会把覆盖的假设打回 `open`。
     """
-    specs = {}          # spec_id -> dict(clause=..., successor=None)
+    specs = {}        # spec_id -> {status, successor, decision, inputs}
+    batches = {}      # decision_id -> {spec_id: disposition}
+    revoked = set()
 
-    def recorded(sid: str) -> None:
-        specs[sid] = {"status": "open", "successor": None}
+    def recorded(sid: str, inputs: dict[str, str] | None = None) -> None:
+        specs[sid] = {"status": "open", "successor": None, "decision": None,
+                      "inputs": dict(inputs or {})}
 
-    def disposed(sid: str, disposition: str, successor: str | None = None) -> None:
-        rec = specs[sid]
+    def sign_batch(decision: str, dispositions: dict[str, str]) -> None:
+        batches[decision] = dict(dispositions)
+        for sid in dispositions:
+            specs[sid]["decision"] = decision          # 已授权、待投影
+
+    def disposed(sid: str, disposition: str, decision: str | None = None,
+                 successor: str | None = None) -> None:
+        if decision is None or decision not in batches or decision in revoked:
+            raise ValueError("没有覆盖该条的集合签字：处置必须带有效 decision_id")
+        if sid not in batches[decision]:
+            raise ValueError("这条假设不在该批签字里")
+        if batches[decision][sid] != disposition:
+            raise ValueError("事件的 disposition 与签名载荷不一致")
         if disposition in ("rejected", "converted") and not successor:
             raise ValueError("rejected/converted 必须带 successor_ref")
-        rec["status"] = disposition
-        rec["successor"] = successor
+        specs[sid].update(status=disposition, successor=successor, decision=decision)
 
     def invalidated(sid: str) -> None:
-        specs[sid]["status"] = "open"
+        specs[sid].update(status="open", successor=None)
+
+    def revoke(decision: str) -> None:
+        revoked.add(decision)
+        for sid in batches.get(decision, {}):
+            specs[sid].update(status="open", successor=None)
+
+    def set_signed() -> bool:
+        if not batches or all(d in revoked for d in batches):
+            return False
+        if any(v["status"] == "open" for v in specs.values()):
+            return False
+        return all(v["decision"] in batches and v["decision"] not in revoked
+                   for v in specs.values())
 
     def can_dispatch(card_specs: list[str]) -> bool:
         return all(specs[s]["status"] != "open"
                    and not (specs[s]["status"] == "rejected" and not specs[s]["successor"])
                    for s in card_specs)
 
-    recorded("A1"); recorded("A2"); recorded("A3")
-    disposed("A1", "confirmed")                       # 确认：在 assumption_set 里
-    disposed("A2", "rejected", successor="S-9")       # 拒绝 + 后继
-    can_dispatch_ok = can_dispatch(["A1", "A2"])
-    blocked_while_open = not can_dispatch(["A1", "A2", "A3"])
+    recorded("A1", {"S-1": "h1"}); recorded("A2", {"S-1": "h1"})
     try:
-        disposed("A3", "rejected")
-        no_successor_raised = False
+        disposed("A1", "rejected", successor="S-9")
+        unsigned = False
     except ValueError:
-        no_successor_raised = True
-    invalidated("A1")
-    invalidated_blocks = not can_dispatch(["A1", "A2"])
-    ok = can_dispatch_ok and blocked_while_open and no_successor_raised and invalidated_blocks
-    record("PASS" if ok else "FAIL", "15. 假设状态机：三条迁移都可达、open 拦派发",
-           f"confirmed+rejected⇒可派发={can_dispatch_ok}；open⇒拦={blocked_while_open}；"
-           f"rejected 无后继被拒={no_successor_raised}；invalidated 回 open⇒拦={invalidated_blocks}")
+        unsigned = True
+    sign_batch("D1", {"A1": "confirmed", "A2": "rejected"})
+    try:
+        disposed("A1", "rejected", decision="D1", successor="S-9")
+        mismatch = False
+    except ValueError:
+        mismatch = True
+    disposed("A1", "confirmed", decision="D1")
+    disposed("A2", "rejected", decision="D1", successor="S-9")
+    after_sign = set_signed() and can_dispatch(["A1", "A2"])
+    recorded("A3", {"S-2": "h9"})           # 新假设出现 ⇒ 未签 ⇒ 整批失效
+    blocked_open = (not set_signed()) and (not can_dispatch(["A1", "A2", "A3"]))
+    invalidated("A1")                       # 依赖变了 → 回 open，旧签字不算覆盖
+    stale_blocked = (not set_signed()) and (not can_dispatch(["A1", "A2"]))
+    sign_batch("D2", {"A1": "confirmed", "A3": "confirmed"})
+    disposed("A1", "confirmed", decision="D2")
+    disposed("A3", "confirmed", decision="D2")
+    reshipped = set_signed()
+    revoke("D2")                            # 撤销 → 覆盖的假设回 open
+    revoked_cascade = (specs["A1"]["status"] == "open") and (not set_signed())
+    ok = (unsigned and mismatch and after_sign and blocked_open
+          and stale_blocked and reshipped and revoked_cascade)
+    record("PASS" if ok else "FAIL",
+           "15. 假设状态机：先签后处置、旧签字过期、撤销级联",
+           f"无签字被拒={unsigned}；载荷不一致被拒={mismatch}；签后可派发={after_sign}；"
+           f"open 拦派发={blocked_open}；invalidated 后旧签字不算={stale_blocked}；"
+           f"重签后恢复={reshipped}；撤销级联回 open={revoked_cascade}")
 
 
 def probe_event_kind_closure() -> None:
