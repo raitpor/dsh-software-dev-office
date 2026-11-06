@@ -346,7 +346,31 @@
 | P2 `clause_unjudged` 独立前置 | 已注明，无需再改 | `design/03` P4 |
 | P2 台账/提交 | 记第二十五轮、指针 §26；本轮提交 | `design/README`、本文件 |
 
-## 26. 当前状态与未覆盖项
+## 26. 评审二十六（2026-11-06，**评审会话 1**，复审第二十五轮）
+
+**起点**：`cda1b77`。**结论**：P1 全部闭合（不自指、闭包按依赖、准入只查 pre-work、post-work 各自时点）；**无 P0/P1**，剩 2 个 P2 + 台账。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| 保证表把保证 3 写成「强」，而实际是「三类全覆盖 + 最多 10% 抽样」，容易被读成 100% 覆盖 | 保证表下加**口径注**：「强」= 风险/契约/release 三类全覆盖 + 抽样兜底（`sample_every ∈ [2,10]`），**不是 100% 覆盖**；要更密就把 N 调小并写进 baseline | `docs/08` §1 |
+| `clause_unjudged` 的 pre-work 清单只在 P13 闭包表里，P4 读者要翻页才知道 | P4 行内直接列出八条 pre-work 判据（`alignment.examples_present`/`redteam.disposed`/`stage.requirement_complete`/`design.covers_spec`/`design.no_spec_creep`/`design.alternatives_declared`/`intent.restated_consistent`/`node.acceptance_bound`） | `design/03` P4 |
+| 台账 | 记第二十六轮、指针 §27 | `design/README`、本文件 |
+
+## 27. 评审二十七（2026-11-06，**评审会话 1**，复审第二十六轮）
+
+**起点**：第二十六轮的未提交改动。**结论**：**无 P0/P1**，也没有设计语义问题；只剩台账与提交。设计可进 M1。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| 台账：README 写二十六轮，本轮是第二十七次；4 个文件未提交 | 记第二十七轮、指针 §28，随本轮提交 | `design/README`、本文件 |
+
+**评审自己给的验收口径**（值得抄进实现期）：
+- core 三条：`spec_set.signed`/`assumption_set.signed`/`provenance.present` 在**每个适用 stage 出口**有效绑定；
+- 条款级：晚到/改过的 requirement/design 有 **pre-work 读数**，`spec_set` 签字载荷含这些读数；
+- 准入：`clause_unjudged` 只查 pre-work 八条，与其余前置**同时**判；
+- post-work：`task.complete`/`design.code_matches`/`node.integration_listed` 在各自时点判。
+
+## 28. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
@@ -355,7 +379,7 @@
   3. 评审抽样的**规则**已进 `review.required` 与 P14，但**没跑过一轮**（P14 的抽样只在文档里），仍然只能靠实现期验证。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
 
-### 26.1 机制预算读数（`docs/01` §11 要求）
+### 28.1 机制预算读数（`docs/01` §11 要求）
 
 | 项 | 现在 | 本轮新增机制类 |
 |---|---|---|
@@ -368,7 +392,7 @@
 
 **退休候选（`caught=0` 且无人消费）**：暂无。先例是第七轮删掉的 `core_waived_unstated`（"写降级就放行"的分支，从未被走到）——给新机制定退休条件时，照这个做：**只要一个分支永远不可达，就删掉它，而不是留着"看起来在管"。**
 
-### 26.2 结构与 OOM 覆盖自查（作者自查，非评审）
+### 28.2 结构与 OOM 覆盖自查（作者自查，非评审）
 
 按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
 
