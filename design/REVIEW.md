@@ -252,16 +252,67 @@
 | `probe/REPORT` 的结果表同样缺 14/15，且 #15 摘要没提空集与撤销后写入 | 补两行并在边界声明里写清「#15 不测 fold 的真实执行」 | `probe/REPORT` |
 | 第十六轮的 7 个文件未提交 | 随本轮一起提交 | — |
 
-## 18. 当前状态与未覆盖项
+## 18. 评审十八（2026-11-05，**评审会话 1**，整套设计审）
+
+**起点**：`759c3c7`。**结论**：设计质量 A-、产品保证 B+；**2 个 P1** 都不是"缺机制"，而是**检查点只做了一次**；另 7 个 P2。核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1-1 `assumption_set.signed` 检查点不连续**：preset 里只绑在 req/harden/req_design 的出口；req 之后新增的**无卡假设**（`assumption.disposed` 查不到）可以一路 `open` 到交付 | ①**把 `assumption_set.signed` 与 `provenance.present` 绑到每个 stage 出口**（三份 preset 的 9 道 gate 全补）；②P15 的 core 规则从"有一个 gate"改成"**凡 `kinds` 与 `applies_to` 相交的每个 stage 出口都必须有效绑定**"（"只在某一个 stage 绑过"算没查）；③R29 同步按 stage 逐个核；④prototype 的 explore 出口现在要求签字（explore 里可记假设、开工不受阻，**出 explore 前必须签**） | `docs/08` §1.1、`docs/04` §5.2、`design/03` P15、`design/check.py` R29 |
+| **P1-2 评审抽样未落地**：「必须评审」全靠作者可自评的 `risk_flags`/契约/release | policy 加 `review{sample_every, sample_seed}`（进 baseline）；P14 加"抽样命中"分支：按卡 id 与 seed 的稳定 hash 取模，每 N 张必抽 1 张，**低风险也不例外**；结果落 `gaps`；`review.required` 判据加该触发条件 | `docs/08` §1、`docs/04` `review.required`、`design/03` P14、`docs/13` §7、`design/02` §5 |
+| P2 先签后处置的崩溃窗口 | 补恢复规则：**按 `decision_id` 幂等重放** `assumption.disposed`（重复重放不产生第二条） | `docs/06` §5.1 |
+| P2 `na_stages` 示例仍是 `build→deliver`（缺 requirement ⇒ core 无处绑、必被拒冻） | 改成 `req→build→deliver`，并写明"不能连 requirement 也缺" | `docs/04` §4.1 |
+| P2 probe 的"26 张设计表"其实是子集 | `probe/README`/`REPORT` 都改成"**探针子集**（`task`/`release`/`decision`/`baseline` 等未建）" | `probe/README`、`probe/REPORT` |
+| P2 机制预算没有按轮报读数 | 状态节补「机制预算读数」：判据/过程/表/模块/图/规则数 + 本轮新增机制类 = 0 + 退休候选（暂无；先例是第七轮删掉的 `core_waived_unstated`） | 本文件 §19 |
+| P2 M1/M2 没把假设链与抽样写进任务 | M1「做」补假设处置链（disposed 投影、先签后处置、失效 fold、撤销级联）与评审抽样；M2 补撤销级联 | `docs/09` §16 |
+
+## 19. 评审十九（2026-11-05，**评审会话 1**，复审第十八轮）
+
+**起点**：第十八轮的未提交改动。**结论**：抽样（P1-2）真修好；**P1-1 只修了 2/3**——`spec_set.signed` 仍只在 requirement 出口，新增 requirement 可绕过集合签字。核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1 `spec_set.signed` 只在 requirement 出口**：requirement 签过之后 `spec.revised`/change 新增条款，旧 `spec_ids[]` 不覆盖，而 build/deliver 的 gate 里即使写它也会判 `na` ⇒ 新条款可直接实现、交付 | 把 `spec_set.signed` 的 `applies_to` 扩成**全阶段**（"需求集合完整性"本来就是全局不变量），并绑到**每个 stage 出口**；P15 的 core 规则（每个适用 stage 都要有效绑定）与 R29 自动覆盖；R29 在补绑过程中真抓出漏绑 | `docs/04` §4.1/§5.2、`docs/08` §1.1、`design/check.py` R29 |
+| P2 `mandate.revalidated` 在 deliver 缺失 | 补进三份 preset 的交付 gate（waterfall `G_deliver_exit`、prototype `G_deliver_exit`、incremental `G_integrate`） | `docs/08` §1.1 |
+| P2 抽样用 hash 取模 ≠ "每 N 张必抽 1 张" | 改成**按单调卡序号**取模（`(seq - sample_seed) mod sample_every == 0`）：任意连续 N 张恰好 1 张；hash 不参与判定，只用于选起点/打散 | `docs/04` `review.required`、`design/03` P14、`docs/13` §7 |
+| P2 `sample_every` 边界没校验 | P15 加第 ⑪ 条：`sample_every ≥ 2`；显式设 `0` 表示关闭抽样，此时 `guarantee_delta` 必须写保证 3 降级，否则拒冻 | `design/03` P15、`docs/08` §1 注 |
+| P2 `review` 配置没进 baseline 视图 | `baseline` 视图列补 `review{sample_every,sample_seed}` | `docs/05` |
+| P2 崩溃重放没有触发点 | P9 C 组加对账：每条有效 `assumption_set` 的 `dispositions[]` 都必须有对应 `disposed` 事件；缺 ⇒ 按 `decision_id` 幂等重放，重放后仍缺 ⇒ 红 | `design/03` P9 |
+
+## 20. 评审二十（2026-11-06，**评审会话 1**，复审第十九轮）
+
+**起点**：第十九轮的未提交改动。**结论**：P1 修好了，但**修过头**——`spec_set.signed` 被铺到 prototype 的 explore 出口，而 explore 阶段还没有 requirement，按 docs/06「空集不可能」它必然 fail ⇒ **prototype 第一段走不出去**。核实为真。另 3 个 P2。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1 `spec_set.signed` 在 prototype explore 必然 fail**：explore 只有 `implement` kind、还没有 requirement 条款；判据要求"存在覆盖全部 requirement 的 decision"，而 `spec_set` 空集按设计不存在 ⇒ `all_of` 整道门 fail。R29 只查绑定，所以照样绿 | 给判据补 `na` 分支：**本期还没有任何 requirement ⇒ 判 `na`（`reason='no_requirement_yet'`），不是 pass；一旦存在 requirement，就必须被有效集合签字覆盖**。这样 explore 放行、harden 起强制，且不需要引入"空集 spec_set"这个与 docs/06 冲突的东西 | `docs/04` `spec_set.signed`、`docs/06` §5.1 |
+| P2 `sample_every=0` 与 `guarantee_delta` 矛盾：P15 要求"0 ⇒ 保证 3 降级"，但 delta 只按判据绑定推导，必然算出"保持" | **禁止 0**：`sample_every` 必须 `≥ 2`；真不想抽就设一个很大的 N（会写进 baseline、被人看见）。删掉"0=关闭"的分支 | `design/03` P15 ⑪、`docs/08` §1 注 |
+| P2 抽样用的 `seq` 没定义 | `task` 表补 **`seq`**：全局单调递增建卡序号（`task.created` 计数、唯一、不复用），抽样按它取模才能保证"任意连续 N 张恰好 1 张" | `docs/07` task 表、`docs/04` `review.required` |
+| P2 轮次/提交 | 本轮记为第二十轮；提交仍未做（等指令） | `design/README`、本文件 |
+
+## 21. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
   1. **假设状态机的规则已闭合，实现未写**：迁移规则、状态图、`disposition` 载荷、`probe #15`（规则级）都有了；但"代码里真的这么跑"、`assumption_set` 空集签字的落库、失效传播的实际执行，仍未验证；
   2. 运行时未验：`stored` / `sign` / isomorphic-git 并发 / P95 / T0 安装；
-  3. "必须评审"目前按风险/kind 判定，**抽样强制**（每 N 张卡必抽 1 张）尚未落地——作者仍可只送稳的卡。
+  3. 评审抽样的**规则**已进 `review.required` 与 P14，但**没跑过一轮**（P14 的抽样只在文档里），仍然只能靠实现期验证。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
 
-### 18.1 结构与 OOM 覆盖自查（作者自查，非评审）
+### 21.1 机制预算读数（`docs/01` §11 要求）
+
+| 项 | 现在 | 本轮新增机制类 |
+|---|---|---|
+| 判据 | 24 | 0（抽样是 `review.required` 的输入，不新增判据） |
+| 过程 | 15 | 0 |
+| 表 | 26 | 0 |
+| 模块 | 20 | 0 |
+| 图 | 28 | 0 |
+| 机器规则 | 18 类（R0a–R0d + R19–R32） | 0（R29/R30/R31/R32 是检查规则，不是产品机制） |
+
+**退休候选（`caught=0` 且无人消费）**：暂无。先例是第七轮删掉的 `core_waived_unstated`（"写降级就放行"的分支，从未被走到）——给新机制定退休条件时，照这个做：**只要一个分支永远不可达，就删掉它，而不是留着"看起来在管"。**
+
+### 21.2 结构与 OOM 覆盖自查（作者自查，非评审）
 
 按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
 

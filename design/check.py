@@ -543,8 +543,13 @@ def delta_errors(stages, gates):
             if g["policy_mode"] == "all_of" and not g["waivable"] and (applies[c] & sk):
                 eff.add(c)
     for c in CORE:
-        if c not in eff:
-            errs.append(f"core 判据 {c} 没有有效绑定（要 all_of + 不可豁免 + stage 适用）")
+        # 不是"某一个 stage 绑了就行"：凡 kinds 与 applies_to 相交的 stage 出口都必须有效绑定
+        need = [sid for sid, sk in stages.items() if applies.get(c, set()) & sk]
+        for sid in need:
+            if not any(c in g["criteria"] and g["stage"] == sid
+                       and g["policy_mode"] == "all_of" and not g["waivable"]
+                       for g in gates.values()):
+                errs.append(f"core 判据 {c} 在 stage {sid} 出口没有有效绑定（检查点不连续）")
     for c, g in guarantee.items():
         if g in ("1", "2", "3") and c not in eff:
             errs.append(f"保证 {g} 的判据 {c} 没绑定，preset 会冻出降级")
