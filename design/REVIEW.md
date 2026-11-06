@@ -323,7 +323,30 @@
 | P2 `seq` 回填范围只写了 v1 导入 | 明确"存量卡 = v1 导入 **+ 已存在的 v2 库**" | `docs/09` §16.1 |
 | P2 台账 | 记第二十三轮、指针 §24 | `design/README`、本文件 |
 
-## 24. 当前状态与未覆盖项
+## 24. 评审二十四（2026-11-06，**评审会话 1**，复审第二十三轮）
+
+**起点**：`e4a8fc1`。**结论**：上一轮的 P1 修得太窄——**2 个新 P1**：集合签字自指死锁、重判闭包只按 kind。核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1-1 自指死锁**：`spec_set.signed` 的 `applies_to` 是全阶段，于是它也算 requirement 的"适用判据"；签字前它没有读数 ⇒ 渲染载荷时拒签 ⇒ 永远签不出来；`clause_unjudged` 准入同样死锁 | 「适用判据」明确**不含集合签字自身**（`spec_set.signed`/`assumption_set.signed`）——它们的读数就是签字本身，由 `decision` 提供 | `docs/04` `spec_set.signed`、`design/03` P13 |
+| **P1-2 重判闭包只按 kind**：新 requirement 只重跑 requirement 类判据，不会触发 `design.covers_spec`（applies design）⇒ 新需求可以没有设计承接就实现；晚改 intent 不触发复述；晚拆 `goal_node` 不触发验收 | 闭包改成**按依赖**：被改对象 ∪ 沿 `inputs[]` 反向可达的 consumer，闭包内每个对象重跑「把它当输入」的判据。P13 补一张**变更闭包表**（requirement→`design.covers_spec`；design→`design.no_spec_creep`/`design.code_matches`；intent→`restatement`/`intent.restated_consistent`；goal_node→`node.acceptance_bound`/`node.integration_listed`）；`clause_unjudged` 用同一闭包 | `design/03` P13 |
+| P2 `sample_every=20` 只有 5% 抽样，撑不起"强" | 上限**降到 10**（每 10 张至少抽 1 张），并在保证表注明"N 越大覆盖越弱、delta 不反映 N" | `design/03` P15、`docs/08` §1 |
+| P2 `clause_unjudged` 行所有前置列都是 `—`，易读成"不依赖其他前置" | 行内注明"**独立前置，与其余列同时判**" | `design/03` P4 |
+| P2 台账 | 记第二十四轮、指针 §25 | `design/README`、本文件 |
+
+## 25. 评审二十五（2026-11-06，**评审会话 1**，复审第二十四轮）
+
+**起点**：第二十四轮的未提交改动。**结论**：自指与跨 kind 闭包都修对了，但**闭包用错了时点**——`clause_unjudged` 在准入（开工前）用同一闭包，其中含 `task.complete`/`design.code_matches`/`node.integration_listed`，这些要等工作做完才有读数 ⇒ "先做完才能开工"的死锁。**1 个 P1**，核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1 闭包时点错位**：`clause_unjudged` 在 P4 准入用"同一闭包"，把 post-work 判据也算进开工前检查 | 闭包拆两段：**pre-work**（requirement/design/alignment/redteam/restatement/acceptance，不需要产物）与 **post-work**（`task.complete`/`design.code_matches`/`node.integration_listed`，各自时点判）；**准入只用 pre-work**；`spec_set` 签字载荷只渲染 pre-work 的 requirement 读数（含 `design.covers_spec`） | `design/03` P13 闭包表 + P4、`docs/04` `spec_set.signed` |
+| P2 `sample_every=10` 的 10% 抽样强度 | 已有注明（N 越大越弱、delta 不反映 N），保留；不再改口径 | `docs/08` §1 |
+| P2 `clause_unjudged` 独立前置 | 已注明，无需再改 | `design/03` P4 |
+| P2 台账/提交 | 记第二十五轮、指针 §26；本轮提交 | `design/README`、本文件 |
+
+## 26. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
@@ -332,7 +355,7 @@
   3. 评审抽样的**规则**已进 `review.required` 与 P14，但**没跑过一轮**（P14 的抽样只在文档里），仍然只能靠实现期验证。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
 
-### 24.1 机制预算读数（`docs/01` §11 要求）
+### 26.1 机制预算读数（`docs/01` §11 要求）
 
 | 项 | 现在 | 本轮新增机制类 |
 |---|---|---|
@@ -345,7 +368,7 @@
 
 **退休候选（`caught=0` 且无人消费）**：暂无。先例是第七轮删掉的 `core_waived_unstated`（"写降级就放行"的分支，从未被走到）——给新机制定退休条件时，照这个做：**只要一个分支永远不可达，就删掉它，而不是留着"看起来在管"。**
 
-### 24.2 结构与 OOM 覆盖自查（作者自查，非评审）
+### 26.2 结构与 OOM 覆盖自查（作者自查，非评审）
 
 按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
 
