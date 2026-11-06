@@ -75,6 +75,7 @@ class Snapshot {
 class Decision {
   + id : DecisionId
   + payload : PayloadHash
+  + clauseReadings : list
   + frontier : Frontier
   + sign(signer)
 }

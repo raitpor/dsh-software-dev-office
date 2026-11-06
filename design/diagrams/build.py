@@ -212,6 +212,11 @@ if (判据全绿?) then (否)
   stop
 else (是)
 endif
+if (条款 pre-work 读数齐?) then (否)
+  :拒绝 clause_unjudged ⇒ admission.rejected + 卡 blocked;
+  stop
+else (是)
+endif
 if (主树干净?) then (否)
   :阻塞 dirty_main_tree;
   stop
@@ -528,6 +533,7 @@ class Snapshot {
 class Decision {
   + id : DecisionId
   + payload : PayloadHash
+  + clauseReadings : list
   + frontier : Frontier
   + sign(signer)
 }

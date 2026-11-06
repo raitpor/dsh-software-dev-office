@@ -661,6 +661,23 @@ for path in sorted(glob.glob(os.path.join(DOCS, "*.md"))) + [
                                f"（freshness 会漏，改成 docs/04 §4 的三条）")
 bad.extend(banned_hits)
 
+# ---------- R33 P4 判定表的拒绝码必须出现在 P4 流程图里 ----------
+p4_sec = re.search(r"\n## \d+\. P4[^\n]*\n(.*?)(?=\n## \d+\. )", d03, flags=re.S)
+p4_dot = diagram_sources().get("p4-admission.puml", "")
+if p4_sec and p4_dot:
+    codes = set()
+    for line in p4_sec.group(1).splitlines():
+        if not line.startswith("|"):
+            continue
+        cells = [c.strip() for c in line.strip().strip("|").split("|")]
+        if len(cells) >= 6:
+            # 只取「拒绝/阻塞」后面那个 code，别把正文里提到的其它标识当拒绝码
+            codes |= set(re.findall(r"(?:拒绝|阻塞)[^`|]*`([a-z_.]+)`", cells[-1]))
+    for code in sorted(codes):
+        if code not in p4_dot:
+            bad.append(f"[R33] P4 判定表里的 {code} 没出现在 p4-admission 流程图里"
+                       f"（表与图两张表达，必有一边漏）")
+
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
     for b in bad:
@@ -668,4 +685,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式")
+      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式、P4 表图一致")
