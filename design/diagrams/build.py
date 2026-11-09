@@ -708,7 +708,7 @@ hide empty description
 planned --> ready : 依赖满足
 ready --> in_progress : claim(lease)
 in_progress --> blocked : 上游变更 / 等输入
-blocked --> in_progress : 解除
+blocked --> ready : task.unblocked（清 lease，重新派发）
 in_progress --> done : complete(判据绿)
 done --> in_progress : reopened(reason)
 ready --> dropped

@@ -384,7 +384,43 @@
 | P2 README 还写"配置面" | 改成「设计基线可进入实现；配置面、假设面、条款质量面均已通过」 | `design/README` |
 | P2 台账 27 轮说"无 P1" | 本轮补 §28 更正：27 轮只覆盖配置面，晚到条款链的 P1 由会话 2 查出 | 本文件 |
 
-## 29. 当前状态与未覆盖项
+## 29. 评审二十九（2026-11-09，**评审会话 2**，按"PM 是头号用户"审）
+
+**起点**：`1f868d5`（新增 PM 环路）。**结论**：PM 的方向对（权限 + 环路，不新增角色），但**还不是一等用户**——读集没被授权、动作没被定义。**3 个 P1 + 3 个 P2**，核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1-1 PM 读不到自己环路里的视图**：`review_queue` 要 decider、`gaps` 要 reviewer、`alignment` 视图**根本不存在**（第 ① 步必然 `query_miss`） | ①第 ① 步改读 `alignment` + `pm_queue`（人签字入口不是 PM 的队列）；②**新增 `alignment` 视图**（12 个）；③`gaps` 的 `min_right` 从 reviewer 降到 reader（只读计数与 id，不含秘密），PM 的完成读数才有出处 | `docs/05` §3/§10.1、`docs/15` §2、`docs/02`/`docs/09` 计数 |
+| **P1-2 PM 的动作契约没定义**：`restate`/`unblock`/`rework`/`deliver` 没有权与事件；尤其 `deliver` 要 `decide@release + sign`，PM 不能签 | docs/15 加**PM 动作表**（action → 权 → 事件 → 幂等键）；`docs/07` 矩阵补 `restate`（`plan@domain`）/`unblock`（`assign@scope`）/`rework`（`plan@domain`）；**`deliver` 从 PM 动作里删掉**——PM 只 `request_sign`，签后由 release 流程交付 | `docs/15` §4、`docs/07` §2 |
+| **P1-3 解阻塞没有事件**（补动作表时暴露）：`task.unblocked` 未登记、无生产者 | 登记 `task.unblocked`；P5 补"解阻塞"段（只解环境/依赖类，问题类等人答）；R27 随即要求生产者，已补 | `docs/02` 事件表、`design/03` P5 |
+| P2-1 `pm_queue` 的 `action` 列写大了 PM 的权（"处置假设""修配置再冻""重判"PM 都做不了） | 八行 `action` 全改成 PM 真能做的：**等/改派/解阻塞/补 attention/建返工卡/准备+升级/建评审卡+派发/升级给人**；不能做的写明"升级给人" | `docs/05` §10.1 |
+| P2-2 M1/M2 没有 PM 环路（主用户要等到 M4） | M2 加 **PM 最小环路**（读 `pm_queue`/`alignment` → 建卡 → 预占/派发 → `request_sign`），`plan`/`assign` 权在 M2 先落最小版；M3 注明"多 PM 与独立性在此补齐"；并写明 **M1/M2 的 PM 是人**（或人临时授权的单 agent） | `docs/09` §16.3/§16.4 |
+| P2-3 `docs/15` 自己矛盾：§1 写 `assign` "语义待定"，§8 写"已定" | §1 改成"预占/派发/收回（见 §4）" | `docs/15` §1 |
+
+## 30. 评审三十（2026-11-09，**评审会话 2**，PM 视角复审）
+
+**起点**：PM 读集/动作表那轮的未提交改动。**结论**：读集与动作表基本闭合，但 **`unblock` 这一条动作的边界没定死**——一个事件三种落点、可解 code 没有白名单。**2 个 P1 + 3 个 P2**，核实为真。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1-1 `task.unblocked` 三种落点**：P5 说回 `ready`、状态图说回 `in_progress`、事件表只登记不写 `to` | 定死：**解阻塞一律回 `ready` 并清 lease**（解阻塞 ≠ 恢复授权，必须重新派发）；状态图边改成 `blocked --> ready : task.unblocked`（**第一次只改了产物 `uml-state-task.puml`，被 `build.py` 重建立刻覆盖；复审指出后改成改模板**），docs/03 状态机同步；R21 双向核对随之通过；**新增 R34 核迁移边**（只核状态集合会漏掉这类） | `docs/03` §4、`design/03` P5、`uml-state-task.puml` |
+| **P1-2 `unblock` 的"可解集合"没定义**：`block_code` 无枚举、无白名单，PM 可能把 `awaiting_signature`/`verify_failed` 直接解掉 | docs/03 §4 加**枚举表**（`lease_expired`/`lease_revoked` 可解；`upstream_changed`/`clause_unjudged`/`awaiting_signature`/`verify_failed`/`dirty_main_tree`/`redteam_deferred` 不可解）；P5 只读白名单；`pm_queue` 的 `blocked` 行按 code 过滤；`verify` D 组加"PM 解了不可解 code ⇒ 红" | `docs/03` §4、`design/03` P5 与 verify、`docs/05` |
+| P2-1 `gaps` 从 reviewer 降到 reader 太宽 | 恢复 `gaps` 为 reviewer；新增 **`pm_gaps`**（只读计数，reader）给 PM 做完成读数；视图 12 → 13 | `docs/05` §3、`docs/15` §6 |
+| P2-2 `docs/02` 事件表的粗体写坏（`**` 配对错位） | 去掉嵌套反引号粗体，改成 `**`task.assigned` / … / `task.unblocked`**` | `docs/02` |
+| P2-3 `pm_queue` 有 8 个 reason code 而 `row_budget` 是 7：`baseline_rejected` 永远看不见 | 把 `baseline_rejected` **并进 `waiting_human`**（同为"等人/等权"），code 数正好 7 = 预算 | `docs/05` §10.1 |
+
+## 31. 评审三十一（2026-11-09，**评审会话 2**，PM 视角复审）
+
+**起点**：第三十轮的未提交改动。**结论**：PM 读集/动作表闭合；**1 个 P1**——`task.unblocked` 的状态图仍是旧边（`blocked --> in_progress : 解除`），而 docs/P5/台账都说回 `ready`。核实为真，且是**我上一轮自己造的**：改了产物 `.puml`，却没改 `build.py` 模板，随即被重建立刻覆盖。
+
+| 发现 | 处置 | 落点 |
+|---|---|---|
+| **P1 状态图没改**：三处说回 `ready`、图说回 `in_progress`；R21 只核状态集合，不核迁移边 | 改 **`build.py` 模板**（不是产物）为 `blocked --> ready : task.unblocked（清 lease，重新派发）`，重建；**新增 R34**：docs 迁移串里写的每条 `A → B`（含 `B | C` 多目标）必须在图里有边，已做反例（还原旧边即红） | `design/diagrams/build.py`、`design/check.py` R34 |
+| P2 `pm_queue` 的 `blocked` 行没暴露 `block_code` | 行加 `block_code` 列；`action` 按白名单现算（可解 ⇒ `unblock`，不可解 ⇒ `attention`/`rework`），不让 PM 点了才被 `verify` 拒 | `docs/05` §3/§10.1 |
+| P2 台账说"状态图已改"但没改 | §30 的处置改成如实记录："第一次只改产物、被重建覆盖；复审指出后改成改模板" | 本文件 §30 |
+| P2 R21 只查状态集合 | **R34** 补迁移边核对（见上）；README 规则表加 R34，绿色范围改"二十类" | `design/check.py`、`design/README` |
+
+## 32. 当前状态与未覆盖项
 
 - 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
@@ -393,7 +429,7 @@
   3. 评审抽样的**规则**已进 `review.required` 与 P14，但**没跑过一轮**（P14 的抽样只在文档里），仍然只能靠实现期验证。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
 
-### 29.1 评审作用域（结论只在所述作用域内成立）
+### 32.1 评审作用域（结论只在所述作用域内成立）
 
 这套台账里两个会话的审法不同，**结论必须带作用域**，否则会被读成全局结论：
 
@@ -408,7 +444,7 @@
 - **"无 P1" 只在所述作用域内成立**，台账里不再用它暗示"可收口"；
 - **整套审放在里程碑门上**（进 M1 前、发版前各一次），不是每轮都做——每轮做增量，成本低、回归快。
 
-### 29.2 机制预算读数（`docs/01` §11 要求）
+### 32.2 机制预算读数（`docs/01` §11 要求）
 
 | 项 | 现在 | 本轮新增机制类 |
 |---|---|---|
@@ -421,7 +457,7 @@
 
 **退休候选（`caught=0` 且无人消费）**：暂无。先例是第七轮删掉的 `core_waived_unstated`（"写降级就放行"的分支，从未被走到）——给新机制定退休条件时，照这个做：**只要一个分支永远不可达，就删掉它，而不是留着"看起来在管"。**
 
-### 29.3 结构与 OOM 覆盖自查（作者自查，非评审）
+### 32.3 结构与 OOM 覆盖自查（作者自查，非评审）
 
 按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
 

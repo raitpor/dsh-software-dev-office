@@ -220,7 +220,31 @@ for name, (expected, doc, pattern) in STATE_SOURCES.items():
                     doc_states.add(word.group(1))
             if doc_states != expected:
                 bad.append(f"[R21] {doc} 的状态枚举与 {name} 期望值不一致：{sorted(doc_states)}")
-
+            # R34：迁移串里写了的边，图里必须有（状态集合一致 ≠ 边一致）
+            # 串的写法：`A → B → C` 是连续迁移；一个位置写 `B | C` 表示同一源的多条目标；`…` 跳过
+            chain = m.group(1)
+            if "→" in chain:
+                tokens = [t.strip() for t in chain.split("→")]
+                alts: list[set[str]] = []
+                for t in tokens:
+                    names = set()
+                    for piece in t.split("|"):
+                        mm = re.match(r"[^a-zA-Z_]*([a-z_]+)", piece)
+                        if mm:
+                            names.add(mm.group(1))
+                    alts.append(names)
+                want_edges: set[tuple[str, str]] = set()
+                for a_set, b_set in zip(alts, alts[1:]):
+                    for a in a_set:
+                        for b in b_set:
+                            if a != b:
+                                want_edges.add((a, b))
+                got_edges = set(re.findall(r"^\s*([a-z_]+)\s*-->\s*([a-z_]+)", text, flags=re.M))
+                for a, b in sorted(want_edges - got_edges):
+                    bad.append(f"[R34] {name}.puml 缺迁移边 {a} --> {b}"
+                               f"（docs 迁移串写了、图里没有）")
+            if doc_states != expected:
+                bad.append(f"[R21] {doc} 的状态枚举与 {name} 期望值不一致：{sorted(doc_states)}")
 # ---------- R22 分层依赖白名单 ----------
 if arch:
     layer: dict[str, str] = {}
@@ -685,4 +709,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式、P4 表图一致")
+      "标题编号、状态枚举、迁移边、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式、P4 表图一致")
