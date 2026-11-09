@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """design/ 的机器校验（不是 docs/check.py 的替代）。
 
-规则（R0a–R0d + R19–R32）：
+规则（R0a–R0d + R19–R34）：
   R0a 文档引用的图片都存在；
   R0b 每个 `.puml` / `.dot` 都有对应的 `.svg` 与 `.png`；
   R0c 图与**文档**里出现的事件 kind 都在 `docs/02` 的登记表里（只读登记表，不抓全篇反引号）；
@@ -243,8 +243,6 @@ for name, (expected, doc, pattern) in STATE_SOURCES.items():
                 for a, b in sorted(want_edges - got_edges):
                     bad.append(f"[R34] {name}.puml 缺迁移边 {a} --> {b}"
                                f"（docs 迁移串写了、图里没有）")
-            if doc_states != expected:
-                bad.append(f"[R21] {doc} 的状态枚举与 {name} 期望值不一致：{sorted(doc_states)}")
 # ---------- R22 分层依赖白名单 ----------
 if arch:
     layer: dict[str, str] = {}

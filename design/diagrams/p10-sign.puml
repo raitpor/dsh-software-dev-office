@@ -2,6 +2,15 @@
 start
 :请求签字（模型只说 request_sign）;
 :组成 payload（命题 + 证据 + frontier + content_hash）;
+if (是集合签字?) then (是)
+  :渲染 clause_readings[] / dispositions[] 并算 readings_hash;
+  if (每条都有 pre-work 读数?) then (否)
+    :拒绝 readings_missing ⇒ 写 decision.rejected;
+    stop
+  else (是)
+  endif
+else (否)
+endif
 if (payload/frontier 与 preview 一致?) then (否)
   :拒绝 payload_moved ⇒ 写 decision.rejected;
   stop
