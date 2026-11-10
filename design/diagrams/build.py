@@ -496,6 +496,7 @@ class Task {
   + lease : LeaseRef
   + block : BlockCode
   + inputs : InputRef[]
+  + blockedBy : DependencyRef[]
   + claim(lease)
   + complete(evidence)
   + reopen(reason)
