@@ -9,7 +9,7 @@ CREATE TABLE intent (
   id            TEXT PRIMARY KEY,
   statement     TEXT NOT NULL,
   owner         TEXT NOT NULL,
-  approved_by   TEXT NOT NULL,
+  decision_id   TEXT NOT NULL,   -- 人签的 decision(kind='intent')；approved_by 是它的投影，库里不存第二份
   strength      TEXT NOT NULL CHECK (strength IN ('explicit','inferred')),
   baseline_hash TEXT NOT NULL,
   content_hash  TEXT NOT NULL,
@@ -242,9 +242,14 @@ CREATE TABLE integration (
 CREATE TABLE attention (
   id          TEXT PRIMARY KEY,
   task_id     TEXT NOT NULL,
+  asked_of    TEXT,
   question    TEXT NOT NULL,
   options     TEXT NOT NULL DEFAULT '[]',    -- JSON
+  state       TEXT NOT NULL DEFAULT 'open' CHECK (state IN ('open','answered','withdrawn')),
+  expires_at  TEXT NOT NULL,                 -- 到期是派生读数（expires_at < now），不是存储状态
   answered_by TEXT,
+  withdrawn_by TEXT,
+  supersedes  TEXT REFERENCES attention(id),
   at          TEXT NOT NULL
 );
 
@@ -272,4 +277,41 @@ CREATE TABLE event (
   prev_hash      TEXT NOT NULL,
   hash           TEXT NOT NULL UNIQUE,
   at             TEXT NOT NULL
+);
+
+-- ---------- 部署配置（不进 baseline、不进 hash） ----------
+CREATE TABLE config (
+  key        TEXT PRIMARY KEY,
+  value      INTEGER NOT NULL CHECK (value >= 1),
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
+
+-- ---------- 缺陷（判据红/集成回归的载体） ----------
+CREATE TABLE verify_run (
+  id         TEXT PRIMARY KEY,
+  at         TEXT NOT NULL,
+  actor_kind TEXT NOT NULL CHECK (actor_kind IN ('human','service','agent')),
+  actor      TEXT NOT NULL,
+  groups     TEXT NOT NULL DEFAULT '[]',    -- JSON: A/B/C/D 四组读数
+  result     TEXT NOT NULL CHECK (result IN ('pass','fail')),
+  signed_by  TEXT,                          -- 发布前置那一次必须是人/服务或人签
+  note       TEXT
+);
+
+CREATE TABLE defect (
+  id             TEXT PRIMARY KEY,
+  criterion_id   TEXT,
+  spec_id        TEXT REFERENCES spec(id),
+  task_id        TEXT,
+  kind           TEXT NOT NULL CHECK (kind IN ('criterion','integration','consistency')),
+  severity       TEXT NOT NULL CHECK (severity IN ('low','medium','high')),
+  family         TEXT,
+  status         TEXT NOT NULL DEFAULT 'open' CHECK (status IN ('open','closed')),
+  evidence       TEXT,
+  verify_run_id  TEXT REFERENCES verify_run(id),
+  closed_by      TEXT,                      -- 复验 actor（工具写，不是人签）
+  at             TEXT NOT NULL,
+  -- 关闭必须有复验读数与关闭人；不许手写"已修"
+  CHECK (status = 'open' OR (verify_run_id IS NOT NULL AND closed_by IS NOT NULL))
 );

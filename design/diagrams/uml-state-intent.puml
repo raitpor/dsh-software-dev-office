@@ -2,7 +2,7 @@
 hide empty description
 [*] --> draft
 draft --> proposed : 提交
-proposed --> signed : 人签（approved_by + content_hash）
+proposed --> signed : 人签（decision + content_hash）
 signed --> proposed : statement 变 ⇒ content_hash 变（必须重签）
 signed --> superseded : 被新意图取代
 superseded --> [*]

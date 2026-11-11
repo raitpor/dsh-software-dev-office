@@ -230,7 +230,7 @@ plantuml("p8-release", """
 start
 :确定 in/out 集合;
 :缺口 = 差集（release.gaps_match）;
-if (冻结前置五条全过（见 03 §9）？) then (否)
+if (冻结前置六条全过（见 03 §9）？) then (否)
   :拒绝 freeze_blocked(reason_code);
   stop
 else (是)
@@ -261,6 +261,16 @@ if (产物与证据对得上？) then (否)
   stop
 else (是)
 endif
+if (交付前复查：scope 决定仍 valid、行仍在载荷 spec_ids[] 内？) then (否)
+  :拒绝 scope_invalid（停在 frozen；作废走 decision(kind=rollback) + release.superseded）;
+  stop
+else (是)
+endif
+if (终态前置：status 仍 frozen 且尚无 release.superseded？) then (否)
+  :拒绝 state_conflict（不落 delivered）;
+  stop
+else (是)
+endif
 :写 release.delivered（status='delivered' 的唯一生产者）;
 stop
 """)
@@ -269,8 +279,9 @@ stop
 plantuml("uml-state-release", """
 hide empty description
 [*] --> draft
-draft --> frozen : release.frozen（前置五条 + decision.signed）
+draft --> frozen : release.frozen（前置六条 + decision.signed）
 frozen --> delivered : release.delivered（绑 package_sha256 + snapshot_id）
+frozen --> rolled_back : decision(kind=rollback) + release.superseded（scope 被撤/未交付，sha256 可空）
 delivered --> rolled_back : decision(kind=rollback) + release.superseded
 rolled_back --> [*] : 原记录保留，另开新 release
 delivered --> [*]
@@ -289,7 +300,7 @@ note right of draft : 退休候选是 gaps 行，不是状态
 plantuml("p9-verify", """
 start
 :verify（全量对账）;
-note right: 条目定义在 docs/02 §14（十项）+ docs/14 两条兜底；这里只分组与失败码
+note right: 条目定义在 docs/02 §14（十八项）+ docs/14 两条兜底；这里只分组与失败码
 :A 事件链：hash 链连续、prev 存在、cursor 与事件数一致;
 if (A 全过?) then (否)
   :红：chain_broken;
@@ -304,14 +315,14 @@ if (B 全过?) then (否)
   stop
 else (是)
 endif
-:C 判定：派生列 = 重算值、判据有正例且负例、baseline.hash 一致、签名可验且 signer ≠ producer;
+:C 判定：派生列 = 重算值、判据（active）有 remedy + 正负例、baseline 一致、签名可验且 signer ≠ producer、意图与目标树逐字段对账、发布引用的 verify_run 是人/服务或经人签;
 if (C 全过?) then (否)
   :红：judgement_mismatch;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
 else (是)
 endif
-:D 运行态：busy 卡有未过期 lease 且 actor 一致、库加密状态与 assurance 一致;
+:D 运行态：lease/预占/依赖未经篡改、defect 关闭凭复验、attention 撤回者=提问者、config 折叠对账、release scope 仍 valid 且终态互斥（rolled_back 后无 delivered）、库加密状态与 assurance 一致;
 if (D 全过?) then (否)
   :红：runtime_inconsistent;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
@@ -474,6 +485,7 @@ class Intent {
   + sourceText : string
   + strength : Strength
   + approvedBy : ActorId
+  + decisionId : DecisionId
   + contentHash : ContentHash
   + baseline : BaselineHash
   + approve(by)
@@ -487,7 +499,8 @@ class GoalNode {
   + kind : Kind
   + scope : ScopePaths
   + acceptance : CriterionRef
-  + declare()
+  + decisionId : DecisionId
+  + declare(decision)
   + acceptViaIntegration()
 }
 class Task {
@@ -497,6 +510,7 @@ class Task {
   + block : BlockCode
   + inputs : InputRef[]
   + blockedBy : DependencyRef[]
+  + setDependencies(deps)
   + claim(lease)
   + complete(evidence)
   + reopen(reason)
@@ -659,9 +673,28 @@ class Restatement {
 class Attention {
   + id : AttentionId
   + task : TaskId
+  + askedOf : ActorId
   + question : string
   + options : list
+  + state : State
+  + expiresAt : Timestamp
   + answeredBy : ActorId
+  + withdrawnBy : ActorId
+  + supersedes : AttentionId
+  + withdraw(by)
+}
+class Defect {
+  + id : DefectId
+  + criterion : CriterionId
+  + spec : SpecId
+  + task : TaskId
+  + kind : Kind
+  + severity : Severity
+  + family : Family
+  + status : Status
+  + evidence : EvidenceId
+  + record()
+  + close(verifyRun)
 }
 interface IntentRepository
 interface EventStore {
@@ -687,6 +720,8 @@ Intent "1" ..> "1" GoalNode : 根（跨聚合）
 GoalNode --> GoalNode : 分解
 GoalNode ..> Criterion : 叶验收（跨聚合）
 Task "1" --> "1" WorkUnit
+Task "1" ..> "0..*" Defect : 判据红/集成回归
+Defect ..> Criterion : 单位是判据
 WorkUnit ..> Criterion : 跨聚合
 Criterion "1" --> "1..*" Fixture
 Gate ..> Criterion : 引用（跨聚合）
@@ -756,7 +791,7 @@ plantuml("uml-state-intent", """
 hide empty description
 [*] --> draft
 draft --> proposed : 提交
-proposed --> signed : 人签（approved_by + content_hash）
+proposed --> signed : 人签（decision + content_hash）
 signed --> proposed : statement 变 ⇒ content_hash 变（必须重签）
 signed --> superseded : 被新意图取代
 superseded --> [*]

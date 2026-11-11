@@ -262,7 +262,7 @@
 | **P1-2 评审抽样未落地**：「必须评审」全靠作者可自评的 `risk_flags`/契约/release | policy 加 `review{sample_every, sample_seed}`（进 baseline）；P14 加"抽样命中"分支：按卡 id 与 seed 的稳定 hash 取模，每 N 张必抽 1 张，**低风险也不例外**；结果落 `gaps`；`review.required` 判据加该触发条件 | `docs/08` §1、`docs/04` `review.required`、`design/03` P14、`docs/13` §7、`design/02` §5 |
 | P2 先签后处置的崩溃窗口 | 补恢复规则：**按 `decision_id` 幂等重放** `assumption.disposed`（重复重放不产生第二条） | `docs/06` §5.1 |
 | P2 `na_stages` 示例仍是 `build→deliver`（缺 requirement ⇒ core 无处绑、必被拒冻） | 改成 `req→build→deliver`，并写明"不能连 requirement 也缺" | `docs/04` §4.1 |
-| P2 probe 的"26 张设计表"其实是子集 | `probe/README`/`REPORT` 都改成"**探针子集**（`task`/`release`/`decision`/`baseline` 等未建）" | `probe/README`、`probe/REPORT` |
+| P2 probe 号称的设计表其实是子集 | `probe/README`/`REPORT` 都改成"**探针子集**（`task`/`release`/`decision`/`baseline` 等未建）" | `probe/README`、`probe/REPORT` |
 | P2 机制预算没有按轮报读数 | 状态节补「机制预算读数」：判据/过程/表/模块/图/规则数 + 本轮新增机制类 = 0 + 退休候选（暂无；先例是第七轮删掉的 `core_waived_unstated`） | 本文件 §19 |
 | P2 M1/M2 没把假设链与抽样写进任务 | M1「做」补假设处置链（disposed 投影、先签后处置、失效 fold、撤销级联）与评审抽样；M2 补撤销级联 | `docs/09` §16 |
 
@@ -476,16 +476,151 @@
 | P2 机制预算读数没随本批更新 | 真 | §36.2 更新：本批新增 1 事件、1 动作、4 baseline 字段、5 拒绝码、3 个 pm_queue 列/归属列；**独立机制 0**（都挂在既有 task/dispatch/baseline 上），并给两条退休条件 |
 | 报告中"REVIEW §34 P1-3 前提无法验证" | 成立（该表述只在未提交草稿） | §34 已注明"git 不可审计" |
 
-## 36. 当前状态与未覆盖项
+## 36. 评审三十六（2026-11-11，作者自检，**非独立**）
 
-- 判据 **24 条**、过程 **15 个**、图 **28 张**、表 **26 张**、模块 **20 个**；G1–G5 全 A；探针 **21 PASS / 0 GAP**。
+用户批准六项机制变更（A-2 / A-4 / D-2 / D-3 / D-9 / D-10）后逐项落地。**本节是作者自检，不是独立评审**；独立性由上述非作者轮次提供。
+
+| 变更 | 落地 | 自检 |
+|---|---|---|
+| A-2 意图进签名链 | `decision_kind` 增 `intent`；`intent` 增 `decision_id`（`approved_by` 降为投影）；P10 单对象 payload；`verify` 增“intent 的 decision 有效且 signer=approved_by” | 检查器无对应项，已写进 `docs/02` §14 与 P9（手工核对） |
+| A-4 树由人签的 plan 长 | `decision_kind` 增 `plan`；`goal_node.decision_id`；PM 动作 `declare`/`split` → `propose_plan`；矩阵守卫改 `GoalNode.declare` | 同上，`verify` 增“节点在 `node_ids[]` 内” |
+| D-2 grant 延后 M4 | `docs/07` §5 顶部启用时点声明；`docs/05`/`docs/11`/`docs/09` 标注 M1–M3 无 delegated；`docs/14` G6 | 机械项：R27 不查 delegated（过程外未登记），无新增检查需求 |
+| D-3 limits 移出 baseline | `docs/08` 删 `policy.limits`；`docs/04`/`docs/05`/`design/03` 去字段；P15 ⑫ 改为部署配置；`docs/12` §6.1 | `config.changed` 进 `docs/02` 事件表（运维域），R12/R27 绿 |
+| D-9 缺口 = requirement 差集 | `docs/09` §5 定义、`release.gaps_match`、视图与验收读数 | 纯口径变更，无新载体 |
+| D-10 M1 收窄 | `docs/09` §16.2 只留六表+对齐+判据框架+core；假设处置链/抽样/晚到条款链移 M2 | 与 §16.3 的 `assumption_set` 撤销级联一致 |
+
+**顺带补的缺口**（按“缺口直接补”）：`defect` 表 + `defect.recorded/closed`（A-3）；`attention` 的 `expires_at`/`state` + 到期读数（`expires_at` 派生，不是事件）与撤回事件（A-16，防僵尸问题占满 16 条配额）；`docs/03` 辅助表 18→19。
+
+## 37. 评审三十七（2026-11-11，**teammate 独立评审**，审未提交工作树）
+
+> 作用域：**增量 + 两个视角**（写得对不对 / 机制合不合理），对象是六项机制变更（A-2/A-4/D-2/D-3/D-9/D-10）与两个补缺（A-3 defect、A-16 attention）的未提交改动。结论原话是"**不可提交**"。
+
+审出的模式很一致：**字段、事件、句子都加了，载体/动作/权限/拒绝码/校验点没接上**——正是本项目历史上反复出现的"文档加了、机制没接住"。逐条处置：
+
+| # | 发现 | 处置 |
+|---|---|---|
+| P0-1 | D-3 把 `limits` 移出 baseline，却全库无 `config` 表/写入动作/权限/拒绝码；P15 ⑫ 还保留"配置不合法 ⇒ 拒绝冻结" | 补最小闭环：`config` 表 + `config` 动作（`admin@domain`）+ `config_invalid`/`config_missing` + 写入时校验 + `config.changed` 折叠读数（第 38 轮补：`design/03` P5/P6 的四个读点 + `docs/02` §14 对账行，否则只有"写"没有"用"）；**P15 删 ⑫**，配置非法只拒写入/拒启动，不产出 `baseline.rejected`；`design/01` 去 limits |
+| P0-2 | intent/plan 不在 `docs/06` 必须签表与 payload schema；verify 只查 membership；`goal.reparented` 走默认变更可绕过；`goal.declared` 无过程落点；`intent.signed` 双真源 | §4 加"分解树（plan）"必须签；§5 加 `intent{source_text,strength,content_hash}` 与 `plan{node_ids[],tree[],tree_hash}`；content_hash 覆盖单对象载荷；verify 逐字段比对；P10 成功分支同事务写 `intent.signed`/`goal.declared`/`goal.reparented`（幂等键 `(decision_id,node_id)`）；`intent.signed` 声明为 `decision.signed` 的投影、查 1:1；P13 明确改挂不走默认变更 |
+| P0-3 | `gaps_match` 的 requirement 差集无范围、无 requirement 级条目 | release 加 `scope_spec_set`（冻结时引用的有效 `spec_set`）；`release_item` 加 `kind='requirement'` 与 `requirement_id`；§5 定义全集与两边现算 |
+| P1-1 | M1 要冻结 baseline，但签字链在 M2 ⇒ M1 判死读数不可达 | M1 只留 P15 **静态**校验（对文件、不落冻结）+ 离线 `sdo_check`；冻结与门禁移到 M2，判死读数同步改 |
+| P1-2 | defect 只有表/事件，无生产者/权限/关闭载体；"修复者签 `defect.closed`"违反"签字只签 decision" | `defect.closed` 由**工具**在复验 `verify_run` 通过后写；P8 集成回归落 `defect.recorded(kind=integration)`；`docs/07` 加记/关缺陷动作；OOM 加 `Defect` 类 + 矩阵两行 |
+| P1-3 | attention 的到期读数由"投影侧清理"凭空写事件 | `expired` 改为 `expires_at` 的**派生读数**，不是状态、不是事件；只保留 `withdrawn`（提问者、`escalate@scope`）；`design/02` 同步 |
+| P1-4 | `verify_run` 是发布证据唯一信任锚却无 DDL；元组 `at` 重复 | `docs/02` §5 补 DDL（去重）、唯一写入路径、`actor_kind` 由凭据决定、发布只认 human/service 或人签 |
+| P1-5 | OOM 没接住本批字段：`Intent`/`GoalNode` 无 `decisionId`、`Attention` 无状态列、全图无 `Defect` | `build.py` 模板补齐并重建；矩阵补守卫行 |
+| P2 | 计数（"十二项"实际 14、"十条"实际 12）、`design/01` 残留 limits、旧 `approved_by` 口径、`docs/00` §10 坏锚点、机制预算仍写 4 个 baseline 字段、README 把非独立自检当证据 | 逐条改；probe 同步（`intent` 的 `decision_id`、`config`/`defect`/`verify_run` 三表、`#16` 四个子项，21→25 PASS） |
+
+**这轮补的机器检查**：`R25` 现在要求矩阵守卫点精确指向类图里的类与方法（`Defect.record`/`Defect.close`/`Attention.withdraw` 都被它逼着落地）；`R27` 把 `config.changed` 登记为 `handlers` 的过程外事件（它没有 P 号，属于写网关）；`R23` 的表数改由 探针 DDL 现算（29）。
+
+## 38. 评审三十八（2026-11-11，**teammate 独立评审**，复评第 37 轮处置）
+
+> 作用域：增量续审 + 六个重点（config 消费方、plan 树唯一入口、scope 撤销、M1 依赖方向、`#16` 覆盖、台账真实性）。结论原话仍是“**不可提交**”。已确认接上：A-2、A-4、D-2、P1-3、P1-4、P1-5 与多数 P2。
+
+第 38 轮指出的问题与处置：
+
+| # | 发现 | 核实 | 处置 |
+|---|---|---|---|
+| P0 | `config` 只有“表 + 动作 + 事件”，没有消费方：`design/03` 0 处、`docs/05` 0 处、`docs/02` §14 无行，执行点只活在 `docs/12` 散文里 | 真 | `design/03` P5 加 `max_members`（候选前）与 `cleanup_timeout_s`（revoke/回收）、P6 加 `max_pending_attention`（提问前）与 `max_payload_bytes`（追加前），读不到键一律 `config_missing` 失败关闭；`docs/02` §14 加“`config` 表 = `config.changed` 逐键折叠 + 四键存在”对账行；`docs/05` 的“16 条”改为默认值（从 `config` 读）；`design/03` 写出“上限的消费者清单”，缺一即视为没接住 |
+| P1 | 矩阵审计列写 `verify C`/`verify D`，但 §14 与 P9 的 C/D 组都没有 defect 关闭、attention 撤回的检查；`docs/03` 的 defect 表缺 `verify_run_id`/`closed_by` | 真 | defect 表补两列并写明“关闭凭复验、由工具写”；§14 加 defect 关闭、attention 撤回两行；P9 D 组同步；`design/03` 的“范围 = 十四项”改“十七项”（§14 现 17 项） |
+| P1 | M1 的 `sdo_check` 仍要 baseline：`docs/04` 规定“没有 baseline 的判定无效”，M1 没有 baseline 行 ⇒ 产出的 `gate.judged` 全无效 | 真 | M1 的 `sdo_check` 明确为**只读预览、不落 `gate.judged`**；`docs/04` §5.2 规则 1 与 `docs/05` 工具表同步；M1 判死读数加第 7 条“跑完 `sdo_check` 后 `gate.judged` 行数为 0” |
+| P1 | release 的 `scope_spec_set` 被撤销后无规则；`requirement_id` 的“必填”只在注释里 | 真 | `docs/09` §13 加不变式 7（scope 决定必须仍 `valid`；被撤 ⇒ 缺口失效、不能交付；**第 39 轮改**：不原地回 `draft`，冻结行不可变，只能 `release.superseded` 重做）；`release_item` 加 `CHECK (kind='requirement' OR requirement_id IS NOT NULL)`，并在冻结写入路径强制（缺 ⇒ `invalid_field`） |
+| P2 | `docs/06` 可见 `status` 含 pending/awaiting_unlock，但 `decision` 行只有三态 | 真 | 拆成“decision 行三态 + 请求态（pending/awaiting_unlock）”；人签前库里没有半成品 decision |
+| P2 | `docs/03` 仍写 `goal_node` “只由需求/设计阶段显式声明” | 真 | 改“只能由人签的 plan 落树（PM 只能 `propose_plan`）” |
+| P2 | goal_node 对账只有单向（漏“载荷节点被静默删”） | 真 | §14 与 P9 C 组都改成**双向**：树→载荷逐字段相等，且每条有效 plan 载荷的 `node_ids[]` 必须仍在树里 |
+| P2 | 台账夸大：§37 的“消费者”只是自述、README 写“逐条处置完毕” | 真 | §37 该行改为“+ 第 38 轮补的四个读点与 §14 对账行”；README 改为“已按轮处置，第 38 轮仍判不可提交” |
+| P2 | `#16` 只测 SQLite CHECK | 真（§39 已自认） | 不把它当机制证据；README/REPORT 维持“只到 DDL 约束” |
+
+**这轮的结论**：第 37 轮的病根是“加字段不加消费方”，第 38 轮把它逐点补成了“写入校验 + 读取点 + §14 对账”三件套；但**运行时仍未验证**，所以即便下一轮判“可提交”，提交的也只是**设计稿**，不是“机制已被证明会跑”。
+
+## 39. 评审三十九（2026-11-11，**teammate 独立评审**，复评第 38 轮处置）
+
+> 作用域：增量续审 + 九条处置核对。结论仍“**不可提交**”：4 组 P1 未闭合，其中两条是“台账声称已改、工作树没改”。这几条是本项目的老毛病在第 38 轮修复里复发：**改了文档、忘了真源表；写了规则、忘了执行点**。
+
+| # | 发现 | 核实 | 处置 |
+|---|---|---|---|
+| P1 | `docs/03` 的 defect 表仍无 `verify_run_id`/`closed_by`，而 §14 与矩阵已把 verify 绑到这两列；§38 却称“已补两列” | 真（上一轮替换串没匹配上，静默失败） | defect 表补两列（关闭由 `defect.closed` 投影、工具写）；probe 的 `defect` 补 `closed_by` 并收紧 CHECK（`open` 或 复验+关闭人）；`#16b` 同步 |
+| P1 | release 的 scope 规则只在 `docs/09` 散文里：P8 没有 `scope_spec_set`/`requirement_id` 校验，§14 与 P9 无 release scope 对账；“回 draft”与不变式 1（冻结行不可变）冲突 | 真 | P8 前置加第⑥条（scope decision `valid`、逐行 `requirement_id`、必须在 `spec_ids[]` 内，违者 `scope_invalid`/`invalid_field`）；§14 加 release scope 对账行（18 项）；不变式 7 改为“冻结行不变、不能交付、`verify` 记 `runtime_inconsistent` + 落 `defect.recorded(kind=consistency, criterion_id='release.gaps_match')`，只能 `release.superseded` 重做” |
+| P1 | config 读点与 `docs/12` 三处行为矛盾（park vs 拒绝、cleanup 阻塞 vs 不阻塞、`attention_overflow` vs `config_invalid`），键名三处不一致（`limits.*` vs 裸键），初始化与折叠对账自举失败 | 真 | 读点统一按 `docs/12`：成员满先 park 最久 idle、全 busy 才拒；清理超时标 `stale` 进 `gaps` 不阻塞；提问超限用 `attention_overflow`；键名统一 `limits.*`；§14 写明“含迁移初始化事件”；P6 写明初始化走 boot 路径、不受 payload 上限约束 |
+| P1 | attention 撤回对账绑错对象：§14 用 `asked_of`（被问的人），而真源表没有“提问者”列 | 真 | attention 表加 `raised_by`；§14 与 P9 都改成 `withdrawn_by = raised_by`，删掉“或提问者本人”这种无载体的说法 |
+| P2 | P9 口径“十七项”仍不实（C/D 组有 §14 外检查） | 真 | 改为“十八项 + 本节补充项” |
+| P2 | `design/03` §17 说 config 由 handlers 承接，但 handlers 的 append 白名单不含 config | 真 | 写明“config 写入是 handlers 的独立动作，不在 append 白名单；读取点在 P6” |
+| P2 | 待签请求无载体：队列只物化已落库 decision | 真（有意） | 在 `docs/05` 待审队列契约里明说“待签在会话态 preview，不入库、不进队列”，不给半签行造真源 |
+| P2 | release scope 撤销落 `defect.recorded(kind=consistency)` 但没 `criterion_id` | 真 | 指定 `criterion_id='release.gaps_match'` |
+| P2 | `scope_invalid` 未进拒绝码表 | 真 | 补进 `docs/02` §11 与 `design/01` §7（与 `attention_overflow`/`payload_too_large` 一起） |
+| P2 | `design/README` 头行仍写“可进入实现”，与 §38 结论矛盾 | 真 | 改为“仍在评审环里，reviewer 明确‘可以提交’之前不声称可进入实现” |
+
+**这轮的教训（写进流程）**：sed/replace 的静默失败会让“台账说改了、工作树没改”；以后每轮处置完，先对**真源表**与**执行点**各 grep 一次再写台账。
+
+## 40. 评审四十（2026-11-11，**teammate 独立评审**，复评第 39 轮处置）
+
+> 作用域：增量续审 + 五组处置核对。结论仍“**不可提交**”，但已无 P0；只剩一条 P1（不变式 7 的执行点）与五条 P2。这轮的特征是：**文本载体已经在了，执行点还差一步**——上一轮说“范围被撤不能交付”，却没写哪一行代码/哪一步过程去拦。
+
+| # | 发现 | 核实 | 处置 |
+|---|---|---|---|
+| P1 | 不变式 7 的三个执行点不存在：P8 交付路径不复查 scope、P9 的 A–D 组没有 release scope 项、`grep scope_spec_set design/03` 只命中冻结前置⑥ | 真 | ①`design/03` P8 加**步骤 10「交付前复查范围仍有效」**（decision 仍 `valid`、`requirement_id` 仍在载荷内，否则 `scope_invalid`、不落 `release.delivered`），原步骤 10 顺延为 11；②P9 **D 组**加“`frozen`/`delivered` 的 release 其 `scope_spec_set` 仍 `valid` 且行在载荷内”；③P9 **C 组**加“发布引用的 `verify_run` 必须 human/service 或经人签” |
+| P2 | 矩阵审计列指空：`Defect.close` 写 `verify C` 实际在 D 组；`发布引用的 verify_run` 写 `verify C 组` 而 A–D 一处都没有 | 真 | `Defect.close` 改 `verify D`；`verify_run` 信任检查**补进 C 组**（现在审计列有落点，不再靠改名糊过去）；§14 的 18 项因此都能在 A–D 找到落点（**口径**：夹具那项只复核 active 子集，见 §41） |
+| P2 | config 初始化只写“迁移写四个缺省值”，§14 却要求“含四个初始化事件”；`config.changed` 需 admin 而迁移没有身份 | 真 | `docs/12` 明说迁移写四条 `config.changed`（`actor='migration'`、`before=NULL`）；迁移 actor **免 admin 校验、免 payload 上限**（只此一个例外，否则新库自举死锁）；P6 同步 |
+| P2 | 执行点措辞两处不一致（`dispatch` 前 vs 候选集前）；池满拒绝复用 `config_invalid`（语义是写入值非法） | 真 | `docs/12` 统一为“进入候选集之前”；池满改用独立码 **`member_capacity`**，登记进 `docs/02` §11 与 `design/01` §7 的拒绝码清单 |
+| P2 | release §12 七条判据没有 scope 有效性，`gaps_match` 在 scope 被撤后仍可算绿；不变式 7 的“缺口读数失效”无可观测判据 | 真 | **不新增第 8 条判据**（避免计数与落点成倍扩散）：把 scope 有效性**并入 `release.evidence_valid`**（“证据在 frontier 内有效，且 scope 决定仍 `valid`”）；不变式 7 落的缺陷 `criterion_id` 从 `release.gaps_match` 改 `release.evidence_valid`——红的是它，`gaps_match` 的差集公式本身不红 |
+| P2 | `defect.criterion_id` 能指向 `release.*` 但没有语义，`family` 会把两类判据混族 | 真 | `docs/03` 的 `defect` 行写明：`criterion_id` 可指阶段判据，也可指内置 `release.*`/`security.*`（内置不进 24 条注册表）；`kind ≠ criterion` 只记归属；`family` 聚合时**内置判据单独成族** |
+
+**这轮的教训（写进下一轮的自检）**：写完“某时点必须成立”的规则，立刻回 `design/03` 找**那个时点的过程步骤与 verify 分组**；找不到就等于没写。`make all` 与 `grep` 都不认识“应该存在”的东西——R27 只查事件有没有生产者，不查不变量有没有执行点。
+
+## 41. 评审四十一（2026-11-11，**teammate 独立评审**，复评第 40 轮处置）
+
+> 作用域：增量续审 + 六条处置核对。结论仍“**不可提交**”，无 P0；2 个 P1 + 4 个 P2。这轮的特征是：**上一轮补的“检测侧”对了，“处置侧”还是死胡同**——说“不能交付”，却没说“这版怎么收尾”。
+
+| # | 发现 | 核实 | 处置 |
+|---|---|---|---|
+| P1 | `frozen` release 因 scope 被撤而不能交付后**没有可执行的补救路径**：`release.superseded` 只有 rollback 一个生产者，而 rollback 的语义与状态图都是 `delivered` 态（绑产物 sha256），`frozen` 没有出边 | 真 | 不新增 `decision_kind`：**同一个 `decision(kind=rollback)` 可以作用于未交付的冻结版**——载荷 `artifact_sha256` 留空、`release.superseded` 绑新 release id、本版进 `rolled_back`；状态图加 `frozen --> rolled_back`（第 42 轮补正：当初声称“`design/03` P8 步骤 10 也写了”，实际只有图模板写了，正文漏了——本轮已按正文补齐） |
+| P1 | `config` 初始化豁免只写在 `docs/12` 散文：真源 `docs/02` 的 `config.changed` 仍写“需 admin”，`docs/07` 权限表没有 migration/boot actor | 真 | `docs/02` 运维行补 boot 例外（`actor='migration'`、`before=null`、免 admin 与 payload 上限）；`docs/07` 加“初始化部署配置”一行，写明 boot 系统 actor 是**唯一**豁免处，且照样落 `config.changed`、可由 §14 对账 |
+| P2 | 三张图源没跟上第 40 轮文本：`p8-release` 与 `uml-state-release` 仍写“前置五条”，`p9-verify` 注“§14（十项）”且 C/D 组示意行缺新检查；R19 只重建不查语义 | 真 | 改 `build.py` 模板：五条→六条、十项→十八项、p8 加“交付前复查 scope”分支、release 状态图加 frozen 出边、p9 的 C/D 组示意行补齐新检查；重建 png/svg |
+| P2 | 矩阵没有不变式 7 的守卫行（M-03 要求一条不变量一个守卫点） | 真 | 矩阵加一行：“`frozen`/`delivered` 的 release 其 scope 决定仍 `valid`、行仍在载荷内”，守卫点 `Release.freeze`（前置⑥ + 交付步 10），审计列 `verify D` |
+| P2 | `design/01` §7 逐过程拒绝表没同步新码：P5 派发缺 `member_capacity`/`config_missing`，P8 交付缺 `scope_invalid`/`release.evidence_valid`/`release.deprecation_window`，全表无 P6 行 | 真 | P5 派发行补两码；新增 P6 行（`attention_overflow`/`payload_too_large`/`config_invalid`/`config_missing`/`no_permission`）；P8 行改“交付（冻结与交付）”并补齐九码 |
+| P2 | “§14 十八项全部被 A–D 覆盖”措辞略宽：第 5 项是“所有 criterion 有正负例”，C 组只复核 active 子集 | 真 | `design/03` P9 加“覆盖口径”说明：夹具那项只查 active；未激活与 `na` 的约束在 P1 注册与有效绑定里；不得读成“每项都是全量检查” |
+
+**这轮的教训**：写“某状态不能做 X”时，必须再写“那它能做什么”——否则就是造死胡同。检测点（不能交付）与处置点（怎么收尾）要成对出现，和“事件要有生产者”是同一条纪律。
+
+## 42. 评审四十二（2026-11-11，**teammate 独立评审**，复评第 41 轮处置）
+
+> 作用域：增量续审 + 六条处置核对。结论：**可以提交**。无 P0、无 P1；5 条 P2 属载体与措辞（不阻塞提交）。这是本项目第一次拿到“可提交”的独立结论，依据是：第 41 轮的两条 P1 确实落下去了、`make all` 绿、三张图源与真源四处一致、矩阵与逐过程表同步。
+
+| # | P2 发现 | 核实 | 处置（提交前一并做掉） |
+|---|---|---|---|
+| P2-1 | 台账称“三处同步”，但 `design/03` P8 步骤 10 正文没写回滚路径，只有图模板写了 | 真 | 步骤 10 正文补“收尾 = `decision(kind=rollback)` + `release.superseded` 换新 release”；§41 那格改成“第 42 轮补正：声称三处、实际只写了图模板，本轮补正文”——**不掩盖，只留痕** |
+| P2-2 | rollback / `release.superseded` 的签字与载荷载体不完整：必须签表无“回滚”行、payload 无专有字段、`docs/02` 只写“见 09” | 真 | `docs/06` §4 加“回滚 / 作废冻结版”必须签行；§5 加 `rollback{release_id, frontier, artifact_sha256|null, successor_release_id}`（successor 由工具生成，同一次写入建 draft 行）；`docs/02` 的事件行写死载荷字段 |
+| P2-3 | “既 rolled_back 又能 delivered”没有真源守卫：`release` 的 `status` 没有折叠优先级/终态互斥规则，§14 与 P9 D 组都没查 | 真 | `docs/02` §14 加第 19 项（状态 = 事件序列折叠、终态互斥、违反 ⇒ 红）；`docs/09` 加不变式 8；P8 加**步骤 11 终态前置**（拒 `state_conflict`）；P9 D 组同步；`design/03` 计数 18→19 |
+| P2-4 | `docs/09` §7 两句并列有歧义（先读“必须绑产物”，下一句才说未交付可空） | 真 | §7 首句改为“已交付版必填、未交付 frozen 版为 null，见下”，下一句只留处置细节 |
+| P2-5 | `design/01` §7 逐过程表行序非 P 号（P4 在 P5 后、P6/P8 在 P10 后） | 真 | 按 P4 / P5 依赖 / P5 派发 / P6 / P8 / P10 重排；P8 行补 `state_conflict` |
+
+**提交前的最后一条自检**（写进纪律）：改完 P2 还要再送一次确认——因为“可提交”是针对**评审看到的那棵树**说的，之后任何改动都让结论过期。所以第 42 轮的“可提交”在补正后需要第 43 轮复认，通过才提交。
+
+## 43. 评审四十三（2026-11-11，**teammate 独立评审**，复认第 42 轮补正）
+
+> 作用域：增量复认（第 42 轮判“可提交”之后又改了 5 条 P2，结论因此过期）。结论：**不可提交**——补正本身没写错，但 P2-2 把 rollback 变成“冻结版唯一出口”后，暴露出两个新 P1：**这条出口没有授权人**，而且**它要求建的 successor draft 行按现有 DDL 根本建不出来**。上一轮的死胡同没有打开，只是换了失败点。
+
+| # | 发现 | 核实 | 处置 |
+|---|---|---|---|
+| P1-1 | `rollback` 必须签、又是唯一出口，但 `docs/07` §2 动作矩阵没有这一行（查不到谁发起、谁签、独立性怎么算）；`design/03` §17 的过程外动作清单也不含它 | 真 | `docs/07` 加“**回滚 / 作废冻结版**”行：`decide@release` + `sign`，不能自签，**独立性不低于冻结**（`dual_human` 或 T0 `solo_cooldown(15m)`）；`design/03` §17 的过程外清单补 `rollback` |
+| P1-2 | “同一次写入建 successor 的 draft 行”写不下去：release DDL 的 `frontier`/`baseline_hash`/`scope_spec_set` 都是 NOT NULL，此刻三列都没有值；`docs/02` 也没有任何“创建 release 行”的事件（只有冻结/交付/作废三个） | 真 | **选最简单的第三条路**：回滚**不建 successor 行**——只把旧版收尾（`release.superseded` + `rolled_back`），新版本走常规路径（声明范围 → 人签 `spec_set` → P8 冻结）。`docs/09` §7、`docs/06` payload、`docs/02` 事件行三处同步删掉 `successor_release_id` 与“同一次写入建行” |
+| P2-1 | `p8-release` 图只有 scope 复查、没有步骤 11 的终态前置（`state_conflict`）节点 | 真 | `build.py` 模板补该分支并重建 |
+| P2-2 | `p9-verify` 的 D 组示意行没有“终态互斥” | 真 | 模板 D 组行补“release scope 仍 valid 且终态互斥（rolled_back 后无 delivered）” |
+| P2-3 | 覆盖口径句残留旧数字“18 项全覆盖” | 真 | 改 19 |
+| P2-4 | rollback 示例 `"frontier": 812` 是整数，真源是字符串 hash | 真 | 改 `"f:9c1e…"` |
+| P2-5 | `docs/09` 的“冻结写入路径（P8 步骤 2）”措辞错位（步骤 2 是前置校验，写 `release.frozen` 在步骤 7） | 真 | 改“冻结前置校验（P8 步骤 2）” |
+
+**教训（第三条，记下来）**：修一个“没有出口”的缺口时，先问“这条出口自己要什么”——授权、载体、DDL 约束、事件来源。**出口不能比原路更贵**；如果新出口需要造一条没有事件来源的记录，就不要造，退回常规路径。
+
+## 44. 当前状态与未覆盖项
+
+- 判据 **24 条**、过程 **15 个**、图 **28 张**、设计表以 `docs/03` 表清单为准（探针子集 29 张）、模块 **20 个**；G1–G6 全 A（G6 = grant 真源，M4 再建）；探针 **25 PASS / 0 GAP**。
 - **未覆盖（明确不声称已验）**：
   1. **假设状态机的规则已闭合，实现未写**：迁移规则、状态图、`disposition` 载荷、`probe #15`（规则级）都有了；但"代码里真的这么跑"、`assumption_set` 空集签字的落库、失效传播的实际执行，仍未验证；
   2. 运行时未验：`stored` / `sign` / isomorphic-git 并发 / P95 / T0 安装；
-  3. 评审抽样的**规则**已进 `review.required` 与 P14，但**没跑过一轮**（P14 的抽样只在文档里），仍然只能靠实现期验证。
+  3. 评审抽样的**规则**已进 `review.required` 与 P14，但**没跑过一轮**（P14 的抽样只在文档里），仍然只能靠实现期验证；
+  4. **探针只到 DDL 约束**：`#16` 证明"配置非法值、无复验关缺陷、`actor_kind` 越界会被 SQLite 拒"，不证明 `config` 动作的权限/拒绝码、`config.changed` 的投影、缺陷关闭的 verify 对账——这些仍要靠实现与 verify 测。
 - 下一轮评审若继续，优先看上面三项，而不是再加文档。
 
-### 36.1 评审作用域（结论只在所述作用域内成立）
+### 44.1 评审作用域（结论只在所述作用域内成立）
 
 这套台账里两个会话的审法不同，**结论必须带作用域**，否则会被读成全局结论：
 
@@ -500,21 +635,21 @@
 - **"无 P1" 只在所述作用域内成立**，台账里不再用它暗示"可收口"；
 - **整套审放在里程碑门上**（进 M1 前、发版前各一次），不是每轮都做——每轮做增量，成本低、回归快。
 
-### 36.2 机制预算读数（`docs/01` §11 要求）
+### 44.2 机制预算读数（`docs/01` §11 要求）
 
 | 项 | 现在 | 本轮新增机制类 |
 |---|---|---|
 | 判据 | 24 | 0（抽样是 `review.required` 的输入，不新增判据） |
 | 过程 | 15 | 0 |
-| 表 | 26 | 0 |
+| 表 | 29 | +3（`config`/`defect`/`verify_run`） |
 | 模块 | 20 | 0 |
 | 图 | 28 | 0 |
 | 机器规则 | **20 类（R0a–R0d + R19–R34）** | 0（R29–R34 是检查规则，不是产品机制） |
-| 本批（参考宿主插件）新增 | 1 事件（`task.dependencies_changed`）、1 动作（`dependencies`）、4 个 baseline 字段（`limits`）、5 个拒绝码、3 个视图/表列（`asked_of`、`blocked_by[]`、`pm_queue` 两列） | **独立机制 0**：依赖挂在 task、上限挂在 baseline、等待挂在 PM 环路，都不新增子系统 |
+| 本批（六项变更）新增 | 2 个 `decision_kind`（`intent`/`plan`）、1 动作（`propose_plan`）、3 表（`config`/`defect`/`verify_run`）、3 拒绝码（`config_invalid`/`config_missing`/`member_capacity`）、2 列（`release` 的 `scope_spec_set` 列、`release_item.requirement_id`） | **独立机制 1**：部署配置从 baseline 拆出（旋钮不是尺子）；其余挂在既有对象上 |
 
 **退休候选（`caught=0` 且无人消费）**：①`cleanup_timeout_s`——若 M2 前仍没有"清理"执行点就删掉；②`payload_too_large`——若 M1 实测正常签字包都远小于 64 KiB 且从未触发，就把它改成只报警不拒绝。先例是第七轮删掉的 `core_waived_unstated`（"写降级就放行"的分支，从未被走到）——给新机制定退休条件时，照这个做：**只要一个分支永远不可达，就删掉它，而不是留着"看起来在管"。**
 
-### 36.3 结构与 OOM 覆盖自查（作者自查，非评审）
+### 44.3 结构与 OOM 覆盖自查（作者自查，非评审）
 
 按"概念表 → 类/上下文/模块"和"过程 → 模块"两个方向对了一遍，查出 5 处覆盖缺口（都已修）：
 
@@ -525,6 +660,8 @@
 | `baseline.amended` / `baseline.loosened` 登记了却**没有语义与生产者** | P15「变更」段定死：收紧落 `amended`、放宽落 `loosened`，二者都是**新行**（`prev` + `direction`），绝不原地改 hash；`docs/04` §5.2 同步 |
 | **P11 对齐/复述与 P12 假设处置两个过程没有任何模块** | 新增 L1 模块 `alignment`；模块数 19→20；**加机器规则 R30**：`design/03` §17 表新增「模块」列，P1–P15 每个过程都必须有归属 |
 | `Attention` 是"在等谁"的唯一源却没有任何对象；`Restatement` 只有过程没有对象 | 类图加 `Attention`、`Restatement`（Intent 聚合内实体）；`Release`/`Decision` 补到 `Baseline` 的跨聚合虚线 |
+
+> 第 37 轮复审后已同步：`Intent`/`GoalNode` 的 `decisionId`、`Attention` 的三态与寿命列、`Defect` 类都已进类图模板与矩阵（不再只是文档字段）。
 
 另有两处**刻意不补**，已写进 `design/02` §2/§3 免得下次被当遗漏：
 

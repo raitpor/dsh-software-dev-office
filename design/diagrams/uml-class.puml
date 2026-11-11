@@ -7,6 +7,7 @@ class Intent {
   + sourceText : string
   + strength : Strength
   + approvedBy : ActorId
+  + decisionId : DecisionId
   + contentHash : ContentHash
   + baseline : BaselineHash
   + approve(by)
@@ -20,7 +21,8 @@ class GoalNode {
   + kind : Kind
   + scope : ScopePaths
   + acceptance : CriterionRef
-  + declare()
+  + decisionId : DecisionId
+  + declare(decision)
   + acceptViaIntegration()
 }
 class Task {
@@ -30,6 +32,7 @@ class Task {
   + block : BlockCode
   + inputs : InputRef[]
   + blockedBy : DependencyRef[]
+  + setDependencies(deps)
   + claim(lease)
   + complete(evidence)
   + reopen(reason)
@@ -192,9 +195,28 @@ class Restatement {
 class Attention {
   + id : AttentionId
   + task : TaskId
+  + askedOf : ActorId
   + question : string
   + options : list
+  + state : State
+  + expiresAt : Timestamp
   + answeredBy : ActorId
+  + withdrawnBy : ActorId
+  + supersedes : AttentionId
+  + withdraw(by)
+}
+class Defect {
+  + id : DefectId
+  + criterion : CriterionId
+  + spec : SpecId
+  + task : TaskId
+  + kind : Kind
+  + severity : Severity
+  + family : Family
+  + status : Status
+  + evidence : EvidenceId
+  + record()
+  + close(verifyRun)
 }
 interface IntentRepository
 interface EventStore {
@@ -220,6 +242,8 @@ Intent "1" ..> "1" GoalNode : 根（跨聚合）
 GoalNode --> GoalNode : 分解
 GoalNode ..> Criterion : 叶验收（跨聚合）
 Task "1" --> "1" WorkUnit
+Task "1" ..> "0..*" Defect : 判据红/集成回归
+Defect ..> Criterion : 单位是判据
 WorkUnit ..> Criterion : 跨聚合
 Criterion "1" --> "1..*" Fixture
 Gate ..> Criterion : 引用（跨聚合）

@@ -44,7 +44,7 @@ def build(conn: sqlite3.Connection) -> None:
 def seed(conn: sqlite3.Connection) -> None:
     conn.execute("INSERT INTO snapshot VALUES ('snap1','oid_snap1',NULL,'t0')")
     conn.execute("INSERT INTO event_kind VALUES ('test.event','t0','探针用')")
-    conn.execute("INSERT INTO intent VALUES ('I1','做一件事','u','u','explicit','b1','h1','t0')")
+    conn.execute("INSERT INTO intent VALUES ('I1','做一件事','u','d1','explicit','b1','h1','t0')")
     conn.execute("INSERT INTO spec (id,intent_id,clause,kind,mech_checkable,created_by,producer,"
                  "content_hash,at) VALUES ('S1','I1','条款一','requirement',0,'u','u','ch1','t0')")
     conn.execute("INSERT INTO spec (id,intent_id,clause,kind,mech_checkable,created_by,producer,"
@@ -197,7 +197,7 @@ def probe_single_writer() -> None:
         a = sqlite3.connect(path, timeout=0.2, isolation_level=None)
         build(a)
         a.execute("BEGIN IMMEDIATE")
-        a.execute("INSERT INTO intent VALUES ('I9','x','u','u','explicit','b','h','t')")
+        a.execute("INSERT INTO intent VALUES ('I9','x','u','d9','explicit','b','h','t')")
         b = sqlite3.connect(path, timeout=0.2, isolation_level=None)
         t0 = time.time()
         try:
@@ -339,8 +339,8 @@ def probe_goal_root() -> None:
     """goal_node：根必须指向 intent，且每个 intent 至多一个根（部分唯一索引）。"""
     conn = sqlite3.connect(":memory:")
     build(conn)
-    conn.execute("INSERT INTO intent (id,statement,owner,approved_by,strength,"
-                 "baseline_hash,content_hash,at) VALUES ('I1','x','u','u','explicit','b','h','t')")
+    conn.execute("INSERT INTO intent (id,statement,owner,decision_id,strength,"
+                 "baseline_hash,content_hash,at) VALUES ('I1','x','u','d1','explicit','b','h','t')")
     conn.execute("INSERT INTO goal_node (id,parent_id,intent_id,goal,kind,at) "
                  "VALUES ('G1',NULL,'I1','整体','intent','t')")
     conn.commit()
@@ -489,6 +489,42 @@ def probe_event_kind_closure() -> None:
     else:
         record("FAIL", "12. 事件 kind 闭包", "任意 kind 仍能写入")
 
+def probe_config_defect() -> None:
+    """部署配置的范围校验 + 缺陷关闭必须有复验读数 + verify_run 的 actor_kind 闭包。"""
+    conn = sqlite3.connect(":memory:")
+    build(conn)
+    conn.execute("INSERT INTO config VALUES ('limits.max_members',8,'admin','t0')")
+
+    def bad_value() -> None:
+        conn.execute("INSERT INTO config VALUES ('limits.max_members',0,'admin','t0')")
+
+    expect_fail(bad_value, "16a. 部署配置：0 不合法（CHECK value >= 1）", "config")
+
+    conn.execute("INSERT INTO defect (id,criterion_id,spec_id,kind,severity,family,status,evidence,at) "
+                 "VALUES ('D1','C1',NULL,'criterion','high','f1','open','e1','t0')")
+
+    def close_without_run() -> None:
+        conn.execute("UPDATE defect SET status='closed' WHERE id='D1'")
+
+    expect_fail(close_without_run, "16b. 缺陷关闭必须有 `verify_run`/`closed_by`（不许手写已修）", "defect_close")
+
+    conn.execute("INSERT INTO verify_run (id,at,actor_kind,actor,groups,result) "
+                 "VALUES ('V1','t0','human','u','[]','pass')")
+
+    def bad_actor() -> None:
+        conn.execute("INSERT INTO verify_run (id,at,actor_kind,actor,groups,result) "
+                     "VALUES ('V2','t0','robot','u','[]','pass')")
+
+    expect_fail(bad_actor, "16c. verify_run 的 actor_kind 闭包（human/service/agent）", "actor_kind")
+
+    try:
+        conn.execute("UPDATE defect SET status='closed', verify_run_id='V1', closed_by='u' WHERE id='D1'")
+        conn.commit()
+        record("PASS", "16d. 缺陷带复验读数可关闭", "关闭后 status=closed 且 verify_run_id/closed_by 有值")
+    except sqlite3.IntegrityError as e:
+        record("FAIL", "16d. 缺陷带复验读数可关闭", str(e))
+
+
 def main() -> int:
     print("== 可执行性探针 ==")
     probe_schema()
@@ -506,6 +542,7 @@ def main() -> int:
     probe_event_kind_closure()
     probe_goal_root()
     probe_assumption_transitions()
+    probe_config_defect()
 
     fails = [r for r in results if r[0] == "FAIL"]
     gaps = [r for r in results if r[0] == "GAP"]

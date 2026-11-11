@@ -2,7 +2,7 @@
 start
 :确定 in/out 集合;
 :缺口 = 差集（release.gaps_match）;
-if (冻结前置五条全过（见 03 §9）？) then (否)
+if (冻结前置六条全过（见 03 §9）？) then (否)
   :拒绝 freeze_blocked(reason_code);
   stop
 else (是)
@@ -30,6 +30,16 @@ endif
 :记 package_sha256 + snapshot_id;
 if (产物与证据对得上？) then (否)
   :拒绝 artifact_mismatch（停在 frozen，不落 delivered）;
+  stop
+else (是)
+endif
+if (交付前复查：scope 决定仍 valid、行仍在载荷 spec_ids[] 内？) then (否)
+  :拒绝 scope_invalid（停在 frozen；作废走 decision(kind=rollback) + release.superseded）;
+  stop
+else (是)
+endif
+if (终态前置：status 仍 frozen 且尚无 release.superseded？) then (否)
+  :拒绝 state_conflict（不落 delivered）;
   stop
 else (是)
 endif

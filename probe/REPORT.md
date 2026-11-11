@@ -1,7 +1,7 @@
 # 可执行性测试报告
 
 > 目的：把 `docs/` 的设计**当成假设**验证一次——建得起来吗？约束真会拦人吗？
-> 结论先说：**21 PASS / 0 GAP / 0 FAIL**（21 条输出行，15 项探针，3/4/14 拆子项）。G1–G5 已全部决定（见 [docs/14](../docs/14-待决缺口.md)），本报告按决定后的设计复跑。
+> 结论先说：**25 PASS / 0 GAP / 0 FAIL**（25 条输出行，16 项探针，3/4/14/16 拆子项）。G1–G5 已全部决定（见 [docs/14](../docs/14-待决缺口.md)），本报告按决定后的设计复跑。
 
 运行：`python3 probe/run.py`（SQLite 3.54，Python 3.14，`:memory:` + 单文件锁测试）
 
@@ -11,7 +11,7 @@
 
 | # | 探针 | 结果 | 含义 |
 |---|---|---|---|
-| 1 | 探针覆盖的 26 张表能一次建起来 | ✅ PASS | 26 张**探针子集**表（不是全部设计表：`task`/`release`/`decision`/`baseline` 等未建）+ SQLite 内部表 |
+| 1 | 探针覆盖的 29 张表能一次建起来 | ✅ PASS | 29 张**探针子集**表（不是全部设计表：`task`/`release`/`decision`/`baseline` 等未建；本轮新增 `config`/`defect`/`verify_run`）+ SQLite 内部表 |
 | 2 | `work_unit` 复合外键 | ✅ PASS | `spec_id` 偏离 `criterion.spec_id`、`evidence` 挂错判据，都被拒绝；一致行可插入 |
 | 3a | 快照祖先闭包（递归 CTE） | ✅ PASS | `S3 → S2 → S1` 可判定 |
 | 3b | 父链完整性（链接表 + 外键） | ✅ PASS | 指向不存在的父快照被拒绝 |
@@ -27,6 +27,7 @@
 | 13 | 假设条款形状（`status` / `blast_radius` 与 `kind` 一致） | ✅ PASS | 缺 `blast_radius`、缺 `status`、非假设却有 `status` 都被拒；合法行可插入 |
 | 14a–c | 分解树根：根唯一、子节点不误伤、根必须指向 intent | ✅ PASS | 同一 intent 第二个根被部分唯一索引拒绝；`part` 可多个；根无 `intent_id` 被 CHECK 拒绝 |
 | 15 | 假设状态机：先签后处置、旧签字过期、撤销级联、空集 | ✅ PASS | 无签字处置/载荷不一致/撤销后旧签字写处置 都被拒；`invalidated` 后旧签字不算；空集未签 vs 空集已签区分正确 |
+| 16a–d | 部署配置范围、缺陷关闭凭复验、`verify_run` 的 `actor_kind` | ✅ PASS | 配置 0 被 CHECK 拒；无 `verify_run` 关缺陷被拒；`actor_kind` 非 human/service/agent 被拒；带复验读数可关闭 |
 
 ---
 
@@ -58,7 +59,7 @@
 
 ## 四、这轮测试**没有**证明的事
 
-**先声明 assumption 的覆盖边界**：探针 #13 只证明**形状能表达**；**#15 是把 `docs/03/04/06` 的规则照抄成函数**，验证授权与新鲜度（无签字处置被拒、载荷不一致被拒、`open` 拦派发、`invalidated` 后旧签字不算、撤销集合签字会级联回 `open`）——它验的是**规则本身**，不是实现；真正的 fold、落库与并发仍未验证。**21 PASS 不等于"assumption 整套已验证"**——#15 还不测 `fold` 的真实执行（依赖 hash 变化触发 `invalidated` 的落库）。
+**先声明 assumption 的覆盖边界**：探针 #13 只证明**形状能表达**；**#15 是把 `docs/03/04/06` 的规则照抄成函数**，验证授权与新鲜度（无签字处置被拒、载荷不一致被拒、`open` 拦派发、`invalidated` 后旧签字不算、撤销集合签字会级联回 `open`）——它验的是**规则本身**，不是实现；真正的 fold、落库与并发仍未验证。**25 PASS 不等于"assumption 整套已验证"**——#15 还不测 `fold` 的真实执行（依赖 hash 变化触发 `invalidated` 的落库）。
 
 避免误读，逐条列出：
 

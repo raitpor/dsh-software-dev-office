@@ -1,8 +1,9 @@
 @startuml
 hide empty description
 [*] --> draft
-draft --> frozen : release.frozen（前置五条 + decision.signed）
+draft --> frozen : release.frozen（前置六条 + decision.signed）
 frozen --> delivered : release.delivered（绑 package_sha256 + snapshot_id）
+frozen --> rolled_back : decision(kind=rollback) + release.superseded（scope 被撤/未交付，sha256 可空）
 delivered --> rolled_back : decision(kind=rollback) + release.superseded
 rolled_back --> [*] : 原记录保留，另开新 release
 delivered --> [*]

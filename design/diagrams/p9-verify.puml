@@ -1,7 +1,7 @@
 @startuml
 start
 :verify（全量对账）;
-note right: 条目定义在 docs/02 §14（十项）+ docs/14 两条兜底；这里只分组与失败码
+note right: 条目定义在 docs/02 §14（十八项）+ docs/14 两条兜底；这里只分组与失败码
 :A 事件链：hash 链连续、prev 存在、cursor 与事件数一致;
 if (A 全过?) then (否)
   :红：chain_broken;
@@ -16,14 +16,14 @@ if (B 全过?) then (否)
   stop
 else (是)
 endif
-:C 判定：派生列 = 重算值、判据有正例且负例、baseline.hash 一致、签名可验且 signer ≠ producer;
+:C 判定：派生列 = 重算值、判据（active）有 remedy + 正负例、baseline 一致、签名可验且 signer ≠ producer、意图与目标树逐字段对账、发布引用的 verify_run 是人/服务或经人签;
 if (C 全过?) then (否)
   :红：judgement_mismatch;
   :写 verify.failed + blocked(verify_failed) + attention.raised;
   stop
 else (是)
 endif
-:D 运行态：busy 卡有未过期 lease 且 actor 一致、库加密状态与 assurance 一致;
+:D 运行态：lease/预占/依赖未经篡改、defect 关闭凭复验、attention 撤回者=提问者、config 折叠对账、release scope 仍 valid 且终态互斥（rolled_back 后无 delivered）、库加密状态与 assurance 一致;
 if (D 全过?) then (否)
   :红：runtime_inconsistent;
   :写 verify.failed + blocked(verify_failed) + attention.raised;

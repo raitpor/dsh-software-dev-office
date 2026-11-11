@@ -420,6 +420,7 @@ EXTERNAL_EVENTS = {
     # baseline.frozen / amended / loosened 已在 P15 正文里有生产者（收紧/放宽都建新行），不再登记为过程外
     "decision.revoked": "sign", "redaction.applied": "store", "i18n.fallback": "store",
     "attention.answered": "execution",
+    "config.changed": "handlers",
 }
 producer_text = read(os.path.join(DESIGN, "03-过程逻辑.md")) + "".join(diagram_sources().values())
 for kind in sorted(registered):
