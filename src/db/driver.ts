@@ -25,6 +25,10 @@ export function openEncryptedDatabase(file: string, passphrase: string): SdoData
     db.pragma('legacy=4');
     db.key(Buffer.from(passphrase, 'utf8'));
     db.pragma('foreign_keys = ON');
+    // REPLACE 冲突是“删旧行 + 插新行”；默认 recursive_triggers=OFF 时删旧行不触发
+    // DELETE 触发器，event/baseline 的“只追加”就能被 INSERT OR REPLACE 绕过。
+    // 打开它，让 REPLACE 也走删除触发器（评审 P1-1）。
+    db.pragma('recursive_triggers = ON');
     // fail-closed：错误口令或明文 SQLite 文件在这里就抛 SQLITE_NOTADB，
     // 不会留下“能打开、之后某条语句才炸”的半开状态。
     db.prepare('SELECT count(*) FROM sqlite_master').get();
