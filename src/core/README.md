@@ -1,9 +1,9 @@
 # src/core/ · 事件与 fold
 
-职责：事件模型、fold（事件 → 投影的纯函数）、verify、P15 静态校验、门禁判定。
+职责：事件模型、fold（事件 → 投影的纯函数）、verify、库路径策略、P15 静态校验、门禁判定。
 
 - 写域：`core` 泳道（impl-core）。其他泳道只读调用，不改这里的文件。
-- 第一张填充卡：M0-2（`fold`）；M1 接 P15；M2 接门禁判定。
+- 填充卡：M0-2（`fold`）、M0-6（`paths`/`verify`，沙箱与可发现性）；M1 接 P15；M2 接门禁判定。
 - 纪律：投影函数优先纯函数；重放两次必须逐字节相同（M0-2 判据）。
 
 ## fold（M0-2 交付）
@@ -24,6 +24,14 @@ fold(prev: FoldState | undefined, events: readonly Event[]): FoldState
 - 输出是浅只读：`freezeState` 只做只读视图，不深冻结行对象；调用方不要改写。
 - 输出形状：`tables` 按 34 张物化表分组（`id → row`），行字段跟 `docs/03`/支撑表一致；聚合命名（design/02 的 `Task`/`Spec` 等）留给 M0-3 的视图层翻译（卡 P6 仍待确认）。
 
+## paths / verify（M0-6 交付）
+
+- `src/core/paths.ts`：`resolveDbPath()` 默认给 `~/.local/state/sdo/<project>.db`（工作区外）；`SDO_DB` 是唯一覆盖，落进工作区只 warning 不阻止；`ensureDbDirectory()` 递归建 0700 目录，建不出/不可写一律抛 `SdoPathError` 并带 `fail-closed: no workspace fallback`——绝不回退工作区。
+- `src/core/verify.ts`：`verify(db)` 按 `event` 行序（`rowid`）重算链，逐条验 `hash = sha256(规范化(事件去 hash) + prev)` 与 `prev` 连续，再 `fold` 重算并与库内 `task`/`spec`/`release` 行逐列对账；差异报 `runtime_inconsistent`/`projection_missing`/`projection_unexpected` 等并带对象 id。只发现、不归因；M0 的对账清单是显式常量 `VERIFIED_TABLES = ['task','spec','release']`（`src/core/verify.ts`）——这三张是 M0 视图/查询的主要读数面、字段最密、最容易被直改；其余投影在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐，本卡不扩表。
+- `verify` 只收最小接口 `{ prepare(sql).all() }`，不 import `src/db/`（core→db 反向依赖禁止）。
+- hash 口径（写死，M1 不得另解）：`body = canonicalJson({id,at,actor,kind,subject,payload,caused_by,request_id,prev})`——对象键递归排序、数组保序，**body 已含 `prev`**；`hash = 'sha256:' + sha256(body + prev)`。golden vector 在 `test/core/verify.test.ts` 写死期望值：`e-golden-1` ⇒ `sha256:2a6359fd2f31b388cc1a301cf6baefba777d2c6904085e856c09478327cc78e1`。
+- 对账方向是单向的：只比对 fold 行里**有值的列**；DB 有而 fold 没有的列、以及 fold 多出的列（如 `task.reserved_by`/`reserved_until`，001 DDL 无落点，见 `plan/03` D-021）不报——M0 的目标是“发现被改过的已知读数”，不是 schema 双向校验。
+
 ## 目录
 
 - `fold/types.ts`：事件信封、`FoldState`、34 张表名、`inputs` 边与 `invalidatedKeys`。
@@ -35,3 +43,5 @@ fold(prev: FoldState | undefined, events: readonly Event[]): FoldState
 - `fold/reducers/*.ts`：按域分文件（intent/spec/assumption/goal/task/flow/verify/review/decision/release/baseline/release-items/workunit/ops/content）；`decision.ts` 是只增不改的两事件状态机。
 - `fold/registry.ts`：kind → reducer 查重合并。
 - `fold/ack.ts`：已知但不改变 34 张表的事件及理由。
+- `paths.ts`：库路径解析与目录守卫（M0-6）。
+- `verify.ts` / `verify-events.ts` / `verify-projection.ts` / `verify-types.ts`：链路复算与投影对账（M0-6）。

@@ -20,6 +20,7 @@
 
 import { createHash } from 'node:crypto';
 
+import { recordAccessSafe } from '../db/access-log.js';
 import type { SdoDatabase } from '../db/driver.js';
 import {
   assertSelectOnly,
@@ -219,6 +220,24 @@ function buildListRows(db: SdoDatabase, right: Right, select?: readonly string[]
 }
 
 /**
+ * 读留痕（M0-6 C3）：best-effort、不改 `QueryResult`、每进程最多一条 stderr warning。
+ * 包在唯一执行路径外层，避免调用方绕过 `query()` 直接执行。
+ */
+function logAccess(db: SdoDatabase, args: QueryArgs, context: QueryContext): void {
+  const bound: unknown = (db as { sdoPath?: unknown }).sdoPath;
+  const dbPath: unknown = typeof bound === 'string' && bound.length > 0 ? bound : (db as { name?: unknown }).name;
+  if (typeof dbPath !== 'string' || dbPath.length === 0 || dbPath === ':memory:') {
+    return;
+  }
+  recordAccessSafe(dbPath, {
+    at: new Date().toISOString(),
+    view: typeof args?.view === 'string' ? args.view : '',
+    args,
+    right: resolveRight(context.right),
+  });
+}
+
+/**
  * 读一个视图。
  *
  * @example
@@ -227,6 +246,16 @@ function buildListRows(db: SdoDatabase, right: Right, select?: readonly string[]
  * query(db, { view: 'defects', limit: 5, cursor: page2 });   // 续查
  */
 export function query(
+  db: SdoDatabase,
+  args: QueryArgs,
+  context: QueryContext = {},
+): QueryResult {
+  const result = runQuery(db, args, context);
+  logAccess(db, args, context);
+  return result;
+}
+
+function runQuery(
   db: SdoDatabase,
   args: QueryArgs,
   context: QueryContext = {},

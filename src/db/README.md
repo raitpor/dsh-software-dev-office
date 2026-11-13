@@ -1,9 +1,9 @@
 # src/db/ · schema 与驱动
 
-职责：`event` / `schema_version` 等 DDL、迁移框架（可建、可迁、可回滚）、SQLite 驱动适配。
+职责：`event` / `schema_version` 等 DDL、迁移框架（可建、可迁、可回滚）、SQLite 驱动适配、打开路径守卫与读留痕 sidecar。
 
 - 写域：`core` 泳道（impl-core）。surface 不碰 DDL。
-- 第一张填充卡：M0-1（schema 与迁移）；M0-6 接库位置与沙箱约束。
+- 填充卡：M0-1（schema 与迁移）、M0-6（打开路径守卫与读留痕）。
 - 驱动：`better-sqlite3-multiple-ciphers@13.0.3`，SQLCipher 格式（`cipher='sqlcipher'` + `legacy=4`）；空口令拒绝、无明文回落，`openEncryptedDatabase` 在 open 内立即读一次 `sqlite_master`，错误口令/明文库当场失败。选型证据见 [M0-0 卡](../../plan/cards/M0-0.md) C4。
 - 为什么是 13.x：tarball 自带 8 平台 `prebuilds/*.node`，安装期不需要 node-gyp/prebuild-install（离线/镜像友好）。因此干净安装钉 `npm ci --ignore-scripts`；裸 `npm ci` 会触发 npm 对 `binding.gyp` 的自动重建（见卡 E9/E10）。
 - 为什么不是 12.11.1：12.x 不带 prebuilds，靠 `prebuild-install` 在安装期联网从 GitHub 下二进制（该依赖已停止维护），且 `npm ci --ignore-scripts` 后驱动直接不可用。
@@ -14,3 +14,6 @@
 - 外键：驱动编译了 `DEFAULT_FOREIGN_KEYS`，裸连接默认 FK=ON；`openEncryptedDatabase` 仍显式 `PRAGMA foreign_keys = ON`，每连接生效。
 - `config` 只建表、不填四把钥匙的缺省值（M0-7 的事）；迁移幂等：第二次 `runMigrations` 返回 `applied: []`。
 - `defect` 的 `closed` 是终态：关闭人必须就是复验的 actor（`closed_by = verify_run.actor`，且该 verify 必须 `result='pass'`）；关掉后任何 `UPDATE` 都被拒（重开、换复验证据都不行）。设计里没有定义“重开”（docs/03 只有 open/closed）——若要重开，先改设计（新增事件与状态迁移），不是库层放宽。
+
+- 打开入口（M0-6）：`src/db/open.ts` 的 `openSdoDatabase(path, passphrase, {mustExist})` 先判 `mustExist` 存在性（缺失直接报错、不留空目录），再 `ensureDbDirectory`（0700、不可写即 `SdoPathError`），最后交给 `openEncryptedDatabase`；打开成功后把**绝对路径** `sdoPath` 绑到连接上（`db.name` 是传入时的相对路径，chdir 后会漂移），`access.log` 优先用它。调用方不要绕过 `--ignore-scripts` 那条安装纪律，也不要自己 `new Database`。
+- 读留痕（M0-6）：`src/db/access-log.ts` 的 `recordAccess` 在库同目录追加 `access.log`，一行 `{at,view,args_hash,right}`（`args_hash = sha256(canonicalJson(args))`，0600、不进事件）。`sdo_query` 的唯一执行路径已接 `recordAccessSafe`：**best-effort**，日志不可写时读照常成功、每进程只打一条 stderr warning，失败计数可查（`accessLogFailureCount()`），不改 `QueryResult` 形状。该边界会丢：warning 只在本进程、计数重启即归零；M1 可接持久化告警。
