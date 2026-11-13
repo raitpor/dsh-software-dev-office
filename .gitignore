@@ -10,3 +10,6 @@ lib/
 *.db-shm
 sdo.db*
 __pycache__/
+# 本地产物：spike 样本与安装矩阵日志（可重放，不入库）
+artifacts/
+.npmcache/

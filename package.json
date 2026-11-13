@@ -1,0 +1,25 @@
+{
+  "name": "sdo-v2",
+  "version": "0.2.0",
+  "private": true,
+  "description": "SDO v2 · 真源与视图内核（M0 骨架）",
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "setup": "npm ci --ignore-scripts",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run build && node --test lib/test/",
+    "spike:driver-native": "node test/spike/driver-native.mjs",
+    "spike:node-sqlite": "node test/spike/node-sqlite-roundtrip.mjs"
+  },
+  "dependencies": {
+    "better-sqlite3-multiple-ciphers": "^13.0.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "typescript": "^7.0.2"
+  }
+}
