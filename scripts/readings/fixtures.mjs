@@ -71,7 +71,7 @@ export function appendQueryMisses(events, views) {
 
 function insertEvents(db, events) {
   for (const kind of new Set(events.map((event) => event.kind))) {
-    db.prepare('INSERT INTO event_kind (kind, since, note) VALUES (?, ?, ?)').run(kind, AT, 'M0-G readings');
+    db.prepare('INSERT OR IGNORE INTO event_kind (kind, since, note) VALUES (?, ?, ?)').run(kind, AT, 'M0-G readings');
   }
   const insert = db.prepare(
     'INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',

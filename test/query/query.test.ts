@@ -62,7 +62,7 @@ function seedAttention(db: SdoDatabase): void {
 
 function seedEventChain(db: SdoDatabase): void {
   db.prepare(
-    "INSERT INTO event_kind (kind, since, note) VALUES ('task.assigned', '2026-01-01T00:00:00Z', '已派发')",
+    "INSERT OR IGNORE INTO event_kind (kind, since, note) VALUES ('task.assigned', '2026-01-01T00:00:00Z', '已派发')",
   ).run();
   db.prepare(
     `INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash)

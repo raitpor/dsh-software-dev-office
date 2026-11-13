@@ -44,7 +44,7 @@ async function startConsole(db: SdoDatabase, options: Omit<ConsoleServerOptions,
 }
 
 function seedEvent(db: SdoDatabase): void {
-  db.prepare("INSERT INTO event_kind (kind, since) VALUES ('query_miss', '2026-11-13')").run();
+  db.prepare("INSERT OR IGNORE INTO event_kind (kind, since) VALUES ('query_miss', '2026-11-13')").run();
   db.prepare(
     'INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
   ).run('E1', '2026-11-13T00:00:00Z', 'a-dev', 'query_miss', 'overview', '{"view":"overview"}', '[]', '', 'h1');

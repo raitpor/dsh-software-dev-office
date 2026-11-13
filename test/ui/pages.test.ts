@@ -71,7 +71,7 @@ function seed(db: SdoDatabase): void {
   db.prepare(
     "INSERT INTO stage_run (id, stage, gate_id, baseline_hash, entered_at, verdict, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run('S1', 'build', 'G1', 'BASE-1', '2026-11-13T00:03:00Z', 'pass', '2026-11-13T00:03:00Z');
-  db.prepare("INSERT INTO event_kind (kind, since) VALUES ('report.recorded', '2026-11-13')").run();
+  db.prepare("INSERT OR IGNORE INTO event_kind (kind, since) VALUES ('report.recorded', '2026-11-13')").run();
   db.prepare(
     "INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
   ).run('E1', '2026-11-13T00:04:00Z', 'dev-a', 'report.recorded', 'T1', '{}', '[]', '', 'h1');

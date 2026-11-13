@@ -63,7 +63,7 @@ test('constraint: ux_goal_root rejects a second root per intent (partial unique 
 
 test('constraint: event is append-only at the database layer (UPDATE/DELETE rejected)', () => {
   withMigratedDb((db) => {
-    db.prepare("INSERT INTO event_kind (kind, since, note) VALUES ('intent.signed', ?, 'test')").run(AT);
+    db.prepare("INSERT OR IGNORE INTO event_kind (kind, since, note) VALUES ('intent.signed', ?, 'test')").run(AT);
     db.prepare(
       `INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash)
        VALUES ('e1', ?, 'alice', 'intent.signed', 'intent/i1', '{"a":1}', '[]', 'r1', 'f0', 'h1')`,

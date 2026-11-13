@@ -28,19 +28,19 @@ test('migrate: migration files are versioned 001..N', () => {
   const migrations = listMigrations();
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2],
-    'M0-3 adds migration 002 (13 views + view_catalog)',
+    [1, 2, 3],
+    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed)',
   );
   assert.match(migrations[0]?.file ?? '', /^001_[A-Za-z0-9_-]+\.sql$/);
 });
 
-test('migrate: fresh database applies 001..002 and reports user_version = 2', () => {
+test('migrate: fresh database applies 001..003 and reports user_version = 3', () => {
   withEmptyDb((_file, _close, db) => {
     assert.equal(currentUserVersion(db), 0, 'a fresh database starts at user_version 0');
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [1, 2]);
-    assert.equal(result.userVersion, 2);
-    assert.equal(currentUserVersion(db), 2);
+    assert.deepEqual(result.applied, [1, 2, 3]);
+    assert.equal(result.userVersion, 3);
+    assert.equal(currentUserVersion(db), 3);
     assert.equal(tableNames(db).length, 35);
   });
 });
@@ -52,9 +52,9 @@ test('migrate: second run is a no-op (idempotent, zero changes)', () => {
 
     const second = runMigrations(db);
     assert.deepEqual(second.applied, [], 'an up-to-date database must apply no migrations');
-    assert.equal(second.userVersion, 2, 'user_version must not move on a no-op run');
+    assert.equal(second.userVersion, 3, 'user_version must not move on a no-op run');
     assert.deepEqual(tableNames(db), before);
-    assert.equal(currentUserVersion(db), 2);
+    assert.equal(currentUserVersion(db), 3);
   });
 });
 

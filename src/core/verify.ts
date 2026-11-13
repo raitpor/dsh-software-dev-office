@@ -15,13 +15,13 @@ import { compareProjections } from './verify-projection.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
- * M0 逐列对账的投影清单：只覆盖判据里点名的三张。
- * 为什么是这三张：`task`/`spec`/`release` 是 M0-3 视图与 M0-4 查询的主要读数面，且字段最密、
- * 最容易被直改；`event` 链另由 `verify-events.ts` 校验。其余投影表（intent/goal_node/
- * defect/evidence 等）在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐——本卡不扩表，
- * 否则会把 M0-6 拖成 M2。
+ * 逐列对账的投影清单。
+ *
+ * `task`/`spec`/`release` 是 M0-3 视图与 M0-4 查询的主要读数面；`decision` 在 M1-0 起由写网关
+ * 物化（只落 signed 行，口径与 `write-materialize.ts` 一致，见 `verify-projection.ts`）。
+ * 其余投影表在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐。
  */
-export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release'];
+export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release', 'decision'];
 
 export { GENESIS_PREV, computeEventHash };
 export type { VerifyDatabase, VerifyProblem, VerifyReport, VerifyStatement } from './verify-types.js';

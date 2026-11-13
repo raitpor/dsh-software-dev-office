@@ -36,14 +36,33 @@ export function sameValue(left: unknown, right: unknown): boolean {
   return a === b;
 }
 
+/**
+ * decision 的物化口径（M1-0）：只有 `signature` 非空的行才落库（valid+signed 之后）。
+ * 对账必须用同一口径，否则 `decision.valid` 单批会被误报 projection_missing。
+ */
+function signedDecisionOnly(state: FoldState): Record<string, Record<string, unknown>> {
+  const projected = state.tables['decision'];
+  const result: Record<string, Record<string, unknown>> = {};
+  for (const [id, row] of Object.entries(projected)) {
+    if (row['signature'] !== null) {
+      result[id] = row;
+    }
+  }
+  return result;
+}
+
 export function compareTable(
   db: VerifyDatabase,
   table: TableName,
   state: FoldState,
   problems: VerifyProblem[],
 ): void {
-  const dbRows = db.prepare(`SELECT * FROM ${table} ORDER BY id`).all() as Array<Record<string, unknown>>;
-  const projected = state.tables[table];
+  const signedOnly = table === 'decision';
+  const sql = signedOnly
+    ? 'SELECT * FROM decision WHERE signature IS NOT NULL ORDER BY id'
+    : `SELECT * FROM ${table} ORDER BY id`;
+  const dbRows = db.prepare(sql).all() as Array<Record<string, unknown>>;
+  const projected = signedOnly ? signedDecisionOnly(state) : state.tables[table];
   const seen = new Set<string>();
 
   for (const dbRow of dbRows) {

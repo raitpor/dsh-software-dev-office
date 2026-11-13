@@ -76,7 +76,7 @@ function events(): Event[] {
 function insertEventRows(db: SdoDatabase, chain: readonly Event[]): void {
   const kinds = new Set(chain.map((event) => event.kind));
   for (const kind of kinds) {
-    db.prepare('INSERT INTO event_kind (kind, since, note) VALUES (?, ?, ?)').run(kind, AT, 'verify test');
+    db.prepare('INSERT OR IGNORE INTO event_kind (kind, since, note) VALUES (?, ?, ?)').run(kind, AT, 'verify test');
   }
   const insert = db.prepare(
     'INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',

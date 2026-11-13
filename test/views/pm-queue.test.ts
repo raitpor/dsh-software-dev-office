@@ -48,7 +48,7 @@ function seedPmQueueFixture(db: SdoDatabase): void {
 
   // 6. rework_pending：change.applied 且 rework_units>0，尚无对应 implement 卡。
   db.prepare(
-    `INSERT INTO event_kind (kind, since, note) VALUES ('change.applied', '2026-01-01T00:00:00Z', '变更已应用')`,
+    `INSERT OR IGNORE INTO event_kind (kind, since, note) VALUES ('change.applied', '2026-01-01T00:00:00Z', '变更已应用')`,
   ).run();
   db.prepare(
     `INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash)
