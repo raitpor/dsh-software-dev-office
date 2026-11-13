@@ -21,6 +21,7 @@
   R30 每个过程（P1–P15）都必须在 03 §17 表里有模块归属，且名字在 01 模块表里；
   R31 顺序图里**实线**的 L1→L1 调用必须在源模块依赖列里登记（虚线 `-->` 是返回，不算）。
       *已知边界*：L2 编排层 `handlers` 的依赖写作「L1 服务」（刻意抽象），L2→L1 不做逐边校验。
+  R35 design/*.md 的表格列数自洽（与 docs/check.py 的 R19 共用 `mdtable.py`）；
   R32 已废弃的判据句式不许留在实现面（docs/ 与 design/01–03）：出现「仍为 open 的假设都必须已被…」这类
       旧谓词即红——它把 freshness 漏了，改一处不改别处就会把洞重开。
 
@@ -701,6 +702,13 @@ if p4_sec and p4_dot:
             bad.append(f"[R33] P4 判定表里的 {code} 没出现在 p4-admission 流程图里"
                        f"（表与图两张表达，必有一边漏）")
 
+# ---------- R35 design/*.md 的表格列数自洽（与 docs 的 R19 共用一份实现）----------
+sys.path.insert(0, ROOT)
+import mdtable  # noqa: E402
+for n in md_files():
+    for msg in mdtable.scan(read(os.path.join(DESIGN, n)), n):
+        bad.append("[R35] " + msg)
+
 if bad:
     print(f"✗ design 漂移 {len(bad)} 处：")
     for b in bad:
@@ -708,4 +716,4 @@ if bad:
     sys.exit(1)
 
 print("✓ design 无漂移：图片、产物&源文件重建一致、事件 kind（文档+图）、模块↔组件、"
-      "标题编号、状态枚举、迁移边、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式、P4 表图一致")
+      "标题编号、状态枚举、迁移边、分层依赖、计数、P3 串联、矩阵守卫点、依赖列、事件生产者、判据落点、preset 保证、过程归属、顺序图依赖、废弃句式、P4 表图一致、表格列数")

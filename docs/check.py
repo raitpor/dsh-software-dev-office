@@ -13,6 +13,9 @@
   R6 01 的度量行数 == 反指标配对行数 == 文案里的中文数字
   R7 若存在 lang/*.lang：两包键集必须恰好相等、占位符集合相同
   R9 关键预算常量只许出现在定义处（白名单计数）
+  R10–R18 见正文各段注释（编号在本文件里不连续，避免与 design/check.py 的规则号混淆）
+  R19（docs 表格）表头 / 分隔行 / 每一行的列数必须相等；裸竖线即使包在反引号里也算分隔符
+      （GFM 管表解析先于行内解析）。实现与 design/check.py 的 R35 共用 `mdtable.py`
 """
 import os, re, sys, glob, collections
 
@@ -333,8 +336,16 @@ for q in files():
         if tok in text:
             bad.append(f'R18 {os.path.basename(q)}: 出现旧写法「{tok}」（统一用工作副本/快照/内嵌库）')
 
+# R19 表格自洽：表头 / 分隔行 / 每一行的列数必须相等（否则渲染会塌；裸竖线在反引号里也算分隔符）
+sys.path.insert(0, os.path.dirname(ROOT))  # 仓库根，供 mdtable.py
+import mdtable  # 与 design/check.py 的 R35 共用一份实现，规则只写一次
+
+for p in files():
+    for msg in mdtable.scan(read(p), os.path.basename(p)):
+        bad.append('R19 ' + msg)
+
 if bad:
     print('✗ 发现漂移 %d 处：' % len(bad))
     for b in bad: print('   -', b)
     sys.exit(1)
-print('✓ 无漂移：已实现的规则全过（R1、R1+、R2、R3、R4、R5、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17、R18；R7 仅在有 lang/*.lang 时运行；无 R8）——%d 篇' % len(files()))
+print('✓ 无漂移：已实现的规则全过（R1、R1+、R2、R3、R4、R5、R6、R6+、R9、R10、R11、R12、R13、R14、R15、R16、R17、R18、R19；R7 仅在有 lang/*.lang 时运行；无 R8）——%d 篇' % len(files()))

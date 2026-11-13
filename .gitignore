@@ -9,3 +9,4 @@ lib/
 *.db-wal
 *.db-shm
 sdo.db*
+__pycache__/
