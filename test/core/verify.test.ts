@@ -69,7 +69,7 @@ function events(): Event[] {
     { kind: 'intent.signed', subject: 'INT-1', payload: { decision_id: 'd-int', statement: 'ship it', owner: 'alice', strength: 'explicit', baseline_hash: 'h-1', content_hash: 'ch-1' } },
     { kind: 'spec.defined', subject: 'SPEC-1', payload: { intent_id: 'INT-1', clause: 'clause', kind: 'requirement', content_hash: 'ch-spec' } },
     { kind: 'task.created', subject: 'TASK-1', payload: { seq: 1, title: 'do it', kind: 'implement' } },
-    { kind: 'release.frozen', subject: 'REL-1', payload: { package_version: '0.2.0', frozen_by: '{"by":"tester"}', frontier: 'f-1', baseline_hash: 'h-1', scope_spec_set: 's-1', items: [] } },
+    { kind: 'release.frozen', subject: 'REL-1', payload: { package_version: '0.2.0', frozen_by: ['alice', 'bob'], frontier: 'f-1', baseline_hash: 'h-1', scope_spec_set: 's-1', items: [] } },
   ]);
 }
 

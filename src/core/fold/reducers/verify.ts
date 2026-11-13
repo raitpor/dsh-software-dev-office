@@ -30,6 +30,53 @@ export function criterionRegistered(state: FoldWorking, event: Event): void {
     remedy,
     at: event.at,
   });
+  // P1-3：唯一写路径上的机械门——新建判据必须带 >=1 正例 + >=1 负例夹具。
+  // 迁移例外 `legacy: true` 只给 M1-6 的 v1 导入用，且由 verify 的 legacy 计数暴露。
+  const legacy = payload['legacy'] === true;
+  const fixtures = payload['fixtures'];
+  if (fixtures === undefined) {
+    if (!legacy) {
+      return fail(event, 'criterion.registered requires fixtures[] with >=1 positive and >=1 negative');
+    }
+  } else {
+    if (!Array.isArray(fixtures)) return fail(event, 'criterion.registered fixtures must be an array');
+    const seen = new Set<string>();
+    let positives = 0;
+    let negatives = 0;
+    fixtures.forEach((fixture, index) => {
+      if (fixture === null || typeof fixture !== 'object') {
+        return fail(event, `fixtures[${index}] must be an object`);
+      }
+      const raw = fixture as Record<string, unknown>;
+      const polarity = raw['polarity'];
+      if (polarity !== 'positive' && polarity !== 'negative') {
+        return fail(event, `fixtures[${index}].polarity must be positive|negative`);
+      }
+      const input = raw['input'];
+      if (typeof input !== 'string' || input.length === 0) {
+        return fail(event, `fixtures[${index}].input must be a non-empty string`);
+      }
+      const expected = raw['expected_status'];
+      if (expected !== 'pass' && expected !== 'fail' && expected !== 'na') {
+        return fail(event, `fixtures[${index}].expected_status must be pass|fail|na`);
+      }
+      const key = `${polarity}\u0000${input}`;
+      if (seen.has(key)) return fail(event, `duplicate fixture ${polarity}:${input}`);
+      seen.add(key);
+      if (polarity === 'positive') positives += 1;
+      else negatives += 1;
+      upsert(state, 'criterion_fixture', `${id}/fx/${index + 1}`, {
+        id: `${id}/fx/${index + 1}`,
+        criterion_id: id,
+        polarity,
+        input,
+        expected_status: expected,
+      });
+    });
+    if (!legacy && (positives === 0 || negatives === 0)) {
+      return fail(event, 'criterion.registered requires fixtures[] with >=1 positive and >=1 negative');
+    }
+  }
 }
 
 export function criterionRevised(state: FoldWorking, event: Event): void {
@@ -92,8 +139,19 @@ export function stageExited(state: FoldWorking, event: Event): void {
 
 export function gateJudged(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
+  const existing = rowOf(state, 'stage_run', subjectId(event));
+  const gateId = optString(event, payload, 'gate_id') ?? (existing?.['gate_id'] as string | undefined);
+  const baselineHash = optString(event, payload, 'baseline_hash') ?? (existing?.['baseline_hash'] as string | undefined);
+  if (gateId === undefined || gateId === null || gateId.length === 0) {
+    return fail(event, 'gate.judged requires gate_id (none on stage.entered either)');
+  }
+  if (baselineHash === undefined || baselineHash === null || baselineHash.length === 0) {
+    return fail(event, 'gate.judged requires baseline_hash (none on stage.entered either)');
+  }
   patchRow(state, 'stage_run', subjectId(event), event, {
     verdict: reqEnum(event, payload, 'verdict', VERDICTS),
+    gate_id: gateId,
+    baseline_hash: baselineHash,
     judged_at: event.at,
   });
 }

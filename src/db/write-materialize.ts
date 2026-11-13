@@ -45,6 +45,7 @@ export const MATERIALIZED_TABLES: readonly TableName[] = [
   'evidence',
   'restatement',
   'restatement_diff',
+  'criterion_fixture',
 ];
 
 /**

@@ -74,6 +74,10 @@ export function fourDomainSeeds(): EventSeed[] {
       content_hash: 'sha256:spec-1',
     }),
     seed(5, 'criterion.registered', 'CRIT-1', {
+      fixtures: [
+        { polarity: 'positive', input: 'p', expected_status: 'pass' },
+        { polarity: 'negative', input: 'n', expected_status: 'fail' },
+      ],
       spec_id: 'SPEC-1',
       kind: 'functional',
       remedy: 'fix it',

@@ -3,6 +3,12 @@ import { fold, FoldError, type Event, type FoldState } from '../../src/core/fold
 import { eventFactory } from './helpers.js';
 
 /** 顺序堆事件再一次性 fold 的测试夹具。 */
+/** 判据注册的默认夹具（只用于与注册门槛无关的规则测试；门槛本身另有专项用例）。 */
+export const DEFAULT_FIXTURES = [
+  { polarity: 'positive', input: 'default-pos', expected_status: 'pass' },
+  { polarity: 'negative', input: 'default-neg', expected_status: 'fail' },
+] as const;
+
 export class TestFolder {
   private readonly factory = eventFactory('rules');
   private readonly events: Event[] = [];
@@ -11,8 +17,19 @@ export class TestFolder {
     subject: string,
     payload: unknown,
     overrides?: Parameters<ReturnType<typeof eventFactory>['ev']>[3],
+    options?: { readonly raw?: boolean },
   ): string {
-    const event = this.factory.ev(kind, subject, payload, overrides);
+    let shaped = payload;
+    if (options?.raw !== true && payload !== null && typeof payload === 'object') {
+      const record = payload as Record<string, unknown>;
+      if (kind === 'criterion.registered' && record['fixtures'] === undefined && record['legacy'] !== true) {
+        shaped = { fixtures: DEFAULT_FIXTURES, ...record };
+      }
+      if (kind === 'release.frozen' && record['frozen_by'] === undefined) {
+        shaped = { frozen_by: ['alice', 'bob'], ...record };
+      }
+    }
+    const event = this.factory.ev(kind, subject, shaped, overrides);
     this.events.push(event);
     return event.id;
   }

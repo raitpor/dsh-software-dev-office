@@ -32,6 +32,8 @@ fold(prev: FoldState | undefined, events: readonly Event[]): FoldState
 - hash 口径（写死，M1 不得另解）：`body = canonicalJson({id,at,actor,kind,subject,payload,caused_by,request_id,prev})`——对象键递归排序、数组保序，**body 已含 `prev`**；`hash = 'sha256:' + sha256(body + prev)`。golden vector 在 `test/core/verify.test.ts` 写死期望值：`e-golden-1` ⇒ `sha256:2a6359fd2f31b388cc1a301cf6baefba777d2c6904085e856c09478327cc78e1`。
 - 对账方向是单向的：只比对 fold 行里**有值的列**；DB 有而 fold 没有的列、以及 fold 多出的列（如 `task.reserved_by`/`reserved_until`，001 DDL 无落点，见 `plan/03` D-021）不报——M0 的目标是“发现被改过的已知读数”，不是 schema 双向校验。
 
+- 判据框架（M1-1）：`src/core/criteria/` 三件纯函数件——`catalog.ts` 是 `docs/04` §4/§4.1 的 24 条目录快照（`guarantee`/`applies_to` 是 code 的目录属性，不落 `criterion` 表列，D-026；`applies_to=[]` 的表约束型判据永远生效、不绑 gate）；`register.ts` 是注册门槛（remedy、目录 code 与 guarantee、≥1 正例 + ≥1 负例、逐夹具中位数取 max 后 <200ms，全拒且自身零写入）；`binding.ts` 按五条件算有效绑定，缺一给具体原因码，某 stage 有交集却无合格 gate 时报 `stage_gap`；core 三条额外有结构性前置 `policyHasRequirementKind`（policy 缺 `requirement` kind ⇒ 三条 `missing_required_kind`，M1-3 P15 复用）；畸形 policy 返回 `invalid_policy` 而不是抛异常。`criterion.registered` 事件新建判据时 `fixtures[]` 必填（≥1 正 + ≥1 负，reducer 同事务写 `criterion` + `criterion_fixture`，D-032 裁定 ①），写网关物化集因此是 8 张表；`legacy: true` 是唯一例外，只给 M1-6 的 v1 导入用，且 `verify()` 以 `legacy_criterion_registrations` 计数暴露，M1-G 读数不使用 legacy 注册取证。
+
 ## 目录
 
 - `fold/types.ts`：事件信封、`FoldState`、34 张表名、`inputs` 边与 `invalidatedKeys`。
@@ -43,5 +45,8 @@ fold(prev: FoldState | undefined, events: readonly Event[]): FoldState
 - `fold/reducers/*.ts`：按域分文件（intent/spec/assumption/goal/task/flow/verify/review/decision/release/baseline/release-items/workunit/ops/content）；`decision.ts` 是只增不改的两事件状态机。
 - `fold/registry.ts`：kind → reducer 查重合并。
 - `fold/ack.ts`：已知但不改变 34 张表的事件及理由。
+- `criteria/catalog.ts`：`docs/04` §4/§4.1 的 24 条目录快照（code→guarantee/applies_to）+ 纯查询 API。
+- `criteria/register.ts`：注册五门槛（实跑夹具 + 中位预算），只在内存判定、不写库。
+- `criteria/binding.ts`：有效绑定五条件 + `stage_gap` + core 计数；M1-3/M1-4 的唯一消费入口。
 - `paths.ts`：库路径解析与目录守卫（M0-6）。
 - `verify.ts` / `verify-events.ts` / `verify-projection.ts` / `verify-types.ts`：链路复算与投影对账（M0-6）。

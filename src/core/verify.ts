@@ -30,6 +30,15 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
+/** P1-3：迁移例外计数，只认 new `criterion.registered` 的 payload.legacy=true。 */
+function countLegacyRegistrations(events: readonly { kind: string; payload: unknown }[]): number {
+  return events.filter((event) => {
+    if (event.kind !== 'criterion.registered') return false;
+    const payload = event.payload;
+    return typeof payload === 'object' && payload !== null && (payload as Record<string, unknown>)['legacy'] === true;
+  }).length;
+}
+
 export function verify(db: VerifyDatabase): VerifyReport {
   const problems: VerifyProblem[] = [];
 
@@ -41,6 +50,7 @@ export function verify(db: VerifyDatabase): VerifyReport {
       ok: false,
       eventCount: 0,
       problems: [{ code: 'fold_failed', detail: `cannot read event table: ${errorMessage(error)}` }],
+      legacy_criterion_registrations: 0,
     };
   }
 
@@ -49,7 +59,7 @@ export function verify(db: VerifyDatabase): VerifyReport {
     state = fold(undefined, events);
   } catch (error) {
     problems.push({ code: 'fold_failed', detail: errorMessage(error) });
-    return { ok: false, eventCount: events.length, problems };
+    return { ok: false, eventCount: events.length, problems, legacy_criterion_registrations: 0 };
   }
 
   try {
@@ -58,5 +68,10 @@ export function verify(db: VerifyDatabase): VerifyReport {
     problems.push({ code: 'projection_check_failed', detail: errorMessage(error) });
   }
 
-  return { ok: problems.length === 0, eventCount: events.length, problems };
+  return {
+    ok: problems.length === 0,
+    eventCount: events.length,
+    problems,
+    legacy_criterion_registrations: countLegacyRegistrations(events),
+  };
 }

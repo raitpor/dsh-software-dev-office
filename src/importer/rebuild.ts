@@ -107,6 +107,8 @@ export function buildClaimEvents(claim: ExportClaim): Event[] {
       payload: {
         spec_id: claim.spec_id,
         remedy: `rebuilt-from-v1-export:${claim.claim_no}`,
+        // P1-3 迁移例外：v1 导入没有夹具，legacy 计数由 verify 暴露（M1-6 落库时处理）。
+        legacy: true,
       },
     },
     {

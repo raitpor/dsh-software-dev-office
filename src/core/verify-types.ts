@@ -33,4 +33,6 @@ export interface VerifyReport {
   readonly ok: boolean;
   readonly eventCount: number;
   readonly problems: readonly VerifyProblem[];
+  /** 迁移例外计数（P1-3）：`criterion.registered` 且 payload.legacy=true 的条数。 */
+  readonly legacy_criterion_registrations: number;
 }
