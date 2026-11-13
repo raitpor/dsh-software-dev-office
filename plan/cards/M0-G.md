@@ -4,7 +4,7 @@ seq: 9
 milestone: M0
 owner: impl-core
 write_scope: [scripts/, package.json, test/readings/, plan/milestone/, plan/cards/M0-G.md, plan/03-偏差台账.md]
-status: open
+status: done
 created_at: 2026-11-13
 ---
 
@@ -18,7 +18,7 @@ M0 的八张卡都收口了，但 `plan/00` §5 有一条硬门：**读数报告
 
 **复述**：这张卡不是“再写一遍测试”，而是把 M0 已经有的事实翻译成四条读数，每条给出**命令、原始输出、结论（达标/部分达标/不达标）**；数字必须是机器算出来的，不是抄卡面。报告写给人签，签完 M0 才算过门。
 
-**人确认**：pending（收卡前必须确认）
+**人确认**：confirmed（2026-11-13T16:35+08:00，签署者点头“签：接受 R4 部分达标，进 M1”）
 
 **正例 2**
 1. 在干净检出的仓库上 `npm run readings` 一条命令跑完，产出 `plan/milestone/M0-读数.json` 与 `M0-读数.md`，四条读数各有 `measured` 与 `verdict`。
@@ -100,10 +100,9 @@ M0 的八张卡都收口了，但 `plan/00` §5 有一条硬门：**读数报告
 
 - [x] 四条读数实测并写进报告（3 pass + 1 partial，R4 显式标 partial）
 - [x] 评审三轮（58 改完再审 → 59 收卡 → 60 可签）
-- [ ] 人签（M0 门）——等签署者确认
+- [x] 人签（M0 门）——`plan/sign/M0-G.md`（S1，2026-11-13）
 - [x] 台账无新增 gap（D-022/D-023 为 Lead 记录的观察项，本卡引用不新增 gap）
 
 ## 待确认
 
-- 人确认复述（收卡前）
-- 若 R4 只能“部分达标”：是否接受“视图侧已通、写入路径 M1 补”，还是要求 M0 内补 `query_miss` 写路径
+- 无（人确认已 confirmed；R4 部分达标已获签接受；R1 口径收窄已获签接受，边界记 D-023）
