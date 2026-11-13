@@ -13,7 +13,8 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test lib/test/",
     "spike:driver-native": "node test/spike/driver-native.mjs",
-    "spike:node-sqlite": "node test/spike/node-sqlite-roundtrip.mjs"
+    "spike:node-sqlite": "node test/spike/node-sqlite-roundtrip.mjs",
+    "console": "npm run build && node lib/src/ui/serve.js"
   },
   "dependencies": {
     "better-sqlite3-multiple-ciphers": "^13.0.3"
