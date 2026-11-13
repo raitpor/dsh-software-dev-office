@@ -1,0 +1,105 @@
+{
+  "id": "bl-lite-noreq",
+  "frozen_by": [
+    "alice",
+    "bob"
+  ],
+  "engine": {
+    "version": "0.2.0",
+    "criteria_manifest_hash": "sha256:abc"
+  },
+  "policy": {
+    "id": "policy-bl-lite-noreq",
+    "preset": "lite",
+    "stages": [
+      {
+        "id": "build",
+        "kinds": [
+          "implement"
+        ],
+        "after": []
+      },
+      {
+        "id": "deliver",
+        "kinds": [
+          "deliver"
+        ],
+        "after": [
+          "build"
+        ]
+      }
+    ],
+    "gates": {
+      "build": [
+        "G_build_exit"
+      ],
+      "deliver": [
+        "G_deliver_exit"
+      ]
+    },
+    "switches": {
+      "assurance": true,
+      "preview": true,
+      "align": true,
+      "import": false
+    },
+    "regression": {
+      "mode": "none"
+    },
+    "review": {
+      "sample_every": 5,
+      "sample_seed": 20261113
+    },
+    "artifact_kinds": {
+      "prototype": "ok",
+      "product": "ok",
+      "throwaway": "ok"
+    }
+  },
+  "criteria": [],
+  "gates": [
+    {
+      "id": "G_build_exit",
+      "stage": "build",
+      "criteria": [
+        "task.complete",
+        "assumption.disposed",
+        "mandate.revalidated",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    },
+    {
+      "id": "G_deliver_exit",
+      "stage": "deliver",
+      "criteria": [
+        "design.code_matches",
+        "node.integration_listed",
+        "mandate.revalidated",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    }
+  ],
+  "thresholds": {},
+  "assurance": {
+    "unbound_gates": false,
+    "independence": "checked",
+    "db_confidentiality": true,
+    "na_stages": [
+      "requirement",
+      "design",
+      "review"
+    ],
+    "level": "L2"
+  },
+  "prev": null,
+  "direction": null,
+  "hash": "sha256:placeholder"
+}

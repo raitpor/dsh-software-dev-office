@@ -1,0 +1,188 @@
+{
+  "id": "bl-waterfall",
+  "frozen_by": [
+    "alice",
+    "bob"
+  ],
+  "engine": {
+    "version": "0.2.0",
+    "criteria_manifest_hash": "sha256:abc"
+  },
+  "policy": {
+    "id": "policy-bl-waterfall",
+    "preset": "waterfall",
+    "stages": [
+      {
+        "id": "req",
+        "kinds": [
+          "requirement"
+        ],
+        "after": []
+      },
+      {
+        "id": "design",
+        "kinds": [
+          "design"
+        ],
+        "after": [
+          "req"
+        ]
+      },
+      {
+        "id": "build",
+        "kinds": [
+          "implement"
+        ],
+        "after": [
+          "design"
+        ]
+      },
+      {
+        "id": "verify",
+        "kinds": [
+          "review"
+        ],
+        "after": [
+          "build"
+        ]
+      },
+      {
+        "id": "deliver",
+        "kinds": [
+          "deliver"
+        ],
+        "after": [
+          "verify"
+        ]
+      }
+    ],
+    "gates": {
+      "req": [
+        "G_req_exit"
+      ],
+      "design": [
+        "G_design_exit"
+      ],
+      "build": [
+        "G_build_exit"
+      ],
+      "verify": [
+        "G_verify_exit"
+      ],
+      "deliver": [
+        "G_deliver_exit"
+      ]
+    },
+    "switches": {
+      "assurance": true,
+      "preview": true,
+      "align": true,
+      "import": false
+    },
+    "regression": {
+      "mode": "none"
+    },
+    "review": {
+      "sample_every": 5,
+      "sample_seed": 20261113
+    },
+    "artifact_kinds": {
+      "prototype": "ok",
+      "product": "ok",
+      "throwaway": "ok"
+    }
+  },
+  "criteria": [],
+  "gates": [
+    {
+      "id": "G_req_exit",
+      "stage": "req",
+      "criteria": [
+        "stage.requirement_complete",
+        "intent.restated_consistent",
+        "alignment.examples_present",
+        "scope.present",
+        "intent.explicit_for_risk",
+        "redteam.disposed",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    },
+    {
+      "id": "G_design_exit",
+      "stage": "design",
+      "criteria": [
+        "stage.design_traceable",
+        "design.covers_spec",
+        "design.no_spec_creep",
+        "design.alternatives_declared",
+        "node.acceptance_bound",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    },
+    {
+      "id": "G_build_exit",
+      "stage": "build",
+      "criteria": [
+        "task.complete",
+        "assumption.disposed",
+        "mandate.revalidated",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    },
+    {
+      "id": "G_verify_exit",
+      "stage": "verify",
+      "criteria": [
+        "review.round_bound",
+        "review.required",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    },
+    {
+      "id": "G_deliver_exit",
+      "stage": "deliver",
+      "criteria": [
+        "design.code_matches",
+        "node.integration_listed",
+        "mandate.revalidated",
+        "spec_set.signed",
+        "assumption_set.signed",
+        "provenance.present"
+      ],
+      "policy_mode": "all_of",
+      "waivable": false
+    }
+  ],
+  "thresholds": {},
+  "assurance": {
+    "unbound_gates": false,
+    "independence": "checked",
+    "db_confidentiality": true,
+    "na_stages": [],
+    "level": "L2"
+  },
+  "prev": null,
+  "direction": null,
+  "hash": "sha256:placeholder",
+  "guarantee_delta": {
+    "1": "degraded",
+    "2": "degraded",
+    "3": "degraded"
+  }
+}
