@@ -12,9 +12,13 @@ design:
 design-check:
 	python3 design/check.py
 
+# 实现层：骨架起于 M0-0（卡 plan/cards/M0-0.md）。docs/probe/design 与它互不依赖。
+test:
+	npm test
+
 all: check probe design-check
 
 # 从零开始：重建图，再跑全套检查
 fresh: design all
 
-.PHONY: check probe design design-check all fresh
+.PHONY: check probe design design-check test all fresh
