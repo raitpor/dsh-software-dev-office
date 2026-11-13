@@ -1,6 +1,6 @@
 {
   "card": "M0-G",
-  "generatedAt": "2026-11-13T08:27:50.061Z",
+  "generatedAt": "2026-11-13T08:32:30.181Z",
   "command": "npm run readings",
   "node": "v26.13.1",
   "metric": "R1 = 查询在字节码里打开 event 表游标的次数（结构口径，不是运行期行访问数）",
