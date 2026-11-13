@@ -41,8 +41,9 @@
 5. 新事件必须接在当前链头（`prev` 匹配），且 `hash === computeEventHash(event)`。
 
 **信封校验对所有事件（含重放）都做**：复用 `src/db/write-envelope.ts` 的 `checkEnvelope`，
-与 append 的 `invalid_field` / `unknown_event_kind` 同口径。唯一例外是 M1-0 的物化范围收窄
-（`unsupported_scope`）：`task.*` 等在 fold 里合法、只是还没物化（D-031/D-038），preview 是
+与 append 的 `invalid_field` / `unknown_event_kind` 同口径。`checkEnvelope` 是纯函数（不写库、
+不开事务），preview 调它不破坏只读（C5）。唯一例外是 M1-0 的物化范围收窄
+（`unsupported_scope`）：M1-7 后 `task.*`/`evidence.*` 已可真写；仍非物化的 `claim.*`/`scenario.*` 等在 fold 里合法、只是不进物化面（D-031；D-038 已 closed），preview 是
 fold 层试算，不在这一步拒。
 
 “同形状”指两边**都接受/都拒绝**，不是错误码可对拍——两边码不同是预期的：
@@ -90,11 +91,11 @@ previewChange(db, events, options?)
 “事件语义”和普通分支：如需 `switch (change.kind)` 这类合法写法，请改用类型守卫函数或 `if` 链，
 免得被误红。
 
-两类对账：
+对账（M1-7 全表物化后，非零样本也走真 `append`；D-038 已 closed）：
 
-- **append 真落库**：只用写网关支持的 kind（`SUPPORTED_KINDS` 里的 spec/criterion/
-  evidence），预览 `spec.revised` 得 0，`append` 后重放差额也是 0。
-- **非零样本**：`work_unit` 只能由 `task.*`/`evidence.*` 折出，而 M1-0 写网关拒
-  `task.*`（`unsupported_scope`），且物化安全网看到 7 表之外的 fold 行会整体回滚
-  （D-031）；所以“变更前已有 work_unit”的夹具绕网关直插事件行，非零对账用同一批事件的
-  fold 重放完成。等 M1-7 全表物化后，这里应改成对非零样本也走真 `append`。
+- **零样本真落库**：预览 `spec.revised` 得 0，`append` 后重放差额也是 0。
+- **非零样本真落库**：真 `append` 铺 3 条 `work_unit`（`task.created`/`task.claimed`/
+  `evidence.attached`），预览 `spec.revised` = 3；同批事件真 `append` 后从落库事件链重新
+  `fold`，`invalidatedWorkUnits` 与预览逐条 `deepEqual`。同一用例内另有“同批事件在变更前
+  状态 fold 重放”一段，只用于证明 preview 与 append 的 fold 语义一致，**不是替代路径**。
+  覆盖命令：`node --test --test-name-pattern="C6 对账" lib/test/preview/`。

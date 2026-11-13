@@ -34,41 +34,10 @@ function appendSeeds(db: SdoDatabase, seeds: readonly Omit<Event, 'prev' | 'hash
   return events;
 }
 
-/**
- * M1-0 的写网关只接受投影落在 7 张物化表里的 kind（`SUPPORTED_KINDS`），
- * `task.*` 会被 `unsupported_scope` 拒——但 `work_unit` 只能由 task/evidence 事件折出。
- * 因此“变更前已有 work_unit”的夹具只能绕网关直插事件行（仅测试夹具；预览本身仍只
- * readEvents+fold）。这是 M1-0/M1-7 的物化范围缺口，记在卡面已知边界。
- */
-function insertFixtureEvents(
-  db: SdoDatabase,
-  seeds: readonly Omit<Event, 'prev' | 'hash'>[],
-): Event[] {
-  const events = chain(seeds, chainHead(db));
-  const insert = db.prepare(
-    'INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  );
-  for (const event of events) {
-    insert.run(
-      event.id,
-      event.at,
-      event.actor,
-      event.kind,
-      event.subject,
-      JSON.stringify(event.payload),
-      JSON.stringify(event.caused_by),
-      event.request_id,
-      event.prev,
-      event.hash,
-    );
-  }
-  return events;
-}
-
-/** 三张卡 + 三条已完成 work_unit（都挂在 SPEC-1 / CRIT-1 下）。 */
 function seedThreeWorkUnits(db: SdoDatabase): void {
-  insertFixtureEvents(db, fourDomainSeeds());
-  insertFixtureEvents(db, [
+  // M1-7 后写网关已支持 task.* / evidence.attached，铺 work_unit 走真 append（生产口径）。
+  appendSeeds(db, fourDomainSeeds());
+  appendSeeds(db, [
     ev('task.created', 'T1', { seq: 1, title: 'task 1', kind: 'implement' }),
     ev('task.created', 'T2', { seq: 2, title: 'task 2', kind: 'implement' }),
     ev('task.created', 'T3', { seq: 3, title: 'task 3', kind: 'implement' }),
@@ -82,18 +51,21 @@ function seedThreeWorkUnits(db: SdoDatabase): void {
       criterion_id: 'CRIT-1',
       artifact_uri: 'file:///t1',
       artifact_sha256: 'sha256:t1',
+      command: 'node --test',
       task_id: 'T1',
     }),
     ev('evidence.attached', 'EVID-T2', {
       criterion_id: 'CRIT-1',
       artifact_uri: 'file:///t2',
       artifact_sha256: 'sha256:t2',
+      command: 'node --test',
       task_id: 'T2',
     }),
     ev('evidence.attached', 'EVID-T3', {
       criterion_id: 'CRIT-1',
       artifact_uri: 'file:///t3',
       artifact_sha256: 'sha256:t3',
+      command: 'node --test',
       task_id: 'T3',
     }),
   ]);
@@ -152,7 +124,7 @@ test('C2 正例 1：spec 内容变 ⇒ 引用它的 3 条 work_unit 全部作废
 test('C2 正例 2：变更不碰 work_unit 的上游 ⇒ reworkUnits 为数字 0（非 null/undefined/"0"）', () => {
   withWriteDb((db) => {
     seedThreeWorkUnits(db);
-    insertFixtureEvents(db, [
+    appendSeeds(db, [
       ev('spec.defined', 'SPEC-2', {
         kind: 'requirement',
         clause: 'unrelated clause',
@@ -173,7 +145,7 @@ test('C2 换一条 spec 的用例：作废数按引用逐行算（硬编码 3 �
   withWriteDb((db) => {
     seedThreeWorkUnits(db);
     // SPEC-3 被一条独立 work_unit 引用：只应作废这一条。
-    insertFixtureEvents(db, [
+    appendSeeds(db, [
       ev('spec.defined', 'SPEC-3', {
         kind: 'requirement',
         clause: 'third clause',
@@ -186,6 +158,7 @@ test('C2 换一条 spec 的用例：作废数按引用逐行算（硬编码 3 �
         criterion_id: 'CRIT-3',
         artifact_uri: 'file:///t4',
         artifact_sha256: 'sha256:t4',
+        command: 'node --test',
         task_id: 'T4',
       }),
     ]);
@@ -223,7 +196,7 @@ test('C2 交叉触发：同一 work_unit 因 task+spec 同时变只计 1 条，c
 test('C2 对照：只改没有 work_unit 的 task ⇒ reworkUnits=0（不是一律全算作废）', () => {
   withWriteDb((db) => {
     seedThreeWorkUnits(db);
-    insertFixtureEvents(db, [ev('task.created', 'T9', { seq: 9, title: 'unrelated task', kind: 'implement' })]);
+    appendSeeds(db, [ev('task.created', 'T9', { seq: 9, title: 'unrelated task', kind: 'implement' })]);
     const { result } = drainBatch(db, [
       ev('task.assigned', 'T9', { assignee: 'dev-9', reserved_until: '2026-11-14T00:00:00Z' }),
     ]);
@@ -295,8 +268,8 @@ test('C5 纯函数：预览前后 event/work_unit 行数与 hash 链不变', () 
     assert.equal(after.events.length, before.events.length);
     assert.deepEqual(after.events.map((event) => event.hash), beforeHashes);
     const afterRows = db.prepare('SELECT count(*) AS n FROM work_unit').all() as { n: number }[];
-    assert.equal(afterRows[0]?.n, beforeCount);
-    assert.equal(afterRows[0]?.n, 0);
+    assert.equal(afterRows[0]?.n, beforeCount, '预览不得改 work_unit 表');
+    assert.equal(afterRows[0]?.n, 3, 'M1-7 后 work_unit 已物化，真 append 的 3 行是前置状态');
   });
 });
 
@@ -329,22 +302,40 @@ test('C6 对账（append 真落库）：预览 0 == 落库后重放的事后 0',
   });
 });
 
-test('C6 对账（非零样本，fold 重放口径）：预览 3 == 假如追加后重放的事后 3', () => {
+test('C6 对账（非零样本，真 append）：预览 3 == 落库后实际作废 3，逐条集合相等', () => {
   withWriteDb((db) => {
     seedThreeWorkUnits(db);
     const before = readState(db);
+    // 行级快照：只断行数不足以排除“删掉再重插成不同内容”的物化破坏。
+    const unitRows = () =>
+      db
+        .prepare('SELECT id, task_id, criterion_id, spec_id, evidence_id, at FROM work_unit ORDER BY id')
+        .all() as Record<string, unknown>[];
+    const unitsBefore = unitRows();
+    assert.equal(unitsBefore.length, 3);
+    // ① 生产口径：preview 同批事件真 append 落库，再从落库后的链重新 fold 数实际作废数。
     const batch = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'upstream change', clause: 'clause 1 v5' })],
       chainHead(db),
     );
     const preview = previewChange(db, batch);
     assert.equal(preview.reworkUnits, 3);
-    // append 路径在这里走不通：物化安全网看到 task/work_unit 在 7 表之外会整体回滚
-    // （M1-0 D-031 范围问题，见卡面已知边界与回报）。这里用同一批事件的 fold 重放对账。
-    const simulated = fold(before.state, batch);
-    const actual = collectInvalidatedWorkUnits(before.state, simulated);
+    const appended = append(db, batch);
+    assert.equal(appended.ok, true);
+    if (!appended.ok) return;
+    assert.equal(appended.written, 1);
+    const after = readState(db);
+    const actual = collectInvalidatedWorkUnits(before.state, fold(undefined, after.events));
     assert.equal(actual.length, preview.reworkUnits);
     assert.deepEqual(actual, preview.invalidatedWorkUnits);
+    // work_unit 行本身不删：作废是“上游 hash 变”派生的有效集合差；行内容必须与 append 前逐条相同
+    // （只断 count=3 会被“删掉再重插不同内容”骗过，见变异记录）。
+    assert.deepEqual(unitRows(), unitsBefore);
+
+    // ② 同一批事件在变更前状态上 fold 重放：证明 preview 与 append 的语义一致。
+    //    这不是替代路径——上段已用真 append 取证；本段只做对账。
+    const replay = collectInvalidatedWorkUnits(before.state, fold(before.state, batch));
+    assert.deepEqual(replay, actual);
   });
 });
 
