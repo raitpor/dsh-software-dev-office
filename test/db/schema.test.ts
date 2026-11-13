@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { columnNames, tableNames, withMigratedDb } from './helpers.js';
 
-/** docs/03 的 25 张表 + docs/02/04/06/07/09/12 的 9 张支撑表。 */
+/** docs/03 的 25 张表 + docs/02/04/06/07/09/12 的 9 张支撑表 + M0-3 的视图目录 view_catalog（第 35 张）。 */
 const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   decision: [
     'id', 'decision_kind', 'status', 'payload', 'payload_hash', 'signature',
@@ -56,11 +56,12 @@ const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   defect: ['id', 'criterion_id', 'spec_id', 'task_id', 'kind', 'severity', 'family', 'status', 'evidence', 'verify_run_id', 'closed_by', 'at'],
   release: ['id', 'package_version', 'status', 'frozen_at', 'frozen_by', 'frontier', 'baseline_hash', 'scope_spec_set', 'note'],
   release_item: ['release_id', 'kind', 'target', 'requirement_id', 'disposition', 'reason', 'defer_count', 'approved_by'],
+  view_catalog: ['name', 'sql', 'columns', 'doc', 'min_right', 'row_budget'],
 };
 
 const EXPECTED_TABLES = Object.keys(EXPECTED_COLUMNS).sort();
 
-test('schema: every expected table exists (docs/03 25 + 9 support = 34)', () => {
+test('schema: every expected table exists (docs/03 25 + 9 support + view_catalog = 35)', () => {
   withMigratedDb((db) => {
     const actual = tableNames(db);
     assert.equal(actual.length, EXPECTED_TABLES.length, `table count drift: ${JSON.stringify(actual)}`);
