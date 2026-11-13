@@ -1,0 +1,278 @@
+{
+  "card": "M0-G",
+  "generatedAt": "2026-11-13T08:27:50.061Z",
+  "command": "npm run readings",
+  "node": "v26.13.1",
+  "metric": "R1 = 查询在字节码里打开 event 表游标的次数（结构口径，不是运行期行访问数）",
+  "readings": {
+    "R1": {
+      "title": "一次 status 查询中 event 表游标打开次数 ≤ 1（overview 表开 0 / 索引开 0）",
+      "verdict": "pass",
+      "measured": {
+        "viewCount": 13,
+        "perView": {
+          "agents": {
+            "eventTableOpens": 1,
+            "eventIndexOpens": 0
+          },
+          "alignment": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "baseline": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "board": {
+            "eventTableOpens": 1,
+            "eventIndexOpens": 1
+          },
+          "defects": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "evidence": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "gaps": {
+            "eventTableOpens": 1,
+            "eventIndexOpens": 1
+          },
+          "overview": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "plan": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "pm_gaps": {
+            "eventTableOpens": 1,
+            "eventIndexOpens": 1
+          },
+          "pm_queue": {
+            "eventTableOpens": 3,
+            "eventIndexOpens": 4
+          },
+          "review_queue": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          },
+          "team": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 0
+          }
+        },
+        "overview": {
+          "eventTableOpens": 0,
+          "eventIndexOpens": 0
+        },
+        "redProof": {
+          "singleSql": "SELECT * FROM event",
+          "single": {
+            "eventTableOpens": 1,
+            "eventIndexOpens": 0
+          },
+          "unionSql": "SELECT * FROM event UNION ALL SELECT * FROM event",
+          "union": {
+            "eventTableOpens": 2,
+            "eventIndexOpens": 0
+          },
+          "coveringIndexSql": "SELECT max(at) FROM event",
+          "coveringIndex": {
+            "eventTableOpens": 0,
+            "eventIndexOpens": 1
+          }
+        },
+        "mutation": {
+          "view": "gaps",
+          "before": {
+            "eventTableOpens": 1,
+            "eventIndexOpens": 1
+          },
+          "after": {
+            "eventTableOpens": 2,
+            "eventIndexOpens": 2
+          },
+          "sql": "SELECT * FROM (<gaps.sql>) UNION ALL SELECT * FROM (<gaps.sql>)"
+        }
+      }
+    },
+    "R2": {
+      "title": "同一 as_of 两次查询逐字节相同（同进程 + 两个独立进程）",
+      "verdict": "pass",
+      "measured": {
+        "viewCount": 13,
+        "allEqual": true,
+        "shapesOk": true,
+        "perView": {
+          "agents": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "alignment": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "baseline": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "board": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "defects": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "evidence": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "gaps": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "overview": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "plan": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "pm_gaps": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "pm_queue": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "review_queue": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          },
+          "team": {
+            "inProcessEqual": true,
+            "twoChildrenEqual": true,
+            "crossProcessEqual": true,
+            "ownShape": true,
+            "childShape": true,
+            "childAExit": 0,
+            "childBExit": 0
+          }
+        },
+        "excerpt": "{\"rows\":[{\"stage\":\"unset\",\"in_flight\":0,\"blocked\":0,\"open_defects\":0,\"health\":\"green\"}],\"truncated\":false,\"as_of\":[\"e-m0g-1\",\"e-m0g-2\",\"e-m0g-3\",\"e-m0g-4\",\"e-m0"
+      }
+    },
+    "R3": {
+      "title": "读只留探针线索；写/篡改由 verify 发现；都不承诺归因",
+      "verdict": "pass",
+      "measured": {
+        "accessLines": 3,
+        "projection": {
+          "code": "runtime_inconsistent",
+          "table": "task",
+          "objectId": "TASK-1",
+          "detail": "column title differs: database=\"tampered\" fold=\"do it\""
+        },
+        "hash": {
+          "code": "event_hash_mismatch",
+          "objectId": "e-m0g-2",
+          "detail": "stored hash does not match the recomputed hash"
+        }
+      }
+    },
+    "R4": {
+      "title": "gaps 能看到 query_miss 的聚合（生产写入路径不在 M0）",
+      "verdict": "partial",
+      "measured": {
+        "verify": {
+          "ok": true,
+          "eventCount": 9,
+          "problemCount": 0,
+          "codes": []
+        },
+        "rows": [
+          {
+            "kind": "query_miss",
+            "subject": "overview",
+            "count": 2,
+            "last_seen": "2026-11-13T15:00:00.000Z"
+          },
+          {
+            "kind": "query_miss",
+            "subject": "gaps",
+            "count": 1,
+            "last_seen": "2026-11-13T15:00:00.000Z"
+          }
+        ],
+        "totalMisses": 3,
+        "missing": "M1 写网关的 query_miss 生产写入路径（D-012）不在 M0；本读数只证明视图侧聚合可用"
+      }
+    }
+  }
+}
