@@ -4,7 +4,7 @@ seq: 18
 milestone: M1
 owner: impl-surface
 write_scope: [scripts/, package.json, test/readings/, plan/milestone/, plan/cards/M1-G.md]
-status: open
+status: done
 created_at: 2026-11-13
 ---
 
@@ -114,16 +114,16 @@ M1 不绑 baseline，本卡不做机器判定；人工判定 = E1–E10 全绿 +
 
 | 轮次 | 结论 | 要点 |
 |---|---|---|
-| 自检 | 待 reviewer 收卡 | 七条 verdict 与 caveat 如上；④ 按 A3 降级；⑦ 的 gate/gate.judged 不存在按 partial（M2 建表后必须复跑）；第 2 轮评审确认 overall partial 的两个理由诚实；最终取证 2026-11-14T13:14:52+08:00（树冻结后） |
+| 自检 / 第 1 轮 | 改完再审（2 P1 + 6 P2） | 七条 verdict 与 caveat 如上；④ 按 A3 降级；⑦ 的 gate/gate.judged 不存在按 partial（M2 建表后必须复跑）；第 2 轮评审确认 overall partial 的两个理由诚实；最终取证 2026-11-14T13:14:52+08:00（树冻结后） |
 
 ## 收口
 
 - [x] 判据 C1–C11 全绿（C1–C11 逐条见证据与协作偏差；裁判权在 reviewer）
 - [x] 七条读数逐条 verdict + caveat
 - [x] 人确认 confirmed（Lead m02863）
-- [ ] reviewer 收卡
-- [ ] 代码与生成物一笔提交、卡与台账一笔提交
-- [ ] 报告交人签（`plan/sign/S-M1.md`）——树冻结后已复跑最终读数（2026-11-14T13:14:52+08:00），待签字
+- [x] reviewer 收卡（第 2 轮「可收卡（仅 P3）」）
+- [x] 代码与生成物一笔提交（`54652fe`）、卡与生成物一笔提交（`185ffc1`）
+- [x] 报告交人签：`plan/sign/S10.md`（2026-11-14T13:30+08:00，签：接受 overall partial，进 M2）
 
 ## 待确认
 
