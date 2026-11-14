@@ -3,9 +3,11 @@
  * 独立成文件是为了让 `write.ts` 只留事务/链/物化编排（单文件 <200 行）。
  */
 
+import { canonicalJson, sha256Hex } from '../core/fold/canonical.js';
 import { ACK_KINDS } from '../core/fold/ack.js';
 import { REDUCERS } from '../core/fold/registry.js';
 import type { Event } from '../core/fold/types.js';
+import { checkDecisionSignedProvenance } from '../sign/provenance.js';
 import { MATERIALIZED_TABLES, SUPPORTED_KINDS, requiredTable } from './write-materialize.js';
 import { failure, type AppendFailure } from './write-types.js';
 
@@ -27,6 +29,46 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
   if (!Object.hasOwn(REDUCERS, event.kind) && !Object.hasOwn(ACK_KINDS, event.kind)) {
     return failure('unknown_event_kind', `unknown event kind ${event.kind}`);
   }
+  // C8：decision.signed 必须带 signerd 的可验证回执（受信公钥 + Ed25519 + 回执逐字段一致）。
+  // 只有裸 append 的“随便一个 signature 字符串”在这里被拒，0 行落库。
+  if (event.kind === 'decision.signed') {
+    const check = checkDecisionSignedProvenance({
+      decision_id: event.subject,
+      payload: event.payload,
+    });
+    if (!check.ok) {
+      return failure(
+        'signature_not_from_signerd',
+        `decision.signed 未通过 signerd 验签：${check.message ?? 'unknown'}`,
+      );
+    }
+  }
+  // D-055：decision.valid 的 payload_hash 必须覆盖 payload.payload 的真实内容。
+  // 否则“签过的内容”与库里的内容可以对不上而无人发现（canonicalJson 复用 core，不另写一套）。
+  if (event.kind === 'decision.valid') {
+    const payload = event.payload as unknown;
+    if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
+      return failure('invalid_field', 'decision.valid.payload must be an object');
+    }
+    const record = payload as Record<string, unknown>;
+    const declared = record['payload_hash'];
+    if (!isNonEmptyString(declared)) {
+      return failure('invalid_field', 'decision.valid.payload_hash must be a non-empty string');
+    }
+    const inner = record['payload'];
+    if (typeof inner !== 'object' || inner === null || Array.isArray(inner)) {
+      return failure('invalid_field', 'decision.valid.payload.payload must be an object');
+    }
+    const expected = `sha256:${sha256Hex(canonicalJson(inner))}`;
+    if (declared !== expected) {
+      return failure(
+        'invalid_field',
+        `decision.valid.payload_hash 与 payload 内容不一致（D-055）：declared=${declared} expected=${expected}`,
+      );
+    }
+  }
+  // ACK kind（audit-only，如 security.alert/auth.failed）：append 成功即写 event，不投影业务表（C12）。
+  if (Object.hasOwn(ACK_KINDS, event.kind)) return undefined;
   if (!Object.hasOwn(SUPPORTED_KINDS, event.kind)) {
     const project = requiredTable(event.kind) ?? 'no fold projection (ACK kind)';
     return failure(

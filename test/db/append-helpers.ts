@@ -5,8 +5,15 @@ import { join } from 'node:path';
 import { openSdoDatabase } from '../../src/db/open.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
+import { canonicalJson, sha256Hex } from '../../src/core/fold/canonical.js';
 import { GENESIS_PREV, computeEventHash } from '../../src/core/verify-events.js';
 import type { Event } from '../../src/core/fold/types.js';
+import { installTestSignerd } from '../sign/fixture-signerd.js';
+
+/** D-055：decision.valid 的 payload_hash 必须覆盖 payload.payload；夹具统一用它算。 */
+export function payloadHashOf(payload: unknown): string {
+  return `sha256:${sha256Hex(canonicalJson(payload))}`;
+}
 
 export const PASSPHRASE = 'm1-write-test-passphrase';
 export const AT = '2026-11-13T00:00:00Z';
@@ -24,6 +31,55 @@ export function chain(seeds: readonly EventSeed[], startPrev = GENESIS_PREV): Ev
   });
 }
 
+/**
+ * decision.signed 是写网关验签的入口（C8）：夹具必须真签，不能再用 `signature: 'sig'`。
+ * 夹具按 payload 里的 payload_hash/frontier/nonce 出真 Ed25519 签名，并落一条回执；
+ * 调用方给 `signature`/`key_id` 的假值被忽略（否则测试就在测一个假网关）。
+ */
+function signedDecisionSeed(
+  n: number,
+  subject: string,
+  payload: unknown,
+  overrides: Partial<EventSeed>,
+): EventSeed {
+  const fixture = installTestSignerd();
+  const source = (
+    typeof payload === 'object' && payload !== null ? payload : {}
+  ) as Record<string, unknown>;
+  const payloadHash =
+    typeof source['payload_hash'] === 'string' && source['payload_hash'].length > 0
+      ? source['payload_hash']
+      : `sha256:${'0'.repeat(64)}`;
+  const frontier = typeof source['frontier'] === 'string' && source['frontier'].length > 0
+    ? source['frontier']
+    : 'f-1';
+  const nonce = typeof source['nonce'] === 'string' && source['nonce'].length > 0
+    ? source['nonce']
+    : `nonce-${subject}`;
+  const signer = typeof source['signer'] === 'string' && source['signer'].length > 0
+    ? source['signer']
+    : undefined;
+  const signed = fixture.sign({
+    decision_id: subject,
+    payload_hash: payloadHash,
+    frontier,
+    nonce,
+    ...(signer === undefined ? {} : { signer }),
+    at: AT,
+  });
+  return {
+    id: `e-m1-${n}`,
+    at: AT,
+    actor: 'actor-1',
+    kind: 'decision.signed',
+    subject,
+    payload: signed,
+    caused_by: [],
+    request_id: `req-m1-${n}`,
+    ...overrides,
+  };
+}
+
 export function seed(
   n: number,
   kind: string,
@@ -31,13 +87,19 @@ export function seed(
   payload: unknown,
   overrides: Partial<EventSeed> = {},
 ): EventSeed {
+  if (kind === 'decision.signed') return signedDecisionSeed(n, subject, payload, overrides);
+  let effectivePayload = payload;
+  if (kind === 'decision.valid') {
+    const source = (typeof payload === 'object' && payload !== null ? payload : {}) as Record<string, unknown>;
+    effectivePayload = { ...source, payload_hash: payloadHashOf(source['payload'] ?? {}) };
+  }
   return {
     id: `e-m1-${n}`,
     at: AT,
     actor: 'actor-1',
     kind,
     subject,
-    payload,
+    payload: effectivePayload,
     caused_by: [],
     request_id: `req-m1-${n}`,
     ...overrides,
@@ -46,15 +108,17 @@ export function seed(
 
 /** intent.signed 需要有效 decision(kind='intent')；返回四表链用的完整事件种子。 */
 export function fourDomainSeeds(): EventSeed[] {
+  const intentPayload = { kind: 'intent', intent_id: 'INT-1' };
+  const intentHash = payloadHashOf(intentPayload);
   return [
     seed(1, 'decision.valid', 'd-int', {
       decision_kind: 'intent',
-      payload_hash: 'ph-d-int',
+      payload_hash: intentHash,
       frontier: 'f-1',
-      payload: { kind: 'intent', intent_id: 'INT-1' },
+      payload: intentPayload,
     }),
     seed(2, 'decision.signed', 'd-int', {
-      payload_hash: 'ph-d-int',
+      payload_hash: intentHash,
       signature: 'sig',
       key_id: 'key-1',
       signer: 'alice',

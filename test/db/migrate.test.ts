@@ -28,19 +28,19 @@ test('migrate: migration files are versioned 001..N', () => {
   const migrations = listMigrations();
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5],
-    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards)',
+    [1, 2, 3, 4, 5, 6],
+    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel)',
   );
   assert.match(migrations[0]?.file ?? '', /^001_[A-Za-z0-9_-]+\.sql$/);
 });
 
-test('migrate: fresh database applies 001..005 and reports user_version = 5', () => {
+test('migrate: fresh database applies 001..006 and reports user_version = 6', () => {
   withEmptyDb((_file, _close, db) => {
     assert.equal(currentUserVersion(db), 0, 'a fresh database starts at user_version 0');
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5]);
-    assert.equal(result.userVersion, 5);
-    assert.equal(currentUserVersion(db), 5);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6]);
+    assert.equal(result.userVersion, 6);
+    assert.equal(currentUserVersion(db), 6);
     assert.equal(tableNames(db).length, 35);
   });
 });
@@ -52,9 +52,9 @@ test('migrate: second run is a no-op (idempotent, zero changes)', () => {
 
     const second = runMigrations(db);
     assert.deepEqual(second.applied, [], 'an up-to-date database must apply no migrations');
-    assert.equal(second.userVersion, 5, 'user_version must not move on a no-op run');
+    assert.equal(second.userVersion, 6, 'user_version must not move on a no-op run');
     assert.deepEqual(tableNames(db), before);
-    assert.equal(currentUserVersion(db), 5);
+    assert.equal(currentUserVersion(db), 6);
   });
 });
 
@@ -89,8 +89,8 @@ test('migrate: 004 preserves existing stage_run rows during the rebuild (upgrade
     ).run();
 
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [4, 5]);
-    assert.equal(result.userVersion, 5);
+    assert.deepEqual(result.applied, [4, 5, 6]);
+    assert.equal(result.userVersion, 6);
     const row = db.prepare("SELECT * FROM stage_run WHERE id = 'SR-old'").get() as Record<string, unknown>;
     assert.equal(row['stage'], 'build');
     assert.equal(row['gate_id'], 'G_build');

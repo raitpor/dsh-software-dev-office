@@ -16,7 +16,7 @@ test('migration seeds exactly REDUCERS ∪ ACK_KINDS (drift guard)', () => {
     const seeded = rows.map((row) => row.kind);
     const code = [...new Set([...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)])].sort();
     assert.deepEqual(seeded, code, 'event_kind seed drifted from code registry');
-    assert.equal(seeded.length, 92);
+    assert.equal(seeded.length, 93);
     for (const kind of seeded) {
       assert.ok(
         Object.hasOwn(REDUCERS, kind) || Object.hasOwn(ACK_KINDS, kind),

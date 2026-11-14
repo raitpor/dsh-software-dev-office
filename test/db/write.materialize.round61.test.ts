@@ -9,22 +9,32 @@ import {
   SUPPORTED_KINDS,
 } from '../../src/db/write-materialize.js';
 import { ACK_KINDS } from '../../src/core/fold/ack.js';
+import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { fold } from '../../src/core/fold/index.js';
 import { REDUCERS } from '../../src/core/fold/registry.js';
-import { readEvents } from '../../src/core/verify-events.js';
+import { GENESIS_PREV, readEvents } from '../../src/core/verify-events.js';
 import { verify } from '../../src/core/verify.js';
 import type { VerifyProblem } from '../../src/core/verify-types.js';
-import { chain, fourDomainSeeds, seed, withWriteDb } from './append-helpers.js';
+import { chain, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
-test('P1: unsupported (registered but out-of-scope) kind is rejected, verify stays green', () => {
+test('D-053: ACK kind 在 fold 里显式忽略——投影表逐字节不变，但 seen/eventIds 记账', () => {
+  const before = fold(undefined, []);
+  const events = chain([seed(1, 'query_miss', 'Q-1', { query: 'q', gap: 'g' })]);
+  const event = events[0];
+  assert.ok(event);
+  const after = fold(undefined, events);
+  assert.equal(canonicalJson(after.tables), canonicalJson(before.tables), 'ACK kind 不许改任何投影表');
+  assert.deepEqual(after.eventIds, [event.id], 'ACK 事件必须显式记账，不能靠 REDUCERS 未命中悄悄跳过');
+  assert.equal(after.seen[event.id], true);
+});
+
+test('P1/C12: ACK kind（query_miss）是 append-only 审计事件，不投影、verify 仍绿', () => {
   withWriteDb((db) => {
     const result = append(db, chain([seed(1, 'query_miss', 'Q-1', {})]));
-    assert.equal(result.ok, false);
-    assert.equal(result.reason_code, 'unsupported_scope');
-    assert.match(result.message ?? '', /query_miss/u);
-    assert.match(result.message ?? '', /no fold projection/u);
-    assert.equal(count(db, 'event'), 0);
+    assert.equal(result.ok, true);
+    assert.equal(result.written, 1);
+    assert.equal(count(db, 'event'), 1);
     assert.deepEqual(verify(db).problems, []);
   });
 });
@@ -40,7 +50,14 @@ test('P1/D-019: decision.valid alone writes no decision row; signed batch materi
     const result = append(db, signed);
     assert.equal(result.ok, true, `append failed: ${result.message ?? ''}`);
     const row = db.prepare('SELECT signature FROM decision WHERE id = ?').get('d-int') as { signature: string };
-    assert.equal(row.signature, 'sig-d-int');
+    const signedEvent = db
+      .prepare("SELECT payload FROM event WHERE kind = 'decision.signed' AND subject = 'd-int'")
+      .get() as { payload: string };
+    const signedPayload = JSON.parse(signedEvent.payload) as { signature: string };
+    // 真 Ed25519 签名（C8）：不是 'sig' 占位串。
+    assert.equal(row.signature, signedPayload.signature);
+    assert.notEqual(row.signature, 'sig-d-int');
+    assert.ok(Buffer.from(row.signature, 'base64').length === 64, 'Ed25519 signature must be 64 bytes');
     assert.deepEqual(verify(db).problems, []);
   });
 });
@@ -113,11 +130,12 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
   });
 });
 
-test('P1/C1: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
+test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
   withWriteDb((db) => {
     const kinds = [...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)].sort();
-    assert.equal(kinds.length, 92, 'registered kind count drift');
+    assert.equal(kinds.length, 93, 'registered kind count drift');
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
+    let prev: string = GENESIS_PREV;
     for (const kind of kinds) {
       if (Object.hasOwn(SUPPORTED_KINDS, kind)) {
         counts.supported += 1;
@@ -128,17 +146,24 @@ test('P1/C1: every registered kind is supported / unsupported_scope / ack-only (
         );
         continue;
       }
-      const result = append(db, chain([seed(1, kind, 'X-1', {})]));
-      assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
       if (Object.hasOwn(ACK_KINDS, kind)) {
+        // ACK kind 是 append-only 审计事件：网关接受、fold 不投影（C12；security.alert/auth.failed）。
         counts.ackOnly += 1;
         assert.equal(Object.hasOwn(REDUCERS, kind), false, `ack-only kind ${kind} must not have a reducer`);
-      } else {
-        counts.unsupported += 1;
+        const [event] = chain([seed(counts.ackOnly, kind, 'X-1', {})], prev);
+        assert.ok(event);
+        const result = append(db, [event]);
+        assert.equal(result.ok, true, `ack kind ${kind} must append`);
+        assert.equal(result.written, 1);
+        prev = event.hash;
+        continue;
       }
+      const result = append(db, chain([seed(1, kind, 'X-1', {})]));
+      assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
+      counts.unsupported += 1;
     }
-    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 92);
-    assert.equal(count(db, 'event'), 0);
+    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 93);
+    assert.equal(count(db, 'event'), counts.ackOnly, '只有 ack kind 落 event，业务 kind 不越权写');
   });
 });
 
@@ -153,7 +178,7 @@ function seedDecisionValid(): ReturnType<typeof seed> {
 
 function seedDecisionSigned(): ReturnType<typeof seed> {
   return seed(91, 'decision.signed', 'd-int', {
-    payload_hash: 'ph-d-int',
+    payload_hash: payloadHashOf({ kind: 'intent' }),
     signature: 'sig-d-int',
     key_id: 'key-1',
     signer: 'alice',

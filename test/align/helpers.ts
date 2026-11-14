@@ -11,7 +11,7 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { append, chainHead } from '../../src/db/write.js';
-import { chain, seed } from '../db/append-helpers.js';
+import { chain, payloadHashOf, seed } from '../db/append-helpers.js';
 import type { EventSeed } from '../db/append-helpers.js';
 
 export const PASSPHRASE = 'm1-2-align-passphrase';
@@ -73,15 +73,17 @@ export function appendIntent(db: SdoDatabase, fixture: IntentFixture = {}): stri
   const contentHash = fixture.contentHash ?? 'ch:intent-1';
   const at = fixture.at ?? ALIGN_AT;
   const decisionId = `d-${intentId}`;
+  const intentPayload = { kind: 'intent', intent_id: intentId };
+  const intentHash = payloadHashOf(intentPayload);
   appendSeeds(db, [
     ev('decision.valid', decisionId, {
       decision_kind: 'intent',
-      payload_hash: `ph-${intentId}`,
+      payload_hash: intentHash,
       frontier: 'f-1',
-      payload: { kind: 'intent', intent_id: intentId },
+      payload: intentPayload,
     }, { at }),
     ev('decision.signed', decisionId, {
-      payload_hash: `ph-${intentId}`,
+      payload_hash: intentHash,
       signature: 'sig-fixture',
       key_id: 'key-fixture',
       signer: 'alice',

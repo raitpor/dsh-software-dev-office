@@ -7,7 +7,7 @@ import { columnNames, tableNames, withMigratedDb } from './helpers.js';
 const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   decision: [
     'id', 'decision_kind', 'status', 'payload', 'payload_hash', 'signature',
-    'key_id', 'signer', 'frontier', 'at', 'revoked_at', 'revoke_reason',
+    'key_id', 'signer', 'frontier', 'at', 'revoked_at', 'revoke_reason', 'channel',
   ],
   baseline: [
     'id', 'frozen_by', 'engine_version', 'criteria_manifest_hash', 'policy',

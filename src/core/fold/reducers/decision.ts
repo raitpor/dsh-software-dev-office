@@ -1,4 +1,15 @@
-import { createOnce, fail, optString, payloadOf, reqEnum, reqString, rowOf, subjectId, upsert } from '../guards.js';
+import {
+  createOnce,
+  fail,
+  optEnum,
+  optString,
+  payloadOf,
+  reqEnum,
+  reqString,
+  rowOf,
+  subjectId,
+  upsert,
+} from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 
 const DECISION_KINDS = [
@@ -45,10 +56,13 @@ export function decisionSigned(state: FoldWorking, event: Event): void {
   if (payloadHash !== row['payload_hash']) {
     return fail(event, `decision ${id} payload_hash mismatch with decision.valid`);
   }
+  // C12/D-047：channel 与 key_id 都从**已验签的载荷**投影（网关已核过回执）；
+  // channel 对旧 fixture 允许缺省为 null，但真实签发路径必填。
   upsert(state, 'decision', id, {
     ...row,
     signature: reqString(event, payload, 'signature'),
     key_id: reqString(event, payload, 'key_id'),
+    channel: optEnum(event, payload, 'channel', ['ui', 'cli'] as const) ?? null,
     signer: reqString(event, payload, 'signer'),
     at: event.at,
   });

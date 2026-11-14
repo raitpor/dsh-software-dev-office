@@ -14,7 +14,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { alignmentGate, disposeDiff, proposeRestatement } from '../../../lib/src/align/index.js';
-import { canonicalJson } from '../../../lib/src/core/fold/canonical.js';
+import { canonicalJson, sha256Hex } from '../../../lib/src/core/fold/canonical.js';
 import { fold } from '../../../lib/src/core/fold/index.js';
 import { validateBaseline } from '../../../lib/src/core/baseline/index.js';
 import { registerCriterion } from '../../../lib/src/core/criteria/register.js';
@@ -23,6 +23,7 @@ import { append, chainHead } from '../../../lib/src/db/write.js';
 import { importClaims, expectedClaimRow } from '../../../lib/src/claim/gateway.js';
 import { readExportFile } from '../../../lib/src/importer/parse.js';
 import { collectInvalidatedWorkUnits, previewChange } from '../../../lib/src/preview/index.js';
+import { installTestSignerd } from '../../../lib/test/sign/fixture-signerd.js';
 import { PASSPHRASE, withTempDb } from '../fixtures.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
@@ -66,20 +67,31 @@ function appendSeeds(db, seeds) {
   return events;
 }
 
+/**
+ * M2-0/C8 起写网关对 decision.signed 真验签：读数夹具必须真签（D-052）。
+ * 复用 `test/sign/fixture-signerd` 的固定测试钥匙 + keyring/receipts，不给产品开测试后门。
+ */
+function signedDecisionPayload(decisionId, payloadHash, frontier, at = AT) {
+  return installTestSignerd().sign({
+    decision_id: decisionId,
+    payload_hash: payloadHash,
+    frontier,
+    nonce: `m1g-${decisionId}`,
+    at,
+  });
+}
+
 function intentSeeds(contentHash, at = AT) {
+  const intentPayload = { statement: '把返工前移' };
+  const intentHash = `sha256:${sha256Hex(canonicalJson(intentPayload))}`;
   return [
     seed('m1g-d-int-valid', 'decision.valid', 'd-int', {
       decision_kind: 'intent',
-      payload_hash: 'ph-intent',
+      payload_hash: intentHash,
       frontier: 'f-1',
-      payload: { statement: '把返工前移' },
+      payload: intentPayload,
     }, at),
-    seed('m1g-d-int-signed', 'decision.signed', 'd-int', {
-      payload_hash: 'ph-intent',
-      signature: 'sig',
-      key_id: 'k-1',
-      signer: 'alice',
-    }, at),
+    seed('m1g-d-int-signed', 'decision.signed', 'd-int', signedDecisionPayload('d-int', intentHash, 'f-1', at), at),
     seed('m1g-intent', 'intent.signed', 'INT-1', {
       decision_id: 'd-int',
       statement: '把返工前移',

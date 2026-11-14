@@ -12,6 +12,7 @@ export const ACK_KINDS: Readonly<Record<string, string>> = {
   'auth.login': '审计事件，不投影',
   'auth.unlock': '审计事件，不投影',
   'auth.failed': '审计事件，不投影',
+  'security.alert': '安全告警审计事件，不投影（M2-0 C12/D-046；append 成功即落 event，无业务表）',
   'query_miss': 'gap 的输入；gaps/pm_gaps 是视图（M0-3），不是表',
   'schema.migrated': '迁移自述事件；迁移本身由 user_version 记录',
   'backup.taken': '运维审计事件，不投影',

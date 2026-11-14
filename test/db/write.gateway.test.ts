@@ -12,6 +12,10 @@ function eventCount(db: SdoDatabase): number {
   return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
 }
 
+function count(db: SdoDatabase, sql: string): number {
+  return (db.prepare(sql).get() as { n: number }).n;
+}
+
 function sourceFiles(dir: string): string[] {
   return readdirSync(dir, { recursive: true })
     .map((entry) => join(dir, String(entry)))
@@ -138,7 +142,7 @@ test('P2-4 duplicate id inside a batch fails at INSERT and rolls back (append_co
   withWriteDb((db) => {
     const first = seed(1, 'decision.valid', 'd-1', { decision_kind: 'intent', payload_hash: 'ph1', frontier: 'f', payload: {} });
     const duplicate = seed(2, 'decision.valid', 'd-2', { decision_kind: 'intent', payload_hash: 'ph2', frontier: 'f', payload: {} });
-    const second = { ...duplicate, id: first.id, payload: { statement: 'b' } };
+    const second = { ...duplicate, id: first.id };
     const events = chain([first, second]);
     const result = append(db, events);
     assert.equal(result.ok, false);
@@ -180,15 +184,28 @@ test('P2-6 append refuses to nest inside an open transaction', () => {
   });
 });
 
-test('P1: unsupported kind is rejected with unsupported_scope and writes nothing', () => {
+test('P1/D-053: ACK kind（query_miss）可 append 落 event，但不落业务表、verify 绿', () => {
   withWriteDb((db) => {
-    const result = append(db, chain([seed(1, 'query_miss', 'Q-1', {})]));
-    assert.equal(result.ok, false);
-    assert.equal(result.reason_code, 'unsupported_scope');
-    assert.match(result.message ?? '', /query_miss/u);
-    assert.match(result.message ?? '', /no fold projection/u);
-    assert.equal(result.attempted, 0);
-    assert.equal(eventCount(db), 0);
+    const before = {
+      task: count(db, 'SELECT count(*) AS n FROM task'),
+      spec: count(db, 'SELECT count(*) AS n FROM spec'),
+      decision: count(db, 'SELECT count(*) AS n FROM decision'),
+    };
+    const result = append(db, chain([seed(1, 'query_miss', 'Q-1', { query: 'q', gap: 'g' })]));
+    assert.equal(result.ok, true);
+    assert.equal(result.written, 1);
+    assert.equal(result.attempted, 1);
+    assert.equal(result.rolled_back, false);
+    assert.equal(eventCount(db), 1);
+    assert.deepEqual(
+      {
+        task: count(db, 'SELECT count(*) AS n FROM task'),
+        spec: count(db, 'SELECT count(*) AS n FROM spec'),
+        decision: count(db, 'SELECT count(*) AS n FROM decision'),
+      },
+      before,
+      'ACK kind 不许投影到任何业务表',
+    );
     assert.equal(verify(db).ok, true);
   });
 });

@@ -1,4 +1,4 @@
-import { seed, type EventSeed } from './append-helpers.js';
+import { payloadHashOf, seed, type EventSeed } from './append-helpers.js';
 
 /**
  * 覆盖全部 56 个 supported kind 的一条合法事件链（M1-7 C6）。
@@ -10,10 +10,13 @@ export function worldSeeds(): EventSeed[] {
   const add = (...xs: EventSeed[]): void => {
     for (const x of xs) s.push(x);
   };
-  const dec = (n: number, id: string, kind: string, payload: unknown = {}, hash = `ph-${id}`): EventSeed[] => [
-  seed(n, 'decision.valid', id, { decision_kind: kind, payload_hash: hash, frontier: `f-${id}`, payload }),
-  seed(n + 1, 'decision.signed', id, { payload_hash: hash, signature: `sig-${id}`, key_id: 'key-1', signer: 'alice' }),
-  ];
+  const dec = (n: number, id: string, kind: string, payload: unknown = {}): EventSeed[] => {
+    const hash = payloadHashOf(payload);
+    return [
+      seed(n, 'decision.valid', id, { decision_kind: kind, payload_hash: hash, frontier: `f-${id}`, payload }),
+      seed(n + 1, 'decision.signed', id, { payload_hash: hash, frontier: `f-${id}`, signer: 'alice' }),
+    ];
+  };
   const plan = (ids: string[], tree: unknown[]): Record<string, unknown> => ({ node_ids: ids, tree });
   add(...dec(1, 'd-int', 'intent', { intent_id: 'INT-1', kind: 'intent' }));
   add(seed(3, 'intent.signed', 'INT-1', { decision_id: 'd-int', statement: 'root intent', owner: 'alice', strength: 'explicit', content_hash: 'ch:int', baseline_hash: 'bh-1' }));
@@ -38,8 +41,9 @@ export function worldSeeds(): EventSeed[] {
   { id: 'GOAL-2', parent_id: 'GOAL-1', kind: 'part', goal: 'part two' },
   { id: 'GOAL-3', parent_id: 'GOAL-1', kind: 'part', goal: 'part three' },
   ]);
-  add(seed(21, 'decision.valid', 'd-plan', { decision_kind: 'plan', payload_hash: 'ph-d-plan', frontier: 'f', payload: tree1 }));
-  add(seed(22, 'decision.signed', 'd-plan', { payload_hash: 'ph-d-plan', signature: 'sig', key_id: 'k', signer: 'alice' }));
+  const tree1Hash = payloadHashOf(tree1);
+  add(seed(21, 'decision.valid', 'd-plan', { decision_kind: 'plan', payload_hash: tree1Hash, frontier: 'f', payload: tree1 }));
+  add(seed(22, 'decision.signed', 'd-plan', { payload_hash: tree1Hash, frontier: 'f', signer: 'alice' }));
   add(seed(23, 'goal.declared', 'GOAL-1', { kind: 'intent', intent_id: 'INT-1', decision_id: 'd-plan', goal: 'root' }));
   add(seed(24, 'goal.declared', 'GOAL-2', { kind: 'part', parent_id: 'GOAL-1', decision_id: 'd-plan', goal: 'part two' }));
   add(seed(25, 'goal.declared', 'GOAL-3', { kind: 'part', parent_id: 'GOAL-1', decision_id: 'd-plan', goal: 'part three' }));
@@ -48,8 +52,9 @@ export function worldSeeds(): EventSeed[] {
   { id: 'GOAL-2', parent_id: 'GOAL-1', kind: 'part', goal: 'part two' },
   { id: 'GOAL-3', parent_id: 'GOAL-2', kind: 'part', goal: 'part three' },
   ]);
-  add(seed(26, 'decision.valid', 'd-plan2', { decision_kind: 'plan', payload_hash: 'ph-d-plan2', frontier: 'f', payload: tree2 }));
-  add(seed(27, 'decision.signed', 'd-plan2', { payload_hash: 'ph-d-plan2', signature: 'sig', key_id: 'k', signer: 'alice' }));
+  const tree2Hash = payloadHashOf(tree2);
+  add(seed(26, 'decision.valid', 'd-plan2', { decision_kind: 'plan', payload_hash: tree2Hash, frontier: 'f', payload: tree2 }));
+  add(seed(27, 'decision.signed', 'd-plan2', { payload_hash: tree2Hash, frontier: 'f', signer: 'alice' }));
   add(seed(28, 'goal.reparented', 'GOAL-3', { parent_id: 'GOAL-2', decision_id: 'd-plan2' }));
   add(seed(29, 'goal.integrated', 'INTG-1', { parent_goal_id: 'GOAL-1', child_goal_id: 'GOAL-2', state: 'connected', evidence_id: 'EVID-1' }));
   add(seed(30, 'task.created', 'TASK-1', { seq: 1, title: 't1', kind: 'implement' }));
@@ -88,22 +93,28 @@ export function worldSeeds(): EventSeed[] {
   add(seed(100, 'criterion.revised', 'CRIT-1', { remedy: 'better' }));
   add(seed(63, 'baseline.frozen', 'B-1', { frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: 'bh-1' }));
   add(seed(64, 'baseline.amended', 'B-2', { prev: 'B-1', direction: 'tighten', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: 'bh-2' }));
-  add(seed(65, 'decision.valid', 'd-base', { decision_kind: 'baseline', payload_hash: 'ph-d-base', frontier: 'f', payload: { baseline_id: 'B-3' } }));
-  add(seed(66, 'decision.signed', 'd-base', { payload_hash: 'ph-d-base', signature: 'sig', key_id: 'k', signer: 'alice' }));
+  const basePayload = { baseline_id: 'B-3' };
+  const baseHash = payloadHashOf(basePayload);
+  add(seed(65, 'decision.valid', 'd-base', { decision_kind: 'baseline', payload_hash: baseHash, frontier: 'f', payload: basePayload }));
+  add(seed(66, 'decision.signed', 'd-base', { payload_hash: baseHash, frontier: 'f', signer: 'alice' }));
   add(seed(67, 'baseline.loosened', 'B-3', { prev: 'B-2', direction: 'loosen', decision_id: 'd-base', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: 'bh-3' }));
   add(seed(68, 'release.frozen', 'REL-1', { frozen_by: ['alice', 'bob'], package_version: '0.2.0', frontier: 'f', baseline_hash: 'bh-3', scope_spec_set: 'ss1', items: [{ kind: 'requirement', target: 'SPEC-1', disposition: 'in' }] }));
   add(seed(69, 'release.delivered', 'REL-1', {}));
   add(seed(70, 'release.frozen', 'REL-2', { frozen_by: ['alice', 'bob'], frontier: 'f', baseline_hash: 'bh-3', scope_spec_set: 'ss2', items: [{ kind: 'spec', target: 'SPEC-1', requirement_id: 'SPEC-1', disposition: 'out', reason: 'deferred' }] }));
-  add(seed(71, 'decision.valid', 'd-rb', { decision_kind: 'rollback', payload_hash: 'ph-d-rb', frontier: 'f', payload: { release_id: 'REL-2', frontier: 'f', artifact_sha256: null } }));
-  add(seed(72, 'decision.signed', 'd-rb', { payload_hash: 'ph-d-rb', signature: 'sig', key_id: 'k', signer: 'alice' }));
+  const rollbackPayload = { release_id: 'REL-2', frontier: 'f', artifact_sha256: null };
+  const rollbackHash = payloadHashOf(rollbackPayload);
+  add(seed(71, 'decision.valid', 'd-rb', { decision_kind: 'rollback', payload_hash: rollbackHash, frontier: 'f', payload: rollbackPayload }));
+  add(seed(72, 'decision.signed', 'd-rb', { payload_hash: rollbackHash, frontier: 'f', signer: 'alice' }));
   add(seed(73, 'release.superseded', 'REL-2', { release_id: 'REL-2', decision_id: 'd-rb', frontier: 'f', artifact_sha256: null }));
   add(seed(74, 'config.changed', 'limits.max_payload_bytes', { after: 4096, actor: 'alice' }));
   add(seed(101, 'snapshot.taken', 'SNAP-0', { git_oid: 'base0' }));
   add(seed(75, 'snapshot.taken', 'SNAP-1', { git_oid: 'abc123', parent_ids: ['SNAP-0'] }));
-  add(seed(76, 'decision.valid', 'd-rv', { decision_kind: 'intent', payload_hash: 'ph-d-rv', frontier: 'f', payload: {} }));
-  add(seed(77, 'decision.signed', 'd-rv', { payload_hash: 'ph-d-rv', signature: 'sig', key_id: 'k', signer: 'alice' }));
+  const revokedPayload = {};
+  const revokedHash = payloadHashOf(revokedPayload);
+  add(seed(76, 'decision.valid', 'd-rv', { decision_kind: 'intent', payload_hash: revokedHash, frontier: 'f', payload: revokedPayload }));
+  add(seed(77, 'decision.signed', 'd-rv', { payload_hash: revokedHash, frontier: 'f', signer: 'alice' }));
   add(seed(78, 'decision.revoked', 'd-rv', { reason: 'revoked' }));
-  add(seed(79, 'decision.valid', 'd-rj', { decision_kind: 'intent', payload_hash: 'ph-d-rj', frontier: 'f', payload: {} }));
+  add(seed(79, 'decision.valid', 'd-rj', { decision_kind: 'intent', payload_hash: payloadHashOf({}), frontier: 'f', payload: {} }));
   add(seed(80, 'decision.rejected', 'd-rj', { reason: 'no' }));
   return s;
 }

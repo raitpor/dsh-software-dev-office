@@ -6,7 +6,7 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { append, chainHead } from '../../src/db/write.js';
-import { PASSPHRASE, AT, chain, fourDomainSeeds, seed, type EventSeed } from '../db/append-helpers.js';
+import { PASSPHRASE, AT, chain, fourDomainSeeds, payloadHashOf, seed, type EventSeed } from '../db/append-helpers.js';
 
 export { PASSPHRASE, AT, chain, fourDomainSeeds, seed };
 export type { EventSeed };
@@ -71,15 +71,17 @@ export function seamSeeds(): EventSeed[] {
 
 /** 有效 decision(kind='spec_set') 覆盖 SPEC-1。 */
 export function engineSeedForSpecSet(): EventSeed[] {
+  const specSetPayload = { spec_ids: ['SPEC-1'] };
+  const specSetHash = payloadHashOf(specSetPayload);
   return [
     seed(7, 'decision.valid', 'd-spec-set', {
       decision_kind: 'spec_set',
-      payload_hash: 'ph-spec-set',
+      payload_hash: specSetHash,
       frontier: 'f-1',
-      payload: { spec_ids: ['SPEC-1'] },
+      payload: specSetPayload,
     }),
     seed(8, 'decision.signed', 'd-spec-set', {
-      payload_hash: 'ph-spec-set',
+      payload_hash: specSetHash,
       signature: 'sig-spec-set',
       key_id: 'key-1',
       signer: 'alice',

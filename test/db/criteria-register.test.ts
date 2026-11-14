@@ -7,7 +7,7 @@ import { append } from '../../src/db/write.js';
 import { MATERIALIZED_TABLES } from '../../src/db/write-materialize.js';
 import { verify } from '../../src/core/verify.js';
 import { registerCriterion, type Fixture, type FixtureRunner } from '../../src/core/criteria/register.js';
-import { chain, seed, withWriteDb, type EventSeed } from './append-helpers.js';
+import { chain, payloadHashOf, seed, withWriteDb, type EventSeed } from './append-helpers.js';
 
 const FIXTURES: readonly Fixture[] = [
   { polarity: 'positive', input: 'pos-1', expected_status: 'pass' },
@@ -18,15 +18,17 @@ const FIXTURES: readonly Fixture[] = [
 const RUNNER: FixtureRunner = (fixture) => (fixture.input.startsWith('pos') ? 'pass' : 'fail');
 
 function seedsWithFixtures(): EventSeed[] {
+  const intentPayload = { kind: 'intent', intent_id: 'INT-1' };
+  const intentHash = payloadHashOf(intentPayload);
   return [
     seed(1, 'decision.valid', 'd-int', {
       decision_kind: 'intent',
-      payload_hash: 'ph-d-int',
+      payload_hash: intentHash,
       frontier: 'f-1',
-      payload: { kind: 'intent', intent_id: 'INT-1' },
+      payload: intentPayload,
     }),
     seed(2, 'decision.signed', 'd-int', {
-      payload_hash: 'ph-d-int',
+      payload_hash: intentHash,
       signature: 'sig',
       key_id: 'key-1',
       signer: 'alice',

@@ -267,7 +267,7 @@
       "decision_kind": "intent",
       "status": "invalid",
       "payload": {},
-      "payload_hash": "ph-d-rj",
+      "payload_hash": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
       "signature": null,
       "key_id": null,
       "signer": null,
@@ -287,14 +287,15 @@
       "decision_kind": "intent",
       "status": "revoked",
       "payload": {},
-      "payload_hash": "ph-d-rv",
-      "signature": "sig",
-      "key_id": "k",
+      "payload_hash": "sha256:44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a",
+      "signature": "urpvrEO1k6g0QH++nepx19qNkRZEk0nefHYXVFfp2PGJ1epwTADUEXIcszIV1BR2KgW9bYI1tUJRqFs03yC7DA==",
+      "key_id": "ed25519:7c77142cb31692c988209e3a487109fc",
       "signer": "alice",
       "frontier": "f",
       "at": "2026-11-13T00:00:00Z",
       "revoked_at": "2026-11-13T00:00:00Z",
-      "revoke_reason": "revoked"
+      "revoke_reason": "revoked",
+      "channel": "cli"
     }
   },
   "decision.signed": {
@@ -308,14 +309,15 @@
         "intent_id": "INT-1",
         "kind": "intent"
       },
-      "payload_hash": "ph-d-int",
-      "signature": "sig-d-int",
-      "key_id": "key-1",
+      "payload_hash": "sha256:624a63483f5ca604384d47948ca5d791558b0ebd64194ba334a69b0234a61b6a",
+      "signature": "j7fxtrYNhXwnvcxmawhsph02V9tQrHVrIzeuWhCRkkAVf0T3x+DOHw+LtRKwBsnaLA+BTD3kT7dVfbQkqo9ZCw==",
+      "key_id": "ed25519:7c77142cb31692c988209e3a487109fc",
       "signer": "alice",
       "frontier": "f-d-int",
       "at": "2026-11-13T00:00:00Z",
       "revoked_at": null,
-      "revoke_reason": null
+      "revoke_reason": null,
+      "channel": "cli"
     }
   },
   "decision.valid": {
@@ -329,7 +331,7 @@
         "intent_id": "INT-1",
         "kind": "intent"
       },
-      "payload_hash": "ph-d-int",
+      "payload_hash": "sha256:624a63483f5ca604384d47948ca5d791558b0ebd64194ba334a69b0234a61b6a",
       "signature": null,
       "key_id": null,
       "signer": null,

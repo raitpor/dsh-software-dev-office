@@ -17,7 +17,9 @@ export type AppendReason =
   /** kind 已登记，但其投影表不在 M1-0 的物化范围内（写网关收窄，D-031）。 */
   | 'unsupported_scope'
   /** 事件已落库，但 fold/投影落库失败；整批 ROLLBACK。 */
-  | 'materialize_failed';
+  | 'materialize_failed'
+  /** M2-0/C8：decision.signed 没有 signerd 的可验证回执（验签失败）。 */
+  | 'signature_not_from_signerd';
 // 台账 D-025 需同步登记 append_conflict / transaction_in_progress（Lead 代记）。
 
 /**
