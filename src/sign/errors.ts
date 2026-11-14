@@ -10,6 +10,8 @@ export const SIGN_REASON_CODES = [
   'awaiting_unlock',
   'not_a_signer',
   'no_blind_sign',
+  // M2-6 C2：confirm 绑定的 hash 与当前内容不一致（两段式不可绕）。
+  'payload_changed',
   'frontier_stale',
   'signature_not_from_signerd',
   'signature_unverifiable',
@@ -21,6 +23,7 @@ export const SIGN_REASON_CODES = [
   'rate_limited',
   'locked',
   'invalid_request',
+  'invalid_field',
   'unknown_request',
   'store_not_initialized',
   'key_missing',

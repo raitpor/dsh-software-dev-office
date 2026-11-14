@@ -20,6 +20,7 @@ import { append, chainHead } from '../db/write.js';
 import type { SignerdClient } from './client.js';
 import { fail, isSignReasonCode, type SignFailure, type SignReasonCode } from './errors.js';
 import type { ActorKind } from './protocol.js';
+import { resolveClaimDecision } from './proposition.js';
 import { propositionHash, type SignChannel } from './receipt.js';
 
 export const DECISION_KINDS = [
@@ -47,7 +48,12 @@ export interface DecisionRequest {
   readonly consequence: string;
   /** 可选：调用方（签字页）渲染后回传的命题；必须与 renderer 一致。 */
   readonly proposition?: string;
-  /** 子载荷（如 baseline 的 guarantee_delta），进 payload_hash。 */
+  /** M2-6：签字页的待签项只选 claim 集合；命题由 claim 渲染器生成。 */
+  readonly claim_ids?: readonly string[];
+  /**
+   * 决策专属顶层字段（如 baseline 的 `baseline`/`guarantee_delta`、plan 的 `spec_ids`）。
+   * D-062：按 `docs/06` §5 铺进 payload **顶层**（不是 `payload.extra`），键不得与固定字段重名。
+   */
   readonly extra?: Readonly<Record<string, unknown>>;
   readonly actor: string;
   readonly actor_kind: ActorKind;
@@ -78,8 +84,31 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/** D-062：payload 固定字段；`extra` 的键不得与它们重名（防静默覆盖）。 */
+const FIXED_PAYLOAD_FIELDS = new Set([
+  'decision_kind',
+  'subject',
+  'value',
+  'proposition',
+  'evidence',
+  'difference',
+  'consequence',
+  'as_of_frontier',
+  'claim_ids',
+]);
+
 /** C5：四元组与命题一致性闸门；失败 = `no_blind_sign`，调用方不得写任何行。 */
-export function prepareDecision(input: DecisionRequest): PreparedDecision | SignFailure {
+export interface PrepareOptions {
+  /** 由 claim 渲染器算出的命题（M2-6）：以它为准，并跳过自由文本模板比对。 */
+  readonly proposition?: string;
+  /** claim 渲染器的依据集合；进 payload，签名覆盖“选了哪些 claim”。 */
+  readonly claimIds?: readonly string[];
+}
+
+export function prepareDecision(
+  input: DecisionRequest,
+  options: PrepareOptions = {},
+): PreparedDecision | SignFailure {
   if (!nonEmpty(input.subject) || !nonEmpty(input.value)) {
     return fail('no_blind_sign', '命题缺少 subject/value');
   }
@@ -89,13 +118,20 @@ export function prepareDecision(input: DecisionRequest): PreparedDecision | Sign
   }
   if (!nonEmpty(input.difference)) return fail('no_blind_sign', '四元组缺差异（difference）');
   if (!nonEmpty(input.consequence)) return fail('no_blind_sign', '四元组缺后果（consequence）');
-  const rendered = renderProposition({
-    subject: input.subject,
-    value: input.value,
-    consequence: input.consequence,
-  });
+  const rendered =
+    options.proposition ??
+    renderProposition({
+      subject: input.subject,
+      value: input.value,
+      consequence: input.consequence,
+    });
   if (input.proposition !== undefined && input.proposition !== rendered) {
     return fail('no_blind_sign', '调用方给的 proposition 与 renderer 渲染结果不一致');
+  }
+  for (const key of Object.keys(input.extra ?? {})) {
+    if (FIXED_PAYLOAD_FIELDS.has(key)) {
+      return fail('invalid_field', `extra 键与固定字段重名：${key}`);
+    }
   }
   const payload = {
     decision_kind: input.decision_kind,
@@ -105,7 +141,8 @@ export function prepareDecision(input: DecisionRequest): PreparedDecision | Sign
     evidence: [...evidence],
     difference: input.difference,
     consequence: input.consequence,
-    ...(input.extra === undefined ? {} : { extra: input.extra }),
+    ...(input.extra ?? {}),
+    ...(options.claimIds === undefined ? {} : { claim_ids: [...options.claimIds] }),
     as_of_frontier: input.frontier,
   };
   const payload_hash = `sha256:${sha256Hex(canonicalJson(payload))}`;
@@ -242,6 +279,9 @@ export interface SignOutcome {
   readonly signer: string;
   readonly frontier: string;
   readonly receipt_id: string;
+  /** M2-6 C4：signerd 回执里的真实耗时（不是页面估算）。 */
+  readonly unlock_wait_ms: number;
+  readonly sign_ms: number;
 }
 
 export interface SignResult {
@@ -274,7 +314,34 @@ export async function signDecision(
     });
     return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
   }
-  const prepared = prepareDecision(input);
+  let preparedInput = input;
+  let prepareOptions: PrepareOptions = {};
+  if (input.claim_ids !== undefined && input.claim_ids.length > 0) {
+    const resolved = resolveClaimDecision(db, {
+      claim_ids: input.claim_ids,
+      difference: input.difference,
+      consequence: input.consequence,
+    });
+    if (!resolved.ok) {
+      if (resolved.reason_code === 'no_blind_sign') return fail('no_blind_sign', resolved.message);
+      return fail('no_blind_sign', `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
+    }
+    if (input.proposition !== undefined && input.proposition !== resolved.resolved.proposition) {
+      return fail('no_blind_sign', '调用方给的 proposition 与 claim 渲染器结果不一致');
+    }
+    preparedInput = {
+      ...input,
+      subject: resolved.resolved.subject,
+      value: resolved.resolved.value,
+      evidence: resolved.resolved.evidence,
+      proposition: resolved.resolved.proposition,
+    };
+    prepareOptions = {
+      proposition: resolved.resolved.proposition,
+      claimIds: resolved.resolved.claim_ids,
+    };
+  }
+  const prepared = prepareDecision(preparedInput, prepareOptions);
   if ('reason_code' in prepared) return prepared;
   const decision = prepared;
 
@@ -395,7 +462,228 @@ export async function signDecision(
     signer: signed.signer,
     frontier: input.frontier,
     receipt_id: signed.receipt_id,
+    unlock_wait_ms: signed.unlock_wait_ms,
+    sign_ms: signed.sign_ms,
   };
+}
+
+/**
+ * D-060（会话式批量）第一段：只把签名**暂存**在会话里，不 append。
+ *
+ * 前置条件与 `signDecision` 相同（agent/四元组/claim 命题/frontier 双检），
+ * 区别是成功时返回 `StagedSignature`，事件由 `submitStagedBatch` 在整批确认后
+ * 一次 append —— 这样链头在确认期间保持为解锁时的 frontier `f0`。
+ */
+export interface StagedSignature {
+  readonly decision_id: string;
+  readonly decision_kind: DecisionKind;
+  readonly producer: string;
+  readonly actor: string;
+  readonly proposition: string;
+  readonly proposition_hash: string;
+  readonly payload_hash: string;
+  readonly payload: Readonly<Record<string, unknown>>;
+  readonly nonce: string;
+  readonly frontier: string;
+  readonly signature: string;
+  readonly key_id: string;
+  readonly signer: string;
+  readonly channel: SignChannel;
+  readonly receipt_id: string;
+  readonly receipt_at: string;
+  readonly unlock_wait_ms: number;
+  readonly sign_ms: number;
+}
+
+export type StageResult = { readonly ok: true; readonly staged: StagedSignature } | SignFailure;
+
+export async function stageDecision(
+  db: SdoDatabase,
+  client: SignerdClient,
+  input: DecisionRequest & { readonly now?: Date },
+): Promise<StageResult> {
+  const now = input.now ?? new Date();
+  const at = now.toISOString();
+  if (input.actor_kind === 'agent') {
+    recordSecurityAlert(db, {
+      actor: input.actor,
+      actor_kind: input.actor_kind,
+      at,
+      detail: `agent 尝试签发 decision_kind=${input.decision_kind}`,
+    });
+    return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
+  }
+  let preparedInput = input;
+  let prepareOptions: PrepareOptions = {};
+  if (input.claim_ids !== undefined && input.claim_ids.length > 0) {
+    const resolved = resolveClaimDecision(db, {
+      claim_ids: input.claim_ids,
+      difference: input.difference,
+      consequence: input.consequence,
+    });
+    if (!resolved.ok) {
+      if (resolved.reason_code === 'no_blind_sign') return fail('no_blind_sign', resolved.message);
+      return fail('no_blind_sign', `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
+    }
+    if (input.proposition !== undefined && input.proposition !== resolved.resolved.proposition) {
+      return fail('no_blind_sign', '调用方给的 proposition 与 claim 渲染器结果不一致');
+    }
+    preparedInput = {
+      ...input,
+      subject: resolved.resolved.subject,
+      value: resolved.resolved.value,
+      evidence: resolved.resolved.evidence,
+      proposition: resolved.resolved.proposition,
+    };
+    prepareOptions = {
+      proposition: resolved.resolved.proposition,
+      claimIds: resolved.resolved.claim_ids,
+    };
+  }
+  const prepared = prepareDecision(preparedInput, prepareOptions);
+  if ('reason_code' in prepared) return prepared;
+  const decision = prepared;
+
+  const head = chainHead(db);
+  if (head !== input.frontier) {
+    await client.lock(input.actor).catch(() => undefined);
+    return fail('frontier_stale', `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`);
+  }
+  const signed = await client.sign({
+    actor: input.actor,
+    actor_kind: input.actor_kind,
+    producer: input.producer,
+    decision_id: decision.decision_id,
+    payload_hash: decision.payload_hash,
+    proposition_hash: decision.proposition_hash,
+    frontier: input.frontier,
+    nonce: decision.nonce,
+    channel: input.channel,
+  });
+  if (!signed.ok) return signed;
+  const afterSign = chainHead(db);
+  if (afterSign !== input.frontier) {
+    await client.lock(input.actor).catch(() => undefined);
+    client.discardReceiptOnFailure(signed.receipt_id);
+    return fail('frontier_stale', `frontier 在签发期间变化：签名前 ${input.frontier}，签名后 ${afterSign}；请重新解锁`);
+  }
+  return {
+    ok: true,
+    staged: {
+      decision_id: decision.decision_id,
+      decision_kind: input.decision_kind,
+      producer: input.producer,
+      actor: input.actor,
+      proposition: decision.proposition,
+      proposition_hash: decision.proposition_hash,
+      payload_hash: decision.payload_hash,
+      payload: decision.payload,
+      nonce: decision.nonce,
+      frontier: input.frontier,
+      signature: signed.signature,
+      key_id: signed.key_id,
+      signer: signed.signer,
+      channel: signed.channel,
+      receipt_id: signed.receipt_id,
+      receipt_at: signed.at,
+      unlock_wait_ms: signed.unlock_wait_ms,
+      sign_ms: signed.sign_ms,
+    },
+  };
+}
+
+export interface SubmitStagedResult {
+  readonly ok: true;
+  readonly decision_ids: readonly string[];
+  readonly event_count: number;
+}
+
+/**
+ * D-060（会话式批量）第二段：整批一次 append（全部成功或全部回滚）。
+ *
+ * 只有链头仍等于会话 frontier 时才可提交；外部事件注入 ⇒ `frontier_stale`、0 条 decision。
+ */
+export function submitStagedBatch(
+  db: SdoDatabase,
+  staged: readonly StagedSignature[],
+  frontier: string,
+): SubmitStagedResult | SignFailure {
+  if (staged.length === 0) return fail('invalid_request', '没有可提交的签名');
+  const head = chainHead(db);
+  if (head !== frontier) {
+    return fail('frontier_stale', `提交前 frontier 已变：会话 ${frontier}，当前链头 ${head}；整批拒，0 条 decision`);
+  }
+  const events: Event[] = [];
+  let prev = head;
+  for (const item of staged) {
+    if (item.frontier !== frontier) {
+      return fail('frontier_stale', '会话内签名的 frontier 不一致，整批拒');
+    }
+    const at = item.receipt_at;
+    const requestId = `req-${randomUUID()}`;
+    const validEvent = buildEvent(
+      {
+        kind: 'decision.valid',
+        subject: item.decision_id,
+        actor: item.producer,
+        payload: {
+          decision_kind: item.decision_kind,
+          payload_hash: item.payload_hash,
+          frontier: item.frontier,
+          payload: item.payload,
+        },
+        request_id: requestId,
+        at,
+      },
+      prev,
+    );
+    const signedEvent = buildEvent(
+      {
+        kind: 'decision.signed',
+        subject: item.decision_id,
+        actor: item.actor,
+        payload: {
+          payload_hash: item.payload_hash,
+          proposition_hash: item.proposition_hash,
+          frontier: item.frontier,
+          nonce: item.nonce,
+          signature: item.signature,
+          key_id: item.key_id,
+          signer: item.signer,
+          channel: item.channel,
+          signerd: {
+            receipt_id: item.receipt_id,
+            at: item.receipt_at,
+            unlock_wait_ms: item.unlock_wait_ms,
+            sign_ms: item.sign_ms,
+          },
+        },
+        request_id: requestId,
+        at,
+        caused_by: [validEvent.id],
+      },
+      validEvent.hash,
+    );
+    events.push(validEvent, signedEvent);
+    prev = signedEvent.hash;
+  }
+  const result = append(db, events);
+  if (!result.ok) {
+    const reason = String(result.reason_code);
+    return fail(
+      isSignReasonCode(reason) ? reason : 'unknown_request',
+      result.message ?? 'append rejected',
+    );
+  }
+  return { ok: true, decision_ids: staged.map((item) => item.decision_id), event_count: events.length };
+}
+
+/** 会话放弃/提交失败：把已暂存回执全部标记 consumed:false（D-054），不 append。 */
+export function discardStagedSignatures(
+  client: SignerdClient,
+  staged: readonly StagedSignature[],
+): void {
+  for (const item of staged) client.discardReceiptOnFailure(item.receipt_id);
 }
 
 export { GENESIS_PREV };

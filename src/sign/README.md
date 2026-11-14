@@ -14,14 +14,16 @@
 | `permissions.ts` | 0600/0700 校验（lstat + uid + 精确位）、原子写 0600 |
 | `keys.ts` | 生成 Ed25519、Argon2id 派生 + AES-256-GCM 加密私钥信封（`sdo-signerd-key-v1`） |
 | `receipt.ts` | 规范签名消息、Ed25519 签/验、receipt 结构与 `receipt_id`、回执哈希链 |
-| `window.ts` | 免密窗口（TTL 0/5/15/60；D-051 单次签发） |
+| `window.ts` | 免密窗口（TTL 0/5/15/60；D-060：TTL=0 单次，TTL>0 供会话式批量复用；frontier 变即失效） |
 | `store.ts` | signerd 持久化：key 信封、keyring、receipts、capability、失败计数/限速 |
 | `protocol.ts` | unix socket JSON-per-line 协议：`status/unlock/lock/sign` |
 | `signerd.ts` | socket server、单实例锁、权限拒启、请求分发 |
 | `client.ts` | 插件侧客户端（capability 从 0600 文件读，口令走请求体） |
 | `provenance.ts` | 写网关用：只验“签名是否 signerd 产出”（受信公钥 + Ed25519 + receipt 逐字段） |
 | `verify.ts` | `verify` 用：decision 行 vs 签名载荷 vs receipt；缺回执/改签名/改 payload/断链都红 |
-| `decision.ts` | 插件侧签发流程：四元组闸门 → signerd → 同批写 `decision.valid`+`decision.signed` |
+| `decision.ts` | 插件侧签发流程：四元组闸门 → signerd → 同批写 `decision.valid`+`decision.signed`；另含 D-060 会话式批量 API：`stageDecision`（只签名不落库）、`submitStagedBatch`（整批一次 append）、`discardStagedSignatures` |
+| `proposition.ts` | 签字页命题渲染器（D-061）：从 `claim` 行渲染命题，模型只能选 claim 集合 |
+| `page.ts` | D-060 会话式批量签字页服务端状态机：preview N → 解锁 → 逐条 confirm（暂存签名）→ 整批提交 |
 | `errors.ts` | 稳定拒绝码闭集与 `{ok:false,reason_code,message}` 形状 |
 
 ## 默认路径（D-054：信任根固定，不用 env 覆盖）
@@ -74,13 +76,58 @@ M2-0 **不校验调用者身份**：`actor` / `actor_kind` 由调用方传入，
 `signature_not_from_signerd`、`signature_unverifiable`、`runtime_inconsistent`、
 `signerd_home_insecure`、`receipt_chain_broken`、`event_chain_broken`（写网关透传的真实原因：
 签后复核通过、但 append 时链头已被并发推进）。
-signerd：`bad_passphrase`、`rate_limited`、`locked`、`invalid_request`、`unknown_request`、
+signerd：`bad_passphrase`、`rate_limited`、`locked`、`invalid_request`、`invalid_field`（D-062：
+`extra` 键与 payload 固定字段重名）、`unknown_request`、
 `store_not_initialized`、`key_missing`、`key_file_insecure`、`key_dir_insecure`、
 `dir_perm_insecure`、`file_perm_insecure`、`key_envelope_invalid`、`receipt_not_found`、
 `signerd_already_running`、`signerd_lock_insecure`。
 平台/路径：`platform_unsupported`、`socket_dir_insecure`、`socket_perm_insecure`、
 `socket_path_too_long`、`socket_not_ready`、`runtime_dir_insecure`、`path_missing`、
 `path_is_symlink`、`path_not_directory`、`path_not_regular_file`、`path_owner_mismatch`。
+
+## 签字页（M2-6，D-060 会话式批量）
+
+签字页不是“再做一个确认弹窗”，是 `no_blind_sign` 的最后一公里：
+人看到的是 **renderer 从 claim 渲染的命题**，不是模型摘要；模型只能选 claim 集合。
+
+- 命题渲染：`src/sign/proposition.ts`。`resolveClaimDecision` 从 claim 行渲染命题、
+  派生 subject/value/evidence；提交的 `proposition` 与服务端复算不一致 ⇒ `no_blind_sign`。
+- 两段式：`createRequest` 产出 `proposition`/`payload_hash`，`confirm` 必须原样回传；
+  任何字段变化 ⇒ `payload_changed`（要求重新预览）。
+- **会话式批量（D-060）**：一次解锁 = 一个签名会话，绑定解锁时 frontier `f0`。
+  `preview` 一次生成 N 条（同 `f0`）；人逐条 `confirm`，每次只调 signerd 签名并暂存，
+  **确认期间不 append**；整批确认完后一次 `append` N 条 `decision.valid`+`decision.signed`
+  （`submitStagedBatch`）。因此确认期间链头始终是 `f0`，signerd 的
+  `request.frontier === window.frontier_hash` 严格成立；不是“全部同意”——服务端拒绝
+  一次请求提交多条 payload 的签名捷径（C8），批量只发生在逐条确认之后的提交。
+- 放弃/超时：`abandon` ⇒ 已签回执全部 `consumed:false` 清理、不 append 任何事件。
+- TTL：`0` 只能签一条（N=1）；多个待签项需要 `TTL∈{5,15,60}` 的免密窗口。
+- 交互计数（A2，Lead 定死）：一次交互 = 一个需要人输入并提交的 POST
+  （`/sign/unlock` 或 `/sign/confirm`）；GET/轮询不计；计数随响应返回。
+  单条 = 解锁 + 确认 = 2；批量第一条 2、后续每条 1。
+- 成本（A3）：`sign_ms` 与 `unlock_wait_ms` **取 signerd 回执原值**；页面侧
+  `page_total_ms` 仅展示，不参与 M2-G 读数；`page_unlock_wait_ms` 在复用会话时为 0。
+- 失败态都带 `title`/`next`（`failureGuidance`）；不透出私钥或签名原文以外的材料。
+
+### HTTP 页面
+
+```sh
+npm run build
+SDO_DB_PATH=./sdo.db SDO_DB_PASSPHRASE='<口令>' node lib/src/ui/sign-serve.js
+# 默认 http://127.0.0.1:4174/sign；SDO_SIGN_PAGE_PORT 覆盖，0 为随机端口
+```
+
+路由：`GET /sign`（页面）、`GET /sign/status`、`GET /sign/costs`、
+`POST /sign/requests`（preview）、`POST /sign/unlock`、`POST /sign/confirm`、
+`POST /sign/submit`（批量确认后提交）、`POST /sign/abandon`。
+页面只绑 `127.0.0.1`；`src/ui/` 不直接碰库（DB 读都在 `src/sign/`）。
+
+测试：
+
+```sh
+node --test lib/test/sign/          # 命题渲染 + 签字页状态机 + 批量/负例
+node --test lib/test/ui/            # HTTP 壳（含 sign-page 端到端）
+```
 
 ## 使用
 
@@ -97,6 +144,11 @@ npm run signerd -- lock --actor alice
 插件侧：`signDecision(db, client, ...)` 未解锁返回 `awaiting_unlock`（0 行）；成功时
 `decision` 行的 `signature/key_id/signer/channel/frontier` 与 signerd 回执一致。
 裸 `append` 一条 `decision.signed` 会被写网关拒（`signature_not_from_signerd`）。
+**决策载荷形状（D-062，按 `docs/06` §5）**：`decision_kind`、`subject`、`value`、`proposition`、
+`evidence`、`difference`、`consequence`、`as_of_frontier` 是顶层固定字段；kind 专属字段
+（`baseline`、`plan`、`intent`、`spec_ids`、`dispositions`、`clause_readings`、`readings_hash`、
+`rollback`、`scenarios_run` 等）由调用方的 `extra` 注入，**铺在 payload 顶层**（不存在
+`payload.extra` 这一层）。`extra` 的键与固定字段重名 ⇒ `invalid_field`、0 行、链上零事件。
 `decision.valid` 的 `payload_hash` 必须等于 `sha256:` + `sha256(canonicalJson(payload.payload))`
 （D-055，写网关与 `verify` 双向重算）；`verify` 还要求 decision 行的 `payload_hash` 等于
 **已签名载荷**里的 `payload_hash`（成对改 payload+hash 也会红）。

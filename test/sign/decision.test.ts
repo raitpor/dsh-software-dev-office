@@ -81,6 +81,37 @@ async function unlock(db: SdoDatabase, client: SignerdClient): Promise<void> {
   assert.equal(outcome.ok, true);
 }
 
+test('D-062：extra 铺到 payload 顶层（baseline 等是顶层字段，不是 payload.extra）', () => {
+  const prepared = prepareDecision({
+    ...baseRequest('sha256:genesis'),
+    extra: {
+      baseline: { baseline_id: 'b-1' },
+      guarantee_delta: { no_blind_sign: 'kept' },
+      spec_ids: ['SPEC-1'],
+    },
+  });
+  assert.ok(!('reason_code' in prepared));
+  if ('reason_code' in prepared) return;
+  assert.equal('extra' in prepared.payload, false, 'payload 不允许再有 extra 嵌套层');
+  assert.deepEqual(prepared.payload['baseline'], { baseline_id: 'b-1' });
+  assert.deepEqual(prepared.payload['spec_ids'], ['SPEC-1']);
+  assert.equal(prepared.payload_hash, `sha256:${sha256Hex(canonicalJson(prepared.payload))}`);
+});
+
+test('D-062：extra 键与固定字段重名 ⇒ invalid_field、0 行、链上无事件', async () => {
+  await withRigAndDb(async (db, rig) => {
+    await unlock(db, rig.client);
+    const outcome = await signDecision(db, rig.client, {
+      ...baseRequest(chainHead(db)),
+      extra: { value: 'sneaky', baseline: { baseline_id: 'b-1' } },
+    });
+    assert.equal(outcome.ok, false);
+    if (!outcome.ok) assert.equal(outcome.reason_code, 'invalid_field');
+    assert.equal(rows(db, 'SELECT id FROM decision').length, 0);
+    assert.equal(rows(db, 'SELECT id FROM event').length, 0, '碰撞必须在 prepare 阶段拒，链上零事件');
+  });
+});
+
 test('C5: 四元组不全 ⇒ no_blind_sign，0 行', () => {
   const request = baseRequest('f-1');
   const prepared = prepareDecision({ ...request, difference: ' ' });
