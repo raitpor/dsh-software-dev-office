@@ -17,7 +17,10 @@
     "console": "npm run build && node lib/src/ui/serve.js",
     "check": "npm run build && node lib/src/check/cli.js",
     "readings": "npm run build && node scripts/m0-readings.mjs",
-    "readings:m1": "npm run build && node scripts/m1-readings.mjs"
+    "readings:m1": "npm run build && node scripts/m1-readings.mjs",
+    "spike:crypto": "node scripts/spike/signerd-crypto.mjs",
+    "spike:unix-socket": "node scripts/spike/unix-socket.mjs",
+    "spike:test": "npm run build && node scripts/spike/copy-spike-tests.mjs && node --test lib/spike-test/"
   },
   "dependencies": {
     "better-sqlite3-multiple-ciphers": "^13.0.3"
