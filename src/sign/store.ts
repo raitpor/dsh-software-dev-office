@@ -78,6 +78,7 @@ export class SignerdStore {
   private failedAttempts = 0;
   private rateLimitedUntil = 0;
   private lastUnlockAt = 0;
+  private lastSignAt = 0;
 
   constructor(paths: SignerdPaths, options: SignerdStoreOptions = {}) {
     this.paths = paths;
@@ -160,6 +161,7 @@ export class SignerdStore {
       this.keyIdValue = material.key_id;
         this.failedAttempts = 0;
       this.lastUnlockAt = this.now().getTime();
+      this.lastSignAt = 0;
       this.window = openWindow({
         actor,
         frontier,
@@ -189,6 +191,7 @@ export class SignerdStore {
     this.privateKey = undefined;
     this.window = undefined;
     this.lastUnlockAt = 0;
+    this.lastSignAt = 0;
   }
 
   get unlockWindow(): UnlockWindow | undefined {
@@ -214,6 +217,21 @@ export class SignerdStore {
   unlockWaitMs(): number {
     if (this.lastUnlockAt === 0) return 0;
     return Math.max(0, this.now().getTime() - this.lastUnlockAt);
+  }
+
+  /**
+   * M2-6 第 1 轮 P2-2：签发前取两个诚实的时长，并记录本次签发时刻。
+   *
+   * - `unlock_wait_ms`：本次签发实际等人解锁的时长；同一窗口内第 2 条起为 0。
+   * - `since_last_unlock_ms`：距上次解锁的时长（保留原 `unlockWaitMs` 的量）。
+   */
+  beginSignTiming(): { unlock_wait_ms: number; since_last_unlock_ms: number } {
+    const nowMs = this.now().getTime();
+    if (this.lastUnlockAt === 0) return { unlock_wait_ms: 0, since_last_unlock_ms: 0 };
+    const since = Math.max(0, nowMs - this.lastUnlockAt);
+    const wait = this.lastSignAt === 0 ? since : 0;
+    this.lastSignAt = nowMs;
+    return { unlock_wait_ms: wait, since_last_unlock_ms: since };
   }
 
   readCapability(): string {

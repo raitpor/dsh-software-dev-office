@@ -2,8 +2,8 @@
  * signerd 进程本体（C1/C2/C4/C5/C6/C7/C11；docs/06 §3）。
  *
  * 一个 unix socket server，四个 op；私钥只在 unlock 之后以 KeyObject 存在于本进程内存。
- * 签名请求只收摘要：signerd 自己复核 frontier（防签旧版本），拒绝 agent 与“自己批自己”，
- * 每次签发消费掉窗口并立即回 locked。
+ * 签名请求只收摘要：signerd 自己复核 frontier（防签旧版本），拒绝 agent 与“自己批自己”。
+ * 窗口（D-060）：TTL=0 时一次解锁授权一次签发、签完即锁；TTL>0 时窗口内可连签（不消费窗口）。
  *
  * 单实例语义与 spike 一致：先抢 `signerd.lock`（0600，含 pid），抢不到活进程 ⇒ 拒绝；
  * 只有持锁后遇到的 socket 才当崩溃遗留清理。
@@ -23,6 +23,7 @@ import {
 import {
   checkWindow,
   parseWindowTtl,
+  windowReusable,
   type WindowTtlMinutes,
 } from './window.js';
 import {
@@ -183,7 +184,8 @@ async function handleRequest(
     store.lock();
     return fail('frontier_stale', checked.message);
   }
-  const unlock_wait_ms = store.unlockWaitMs();
+  const timing = store.beginSignTiming();
+  const { unlock_wait_ms, since_last_unlock_ms } = timing;
   const signStarted = Date.now();
   try {
     if (options.signDelayMs > 0) {
@@ -221,10 +223,13 @@ async function handleRequest(
       channel: request.channel,
       at,
       unlock_wait_ms,
+      since_last_unlock_ms,
       sign_ms,
     };
     const receipt = store.appendReceipt(base);
-    store.consumeWindow();
+    // D-060：TTL=0 的解锁是一次性授权（签完即锁）；TTL>0 的窗口内可连签，不消费窗口，
+    // 直到到期 / frontier 变 / 手动 lock。连签时每条仍经过上面的窗口与 frontier 检查。
+    if (!windowReusable(window)) store.consumeWindow();
     return {
       ok: true,
       op: 'sign',
@@ -235,6 +240,7 @@ async function handleRequest(
       channel: receipt.channel,
       at,
       unlock_wait_ms,
+      since_last_unlock_ms,
       sign_ms,
     };
   } catch (error) {

@@ -99,6 +99,8 @@ export interface SignerdReceipt {
   readonly at: string;
   /** C11：真实测量的两段耗时（毫秒），0 不通过。 */
   readonly unlock_wait_ms: number;
+  /** M2-6 第 1 轮 P2-2：距上次解锁的真实时长（窗口复用时 unlock_wait_ms=0，它仍 >0）。 */
+  readonly since_last_unlock_ms?: number;
   readonly sign_ms: number;
   /** D-054：回执哈希链的前驱哈希（首条为 null）。 */
   readonly prev_receipt_hash: string | null;
@@ -163,6 +165,9 @@ export function parseReceipt(line: string): SignerdReceipt | undefined {
   }
   if (!isSignChannel(record['channel'])) return undefined;
   if (typeof record['unlock_wait_ms'] !== 'number' || typeof record['sign_ms'] !== 'number') return undefined;
+  if ('since_last_unlock_ms' in record) {
+    if (typeof record['since_last_unlock_ms'] !== 'number' || record['since_last_unlock_ms'] < 0) return undefined;
+  }
   if (!('prev_receipt_hash' in record)) return undefined;
   if ('consumed' in record && typeof record['consumed'] !== 'boolean') return undefined;
   if (record['prev_receipt_hash'] !== null && (typeof record['prev_receipt_hash'] !== 'string' || (record['prev_receipt_hash'] as string).length === 0)) {

@@ -84,6 +84,31 @@ function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.trim().length > 0;
 }
 
+/**
+ * M2-6 P3：baseline 的两段式前置（will_change + guarantee_delta）。
+ *
+ * 挂在 `prepareDecision` 上，因此 `signDecision` 与直接调用 `stageDecision` 的路径
+ * 都受同一闸门约束；签字页的 createRequest 仍会先给一次人话更清楚的拒绝。
+ */
+export function baselineEvidenceProblem(extra: Readonly<Record<string, unknown>> | undefined): string | undefined {
+  const willChange = extra?.['will_change'];
+  if (!Array.isArray(willChange) || willChange.length === 0 || willChange.some((item) => typeof item !== 'string')) {
+    return 'baseline 冻结缺少 will_change（这一签会改什么）';
+  }
+  const delta = extra?.['guarantee_delta'];
+  if (typeof delta !== 'object' || delta === null || Array.isArray(delta)) {
+    return 'baseline 冻结缺少 guarantee_delta（1/2/3 的 kept/degraded）';
+  }
+  const record = delta as Record<string, unknown>;
+  for (const guarantee of ['1', '2', '3']) {
+    const status = record[guarantee];
+    if (status !== 'kept' && status !== 'degraded') {
+      return 'baseline 冻结缺少 guarantee_delta（1/2/3 的 kept/degraded）';
+    }
+  }
+  return undefined;
+}
+
 /** D-062：payload 固定字段；`extra` 的键不得与它们重名（防静默覆盖）。 */
 const FIXED_PAYLOAD_FIELDS = new Set([
   'decision_kind',
@@ -132,6 +157,10 @@ export function prepareDecision(
     if (FIXED_PAYLOAD_FIELDS.has(key)) {
       return fail('invalid_field', `extra 键与固定字段重名：${key}`);
     }
+  }
+  if (input.decision_kind === 'baseline') {
+    const problem = baselineEvidenceProblem(input.extra);
+    if (problem !== undefined) return fail('no_blind_sign', problem);
   }
   const payload = {
     decision_kind: input.decision_kind,
@@ -281,6 +310,8 @@ export interface SignOutcome {
   readonly receipt_id: string;
   /** M2-6 C4：signerd 回执里的真实耗时（不是页面估算）。 */
   readonly unlock_wait_ms: number;
+  /** M2-6 第 1 轮 P2-2：距上次解锁的真实时长（回执保留，M2-G 可能要看）。 */
+  readonly since_last_unlock_ms?: number;
   readonly sign_ms: number;
 }
 
@@ -423,6 +454,9 @@ export async function signDecision(
           receipt_id: signed.receipt_id,
           at: signed.at,
           unlock_wait_ms: signed.unlock_wait_ms,
+          ...(signed.since_last_unlock_ms === undefined
+            ? {}
+            : { since_last_unlock_ms: signed.since_last_unlock_ms }),
           sign_ms: signed.sign_ms,
         },
       },
@@ -463,6 +497,7 @@ export async function signDecision(
     frontier: input.frontier,
     receipt_id: signed.receipt_id,
     unlock_wait_ms: signed.unlock_wait_ms,
+    since_last_unlock_ms: signed.since_last_unlock_ms,
     sign_ms: signed.sign_ms,
   };
 }
@@ -492,6 +527,7 @@ export interface StagedSignature {
   readonly receipt_id: string;
   readonly receipt_at: string;
   readonly unlock_wait_ms: number;
+  readonly since_last_unlock_ms?: number;
   readonly sign_ms: number;
 }
 
@@ -587,6 +623,7 @@ export async function stageDecision(
       receipt_id: signed.receipt_id,
       receipt_at: signed.at,
       unlock_wait_ms: signed.unlock_wait_ms,
+      since_last_unlock_ms: signed.since_last_unlock_ms,
       sign_ms: signed.sign_ms,
     },
   };
@@ -655,6 +692,9 @@ export function submitStagedBatch(
             receipt_id: item.receipt_id,
             at: item.receipt_at,
             unlock_wait_ms: item.unlock_wait_ms,
+            ...(item.since_last_unlock_ms === undefined
+              ? {}
+              : { since_last_unlock_ms: item.since_last_unlock_ms }),
             sign_ms: item.sign_ms,
           },
         },
@@ -673,6 +713,7 @@ export function submitStagedBatch(
     return fail(
       isSignReasonCode(reason) ? reason : 'unknown_request',
       result.message ?? 'append rejected',
+      { append_reason_code: reason },
     );
   }
   return { ok: true, decision_ids: staged.map((item) => item.decision_id), event_count: events.length };

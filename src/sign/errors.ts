@@ -12,6 +12,8 @@ export const SIGN_REASON_CODES = [
   'no_blind_sign',
   // M2-6 C2：confirm 绑定的 hash 与当前内容不一致（两段式不可绕）。
   'payload_changed',
+  // M2-6 第 1 轮 P2-1：TTL=0 时一次解锁只授权一条；多条需开免密窗口（TTL>0）。
+  'ttl_requires_window',
   'frontier_stale',
   'signature_not_from_signerd',
   'signature_unverifiable',
@@ -60,10 +62,19 @@ export interface SignFailure {
   readonly ok: false;
   readonly reason_code: SignReasonCode;
   readonly message: string;
+  /** 写网关的原始拒绝码（不折成 unknown_request 时也保留）。 */
+  readonly append_reason_code?: string;
+  /** M2-6 P2-1：被拒时已暂存的签名数与本批请求数。 */
+  readonly staged?: number;
+  readonly requested?: number;
 }
 
-export function fail(reason_code: SignReasonCode, message: string): SignFailure {
-  return { ok: false, reason_code, message };
+export function fail(
+  reason_code: SignReasonCode,
+  message: string,
+  extra: { append_reason_code?: string; staged?: number; requested?: number } = {},
+): SignFailure {
+  return { ok: false, reason_code, message, ...extra };
 }
 
 export function isSignReasonCode(value: unknown): value is SignReasonCode {

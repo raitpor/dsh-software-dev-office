@@ -101,7 +101,16 @@ signerd：`bad_passphrase`、`rate_limited`、`locked`、`invalid_request`、`in
   `request.frontier === window.frontier_hash` 严格成立；不是“全部同意”——服务端拒绝
   一次请求提交多条 payload 的签名捷径（C8），批量只发生在逐条确认之后的提交。
 - 放弃/超时：`abandon` ⇒ 已签回执全部 `consumed:false` 清理、不 append 任何事件。
-- TTL：`0` 只能签一条（N=1）；多个待签项需要 `TTL∈{5,15,60}` 的免密窗口。
+- TTL：`0` 只能签一条（N=1）；多条需要 `TTL∈{5,15,60}` 的免密窗口，且**不会自动开窗**。
+  TTL 由 signerd 启动参数/环境变量 `SDO_SIGNERD_WINDOW_TTL_MINUTES` 决定，**页面不能改**；`needs_window` 时须人工以 TTL>0 重启 signerd 后重新解锁。
+  守卫在 `createRequest` 与 `confirm` 两处：已解锁且 TTL=0 的会话里再登记/再确认第二条
+  ⇒ 结构化拒绝 `ttl_requires_window`（带 `staged`/`requested`），页面进入 `needs_window` 态。
+- 两个时长字段（第 1 轮 P2-2）：signerd 回执的 `unlock_wait_ms` = 本次签发**实际等人解锁**
+  的时长（同一窗口第 2 条起为 0）；`since_last_unlock_ms` = 距上次解锁的时长（保留，
+  M2-G 可能要看）。页面原样透出前者而不是自己的计时。
+- `submitStagedBatch` 失败时返回体带 `append_reason_code`（写网关原始码），不只折成
+  `unknown_request`；`stageDecision` 单独调用也强制 baseline 的 `will_change`/
+  `guarantee_delta`（只有 `prepareDecision` 这一道闸门，不存在绕过两段式的 API）。
 - 交互计数（A2，Lead 定死）：一次交互 = 一个需要人输入并提交的 POST
   （`/sign/unlock` 或 `/sign/confirm`）；GET/轮询不计；计数随响应返回。
   单条 = 解锁 + 确认 = 2；批量第一条 2、后续每条 1。
@@ -162,3 +171,9 @@ sign 请求的 `frontier` 必须等于当前库链头（P1-1）；并且 **签�
 
 测试注入口：`test/sign/fixture-signerd.ts` 的 `installTestSignerd()` 固定测试钥匙，
 **仅供测试**，生产不可用；产品代码没有任何“测试时跳过验签”的分支。
+
+- 成本归因：`costs()` 按实际签名顺序 `sign_seq` 升序；`interactions` 与 `page_unlock_wait_ms`
+  只归给本次解锁后第一条真正签下的条目（`sign_seq` 最小），其余条目 1 次/0。
+  `interactions` 口径 = 本次解锁 POST 数 + 本次确认 POST（正常路径 `[2,1,1]`；同窗口重复 unlock 后首条为 3）。
+  `signerd_unlock_wait_ms` / `since_last_unlock_ms` / `sign_ms` 一律逐条取回执原值（测试逐条与 `receipts.jsonl` 比对）。
+  `created_at` 只决定页面展示顺序，不参与归因（同毫秒创建、乱序确认也必须归对）；`page_total_ms` 与成本 `at` 用同一注入时钟。

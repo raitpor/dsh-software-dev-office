@@ -79,8 +79,10 @@ export interface SignSuccess {
   readonly signer: string;
   readonly channel: SignChannel;
   readonly at: string;
-  /** C11：解锁后到本次签发之间的真实等待（毫秒）。 */
+  /** C11：本次签发实际等人解锁的毫秒数（同一窗口第 2 条起为 0）。 */
   readonly unlock_wait_ms: number;
+  /** M2-6 第 1 轮 P2-2：距上次解锁的真实时长（回执里的 `unlock_wait_ms` 不再复用这个量）。 */
+  readonly since_last_unlock_ms?: number;
   /** C11：Ed25519 签名本身的耗时（毫秒）。 */
   readonly sign_ms: number;
 }
