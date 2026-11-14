@@ -37,13 +37,6 @@ export type AlignReason =
   | 'stale_reason'
   | 'write_failed';
 
-/**
- * 门输出的临时性说明（M1-2 第 1 轮评审 P1-1）：
- * C5“例子”目前只能从 `criterion_fixture` 数，而该表没有事件载体（台账 D-032），
- * 生产路径写不进去。因此门的 ok 只是 provisional：夹具存在时才成立。
- */
-export const PROVISIONAL_REASONS = ['fixture_no_event_carrier'] as const;
-
 export const DIFF_KINDS = ['agree', 'missing', 'extra', 'conflict'] as const;
 export const DIFF_DISPOSITIONS = ['accept', 'reject', 'defer'] as const;
 export const ACTOR_KINDS = ['human', 'agent', 'service'] as const;
@@ -87,8 +80,6 @@ export interface AlignmentGateResult {
   readonly pending: readonly string[];
   readonly specIds: readonly string[];
   readonly staleReason?: string;
-  /** 恒定说明哪些结论是 provisional（见 PROVISIONAL_REASONS）。 */
-  readonly provisional_reasons: readonly string[];
 }
 
 export interface AlignmentGateOptions {
@@ -180,7 +171,6 @@ export function gateFailure(
     pending,
     specIds,
     ...(staleReason === undefined ? {} : { staleReason }),
-    provisional_reasons: PROVISIONAL_REASONS,
   };
 }
 
@@ -590,7 +580,7 @@ export function alignmentGate(
     .filter((id) => id.length > 0)
     .sort(textCompare);
 
-  const fixtureCounts = countFixtures(db);
+  const fixtureCounts = countFixtures(state);
   const missing = requirements.filter((specId) => {
     const counts = fixtureCounts.get(specId);
     return counts === undefined || counts.positive < 2 || counts.negative < 1;
@@ -604,13 +594,7 @@ export function alignmentGate(
     );
   }
 
-  return { ok: true, pending: [], specIds: [], provisional_reasons: PROVISIONAL_REASONS };
-}
-
-interface FixtureCountRow {
-  readonly spec_id: unknown;
-  readonly polarity: unknown;
-  readonly total: unknown;
+  return { ok: true, pending: [], specIds: [] };
 }
 
 interface FixtureCounts {
@@ -619,30 +603,25 @@ interface FixtureCounts {
 }
 
 /**
- * 从 `criterion_fixture` 数例子（卡 A3：例子只认 criterion_fixture）。
- * 该表在 M1-1 才会进物化清单；M1-2 的测试在所有事件写完后再直接插入夹具行。
+ * 从 fold 的事件态数例子（`state.tables['criterion_fixture']` join `criterion` 行）。
+ * 卡 A3：例子只认 `criterion_fixture`；但**只有事件能影响门**——物化表可被直插/直删，
+ * 读表会把 C5 的证据链截断在表上（第 2 轮复认 P1）。因此这里不碰 `db`。
  */
-function countFixtures(db: SdoDatabase): Map<string, FixtureCounts> {
-  const rows = db
-    .prepare(
-      `SELECT c.spec_id AS spec_id, cf.polarity AS polarity, count(*) AS total
-         FROM criterion_fixture cf
-         JOIN criterion c ON c.id = cf.criterion_id
-        GROUP BY c.spec_id, cf.polarity`,
-    )
-    .all() as FixtureCountRow[];
-
+function countFixtures(state: FoldState): Map<string, FixtureCounts> {
   const counts = new Map<string, FixtureCounts>();
-  for (const row of rows) {
-    if (typeof row.spec_id !== 'string') continue;
-    const total = typeof row.total === 'number' ? row.total : Number(row.total);
-    const entry = counts.get(row.spec_id) ?? { positive: 0, negative: 0 };
-    if (row.polarity === 'positive') {
-      entry.positive += Number.isFinite(total) ? total : 0;
-    } else if (row.polarity === 'negative') {
-      entry.negative += Number.isFinite(total) ? total : 0;
-    }
-    counts.set(row.spec_id, entry);
+  const criteria = state.tables['criterion'];
+  for (const fixture of Object.values(state.tables['criterion_fixture'])) {
+    const criterionId = rowString(fixture, 'criterion_id');
+    if (criterionId === undefined) continue;
+    const criterion = criteria[criterionId];
+    if (criterion === undefined) continue;
+    const specId = rowString(criterion, 'spec_id');
+    if (specId === undefined) continue;
+    const polarity = rowString(fixture, 'polarity');
+    const entry = counts.get(specId) ?? { positive: 0, negative: 0 };
+    if (polarity === 'positive') entry.positive += 1;
+    else if (polarity === 'negative') entry.negative += 1;
+    counts.set(specId, entry);
   }
   return counts;
 }

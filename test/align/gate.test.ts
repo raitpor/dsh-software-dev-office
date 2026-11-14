@@ -15,10 +15,10 @@ import {
   appendSeeds,
   draft,
   ev,
-  insertExamples,
   intentEdge,
   withAlignDb,
 } from './helpers.js';
+import type { FixtureSeed } from './helpers.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 
 interface AlignedOptions {
@@ -58,22 +58,34 @@ function buildAligned(db: SdoDatabase, options: AlignedOptions = {}): string {
 
   appendRequirement(db);
   if (options.withCriterion !== false) {
-    appendCriterion(db, 'CRIT-1', 'SPEC-1');
-    insertExamples(db, 'CRIT-1', options.positive ?? 2, options.negative ?? 1);
+    appendCriterion(
+      db,
+      'CRIT-1',
+      'SPEC-1',
+      SPEC_AT,
+      fixturesFor(options.positive ?? 2, options.negative ?? 1),
+    );
   }
   return restatement.id;
+}
+
+/** 按数量造 `fixtures[]`：经 `criterion.registered` 事件写入，测试不直插夹具表。 */
+function fixturesFor(positive: number, negative: number): FixtureSeed[] {
+  const fixtures: FixtureSeed[] = [];
+  for (let index = 1; index <= positive; index += 1) {
+    fixtures.push({ polarity: 'positive', input: `positive-${index}` });
+  }
+  for (let index = 1; index <= negative; index += 1) {
+    fixtures.push({ polarity: 'negative', input: `negative-${index}` });
+  }
+  return fixtures;
 }
 
 test('C5：差异全部处置 + 每条 requirement 2 正 1 反 ⇒ 门 ok，且 verify() 绿', () => {
   withAlignDb((db) => {
     buildAligned(db);
     const gate = alignmentGate(db);
-    assert.deepEqual(gate, {
-      ok: true,
-      pending: [],
-      specIds: [],
-      provisional_reasons: ['fixture_no_event_carrier'],
-    });
+    assert.deepEqual(gate, { ok: true, pending: [], specIds: [] });
     assert.equal(verify(db).ok, true);
 
     const again = alignmentGate(db);
@@ -109,13 +121,8 @@ test('C5：例子不足 ⇒ examples_missing（specIds 指向缺例子的 requir
     assert.equal(gate.reason_code, 'examples_missing');
     assert.deepEqual(gate.specIds, ['SPEC-1']);
 
-    insertExamples(db, 'CRIT-1', 1, 0);
-    assert.deepEqual(alignmentGate(db), {
-      ok: true,
-      pending: [],
-      specIds: [],
-      provisional_reasons: ['fixture_no_event_carrier'],
-    });
+    // 注册事件带 1 正 1 反（M1-1 硬门允许），但门要 2 正 ⇒ 仍红。
+    assert.deepEqual(gate.specIds, ['SPEC-1']);
   });
 });
 
@@ -267,14 +274,8 @@ test('门默认看最新复述；指定旧复述能看到它的 pending', () => 
 
     appendRequirement(db);
     appendCriterion(db, 'CRIT-1', 'SPEC-1');
-    insertExamples(db, 'CRIT-1', 2, 1);
 
-    assert.deepEqual(alignmentGate(db), {
-      ok: true,
-      pending: [],
-      specIds: [],
-      provisional_reasons: ['fixture_no_event_carrier'],
-    });
+    assert.deepEqual(alignmentGate(db), { ok: true, pending: [], specIds: [] });
 
     const olderGate = alignmentGate(db, { restatementId: olderId });
     assert.equal(olderGate.ok, false);
@@ -391,29 +392,30 @@ test('P2：无时区/不可解析的 at ⇒ invalid_args（门 fail-closed）', 
   });
 });
 
-test('P1-2 残余：同一 subject 的重复处置事件（fold upsert 覆盖）⇒ 门扫事件流仍报 diff_conflict', () => {
+test('P1-2 残余：同一 subject 的重复处置事件——fold 侧已 append-only 拒绝，门不会被静默翻掉', () => {
   withAlignDb((db) => {
     const restatementId = buildAligned(db);
     assert.equal(alignmentGate(db).ok, true);
 
-    // 与 disposeDiff 写的 subject 相同、事件 id 不同：fold 会静默覆盖成一行，
-    // 只看折叠行检测不到；门必须扫事件流（D-039）。
-    appendSeeds(db, [
-      ev('restatement.diff_dispositioned', `${restatementId}:d1`, {
-        restatement_id: restatementId,
-        kind: 'agree',
-        target_ref: 'd1',
-        disposition: 'defer',
-        reason: '二轮复审又点了一次',
-      }),
-    ]);
+    // 与 disposeDiff 写的 subject 相同、事件 id 不同。M1-6 之后 fold 对同一投影行
+    // 的「同 id 不同内容」直接拒绝（restatement_diff ... append-only），因此这条旁路
+    // 在写入口就关掉了；门侧的事件流扫描（D-039）保留为纵深防御。
+    assert.throws(
+      () =>
+        appendSeeds(db, [
+          ev('restatement.diff_dispositioned', `${restatementId}:d1`, {
+            restatement_id: restatementId,
+            kind: 'agree',
+            target_ref: 'd1',
+            disposition: 'defer',
+            reason: '二轮复审又点了一次',
+          }),
+        ]),
+      /append-only/,
+    );
 
     const gate = alignmentGate(db);
-    assert.equal(gate.ok, false);
-    assert.equal(gate.reason_code, 'diff_conflict');
-    assert.deepEqual(gate.pending, ['d1']);
-    assert.match(gate.staleReason ?? '', /2 条/);
-    assert.match(gate.staleReason ?? '', /D-039/);
+    assert.equal(gate.ok, true, '冲突事件落不了库，门状态不应被翻转');
   });
 });
 

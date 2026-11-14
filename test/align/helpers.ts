@@ -1,5 +1,5 @@
 /**
- * M1-2 对齐测试夹具：在临时已迁移库上铺事件（只经 append）与例子行。
+ * M1-2 对齐测试夹具：在临时已迁移库上铺事件（只经 append）。
  * 事件 id 由本文件的计数器保证唯一；时间由调用方显式给，保证 C1/C2 的先后可复现。
  */
 
@@ -118,11 +118,32 @@ export function appendRequirement(db: SdoDatabase, fixture: RequirementFixture =
   return specId;
 }
 
+export type FixturePolarity = 'positive' | 'negative';
+
+export interface FixtureSeed {
+  readonly polarity: FixturePolarity;
+  readonly input: string;
+  readonly expectedStatus?: 'pass' | 'fail' | 'na';
+}
+
+/** C5 的默认例子：2 正 1 反（满足门的“每条 requirement 2 正 1 反”）。 */
+export const DEFAULT_FIXTURES: readonly FixtureSeed[] = [
+  { polarity: 'positive', input: 'positive-input-1' },
+  { polarity: 'positive', input: 'positive-input-2' },
+  { polarity: 'negative', input: 'negative-input-1' },
+];
+
+/**
+ * 注册判据时**必须**带上 `fixtures[]`（M1-1 的 `criterion.registered` 事件载体，
+ * D-032 裁定 ①）：reducer 同事务写 `criterion_fixture` 行（id `${criterionId}/fx/N`），
+ * 门再从物化行里数例子。测试不直插夹具表，只走 `append` 唯一写入口。
+ */
 export function appendCriterion(
   db: SdoDatabase,
   criterionId: string,
   specId: string,
   at = SPEC_AT,
+  fixtures: readonly FixtureSeed[] = DEFAULT_FIXTURES,
 ): string {
   appendSeeds(db, [
     ev('criterion.registered', criterionId, {
@@ -130,34 +151,15 @@ export function appendCriterion(
       kind: 'functional',
       remedy: 'fix it',
       status_enum: 'pass',
+      fixtures: fixtures.map((fixture) => ({
+        polarity: fixture.polarity,
+        input: fixture.input,
+        expected_status:
+          fixture.expectedStatus ?? (fixture.polarity === 'positive' ? 'pass' : 'fail'),
+      })),
     }, { at }),
   ]);
   return criterionId;
-}
-
-/**
- * 直接写 `criterion_fixture`：该表**没有事件载体**（台账 D-032），生产路径写不进去，
- * 门对 C5 的 ok 因此只是 provisional（见 gate 的 `provisional_reasons`）。
- * 只在测试里直插，M1-1 定下夹具写入路径后这里改走事件。
- */
-export function insertExamples(
-  db: SdoDatabase,
-  criterionId: string,
-  positive: number,
-  negative: number,
-): void {
-  const statement = db.prepare(
-    `INSERT INTO criterion_fixture (id, criterion_id, polarity, input, expected_status)
-     VALUES (?, ?, ?, ?, ?)`,
-  );
-  for (let index = 0; index < positive; index += 1) {
-    seq += 1;
-    statement.run(`fix-pos-${seq}`, criterionId, 'positive', `input-pos-${seq}`, 'pass');
-  }
-  for (let index = 0; index < negative; index += 1) {
-    seq += 1;
-    statement.run(`fix-neg-${seq}`, criterionId, 'negative', `input-neg-${seq}`, 'fail');
-  }
 }
 
 export function draft(id: string, clause = `${id} 的草案条款`): Record<string, unknown> {

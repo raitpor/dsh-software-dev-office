@@ -22,7 +22,6 @@ export {
   ACTOR_KINDS,
   DIFF_DISPOSITIONS,
   DIFF_KINDS,
-  PROVISIONAL_REASONS,
   alignmentGate,
   buildEvent,
   earliestSpecForIntent,
