@@ -97,10 +97,18 @@ describe('importer/rebuild: 合成事件流', () => {
       kind: claim.task_kind,
       created_by: claim.actor,
     });
+    assert.deepEqual(events[2]?.payload, {
+      spec_id: claim.spec_id,
+      kind: 'v1_conclusion',
+      status_enum: 'draft',
+      remedy: `rebuilt-from-v1-export:${claim.claim_no}`,
+      legacy: true,
+    });
     assert.deepEqual(events[3]?.payload, {
       criterion_id: claim.criterion_id,
       artifact_uri: claim.artifact_uri,
       artifact_sha256: claim.artifact_sha256,
+      command: 'unknown: v1 export has no command field',
       task_id: claim.task_id,
     });
   });

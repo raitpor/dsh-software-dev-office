@@ -106,6 +106,12 @@ export function buildClaimEvents(claim: ExportClaim): Event[] {
       subject: claim.criterion_id,
       payload: {
         spec_id: claim.spec_id,
+        // criterion.kind 在冻结设计里没有枚举（docs/03 §1 只列列名），v1 结论型回执
+        // 重建出来的判据自成一类：显式标 v1_conclusion，便于日后按来源筛出来复核。
+        kind: 'v1_conclusion',
+        // 这些判据从未过注册门槛（无夹具、无 remedy 实跑），所以只能是 draft：
+        // 谁要把它变成 active，必须走正规注册（M1-1 的 fixtures[] 门槛），不能靠导入。
+        status_enum: 'draft',
         remedy: `rebuilt-from-v1-export:${claim.claim_no}`,
         // P1-3 迁移例外：v1 导入没有夹具，legacy 计数由 verify 暴露（M1-6 落库时处理）。
         legacy: true,
@@ -119,6 +125,9 @@ export function buildClaimEvents(claim: ExportClaim): Event[] {
         criterion_id: claim.criterion_id,
         artifact_uri: claim.artifact_uri,
         artifact_sha256: claim.artifact_sha256,
+        // 001 的 evidence.command 是 NOT NULL；v1 导出里没有这条信息，
+        // 就如实写“未知”，不编造命令行（编造会让证据看起来比实际更强）。
+        command: 'unknown: v1 export has no command field',
         task_id: claim.task_id,
       },
     },
@@ -142,6 +151,21 @@ export function buildClaimEvents(claim: ExportClaim): Event[] {
     prev = event.hash;
   }
   return events;
+}
+
+/**
+ * M1-6 落库子集（D-045）。
+ *
+ * 离线重建仍产出四类事件（`buildClaimEvents`，用于 work_unit 对账）；但**落库只取
+ * `task.created` + `task.claimed`**：`criterion.registered` 的 `spec_id` 在 v1 导出里
+ * 没有对应的 spec→intent→decision 链，补链只能靠伪造签字（`decision.signature` 一旦
+ * 非空就会被 verify/P9 当作真实授权），所以 M1 不落库，把这条链交回 M2 迁移卡。
+ * 这不是“四类事件都落了”——卡 C2/D-045 写得很清楚。
+ */
+export function landingEvents(claim: ExportClaim): Event[] {
+  return buildClaimEvents(claim).filter(
+    (event) => event.kind === 'task.created' || event.kind === 'task.claimed',
+  );
 }
 
 /** 导出 claim 按 D-008 约定应物化出的 work_unit 行（独立于 rebuilt 的期望值）。 */
