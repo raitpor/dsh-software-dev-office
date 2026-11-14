@@ -1,4 +1,5 @@
 import {
+  createOnce,
   fail,
   optBool,
   optString,
@@ -53,10 +54,7 @@ export function specRow(event: Event, id: string, kind: string): Record<string, 
 
 function defineNewSpec(state: FoldWorking, event: Event, kind: string): void {
   const id = subjectId(event);
-  if (rowOf(state, 'spec', id) !== undefined) {
-    return fail(event, `spec ${id} already defined; use spec.revised`);
-  }
-  upsert(state, 'spec', id, specRow(event, id, kind));
+  createOnce(state, event, 'spec', id, specRow(event, id, kind));
 }
 
 export function specDefined(state: FoldWorking, event: Event): void {
@@ -99,7 +97,7 @@ export function specRevised(state: FoldWorking, event: Event): void {
 export function scopeDeclared(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'scope_decl', id, {
+  createOnce(state, event, 'scope_decl', id, {
     id,
     stage: reqString(event, payload, 'stage'),
     paths: reqStringArray(event, payload, 'paths'),
@@ -111,7 +109,7 @@ export function scopeDeclared(state: FoldWorking, event: Event): void {
 export function designLocked(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'design_lock', id, {
+  createOnce(state, event, 'design_lock', id, {
     id,
     spec_id: reqString(event, payload, 'spec_id'),
     spec_version_hash: reqString(event, payload, 'spec_version_hash'),
@@ -123,7 +121,7 @@ export function designLocked(state: FoldWorking, event: Event): void {
 export function restatementRecorded(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'restatement', id, {
+  createOnce(state, event, 'restatement', id, {
     id,
     intent_id: reqString(event, payload, 'intent_id'),
     draft_specs: payload['draft_specs'] ?? [],
@@ -138,7 +136,7 @@ export function restatementRecorded(state: FoldWorking, event: Event): void {
 export function restatementDiffDispositioned(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'restatement_diff', id, {
+  const next = {
     id,
     restatement_id: reqString(event, payload, 'restatement_id'),
     kind: reqEnum(event, payload, 'kind', DIFF_KINDS),
@@ -146,7 +144,9 @@ export function restatementDiffDispositioned(state: FoldWorking, event: Event): 
     disposition: reqEnum(event, payload, 'disposition', DIFF_DISPOSITIONS),
     reason: optString(event, payload, 'reason') ?? null,
     at: event.at,
-  });
+  };
+  // D-039：同一 subject 的派生行只能出现一次；同内容幂等、不同内容显式拒绝，不静默覆盖。
+  createOnce(state, event, 'restatement_diff', id, next);
 }
 
 export function restatementInvalidated(state: FoldWorking, event: Event): void {

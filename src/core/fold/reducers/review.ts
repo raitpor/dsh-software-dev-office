@@ -1,13 +1,12 @@
 import {
+  createOnce,
   fail,
   optString,
   patchRow,
   payloadOf,
   reqEnum,
   reqString,
-  rowOf,
   subjectId,
-  upsert,
 } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 
@@ -19,10 +18,7 @@ const DISPOSITIONS = ['accepted', 'rejected', 'deferred'] as const;
 export function reviewRecorded(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'review', id) !== undefined) {
-    return fail(event, `review ${id} already recorded`);
-  }
-  upsert(state, 'review', id, {
+  createOnce(state, event, 'review', id, {
     id,
     task_id: reqString(event, payload, 'task_id'),
     reviewer: reqString(event, payload, 'reviewer'),
@@ -57,7 +53,7 @@ export function reviewRoundClosed(state: FoldWorking, event: Event): void {
     }
   }
   const id = subjectId(event);
-  upsert(state, 'review_round', id, {
+  createOnce(state, event, 'review_round', id, {
     id,
     task_id: taskId,
     baseline_hash: reqString(event, payload, 'baseline_hash'),
@@ -71,7 +67,7 @@ export function reviewRoundClosed(state: FoldWorking, event: Event): void {
 export function redteamRecorded(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'redteam', id, {
+  createOnce(state, event, 'redteam', id, {
     id,
     subject_kind: reqEnum(event, payload, 'subject_kind', REDTEAM_SUBJECTS),
     subject_id: reqString(event, payload, 'subject_id'),

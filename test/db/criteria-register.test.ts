@@ -106,7 +106,7 @@ test('C10: replay is idempotent; re-registering with new fixtures is an explicit
     const conflict = append(db, conflicting);
     assert.equal(conflict.ok, false);
     assert.equal(conflict.reason_code, 'materialize_failed');
-    assert.match(conflict.message ?? '', /already registered/u);
+    assert.match(conflict.message ?? '', /already exists with different content/u);
     assert.equal(fixtureCount(db), 3);
   });
 });

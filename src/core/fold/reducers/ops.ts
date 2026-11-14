@@ -1,4 +1,4 @@
-import { fail, optString, optStringArray, payloadOf, reqEnum, reqInteger, reqString, subjectId, upsert } from '../guards.js';
+import { createOnce, fail, optString, optStringArray, payloadOf, reqEnum, reqInteger, reqString, subjectId, upsert } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 
 const ACTOR_KINDS = ['human', 'service', 'agent'] as const;
@@ -12,7 +12,7 @@ const CONFIG_KEYS = [
 function verifyRun(state: FoldWorking, event: Event, result: 'pass' | 'fail'): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'verify_run', id, {
+  createOnce(state, event, 'verify_run', id, {
     id,
     at: event.at,
     actor_kind: reqEnum(event, payload, 'actor_kind', ACTOR_KINDS),

@@ -90,7 +90,8 @@
 ## 五、行字段与 DDL 对齐
 
 - `baseline` 行 = `id, frozen_by, engine_version, criteria_manifest_hash, policy, criteria, gates, thresholds, assurance, prev, direction, hash, at`（无 `frozen_at`/内嵌 `engine`）。
-- `release` 行 = `id, package_version, status, frozen_at, frozen_by, frontier, baseline_hash, scope_spec_set, note`（无 `delivered_at`/`superseded_by` 等 DDL 外字段）。
+- `release` 行 = `id, package_version, status, frozen_at, frozen_by, frontier, baseline_hash, scope_spec_set, note`（无 `delivered_at`/`superseded_by` 等 DDL 外字段）；`frozen_by` 是 JSON 字符串数组（≥2 human，DDL `json_valid`），由 `release.frozen` 写入字符串化的数组，物化时按 JSON 列落库（M1-7 C3）。
+- `restatement_diff` 是 append-only 投影：同 id 同内容幂等、不同内容由 reducer 显式冲突（D-039），不走静默 upsert。
 - `intent` 行只由 `intent.signed` 创建，`decision_id`/`content_hash` 强制非空，与 001 DDL 的 NOT NULL 一致（D-015 已 accepted：fold 收紧，不需要改 DDL）。`intent.status` 是 `design/02` 的生命周期读数，001 DDL 无 `status` 列——这是唯一残留张力，记 `plan/03` D-014（M-5 写路径/视图从 `decision` 折叠派生 status，或 v2.1 加列，二选一未定）。
 - `review_round` 的 `baseline_hash/frontier` 改为必填。
 

@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { ensureNoUnknownFoldOnlyColumns, materialize } from '../../src/db/write-materialize.js';
+import { MATERIALIZED_TABLES, ensureNoUnknownFoldOnlyColumns, materialize } from '../../src/db/write-materialize.js';
 import { chain, seed, withWriteDb } from './append-helpers.js';
 
 test('safety net: fold output outside the materialized set fails closed', () => {
@@ -31,7 +31,8 @@ test('safety net: fold output outside the materialized set fails closed', () => 
         event.hash,
       );
     }
-    assert.throws(() => materialize(db), /outside the M1-0 materialized set/u);
+    const tables = MATERIALIZED_TABLES.filter((table) => table !== 'design_lock');
+    assert.throws(() => materialize(db, { tables }), /outside the materialized set/u);
   });
 });
 

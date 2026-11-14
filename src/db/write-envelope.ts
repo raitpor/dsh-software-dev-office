@@ -6,39 +6,11 @@
 import { ACK_KINDS } from '../core/fold/ack.js';
 import { REDUCERS } from '../core/fold/registry.js';
 import type { Event } from '../core/fold/types.js';
-import { MATERIALIZED_TABLES, SUPPORTED_KINDS } from './write-materialize.js';
+import { MATERIALIZED_TABLES, SUPPORTED_KINDS, requiredTable } from './write-materialize.js';
 import { failure, type AppendFailure } from './write-types.js';
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
-}
-
-const KIND_TABLE: Readonly<Record<string, string>> = {
-  decision: 'decision',
-  intent: 'intent',
-  spec: 'spec',
-  assumption: 'spec',
-  contract: 'spec',
-  criterion: 'criterion',
-  evidence: 'evidence',
-  task: 'task',
-  goal: 'goal_node',
-  release: 'release',
-  baseline: 'baseline',
-  report: 'report',
-  attention: 'attention',
-  defect: 'defect',
-  stage: 'stage_run',
-  gate: 'stage_run',
-  review: 'review',
-  redteam: 'redteam',
-  verify: 'verify_run',
-  config: 'config',
-  snapshot: 'snapshot',
-};
-
-function requiredTable(kind: string): string {
-  return KIND_TABLE[kind.split('.')[0] ?? ''] ?? 'a table outside the 34';
 }
 
 export function checkEnvelope(event: Event): AppendFailure | undefined {
@@ -56,10 +28,11 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
     return failure('unknown_event_kind', `unknown event kind ${event.kind}`);
   }
   if (!Object.hasOwn(SUPPORTED_KINDS, event.kind)) {
+    const project = requiredTable(event.kind) ?? 'no fold projection (ACK kind)';
     return failure(
       'unsupported_scope',
-      `event kind ${event.kind} is registered but projects to ${requiredTable(event.kind)}; ` +
-        `M1-0 only materializes ${MATERIALIZED_TABLES.join('/')} (D-031)`,
+      `event kind ${event.kind} projects to ${project}; ` +
+        `materialized tables are ${MATERIALIZED_TABLES.join('/')} (C5)`,
     );
   }
   return undefined;

@@ -77,5 +77,5 @@ test('P1-1 baseline.frozen 缺 engine、二次 frozen、重复 id ⇒ FoldError'
   duplicate.push('baseline.amended', 'B-1', baselinePayload('h-2', {
     prev: 'B-1', direction: 'tighten', decision_id: 'd-base',
   }));
-  expectFoldFail(() => duplicate.fold(), /already exists; amendments are new rows/);
+  expectFoldFail(() => duplicate.fold(), /already exists with different content/);
 });

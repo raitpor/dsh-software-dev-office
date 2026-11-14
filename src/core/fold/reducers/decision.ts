@@ -1,4 +1,4 @@
-import { fail, optString, payloadOf, reqEnum, reqString, rowOf, subjectId, upsert } from '../guards.js';
+import { createOnce, fail, optString, payloadOf, reqEnum, reqString, rowOf, subjectId, upsert } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 
 const DECISION_KINDS = [
@@ -12,10 +12,7 @@ const DECISION_KINDS = [
 export function decisionValid(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'decision', id) !== undefined) {
-    return fail(event, `decision ${id} already exists; decisions are append-only`);
-  }
-  upsert(state, 'decision', id, {
+  createOnce(state, event, 'decision', id, {
     id,
     decision_kind: reqEnum(event, payload, 'decision_kind', DECISION_KINDS),
     status: 'valid',

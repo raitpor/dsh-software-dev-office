@@ -14,12 +14,12 @@ test('P2-2 重复定义守卫生效：spec.defined / criterion.registered 不许
   const spec = new TestFolder();
   spec.push('spec.defined', 'SPEC-1', { kind: 'requirement', clause: 'c1' });
   spec.push('spec.defined', 'SPEC-1', { kind: 'requirement', clause: 'c2' });
-  expectFoldFail(() => spec.fold(), /already defined; use spec.revised/);
+  expectFoldFail(() => spec.fold(), /already exists with different content/);
 
   const criterion = new TestFolder();
   criterion.push('criterion.registered', 'CRIT-1', { spec_id: 'SPEC-1', remedy: 'r1' });
   criterion.push('criterion.registered', 'CRIT-1', { spec_id: 'SPEC-1', remedy: 'r2' });
-  expectFoldFail(() => criterion.fold(), /already registered; use criterion.revised/);
+  expectFoldFail(() => criterion.fold(), /already exists with different content/);
 });
 
 test('P2-2 task 状态守卫：blocked 不能 claim、ready 不能 done、in_progress 不能 reopened', () => {

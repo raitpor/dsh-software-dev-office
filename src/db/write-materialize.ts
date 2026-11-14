@@ -1,27 +1,26 @@
 /**
- * M1-0 物化：全量重放后把 fold 内存状态 diff 落到投影表（A2 口径）。
+ * M1-7 物化：全量重放后把 fold 内存状态 diff 落到投影表（A2 口径）。
  *
- * 范围（M1-0）：7 张可安全物化的表（`MATERIALIZED_TABLES`）。fold 产出落在集外的表一律失败
- * （安全网），全表对齐归 D-031 / M1-7。
- * 列以 001 DDL 为准（`PRAGMA table_info`）；fold 行上 DDL 没有的列必须进 `FOLD_ONLY_COLUMNS`
- * 白名单，否则抛错（防止静默丢字段）。fold 没有的行删掉——全量重放是权威。
+ * 物化面 = fold 能产出的全部表（`TABLE_NAMES` − `NON_MATERIALIZED`）。第 62 轮把“物化全表”
+ * 收窄成 7 张是权宜；本卡按 D-031 的四个前置条件逐个钉死后开闸。
  *
- * `decision` 特例（D-019）：只物化 `signature` 非空的行。`decision.valid` 单批不落库，
- * 等 `decision.signed` 才出现；`verify` 用同一口径（`verify-projection.ts`）。
+ * 三条硬规矩：
+ * 1. **键 = DDL 主键**（`PRAGMA table_info` 的 pk 列），不假设有 `id` 列、不加代理 id；
+ * 2. fold 行比 DDL 多出的列必须进 `FOLD_ONLY_COLUMNS`，否则抛错（C2 双向断言白名单）；
+ * 3. fold 没有的行删掉——全量重放是权威。
+ *
+ * `decision` 特例（D-019）：只物化 `signature` 非空的行；`verify` 用同一口径。
  */
 
 import type { SdoDatabase } from './driver.js';
 import { canonicalJson } from '../core/fold/canonical.js';
 import { fold } from '../core/fold/index.js';
+import { REDUCERS } from '../core/fold/registry.js';
 import { TABLE_NAMES, type FoldState, type Row, type TableName } from '../core/fold/types.js';
 import { readEvents } from '../core/verify-events.js';
 import type { VerifyProblem } from '../core/verify-types.js';
 
-/**
- * 不由 `append`/`fold` 拥有的表：`event`/`event_kind` 是事件存储本身；`claim`/`receipt` 是
- * renderer 写入（M1-6）；`field_consumer` 是目录数据；`scenario` 是 D-024 设计缺口。
- * 这些表不能进物化集合——fold 里没有它们，全量 DELETE 会把数据清掉。
- */
+/** 不由 `append`/`fold` 拥有的表：事件存储、renderer 表（M1-6）、目录数据、设计缺口、视图注册表。 */
 export const NON_MATERIALIZED: readonly TableName[] = [
   'event',
   'event_kind',
@@ -29,59 +28,97 @@ export const NON_MATERIALIZED: readonly TableName[] = [
   'receipt',
   'field_consumer',
   'scenario',
+  'view_catalog' as TableName, // 002 迁移新增的视图注册表；TableName 由 fold 的 34 张表定义，这里只做过滤用
 ];
 
-/**
- * M1-0 的物化面（第 62 轮收窄回 (a)，+ 第 62 轮复认 B）：
- * 四域（intent/spec/criterion/evidence）+ `decision`（四表的外键父）+ `restatement`/`restatement_diff`
- * （三个 restatement.* reducer 的投影；两表都有 `id` PK、无 fold-only 列、无 JSON 口径问题）。
- * “物化全表”是独立设计对齐工作，拆到后续卡（台账 D-031），不混在写网关里。
- */
-export const MATERIALIZED_TABLES: readonly TableName[] = [
-  'decision',
-  'intent',
-  'spec',
-  'criterion',
-  'evidence',
-  'restatement',
-  'restatement_diff',
-  'criterion_fixture',
-];
+/** 物化面：fold 能产出的全部表。放不开的表必须先回 D-031 的四个前置条件，不许靠删集合绕过。 */
+export const MATERIALIZED_TABLES: readonly TableName[] = TABLE_NAMES.filter(
+  (table) => !NON_MATERIALIZED.includes(table),
+);
 
-/**
- * 写网关接受的 kind 白名单：投影必须落在这 7 张表里。
- * `assumption.*`/`contract.*` 写的是 `spec` 表的行（kind='assumption'/'contract'），所以也在内。
- * 其余已登记 kind 一律 `unsupported_scope`——宁可写不进去，也不接受自己物化不了的事件。
- */
-export const SUPPORTED_KINDS: Readonly<Record<string, string>> = {
-  'decision.valid': 'decision',
-  'decision.signed': 'decision',
-  'decision.revoked': 'decision',
-  'decision.rejected': 'decision',
-  'intent.signed': 'intent',
-  'spec.defined': 'spec',
-  'spec.revised': 'spec',
-  'assumption.recorded': 'spec',
-  'assumption.disposed': 'spec',
-  'assumption.invalidated': 'spec',
-  'contract.defined': 'spec',
-  'criterion.registered': 'criterion',
-  'criterion.revised': 'criterion',
-  'evidence.attached': 'evidence',
-  'restatement.recorded': 'restatement',
-  'restatement.diff_dispositioned': 'restatement_diff',
-  'restatement.invalidated': 'restatement',
+/** 事件 kind → 它写哪张表（`write-envelope` 的 `unsupported_scope` 消息与覆盖测试共用）。 */
+const PREFIX_TABLE: Readonly<Record<string, TableName>> = {
+  decision: 'decision',
+  intent: 'intent',
+  spec: 'spec',
+  assumption: 'spec',
+  contract: 'spec',
+  criterion: 'criterion',
+  evidence: 'evidence',
+  task: 'task',
+  goal: 'goal_node',
+  release: 'release',
+  baseline: 'baseline',
+  report: 'report',
+  attention: 'attention',
+  defect: 'defect',
+  stage: 'stage_run',
+  gate: 'stage_run',
+  review: 'review',
+  redteam: 'redteam',
+  verify: 'verify_run',
+  config: 'config',
+  snapshot: 'snapshot',
+  scope: 'scope_decl',
+  design: 'design_lock',
+  restatement: 'restatement',
 };
 
+const KIND_TABLE_OVERRIDES: Readonly<Record<string, TableName>> = {
+  'goal.integrated': 'integration',
+  'review.round_closed': 'review_round',
+  'restatement.diff_dispositioned': 'restatement_diff',
+};
+
+export function requiredTable(kind: string): TableName | undefined {
+  const override = KIND_TABLE_OVERRIDES[kind];
+  if (override !== undefined) return override;
+  return PREFIX_TABLE[kind.split('.')[0] ?? ''];
+}
+
 /**
- * fold 行比 001 DDL 多出的列。每一项都是已知偏差（台账 D-021）；新增项必须显式登记，
- * 否则 `materializeTable` 抛错，C5 测试也会红。
+ * 写网关接受的全部 kind：所有在 `REDUCERS` 里、且投影落在物化面内的 kind。
+ * ACK kind 不物化，保持 `unsupported_scope`（它们没有 fold 产出）。
+ */
+export const SUPPORTED_KINDS: Readonly<Record<string, TableName>> = Object.fromEntries(
+  Object.keys(REDUCERS).flatMap((kind) => {
+    const table = requiredTable(kind);
+    return table !== undefined && MATERIALIZED_TABLES.includes(table) ? [[kind, table]] : [];
+  }),
+);
+
+/**
+ * fold 行比 001 DDL 多出的列（逐表）。每一项都是 fold 的投影口径，必须显式登记；
+ * 测试会断言“实际忽略列 == 白名单”，漏登记/多登记都红。
  */
 export const FOLD_ONLY_COLUMNS: Readonly<Partial<Record<TableName, readonly string[]>>> = {
-  decision: ['rejected_at', 'rejected_reason'],
-  intent: ['status'],
-  spec: ['revised_at', 'decision_id', 'successor_ref', 'disposed_at', 'invalidated_reason', 'invalidated_at'],
+  design_lock: ['id'],
+  redteam: ['disposed_at'],
+  attention: ['answer', 'answered_at', 'withdrawn_at'],
   criterion: ['at', 'revised_at'],
+  decision: ['rejected_at', 'rejected_reason'],
+  defect: ['closed_at'],
+  goal_node: ['reparented_at'],
+  intent: ['status'],
+  review: ['verified_at'],
+  spec: ['revised_at', 'decision_id', 'successor_ref', 'disposed_at', 'invalidated_reason', 'invalidated_at'],
+  stage_run: ['judged_at'],
+  task: [
+    'claimed_at',
+    'reserved_by',
+    'reserved_until',
+    'blocked_reason',
+    'blocked_at',
+    'unblocked_at',
+    'done_at',
+    'evidence_id',
+    'reopened_reason',
+    'reopened_at',
+    'drop_kind',
+    'drop_reason',
+    'drop_credential',
+    'dropped_at',
+  ],
 };
 
 function toSqlValue(value: unknown): unknown {
@@ -91,20 +128,37 @@ function toSqlValue(value: unknown): unknown {
   return value;
 }
 
-interface TableColumn {
+interface ColumnInfo {
   readonly name: string;
+  readonly pk: number;
 }
 
-function tableColumns(db: SdoDatabase, table: TableName): string[] {
-  const rows = db.prepare(`PRAGMA table_info(${table})`).all() as TableColumn[];
-  return rows.map((row) => row.name);
+function tableInfo(db: SdoDatabase, table: TableName): ColumnInfo[] {
+  return db.prepare(`PRAGMA table_info(${table})`).all() as ColumnInfo[];
+}
+
+/** 主键列按 DDL 的 pk 序号排序；没有主键的表在 001 里不存在，若出现直接报错。 */
+export function primaryKeyColumns(db: SdoDatabase, table: TableName): string[] {
+  const columns = tableInfo(db, table)
+    .filter((column) => column.pk > 0)
+    .sort((left, right) => left.pk - right.pk)
+    .map((column) => column.name);
+  if (columns.length === 0) {
+    throw new Error(`table ${table} has no primary key; cannot materialize`);
+  }
+  return columns;
+}
+
+function rowKey(db: SdoDatabase, table: TableName, row: Row): string {
+  const pk = primaryKeyColumns(db, table);
+  return canonicalJson(pk.map((column) => toSqlValue(row[column])));
 }
 
 function existingRows(db: SdoDatabase, table: TableName): Map<string, Row> {
   const rows = db.prepare(`SELECT * FROM ${table}`).all() as Array<Record<string, unknown>>;
   const map = new Map<string, Row>();
   for (const row of rows) {
-    map.set(String(row['id']), row);
+    map.set(rowKey(db, table, row), row);
   }
   return map;
 }
@@ -130,7 +184,6 @@ export function ensureNoUnknownFoldOnlyColumns(table: TableName, id: string, row
 function projectedRows(state: FoldState, table: TableName): Readonly<Record<string, Row>> {
   const rows = state.tables[table] as Readonly<Record<string, Row>>;
   if (table !== 'decision') return rows;
-  // D-019：只落 signed 行；`decision.valid` 单批不物化。
   const signed: Record<string, Row> = {};
   for (const [id, row] of Object.entries(rows)) {
     if (row['signature'] !== null) {
@@ -140,55 +193,81 @@ function projectedRows(state: FoldState, table: TableName): Readonly<Record<stri
   return signed;
 }
 
+export interface MaterializeOptions {
+  /** 测试用：临时收窄物化面以验证安全网；生产路径不传。 */
+  readonly tables?: readonly TableName[];
+}
+
 function materializeTable(db: SdoDatabase, table: TableName, state: FoldState): void {
   const nextRows = projectedRows(state, table);
-  const columns = tableColumns(db, table);
+  const columns = tableInfo(db, table).map((column) => column.name);
+  const pk = primaryKeyColumns(db, table);
   const existing = existingRows(db, table);
 
   for (const [id, next] of Object.entries(nextRows)) {
     ensureNoUnknownFoldOnlyColumns(table, id, next, columns);
-    const current = existing.get(id);
+    const key = rowKey(db, table, next);
+    const current = existing.get(key);
     if (current !== undefined && !rowsDiffer(current, next, columns)) {
-      existing.delete(id);
+      existing.delete(key);
       continue;
     }
     if (current === undefined) {
       const values = columns.map((column) => toSqlValue(next[column]));
+      // release 的插入触发器只接受 draft/frozen：物化最终态时先按 frozen 落行，再走状态迁移。
+      let initialStatus: string | undefined;
+      if (table === 'release') {
+        const statusIndex = columns.indexOf('status');
+        const finalStatus = String(next['status']);
+        initialStatus = finalStatus === 'draft' ? 'draft' : 'frozen';
+        values[statusIndex] = initialStatus;
+      }
       const placeholders = columns.map(() => '?').join(', ');
       db.prepare(`INSERT INTO ${table} (${columns.join(', ')}) VALUES (${placeholders})`).run(...values);
+      if (table === 'release' && initialStatus !== String(next['status'])) {
+        const where = pk.map((column) => `${column} = ?`).join(' AND ');
+        db.prepare(`UPDATE release SET status = ?, package_version = ? WHERE ${where}`).run(
+          toSqlValue(next['status']),
+          toSqlValue(next['package_version']),
+          ...pk.map((column) => toSqlValue(next[column])),
+        );
+      }
     } else {
-      const updates = columns.filter((column) => column !== 'id').map((column) => `${column} = ?`).join(', ');
-      const values = columns.filter((column) => column !== 'id').map((column) => toSqlValue(next[column]));
-      db.prepare(`UPDATE ${table} SET ${updates} WHERE id = ?`).run(...values, id);
+      const updates = columns.filter((column) => !pk.includes(column)).map((column) => `${column} = ?`).join(', ');
+      const values = columns.filter((column) => !pk.includes(column)).map((column) => toSqlValue(next[column]));
+      const where = pk.map((column) => `${column} = ?`).join(' AND ');
+      const whereValues = pk.map((column) => toSqlValue(next[column]));
+      db.prepare(`UPDATE ${table} SET ${updates} WHERE ${where}`).run(...values, ...whereValues);
     }
-    existing.delete(id);
+    existing.delete(key);
   }
 
   // 全量重放是权威：fold 里没有的行必须删掉（只可能是被篡改后重放回正）。
-  for (const staleId of existing.keys()) {
-    db.prepare(`DELETE FROM ${table} WHERE id = ?`).run(staleId);
+  for (const [key, row] of existing) {
+    const where = pk.map((column) => `${column} = ?`).join(' AND ');
+    db.prepare(`DELETE FROM ${table} WHERE ${where}`).run(...pk.map((column) => toSqlValue(row[column])));
+    void key;
   }
 }
 
-export function materialize(db: SdoDatabase): void {
+export function materialize(db: SdoDatabase, options: MaterializeOptions = {}): void {
+  const tables = options.tables ?? MATERIALIZED_TABLES;
   const problems: VerifyProblem[] = [];
   const events = readEvents(db, problems);
   if (problems.length > 0) {
     throw new Error(`event chain unreadable during materialization: ${problems[0]?.detail ?? 'unknown'}`);
   }
   const state = fold(undefined, events);
-  // fail-closed 安全网：白名单漏了某 kind，或 reducer 写了范围外的表 ⇒ 直接失败，不静默丢投影。
+  // fail-closed 安全网：reducer 写了物化面外的表 ⇒ 直接失败，不静默丢投影。
   for (const table of TABLE_NAMES) {
-    if (MATERIALIZED_TABLES.includes(table)) continue;
+    if (tables.includes(table)) continue;
     const rows = state.tables[table];
     const firstId = Object.keys(rows)[0];
     if (firstId !== undefined) {
-      throw new Error(
-        `fold produced rows in ${table} (e.g. ${firstId}), which is outside the M1-0 materialized set`,
-      );
+      throw new Error(`fold produced rows in ${table} (e.g. ${firstId}), which is outside the materialized set`);
     }
   }
-  for (const table of MATERIALIZED_TABLES) {
+  for (const table of tables) {
     materializeTable(db, table, state);
   }
 }

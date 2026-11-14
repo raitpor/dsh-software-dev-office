@@ -1,4 +1,4 @@
-import { fail, optString, payloadOf, reqEnum, reqString, rowOf, subjectId, upsert } from '../guards.js';
+import { createOnce, fail, optString, payloadOf, reqEnum, reqString, rowOf, subjectId } from '../guards.js';
 import { requireSignedDecision } from '../decisions.js';
 import type { Event, FoldWorking } from '../types.js';
 
@@ -44,10 +44,30 @@ function appendBaseline(
 ): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'baseline', id) !== undefined) {
-    return fail(event, `baseline ${id} already exists; amendments are new rows`);
-  }
   const prev = optString(event, payload, 'prev') ?? null;
+  const engine = engineFields(event);
+  const next = {
+    id,
+    frozen_by: optString(event, payload, 'frozen_by') ?? event.actor,
+    ...engine,
+    policy: payload['policy'] ?? {},
+    criteria: payload['criteria'] ?? [],
+    gates: payload['gates'] ?? {},
+    thresholds: payload['thresholds'] ?? {},
+    assurance: payload['assurance'] ?? {},
+    prev,
+    direction,
+    hash: reqString(event, payload, 'hash'),
+    at: event.at,
+  };
+  // 同 id 重放先按 create 语义判：同内容幂等、异内容拒；不被后面的链/唯一性检查抢先误报。
+  if (rowOf(state, 'baseline', id) !== undefined) {
+    createOnce(state, event, 'baseline', id, next);
+    return;
+  }
+  if (!requirePrev && Object.keys(state.tables.baseline).length > 0) {
+    return fail(event, 'baseline.frozen is only for the first baseline; use amended/loosened');
+  }
   if (requirePrev && prev === null) {
     return fail(event, 'baseline amendments require payload.prev');
   }
@@ -63,27 +83,10 @@ function appendBaseline(
       return fail(event, `prev baseline ${prev} is not the current head ${head}`);
     }
   }
-  const engine = engineFields(event);
-  upsert(state, 'baseline', id, {
-    id,
-    frozen_by: optString(event, payload, 'frozen_by') ?? event.actor,
-    ...engine,
-    policy: payload['policy'] ?? {},
-    criteria: payload['criteria'] ?? [],
-    gates: payload['gates'] ?? {},
-    thresholds: payload['thresholds'] ?? {},
-    assurance: payload['assurance'] ?? {},
-    prev,
-    direction,
-    hash: reqString(event, payload, 'hash'),
-    at: event.at,
-  });
+  createOnce(state, event, 'baseline', id, next);
 }
 
 export function baselineFrozen(state: FoldWorking, event: Event): void {
-  if (Object.keys(state.tables.baseline).length > 0) {
-    return fail(event, 'baseline.frozen is only for the first baseline; use amended/loosened');
-  }
   appendBaseline(state, event, null, false);
 }
 

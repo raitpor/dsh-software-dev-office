@@ -36,7 +36,15 @@ test('规则 intent.signed：正例签字落行；反例缺 content_hash/缺决�
   duplicate.push('intent.signed', 'INT-1', {
     decision_id: 'd-1', statement: 's2', owner: 'alice', strength: 'inferred', content_hash: 'ch-2',
   });
-  expectFoldFail(() => duplicate.fold(), /already signed/);
+  expectFoldFail(() => duplicate.fold(), /already exists with different content/);
+
+  const replay = new TestFolder();
+  validDecision(replay);
+  const signedPayload = { decision_id: 'd-1', statement: 's', owner: 'alice', strength: 'explicit' as const, content_hash: 'ch-1' };
+  replay.push('intent.signed', 'INT-1', signedPayload);
+  const once = replay.fold();
+  replay.push('intent.signed', 'INT-1', signedPayload);
+  assert.deepEqual(replay.fold().tables.intent, once.tables.intent, '同内容重放必须是 no-op');
 });
 
 test('规则 spec.defined：正例建条款；反例 mech_checkable=1 缺 scenario_id 被拒', () => {

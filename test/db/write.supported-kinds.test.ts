@@ -1,176 +1,127 @@
+import test from 'node:test';
 import assert from 'node:assert/strict';
-import { test } from 'node:test';
+import { readFileSync } from 'node:fs';
 
 import { append } from '../../src/db/write.js';
-import { SUPPORTED_KINDS } from '../../src/db/write-materialize.js';
+import { MATERIALIZED_TABLES, SUPPORTED_KINDS, primaryKeyColumns, requiredTable } from '../../src/db/write-materialize.js';
+import { canonicalJson } from '../../src/core/fold/canonical.js';
+import { fold } from '../../src/core/fold/index.js';
+import type { FoldState } from '../../src/core/fold/types.js';
 import { verify } from '../../src/core/verify.js';
-import { chain, fourDomainSeeds, seed, withWriteDb, type EventSeed } from './append-helpers.js';
+import type { SdoDatabase } from '../../src/db/driver.js';
+import { chain, withWriteDb } from './append-helpers.js';
+import { worldSeeds } from './world-seeds.js';
 
-/**
- * P1（第 63 轮）：17 个 `SUPPORTED_KINDS` 每一个都要有 append 正例——
- * 一条最小合法事件能写入、`verify()` 绿；再追加一条无关第二批仍绿。
- * 这同时证明“supported 分类”不是纸面声明（P2-2）。
- */
+const seeds = worldSeeds();
+const kinds = Object.keys(SUPPORTED_KINDS).sort();
+const events = chain(seeds);
 
-type Case = readonly [kind: string, build: () => EventSeed[]];
-
-type Db = Parameters<typeof append>[0];
-
-function row(db: Db, sql: string, ...params: unknown[]): Record<string, unknown> | undefined {
-  return db.prepare(sql).get(...params) as Record<string, unknown> | undefined;
+interface Snapshot {
+  readonly table: string;
+  readonly id: string;
+  readonly row: Record<string, unknown>;
 }
+const snapshots = JSON.parse(
+  readFileSync('test/fixtures/per-kind-fold.json', 'utf8'),
+) as Record<string, Snapshot>;
 
-function expectRow(db: Db, sql: string, ...params: unknown[]): Record<string, unknown> {
-  const found = row(db, sql, ...params);
-  assert.ok(found, `expected materialized row for: ${sql}`);
-  return found;
-}
-
-/** P1-2：kind → 物化表 + 最小充分列（1:1）。verify 只对账 4 表，抓不到其余 3 张。 */
-const PROBES: Readonly<Record<string, (db: Db) => void>> = {
-  'decision.valid': (db) => {
-    assert.equal(row(db, 'SELECT id FROM decision WHERE id = ?', 'd-v'), undefined, 'valid-only row must not materialize');
-  },
-  'decision.signed': (db) => assert.equal(expectRow(db, 'SELECT signature FROM decision WHERE id = ?', 'd-s').signature, 'sig-d-s'),
-  'decision.revoked': (db) => assert.equal(expectRow(db, 'SELECT status FROM decision WHERE id = ?', 'd-rv').status, 'revoked'),
-  'decision.rejected': (db) => assert.equal(expectRow(db, 'SELECT status FROM decision WHERE id = ?', 'd-rj').status, 'invalid'),
-  'intent.signed': (db) => assert.equal(expectRow(db, 'SELECT decision_id FROM intent WHERE id = ?', 'INT-1').decision_id, 'd-int'),
-  'spec.defined': (db) => assert.equal(expectRow(db, 'SELECT clause FROM spec WHERE id = ?', 'SPEC-1').clause, 'clause 1'),
-  'spec.revised': (db) => assert.equal(expectRow(db, 'SELECT clause FROM spec WHERE id = ?', 'SPEC-1').clause, 'clause 2'),
-  'assumption.recorded': (db) => {
-    const spec = expectRow(db, 'SELECT kind, status FROM spec WHERE id = ?', 'A-1');
-    assert.equal(spec.kind, 'assumption');
-    assert.equal(spec.status, 'open');
-  },
-  'assumption.disposed': (db) => assert.equal(expectRow(db, 'SELECT status FROM spec WHERE id = ?', 'A-1').status, 'confirmed'),
-  'assumption.invalidated': (db) => assert.equal(expectRow(db, 'SELECT status FROM spec WHERE id = ?', 'A-2').status, 'open'),
-  'contract.defined': (db) => assert.equal(expectRow(db, 'SELECT kind FROM spec WHERE id = ?', 'CT-1').kind, 'contract'),
-  'criterion.registered': (db) => assert.equal(expectRow(db, 'SELECT remedy FROM criterion WHERE id = ?', 'CRIT-1').remedy, 'fix it'),
-  'criterion.revised': (db) => assert.equal(expectRow(db, 'SELECT remedy FROM criterion WHERE id = ?', 'CRIT-1').remedy, 'better'),
-  'evidence.attached': (db) => assert.equal(expectRow(db, 'SELECT criterion_id FROM evidence WHERE id = ?', 'EVID-1').criterion_id, 'CRIT-1'),
-  'restatement.recorded': (db) => assert.equal(expectRow(db, 'SELECT intent_id FROM restatement WHERE id = ?', 'R-1').intent_id, 'INT-1'),
-  'restatement.diff_dispositioned': (db) => assert.equal(expectRow(db, 'SELECT kind FROM restatement_diff WHERE id = ?', 'RD-1').kind, 'agree'),
-  'restatement.invalidated': (db) => assert.equal(expectRow(db, 'SELECT invalid_reason FROM restatement WHERE id = ?', 'R-1').invalid_reason, 'stale'),
-};
-
-const PH = (suffix: string): string => `ph-${suffix}`;
-
-function decisionValid(id: string, kind: string, payload: unknown, hash = PH(id)): EventSeed {
-  return seed(0, 'decision.valid', id, {
-    decision_kind: kind,
-    payload_hash: hash,
-    frontier: `f-${id}`,
-    payload,
-  });
-}
-
-function decisionSigned(id: string, hash = PH(id)): EventSeed {
-  return seed(0, 'decision.signed', id, {
-    payload_hash: hash,
-    signature: `sig-${id}`,
-    key_id: 'key-1',
-    signer: 'alice',
-  });
-}
-
-function decisionOf(id: string, kind: string, payload: unknown): EventSeed[] {
-  return [decisionValid(id, kind, payload), decisionSigned(id)];
-}
-
-const assumption = (id: string): EventSeed =>
-  seed(0, 'assumption.recorded', id, {
-    intent_id: 'INT-1',
-    clause: `clause ${id}`,
-    blast_radius: 'low',
-    content_hash: `ch:${id}`,
-  });
-
-const CASES: readonly Case[] = [
-  ['decision.valid', () => [decisionValid('d-v', 'intent', { kind: 'intent' })]],
-  ['decision.signed', () => decisionOf('d-s', 'intent', { kind: 'intent' })],
-  ['decision.revoked', () => [...decisionOf('d-rv', 'intent', { kind: 'intent' }), seed(0, 'decision.revoked', 'd-rv', { reason: 'superseded' })]],
-  ['decision.rejected', () => [...decisionOf('d-rj', 'intent', { kind: 'intent' }), seed(0, 'decision.rejected', 'd-rj', { reason: 'wrong' })]],
-  ['intent.signed', () => [...fourDomainSeeds()]],
-  ['spec.defined', () => [...fourDomainSeeds()]],
-  ['spec.revised', () => [...fourDomainSeeds(), seed(0, 'spec.revised', 'SPEC-1', { reason: 'tighten', clause: 'clause 2' })]],
-  ['assumption.recorded', () => [...fourDomainSeeds(), assumption('A-1')]],
-  [
-    'assumption.disposed',
-    () => [
-      ...fourDomainSeeds(),
-      assumption('A-1'),
-      ...decisionOf('d-as', 'assumption_set', {
-        spec_ids: ['A-1'],
-        dispositions: [{ spec_id: 'A-1', disposition: 'confirmed' }],
-      }),
-      seed(0, 'assumption.disposed', 'A-1', { decision_id: 'd-as', disposition: 'confirmed' }),
-    ],
-  ],
-  [
-    'assumption.invalidated',
-    () => [...fourDomainSeeds(), assumption('A-2'), seed(0, 'assumption.invalidated', 'A-2', { reason: 'inputs changed' })],
-  ],
-  ['contract.defined', () => [...fourDomainSeeds(), seed(0, 'contract.defined', 'CT-1', { intent_id: 'INT-1', clause: 'contract', content_hash: 'ch:ct' })]],
-  ['criterion.registered', () => [...fourDomainSeeds()]],
-  ['criterion.revised', () => [...fourDomainSeeds(), seed(0, 'criterion.revised', 'CRIT-1', { remedy: 'better' })]],
-  ['evidence.attached', () => [...fourDomainSeeds()]],
-  ['restatement.recorded', () => [...fourDomainSeeds(), seed(0, 'restatement.recorded', 'R-1', { intent_id: 'INT-1', draft_specs: [], inputs: [] })]],
-  [
-    'restatement.diff_dispositioned',
-    () => [
-      ...fourDomainSeeds(),
-      seed(0, 'restatement.recorded', 'R-1', { intent_id: 'INT-1', draft_specs: [], inputs: [] }),
-      seed(0, 'restatement.diff_dispositioned', 'RD-1', {
-        restatement_id: 'R-1',
-        kind: 'agree',
-        target_ref: 'd1',
-        disposition: 'accept',
-      }),
-    ],
-  ],
-  [
-    'restatement.invalidated',
-    () => [
-      ...fourDomainSeeds(),
-      seed(0, 'restatement.recorded', 'R-1', { intent_id: 'INT-1', draft_specs: [], inputs: [] }),
-      seed(0, 'restatement.invalidated', 'R-1', { reason: 'stale' }),
-    ],
-  ],
-];
-
-function numbered(seeds: readonly EventSeed[], prefix = 'sup'): EventSeed[] {
-  return seeds.map((event, index) => ({
-    ...event,
-    id: `e-${prefix}-${index + 1}`,
-    request_id: `req-${prefix}-${index + 1}`,
-  }));
-}
-
-test('P1: SUPPORTED_KINDS has a positive append case for every kind', () => {
-  assert.equal(CASES.length, Object.keys(SUPPORTED_KINDS).length);
-  for (const [kind] of CASES) {
-    assert.ok(Object.hasOwn(SUPPORTED_KINDS, kind), `case ${kind} is not in SUPPORTED_KINDS`);
+test('C5/C6 world chain covers every supported kind exactly once (first occurrence)', () => {
+  assert.equal(kinds.length, 56, 'SUPPORTED_KINDS must stay at 56 (REDUCERS derives it)');
+  for (const kind of kinds) {
+    assert.ok(seeds.some((event) => event.kind === kind), `world chain must contain at least one ${kind} event`);
   }
 });
 
-for (const [kind, build] of CASES) {
-  test(`P1: supported kind ${kind} appends, verifies, and survives a second batch`, () => {
-    withWriteDb((db) => {
-      const batch = chain(numbered(build()));
-      const first = append(db, batch);
-      assert.equal(first.ok, true, `${kind}: ${first.reason_code ?? ''} ${first.message ?? ''}`);
-      assert.equal(first.written, batch.length);
-      assert.deepEqual(verify(db).problems, [], `${kind}: verify after first batch`);
-
-      const probe = PROBES[kind];
-      assert.ok(probe, `missing materialized-row probe for ${kind}`);
-      probe(db);
-
-      const head = batch[batch.length - 1]?.hash;
-      const second = chain(numbered([decisionValid('d-unrelated', 'intent', { kind: 'intent' })], 'sup2'), head);
-      const result = append(db, second);
-      assert.equal(result.ok, true, `${kind} second batch: ${result.reason_code ?? ''} ${result.message ?? ''}`);
-      assert.deepEqual(verify(db).problems, [], `${kind}: verify after second batch`);
-    });
+// C6（P1-2 评审）：每个 kind 不只看“整表变了”，要与**固定快照**逐字段相等——
+// 快照覆盖该 kind 首次出现的 fold 目标行全部列（含 fold-only 列）与具体值；
+// 写错值（如 task.dependencies_changed 写 blocked_by:['bogus']）或漏列都会红。
+// 单事件入 DB 会遇到“中途态 DDL 非法”（如 redteam.disposition NOT NULL），
+// 所以 per-kind 效果在 fold 层取证；DB 物化由下面的 world 全链逐表对账覆盖。
+for (const kind of kinds) {
+  const index = seeds.findIndex((event) => event.kind === kind);
+  test(`C6 ${kind} writes the pinned fold row with exact values`, () => {
+    const table = requiredTable(kind);
+    assert.ok(table !== undefined, `${kind} must map to a folded table`);
+    const before = fold(undefined, events.slice(0, index));
+    const after = fold(undefined, events.slice(0, index + 1));
+    assert.notEqual(
+      canonicalJson(before.tables[table]),
+      canonicalJson(after.tables[table]),
+      `${kind} must change ${table}; a no-op reducer would fail here`,
+    );
+    const expected = snapshots[kind];
+    assert.ok(expected !== undefined, `${kind} has a pinned snapshot`);
+    assert.equal(expected.table, table);
+    const rows = (after.tables as unknown as Record<string, Record<string, Record<string, unknown>>>)[table]!;
+    assert.deepEqual(rows[expected.id], expected.row, `${kind} diverged from the pinned fold snapshot (${table}/${expected.id})`);
   });
 }
+
+// C6 的另一半：整条 world 链一次 append 后，DB 的物化行必须与 fold 最终态逐表相等
+// （decision 只对账已签名行，D-019；fold-only 列不在 DDL 中，天然不参与比较）。
+function columnsOf(db: SdoDatabase, table: string): string[] {
+  return (db.prepare(`PRAGMA table_info("${table}")`).all() as Array<{ name: string }>).map((c) => c.name);
+}
+
+function toSqlValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  if (typeof value === 'boolean') return value ? 1 : 0;
+  return value;
+}
+
+function fromDbValue(value: unknown): unknown {
+  if (typeof value === 'string' && (value.startsWith('[') || value.startsWith('{'))) {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  return value === undefined ? null : value;
+}
+
+function projection(columns: readonly string[], row: Record<string, unknown>, dbSide: boolean): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const column of columns) {
+    out[column] = dbSide ? fromDbValue(row[column]) : toSqlValue(row[column]);
+  }
+  return out;
+}
+
+function keyOf(pk: readonly string[], row: Record<string, unknown>): string {
+  return canonicalJson(pk.map((c) => toSqlValue(row[c])));
+}
+
+function visibleFoldRows(state: FoldState, table: string): Record<string, Record<string, unknown>> {
+  const rows = (state.tables as unknown as Record<string, Record<string, Record<string, unknown>>>)[table] ?? {};
+  if (table !== 'decision') return rows;
+  const signed: Record<string, Record<string, unknown>> = {};
+  for (const [id, row] of Object.entries(rows)) if (row['signature'] !== null && row['signature'] !== undefined) signed[id] = row;
+  return signed;
+}
+
+test('C6 world append: materialized rows equal the fold final state for every table', () => {
+  withWriteDb((db) => {
+    assert.equal(append(db, events).ok, true);
+    assert.equal(verify(db).ok, true);
+    const state = fold(undefined, events);
+    for (const table of MATERIALIZED_TABLES) {
+      const pk = primaryKeyColumns(db, table);
+      const columns = columnsOf(db, table);
+      const foldRows = visibleFoldRows(state, table);
+      const dbRows = new Map<string, Record<string, unknown>>();
+      for (const row of db.prepare(`SELECT * FROM "${table}"`).all() as Array<Record<string, unknown>>) {
+        dbRows.set(keyOf(pk, row), row);
+      }
+      const foldKeys = new Set<string>();
+      for (const row of Object.values(foldRows)) {
+        const key = keyOf(pk, row);
+        foldKeys.add(key);
+        const stored = dbRows.get(key);
+        assert.ok(stored !== undefined, `${table} ${key} is missing in the database`);
+        assert.equal(canonicalJson(projection(columns, stored, true)), canonicalJson(projection(columns, row, false)), `${table} ${key} differs from fold`);
+      }
+      for (const key of dbRows.keys()) assert.ok(foldKeys.has(key), `${table} ${key} is unexpected (not in fold state)`);
+    }
+  });
+});

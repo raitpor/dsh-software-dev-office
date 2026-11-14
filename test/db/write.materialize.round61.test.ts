@@ -13,14 +13,17 @@ import { fold } from '../../src/core/fold/index.js';
 import { REDUCERS } from '../../src/core/fold/registry.js';
 import { readEvents } from '../../src/core/verify-events.js';
 import { verify } from '../../src/core/verify.js';
+import type { VerifyProblem } from '../../src/core/verify-types.js';
 import { chain, fourDomainSeeds, seed, withWriteDb } from './append-helpers.js';
+import { worldSeeds } from './world-seeds.js';
 
 test('P1: unsupported (registered but out-of-scope) kind is rejected, verify stays green', () => {
   withWriteDb((db) => {
-    const result = append(db, chain([seed(1, 'task.created', 'TASK-1', { seq: 1, title: 'x', kind: 'implement' })]));
+    const result = append(db, chain([seed(1, 'query_miss', 'Q-1', {})]));
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'unsupported_scope');
-    assert.match(result.message ?? '', /task\.created/u);
+    assert.match(result.message ?? '', /query_miss/u);
+    assert.match(result.message ?? '', /no fold projection/u);
     assert.equal(count(db, 'event'), 0);
     assert.deepEqual(verify(db).problems, []);
   });
@@ -42,63 +45,26 @@ test('P1/D-019: decision.valid alone writes no decision row; signed batch materi
   });
 });
 
-test('P2-10: ignored fold columns equal FOLD_ONLY_COLUMNS (explicit whitelist)', () => {
+test('P2-10: ignored fold columns equal FOLD_ONLY_COLUMNS (explicit whitelist, all tables)', () => {
   withWriteDb((db) => {
-    const batch = chain([
-      ...fourDomainSeeds(),
-      seed(9, 'spec.revised', 'SPEC-1', { reason: 'tighten' }),
-      seed(10, 'criterion.revised', 'CRIT-1', { remedy: 'better' }),
-      seed(11, 'assumption.recorded', 'A-1', {
-        intent_id: 'INT-1',
-        clause: 'a1',
-        blast_radius: 'low',
-        content_hash: 'ch:a1',
-      }),
-      seed(12, 'decision.valid', 'd-as', {
-        decision_kind: 'assumption_set',
-        payload_hash: 'ph-d-as',
-        frontier: 'f-as',
-        payload: { spec_ids: ['A-1'], dispositions: [{ spec_id: 'A-1', disposition: 'confirmed' }] },
-      }),
-      seed(13, 'decision.signed', 'd-as', {
-        payload_hash: 'ph-d-as',
-        signature: 'sig',
-        key_id: 'key-1',
-        signer: 'alice',
-      }),
-      seed(14, 'assumption.disposed', 'A-1', { decision_id: 'd-as', disposition: 'confirmed' }),
-      seed(15, 'assumption.recorded', 'A-2', {
-        intent_id: 'INT-1',
-        clause: 'a2',
-        blast_radius: 'low',
-        content_hash: 'ch:a2',
-      }),
-      seed(16, 'assumption.invalidated', 'A-2', { reason: 'inputs changed' }),
-      seed(17, 'decision.valid', 'd-rj', {
-        decision_kind: 'intent',
-        payload_hash: 'ph-d-rj',
-        frontier: 'f-rj',
-        payload: { kind: 'intent' },
-      }),
-      seed(18, 'decision.signed', 'd-rj', {
-        payload_hash: 'ph-d-rj',
-        signature: 'sig',
-        key_id: 'key-1',
-        signer: 'alice',
-      }),
-      seed(19, 'decision.rejected', 'd-rj', { reason: 'wrong' }),
-    ]);
-    const result = append(db, batch);
-    assert.equal(result.ok, true, `append failed: ${result.message ?? ''}`);
-    const state = fold(undefined, readEvents(db, []));
+    assert.equal(append(db, chain(worldSeeds())).ok, true);
+    const problems: VerifyProblem[] = [];
+    const state = fold(undefined, readEvents(db, problems));
     for (const table of MATERIALIZED_TABLES) {
-      const columns = (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((row) => row.name);
+      const rows = Object.values(state.tables[table]);
+      if (rows.length === 0) continue;
+      const ddl = new Set(
+        (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((column) => column.name),
+      );
       const actual = new Set<string>();
-      for (const row of Object.values(state.tables[table])) {
-        if (table === 'decision' && row['signature'] === null) continue;
-        for (const key of Object.keys(row)) if (!columns.includes(key)) actual.add(key);
+      for (const row of rows) {
+        for (const key of Object.keys(row)) if (!ddl.has(key)) actual.add(key);
       }
-      assert.deepEqual([...actual].sort(), [...(FOLD_ONLY_COLUMNS[table] ?? [])].sort(), `fold-only columns drifted for ${table}`);
+      assert.deepEqual(
+        [...actual].sort(),
+        [...(FOLD_ONLY_COLUMNS[table] ?? [])].sort(),
+        `fold-only columns drifted for ${table}`,
+      );
     }
   });
 });

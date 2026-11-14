@@ -1,4 +1,5 @@
 import type { Event, FoldWorking, Row, TableName } from './types.js';
+import { canonicalJson } from './canonical.js';
 
 export class FoldError extends Error {
   constructor(message: string) {
@@ -148,4 +149,34 @@ export function subjectId(event: Event): string {
     return fail(event, 'subject must be a non-empty object id');
   }
   return event.subject;
+}
+
+/** 行内容比较：忽略事件时间 `at`（同一 subject 重放时时间可以不同，业务列必须相同）。 */
+function withoutAt(row: Row): Record<string, unknown> {
+  const { at: _at, ...rest } = row as Record<string, unknown>;
+  void _at;
+  return rest;
+}
+
+/**
+ * create 语义 reducer 的公共入口（M1-7 P1-1）：同 subject 已存在时
+ *   · 业务列完全相同 ⇒ 幂等 no-op；
+ *   · 任一业务列不同 ⇒ `FoldError`（不再静默覆盖）。
+ * upsert 只留给设计上“后到覆盖”的投影（逐表列在 `src/db/README.md`）。
+ */
+export function createOnce(
+  state: FoldWorking,
+  event: Event,
+  table: TableName,
+  id: string,
+  next: Row,
+): void {
+  const existing = rowOf(state, table, id);
+  if (existing === undefined) {
+    upsert(state, table, id, next);
+    return;
+  }
+  if (canonicalJson(withoutAt(next)) !== canonicalJson(withoutAt(existing))) {
+    fail(event, `${table} ${id} already exists with different content; this projection is append-only`);
+  }
 }

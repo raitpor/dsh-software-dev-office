@@ -5,7 +5,7 @@ test('P1-2 decision 只增不改：重复 valid、无 valid 直接 signed、二�
   const duplicate = new TestFolder();
   validDecision(duplicate);
   duplicate.push('decision.valid', 'd-1', { decision_kind: 'intent', payload_hash: 'ph-1' });
-  expectFoldFail(() => duplicate.fold(), /already exists; decisions are append-only/);
+  expectFoldFail(() => duplicate.fold(), /already exists with different content/);
 
   const unsigned = new TestFolder();
   unsigned.push('decision.signed', 'd-9', {

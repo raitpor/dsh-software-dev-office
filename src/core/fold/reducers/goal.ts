@@ -1,4 +1,5 @@
 import {
+  createOnce,
   fail,
   optString,
   optStringArray,
@@ -8,7 +9,6 @@ import {
   reqString,
   rowOf,
   subjectId,
-  upsert,
 } from '../guards.js';
 import { requireSignedDecision } from '../decisions.js';
 import type { Event, FoldWorking, Row } from '../types.js';
@@ -41,7 +41,7 @@ export function goalDeclared(state: FoldWorking, event: Event): void {
   }
   if (kind === 'intent') {
     for (const [otherId, row] of Object.entries(state.tables.goal_node)) {
-      if (row['kind'] === 'intent' && row['intent_id'] === intentId) {
+      if (row['kind'] === 'intent' && row['intent_id'] === intentId && otherId !== id) {
         return fail(event, `intent ${intentId} already has root goal ${otherId}`);
       }
     }
@@ -63,7 +63,7 @@ export function goalDeclared(state: FoldWorking, event: Event): void {
   if (planNode['goal'] !== reqString(event, payload, 'goal')) {
     return fail(event, `goal ${id} does not match the signed plan node (goal)`);
   }
-  upsert(state, 'goal_node', id, {
+  createOnce(state, event, 'goal_node', id, {
     id,
     parent_id: parentId,
     intent_id: intentId,
@@ -137,7 +137,7 @@ export function goalIntegrated(state: FoldWorking, event: Event): void {
   if (rowOf(state, 'goal_node', childGoalId) === undefined) {
     return fail(event, `child goal ${childGoalId} does not exist`);
   }
-  upsert(state, 'integration', id, {
+  createOnce(state, event, 'integration', id, {
     id,
     parent_goal_id: parentGoalId,
     child_goal_id: childGoalId,

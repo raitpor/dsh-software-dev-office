@@ -1,0 +1,1059 @@
+{
+  "assumption.disposed": {
+    "table": "spec",
+    "id": "A-1",
+    "row": {
+      "id": "A-1",
+      "kind": "assumption",
+      "intent_id": "INT-1",
+      "clause": "a1",
+      "mech_checkable": false,
+      "scenario_id": null,
+      "is_core": false,
+      "status": "confirmed",
+      "blast_radius": "low",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "content_hash": "ch:a1",
+      "design_artifact_sha256": null,
+      "code_artifact_sha256": null,
+      "code_artifact_ref": null,
+      "risk_flags": [],
+      "alternatives": [],
+      "no_alternative_reason": null,
+      "at": "2026-11-13T00:00:00Z",
+      "decision_id": "d-as",
+      "successor_ref": null,
+      "disposed_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "assumption.invalidated": {
+    "table": "spec",
+    "id": "A-2",
+    "row": {
+      "id": "A-2",
+      "kind": "assumption",
+      "intent_id": "INT-1",
+      "clause": "a2",
+      "mech_checkable": false,
+      "scenario_id": null,
+      "is_core": false,
+      "status": "open",
+      "blast_radius": "low",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "content_hash": "ch:a2",
+      "design_artifact_sha256": null,
+      "code_artifact_sha256": null,
+      "code_artifact_ref": null,
+      "risk_flags": [],
+      "alternatives": [],
+      "no_alternative_reason": null,
+      "at": "2026-11-13T00:00:00Z",
+      "invalidated_reason": "inputs changed",
+      "invalidated_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "assumption.recorded": {
+    "table": "spec",
+    "id": "A-1",
+    "row": {
+      "id": "A-1",
+      "kind": "assumption",
+      "intent_id": "INT-1",
+      "clause": "a1",
+      "mech_checkable": false,
+      "scenario_id": null,
+      "is_core": false,
+      "status": "open",
+      "blast_radius": "low",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "content_hash": "ch:a1",
+      "design_artifact_sha256": null,
+      "code_artifact_sha256": null,
+      "code_artifact_ref": null,
+      "risk_flags": [],
+      "alternatives": [],
+      "no_alternative_reason": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "attention.answered": {
+    "table": "attention",
+    "id": "ATT-1",
+    "row": {
+      "id": "ATT-1",
+      "task_id": "TASK-1",
+      "raised_by": "actor-1",
+      "asked_of": "bob",
+      "question": "which?",
+      "options": [
+        "a",
+        "b"
+      ],
+      "state": "answered",
+      "expires_at": "2026-12-01T00:00:00Z",
+      "answered_by": "actor-1",
+      "withdrawn_by": null,
+      "supersedes": null,
+      "at": "2026-11-13T00:00:00Z",
+      "answer": "a",
+      "answered_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "attention.raised": {
+    "table": "attention",
+    "id": "ATT-1",
+    "row": {
+      "id": "ATT-1",
+      "task_id": "TASK-1",
+      "raised_by": "actor-1",
+      "asked_of": "bob",
+      "question": "which?",
+      "options": [
+        "a",
+        "b"
+      ],
+      "state": "open",
+      "expires_at": "2026-12-01T00:00:00Z",
+      "answered_by": null,
+      "withdrawn_by": null,
+      "supersedes": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "attention.withdrawn": {
+    "table": "attention",
+    "id": "ATT-2",
+    "row": {
+      "id": "ATT-2",
+      "task_id": "TASK-1",
+      "raised_by": "actor-1",
+      "asked_of": "bob",
+      "question": "again?",
+      "options": [],
+      "state": "withdrawn",
+      "expires_at": "2026-12-01T00:00:00Z",
+      "answered_by": null,
+      "withdrawn_by": "actor-1",
+      "supersedes": null,
+      "at": "2026-11-13T00:00:00Z",
+      "withdrawn_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "baseline.amended": {
+    "table": "baseline",
+    "id": "B-2",
+    "row": {
+      "id": "B-2",
+      "frozen_by": "alice",
+      "engine_version": "e1",
+      "criteria_manifest_hash": "cmh",
+      "policy": {},
+      "criteria": [],
+      "gates": {},
+      "thresholds": {},
+      "assurance": {},
+      "prev": "B-1",
+      "direction": "tighten",
+      "hash": "bh-2",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "baseline.frozen": {
+    "table": "baseline",
+    "id": "B-1",
+    "row": {
+      "id": "B-1",
+      "frozen_by": "alice",
+      "engine_version": "e1",
+      "criteria_manifest_hash": "cmh",
+      "policy": {},
+      "criteria": [],
+      "gates": {},
+      "thresholds": {},
+      "assurance": {},
+      "prev": null,
+      "direction": null,
+      "hash": "bh-1",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "baseline.loosened": {
+    "table": "baseline",
+    "id": "B-3",
+    "row": {
+      "id": "B-3",
+      "frozen_by": "alice",
+      "engine_version": "e1",
+      "criteria_manifest_hash": "cmh",
+      "policy": {},
+      "criteria": [],
+      "gates": {},
+      "thresholds": {},
+      "assurance": {},
+      "prev": "B-2",
+      "direction": "loosen",
+      "hash": "bh-3",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "config.changed": {
+    "table": "config",
+    "id": "limits.max_payload_bytes",
+    "row": {
+      "key": "limits.max_payload_bytes",
+      "value": 4096,
+      "updated_by": "alice",
+      "updated_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "contract.defined": {
+    "table": "spec",
+    "id": "CT-1",
+    "row": {
+      "id": "CT-1",
+      "kind": "contract",
+      "intent_id": "INT-1",
+      "clause": "contract clause",
+      "mech_checkable": false,
+      "scenario_id": null,
+      "is_core": false,
+      "status": null,
+      "blast_radius": null,
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "content_hash": "ch:ct",
+      "design_artifact_sha256": null,
+      "code_artifact_sha256": null,
+      "code_artifact_ref": null,
+      "risk_flags": [],
+      "alternatives": [],
+      "no_alternative_reason": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "criterion.registered": {
+    "table": "criterion",
+    "id": "CRIT-1",
+    "row": {
+      "id": "CRIT-1",
+      "spec_id": "SPEC-1",
+      "kind": "functional",
+      "status_enum": "draft",
+      "remedy": "fix",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "criterion.revised": {
+    "table": "criterion",
+    "id": "CRIT-1",
+    "row": {
+      "id": "CRIT-1",
+      "spec_id": "SPEC-1",
+      "kind": "functional",
+      "status_enum": "draft",
+      "remedy": "better",
+      "at": "2026-11-13T00:00:00Z",
+      "revised_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "decision.rejected": {
+    "table": "decision",
+    "id": "d-rj",
+    "row": {
+      "id": "d-rj",
+      "decision_kind": "intent",
+      "status": "invalid",
+      "payload": {},
+      "payload_hash": "ph-d-rj",
+      "signature": null,
+      "key_id": null,
+      "signer": null,
+      "frontier": "f",
+      "at": "2026-11-13T00:00:00Z",
+      "revoked_at": null,
+      "revoke_reason": null,
+      "rejected_at": "2026-11-13T00:00:00Z",
+      "rejected_reason": "no"
+    }
+  },
+  "decision.revoked": {
+    "table": "decision",
+    "id": "d-rv",
+    "row": {
+      "id": "d-rv",
+      "decision_kind": "intent",
+      "status": "revoked",
+      "payload": {},
+      "payload_hash": "ph-d-rv",
+      "signature": "sig",
+      "key_id": "k",
+      "signer": "alice",
+      "frontier": "f",
+      "at": "2026-11-13T00:00:00Z",
+      "revoked_at": "2026-11-13T00:00:00Z",
+      "revoke_reason": "revoked"
+    }
+  },
+  "decision.signed": {
+    "table": "decision",
+    "id": "d-int",
+    "row": {
+      "id": "d-int",
+      "decision_kind": "intent",
+      "status": "valid",
+      "payload": {
+        "intent_id": "INT-1",
+        "kind": "intent"
+      },
+      "payload_hash": "ph-d-int",
+      "signature": "sig-d-int",
+      "key_id": "key-1",
+      "signer": "alice",
+      "frontier": "f-d-int",
+      "at": "2026-11-13T00:00:00Z",
+      "revoked_at": null,
+      "revoke_reason": null
+    }
+  },
+  "decision.valid": {
+    "table": "decision",
+    "id": "d-int",
+    "row": {
+      "id": "d-int",
+      "decision_kind": "intent",
+      "status": "valid",
+      "payload": {
+        "intent_id": "INT-1",
+        "kind": "intent"
+      },
+      "payload_hash": "ph-d-int",
+      "signature": null,
+      "key_id": null,
+      "signer": null,
+      "frontier": "f-d-int",
+      "at": "2026-11-13T00:00:00Z",
+      "revoked_at": null,
+      "revoke_reason": null
+    }
+  },
+  "defect.closed": {
+    "table": "defect",
+    "id": "DEF-1",
+    "row": {
+      "id": "DEF-1",
+      "criterion_id": "CRIT-1",
+      "spec_id": null,
+      "task_id": "TASK-1",
+      "kind": "criterion",
+      "severity": "low",
+      "family": null,
+      "status": "closed",
+      "evidence": null,
+      "verify_run_id": "VR-1",
+      "closed_by": "ci",
+      "at": "2026-11-13T00:00:00Z",
+      "closed_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "defect.recorded": {
+    "table": "defect",
+    "id": "DEF-1",
+    "row": {
+      "id": "DEF-1",
+      "criterion_id": "CRIT-1",
+      "spec_id": null,
+      "task_id": "TASK-1",
+      "kind": "criterion",
+      "severity": "low",
+      "family": null,
+      "status": "open",
+      "evidence": null,
+      "verify_run_id": null,
+      "closed_by": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "design.locked": {
+    "table": "design_lock",
+    "id": "DL-1",
+    "row": {
+      "id": "DL-1",
+      "spec_id": "SPEC-1",
+      "spec_version_hash": "v1",
+      "design_sha256": "sha256:d",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "evidence.attached": {
+    "table": "evidence",
+    "id": "EVID-1",
+    "row": {
+      "id": "EVID-1",
+      "criterion_id": "CRIT-1",
+      "artifact_uri": "file:///a",
+      "artifact_sha256": "sha256:a",
+      "command": "true",
+      "output_digest": null,
+      "snapshot_id": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "gate.judged": {
+    "table": "stage_run",
+    "id": "SR-1",
+    "row": {
+      "id": "SR-1",
+      "stage": "req",
+      "gate_id": "G_req_exit",
+      "baseline_hash": "bh-1",
+      "entered_at": "2026-11-13T00:00:00Z",
+      "exited_at": null,
+      "verdict": "pass",
+      "criteria": [],
+      "at": "2026-11-13T00:00:00Z",
+      "judged_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "goal.declared": {
+    "table": "goal_node",
+    "id": "GOAL-1",
+    "row": {
+      "id": "GOAL-1",
+      "parent_id": null,
+      "intent_id": "INT-1",
+      "decision_id": "d-plan",
+      "goal": "root",
+      "kind": "intent",
+      "acceptance_criterion_id": null,
+      "scope_paths": [],
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "goal.integrated": {
+    "table": "integration",
+    "id": "INTG-1",
+    "row": {
+      "id": "INTG-1",
+      "parent_goal_id": "GOAL-1",
+      "child_goal_id": "GOAL-2",
+      "state": "connected",
+      "evidence_id": "EVID-1",
+      "note": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "goal.reparented": {
+    "table": "goal_node",
+    "id": "GOAL-3",
+    "row": {
+      "id": "GOAL-3",
+      "parent_id": "GOAL-2",
+      "intent_id": null,
+      "decision_id": "d-plan2",
+      "goal": "part three",
+      "kind": "part",
+      "acceptance_criterion_id": null,
+      "scope_paths": [],
+      "at": "2026-11-13T00:00:00Z",
+      "reparented_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "intent.signed": {
+    "table": "intent",
+    "id": "INT-1",
+    "row": {
+      "id": "INT-1",
+      "statement": "root intent",
+      "source_text": "root intent",
+      "owner": "alice",
+      "decision_id": "d-int",
+      "strength": "explicit",
+      "baseline_hash": "bh-1",
+      "content_hash": "ch:int",
+      "status": "signed",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "redteam.disposed": {
+    "table": "redteam",
+    "id": "RT-1",
+    "row": {
+      "id": "RT-1",
+      "subject_kind": "spec",
+      "subject_id": "SPEC-1",
+      "criterion_id": "CRIT-1",
+      "criterion_fixture_id": "CRIT-1/fx/1",
+      "use_case": "uc1",
+      "disposition": "accepted",
+      "at": "2026-11-13T00:00:00Z",
+      "disposed_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "redteam.recorded": {
+    "table": "redteam",
+    "id": "RT-1",
+    "row": {
+      "id": "RT-1",
+      "subject_kind": "spec",
+      "subject_id": "SPEC-1",
+      "criterion_id": "CRIT-1",
+      "criterion_fixture_id": "CRIT-1/fx/1",
+      "use_case": "uc1",
+      "disposition": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "release.delivered": {
+    "table": "release",
+    "id": "REL-1",
+    "row": {
+      "id": "REL-1",
+      "package_version": "0.2.0",
+      "status": "delivered",
+      "frozen_at": "2026-11-13T00:00:00Z",
+      "frozen_by": [
+        "alice",
+        "bob"
+      ],
+      "frontier": "f",
+      "baseline_hash": "bh-3",
+      "scope_spec_set": "ss1",
+      "note": null
+    }
+  },
+  "release.frozen": {
+    "table": "release",
+    "id": "REL-1",
+    "row": {
+      "id": "REL-1",
+      "package_version": "0.2.0",
+      "status": "frozen",
+      "frozen_at": "2026-11-13T00:00:00Z",
+      "frozen_by": [
+        "alice",
+        "bob"
+      ],
+      "frontier": "f",
+      "baseline_hash": "bh-3",
+      "scope_spec_set": "ss1",
+      "note": null
+    }
+  },
+  "release.superseded": {
+    "table": "release",
+    "id": "REL-2",
+    "row": {
+      "id": "REL-2",
+      "package_version": null,
+      "status": "rolled_back",
+      "frozen_at": "2026-11-13T00:00:00Z",
+      "frozen_by": [
+        "alice",
+        "bob"
+      ],
+      "frontier": "f",
+      "baseline_hash": "bh-3",
+      "scope_spec_set": "ss2",
+      "note": null
+    }
+  },
+  "report.recorded": {
+    "table": "report",
+    "id": "REP-1",
+    "row": {
+      "id": "REP-1",
+      "task_id": "TASK-1",
+      "state": "progress",
+      "evidence_id": null,
+      "note": "ok",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "restatement.diff_dispositioned": {
+    "table": "restatement_diff",
+    "id": "RD-1",
+    "row": {
+      "id": "RD-1",
+      "restatement_id": "R-1",
+      "kind": "agree",
+      "target_ref": "d1",
+      "disposition": "accept",
+      "reason": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "restatement.invalidated": {
+    "table": "restatement",
+    "id": "R-2",
+    "row": {
+      "id": "R-2",
+      "intent_id": "INT-1",
+      "draft_specs": [],
+      "inputs": [],
+      "by": "actor-1",
+      "at": "2026-11-13T00:00:00Z",
+      "invalid_reason": "superseded",
+      "accepted_spec_ids": []
+    }
+  },
+  "restatement.recorded": {
+    "table": "restatement",
+    "id": "R-1",
+    "row": {
+      "id": "R-1",
+      "intent_id": "INT-1",
+      "draft_specs": [],
+      "inputs": [],
+      "by": "actor-1",
+      "at": "2026-11-13T00:00:00Z",
+      "invalid_reason": null,
+      "accepted_spec_ids": []
+    }
+  },
+  "review.finding_verified": {
+    "table": "review",
+    "id": "REV-1",
+    "row": {
+      "id": "REV-1",
+      "task_id": "TASK-1",
+      "reviewer": "carol",
+      "subject_hash": "sh1",
+      "subject_producer": "alice",
+      "finding": "looks ok",
+      "verified_by": "dave",
+      "verdict": "reproduced",
+      "reason": null,
+      "at": "2026-11-13T00:00:00Z",
+      "verified_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "review.recorded": {
+    "table": "review",
+    "id": "REV-1",
+    "row": {
+      "id": "REV-1",
+      "task_id": "TASK-1",
+      "reviewer": "carol",
+      "subject_hash": "sh1",
+      "subject_producer": "alice",
+      "finding": "looks ok",
+      "verified_by": null,
+      "verdict": "reproduced",
+      "reason": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "review.round_closed": {
+    "table": "review_round",
+    "id": "RC-1",
+    "row": {
+      "id": "RC-1",
+      "task_id": "TASK-1",
+      "baseline_hash": "bh-1",
+      "frontier": "f",
+      "verdict": "pass",
+      "signer": "carol",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "scope.declared": {
+    "table": "scope_decl",
+    "id": "SC-1",
+    "row": {
+      "id": "SC-1",
+      "stage": "req",
+      "paths": [
+        "src/"
+      ],
+      "created_by": "actor-1",
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "snapshot.taken": {
+    "table": "snapshot",
+    "id": "SNAP-0",
+    "row": {
+      "id": "SNAP-0",
+      "git_oid": "base0",
+      "external_ref": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "spec.defined": {
+    "table": "spec",
+    "id": "SPEC-1",
+    "row": {
+      "id": "SPEC-1",
+      "kind": "requirement",
+      "intent_id": "INT-1",
+      "clause": "c1",
+      "mech_checkable": false,
+      "scenario_id": null,
+      "is_core": false,
+      "status": null,
+      "blast_radius": null,
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "content_hash": "ch:spec-1",
+      "design_artifact_sha256": null,
+      "code_artifact_sha256": null,
+      "code_artifact_ref": null,
+      "risk_flags": [],
+      "alternatives": [],
+      "no_alternative_reason": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "spec.revised": {
+    "table": "spec",
+    "id": "SPEC-1",
+    "row": {
+      "id": "SPEC-1",
+      "kind": "requirement",
+      "intent_id": "INT-1",
+      "clause": "c1",
+      "mech_checkable": false,
+      "scenario_id": null,
+      "is_core": false,
+      "status": null,
+      "blast_radius": null,
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "content_hash": "ch:spec-1",
+      "design_artifact_sha256": null,
+      "code_artifact_sha256": null,
+      "code_artifact_ref": null,
+      "risk_flags": [],
+      "alternatives": [],
+      "no_alternative_reason": null,
+      "at": "2026-11-13T00:00:00Z",
+      "revised_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "stage.entered": {
+    "table": "stage_run",
+    "id": "SR-1",
+    "row": {
+      "id": "SR-1",
+      "stage": "req",
+      "gate_id": null,
+      "baseline_hash": null,
+      "entered_at": "2026-11-13T00:00:00Z",
+      "exited_at": null,
+      "verdict": null,
+      "criteria": [],
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "stage.exited": {
+    "table": "stage_run",
+    "id": "SR-1",
+    "row": {
+      "id": "SR-1",
+      "stage": "req",
+      "gate_id": "G_req_exit",
+      "baseline_hash": "bh-1",
+      "entered_at": "2026-11-13T00:00:00Z",
+      "exited_at": "2026-11-13T00:00:00Z",
+      "verdict": "pass",
+      "criteria": [],
+      "at": "2026-11-13T00:00:00Z",
+      "judged_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.assigned": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "in_progress",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": "bob",
+      "reserved_until": "2026-12-01T00:00:00Z"
+    }
+  },
+  "task.blocked": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "blocked",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": "upstream_changed",
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null,
+      "blocked_reason": "x",
+      "blocked_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.claimed": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "in_progress",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null
+    }
+  },
+  "task.created": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": null,
+      "status": "planned",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.dependencies_changed": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "in_progress",
+      "blocked_by": [
+        "TASK-2"
+      ],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null,
+      "blocked_reason": null,
+      "blocked_at": "2026-11-13T00:00:00Z",
+      "unblocked_at": "2026-11-13T00:00:00Z",
+      "evidence_id": "EVID-1",
+      "done_at": "2026-11-13T00:00:00Z",
+      "reopened_reason": "rework",
+      "reopened_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.done": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "done",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null,
+      "blocked_reason": null,
+      "blocked_at": "2026-11-13T00:00:00Z",
+      "unblocked_at": "2026-11-13T00:00:00Z",
+      "evidence_id": "EVID-1",
+      "done_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.dropped": {
+    "table": "task",
+    "id": "TASK-2",
+    "row": {
+      "id": "TASK-2",
+      "seq": 2,
+      "title": "t2",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": null,
+      "status": "dropped",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "drop_kind": "never_done",
+      "drop_reason": "cancelled",
+      "drop_credential": null,
+      "dropped_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.reopened": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "in_progress",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null,
+      "blocked_reason": null,
+      "blocked_at": "2026-11-13T00:00:00Z",
+      "unblocked_at": "2026-11-13T00:00:00Z",
+      "evidence_id": "EVID-1",
+      "done_at": "2026-11-13T00:00:00Z",
+      "reopened_reason": "rework",
+      "reopened_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "task.unassigned": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "in_progress",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null
+    }
+  },
+  "task.unblocked": {
+    "table": "task",
+    "id": "TASK-1",
+    "row": {
+      "id": "TASK-1",
+      "seq": 1,
+      "title": "t1",
+      "kind": "implement",
+      "created_by": "actor-1",
+      "producer": "actor-1",
+      "owner": "actor-1",
+      "status": "ready",
+      "blocked_by": [],
+      "scope_paths": [],
+      "inputs": [],
+      "subject_kind": null,
+      "subject_id": null,
+      "block_code": null,
+      "at": "2026-11-13T00:00:00Z",
+      "claimed_at": "2026-11-13T00:00:00Z",
+      "reserved_by": null,
+      "reserved_until": null,
+      "blocked_reason": null,
+      "blocked_at": "2026-11-13T00:00:00Z",
+      "unblocked_at": "2026-11-13T00:00:00Z"
+    }
+  },
+  "verify.failed": {
+    "table": "verify_run",
+    "id": "VR-2",
+    "row": {
+      "id": "VR-2",
+      "at": "2026-11-13T00:00:00Z",
+      "actor_kind": "human",
+      "actor": "ci",
+      "groups": [],
+      "result": "fail",
+      "signed_by": null,
+      "note": null
+    }
+  },
+  "verify.passed": {
+    "table": "verify_run",
+    "id": "VR-1",
+    "row": {
+      "id": "VR-1",
+      "at": "2026-11-13T00:00:00Z",
+      "actor_kind": "human",
+      "actor": "ci",
+      "groups": [],
+      "result": "pass",
+      "signed_by": null,
+      "note": null
+    }
+  }
+}

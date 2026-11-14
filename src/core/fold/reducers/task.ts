@@ -1,4 +1,5 @@
 import {
+  createOnce,
   fail,
   optEnum,
   optString,
@@ -10,7 +11,6 @@ import {
   reqString,
   rowOf,
   subjectId,
-  upsert,
 } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 import { materializeWorkUnit } from './workunit.js';
@@ -38,14 +38,11 @@ function requireStatus(event: Event, row: Record<string, unknown>, allowed: read
 export function taskCreated(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'task', id) !== undefined) {
-    return fail(event, `task ${id} already exists`);
-  }
   const status = optString(event, payload, 'status') ?? 'planned';
   if (!(TASK_STATUS as readonly string[]).includes(status)) {
     return fail(event, `payload.status must be one of ${TASK_STATUS.join('|')}`);
   }
-  upsert(state, 'task', id, {
+  createOnce(state, event, 'task', id, {
     id,
     seq: reqInteger(event, payload, 'seq'),
     title: reqString(event, payload, 'title'),

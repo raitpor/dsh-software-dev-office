@@ -182,11 +182,11 @@ test('P2-6 append refuses to nest inside an open transaction', () => {
 
 test('P1: unsupported kind is rejected with unsupported_scope and writes nothing', () => {
   withWriteDb((db) => {
-    const result = append(db, chain([seed(1, 'task.created', 'TASK-1', { seq: 1, title: 'x', kind: 'implement' })]));
+    const result = append(db, chain([seed(1, 'query_miss', 'Q-1', {})]));
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'unsupported_scope');
-    assert.match(result.message ?? '', /task\.created/u);
-    assert.match(result.message ?? '', /task/u);
+    assert.match(result.message ?? '', /query_miss/u);
+    assert.match(result.message ?? '', /no fold projection/u);
     assert.equal(result.attempted, 0);
     assert.equal(eventCount(db), 0);
     assert.equal(verify(db).ok, true);

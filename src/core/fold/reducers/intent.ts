@@ -1,13 +1,11 @@
 import { requireValidDecision } from '../decisions.js';
 import {
-  fail,
+  createOnce,
   optString,
   payloadOf,
   reqEnum,
   reqString,
-  rowOf,
   subjectId,
-  upsert,
 } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 
@@ -19,12 +17,9 @@ import type { Event, FoldWorking } from '../types.js';
 export function intentSigned(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'intent', id) !== undefined) {
-    return fail(event, `intent ${id} already signed`);
-  }
   const decisionId = reqString(event, payload, 'decision_id');
   requireValidDecision(state, event, decisionId, 'intent');
-  upsert(state, 'intent', id, {
+  createOnce(state, event, 'intent', id, {
     id,
     statement: reqString(event, payload, 'statement'),
     source_text: optString(event, payload, 'source_text') ?? reqString(event, payload, 'statement'),

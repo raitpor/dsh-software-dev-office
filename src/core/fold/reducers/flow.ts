@@ -1,4 +1,5 @@
 import {
+  createOnce,
   fail,
   optString,
   optStringArray,
@@ -8,7 +9,6 @@ import {
   reqString,
   rowOf,
   subjectId,
-  upsert,
 } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
 
@@ -20,7 +20,7 @@ const DEFECT_SEVERITY = ['low', 'medium', 'high'] as const;
 export function reportRecorded(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'report', id, {
+  createOnce(state, event, 'report', id, {
     id,
     task_id: reqString(event, payload, 'task_id'),
     state: reqEnum(event, payload, 'state', REPORT_STATES),
@@ -33,7 +33,7 @@ export function reportRecorded(state: FoldWorking, event: Event): void {
 export function attentionRaised(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'attention', id, {
+  createOnce(state, event, 'attention', id, {
     id,
     task_id: reqString(event, payload, 'task_id'),
     raised_by: optString(event, payload, 'raised_by') ?? event.actor,
@@ -89,7 +89,7 @@ export function attentionWithdrawn(state: FoldWorking, event: Event): void {
 export function defectRecorded(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'defect', id, {
+  createOnce(state, event, 'defect', id, {
     id,
     criterion_id: reqString(event, payload, 'criterion_id'),
     spec_id: optString(event, payload, 'spec_id') ?? null,

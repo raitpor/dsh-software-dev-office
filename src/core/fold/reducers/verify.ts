@@ -1,4 +1,5 @@
 import {
+  createOnce,
   optString,
   optStringArray,
   patchRow,
@@ -18,11 +19,8 @@ const VERDICTS = ['pass', 'changes_requested', 'na'] as const;
 export function criterionRegistered(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'criterion', id) !== undefined) {
-    return fail(event, `criterion ${id} already registered; use criterion.revised`);
-  }
   const remedy = reqString(event, payload, 'remedy');
-  upsert(state, 'criterion', id, {
+  createOnce(state, event, 'criterion', id, {
     id,
     spec_id: reqString(event, payload, 'spec_id'),
     kind: optString(event, payload, 'kind') ?? null,
@@ -94,10 +92,7 @@ export function criterionRevised(state: FoldWorking, event: Event): void {
 export function evidenceAttached(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'evidence', id) !== undefined) {
-    return fail(event, `evidence ${id} already attached`);
-  }
-  upsert(state, 'evidence', id, {
+  createOnce(state, event, 'evidence', id, {
     id,
     criterion_id: reqString(event, payload, 'criterion_id'),
     artifact_uri: reqString(event, payload, 'artifact_uri'),
@@ -116,7 +111,7 @@ export function evidenceAttached(state: FoldWorking, event: Event): void {
 export function stageEntered(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  upsert(state, 'stage_run', id, {
+  createOnce(state, event, 'stage_run', id, {
     id,
     stage: reqString(event, payload, 'stage'),
     gate_id: optString(event, payload, 'gate_id') ?? null,

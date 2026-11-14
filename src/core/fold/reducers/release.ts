@@ -1,4 +1,5 @@
-import { fail, optString, payloadOf, reqString, rowOf, subjectId, upsert } from '../guards.js';
+import { createOnce, fail, optString, payloadOf, reqString, rowOf, subjectId, upsert } from '../guards.js';
+import { reqStringArray } from '../guards.js';
 import { decisionPayload, requireSignedDecision } from '../decisions.js';
 import type { Event, FoldWorking } from '../types.js';
 import { materializeReleaseItems } from './release-items.js';
@@ -7,19 +8,21 @@ import { materializeReleaseItems } from './release-items.js';
 export function releaseFrozen(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'release', id) !== undefined) {
-    return fail(event, `release ${id} already exists; a frozen release is immutable`);
-  }
   const baselineId = optString(event, payload, 'baseline_id');
   if (baselineId !== undefined && rowOf(state, 'baseline', baselineId) === undefined) {
     fail(event, `baseline ${baselineId} does not exist`);
   }
-  upsert(state, 'release', id, {
+  // docs/09:37：frozen_by 是 JSON 数组，至少两个 human actor（写库口径按冻结设计的 DDL）。
+  const frozenBy = reqStringArray(event, payload, 'frozen_by');
+  if (frozenBy.length < 2) {
+    return fail(event, 'release.frozen requires payload.frozen_by[] with at least two humans');
+  }
+  createOnce(state, event, 'release', id, {
     id,
     package_version: optString(event, payload, 'package_version') ?? null,
     status: 'frozen',
     frozen_at: event.at,
-    frozen_by: optString(event, payload, 'frozen_by') ?? event.actor,
+    frozen_by: frozenBy,
     frontier: reqString(event, payload, 'frontier'),
     baseline_hash: reqString(event, payload, 'baseline_hash'),
     scope_spec_set: reqString(event, payload, 'scope_spec_set'),

@@ -1,4 +1,5 @@
 import {
+  createOnce,
   fail,
   optString,
   payloadOf,
@@ -51,9 +52,6 @@ const DISPOSITIONS = ['confirmed', 'rejected', 'converted'] as const;
 export function assumptionRecorded(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
   const id = subjectId(event);
-  if (rowOf(state, 'spec', id) !== undefined) {
-    return fail(event, `spec ${id} already defined; use spec.revised`);
-  }
   if (payload['status'] !== undefined) {
     return fail(event, 'assumption.recorded must not carry payload.status (it only creates open)');
   }
@@ -65,7 +63,7 @@ export function assumptionRecorded(state: FoldWorking, event: Event): void {
     }
   }
   state.inputs[id] = edges;
-  upsert(state, 'spec', id, specRow(event, id, 'assumption'));
+  createOnce(state, event, 'spec', id, specRow(event, id, 'assumption'));
 }
 
 /** docs/03:70：覆盖名单只认签名载荷，不是事件回填。 */
