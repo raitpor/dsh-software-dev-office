@@ -1,0 +1,1049 @@
+{
+  "card": "M1-G",
+  "generatedAt": "2026-11-14T05:14:52.629Z",
+  "command": "npm run readings:m1",
+  "node": "v26.13.1",
+  "readings": {
+    "R1": {
+      "id": "R1",
+      "question": "抽 20 条 v1 结论型回执，在 claim 表能重建 20/20（6 列逐字段相等；as_of_frontier 只校验事件 id 存在）",
+      "command": "node scripts/m1-readings.mjs --only R1",
+      "raw": {
+        "import": {
+          "ok": true,
+          "reason_code": null,
+          "claims_written": 20,
+          "events_written": 40
+        },
+        "claimRows": 20,
+        "rows": [
+          {
+            "claim_no": "RC-2026-0001",
+            "claim_id": "claim:RC-2026-0001",
+            "v1": {
+              "subject": "TASK-001",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:01:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-001",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:01:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0001:task.created",
+              "imp:RC-2026-0001:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0002",
+            "claim_id": "claim:RC-2026-0002",
+            "v1": {
+              "subject": "TASK-002",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:02:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-002",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:02:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0002:task.created",
+              "imp:RC-2026-0002:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0003",
+            "claim_id": "claim:RC-2026-0003",
+            "v1": {
+              "subject": "TASK-003",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:03:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-003",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:03:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0003:task.created",
+              "imp:RC-2026-0003:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0004",
+            "claim_id": "claim:RC-2026-0004",
+            "v1": {
+              "subject": "TASK-004",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:04:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-004",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:04:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0004:task.created",
+              "imp:RC-2026-0004:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0005",
+            "claim_id": "claim:RC-2026-0005",
+            "v1": {
+              "subject": "TASK-005",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:05:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-005",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:05:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0005:task.created",
+              "imp:RC-2026-0005:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0006",
+            "claim_id": "claim:RC-2026-0006",
+            "v1": {
+              "subject": "TASK-006",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:06:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-006",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:06:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0006:task.created",
+              "imp:RC-2026-0006:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0007",
+            "claim_id": "claim:RC-2026-0007",
+            "v1": {
+              "subject": "TASK-007",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:07:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-007",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:07:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0007:task.created",
+              "imp:RC-2026-0007:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0008",
+            "claim_id": "claim:RC-2026-0008",
+            "v1": {
+              "subject": "TASK-008",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:08:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-008",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:08:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0008:task.created",
+              "imp:RC-2026-0008:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0009",
+            "claim_id": "claim:RC-2026-0009",
+            "v1": {
+              "subject": "TASK-009",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:09:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-009",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:09:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0009:task.created",
+              "imp:RC-2026-0009:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0010",
+            "claim_id": "claim:RC-2026-0010",
+            "v1": {
+              "subject": "TASK-010",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:10:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-010",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:10:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0010:task.created",
+              "imp:RC-2026-0010:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0011",
+            "claim_id": "claim:RC-2026-0011",
+            "v1": {
+              "subject": "TASK-011",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:11:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-011",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:11:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0011:task.created",
+              "imp:RC-2026-0011:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0012",
+            "claim_id": "claim:RC-2026-0012",
+            "v1": {
+              "subject": "TASK-012",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:12:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-012",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:12:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0012:task.created",
+              "imp:RC-2026-0012:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0013",
+            "claim_id": "claim:RC-2026-0013",
+            "v1": {
+              "subject": "TASK-013",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:13:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-013",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:13:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0013:task.created",
+              "imp:RC-2026-0013:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0014",
+            "claim_id": "claim:RC-2026-0014",
+            "v1": {
+              "subject": "TASK-014",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:14:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-014",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:14:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0014:task.created",
+              "imp:RC-2026-0014:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0015",
+            "claim_id": "claim:RC-2026-0015",
+            "v1": {
+              "subject": "TASK-015",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:15:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-015",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:15:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0015:task.created",
+              "imp:RC-2026-0015:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0016",
+            "claim_id": "claim:RC-2026-0016",
+            "v1": {
+              "subject": "TASK-016",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:16:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-016",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:16:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0016:task.created",
+              "imp:RC-2026-0016:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0017",
+            "claim_id": "claim:RC-2026-0017",
+            "v1": {
+              "subject": "TASK-017",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:17:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-017",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:17:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0017:task.created",
+              "imp:RC-2026-0017:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0018",
+            "claim_id": "claim:RC-2026-0018",
+            "v1": {
+              "subject": "TASK-018",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:18:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-018",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "carol",
+              "at": "2026-09-30T08:18:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0018:task.created",
+              "imp:RC-2026-0018:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0019",
+            "claim_id": "claim:RC-2026-0019",
+            "v1": {
+              "subject": "TASK-019",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:19:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-019",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "alice",
+              "at": "2026-09-30T08:19:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0019:task.created",
+              "imp:RC-2026-0019:task.claimed"
+            ]
+          },
+          {
+            "claim_no": "RC-2026-0020",
+            "claim_id": "claim:RC-2026-0020",
+            "v1": {
+              "subject": "TASK-020",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:20:00Z"
+            },
+            "rebuilt": {
+              "subject": "TASK-020",
+              "predicate": "done",
+              "value": "{\"code\":\"done\",\"value\":true}",
+              "derived_by": "renderer:gate-result",
+              "actor": "bob",
+              "at": "2026-09-30T08:20:00Z"
+            },
+            "equal": true,
+            "frontier_ok": true,
+            "frontier_ids": [
+              "imp:RC-2026-0020:task.created",
+              "imp:RC-2026-0020:task.claimed"
+            ]
+          }
+        ],
+        "allEqual": true,
+        "allFrontierOk": true
+      },
+      "verdict": "pass",
+      "caveat": "20 条样本来自 test/fixtures/v1-export.json（A2 已确认，夹具非真实 v1 导出）；6 列=subject/predicate/value/derived_by/actor/at，as_of_frontier 只校验“非空数组且每个事件 id 在 event 表存在”，不要求与 v1 的原 frontier 值逐 id 相等（v1 导出未保存 frontier 映射）。"
+    },
+    "R2": {
+      "id": "R2",
+      "question": "新增判据无负例 ⇒ 唯一写路径 append 被拒（materialize_failed + requires fixtures[]），且失败时一行不写",
+      "command": "node scripts/m1-readings.mjs --only R2",
+      "raw": {
+        "before": {
+          "events": 1,
+          "criteria": 0
+        },
+        "after": {
+          "events": 1,
+          "criteria": 0
+        },
+        "append_result": {
+          "ok": false,
+          "reason_code": "materialize_failed",
+          "message": "fold failed at event m1g-r2-bad (kind criterion.registered): criterion.registered requires fixtures[] with >=1 positive and >=1 negative",
+          "attempted": 1,
+          "written": 0,
+          "skipped": 0,
+          "rolled_back": true,
+          "eventCount": 1
+        },
+        "register_api_result": {
+          "ok": false,
+          "reason_code": "no_negative_fixture",
+          "note": "附带证据：注册 API 同样拒；verdict 以 append 为准"
+        },
+        "noWrites": true,
+        "rejectedByWritePath": true
+      },
+      "verdict": "pass",
+      "caveat": "主证据走唯一写路径 append（fold 在 criterion.registered 的机械门拒绝 2 正 0 反），库非空（先写 task.created）以排除“空库恒 0”的空证明；registerCriterion 纯函数返回只作附带证据，不作为 verdict 依据。"
+    },
+    "R3": {
+      "id": "R3",
+      "question": "新增真源字段无消费者 ⇒ dead_field 红；补消费者（field_consumer）⇒ 绿",
+      "command": "node scripts/m1-readings.mjs --only R3",
+      "raw": {
+        "red": {
+          "exit": 0,
+          "mode": "criterion",
+          "result": "fail",
+          "preview": true,
+          "judged": false,
+          "baseline": null,
+          "fields": [
+            "intent.statement",
+            "intent.source_text",
+            "intent.decision_id",
+            "intent.strength",
+            "intent.baseline_hash",
+            "spec.mech_checkable",
+            "spec.scenario_id",
+            "spec.is_core",
+            "spec.design_artifact_sha256",
+            "spec.code_artifact_sha256",
+            "spec.code_artifact_ref",
+            "spec.risk_flags",
+            "spec.alternatives",
+            "spec.no_alternative_reason",
+            "criterion.status_enum",
+            "criterion.remedy",
+            "evidence.artifact_uri",
+            "evidence.command",
+            "evidence.output_digest",
+            "evidence.snapshot_id"
+          ],
+          "info": 12,
+          "total": 32
+        },
+        "green": {
+          "exit": 0,
+          "mode": "criterion",
+          "result": "pass",
+          "preview": true,
+          "judged": false,
+          "baseline": null,
+          "fields": [],
+          "info": 12
+        },
+        "consumersWritten": 20
+      },
+      "verdict": "pass",
+      "caveat": "红/绿都是同一临时库上 sdo_check CLI 的真实输出；红=fail 列表（逐列），info 行是“无写入方”列（scenario/claim 等，D-024/M1-6），不判 fail；绿靠补 field_consumer 目录行（不是改产品写入方清单）。"
+    },
+    "R4": {
+      "id": "R4",
+      "question": "一个真实意图走完复述 + 2 正 1 反，人能在第一次写代码前说“对/不对”；分歧前移率 ≥80%（现算）",
+      "command": "node scripts/m1-readings.mjs --only R4",
+      "raw": {
+        "sample": {
+          "intent": "INT-1",
+          "restatement_at": "2026-11-13T09:00:00.000Z",
+          "human_verdict_at": "2026-11-13T09:05:00.000Z",
+          "requirement_written_at": "2026-11-13T09:10:00.000Z",
+          "code_written_at": null,
+          "code_event_kinds_checked": [
+            "task.created(payload.kind=implement)"
+          ],
+          "diff_dispositions": [
+            {
+              "target_ref": "d1",
+              "disposition": "accept",
+              "at": "2026-11-13T09:05:00.000Z"
+            },
+            {
+              "target_ref": "d2",
+              "disposition": "accept",
+              "at": "2026-11-13T09:05:00.000Z"
+            },
+            {
+              "target_ref": "d3",
+              "disposition": "reject",
+              "at": "2026-11-13T09:05:00.000Z"
+            }
+          ]
+        },
+        "gate": {
+          "ok": true,
+          "reason_code": null,
+          "pending": [],
+          "specIds": []
+        },
+        "divergence": {
+          "total": 3,
+          "before_code": 3,
+          "rate": 1,
+          "formula": "对齐阶段发现的分歧数 ÷ 总分歧数；before_code = 处置 at 早于首次代码事件的条数"
+        }
+      },
+      "verdict": "partial",
+      "caveat": "样本由本脚本合成（A3：不是真实外部意图；拿本项目自己的卡评“分歧前移”是循环论证）⇒ 只证“机制可用”，不证返工真的减少。diff_dispositions 从事件流现算；code_written_at 由事件链现查（当前可识别的代码事件 kind：task.created(payload.kind=implement)），M1 没有 ⇒ null（不是常量）；无代码事件时 before_code=total。"
+    },
+    "R5": {
+      "id": "R5",
+      "question": "每次变更的 preview 带 rework_units，且与事后实际作废数一致（两个场景各抽 3 次）",
+      "command": "node scripts/m1-readings.mjs --only R5",
+      "raw": {
+        "scenarios": [
+          {
+            "scenario": "revise-sole-source",
+            "spec_per_task": [
+              "SPEC-1",
+              "SPEC-1",
+              "SPEC-1"
+            ],
+            "revise": [
+              "SPEC-1"
+            ],
+            "expected_actual": 3,
+            "samples": [
+              {
+                "run": 1,
+                "before_units": 3,
+                "preview": 3,
+                "actual": 3,
+                "equal": true,
+                "invalidated": [
+                  {
+                    "task_id": "T1",
+                    "criterion_id": "CRIT-1",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T2",
+                    "criterion_id": "CRIT-2",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T3",
+                    "criterion_id": "CRIT-3",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  }
+                ],
+                "appended_event": [
+                  "m1g-revise-a-1-0"
+                ],
+                "work_unit_rows_after": 3
+              },
+              {
+                "run": 2,
+                "before_units": 3,
+                "preview": 3,
+                "actual": 3,
+                "equal": true,
+                "invalidated": [
+                  {
+                    "task_id": "T1",
+                    "criterion_id": "CRIT-1",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T2",
+                    "criterion_id": "CRIT-2",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T3",
+                    "criterion_id": "CRIT-3",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  }
+                ],
+                "appended_event": [
+                  "m1g-revise-a-2-0"
+                ],
+                "work_unit_rows_after": 3
+              },
+              {
+                "run": 3,
+                "before_units": 3,
+                "preview": 3,
+                "actual": 3,
+                "equal": true,
+                "invalidated": [
+                  {
+                    "task_id": "T1",
+                    "criterion_id": "CRIT-1",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T2",
+                    "criterion_id": "CRIT-2",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T3",
+                    "criterion_id": "CRIT-3",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  }
+                ],
+                "appended_event": [
+                  "m1g-revise-a-3-0"
+                ],
+                "work_unit_rows_after": 3
+              }
+            ],
+            "allEqual": true
+          },
+          {
+            "scenario": "revise-one-of-two-sources",
+            "spec_per_task": [
+              "SPEC-1",
+              "SPEC-1",
+              "SPEC-2"
+            ],
+            "revise": [
+              "SPEC-1"
+            ],
+            "expected_actual": 2,
+            "samples": [
+              {
+                "run": 1,
+                "before_units": 3,
+                "preview": 2,
+                "actual": 2,
+                "equal": true,
+                "invalidated": [
+                  {
+                    "task_id": "T1",
+                    "criterion_id": "CRIT-1",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T2",
+                    "criterion_id": "CRIT-2",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  }
+                ],
+                "appended_event": [
+                  "m1g-revise-b-1-0"
+                ],
+                "work_unit_rows_after": 3
+              },
+              {
+                "run": 2,
+                "before_units": 3,
+                "preview": 2,
+                "actual": 2,
+                "equal": true,
+                "invalidated": [
+                  {
+                    "task_id": "T1",
+                    "criterion_id": "CRIT-1",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T2",
+                    "criterion_id": "CRIT-2",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  }
+                ],
+                "appended_event": [
+                  "m1g-revise-b-2-0"
+                ],
+                "work_unit_rows_after": 3
+              },
+              {
+                "run": 3,
+                "before_units": 3,
+                "preview": 2,
+                "actual": 2,
+                "equal": true,
+                "invalidated": [
+                  {
+                    "task_id": "T1",
+                    "criterion_id": "CRIT-1",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  },
+                  {
+                    "task_id": "T2",
+                    "criterion_id": "CRIT-2",
+                    "spec_id": "SPEC-1",
+                    "changed_refs": [
+                      "spec:SPEC-1"
+                    ]
+                  }
+                ],
+                "appended_event": [
+                  "m1g-revise-b-3-0"
+                ],
+                "work_unit_rows_after": 3
+              }
+            ],
+            "allEqual": true
+          }
+        ],
+        "allEqual": true
+      },
+      "verdict": "pass",
+      "caveat": "每次都是真 append（D-038 已 closed）后重新 fold 算“实际”；作废口径=M1 有效集合差（D-037，不是 v1 删除行）。两个场景故意让作废数不同（3 vs 2），避免“恒 3 全 equal”的常量通过；样本是引擎内夹具变更，不是真实项目变更。"
+    },
+    "R6": {
+      "id": "R6",
+      "question": "空 gate ⇒ gate_empty；core 未有效绑定 ⇒ core_not_effective；缺 engine ⇒ engine_missing（且不夹带未列出的码）",
+      "command": "node scripts/m1-readings.mjs --only R6",
+      "raw": {
+        "results": [
+          {
+            "fixture": "test/fixtures/baseline/criteria-empty.json",
+            "label": "criteria: []",
+            "expect": "gate_empty",
+            "allowed": [
+              "gate_empty",
+              "core_not_effective"
+            ],
+            "ok": false,
+            "reason_codes": [
+              "gate_empty",
+              "core_not_effective"
+            ],
+            "unexpected_codes": [],
+            "hit": true
+          },
+          {
+            "fixture": "test/fixtures/baseline/core-unbound-stage.json",
+            "label": "core 三条未有效绑定",
+            "expect": "core_not_effective",
+            "allowed": [
+              "stage_no_gate",
+              "core_not_effective"
+            ],
+            "ok": false,
+            "reason_codes": [
+              "stage_no_gate",
+              "core_not_effective"
+            ],
+            "unexpected_codes": [],
+            "hit": true
+          },
+          {
+            "fixture": "test/fixtures/baseline/missing-engine.json",
+            "label": "缺 engine",
+            "expect": "engine_missing",
+            "allowed": [
+              "engine_missing"
+            ],
+            "ok": false,
+            "reason_codes": [
+              "engine_missing"
+            ],
+            "unexpected_codes": [],
+            "hit": true
+          }
+        ],
+        "allHit": true
+      },
+      "verdict": "pass",
+      "caveat": "每份夹具断言“期望码必须在 + 允许的伴随码集合 + 不允许的码不得出现”：criteria-empty 实际 gate_empty+core_not_effective、core-unbound-stage 实际 stage_no_gate+core_not_effective。只证静态校验器能拒这三类，不证真实 baseline 覆盖度。"
+    },
+    "R7": {
+      "id": "R7",
+      "question": "M1 跑完 sdo_check 后 gate.judged（gate/stage_run 承载判定的表）行数为 0",
+      "command": "node scripts/m1-readings.mjs --only R7",
+      "raw": {
+        "runs": [
+          {
+            "args": [
+              "--criterion",
+              "provenance.present"
+            ],
+            "status": 0,
+            "mode": "criterion",
+            "result": "pass",
+            "preview": true,
+            "judged": false,
+            "baseline": null
+          },
+          {
+            "args": [
+              "--criterion",
+              "spec_set.signed"
+            ],
+            "status": 0,
+            "mode": "criterion",
+            "result": "fail",
+            "preview": true,
+            "judged": false,
+            "baseline": null
+          },
+          {
+            "args": [
+              "--gate",
+              "req",
+              "--preset",
+              "waterfall"
+            ],
+            "status": 0,
+            "mode": "gate",
+            "result": "fail",
+            "preview": true,
+            "judged": false,
+            "baseline": null
+          }
+        ],
+        "counts": [
+          {
+            "table": "stage_run",
+            "exists": true,
+            "rows": 0
+          },
+          {
+            "table": "gate",
+            "exists": false,
+            "rows": 0
+          },
+          {
+            "table": "gate.judged",
+            "exists": false,
+            "rows": 0
+          }
+        ],
+        "zero": true,
+        "missing_gate_table": true
+      },
+      "verdict": "partial",
+      "caveat": "`stage_run` 表在 001 存在，0 行是真断言；`gate`/`gate.judged` 在当前迁移（001–005）不存在 ⇒ 0 行是平凡真，本读数因此记 **partial**（不是空过 pass），M2 建表后必须复跑；sdo_check 只跑 3 个真实入口（provenance/spec_set/gate req）。"
+    }
+  },
+  "overall": "partial"
+}
