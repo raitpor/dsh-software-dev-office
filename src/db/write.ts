@@ -95,6 +95,10 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
       if (envelope !== undefined) {
         throw new AppendAbort(envelope, validated);
       }
+      const authority = checkBaselineAuthority(db, event, events);
+      if (authority !== undefined) {
+        throw new AppendAbort(authority, validated);
+      }
       const stored = byId.get(event.id);
       if (stored !== undefined) {
         if (sawNew) {
@@ -162,6 +166,90 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
     rollbackQuietly(db);
   }
   return result;
+}
+
+const BASELINE_FREEZE_KINDS = new Set(['baseline.frozen', 'baseline.amended', 'baseline.loosened']);
+
+/**
+ * `docs/04` §5.2：baseline 的每一版都必须先有人签的 `decision(kind='baseline')`；
+ * 事件层不是唯一入口，绕过 preview/confirm 直接 append 未签事件必须被拒（M2-1 C1）。
+ */
+function checkBaselineAuthority(
+  db: SdoDatabase,
+  event: Event,
+  batch: readonly Event[],
+): AppendFailure | undefined {
+  if (!BASELINE_FREEZE_KINDS.has(event.kind)) return undefined;
+  const payload = event.payload;
+  if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) return undefined;
+  const fields = payload as Record<string, unknown>;
+  const decisionId = fields['decision_id'];
+  const hash = fields['hash'];
+  if (typeof decisionId !== 'string' || decisionId.length === 0) {
+    return failure('invalid_field', `${event.kind} requires payload.decision_id (signed baseline decision)`);
+  }
+  let decisionPayload: unknown;
+  let decisionKind: unknown;
+  let hasSignature = false;
+  const stored = db.prepare('SELECT payload, signature FROM decision WHERE id = ?').get(decisionId) as
+    | { payload: unknown; signature: unknown }
+    | undefined;
+  if (stored !== undefined) {
+    try {
+      decisionPayload = JSON.parse(String(stored.payload)) as unknown;
+    } catch {
+      decisionPayload = stored.payload;
+    }
+    hasSignature = typeof stored.signature === 'string' && stored.signature.length > 0;
+    decisionKind =
+      decisionPayload !== null && typeof decisionPayload === 'object'
+        ? (decisionPayload as Record<string, unknown>)['decision_kind']
+        : undefined;
+  } else {
+    const valid = batch.find((candidate) => candidate.kind === 'decision.valid' && candidate.subject === decisionId);
+    const signed = batch.find((candidate) => candidate.kind === 'decision.signed' && candidate.subject === decisionId);
+    if (valid === undefined || signed === undefined) {
+      return failure('invalid_field', `${event.kind} decision ${decisionId} is not signed`);
+    }
+    const validPayload = valid.payload;
+    const outer = validPayload !== null && typeof validPayload === 'object' ? (validPayload as Record<string, unknown>) : {};
+    decisionKind = outer['decision_kind'];
+    decisionPayload = outer['payload'];
+    hasSignature = true;
+  }
+  const record =
+    decisionPayload !== null && typeof decisionPayload === 'object' ? (decisionPayload as Record<string, unknown>) : {};
+  const extra = record['extra'] !== null && typeof record['extra'] === 'object' ? (record['extra'] as Record<string, unknown>) : {};
+  const baseline =
+    record['baseline'] !== null && typeof record['baseline'] === 'object'
+      ? (record['baseline'] as Record<string, unknown>)
+      : extra['baseline'] !== null && typeof extra['baseline'] === 'object'
+        ? (extra['baseline'] as Record<string, unknown>)
+        : {};
+  if (!hasSignature) {
+    return failure('invalid_field', `${event.kind} decision ${decisionId} is not signed`);
+  }
+  if (decisionKind !== 'baseline') {
+    return failure('invalid_field', `decision ${decisionId} must be kind baseline`);
+  }
+  const eventPrev = fields['prev'] ?? null;
+  const eventDirection = fields['direction'] ?? null;
+  if (typeof hash !== 'string' || baseline['hash'] !== hash) {
+    return failure('invalid_field', `${event.kind} hash does not match the signed baseline decision payload`);
+  }
+  if ((baseline['prev'] ?? null) !== eventPrev) {
+    return failure('invalid_field', `${event.kind} prev does not match the signed baseline decision payload`);
+  }
+  if ((baseline['direction'] ?? null) !== eventDirection) {
+    return failure('invalid_field', `${event.kind} direction does not match the signed baseline decision payload`);
+  }
+  if (baseline['will_change_hash'] !== fields['will_change_hash']) {
+    return failure('invalid_field', `${event.kind} will_change_hash does not match the signed baseline decision payload`);
+  }
+  if (JSON.stringify(baseline['guarantee_delta']) !== JSON.stringify(fields['guarantee_delta'])) {
+    return failure('invalid_field', `${event.kind} guarantee_delta does not match the signed baseline decision payload`);
+  }
+  return undefined;
 }
 
 function countEvents(db: SdoDatabase): number {

@@ -1,4 +1,5 @@
 import { payloadHashOf, seed, type EventSeed } from './append-helpers.js';
+import { baselineHash } from '../../src/core/baseline/freeze.js';
 
 /**
  * 覆盖全部 56 个 supported kind 的一条合法事件链（M1-7 C6）。
@@ -6,6 +7,17 @@ import { payloadHashOf, seed, type EventSeed } from './append-helpers.js';
  * 不是“每个 kind 的最小链”，而是可执行的全量对账样本（依赖顺序按 reducer 前置）。
  */
 export function worldSeeds(): EventSeed[] {
+  const body = (policy: Record<string, unknown>) => ({
+    engine: { version: 'e1', criteria_manifest_hash: 'cmh' },
+    policy,
+    criteria: [],
+    gates: {},
+    thresholds: {},
+    assurance: {},
+  });
+  const H1 = baselineHash({ prev: null, rowDirection: null, input: body({}) });
+  const H2 = baselineHash({ prev: 'B-1', rowDirection: 'tighten', input: body({}) });
+  const H3 = baselineHash({ prev: 'B-2', rowDirection: 'loosen', input: body({}) });
   const s: EventSeed[] = [];
   const add = (...xs: EventSeed[]): void => {
     for (const x of xs) s.push(x);
@@ -19,7 +31,7 @@ export function worldSeeds(): EventSeed[] {
   };
   const plan = (ids: string[], tree: unknown[]): Record<string, unknown> => ({ node_ids: ids, tree });
   add(...dec(1, 'd-int', 'intent', { intent_id: 'INT-1', kind: 'intent' }));
-  add(seed(3, 'intent.signed', 'INT-1', { decision_id: 'd-int', statement: 'root intent', owner: 'alice', strength: 'explicit', content_hash: 'ch:int', baseline_hash: 'bh-1' }));
+  add(seed(3, 'intent.signed', 'INT-1', { decision_id: 'd-int', statement: 'root intent', owner: 'alice', strength: 'explicit', content_hash: 'ch:int', baseline_hash: H1 }));
   add(seed(4, 'spec.defined', 'SPEC-1', { kind: 'requirement', clause: 'c1', intent_id: 'INT-1', content_hash: 'ch:spec-1' }));
   add(seed(5, 'criterion.registered', 'CRIT-1', { fixtures: [{ polarity: 'positive', input: 'p', expected_status: 'pass' }, { polarity: 'negative', input: 'n', expected_status: 'fail' }], spec_id: 'SPEC-1', kind: 'functional', remedy: 'fix' }));
   add(seed(6, 'evidence.attached', 'EVID-1', { criterion_id: 'CRIT-1', artifact_uri: 'file:///a', artifact_sha256: 'sha256:a', command: 'true' }));
@@ -80,27 +92,36 @@ export function worldSeeds(): EventSeed[] {
   add(seed(50, 'attention.withdrawn', 'ATT-2', {}));
   add(seed(51, 'review.recorded', 'REV-1', { task_id: 'TASK-1', reviewer: 'carol', subject_hash: 'sh1', subject_producer: 'alice', finding: 'looks ok', verdict: 'reproduced' }));
   add(seed(52, 'review.finding_verified', 'REV-1', { verified_by: 'dave' }));
-  add(seed(53, 'review.round_closed', 'RC-1', { task_id: 'TASK-1', verdict: 'pass', baseline_hash: 'bh-1', frontier: 'f', signer: 'carol' }));
+  add(seed(53, 'review.round_closed', 'RC-1', { task_id: 'TASK-1', verdict: 'pass', baseline_hash: H1, frontier: 'f', signer: 'carol' }));
   add(seed(54, 'redteam.recorded', 'RT-1', { subject_kind: 'spec', subject_id: 'SPEC-1', criterion_id: 'CRIT-1', criterion_fixture_id: 'CRIT-1/fx/1', use_case: 'uc1' }));
   add(seed(55, 'redteam.disposed', 'RT-1', { disposition: 'accepted' }));
   add(seed(56, 'stage.entered', 'SR-1', { stage: 'req' }));
-  add(seed(57, 'gate.judged', 'SR-1', { gate_id: 'G_req_exit', baseline_hash: 'bh-1', verdict: 'pass' }));
+  add(seed(57, 'gate.judged', 'SR-1', { gate_id: 'G_req_exit', baseline_hash: H1, verdict: 'pass' }));
   add(seed(58, 'stage.exited', 'SR-1', { verdict: 'pass' }));
   add(seed(59, 'verify.passed', 'VR-1', { actor_kind: 'human', actor: 'ci', groups: [], result: 'pass' }));
   add(seed(60, 'verify.failed', 'VR-2', { actor_kind: 'human', actor: 'ci', groups: [], result: 'fail' }));
   add(seed(61, 'defect.recorded', 'DEF-1', { criterion_id: 'CRIT-1', task_id: 'TASK-1', kind: 'criterion', severity: 'low' }));
   add(seed(62, 'defect.closed', 'DEF-1', { verify_run_id: 'VR-1', closed_by: 'ci' }));
   add(seed(100, 'criterion.revised', 'CRIT-1', { remedy: 'better' }));
-  add(seed(63, 'baseline.frozen', 'B-1', { frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: 'bh-1' }));
-  add(seed(64, 'baseline.amended', 'B-2', { prev: 'B-1', direction: 'tighten', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: 'bh-2' }));
-  const basePayload = { baseline_id: 'B-3' };
+  const deltaAllKept = { 1: 'kept', 2: 'kept', 3: 'kept' };
+  const b1 = { decision_kind: 'baseline', baseline: { hash: H1, prev: null, direction: null, will_change_hash: 'wch-1', guarantee_delta: deltaAllKept } };
+  const b1Hash = payloadHashOf(b1);
+  add(seed(102, 'decision.valid', 'd-base-1', { decision_kind: 'baseline', payload_hash: b1Hash, frontier: 'f', payload: b1 }));
+  add(seed(103, 'decision.signed', 'd-base-1', { payload_hash: b1Hash, frontier: 'f', signer: 'alice' }));
+  add(seed(63, 'baseline.frozen', 'B-1', { decision_id: 'd-base-1', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: H1, prev: null, direction: null, will_change_hash: 'wch-1', guarantee_delta: deltaAllKept }));
+  const b2 = { decision_kind: 'baseline', baseline: { hash: H2, prev: 'B-1', direction: 'tighten', will_change_hash: 'wch-2', guarantee_delta: deltaAllKept } };
+  const b2Hash = payloadHashOf(b2);
+  add(seed(104, 'decision.valid', 'd-base-2', { decision_kind: 'baseline', payload_hash: b2Hash, frontier: 'f', payload: b2 }));
+  add(seed(105, 'decision.signed', 'd-base-2', { payload_hash: b2Hash, frontier: 'f', signer: 'alice' }));
+  add(seed(64, 'baseline.amended', 'B-2', { decision_id: 'd-base-2', prev: 'B-1', direction: 'tighten', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: H2, will_change_hash: 'wch-2', guarantee_delta: deltaAllKept }));
+  const basePayload = { decision_kind: 'baseline', baseline: { hash: H3, prev: 'B-2', direction: 'loosen', will_change_hash: 'wch-3', guarantee_delta: deltaAllKept } };
   const baseHash = payloadHashOf(basePayload);
   add(seed(65, 'decision.valid', 'd-base', { decision_kind: 'baseline', payload_hash: baseHash, frontier: 'f', payload: basePayload }));
   add(seed(66, 'decision.signed', 'd-base', { payload_hash: baseHash, frontier: 'f', signer: 'alice' }));
-  add(seed(67, 'baseline.loosened', 'B-3', { prev: 'B-2', direction: 'loosen', decision_id: 'd-base', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: 'bh-3' }));
-  add(seed(68, 'release.frozen', 'REL-1', { frozen_by: ['alice', 'bob'], package_version: '0.2.0', frontier: 'f', baseline_hash: 'bh-3', scope_spec_set: 'ss1', items: [{ kind: 'requirement', target: 'SPEC-1', disposition: 'in' }] }));
+  add(seed(67, 'baseline.loosened', 'B-3', { prev: 'B-2', direction: 'loosen', decision_id: 'd-base', frozen_by: 'alice', engine: { version: 'e1', criteria_manifest_hash: 'cmh' }, policy: {}, criteria: [], gates: {}, thresholds: {}, assurance: {}, hash: H3, will_change_hash: 'wch-3', guarantee_delta: deltaAllKept }));
+  add(seed(68, 'release.frozen', 'REL-1', { frozen_by: ['alice', 'bob'], package_version: '0.2.0', frontier: 'f', baseline_hash: H3, scope_spec_set: 'ss1', items: [{ kind: 'requirement', target: 'SPEC-1', disposition: 'in' }] }));
   add(seed(69, 'release.delivered', 'REL-1', {}));
-  add(seed(70, 'release.frozen', 'REL-2', { frozen_by: ['alice', 'bob'], frontier: 'f', baseline_hash: 'bh-3', scope_spec_set: 'ss2', items: [{ kind: 'spec', target: 'SPEC-1', requirement_id: 'SPEC-1', disposition: 'out', reason: 'deferred' }] }));
+  add(seed(70, 'release.frozen', 'REL-2', { frozen_by: ['alice', 'bob'], frontier: 'f', baseline_hash: H3, scope_spec_set: 'ss2', items: [{ kind: 'spec', target: 'SPEC-1', requirement_id: 'SPEC-1', disposition: 'out', reason: 'deferred' }] }));
   const rollbackPayload = { release_id: 'REL-2', frontier: 'f', artifact_sha256: null };
   const rollbackHash = payloadHashOf(rollbackPayload);
   add(seed(71, 'decision.valid', 'd-rb', { decision_kind: 'rollback', payload_hash: rollbackHash, frontier: 'f', payload: rollbackPayload }));

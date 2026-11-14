@@ -98,3 +98,18 @@ core 三条的 `applies_to` 都是 `ALL_KINDS`，所以“core 绑到 `na` 阶�
 `review-params-big`、`review-params-seed`、`artifact-kinds-incomplete`。
 
 每个文件对应 `test/core/baseline/validate.test.ts` 里的一条精确码集合断言（`deepEqual(sorted(codes))`，级联码在卡 M1-3 的负例表里列明）。
+
+## M2-1 冻结事务（P15 → preview → confirm → 人签 → 新行）
+
+纯逻辑在 `freeze.ts`，DB 事务在 `src/db/freeze.ts`；`index.ts` 同时导出两者。
+
+- **方向（`direction.ts`）**：首版 `initial`（行 `direction IS NULL`、`prev IS NULL`）；收紧 `tighten`、放宽 `loosen`。可判定子集：gate/criterion 增删、`policy_mode`、`waivable`、stage/kinds、`criteria[]`、`thresholds` 数值、`na_stages`、`artifact_kinds`、`sample_every`、`db_confidentiality`；引擎版本/hash 不可判定 ⇒ **按放宽**（A2，事前签，不做事后追认）。
+- **哈希（C6）**：`baselineHash = sha256(canonicalJson({prev,direction,engine,policy,criteria,gates,thresholds,assurance,artifact_kinds}))`——`prev` 与 `direction` 在 hash 内（卡面列表漏了这两项，按 `docs/04` §5.1 的超集实现）。旧行 hash 永远可从行内字段复算。
+- **两段式（C2，评审 P1-1 后）**：preview 在服务端 registry 落一条记录（进程内 Map，TTL 10 分钟、最多 64 条），对外只给 `preview_id` + 展示内容。confirm 只认 `preview_id`；取不到 ⇒ `preview_expired`，已用 ⇒ `preview_consumed`。**confirm 时服务端重跑 P15**（用 registry 里的 raw；不过 ⇒ `baseline.rejected` + 0 行），并重算 `baselineHash`/`decision_baseline`/`will_change_hash`/`guarantee_delta` 与 preview 期保存值逐字段比对（不等 ⇒ `preview_mismatch`）；`payload_hash` 从现算 payload 重算后交签名。链头在 preview 后变化 ⇒ `payload_changed`；签名期间链被其他写入推进 ⇒ `frontier_stale`。
+- **首次/重复（C9）**：与当前 head 内容相同 ⇒ `baseline_unchanged`（拒绝，不幂等返回）；同 hash 已冻结的重放 confirm 幂等返回已有行。
+- **拒绝码**：`stage_bad_kind`/`stage_bad_after`/`stage_unknown`/`stage_no_gate`/`gate_empty`/`criterion_unregistered`/`artifact_kinds_incomplete`/`na_stages_mismatch`/`engine_missing`/`review_params_invalid`/`core_not_effective`/`invalid_baseline`（来自 P15）+ `payload_changed`/`direction_mismatch`/`baseline_unchanged`/`no_blind_sign` + `preview_expired`/`preview_consumed`/`preview_mismatch`/`frontier_stale`。
+- **签名载荷（C3）**：`decision(kind='baseline')` 的 payload 顶层 `baseline` 对象 = `{id,hash,policy_id,preset,prev,direction,will_change_hash,guarantee_delta,missing?,will_change}`；`extra` 同时带人读 `will_change: string[]` 与 `guarantee_delta`（M2-6 签名闸门要求）；`payload_hash` 与签名载荷逐字节一致（D-055 网关复核），写网关另逐字段比对 hash/prev/direction/will_change_hash/guarantee_delta（P2-2）。
+- **append 失败（P2）**：签名成功但 baseline append 撞 id/被拒 ⇒ `baseline_append_failed`，**不可重放恢复**，需重新 preview；已签 decision 留作审计。签名前会预占事件 id，避免浪费签名。
+- **D-056**：`actor/actor_kind` 由 `FreezeSession`（工具层会话）固定，动作 payload 不得传。
+- **C8 verify（`verify-references.ts`）**：按**被引用的那一版**复算 hash（不与当前 head 比），检查 frozen 事件存在、`stage_run`/`release` 的 `baseline_hash` 有对应冻结行；问题码 `baseline_hash_mismatch`/`baseline_unfrozen`/`baseline_missing`，已接进产品 `verify()`（P1-2）。
+- **已知边界（D-064）**：preview registry 只在进程内；进程重启或跨进程 confirm ⇒ `preview_expired`。库内尚无任何 baseline 行时 `verify` 跳过引用对账（M0/M1 旧库），出现第一版后即生效。

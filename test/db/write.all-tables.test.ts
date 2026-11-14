@@ -5,6 +5,7 @@ import { fold } from '../../src/core/fold/index.js';
 import { GENESIS_PREV, readEvents } from '../../src/core/verify-events.js';
 import type { VerifyProblem } from '../../src/core/verify-types.js';
 import { verify } from '../../src/core/verify.js';
+import { baselineHash } from '../../src/core/baseline/freeze.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import {
   FOLD_ONLY_COLUMNS,
@@ -149,6 +150,18 @@ test('C4: stage_run gate fields may be null after entered and become non-null af
     assert.equal(judged?.kind, 'gate.judged');
     assert.equal(append(db, chain([judged as NonNullable<typeof judged>], head(db))).ok, true);
     const after = db.prepare('SELECT gate_id, baseline_hash FROM stage_run WHERE id = ?').get('SR-1');
-    assert.deepEqual({ ...(after as object) }, { gate_id: 'G_req_exit', baseline_hash: 'bh-1' });
+    const expectedB1 = baselineHash({
+      prev: null,
+      rowDirection: null,
+      input: {
+        engine: { version: 'e1', criteria_manifest_hash: 'cmh' },
+        policy: {},
+        criteria: [],
+        gates: {},
+        thresholds: {},
+        assurance: {},
+      },
+    });
+    assert.deepEqual({ ...(after as object) }, { gate_id: 'G_req_exit', baseline_hash: expectedB1 });
   });
 });

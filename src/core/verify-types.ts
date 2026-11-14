@@ -20,7 +20,10 @@ export type VerifyProblemCode =
   | 'projection_missing'
   | 'projection_unexpected'
   | 'runtime_inconsistent'
-  | 'projection_check_failed';
+  | 'projection_check_failed'
+  | 'baseline_hash_mismatch'
+  | 'baseline_missing'
+  | 'baseline_unfrozen';
 
 export interface VerifyProblem {
   readonly code: VerifyProblemCode;

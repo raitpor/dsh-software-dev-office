@@ -32,3 +32,13 @@
 - 物化只能表达**批末状态**：中间 fold 态若违反 DDL（典型 `redteam.disposition NOT NULL`、`stage_run.gate_id` 在 004 前），单事件 append 会 `materialize_failed`；这是 M1-7 的已知边界，故 per-kind 证据在 fold 层取证（`test/db/write.supported-kinds.test.ts`），DB 侧证据用整条 world 链一次 append 的“DB 行 == fold 最终态”逐表断言。要做“中途态可物化”需后续投影对齐卡。
 - `release.frozen` 的 `frozen_by` 载荷自 M1-7 起是 **JSON 字符串数组**（DDL 存 JSON），不再是单个字符串；fold 只做结构校验（≥2 个 human 名称），不验 human 身份真伪——身份核对留 M3 actor registry（卡 C3 已写明）。
 - 测试覆盖：`test/db/write.all-tables.test.ts`（56 kind 世界链、PK、FOLD_ONLY 双向、C7 冲突、release/stage_run 口径）、`write.supported-kinds.test.ts`（每个 supported kind 在 fold 层单独改变目标表 + world 链一次 append 后 DB 与 fold 最终态逐表相等）、`write.safety-net.test.ts`（收窄物化面失败关闭）。
+
+## baseline 冻结网关（M2-1）
+
+`src/db/freeze.ts`：`previewFreeze(db, input, session)` → `confirmFreeze(db, client, {preview_id, payload_hash, declared_direction?}, session)`。preview 落 `src/db/freeze-preview.ts` 的进程内 registry（TTL 10 分钟、最多 64 条），对外只返回 `preview_id` 与展示内容；confirm 只认 `preview_id`，且**服务端重跑 P15 与重算 hash**（P1-1）。
+
+- 不过 P15（或结构校验失败）⇒ **落一条 `baseline.rejected`（ACK，不投影业务表，事件 id 带随机后缀防同毫秒撞）**，返回 P15 的首个 reason code；`baseline` 表 0 行。`baseline_unchanged`/`preview_expired`/`preview_consumed`/`preview_mismatch` 是幂等/状态错误，不产生 rejected 事件（P2-1）。
+- 通过 ⇒ `signDecision(kind='baseline')` 真签；签成功后**紧邻** append `baseline.frozen`/`baseline.amended`/`baseline.loosened` 建新行（`prev`=旧 head，旧行永不改写）。签成功但 append 失败 ⇒ `baseline_append_failed` 带 `decision_id`，**需重新 preview**（不可重放恢复），已签 decision 留作审计。
+- 签名为前置条件在写网关有库层兜底：`baseline.frozen|amended|loosened` 必须带 `payload.decision_id`，且 decision 已签、kind='baseline'，其载荷顶层 `baseline` 的 `hash`/`prev`/`direction`/`will_change_hash`/`guarantee_delta` 与事件 payload 逐字段一致；否则 `append` 返回 `invalid_field`（事件层不是唯一入口，C1/C2）。
+- 同 hash 已冻结的重放 confirm 幂等返回已有行；`baseline_unchanged` 由 preview 返回（同内容不再签）。`verify()` 已接 baseline 引用对账（P1-2）；手改 baseline hash 会让 `verify()` 红（`baseline_hash_mismatch`）。
+- **可疑操作审计（P2-1）**：`preview_mismatch`（registry 的 raw/preview 在 confirm 间被改）落一条 `security.alert`（载荷 `{kind:'preview_mismatch', preview_id, expected_hash, actual_hash, at}`）；已消费 preview 被再次 confirm（重放）落 `security.alert`（`{kind:'preview_replay', preview_id, at}`）；`preview_expired` 只是过期，静默。这三类都**不落** `baseline.rejected`（那是“冻结尝试被 P15/结构校验拒”）。审计事件是 **best-effort**：`securityAlert` 不检查 `append` 的返回值，库异常时该告警可能静默丢失（拒签本身仍然成立、不因告警失败而放行）；要保证“每次可疑操作必有告警”需要 M3 的告警持久化通道，这里只承诺“能落就落”。

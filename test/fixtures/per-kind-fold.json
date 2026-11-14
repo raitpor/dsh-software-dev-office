@@ -157,7 +157,7 @@
       "assurance": {},
       "prev": "B-1",
       "direction": "tighten",
-      "hash": "bh-2",
+      "hash": "sha256:fa9c7f8e4a3bfc995b3c75de30e4fdcddcefa3ba9f964a39041ad38706ef39b5",
       "at": "2026-11-13T00:00:00Z"
     }
   },
@@ -176,7 +176,7 @@
       "assurance": {},
       "prev": null,
       "direction": null,
-      "hash": "bh-1",
+      "hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
       "at": "2026-11-13T00:00:00Z"
     }
   },
@@ -195,7 +195,7 @@
       "assurance": {},
       "prev": "B-2",
       "direction": "loosen",
-      "hash": "bh-3",
+      "hash": "sha256:8c2a3fa607d947f423b7347fafe41c4d5d6e1fbd4d06ddad88b883c97f5d5d52",
       "at": "2026-11-13T00:00:00Z"
     }
   },
@@ -410,7 +410,7 @@
       "id": "SR-1",
       "stage": "req",
       "gate_id": "G_req_exit",
-      "baseline_hash": "bh-1",
+      "baseline_hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
       "entered_at": "2026-11-13T00:00:00Z",
       "exited_at": null,
       "verdict": "pass",
@@ -473,7 +473,7 @@
       "owner": "alice",
       "decision_id": "d-int",
       "strength": "explicit",
-      "baseline_hash": "bh-1",
+      "baseline_hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
       "content_hash": "ch:int",
       "status": "signed",
       "at": "2026-11-13T00:00:00Z"
@@ -521,7 +521,7 @@
         "bob"
       ],
       "frontier": "f",
-      "baseline_hash": "bh-3",
+      "baseline_hash": "sha256:8c2a3fa607d947f423b7347fafe41c4d5d6e1fbd4d06ddad88b883c97f5d5d52",
       "scope_spec_set": "ss1",
       "note": null
     }
@@ -539,7 +539,7 @@
         "bob"
       ],
       "frontier": "f",
-      "baseline_hash": "bh-3",
+      "baseline_hash": "sha256:8c2a3fa607d947f423b7347fafe41c4d5d6e1fbd4d06ddad88b883c97f5d5d52",
       "scope_spec_set": "ss1",
       "note": null
     }
@@ -557,7 +557,7 @@
         "bob"
       ],
       "frontier": "f",
-      "baseline_hash": "bh-3",
+      "baseline_hash": "sha256:8c2a3fa607d947f423b7347fafe41c4d5d6e1fbd4d06ddad88b883c97f5d5d52",
       "scope_spec_set": "ss2",
       "note": null
     }
@@ -654,7 +654,7 @@
     "row": {
       "id": "RC-1",
       "task_id": "TASK-1",
-      "baseline_hash": "bh-1",
+      "baseline_hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
       "frontier": "f",
       "verdict": "pass",
       "signer": "carol",
@@ -757,7 +757,7 @@
       "id": "SR-1",
       "stage": "req",
       "gate_id": "G_req_exit",
-      "baseline_hash": "bh-1",
+      "baseline_hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
       "entered_at": "2026-11-13T00:00:00Z",
       "exited_at": "2026-11-13T00:00:00Z",
       "verdict": "pass",

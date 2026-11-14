@@ -21,3 +21,16 @@ export function validateBaseline(input: unknown): P15Result {
 export * from './types.js';
 export { PRESETS, type Preset } from './presets.js';
 export { checkGraph, type GraphCheck } from './graph.js';
+export {
+  confirmBaseline,
+  freezeEventKind,
+  baselineEventPayload,
+  baselineHash,
+  previewBaseline,
+  type BaselinePreview,
+  type BaselineRowLike,
+  type FreezeFailure,
+  type FreezeReasonCode,
+} from './freeze.js';
+export { classifyDirection, type DirectionBody, type DirectionVerdict, type FreezeDirection } from './direction.js';
+export { verifyBaselineReferences, type BaselineReferenceReport } from './verify-references.js';

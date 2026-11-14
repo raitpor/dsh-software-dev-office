@@ -12,6 +12,7 @@ import { fold } from './fold/index.js';
 import type { TableName } from './fold/types.js';
 import { GENESIS_PREV, computeEventHash, readEvents } from './verify-events.js';
 import { compareProjections } from './verify-projection.js';
+import { verifyBaselineReferences } from './baseline/verify-references.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -66,6 +67,13 @@ export function verify(db: VerifyDatabase): VerifyReport {
     compareProjections(db, state, VERIFIED_TABLES, problems);
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: errorMessage(error) });
+  }
+
+  // M2-1 C8：baseline 按“被引用的那一版”复算 hash，并核对冻结事件/引用存在性。
+  try {
+    problems.push(...verifyBaselineReferences(db).problems);
+  } catch (error) {
+    problems.push({ code: 'projection_check_failed', detail: `baseline reference check failed: ${errorMessage(error)}` });
   }
 
   return {
