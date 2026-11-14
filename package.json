@@ -16,7 +16,8 @@
     "spike:node-sqlite": "node test/spike/node-sqlite-roundtrip.mjs",
     "console": "npm run build && node lib/src/ui/serve.js",
     "check": "npm run build && node lib/src/check/cli.js",
-    "readings": "npm run build && node scripts/m0-readings.mjs"
+    "readings": "npm run build && node scripts/m0-readings.mjs",
+    "readings:m1": "npm run build && node scripts/m1-readings.mjs"
   },
   "dependencies": {
     "better-sqlite3-multiple-ciphers": "^13.0.3"
