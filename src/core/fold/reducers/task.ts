@@ -15,7 +15,7 @@ import {
 import type { Event, FoldWorking } from '../types.js';
 import { materializeWorkUnit } from './workunit.js';
 
-const TASK_KINDS = ['implement', 'design', 'review', 'docs'] as const;
+export const TASK_KINDS = ['implement', 'design', 'review', 'docs'] as const;
 const TASK_STATUS = ['planned', 'ready', 'in_progress', 'blocked', 'done', 'dropped'] as const;
 const BLOCK_CODES = ['lease_expired', 'lease_revoked', 'upstream_changed', 'clause_unjudged',
   'awaiting_signature', 'verify_failed', 'dirty_main_tree', 'redteam_deferred'] as const;
