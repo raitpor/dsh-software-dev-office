@@ -1,7 +1,7 @@
 import type { FreezeDbResult } from './freeze-types.js';
 /** M2-1 冻结事务的库内助手（行读取、链头、rejected 事件）。 */
 import type { SdoDatabase } from './driver.js';
-import { append, chainHead } from './write.js';
+import { appendAsTool, chainHead } from './write.js';
 import { computeEventHash } from '../core/verify-events.js';
 import type { Event } from '../core/fold/types.js';
 import type { BaselineRowLike } from '../core/baseline/freeze.js';
@@ -76,7 +76,7 @@ export function rejectEvent(
 ): string {
   const id = readBaselineId(input) ?? 'unknown';
   const eventId = `ev-base-rej-${id}-${at}-${Math.random().toString(16).slice(2, 10)}`;
-  append(db, [
+  appendAsTool(db, [
     buildEvent(
       {
         id: eventId,
@@ -90,7 +90,7 @@ export function rejectEvent(
       },
       chainHead(db),
     ),
-  ]);
+  ], session.actor, session.actor_kind);
   return eventId;
 }
 

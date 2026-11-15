@@ -24,7 +24,7 @@ import type { ActorRef } from '../core/auth/rights.js';
 import { hasRight } from './auth.js';
 import type { SdoDatabase } from './driver.js';
 import { requiredTable } from './write-materialize.js';
-import { append, chainHead } from './write.js';
+import { appendAsTool, chainHead } from './write.js';
 import {
   mintRendererRegistrationAuthority,
   rendererRegistrationPayloadHash,
@@ -416,7 +416,7 @@ export async function registerRenderer(
     return fail('invalid_field', `renderer ${input.id}: registration payload is not canonicalizable`);
   }
   mintRendererRegistrationAuthority(payloadHash);
-  const appended = append(db, [event]);
+  const appended = appendAsTool(db, [event], input.actor.id, input.actor.kind);
   if (!appended.ok) {
     return fail('event_rejected', appended.message ?? `append rejected: ${String(appended.reason_code)}`);
   }

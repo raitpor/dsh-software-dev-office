@@ -1,7 +1,8 @@
+import { appendAs as append } from './append-auth.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { primaryKeyColumns } from '../../src/db/write-materialize.js';
 import { chain, seed, withWriteDb, currentState } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';

@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { chainHead } from '../../src/db/write.js';
+import { grantFixtureRoster } from './append-auth.js';
 import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
@@ -53,6 +54,7 @@ export async function withFreezeRig(run: (rig: FreezeRig) => Promise<void>): Pro
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), TEST_PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     const unlocked = await unlockSigner(db, rig.client, {
       actor: TEST_ACTOR,
       actor_kind: 'human',

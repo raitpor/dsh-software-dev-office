@@ -1,3 +1,4 @@
+import { appendAs as append } from '../db/append-auth.js';
 /**
  * M3-4 · claim 侧的目录只读面（`src/claim/catalog.ts`）+ C5 静态守卫。
  *
@@ -9,7 +10,7 @@ import assert from 'node:assert/strict';
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { append } from '../../src/db/write.js';
+
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import type { ClaimRow } from '../../src/claim/types.js';
 import { writeClaimRows } from '../../src/claim/gateway.js';

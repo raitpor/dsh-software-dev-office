@@ -1,7 +1,8 @@
+import { appendAs as append } from '../db/append-auth.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { append } from '../../src/db/write.js';
+
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { readExportFile } from '../../src/importer/parse.js';
 import { landingEvents } from '../../src/importer/rebuild.js';

@@ -13,6 +13,7 @@ export type MissReason =
   | 'column_not_found'
   | 'invalid_args'
   | 'filtered_by_permission'
+  | 'column_redacted'
   | 'stale_as_of'
   | 'unsafe_view_sql'
   | 'result_too_large';

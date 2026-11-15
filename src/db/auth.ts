@@ -24,6 +24,7 @@ import {
   type GrantView,
   type RightDecision,
   type RightDeny,
+  type ScopeOwn,
 } from '../core/auth/rights.js';
 import { isActorKind, writeIdentity, type ActorKind, type AuthFailure, type Session } from '../core/auth/session.js';
 
@@ -173,9 +174,24 @@ export function readGrants(db: SdoDatabase, actor: string): GrantView[] {
   }));
 }
 
-/** 产品代码唯一权限判定入口（卡 C4）：加载目录 + 该 actor 的 grant，委托纯函数 `hasRight`。 */
+/** 读 `scope_owns` 归属边（迁移 013）：M3-1 C9 的跨前缀判定数据。 */
+export function readScopeOwns(db: SdoDatabase): ScopeOwn[] {
+  const rows = db
+    .prepare('SELECT child_scope, parent_scope FROM scope_owns ORDER BY child_scope, parent_scope')
+    .all() as Array<Record<string, unknown>>;
+  return rows.map((row) => ({
+    child_scope: String(row['child_scope']),
+    parent_scope: String(row['parent_scope']),
+  }));
+}
+
+/** 产品代码唯一权限判定入口（卡 C4）：加载目录 + 该 actor 的 grant + 归属边，委托纯函数 `hasRight`。 */
 export function hasRight(db: SdoDatabase, actor: ActorRef, action: string, scope: string): RightDecision {
-  return decideRight(actor, action, scope, { matrix: readMatrix(db), grants: readGrants(db, actor.id) });
+  return decideRight(actor, action, scope, {
+    matrix: readMatrix(db),
+    grants: readGrants(db, actor.id),
+    ownership: readScopeOwns(db),
+  });
 }
 
 export type WriteAuthorization = { readonly ok: true; readonly actor: ActorRef } | AuthFailure | RightDeny;

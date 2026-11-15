@@ -41,7 +41,31 @@ export interface ViewColumn {
   readonly label: string;
   readonly unit?: string;
   readonly type: ColumnType;
+  /**
+   * M3-6：`true` 表示该列只给人类会话（agent 结果里该列不出现）。
+   *
+   * 数据来自 `view_catalog.columns[].human_only`（migrations/014）；缺省 false 兼容旧库。
+   */
+  readonly human_only: boolean;
 }
+
+/**
+ * M3-6 的 `human_only` 对照清单（**运行时真源是 `view_catalog.columns[].human_only`**，
+ * 由 `migrations/014_view_column_flags.sql` 写入；本常量只作迁移/测试的对照白名单）。
+ *
+ * 依据 `docs/05-观测与交互.md` §6 的唯一示例「别人的签章状态」；文档没有逐列清单，
+ * 所以只标最小口径：`team.rights`（label「已签决策类型」= 该 actor 签过哪些 decision_kind）。
+ * 同一行的 `team.kind`（human/agent，由"有没有有效签字"派生）也是同一泄露面，但保留可见
+ * ——否则整张 team 表对 agent 失去意义；该取舍记 `plan/03-偏差台账.md` D-103，
+ * v2.1 文档追认前不改 docs。
+ *
+ * 目录侧标记由 `migrations/014_view_column_flags.sql` 写入；两处一致性由
+ * `test/views/column-flags.test.ts` 对账（任一边漂移即红）。
+ */
+export const HUMAN_ONLY_COLUMNS: Readonly<Record<string, readonly string[]>> = {
+  team: ['rights'],
+};
+
 
 /** `view_catalog` 的一行，读完并校验后的形状。 */
 export interface ViewCatalogRow {
@@ -191,6 +215,7 @@ function parseColumns(raw: unknown, viewName: string): ViewColumn[] {
     const label = record['label'];
     const unit = record['unit'];
     const type = record['type'];
+    const humanOnly = record['human_only'];
 
     if (typeof name !== 'string' || name.length === 0) {
       throw new Error(`view_catalog[${viewName}].columns[${index}].name must be a non-empty string`);
@@ -204,12 +229,21 @@ function parseColumns(raw: unknown, viewName: string): ViewColumn[] {
     if (typeof type !== 'string' || !COLUMN_TYPES.has(type)) {
       throw new Error(`view_catalog[${viewName}].columns[${index}].type must be one of ${[...COLUMN_TYPES].join('|')}`);
     }
+    if (humanOnly !== undefined && typeof humanOnly !== 'boolean') {
+      throw new Error(`view_catalog[${viewName}].columns[${index}].human_only must be a boolean when present`);
+    }
     if (names.has(name)) {
       throw new Error(`view_catalog[${viewName}].columns contains duplicate column "${name}"`);
     }
     names.add(name);
 
-    return { name, label, type: type as ColumnType, ...(unit === undefined ? {} : { unit }) };
+    return {
+      name,
+      label,
+      type: type as ColumnType,
+      human_only: humanOnly === true,
+      ...(unit === undefined ? {} : { unit }),
+    };
   });
 }
 

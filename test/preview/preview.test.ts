@@ -1,9 +1,10 @@
+import { appendAs as append } from '../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { fold } from '../../src/core/fold/index.js';
 import type { Event } from '../../src/core/fold/types.js';

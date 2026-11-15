@@ -1,3 +1,4 @@
+import { appendAs as append } from './append-auth.js';
 /**
  * M2-2 C1/C2/C9/C10：判定只经门禁流程写 stage_run；裸 append 拒；baseline 必须已冻结；
  * 判定引用 release 必须同版。
@@ -5,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { buildEvent } from '../../src/db/freeze-store.js';
 import { previewFreeze, confirmFreeze, type FreezeDbResult } from '../../src/db/freeze.js';
 import type { FreezePreviewView } from '../../src/db/freeze-preview.js';

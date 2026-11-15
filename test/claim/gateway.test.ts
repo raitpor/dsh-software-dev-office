@@ -1,9 +1,10 @@
+import { appendAs as append } from '../db/append-auth.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { append } from '../../src/db/write.js';
+
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import type { ClaimRow } from '../../src/claim/types.js';
 import { expectedClaimRow, importClaims, writeClaimRows } from '../../src/claim/gateway.js';

@@ -3,6 +3,8 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 import type { AddressInfo } from 'node:net';
 
 import { openEncryptedDatabase } from '../../src/db/driver.js';
@@ -11,6 +13,8 @@ import { runMigrations } from '../../src/db/migrate.js';
 import { createConsoleServer } from '../../src/ui/server.js';
 import type { ConsoleServerOptions } from '../../src/ui/server.js';
 import { PASSPHRASE } from '../db/helpers.js';
+import { grantAll } from '../db/append-auth.js';
+import { appendSeeds, ev } from '../core/pm/helpers.js';
 
 interface ConsoleHandle {
   readonly base: string;
@@ -30,8 +34,14 @@ async function withMigratedDbAsync(run: (db: SdoDatabase) => Promise<void>): Pro
   }
 }
 
-async function startConsole(db: SdoDatabase, options: Omit<ConsoleServerOptions, 'db'> = {}): Promise<ConsoleHandle> {
-  const server = createConsoleServer({ db, ...options });
+async function startConsole(
+  db: SdoDatabase,
+  options: Omit<ConsoleServerOptions, 'db' | 'actor'> & { readonly actor?: string } = {},
+): Promise<ConsoleHandle> {
+  // M3-6 P1：控制台必须有会话身份；默认夹具身份播全权 grant（真库权限，不伪造端口）。
+  const actor = options.actor ?? 'ui-viewer';
+  grantAll(db, actor);
+  const server = createConsoleServer({ db, ...options, actor });
   await new Promise<void>((resolve, reject) => {
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => resolve());
@@ -44,10 +54,9 @@ async function startConsole(db: SdoDatabase, options: Omit<ConsoleServerOptions,
 }
 
 function seedEvent(db: SdoDatabase): void {
-  db.prepare("INSERT OR IGNORE INTO event_kind (kind, since) VALUES ('query_miss', '2026-11-13')").run();
-  db.prepare(
-    'INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)',
-  ).run('E1', '2026-11-13T00:00:00Z', 'a-dev', 'query_miss', 'overview', '{"view":"overview"}', '[]', '', 'h1');
+  // 手写 event 行没有合法链（readPmState 会报 event_hash_mismatch），改走真 append 夹具。
+  grantAll(db, 'align-fixture-actor');
+  appendSeeds(db, [ev('query_miss', 'overview', { view: 'overview' })]);
 }
 
 function countRows(db: SdoDatabase, table: 'event' | 'task'): number {
@@ -78,6 +87,32 @@ test('C1：GET /、/board、/plan 都返回 200，含标题与至少一个带来
       await console.close();
     }
   });
+});
+
+test('P1 fail-closed：没有会话身份时拒绝启动，绝不静默给空页（Lead m06490 P1）', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sdo-ui-server-nosession-'));
+  const db = openEncryptedDatabase(join(dir, 'sdo.db'), PASSPHRASE);
+  try {
+    runMigrations(db);
+    assert.throws(
+      () => createConsoleServer({ db } as unknown as ConsoleServerOptions),
+      /控制台需要会话身份/,
+    );
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('P1 fail-closed：`serve.js` 未设置 SDO_CONSOLE_ACTOR ⇒ 进程 exit 1 且 stderr 说明原因', () => {
+  const servePath = fileURLToPath(new URL('../../src/ui/serve.js', import.meta.url));
+  const env: NodeJS.ProcessEnv = { PATH: process.env['PATH'] ?? '' };
+  delete env['SDO_CONSOLE_ACTOR'];
+  delete env['SDO_CONSOLE_ACTOR_KIND'];
+  const result = spawnSync(process.execPath, [servePath], { env, encoding: 'utf8', timeout: 10_000 });
+  assert.equal(result.status, 1, `stderr=${result.stderr}`);
+  assert.match(result.stderr, /SDO_CONSOLE_ACTOR/);
+  assert.match(result.stderr, /需要会话身份/);
 });
 
 test('C1 负例：未知路径 404，非 GET 405（Allow: GET）', async () => {
@@ -123,7 +158,8 @@ test('C1：三页数据来自 query——有数据时 HTML 里出现 overview �
     db.prepare(
       "INSERT INTO task (id, seq, title, kind, created_by, status, at) VALUES ('T1', 1, '进行中的卡', 'implement', 'pm', 'in_progress', '2026-11-13T00:00:00Z')",
     ).run();
-    const console = await startConsole(db);
+    grantAll(db, 'ui-lead');
+    const console = await startConsole(db, { actor: 'ui-lead' });
     try {
       const html = await (await fetch(`${console.base}/`)).text();
       assert.match(html, /data-figure="in_flight"/);

@@ -1,3 +1,5 @@
+import { grantFixtureRoster } from './append-auth.js';
+import { appendAs as append } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -8,7 +10,7 @@ import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { openSdoDatabase } from '../../src/db/open.js';
 import { registerRenderer } from '../../src/db/renderer.js';
-import { append } from '../../src/db/write.js';
+
 import {
   FOLD_ONLY_COLUMNS,
   MATERIALIZED_TABLES,
@@ -209,6 +211,7 @@ test('M3-4: renderer.registered 走真 registerRenderer() 才落链（一次性�
   const db = openSdoDatabase(join(dir, 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     db.prepare("INSERT INTO actor (id, kind, display, at) VALUES ('admin-1', 'human', 'Admin', '2026-11-15T00:00:00Z')").run();
     db.prepare(
       `INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at)

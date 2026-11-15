@@ -27,7 +27,7 @@ fold(prev: FoldState | undefined, events: readonly Event[]): FoldState
 ## paths / verify（M0-6 交付）
 
 - `src/core/paths.ts`：`resolveDbPath()` 默认给 `~/.local/state/sdo/<project>.db`（工作区外）；`SDO_DB` 是唯一覆盖，落进工作区只 warning 不阻止；`ensureDbDirectory()` 递归建 0700 目录，建不出/不可写一律抛 `SdoPathError` 并带 `fail-closed: no workspace fallback`——绝不回退工作区。
-- `src/core/verify.ts`：`verify(db)` 按 `event` 行序（`rowid`）重算链，逐条验 `hash = sha256(规范化(事件去 hash) + prev)` 与 `prev` 连续，再 `fold` 重算并与库内 `task`/`spec`/`release` 行逐列对账；差异报 `runtime_inconsistent`/`projection_missing`/`projection_unexpected` 等并带对象 id。只发现、不归因；对账清单是显式常量 `VERIFIED_TABLES = ['task','spec','release','decision']`（`src/core/verify.ts`）——前三张是 M0 视图/查询的主要读数面、字段最密、最容易被直改，`decision` 由 M1-0 物化、只比对 `signature` 非空的行（D-019）；其余投影在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐，本卡不扩表。除投影对账外，`verify()` 还调 `src/core/baseline/verify-references.ts` 的 `verifyBaselineReferences`：按“判定引用的那一版”核对 baseline 行、冻结事件与引用关系，问题码（如 `baseline_hash_mismatch`）并入同一条 `problems[]`。边界（D-065）：库里没有任何 baseline 行时跳过引用对账（M1 期是常态），从 M2-2 门禁判定起严格；这条对账不改变 `VERIFIED_TABLES` 的含义——前者是“事件与投影是否一致”，后者是“哪些表的投影参与逐列对账”。
+- `src/core/verify.ts`：`verify(db)` 按 `event` 行序（`rowid`）重算链，逐条验 `hash = sha256(规范化(事件去 hash) + prev)` 与 `prev` 连续，再 `fold` 重算并与库内 `task`/`spec`/`release` 行逐列对账；差异报 `runtime_inconsistent`/`projection_missing`/`projection_unexpected` 等并带对象 id；M3-1 起另报 `unauthorized_row`（投影行在事件日志无来源 ⇒ 只可能绕过写网关直写；链自洽的直插 event 检测不到，M4 签名信封才解）。只发现、不归因；对账清单是显式常量 `VERIFIED_TABLES = ['task','spec','release','decision']`（`src/core/verify.ts`）——前三张是 M0 视图/查询的主要读数面、字段最密、最容易被直改，`decision` 由 M1-0 物化、只比对 `signature` 非空的行（D-019）；其余投影在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐，本卡不扩表。除投影对账外，`verify()` 还调 `src/core/baseline/verify-references.ts` 的 `verifyBaselineReferences`：按“判定引用的那一版”核对 baseline 行、冻结事件与引用关系，问题码（如 `baseline_hash_mismatch`）并入同一条 `problems[]`。边界（D-065）：库里没有任何 baseline 行时跳过引用对账（M1 期是常态），从 M2-2 门禁判定起严格；这条对账不改变 `VERIFIED_TABLES` 的含义——前者是“事件与投影是否一致”，后者是“哪些表的投影参与逐列对账”。
 - **claim 不进 core verify**（避免 core → claim 的分层倒挂）：`claim` 是渲染器派生投影，由 `src/claim/verify.ts` 的 `verifyClaims(db)` 独立兜底（结构 + 内容逐列）；`verify()` 与 `verifyClaims()` 分别报告、互不替代。
 - `verify` 只收最小接口 `{ prepare(sql).all() }`，不 import `src/db/`（core→db 反向依赖禁止）。
 - hash 口径（写死，M1 不得另解）：`body = canonicalJson({id,at,actor,kind,subject,payload,caused_by,request_id,prev})`——对象键递归排序、数组保序，**body 已含 `prev`**；`hash = 'sha256:' + sha256(body + prev)`。golden vector 在 `test/core/verify.test.ts` 写死期望值：`e-golden-1` ⇒ `sha256:2a6359fd2f31b388cc1a301cf6baefba777d2c6904085e856c09478327cc78e1`。
@@ -51,3 +51,10 @@ fold(prev: FoldState | undefined, events: readonly Event[]): FoldState
 - `criteria/binding.ts`：有效绑定五条件 + `stage_gap` + core 计数；M1-3/M1-4 的唯一消费入口。
 - `paths.ts`：库路径解析与目录守卫（M0-6）。
 - `verify.ts` / `verify-events.ts` / `verify-projection.ts` / `verify-types.ts`：链路复算与投影对账（M0-6）。
+
+## auth / session（M3-0 + M3-1 接线）
+
+- `src/core/auth/rights.ts`：`hasRight(actor, action, scope, {matrix, grants, ownership?})` 纯函数；同前缀 `scopeCovers`，跨前缀走 `scope_owns` 祖先链（`ownershipAncestors` 一跳/两跳），无归属 ⇒ `no_permission` 且 `reason:'no_ownership'`，有归属无 grant ⇒ `missing_grant`。
+- `src/core/auth/read.ts`：`MIN_RIGHT_TO_RIGHT = {reader:'read', reviewer:'review', decider:'decide', signer:'sign'}`；`viewRightFor(actor,{grants,ownership})` 取该 actor 实际持有的最高读级（走 `hasGrantedRight`），无任何读权返回 undefined。查询层只认会话身份（`context.session`），unknown actor / 无读权 ⇒ `filtered_by_permission`，**无 reader 回退**（D-101：读权 scope 当前固定 `domain:core`，多域 M4 再建）。
+- `src/core/auth/session.ts`：`Session{actor,actor_kind,session_id,credential}`；payload 自称 `actor` 一律 `actor_not_from_session`（D-056）。会话由调用方/服务端构造，产品路径不得把查询或写网关降级为“无会话”。
+- 授权由事件 kind 决定：`src/core/auth/kind-actions.ts` 的 `KIND_ACTIONS` 是唯一映射（写网关消费），`APPEND_CALL_SITES` 只做静态调用点守卫，二者不重复授权逻辑。

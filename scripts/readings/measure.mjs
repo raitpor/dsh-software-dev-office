@@ -14,6 +14,7 @@ import {
   PASSPHRASE,
   insertEvents,
   makeChain,
+  sessionFor,
   withTempDb,
 } from './fixtures.mjs';
 
@@ -126,8 +127,9 @@ export function measureR2(db, dbPath, scriptPath) {
 
   for (const view of views) {
     const right = view.min_right;
-    const firstResult = query(db, { view: view.name }, { right });
-    const secondResult = query(db, { view: view.name }, { right });
+    const session = sessionFor(db, right);
+    const firstResult = query(db, { view: view.name }, { session });
+    const secondResult = query(db, { view: view.name }, { session });
     const first = JSON.stringify(firstResult);
     const second = JSON.stringify(secondResult);
     const childA = runChild(scriptPath, dbPath, view.name, right);
@@ -169,8 +171,9 @@ export function measureR2(db, dbPath, scriptPath) {
 
 /** R3：3 次 query ⇒ 3 行访问记录；改投影/改 hash 由 verify 发现；不写归因。 */
 export function measureR3(db, dbPath) {
+  const session = sessionFor(db, 'reader');
   for (let index = 0; index < 3; index += 1) {
-    query(db, { view: 'overview' });
+    query(db, { view: 'overview' }, { session });
   }
   const accessLines = readAccessLog(dbPath).length;
 

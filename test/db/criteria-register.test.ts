@@ -1,9 +1,10 @@
+import { appendAs as append } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { append } from '../../src/db/write.js';
+
 import { MATERIALIZED_TABLES } from '../../src/db/write-materialize.js';
 import { verify } from '../../src/core/verify.js';
 import { registerCriterion, type Fixture, type FixtureRunner } from '../../src/core/criteria/register.js';

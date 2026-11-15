@@ -27,9 +27,17 @@ export interface GrantView {
   readonly revoked_at: string | null;
 }
 
+/** `scope_owns` 的一行：child 沿 parent 链归属（M3-1 C9，迁移 013）。 */
+export interface ScopeOwn {
+  readonly child_scope: string;
+  readonly parent_scope: string;
+}
+
 export interface RightContext {
   readonly matrix: readonly MatrixEntry[];
   readonly grants: readonly GrantView[];
+  /** 归属边；缺省视为空表（所有跨前缀判定 fail-closed 为 `no_ownership`）。 */
+  readonly ownership?: readonly ScopeOwn[];
 }
 
 export interface RightAllow {
@@ -52,7 +60,13 @@ export interface RightDeny {
   readonly message: string;
   readonly missing_right?: RightName;
   /** 失败原因细分（如跨前缀拒绝）；保留 reason_code 供调用方粗判。 */
-  readonly reason?: 'cross_prefix_denied' | 'unknown_action' | 'unknown_prefix' | 'boot_only' | 'missing_grant';
+  readonly reason?:
+    | 'cross_prefix_denied'
+    | 'no_ownership'
+    | 'unknown_action'
+    | 'unknown_prefix'
+    | 'boot_only'
+    | 'missing_grant';
 }
 
 export type RightDecision = RightAllow | RightDeny;
@@ -111,6 +125,44 @@ export function scopeCovers(grantScope: string, targetScope: string): boolean {
   return target.value.path.startsWith(`${grant.value.path}/`);
 }
 
+/** 单个 right 在目标 scope 上的 grant 覆盖判定（与 `hasRight` 内部同一套规则，供读权等级复用）。 */
+export function hasGrantedRight(
+  actor: ActorRef,
+  right: RightName,
+  scope: string,
+  ctx: Pick<RightContext, 'grants' | 'ownership'>,
+): boolean {
+  const parsed = parseScope(scope);
+  if (!parsed.ok) return false;
+  return ctx.grants.some((grant) => {
+    if (grant.actor !== actor.id) return false;
+    if (grant.revoked_at !== null) return false;
+    if (grant.right !== right) return false;
+    return scopeCovers(grant.scope, scope);
+  });
+}
+
+/**
+ * 沿 `scope_owns` 把 child scope 的祖先全部找出（BFS，去自环/重复）。
+ * 只做数据解释，不做判定——判定在 `hasRight` 里（卡 C9：归属表是数据，不猜前缀）。
+ */
+export function ownershipAncestors(scope: string, ownership: readonly ScopeOwn[]): readonly string[] {
+  const seen = new Set<string>([scope]);
+  const queue = [scope];
+  const ancestors: string[] = [];
+  while (queue.length > 0) {
+    const current = queue.shift() as string;
+    for (const edge of ownership) {
+      if (edge.child_scope !== current) continue;
+      if (seen.has(edge.parent_scope)) continue;
+      seen.add(edge.parent_scope);
+      ancestors.push(edge.parent_scope);
+      queue.push(edge.parent_scope);
+    }
+  }
+  return ancestors;
+}
+
 function deny(
   code: RightDenyCode,
   actor: ActorRef,
@@ -151,37 +203,43 @@ export function hasRight(actor: ActorRef, action: string, scope: string, ctx: Ri
     return deny('no_permission', actor, action, scope, `${action} 是迁移 boot 动作，只允许 boot 系统 actor`);
   }
   for (const required of entry.required) {
+    const crossPrefix = required.scope !== 'scope' && required.scope !== parsed.value.prefix;
+    // 跨前缀时，先沿归属链把目标 scope 的祖先找出来；只有祖先里出现 required.scope 的前缀才可判。
+    // （D-086：不猜 module→domain 映射；M3-1 C9 用显式 scope_owns 链放开。）
+    const ancestors = crossPrefix ? ownershipAncestors(scope, ctx.ownership ?? []) : [];
+    const candidateScopes = crossPrefix
+      ? ancestors.filter((candidate) => {
+          const ancestor = parseScope(candidate);
+          return ancestor.ok && ancestor.value.prefix === required.scope;
+        })
+      : [scope];
+    const ownedCandidates = required.scope === 'scope'
+      ? candidateScopes
+      : candidateScopes.filter((candidate) => {
+          const c = parseScope(candidate);
+          return c.ok && c.value.prefix === required.scope;
+        });
     const granted = ctx.grants.some((grant) => {
       if (grant.actor !== actor.id) return false;
       if (grant.revoked_at !== null) return false;
       if (grant.right !== required.right) return false;
-      const grantScope = parseScope(grant.scope);
-      if (!grantScope.ok) return false;
-      // 同前缀（module/release/目标自身）：grant 必须覆盖目标 scope。
-      // 跨前缀（如 dependencies 需要 plan@domain 而目标是 module:…）：没有归属解析就**一律拒**
-      // （D-086：不猜 module→domain 映射；M3-1 引入 membership 解析后再放开）。
-      if (required.scope !== 'scope' && required.scope !== parsed.value.prefix) {
-        return false;
-      }
-      if (required.scope === 'scope' && grantScope.value.prefix !== parsed.value.prefix) {
-        return false;
-      }
-      return scopeCovers(grant.scope, scope);
+      if (ownedCandidates.length === 0) return false;
+      return ownedCandidates.some((candidate) => scopeCovers(grant.scope, candidate));
     });
     if (!granted) {
-      const crossPrefix = required.scope !== 'scope' && required.scope !== parsed.value.prefix;
+      const noOwnership = crossPrefix && ownedCandidates.length === 0;
       return {
         ...deny(
           'no_permission',
           actor,
           action,
           scope,
-          crossPrefix
-            ? `跨前缀拒绝：${action} 需要 ${required.right}@${required.scope}，但目标 scope 是 ${parsed.value.prefix}:…（D-086，不猜归属）`
+          noOwnership
+            ? `无归属：${action} 需要 ${required.right}@${required.scope}，但 ${scope} 没有通向 ${required.scope}:… 的 scope_owns 链（fail-closed）`
             : `缺少权 ${required.right}@${required.scope}（scope ${scope}）`,
           required.right,
         ),
-        reason: crossPrefix ? 'cross_prefix_denied' : 'missing_grant',
+        reason: noOwnership ? 'no_ownership' : 'missing_grant',
       };
     }
   }

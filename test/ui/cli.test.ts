@@ -36,6 +36,7 @@ function childEnv(dbPath: string, extra: Record<string, string> = {}): NodeJS.Pr
     SDO_DB_PATH: dbPath,
     SDO_DB_PASSPHRASE: PASSPHRASE,
     SDO_CONSOLE_PORT: '0',
+    SDO_CONSOLE_ACTOR: 'ui-lead',
     SDO_CONSOLE_RIGHT: 'decider',
     ...extra,
   };

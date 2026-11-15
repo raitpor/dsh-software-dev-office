@@ -1,3 +1,4 @@
+import { grantFixtureRoster } from './append-auth.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -143,7 +144,12 @@ export function seed(
   let effectivePayload = payload;
   if (kind === 'decision.valid') {
     const source = (typeof payload === 'object' && payload !== null ? payload : {}) as Record<string, unknown>;
-    effectivePayload = { ...source, payload_hash: payloadHashOf(source['payload'] ?? {}) };
+    // P3-3：producer 是审计归属；夹具给未登记 actor（软校验放行），避免被误判成 human 产出。
+    effectivePayload = {
+      ...source,
+      payload_hash: payloadHashOf(source['payload'] ?? {}),
+      producer: source['producer'] ?? 'seed-agent',
+    };
   }
   return {
     id: `e-m1-${n}`,
@@ -208,11 +214,25 @@ export function fourDomainSeeds(): EventSeed[] {
   ];
 }
 
+/** 同 withWriteDb，但不播种 fixture roster：给「拒绝路径」用例一个干净的授权库。 */
+export function withCleanWriteDb(run: (db: SdoDatabase) => void): void {
+  const dir = mkdtempSync(join(tmpdir(), 'sdo-m1-write-'));
+  const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), PASSPHRASE);
+  try {
+    runMigrations(db);
+    run(db);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 export function withWriteDb(run: (db: SdoDatabase) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'sdo-m1-write-'));
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     run(db);
   } finally {
     db.close();

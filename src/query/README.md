@@ -33,7 +33,8 @@
 
 ## 权限与留痕（C3）
 
-- `context.right` 默认 `reader`；`min_right` 高于当前权限 ⇒ 不执行、返回
+- M3-1 起以 `context.session` 的 actor 为准：`viewRightFor(actor, grants)` 取该 actor 已持的最高读级（`read`/`review`/`decide`/`sign`），再按 `MIN_RIGHT_TO_RIGHT` + `min_right` 层级判；actor/actor_kind 缺失或没有任何读权 ⇒ fail-closed `filtered_by_permission`，**不回退 reader**。行级 `owner` 例外只过滤 task 类对象的归属字段，过滤后为空同样记 miss。`context.right` 已删除（M3-1 P2-4）：无 session 直接 `filtered_by_permission`，不再回退调用方声明的 right。
+- 历史行为（M0-4 至 M2，保留对照）：`context.right` 默认 `reader`；`min_right` 高于当前权限 ⇒ 不执行、返回
   `miss.reason='filtered_by_permission'`（hint 写明需要的权限），并调 `sink.record(miss)`。
 - `MissSink` 默认 no-op；测试注入收集器。真正写 `query_miss` 事件属 M1（D-012）——本卡只把
   miss 交给调用方，不造半条 hash 链。
@@ -80,8 +81,12 @@
 ## 结构化 miss（C7）
 
 一律返回 `QueryResult.miss`，不抛裸异常：`view_not_found` / `column_not_found` /
-`invalid_args` / `filtered_by_permission` / `stale_as_of` / `unsafe_view_sql` /
-`result_too_large`。
+`invalid_args` / `filtered_by_permission` / `column_redacted` / `stale_as_of` /
+`unsafe_view_sql` / `result_too_large`。
+
+`filtered_by_permission` 裁**行**；`column_redacted` 裁**列**（M3-6：agent 会话显式 `select`
+了一个 `human_only` 列）。默认投影被裁时不出 miss，而是在 `QueryResult.redacted_columns`
+里列出被裁列名——列不出现、不置 null，也不静默。
 `query_miss` 的 payload 形状见 docs/05 §5（`{view,reason,hint,task,actor}`）。
 
 ## 测试读数

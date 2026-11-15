@@ -2,6 +2,7 @@
  * M2-2 C6：判定 readings 与 sdo_check 的逐判据三态对账（同一 fold 状态）。
  * 两边实现独立（core 不依赖 src/check），这里只比对输出；core 三条必须一致。
  */
+import { grantFixtureRoster } from '../../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -24,6 +25,7 @@ test('C6: core 三条判定与 sdo_check 三态一致（空状态）', () => {
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), 'm2-2 compare passphrase');
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     const file = fixture('waterfall.json');
     const baseline = { id: String(file['id']), hash: String(file['hash']), policy: file['policy'], gates: file['gates'] };
     const state: FoldState = emptyState();

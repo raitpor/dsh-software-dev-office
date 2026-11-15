@@ -7,6 +7,7 @@ import { withMigratedDb } from '../db/helpers.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { decodeCursor, MAX_RESULT_BYTES, query, type QueryContext, type QueryResult, type Row } from '../../src/query/index.js';
 import { listViewCatalog } from '../../src/views/catalog.js';
+import { asViewer } from './viewer.js';
 
 const ROWS_SQL = 'SELECT id AS row_id, family AS fam FROM defect ORDER BY id ASC';
 
@@ -49,7 +50,7 @@ function drainPages(
   const pages: QueryResult[] = [];
   let cursor: string | undefined;
   for (let guard = 0; guard < 100; guard += 1) {
-    const page = query(db, cursor === undefined ? { view } : { view, cursor }, context);
+    const page = query(db, cursor === undefined ? { view } : { view, cursor }, { session: asViewer(db), ...context });
     pages.push(page);
     assert.equal(page.miss, undefined, `续查不应有 miss（第 ${pages.length} 页）`);
     rows.push(...page.rows);
@@ -64,7 +65,7 @@ test('C4 默认 limit=row_budget：20 行按 7 行一页截断，游标可续查
     seedDefects(db, manyDefectIds(20));
     addAdHocView(db, 'v_rows', ROWS_SQL, 7);
 
-    const first = query(db, { view: 'v_rows' });
+    const first = query(db, { view: 'v_rows' }, { session: asViewer(db) });
     assert.equal(first.miss, undefined);
     assert.equal(first.rows.length, 7);
     assert.equal(first.truncated, true);
@@ -99,19 +100,19 @@ test('C4 显式 limit：小于 row_budget 时也截断且游标继续成立', ()
     seedDefects(db, manyDefectIds(20));
     addAdHocView(db, 'v_rows', ROWS_SQL, 7);
 
-    const first = query(db, { view: 'v_rows', limit: 3 });
+    const first = query(db, { view: 'v_rows', limit: 3 }, { session: asViewer(db) });
     assert.equal(first.rows.length, 3);
     assert.equal(first.truncated, true);
     assert.ok(first.next_cursor !== undefined);
     assert.equal(decodeCursor(first.next_cursor).args.limit, 3);
 
     // 续查沿用游标里的 limit（调用方不必重复传）
-    const second = query(db, { view: 'v_rows', cursor: first.next_cursor });
+    const second = query(db, { view: 'v_rows', cursor: first.next_cursor }, { session: asViewer(db) });
     assert.equal(second.rows.length, 3);
     assert.equal(second.truncated, true);
 
     // 显式 limit 超过 row_budget 是结构化 invalid_args（A4：不得大于 row_budget）
-    const tooLarge = query(db, { view: 'v_rows', limit: 8 });
+    const tooLarge = query(db, { view: 'v_rows', limit: 8 }, { session: asViewer(db) });
     assert.equal(tooLarge.miss?.reason, 'invalid_args');
     assert.match(tooLarge.miss?.hint ?? '', /7/);
   });
@@ -122,12 +123,12 @@ test('C5 游标只对同一 snapshot 有效：中间插入行（不落事件）�
     seedDefects(db, manyDefectIds(20));
     addAdHocView(db, 'v_rows', ROWS_SQL, 7);
 
-    const first = query(db, { view: 'v_rows' });
+    const first = query(db, { view: 'v_rows' }, { session: asViewer(db) });
     assert.ok(first.next_cursor !== undefined);
 
     // 中间插入一行（排序在页首之前），边界行从 D07 变成 D06。
     seedDefects(db, ['D00']);
-    const resumed = query(db, { view: 'v_rows', cursor: first.next_cursor });
+    const resumed = query(db, { view: 'v_rows', cursor: first.next_cursor }, { session: asViewer(db) });
     assert.equal(resumed.miss?.reason, 'stale_as_of');
     assert.equal(resumed.rows.length, 0);
 
@@ -143,7 +144,7 @@ test('C5 新事件推进 frontier ⇒ 旧游标 stale_as_of；新查询带新 as
   withMigratedDb((db) => {
     seedDefects(db, manyDefectIds(20));
     addAdHocView(db, 'v_rows', ROWS_SQL, 7);
-    const first = query(db, { view: 'v_rows' });
+    const first = query(db, { view: 'v_rows' }, { session: asViewer(db) });
     assert.deepEqual(first.as_of, []);
     assert.ok(first.next_cursor !== undefined);
 
@@ -155,10 +156,10 @@ test('C5 新事件推进 frontier ⇒ 旧游标 stale_as_of；新查询带新 as
        VALUES ('E1', '2026-01-01T00:00:00Z', 'human-pm', 'task.assigned', 'T1', '{}', '[]', NULL, '', 'h-e1')`,
     ).run();
 
-    const resumed = query(db, { view: 'v_rows', cursor: first.next_cursor });
+    const resumed = query(db, { view: 'v_rows', cursor: first.next_cursor }, { session: asViewer(db) });
     assert.equal(resumed.miss?.reason, 'stale_as_of');
 
-    const fresh = query(db, { view: 'v_rows' });
+    const fresh = query(db, { view: 'v_rows' }, { session: asViewer(db) });
     assert.deepEqual(fresh.as_of, ['E1']);
     assert.equal(fresh.rows.length, 7);
   });
@@ -181,7 +182,7 @@ test('C4 4000 字符行、20 行视图：游标翻完 == 全量，无重无漏�
                'C4 4000 字符行分页夹具', 'reader', 10)`,
     ).run();
 
-    const first = query(db, { view: 'v_big' });
+    const first = query(db, { view: 'v_big' }, { session: asViewer(db) });
     assert.equal(first.miss, undefined);
     assert.equal(first.truncated, true);
     assertWithinBudget(first);
@@ -222,7 +223,7 @@ test('C4 8000 字符行：单行视图仍可读（reviewer 探针 2）', () => {
                'C4 8000 字符行夹具（单行）', 'reader', 5)`,
     ).run();
 
-    const result = query(db, { view: 'v_one' });
+    const result = query(db, { view: 'v_one' }, { session: asViewer(db) });
     assert.equal(result.miss, undefined, '8000 字符行单行视图必须可读');
     assert.equal(result.rows.length, 1);
     assert.equal(result.truncated, false);
@@ -247,7 +248,7 @@ test('已知边界：8000 字符行 + 下一页 ⇒ 行 + 定长游标整包超 
 
     // 单行 8027B + envelope 66B = 8093B 可读；再加游标 ~170B ⇒ 8260B > 8192，无法同时满足
     // “truncated=true 必带游标”与“整包 ≤8KB”。这是整包预算的代数硬限，不是丢数据。
-    const result = query(db, { view: 'v_many' });
+    const result = query(db, { view: 'v_many' }, { session: asViewer(db) });
     assert.equal(result.miss?.reason, 'result_too_large');
     assert.deepEqual(result.rows, []);
     assert.equal(result.next_cursor, undefined);
@@ -257,7 +258,7 @@ test('已知边界：8000 字符行 + 下一页 ⇒ 行 + 定长游标整包超 
 
 test('C4 list 目录超预算：14 行按 8KB 截断，游标拼回全量（不削数据形状）', () => {
   withMigratedDb((db) => {
-    const first = query(db, { view: 'list' }, { right: 'decider' });
+    const first = query(db, { view: 'list' }, { session: asViewer(db, 'decider-test', 'decide') });
     assert.equal(first.miss, undefined);
     assert.equal(first.truncated, true, '14 行目录（含 columns[].type）超 8KB，必须截断');
     assert.ok(first.next_cursor !== undefined, 'truncated=true 必带游标');
@@ -272,7 +273,7 @@ test('C4 list 目录超预算：14 行按 8KB 截断，游标拼回全量（不�
     assert.ok(columns.every((column) => typeof column['name'] === 'string'));
     assert.ok(columns.some((column) => typeof column['type'] === 'string'));
 
-    const { rows, pages } = drainPages(db, 'list', { right: 'decider' });
+    const { rows, pages } = drainPages(db, 'list', { session: asViewer(db, 'decider-test', 'decide') });
     assert.ok(pages.length >= 2, '目录应分 ≥2 页');
     for (const page of pages) assertWithinBudget(page);
     assert.equal(rows.length, 14);
@@ -289,7 +290,7 @@ test('C4 单行整包仍超预算 ⇒ 结构化 result_too_large（不返回半�
        VALUES ('HUGE', 'criterion', 'low', ?, 'open', '2026-01-01T00:00:00Z')`,
     ).run('y'.repeat(9000));
 
-    const result = query(db, { view: 'defects' });
+    const result = query(db, { view: 'defects' }, { session: asViewer(db) });
     assert.equal(result.miss?.reason, 'result_too_large');
     assert.deepEqual(result.rows, []);
     assert.equal(result.truncated, false);

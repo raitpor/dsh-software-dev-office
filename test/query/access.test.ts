@@ -13,6 +13,7 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { query } from '../../src/query/index.js';
 import { PASSPHRASE } from '../db/helpers.js';
+import { asViewer } from './viewer.js';
 
 function withMigratedDb(run: (dbPath: string, dir: string, db: ReturnType<typeof openSdoDatabase>) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'sdo-m0-6-query-access-'));
@@ -29,9 +30,9 @@ function withMigratedDb(run: (dbPath: string, dir: string, db: ReturnType<typeof
 
 test('C3: 经 sdo_query 的每次读都在库同目录追一行', () => {
   withMigratedDb((dbPath, _dir, db) => {
-    query(db, { view: 'list' });
-    query(db, { view: 'list', limit: 3 });
-    query(db, { view: 'list', select: ['name'] });
+    query(db, { view: 'list' }, { session: asViewer(db) });
+    query(db, { view: 'list', limit: 3 }, { session: asViewer(db) });
+    query(db, { view: 'list', select: ['name'] }, { session: asViewer(db) });
 
     const records = readAccessLog(dbPath);
     assert.equal(records.length, 3);
@@ -47,6 +48,7 @@ test('C3: 经 sdo_query 的每次读都在库同目录追一行', () => {
 test('C3 负例: 日志目录不可写 ⇒ 读仍成功，仅一条 stderr warning', () => {
   withMigratedDb((dbPath, dir, db) => {
     resetAccessLogWarningForTests();
+    const session = asViewer(db);
     const stateDir = join(dir, 'state');
     const messages: string[] = [];
     const originalWrite = process.stderr.write.bind(process.stderr);
@@ -56,8 +58,8 @@ test('C3 负例: 日志目录不可写 ⇒ 读仍成功，仅一条 stderr warni
     }) as typeof process.stderr.write;
     try {
       chmodSync(stateDir, 0o500);
-      const first = query(db, { view: 'list' });
-      const second = query(db, { view: 'list' });
+      const first = query(db, { view: 'list' }, { session });
+      const second = query(db, { view: 'list' }, { session });
 
       assert.ok(first.rows.length > 0);
       assert.ok(second.rows.length > 0);
@@ -82,7 +84,7 @@ test('P2-2: 相对路径打开 → chdir → query ⇒ access.log 仍在库目�
     try {
       runMigrations(db, migrationsDir);
       process.chdir(elsewhere);
-      query(db, { view: 'list' });
+      query(db, { view: 'list' }, { session: asViewer(db) });
 
       const records = readAccessLog(join(base, 'state', 'sdo.db'));
       assert.equal(records.length, 1);

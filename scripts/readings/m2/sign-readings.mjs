@@ -1,7 +1,8 @@
 /**
  * M2-G · R1/R2/R3/R4/R6：签字路径读数（量签字页服务 + signerd 真路径）。
  */
-import { append, chainHead } from '../../../lib/src/db/write.js';
+import { chainHead } from '../../../lib/src/db/write.js';
+import { appendAs as append } from '../../../lib/test/db/append-auth.js';
 import { computeEventHash } from '../../../lib/src/core/verify-events.js';
 import {
   AT, TEST_ACTOR, TEST_PASSPHRASE, createAndConfirm, decisionCount, draft, eventCount,

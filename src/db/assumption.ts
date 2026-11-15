@@ -17,7 +17,7 @@
 import type { SdoDatabase } from './driver.js';
 import { randomUUID } from 'node:crypto';
 
-import { append, chainHead } from './write.js';
+import { appendAsTool, chainHead } from './write.js';
 import type { Event } from '../core/fold/types.js';
 import { fold } from '../core/fold/index.js';
 import type { FoldState, Row } from '../core/fold/types.js';
@@ -257,7 +257,7 @@ export function disposeAssumptionSet(db: SdoDatabase, input: DisposeAssumptionSe
     prev = event.hash;
   }
 
-  const result = append(db, events);
+  const result = appendAsTool(db, events, input.actor);
   if (!result.ok) {
     return {
       ok: false,

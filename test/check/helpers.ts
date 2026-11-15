@@ -1,3 +1,5 @@
+import { appendAs as append } from '../db/append-auth.js';
+import { grantFixtureRoster } from '../db/append-auth.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -5,7 +7,7 @@ import { join } from 'node:path';
 import { openSdoDatabase } from '../../src/db/open.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { PASSPHRASE, AT, chain, fourDomainSeeds, payloadHashOf, seed, type EventSeed } from '../db/append-helpers.js';
 
 export { PASSPHRASE, AT, chain, fourDomainSeeds, seed };
@@ -24,6 +26,7 @@ function makeDb(): { db: SdoDatabase; path: string; dir: string } {
   const path = join(dir, 'state', 'sdo.db');
   const db = openSdoDatabase(path, PASSPHRASE);
   runMigrations(db);
+  grantFixtureRoster(db);
   return { db, path, dir };
 }
 

@@ -5,6 +5,7 @@
  * 夹具事件直接 INSERT（M0 没有写网关，A2），但不写任何业务数据进仓库。
  */
 
+import { grantFixtureRoster } from '../../lib/test/db/append-auth.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -127,6 +128,7 @@ export function withTempDb(run) {
     // open 也可能抛（错口令/目录不可写）：放在 try 里，保证临时目录一定被清掉。
     db = openSdoDatabase(dbPath, PASSPHRASE);
     runMigrations(db);
+    grantFixtureRoster(db);
     return run({ db, dbPath, dir });
   } finally {
     if (db !== undefined) db.close();
@@ -135,3 +137,20 @@ export function withTempDb(run) {
 }
 
 export { insertEvents };
+
+/**
+ * M3-1：查询必须由会话发起。读数脚本用真实 grant（actor + scope 行）构造会话，
+ * 级别按 `view_catalog.min_right`，与生产 `hasRight` 判定同一路径。
+ */
+const RIGHT_ACTION = { reader: 'read', reviewer: 'review', decider: 'decide', signer: 'sign' };
+
+export function sessionFor(db, right = 'reader', actor = `readings-${right}`) {
+  const action = RIGHT_ACTION[right];
+  if (action === undefined) throw new Error(`unknown right: ${right}`);
+  const at = '2026-01-01T00:00:00Z';
+  db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', NULL, ?)").run(actor, at);
+  db.prepare(
+    "INSERT OR IGNORE INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, 'domain:core', ?, 'migration', ?, NULL)",
+  ).run(actor, action, at);
+  return { actor, actor_kind: 'human', session_id: `sess-${actor}`, credential: 'readings-credential' };
+}

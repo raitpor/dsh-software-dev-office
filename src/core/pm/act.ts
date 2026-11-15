@@ -12,13 +12,14 @@
  */
 
 import type { SdoDatabase } from '../../db/driver.js';
-import { append } from '../../db/write.js';
+import { appendAsTool } from '../../db/write.js';
 import { PM_ACTIONS } from './queue.js';
 import type { PmAction } from './queue.js';
 import {
   hasPmRight,
   isSeatName,
   seatOf,
+  scopeCovered,
   scopesCovered,
   scopesOverlap,
   SEATS,
@@ -28,6 +29,7 @@ import { buildPmEvent, readPmState, rowOf, stringArrayField, stringField } from 
 import type { PmContext, PmFailure } from './types.js';
 import { pmFailure } from './types.js';
 import { isPmUnblockable } from './queue.js';
+import { canEscalateTo, denyAllRightsPort, taskScopes } from './access.js';
 
 export interface PmWriteOk {
   readonly ok: true;
@@ -99,7 +101,7 @@ export function assignCard(db: SdoDatabase, ctx: PmContext, input: AssignInput):
     ...(input.at === undefined ? {} : { at: input.at }),
     payload: { owner: input.assignee },
   });
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], ctx.actor, ctx.actorKind);
   if (!result.ok) return writeFailed(result);
   return { ok: true, task_id: input.taskId, event_id: event.id };
 }
@@ -131,7 +133,7 @@ export function unblockCard(db: SdoDatabase, ctx: PmContext, input: UnblockInput
     ...(input.at === undefined ? {} : { at: input.at }),
     payload: {},
   });
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], ctx.actor, ctx.actorKind);
   if (!result.ok) return writeFailed(result);
   return { ok: true, task_id: input.taskId, event_id: event.id };
 }
@@ -218,7 +220,7 @@ export function requestSignature(
       decision_payload: input.payload,
     },
   });
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], ctx.actor, ctx.actorKind);
   if (!result.ok) return writeFailed(result);
   return { ok: true, request_id: event.id, event_id: event.id, idempotent: false };
 }
@@ -275,7 +277,7 @@ export function raiseAttention(
       expires_at: input.expiresAt,
     },
   });
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], ctx.actor, ctx.actorKind);
   if (!result.ok) return writeFailed(result);
   return { ok: true, attention_id: attentionId, event_id: event.id };
 }
@@ -286,13 +288,103 @@ export interface StubOk {
   readonly message: string;
 }
 
-/** M3 才实现的动作：接口存在但明确拒绝，且不写任何事件（C6）。 */
-export function escalate(): StubOk {
-  return {
-    ok: false,
-    reason_code: 'not_implemented',
-    message: 'escalate 的真机制（升级链/授权）留 M3；M2 只读 pm_queue 与 attention',
-  };
+export interface EscalateInput {
+  readonly taskId: string;
+  /** 目标域 scope（`release:<id>` / `domain:<name>`）。 */
+  readonly scope: string;
+  readonly question: string;
+  readonly askedOf: string;
+  readonly options?: readonly string[];
+  readonly expiresAt: string;
+  readonly at?: string;
+  readonly subjectId?: string;
+}
+
+/**
+ * 升级给人（M3-5 C4）：`escalate@scope` 只能在**自己同时有 `read`** 的域发起；
+ * 跨域（不吃该 scope）⇒ `no_permission`；任务不关联该域 ⇒ `scope_mismatch`。
+ * 权限来自 `ctx.rights`（可注入）；缺省回退静态席位表（M3-1 前）。
+ */
+export function escalate(
+  db: SdoDatabase,
+  ctx: PmContext,
+  input: EscalateInput,
+): AttentionOk | PmFailure {
+  const rights = ctx.rights ?? denyAllRightsPort(ctx.actor);
+  if (rights === undefined) {
+    return pmFailure('no_permission', `unknown actor ${JSON.stringify(ctx.actor)}: no rights port`);
+  }
+  if (!canEscalateTo(rights, input.scope)) {
+    return pmFailure(
+      'no_permission',
+      `escalate ${input.scope}: requires both read@${input.scope} and escalate@${input.scope}`,
+    );
+  }
+  const scopes = taskScopes(db, input.taskId).scopes;
+  if (!scopes.some((scope) => scopeCovered(input.scope, scope) || scopeCovered(scope, input.scope))) {
+    return pmFailure(
+      'scope_mismatch',
+      `task ${input.taskId} does not belong to ${input.scope} (scopes: ${scopes.join(', ')})`,
+    );
+  }
+  return raiseAttention(db, ctx, {
+    taskId: input.taskId,
+    question: input.question,
+    askedOf: input.askedOf,
+    expiresAt: input.expiresAt,
+    ...(input.options === undefined ? {} : { options: input.options }),
+    ...(input.at === undefined ? {} : { at: input.at }),
+    ...(input.subjectId === undefined ? {} : { subjectId: input.subjectId }),
+  });
+}
+
+export interface WithdrawAttentionInput {
+  readonly attentionId: string;
+  /** 撤回也要在同一个域上有 `escalate`（“只能撤自己提的”之外的第二道闸）。 */
+  readonly scope: string;
+  readonly at?: string;
+}
+
+/** 撤回自己的提问（`attention.withdrawn`）：只能撤自己提的（reducer 兜底）+ 域权。 */
+export function withdrawAttention(
+  db: SdoDatabase,
+  ctx: PmContext,
+  input: WithdrawAttentionInput,
+): PmWriteOk | PmFailure {
+  const { state } = readPmState(db);
+  const attention = rowOf(state, 'attention', input.attentionId);
+  if (attention === undefined) {
+    return pmFailure('invalid_args', `attention ${input.attentionId} does not exist`);
+  }
+  const raisedBy = stringField(attention, 'raised_by');
+  if (raisedBy !== ctx.actor) {
+    return pmFailure('no_permission', 'only the person who raised an attention can withdraw it');
+  }
+  const rights = ctx.rights ?? denyAllRightsPort(ctx.actor);
+  if (rights === undefined || !rights.has('escalate', input.scope)) {
+    return pmFailure('no_permission', `withdraw requires escalate@${input.scope}`);
+  }
+  const taskId = stringField(attention, 'task_id') ?? '';
+  if (taskId.length > 0) {
+    // P2-3：撤回也要落在该 attention 所属任务的域上（否则能拿 R-2 的权撤 R-1 的提问）。
+    const scopes = taskScopes(db, taskId).scopes;
+    if (!scopes.some((scope) => scopeCovered(input.scope, scope) || scopeCovered(scope, input.scope))) {
+      return pmFailure(
+        'scope_mismatch',
+        `attention ${input.attentionId} belongs to ${taskId} (scopes: ${scopes.join(', ')}), not ${input.scope}`,
+      );
+    }
+  }
+  const event = buildPmEvent(db, {
+    kind: 'attention.withdrawn',
+    subject: input.attentionId,
+    actor: ctx.actor,
+    ...(input.at === undefined ? {} : { at: input.at }),
+    payload: { withdrawn_by: ctx.actor, ...(taskId.length === 0 ? {} : { task_id: taskId }) },
+  });
+  const result = appendAsTool(db, [event], ctx.actor, ctx.actorKind);
+  if (!result.ok) return writeFailed(result);
+  return { ok: true, task_id: taskId, event_id: event.id };
 }
 
 export function grant(): StubOk {

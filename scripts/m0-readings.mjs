@@ -3,32 +3,44 @@
  * M0-G · 里程碑门四条判死读数（卡 plan/cards/M0-G.md）。
  *
  * 一条命令：`npm run readings`（先生成 lib/，再跑本脚本）。
- * 产物：`plan/milestone/M0-读数.json`、`plan/milestone/M0-读数.md`。
+ * 产物：`plan/milestone/M0-读数.json`、`plan/milestone/M0-读数.md`（可用 `--out <prefix>` 改写）。
  * 退出码：任一读数 fail ⇒ 非 0；partial 不算 fail，但 stdout 会打 overall。
  * 纪律：全部在临时目录的新库上跑（A3），不碰 `~/.local/state/sdo/`，不写 `src/**`。
  */
 
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { openSdoDatabase } from '../lib/src/db/open.js';
 import { query } from '../lib/src/query/index.js';
-import { insertEvents, insertFoldRows, makeChain, PASSPHRASE, withTempDb } from './readings/fixtures.mjs';
+import { insertEvents, insertFoldRows, makeChain, PASSPHRASE, sessionFor, withTempDb } from './readings/fixtures.mjs';
 import { measureR1, measureR2, measureR3, M0_VIEW_COUNT } from './readings/measure.mjs';
 import { measureR4 } from './readings/r4.mjs';
 import { exitCodeFor, overallFor } from './readings/verdicts.mjs';
 
 const SCRIPT = fileURLToPath(import.meta.url);
 const ROOT = dirname(dirname(SCRIPT));
-const OUT_DIR = join(ROOT, 'plan', 'milestone');
+
+/** `--out <prefix>`：与 M1/M2 一致；默认保持已签路径不变（CLI 行为不变）。 */
+function outputPrefix(argv) {
+  const index = argv.indexOf('--out');
+  if (index === -1) return join(ROOT, 'plan', 'milestone', 'M0-读数');
+  const value = argv[index + 1];
+  if (typeof value !== 'string' || value.length === 0) {
+    process.stderr.write('usage: node scripts/m0-readings.mjs [--out <prefix>]\n');
+    process.exitCode = 2;
+    return undefined;
+  }
+  return resolve(process.cwd(), value);
+}
 
 function runChild() {
   const db = openSdoDatabase(process.env['SDO_R2_DB'], process.env['SDO_R2_PASSPHRASE'] ?? PASSPHRASE);
   try {
     const view = process.env['SDO_R2_VIEW'] ?? 'overview';
-    const right = process.env['SDO_R2_RIGHT'];
-    const result = right ? query(db, { view }, { right }) : query(db, { view });
+    const right = process.env['SDO_R2_RIGHT'] ?? 'reader';
+    const result = query(db, { view }, { session: sessionFor(db, right) });
     process.stdout.write(JSON.stringify(result));
   } finally {
     db.close();
@@ -41,7 +53,7 @@ function seed(db) {
   insertFoldRows(db, events);
 }
 
-function runMain() {
+function runMain(outPrefix) {
   const results = {};
   results['R1'] = withTempDb(({ db }) => measureR1(db));
   results['R2'] = withTempDb(({ db, dbPath }) => {
@@ -76,8 +88,8 @@ function runMain() {
   const verdicts = Object.fromEntries(Object.entries(report.readings).map(([key, value]) => [key, value.verdict]));
   const overall = overallFor(verdicts);
 
-  mkdirSync(OUT_DIR, { recursive: true });
-  writeFileSync(join(OUT_DIR, 'M0-读数.json'), `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+  mkdirSync(dirname(outPrefix), { recursive: true });
+  writeFileSync(`${outPrefix}.json`, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
 
   const lines = [
     '# M0 读数报告（M0-G）',
@@ -133,14 +145,15 @@ function runMain() {
     '- R1 是结构口径，不覆盖运行期行访问数（相关子查询、LIKE 扫描等）。',
   ];
 
-  writeFileSync(join(OUT_DIR, 'M0-读数.md'), `${lines.join('\n')}\n`, 'utf8');
+  writeFileSync(`${outPrefix}.md`, `${lines.join('\n')}\n`, 'utf8');
 
-  process.stdout.write(`${JSON.stringify({ overall, verdicts, out: OUT_DIR }, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify({ overall, verdicts, out: outPrefix }, null, 2)}\n`);
   process.exitCode = exitCodeFor(verdicts);
 }
 
 if (process.argv[2] === '--r2-child') {
   runChild();
 } else {
-  runMain();
+  const outPrefix = outputPrefix(process.argv.slice(2));
+  if (outPrefix !== undefined) runMain(outPrefix);
 }

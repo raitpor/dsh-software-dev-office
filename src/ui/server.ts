@@ -11,16 +11,36 @@ import type { IncomingMessage, Server, ServerResponse } from 'node:http';
 
 import type { SdoDatabase } from '../db/driver.js';
 import { loadBoardPage, loadOverviewPage, loadPlanPage } from './pages.js';
-import type { PageModel } from './pages.js';
+import type { ConsoleAccess, PageModel } from './pages.js';
+import { dbRightsPort } from '../core/pm/access.js';
+import type { ActorKind, Session } from '../core/auth/session.js';
 import { renderError, renderNotFound, renderPage } from './render.js';
 
 export interface ConsoleServerOptions {
   readonly db: SdoDatabase;
   /** 读取权限；M0 没有登录身份，由启动方固定（默认 decider，见卡「已知边界」）。 */
   readonly right?: unknown;
+  /**
+   * M3-5/M3-6：控制台身份（`SDO_CONSOLE_ACTOR`，**必填**）。M3-1 起 query 只认 session，
+   * 没有身份就没有可展示的读数；控制台拒绝在无身份时启动/装载（Lead m06490 P1，fail-closed）。
+   */
+  readonly actor: string;
+  /** M3-6：控制台会话的 `actor_kind`（`SDO_CONSOLE_ACTOR_KIND`，缺省 human）。 */
+  readonly actorKind?: ActorKind;
 }
 
-type PageLoader = (db: SdoDatabase, right: unknown) => PageModel;
+type PageLoader = (db: SdoDatabase, right: unknown, access?: ConsoleAccess) => PageModel;
+
+function consoleSession(actor: string, kind: ActorKind): Session {
+  return { actor, actor_kind: kind, session_id: `console:${actor}`, credential: 'SDO_CONSOLE_ACTOR' };
+}
+
+function accessOf(db: SdoDatabase, options: ConsoleServerOptions): ConsoleAccess {
+  const actor = options.actor.trim();
+  const kind = options.actorKind ?? 'human';
+  // 收口（Lead m06236 ①）：权限只来自真库 grant；无 grant ⇒ deny-all（绝不回退静态席位表）。
+  return { actor, rights: dbRightsPort(db, actor), session: consoleSession(actor, kind) };
+}
 
 const ROUTES: ReadonlyMap<string, PageLoader> = new Map<string, PageLoader>([
   ['/', loadOverviewPage],
@@ -57,7 +77,7 @@ async function handle(request: IncomingMessage, response: ServerResponse, option
   }
 
   try {
-    const page = loader(options.db, options.right ?? 'decider');
+    const page = loader(options.db, options.right ?? 'decider', accessOf(options.db, options));
     sendHtml(response, 200, renderPage(page));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -71,6 +91,11 @@ async function handle(request: IncomingMessage, response: ServerResponse, option
  * 传入的 `db` 生命周期归调用方；server 自己不打开/关闭数据库。
  */
 export function createConsoleServer(options: ConsoleServerOptions): Server {
+  if (typeof options.actor !== 'string' || options.actor.trim() === '') {
+    throw new Error(
+      '控制台需要会话身份：请设置 SDO_CONSOLE_ACTOR（及 SDO_CONSOLE_ACTOR_KIND），没有身份时拒绝启动（fail-closed）',
+    );
+  }
   const server = createServer((request, response) => {
     void handle(request, response, options);
   });

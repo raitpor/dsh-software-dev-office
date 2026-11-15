@@ -1,3 +1,5 @@
+import { grantFixtureRoster } from './append-auth.js';
+import { appendAs as append } from './append-auth.js';
 /**
  * M2-3 C1/C2/C7/C8/C9 的 db 级证据：
  * - write 动作（`previewAssumptionSet` / `disposeAssumptionSet`）只经一次 append；
@@ -16,7 +18,7 @@ import { test } from 'node:test';
 
 import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { computeEventHash } from '../../src/core/verify-events.js';
 import { verify } from '../../src/core/verify.js';
 import { runCheck, type CheckReport } from '../../src/check/index.js';
@@ -203,6 +205,7 @@ test('C8 双向：手改投影行造 confirmed（事件链里没有 disposed）�
   const db: SdoDatabase = openSdoDatabase(join(dir, 'state', 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     assert.equal(append(db, assumptionSeeds()).ok, true);
     db.prepare("UPDATE spec SET status = 'confirmed' WHERE id = 'A-1'").run();
     const result = verify(db);

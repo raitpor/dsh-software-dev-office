@@ -1,7 +1,8 @@
+import { appendAs as append } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { append } from '../../src/db/write.js';
+
 import { chain, fourDomainSeeds, withWriteDb } from './append-helpers.js';
 
 test('P1-1: failure after BEGIN always rolls back and the connection stays usable', () => {

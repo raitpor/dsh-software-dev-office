@@ -1,3 +1,5 @@
+import { grantFixtureRoster } from './append-auth.js';
+import { appendAs as append } from './append-auth.js';
 /**
  * M3-4 · 渲染器注册目录（C1 表/迁移、C3 登记即代码、权限、事件投影）。
  *
@@ -28,7 +30,7 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { PASSPHRASE, chain, seed } from './append-helpers.js';
 import { columnNames, withMigratedDb } from './helpers.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { renderClaimRows } from '../../src/claim/render.js';
 import { nativeViewName } from '../../src/views/catalog.js';
 
@@ -38,6 +40,7 @@ async function withMigratedDbAsync(run: (db: SdoDatabase) => Promise<void>): Pro
   const db = openSdoDatabase(join(dir, 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     await run(db);
   } finally {
     db.close();
@@ -50,7 +53,7 @@ const STRANGER = { id: 'mallory', kind: 'human' } as const;
 
 /** 插 actor + 一条 `admin@domain:renderers` grant（hasRight 的输入是数据）。 */
 function grantAdmin(db: SdoDatabase): void {
-  db.prepare("INSERT INTO actor (id, kind, display, at) VALUES (?, 'human', 'Admin', '2026-11-15T00:00:00Z')").run(
+  db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', 'Admin', '2026-11-15T00:00:00Z')").run(
     ADMIN.id,
   );
   db.prepare(
@@ -65,7 +68,7 @@ function eventCount(db: SdoDatabase): number {
 
 test('C1 migration 010/011: renderer_catalog table + renderer.registered kind + built-in renderer (idempotent)', () => {
   withMigratedDb((db) => {
-    assert.equal(currentUserVersion(db), 12, '当前链头（010/011 之后 M3-3 追加 012）');
+    assert.equal(currentUserVersion(db), 14, '当前链头（010/011/012 之后 M3-1 追加 013 scope_owns，M3-6 追加 014）');
     assert.deepEqual(columnNames(db, 'renderer_catalog'), ['id', 'module_path', 'views', 'at']);
     const kind = db.prepare("SELECT kind FROM event_kind WHERE kind = 'renderer.registered'").get();
     assert.ok(kind !== undefined, 'migration 010 must seed the ACK kind');
@@ -204,7 +207,7 @@ test('C4 registerRenderer: permission comes from the matrix (admin@domain), not 
   await withMigratedDbAsync(async (db) => {
     assert.equal(RENDERER_PERMISSION_ACTION, 'config');
     assert.equal(RENDERER_REGISTRY_SCOPE, 'domain:renderers');
-    db.prepare("INSERT INTO actor (id, kind, display, at) VALUES ('mallory', 'human', 'Mallory', '2026-11-15T00:00:00Z')").run();
+    db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES ('mallory', 'human', 'Mallory', '2026-11-15T00:00:00Z')").run();
     const denied = await registerRenderer(db, {
       id: 'renderer:claim-v1',
       module_path: 'src/claim/render.ts',

@@ -4,6 +4,7 @@
  * 纪律：不碰 ~/.local/state/sdo/（bootSignerd 把 HOME 指到临时目录），
  * 所有库都在 mkdtemp 出的临时目录；读数只取产品路径返回的码/计数/回执，不硬编码。
  */
+import { grantFixtureRoster } from '../../../lib/test/db/append-auth.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,7 +13,8 @@ import { bootSignerd, TEST_ACTOR, TEST_PASSPHRASE, TEST_PRODUCER } from '../../.
 import { SigningPageService } from '../../../lib/src/sign/page.js';
 import { openSdoDatabase } from '../../../lib/src/db/open.js';
 import { runMigrations } from '../../../lib/src/db/migrate.js';
-import { append, chainHead } from '../../../lib/src/db/write.js';
+import { chainHead } from '../../../lib/src/db/write.js';
+import { appendAs as append } from '../../../lib/test/db/append-auth.js';
 import { computeEventHash } from '../../../lib/src/core/verify-events.js';
 import { expectedClaimRow, writeClaimRows } from '../../../lib/src/claim/gateway.js';
 
@@ -79,6 +81,7 @@ export async function withSignPage(options, run) {
   const db = openSdoDatabase(join(dir, 'sdo.db'), 'm2-g-readings-passphrase');
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     let tick = Date.parse(AT);
     const service = new SigningPageService({
       db,

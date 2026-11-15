@@ -43,8 +43,14 @@ export type AppendReason =
   | 'conflict_scope_undeclared'
   /** M3-2：conflict.detected 不是 CAS 路径 mint 的能力（P1-3）。 */
   | 'unauthorized_conflict_detected'
-  /** M3-2：写对象的 scope 未声明，冲突检测无法判定归属。 */
-  | 'conflict_scope_undeclared';
+  /** M3-1/C3：会话没有该批事件所需的权（reason 里带 action/scope/actor_kind）。 */
+  | 'no_permission'
+  /** M3-1/P0：事件 kind 在 `KIND_ACTIONS` 里没有映射（fail-closed，不许调用方自带动作）。 */
+  | 'unmapped_event_kind'
+  /** M3-1/P1-2：事件 actor 与授权会话不一致（白名单 kind 除外）。 */
+  | 'actor_not_from_session'
+  /** M3-1/C8：动作级对象条件不满足（defect.close 需本人复验；verify_finding 只认 producer）。 */
+  | 'object_condition_failed';
 // 台账 D-025 需同步登记 append_conflict / transaction_in_progress（Lead 代记）。
 
 /**

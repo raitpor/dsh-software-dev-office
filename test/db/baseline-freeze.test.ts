@@ -1,3 +1,4 @@
+import { appendAs as append } from './append-auth.js';
 /**
  * M2-1 C1/C2/C3/C9/C10：preview→confirm→人签→新行；不过则落 rejected。
  */
@@ -7,7 +8,7 @@ import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { canonicalJson, sha256Hex } from '../../src/core/fold/canonical.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import {
   confirmFreeze,
   previewFreeze,

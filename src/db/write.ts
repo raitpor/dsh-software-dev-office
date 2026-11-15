@@ -19,15 +19,160 @@ import { readEvents } from '../core/verify-events.js';
 import { detectConflict, extractConflictClaim } from '../core/conflict/detect.js';
 import { trackedField } from '../core/conflict/scope.js';
 import type { FoldState } from '../core/fold/types.js';
-import { buildConflictDetectedEvent, latestActorForSubject, newConflictId } from './conflict.js';
 import {
-  conflictDetectedPayloadHash,
+  buildConflictDetectedEvent,
   consumeConflictDetectedAuthority,
-} from './conflict-authority.js';
+  latestActorForSubject,
+  newConflictId,
+} from './conflict.js';
+import { conflictDetectedPayloadHash } from './conflict-authority.js';
 import { gateJudgedPayloadHash, validateGateJudgedPayload } from '../core/gate/schema.js';
 import { failure, type AppendFailure, type AppendResult } from './write-types.js';
+import { hasRight, readGrants } from './auth.js';
+import { scopeCovers } from '../core/auth/rights.js';
+import { ACK_KINDS } from '../core/fold/ack.js';
+import { KIND_ACTIONS } from '../core/auth/kind-actions.js';
+import { ACTION_OBJECT_CONDITIONS } from './action-objects.js';
+
+/** M3-1/C2：写网关的授权会话（只要身份二元组；工具路径的 session 形态各异）。 */
+export interface AppendSession {
+  readonly actor: string;
+  readonly actor_kind: 'human' | 'agent' | 'service';
+}
+
+/**
+ * M3-1/P0：append 只收会话，**不收动作/作用域**。
+ * 动作由 `event.kind` 经 `KIND_ACTIONS` 映射（同批逐条判定），作用域从载荷推导；
+ * 调用方声明动作会让“空 required 动作”变成万能钥匙（评审 P0）。
+ */
+export interface AppendAuthz {
+  readonly session: AppendSession;
+}
+
+/** 唯一的 actor 例外白名单：conflict.detected 的 actor 按 M3-2 设计是失败写入方。 */
+const ACTOR_EXEMPT_KINDS: ReadonlySet<string> = new Set([
+  // S22：冲突时 actor 记“失败写入方”，来源由检测路径 mint 的一次性能力保证（非伪造入口）。
+  'conflict.detected',
+]);
+
+function parseEventPayload(event: Event): Record<string, unknown> {
+  const raw: unknown = event.payload;
+  if (typeof raw === 'string') {
+    try {
+      const parsed: unknown = JSON.parse(raw);
+      return typeof parsed === 'object' && parsed !== null && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
+  }
+  return typeof raw === 'object' && raw !== null && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+}
+
+function sessionFailure(authz: AppendAuthz | undefined): AppendFailure | undefined {
+  if (authz === undefined) {
+    return failure('no_permission', 'authz_missing: append requires {session} (fail-closed)');
+  }
+  const session = authz.session;
+  if (
+    typeof session?.actor !== 'string' || session.actor.length === 0 ||
+    (session.actor_kind !== 'human' && session.actor_kind !== 'agent' && session.actor_kind !== 'service')
+  ) {
+    return failure('no_permission', 'authz_missing: session.actor / actor_kind are required (fail-closed)');
+  }
+  return undefined;
+}
+
+/** 单条事件的授权 + 对象条件（P0/P1-1/P1-2），在事务内落库前判定。 */
+function hasSignRight(db: SdoDatabase, actor: string, scope: string): boolean {
+  return readGrants(db, actor).some(
+    (grant) => grant.revoked_at === null && grant.right === 'sign' && scopeCovers(grant.scope, scope),
+  );
+}
+
+function authorizeEvent(
+  db: SdoDatabase,
+  event: Event,
+  session: AppendSession,
+  state: FoldState,
+): AppendFailure | undefined {
+  if (event.actor !== session.actor && !ACTOR_EXEMPT_KINDS.has(event.kind)) {
+    return failure(
+      'actor_not_from_session',
+      `event ${event.id} actor=${event.actor} does not match session actor=${session.actor}`,
+    );
+  }
+  // P3-3（第 3 轮）：decision.valid 的 producer 是审计归属，不参与授权；
+  // 但乱填会让归因失真。硬要求非空；若 producer 已在 actor 表登记，必须是 agent
+  // （human/service 冒充模型产出 ⇒ invalid_field）。未登记时放行（软校验，测试夹具
+  // 可能只播 session actor；M4 签名信封落地后改为硬校验，见 D-112）。
+  if (event.kind === 'decision.valid') {
+    const producer = parseEventPayload(event)['producer'];
+    if (typeof producer !== 'string' || producer.length === 0) {
+      return failure('invalid_field', `event ${event.id} decision.valid.payload.producer must be a non-empty string`);
+    }
+    const row = db.prepare('SELECT kind FROM actor WHERE id = ?').get(producer) as { kind?: string } | undefined;
+    if (row !== undefined && row.kind !== 'agent') {
+      return failure(
+        'invalid_field',
+        `event ${event.id} decision.valid.payload.producer=${producer} is actor kind ${String(row.kind)}; producer must be an agent`,
+      );
+    }
+  }
+  const mapped = KIND_ACTIONS[event.kind];
+  if (mapped === undefined) {
+    // 其余 ACK 是审计/派生通知：只做会话绑定，不投影任何物化行（边界见卡 A5 / D-108）。
+    if (Object.hasOwn(ACK_KINDS, event.kind)) return undefined;
+    return failure('unmapped_event_kind', `event kind ${event.kind} has no KIND_ACTIONS mapping (fail-closed)`);
+  }
+  const scope = mapped.scopeOf(parseEventPayload(event), { state, subject: event.subject });
+  // sign 不是矩阵动作（docs/07 §2 没有行）：只认“在该 scope 上持未撤销 sign 权”，不做前缀推断。
+  if (mapped.action === 'sign') {
+    if (!hasSignRight(db, session.actor, scope)) {
+      return failure(
+        'no_permission',
+        `append denied: actor=${session.actor} kind=${session.actor_kind} event_kind=${event.kind} action=sign scope=${scope} reason=missing_grant (requires a non-revoked sign right on ${scope})`,
+      );
+    }
+    const condition = ACTION_OBJECT_CONDITIONS[event.kind];
+    if (condition !== undefined) {
+      const failedCondition = condition(state, event, session);
+      if (failedCondition !== undefined) return failure('object_condition_failed', failedCondition.message);
+    }
+    return undefined;
+  }
+  const decision = hasRight(db, { id: session.actor, kind: session.actor_kind }, mapped.action, scope);
+  if (!decision.ok) {
+    return failure(
+      'no_permission',
+      `append denied: actor=${session.actor} kind=${session.actor_kind} event_kind=${event.kind} action=${mapped.action} scope=${scope} reason=${decision.reason ?? 'missing_grant'} (${decision.message})`,
+    );
+  }
+  const condition = ACTION_OBJECT_CONDITIONS[event.kind];
+  if (condition !== undefined) {
+    const failedCondition = condition(state, event, session);
+    if (failedCondition !== undefined) {
+      return failure('object_condition_failed', failedCondition.message);
+    }
+  }
+  return undefined;
+}
 
 export type { AppendReason, AppendResult } from './write-types.js';
+
+/**
+ * 工具路径的显式入口（M3-1/C2）：内部 public API 只声明“以谁的身份写”，
+ * 动作/作用域由 kind 查表（P0）。
+ */
+export function appendAsTool(
+  db: SdoDatabase,
+  events: readonly Event[],
+  actor: string,
+  actor_kind: 'human' | 'agent' | 'service' = 'human',
+): AppendResult {
+  return append(db, events, { session: { actor, actor_kind } });
+}
 
 class AppendAbort extends Error {
   constructor(
@@ -121,10 +266,16 @@ function winnerForSubject(
   return stored;
 }
 
-export function append(db: SdoDatabase, events: readonly Event[]): AppendResult {
+export function append(db: SdoDatabase, events: readonly Event[], authz: AppendAuthz): AppendResult {
   if (events.length === 0) {
     return { ok: true, written: 0, skipped: 0, attempted: 0, rolled_back: false, eventCount: countEvents(db) };
   }
+
+  const missingSession = sessionFailure(authz);
+  if (missingSession !== undefined) {
+    return failed(missingSession, 0, db);
+  }
+  const session = authz.session;
 
   if (db.inTransaction) {
     return failed(
@@ -169,6 +320,11 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
         foldState = undefined;
       }
     };
+    // P0/P1-1/P1-2 的判定态：事件前的折叠态（同批前置事件已推进）；读不出来按 materialize_failed。
+    const stateForAuth = (): FoldState => {
+      if (foldState !== undefined) return foldState;
+      return fold(undefined, readEvents(db, []));
+    };
     // 批内逐条推进时，本批已写事件的 actor 也要算“最后一位写者”。
     const winnerActors = new Map<string, string>();
     let detected: { conflict_id: string; base_hash: string; current_hash: string; field: string; subject: string } | undefined;
@@ -178,14 +334,8 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
       if (envelope !== undefined) {
         throw new AppendAbort(envelope, validated);
       }
-      const authority = checkBaselineAuthority(db, event, events);
-      if (authority !== undefined) {
-        throw new AppendAbort(authority, validated);
-      }
-      const rejected = checkDecisionRejectedAuthority(db, event);
-      if (rejected !== undefined) {
-        throw new AppendAbort(rejected, validated);
-      }
+      // 重放路径先于授权：已存在且 hash 一致的事件是幂等重放，不重新判权/对象条件
+      //（对象条件按“当前态”评估，重放时态已变会被误拒）；hash 不一致仍拒。
       const stored = byId.get(event.id);
       if (stored !== undefined) {
         if (sawNew) {
@@ -197,6 +347,24 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
         skipped += 1;
         validated += 1;
         continue;
+      }
+      let authState: FoldState;
+      try {
+        authState = stateForAuth();
+      } catch (error) {
+        throw new AppendAbort(failure('materialize_failed', `authorization fold failed: ${errorMessage(error)}`), validated);
+      }
+      const denied = authorizeEvent(db, event, session, authState);
+      if (denied !== undefined) {
+        throw new AppendAbort(denied, validated);
+      }
+      const authority = checkBaselineAuthority(db, event, events);
+      if (authority !== undefined) {
+        throw new AppendAbort(authority, validated);
+      }
+      const rejected = checkDecisionRejectedAuthority(db, event);
+      if (rejected !== undefined) {
+        throw new AppendAbort(rejected, validated);
       }
       // M3-3 第 2 轮 P1-2：回执一次性（先占位，后续任何校验失败都会回滚）。
       if (event.kind === 'decision.signed') {

@@ -20,6 +20,8 @@ export type VerifyProblemCode =
   | 'projection_missing'
   | 'projection_unexpected'
   | 'runtime_inconsistent'
+  /** M3-1/C5：投影行在事件日志里没有来源（只可能绕过写网关直写），归因不了人。 */
+  | 'unauthorized_row'
   | 'projection_check_failed'
   /** M2-3/D-081：旧库残留的 `assumption.invalidated` 事件（该 kind 已降为派生读数）。 */
   | 'legacy_assumption_invalidated'

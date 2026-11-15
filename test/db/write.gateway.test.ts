@@ -1,9 +1,10 @@
+import { appendAs as append } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { verify } from '../../src/core/verify.js';
 import { chain, seed, fourDomainSeeds, withWriteDb } from './append-helpers.js';

@@ -9,6 +9,7 @@
 
 import type { SdoDatabase } from '../../db/driver.js';
 import { query } from '../../query/index.js';
+import type { Session } from '../auth/session.js';
 import type { Right } from '../../views/catalog.js';
 import type { PmFailure } from './types.js';
 import { seatViewRight } from './rights.js';
@@ -87,7 +88,7 @@ function toRow(raw: Readonly<Record<string, unknown>>): PmQueueRow {
 }
 
 /** 读队列：权限投影来自 `src/query/`；未知/空 actor fail-closed ⇒ no_permission（P2-2）。 */
-export function readPmQueue(db: SdoDatabase, actor: string): PmQueueRead {
+export function readPmQueue(db: SdoDatabase, actor: string, session?: Session): PmQueueRead {
   const right: Right | undefined = seatViewRight(actor);
   if (right === undefined) {
     return {
@@ -96,7 +97,14 @@ export function readPmQueue(db: SdoDatabase, actor: string): PmQueueRead {
       message: `unknown actor ${JSON.stringify(actor)}: no static seat, refusing to read pm_queue`,
     };
   }
-  const result = query(db, { view: 'pm_queue' }, { right });
+  if (session === undefined) {
+    return {
+      ok: false,
+      reason_code: 'no_permission',
+      message: 'readPmQueue requires a session: query authorization is session-only',
+    };
+  }
+  const result = query(db, { view: 'pm_queue' }, { session });
   if (result.miss !== undefined) {
     const reason = result.miss.reason === 'filtered_by_permission' ? 'no_permission' : 'invalid_args';
     return {

@@ -3,7 +3,8 @@
  */
 import { previewFreeze, confirmFreeze } from '../../../lib/src/db/freeze.js';
 import { judgeStage } from '../../../lib/src/db/gate.js';
-import { append, chainHead } from '../../../lib/src/db/write.js';
+import { chainHead } from '../../../lib/src/db/write.js';
+import { appendAs as append } from '../../../lib/test/db/append-auth.js';
 import { computeEventHash } from '../../../lib/src/core/verify-events.js';
 import { verify } from '../../../lib/src/core/verify.js';
 import {

@@ -7,7 +7,7 @@
  * 判定引用的 release 必须绑同一版 baseline（C9）。
  */
 import type { SdoDatabase } from './driver.js';
-import { append, chainHead } from './write.js';
+import { appendAsTool, chainHead } from './write.js';
 import { buildEvent, parseJson, toRow } from './freeze-store.js';
 import { readEvents } from '../core/verify-events.js';
 import { fold } from '../core/fold/index.js';
@@ -272,7 +272,7 @@ export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudg
     },
     chainHead(db),
   );
-  const appended = append(db, [event]);
+  const appended = appendAsTool(db, [event], request.actor);
   if (!appended.ok) {
     return { ...fail('append_failed', appended.message ?? appended.reason_code ?? 'append failed'), evaluation };
   }

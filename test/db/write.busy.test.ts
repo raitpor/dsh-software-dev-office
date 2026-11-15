@@ -1,10 +1,11 @@
+import { appendAs as append, grantFixtureRoster } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { append } from '../../src/db/write.js';
+
 import { isLockMessage } from '../../src/db/write-envelope.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { openSdoDatabase } from '../../src/db/open.js';
@@ -20,6 +21,7 @@ test('P2-7: BEGIN IMMEDIATE hitting a writer lock returns database_busy', () => 
   const db = openSdoDatabase(file, PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     db.pragma('busy_timeout = 50');
     const other = openSdoDatabase(file, PASSPHRASE);
     try {

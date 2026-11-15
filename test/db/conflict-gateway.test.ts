@@ -1,3 +1,4 @@
+import { appendAs as append } from './append-auth.js';
 /**
  * M3-2 同进程：并发写一成一败、conflicts 视图、与 disputed 分离、verify 抓直改。
  * 两进程用例见 conflict-two-process.test.ts。
@@ -5,7 +6,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { verify } from '../../src/core/verify.js';
 import { fold } from '../../src/core/fold/index.js';
 import { readEvents } from '../../src/core/verify-events.js';

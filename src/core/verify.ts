@@ -24,7 +24,19 @@ import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types
  * 物化（只落 signed 行，口径与 `write-materialize.ts` 一致，见 `verify-projection.ts`）。
  * 其余投影表在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐。
  */
-export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release', 'decision', 'stage_run', 'conflict'];
+export const VERIFIED_TABLES: readonly TableName[] = [
+  'task',
+  'spec',
+  'release',
+  'decision',
+  'stage_run',
+  'conflict',
+  // M3-1 P2-3：绕过网关直写的高风险投影面（对象条件/评审/缺陷/假设区）也要纳入越权行扫描。
+  'review',
+  'defect',
+  'attention',
+  'baseline',
+];
 
 export { GENESIS_PREV, computeEventHash };
 export type { VerifyDatabase, VerifyProblem, VerifyReport, VerifyStatement } from './verify-types.js';
@@ -40,6 +52,39 @@ function countLegacyRegistrations(events: readonly { kind: string; payload: unkn
     const payload = event.payload;
     return typeof payload === 'object' && payload !== null && (payload as Record<string, unknown>)['legacy'] === true;
   }).length;
+}
+
+/**
+ * M3-1/C5：投影表里的行若在事件日志里没有来源，只可能是绕过写网关直写进去的
+ * （扫描面 = VERIFIED_TABLES；未纳入的物化表在卡里明写为“后续扩展”，见 C5 边界）
+ * （网关只按 fold 结果物化）。这里单独报 `unauthorized_row`，与 `projection_unexpected`
+ * 并存：前者是“越权/绕过”的读数，后者是“投影不对账”的读数。
+ *
+ * 边界（卡 M3-1 C5）：链自洽的**直接 INSERT event** 无法与网关写入区分（事件信封没有
+ * 独立签名，actor 是自称），本卡不承诺检测；M4 的签名信封才是该层的解。
+ */
+function reportUnauthorizedRows(
+  db: VerifyDatabase,
+  state: ReturnType<typeof fold>,
+  problems: VerifyProblem[],
+): void {
+  for (const table of VERIFIED_TABLES) {
+    const projected = table === 'decision'
+      ? Object.fromEntries(Object.entries(state.tables[table]).filter(([, row]) => row['signature'] !== null))
+      : state.tables[table];
+    const rows = db.prepare(`SELECT id FROM ${table}`).all() as Array<{ id?: unknown }>;
+    for (const row of rows) {
+      if (typeof row.id !== 'string') continue;
+      if (projected[row.id] === undefined) {
+        problems.push({
+          code: 'unauthorized_row',
+          table,
+          objectId: row.id,
+          detail: `row ${row.id} exists in ${table} but no event produces it (written outside the gateway)`,
+        });
+      }
+    }
+  }
 }
 
 export function verify(db: VerifyDatabase): VerifyReport {
@@ -88,6 +133,7 @@ export function verify(db: VerifyDatabase): VerifyReport {
 
   try {
     compareProjections(db, state, VERIFIED_TABLES, problems);
+    reportUnauthorizedRows(db, state, problems);
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: errorMessage(error) });
   }

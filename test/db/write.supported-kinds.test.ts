@@ -1,8 +1,9 @@
+import { appendAs as append } from './append-auth.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { append } from '../../src/db/write.js';
+
 import { MATERIALIZED_TABLES, SUPPORTED_KINDS, primaryKeyColumns, requiredTable } from '../../src/db/write-materialize.js';
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { fold } from '../../src/core/fold/index.js';

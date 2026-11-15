@@ -6,7 +6,7 @@
  * 不过 P15 ⇒ 落 `baseline.rejected`（ACK，不投影）；过了且签成功 ⇒ 紧邻 append 冻结事件。
  */
 import type { SdoDatabase } from './driver.js';
-import { append, chainHead } from './write.js';
+import { appendAsTool, chainHead } from './write.js';
 import { failure } from './freeze-store.js';
 import { signDecision, type DecisionRequest } from '../sign/decision.js';
 import type { SignerdClient } from '../sign/client.js';
@@ -44,7 +44,7 @@ function securityAlert(
 ): void {
   const kind = String(payload['kind']);
   const id = `ev-security-${kind}-${at}-${Math.random().toString(16).slice(2, 10)}`;
-  append(db, [
+  appendAsTool(db, [
     buildEvent(
       {
         id,
@@ -58,7 +58,7 @@ function securityAlert(
       },
       chainHead(db),
     ),
-  ]);
+  ], session.actor, session.actor_kind);
 }
 
 export interface FreezeConfirmRequest {
@@ -204,7 +204,7 @@ export async function confirmFreeze(
     });
   }
 
-  const result = append(db, [
+  const result = appendAsTool(db, [
     buildEvent(
       {
         id: eventId,
@@ -218,7 +218,7 @@ export async function confirmFreeze(
       },
       chainHead(db),
     ),
-  ]);
+  ], session.actor, session.actor_kind);
   if (!result.ok) {
     return failure(
       'baseline_append_failed',

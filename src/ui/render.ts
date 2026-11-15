@@ -6,7 +6,7 @@
  * `query(view,args)` 取得。渲染层不做聚合、排序或格式化计算（docs/05 §15「界面零本地计算」）。
  */
 
-import type { Figure, PageModel, PageMiss, TableModel } from './pages.js';
+import type { ApplyEntry, Figure, PageModel, PageMiss, TableModel } from './pages.js';
 
 /** 手写转义（不依赖任何模板引擎；也避免在渲染层引入字符串替换链）。 */
 export function escapeHtml(value: string): string {
@@ -69,11 +69,17 @@ function renderTable(table: TableModel): string {
     ? '<p class="warn">结果已截断：这是 query 返回的前若干行，续查要带 next_cursor（M0 控制台不提供续查按钮）。</p>'
     : '';
   const empty = table.rows.length === 0 ? '<p class="empty">没有数据。</p>' : '';
+  const redacted = table.redacted_columns ?? [];
+  const redactedNote =
+    redacted.length === 0
+      ? ''
+      : `<p class="redacted" data-redacted-count="${redacted.length}">已按你的身份隐藏 ${redacted.length} 列（列值不返回；被裁列名见 query 元数据）。</p>`;
   return [
     `<section class="table-source" data-view="${escapeHtml(table.source.view)}">`,
     `<h2>${escapeHtml(table.title ?? table.source.view)}</h2>`,
     truncation,
     empty,
+    redactedNote,
     table.rows.length === 0
       ? ''
       : `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`,
@@ -128,6 +134,21 @@ th, td { text-align: left; padding: 0.25rem 0.5rem; border-bottom: 1px solid cur
 footer { margin-top: 2rem; font-size: 0.8rem; opacity: 0.7; }
 `.trim();
 
+function renderApplyEntries(entries: readonly ApplyEntry[]): string {
+  if (entries.length === 0) return '';
+  const items = entries
+    .map(
+      (entry) =>
+        `<li data-apply-entry="${escapeHtml(entry.scope)}">` +
+        `<code>${escapeHtml(entry.action)}</code>` +
+        `<span class="apply-scope">${escapeHtml(entry.scope)}</span>` +
+        `<span class="apply-hint">${escapeHtml(entry.hint)}</span>` +
+        '</li>',
+    )
+    .join('');
+  return `<section class="apply"><h2>你需要申请权限</h2><ul>${items}</ul></section>`;
+}
+
 function nav(current: PageModel['id']): string {
   const links: Array<[PageModel['id'], string, string]> = [
     ['overview', '/', '总览'],
@@ -144,6 +165,7 @@ function nav(current: PageModel['id']): string {
 
 function renderPageBody(model: PageModel): string {
   const misses = model.misses.map(renderMiss).join('');
+  const applyEntries = renderApplyEntries(model.apply_entries);
   const figures = model.figures.map(renderFigure).join('');
   const tables = model.tables.map(renderTable).join('');
   const asOf = model.as_of.map((id) => escapeHtml(id)).join(', ');
@@ -152,6 +174,7 @@ function renderPageBody(model: PageModel): string {
     `<h1>${escapeHtml(model.heading)}</h1>`,
     '<p class="source-note">每个数字都可用 sdo_query 按标注的视图复算；M0 只做看图（不做审批），刷新才更新。</p>',
     misses,
+    applyEntries,
     `<section class="figures" data-page="${escapeHtml(model.id)}">${figures}</section>`,
     tables,
     `<footer>as_of: [${asOf}] · 数据来自 view_catalog 中的视图</footer>`,

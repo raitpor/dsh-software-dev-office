@@ -1,3 +1,5 @@
+import { grantFixtureRoster } from './append-auth.js';
+import { appendAs as append } from './append-auth.js';
 /**
  * M3-2 C1 两进程：两个独立 node 进程、两个 SQLite 连接写同一库文件，
  * 同一 base_hash 并发写 ⇒ 一成一败，冲突行落库且可对账。
@@ -11,7 +13,7 @@ import { test } from 'node:test';
 
 import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { append } from '../../src/db/write.js';
+
 import { verify } from '../../src/core/verify.js';
 import { fold } from '../../src/core/fold/index.js';
 import { readEvents } from '../../src/core/verify-events.js';
@@ -24,7 +26,8 @@ const CHILD = String.raw`
 import { pathToFileURL } from 'node:url';
 const url = (p) => pathToFileURL(process.cwd() + '/' + p).href;
 const { openSdoDatabase } = await import(url('lib/src/db/open.js'));
-const { append, chainHead } = await import(url('lib/src/db/write.js'));
+const { chainHead } = await import(url('lib/src/db/write.js'));
+const { appendAs: append } = await import(url('lib/test/db/append-auth.js'));
 const { chain, seed } = await import(url('lib/test/db/append-helpers.js'));
 const db = openSdoDatabase(process.env['SDO_CONFLICT_DB'], process.env['SDO_CONFLICT_PASS']);
 const [event] = chain([seed(Number(process.env['SDO_CONFLICT_N']), 'spec.revised', 'SPEC-1', {
@@ -65,6 +68,7 @@ test('C1 two processes: one write wins, the stale one becomes a visible conflict
     let base = '';
     try {
       runMigrations(db);
+      grantFixtureRoster(db);
       assert.equal(append(db, chain(fourDomainSeeds())).ok, true);
       const state = fold(undefined, readEvents(db, []));
       const row = state.tables.spec['SPEC-1'];

@@ -5,6 +5,9 @@ import { withMigratedDb } from '../db/helpers.js';
 import { query } from '../../src/query/index.js';
 import type { QueryResult } from '../../src/query/index.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
+import type { Session } from '../../src/core/auth/session.js';
+import { computeEventHash, GENESIS_PREV } from '../../src/core/verify-events.js';
+import type { Event } from '../../src/core/fold/types.js';
 import { listViewCatalog } from '../../src/views/catalog.js';
 import {
   loadBoardPage,
@@ -13,8 +16,20 @@ import {
 } from '../../src/ui/pages.js';
 import type { Figure, PageModel } from '../../src/ui/pages.js';
 import { renderPage } from '../../src/ui/render.js';
+import { dbRightsPort } from '../../src/core/pm/access.js';
+import { pmSession } from '../core/pm/helpers.js';
+import { seedRights } from '../db/append-auth.js';
+
+const ACCESS_RIGHTS = ['read', 'review', 'decide'] as const;
+
+function accessFor(db: SdoDatabase, actor: string, rights: readonly ('read'|'review'|'decide')[] = ACCESS_RIGHTS) {
+  seedRights(db, rights.map((right) => ({ actor, scope: 'domain:core', right })));
+  return { actor, rights: dbRightsPort(db, actor), session: pmSession(actor) };
+}
 
 const RIGHT = 'decider';
+
+const ACC_ACTOR = 'ui-lead';
 
 /**
  * 口径表（评审 P2-2）：每个读数 id 的来源视图与取数方式在这里**显式钉死**，
@@ -31,16 +46,16 @@ const OVERVIEW_CONTRACT: Readonly<
   to_decide: { view: 'review_queue', derive: 'row_count' },
 };
 
-function replay(db: SdoDatabase, figure: Figure): QueryResult {
-  return query(db, { view: figure.source.view, ...figure.source.args }, { right: RIGHT });
+function replay(db: SdoDatabase, figure: Figure, session: Session): QueryResult {
+  return query(db, { view: figure.source.view, ...figure.source.args }, { session });
 }
 
 /** C2 的通用复算：每个 Figure 都能由 `query(view,args)` 按 `derive` 重新算出同一个值。 */
-function assertFiguresRecomputable(db: SdoDatabase, page: PageModel): void {
+function assertFiguresRecomputable(db: SdoDatabase, page: PageModel, session: Session): void {
   assert.ok(page.figures.length > 0, `${page.id} 页必须至少有一个读数`);
   for (const figure of page.figures) {
     assert.equal(figure.source.args && typeof figure.source.args, 'object', `${figure.id} 来源 args`);
-    const result = replay(db, figure);
+    const result = replay(db, figure, session);
     assert.equal(result.miss, undefined, `${figure.id} 的来源 ${figure.source.view} 不应 miss`);
     if (figure.derive.kind === 'field') {
       const row = result.rows[figure.derive.row ?? 0];
@@ -72,9 +87,23 @@ function seed(db: SdoDatabase): void {
     "INSERT INTO stage_run (id, stage, gate_id, baseline_hash, entered_at, verdict, at) VALUES (?, ?, ?, ?, ?, ?, ?)",
   ).run('S1', 'build', 'G1', 'BASE-1', '2026-11-13T00:03:00Z', 'pass', '2026-11-13T00:03:00Z');
   db.prepare("INSERT OR IGNORE INTO event_kind (kind, since) VALUES ('report.recorded', '2026-11-13')").run();
+  const synthetic = {
+    id: 'E1',
+    at: '2026-11-13T00:04:00Z',
+    actor: 'dev-a',
+    kind: 'report.recorded',
+    subject: 'T1',
+    payload: { task_id: 'T1', state: 'progress' },
+    caused_by: [] as readonly string[],
+    request_id: 'req-E1',
+    prev: GENESIS_PREV,
+  } satisfies Omit<Event, 'hash'>;
   db.prepare(
-    "INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-  ).run('E1', '2026-11-13T00:04:00Z', 'dev-a', 'report.recorded', 'T1', '{}', '[]', '', 'h1');
+    "INSERT INTO event (id, at, actor, kind, subject, payload, caused_by, request_id, prev, hash) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+  ).run(
+    synthetic.id, synthetic.at, synthetic.actor, synthetic.kind, synthetic.subject,
+    JSON.stringify(synthetic.payload), '[]', synthetic.request_id, synthetic.prev, computeEventHash({ ...synthetic, hash: '' }),
+  );
   db.prepare(
     'INSERT INTO report (id, task_id, state, at) VALUES (?, ?, ?, ?)',
   ).run('R1', 'T1', 'progress', '2026-11-13T00:04:30Z');
@@ -82,8 +111,9 @@ function seed(db: SdoDatabase): void {
 
 test('C2：空库三页的每个读数都能用 query(view,args) 复算，且为显式空态', () => {
   withMigratedDb((db) => {
-    const overview = loadOverviewPage(db, RIGHT);
-    assertFiguresRecomputable(db, overview);
+    const ACCESS = accessFor(db, ACC_ACTOR);
+    const overview = loadOverviewPage(db, RIGHT, ACCESS);
+    assertFiguresRecomputable(db, overview, ACCESS.session);
     assert.equal(figureValue(overview, 'stage'), 'unset');
     assert.equal(figureValue(overview, 'health'), 'green');
     assert.equal(figureValue(overview, 'in_flight'), 0);
@@ -94,13 +124,13 @@ test('C2：空库三页的每个读数都能用 query(view,args) 复算，且为
     assert.equal(figureValue(overview, 'to_decide'), 0, '空库待审项 0');
     assert.deepEqual(overview.as_of, []);
 
-    const board = loadBoardPage(db, RIGHT);
-    assertFiguresRecomputable(db, board);
+    const board = loadBoardPage(db, RIGHT, ACCESS);
+    assertFiguresRecomputable(db, board, ACCESS.session);
     assert.equal(figureValue(board, 'board_rows'), 0);
     assert.deepEqual(board.misses, []);
 
-    const plan = loadPlanPage(db, RIGHT);
-    assertFiguresRecomputable(db, plan);
+    const plan = loadPlanPage(db, RIGHT, ACCESS);
+    assertFiguresRecomputable(db, plan, ACCESS.session);
     assert.equal(figureValue(plan, 'plan_rows'), 0);
     assert.deepEqual(plan.misses, []);
   });
@@ -108,10 +138,11 @@ test('C2：空库三页的每个读数都能用 query(view,args) 复算，且为
 
 test('C2：有数据时三个必答数字与 overview 逐字段相等（卡数/红过/待确认），board/plan 跟上', () => {
   withMigratedDb((db) => {
+    const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
-    const overview = loadOverviewPage(db, RIGHT);
-    assertFiguresRecomputable(db, overview);
-    const source = replay(db, overview.figures[0] as Figure);
+    const overview = loadOverviewPage(db, RIGHT, ACCESS);
+    assertFiguresRecomputable(db, overview, ACCESS.session);
+    const source = replay(db, overview.figures[0] as Figure, ACCESS.session);
     const row = source.rows[0];
     assert.ok(row);
     assert.equal(figureValue(overview, 'in_flight'), row['in_flight']);
@@ -123,8 +154,8 @@ test('C2：有数据时三个必答数字与 overview 逐字段相等（卡数/�
     assert.equal(figureValue(overview, 'stage'), 'build');
     assert.equal(overview.as_of.length, 1, 'as_of 跟着事件头走');
 
-    const board = loadBoardPage(db, RIGHT);
-    assertFiguresRecomputable(db, board);
+    const board = loadBoardPage(db, RIGHT, ACCESS);
+    assertFiguresRecomputable(db, board, ACCESS.session);
     assert.equal(figureValue(board, 'board_rows'), 2);
     const boardRow = board.tables[0]?.rows.find((candidate) => candidate['task_id'] === 'T1');
     assert.ok(boardRow, 'board 应有 T1');
@@ -134,16 +165,17 @@ test('C2：有数据时三个必答数字与 overview 逐字段相等（卡数/�
     assert.equal(blockedRow?.['status'], 'blocked');
     assert.equal(blockedRow?.['block_code'], 'awaiting_signature');
 
-    const plan = loadPlanPage(db, RIGHT);
-    assertFiguresRecomputable(db, plan);
+    const plan = loadPlanPage(db, RIGHT, ACCESS);
+    assertFiguresRecomputable(db, plan, ACCESS.session);
     assert.equal(figureValue(plan, 'plan_rows'), 2);
   });
 });
 
 test('C2：模板不写死数字——改模型里的值，渲染结果跟着变', () => {
   withMigratedDb((db) => {
+    const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
-    const model = loadOverviewPage(db, RIGHT);
+    const model = loadOverviewPage(db, RIGHT, ACCESS);
     const rendered = renderPage(model);
     const mutated: PageModel = {
       ...model,
@@ -161,17 +193,19 @@ test('C2：模板不写死数字——改模型里的值，渲染结果跟着变
 
 test('C2：同一模型两次渲染逐字节相同（同 as_of 确定性）', () => {
   withMigratedDb((db) => {
+    const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
-    const model = loadPlanPage(db, RIGHT);
+    const model = loadPlanPage(db, RIGHT, ACCESS);
     assert.equal(renderPage(model), renderPage(model));
   });
 });
 
 test('C2：读数来源只允许目录里的视图名（A3）', () => {
   withMigratedDb((db) => {
+    const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
     const catalogNames = new Set(listViewCatalog(db).map((view) => view.name));
-    for (const page of [loadOverviewPage(db, RIGHT), loadBoardPage(db, RIGHT), loadPlanPage(db, RIGHT)]) {
+    for (const page of [loadOverviewPage(db, RIGHT, ACCESS), loadBoardPage(db, RIGHT, ACCESS), loadPlanPage(db, RIGHT, ACCESS)]) {
       for (const figure of page.figures) {
         assert.ok(catalogNames.has(figure.source.view), `${figure.id} 来源 ${figure.source.view} 不在 view_catalog`);
       }
@@ -184,9 +218,10 @@ test('C2：读数来源只允许目录里的视图名（A3）', () => {
 
 test('空库与有数据的渲染结果不同（负例：写死数字的模板不可能通过）', () => {
   withMigratedDb((db) => {
-    const emptyHtml = renderPage(loadOverviewPage(db, RIGHT));
+    const ACCESS = accessFor(db, ACC_ACTOR);
+    const emptyHtml = renderPage(loadOverviewPage(db, RIGHT, ACCESS));
     seed(db);
-    const seededHtml = renderPage(loadOverviewPage(db, RIGHT));
+    const seededHtml = renderPage(loadOverviewPage(db, RIGHT, ACCESS));
     assert.notEqual(emptyHtml, seededHtml);
     assert.match(emptyHtml, /data-page="overview"/);
     assert.match(seededHtml, /data-page="overview"/);
@@ -196,7 +231,8 @@ test('空库与有数据的渲染结果不同（负例：写死数字的模板�
 
 test('C2 口径表：每个数字的 id→{view,field} 显式钉死；label 含“待确认”的不得来自 blocked', () => {
   withMigratedDb((db) => {
-    const page = loadOverviewPage(db, RIGHT);
+    const ACCESS = accessFor(db, ACC_ACTOR);
+    const page = loadOverviewPage(db, RIGHT, ACCESS);
     assert.deepEqual(
       page.figures.map((figure) => figure.id).sort(),
       Object.keys(OVERVIEW_CONTRACT).sort(),
@@ -234,15 +270,16 @@ test('C2 口径表：每个数字的 id→{view,field} 显式钉死；label 含�
 
 test('C2：decider 有「要我决定」数字（review_queue 行数）；reader 拿不到时显式权限 miss', () => {
   withMigratedDb((db) => {
-    const decider = loadOverviewPage(db, 'decider');
+    const ACCESS = accessFor(db, ACC_ACTOR);
+    const decider = loadOverviewPage(db, 'decider', ACCESS);
     const toDecide = decider.figures.find((figure) => figure.id === 'to_decide');
     assert.ok(toDecide, 'decider 应看到“要我决定”');
     assert.equal(toDecide.source.view, 'review_queue');
     assert.equal(toDecide.derive.kind, 'row_count');
-    const replayed = query(db, { view: 'review_queue' }, { right: 'decider' });
+    const replayed = query(db, { view: 'review_queue' }, { session: ACCESS.session });
     assert.equal(toDecide.value, replayed.rows.length);
 
-    const reader = loadOverviewPage(db, 'reader');
+    const reader = loadOverviewPage(db, 'reader', accessFor(db, 'ui-reader', ['read']));
     assert.equal(reader.figures.some((figure) => figure.id === 'to_decide'), false, 'reader 不应看到 decider 的数字');
     const miss = reader.misses.find((candidate) => candidate.view === 'review_queue');
     assert.ok(miss, 'reader 应有 review_queue 的 miss');
@@ -254,8 +291,28 @@ test('C2：decider 有「要我决定」数字（review_queue 行数）；reader
 
 test('P2-3：页脚不写死视图数量（目录会变，页脚不能撒谎）', () => {
   withMigratedDb((db) => {
-    const html = renderPage(loadOverviewPage(db, RIGHT));
+    const ACCESS = accessFor(db, ACC_ACTOR);
+    const html = renderPage(loadOverviewPage(db, RIGHT, ACCESS));
     assert.doesNotMatch(html, /13 个视图/);
     assert.match(html, /数据来自 view_catalog 中的视图/);
+  });
+});
+
+test('P2-1 fail-closed：缺 session / session 与 actor 不一致 ⇒ 拒绝装载页面（不静默跳过过滤）', () => {
+  withMigratedDb((db) => {
+    const noSession = { actor: 'ghost', rights: { actor: 'ghost', has: () => false } };
+    assert.throws(
+      () => loadOverviewPage(db, RIGHT, noSession as unknown as Parameters<typeof loadOverviewPage>[2]),
+      /控制台需要会话身份/,
+    );
+    const mismatched = {
+      actor: 'ghost',
+      rights: { actor: 'ghost', has: () => false },
+      session: { actor: 'someone-else', actor_kind: 'human', session_id: 's', credential: 'c' },
+    };
+    assert.throws(
+      () => loadOverviewPage(db, RIGHT, mismatched as unknown as Parameters<typeof loadOverviewPage>[2]),
+      /控制台需要会话身份/,
+    );
   });
 });

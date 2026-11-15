@@ -20,7 +20,10 @@
 
 import { createHash } from 'node:crypto';
 
+import { levelCovers, viewRightFor } from '../core/auth/read.js';
+import type { Session } from '../core/auth/session.js';
 import { recordAccessSafe } from '../db/access-log.js';
+import { readGrants, readScopeOwns } from '../db/auth.js';
 import type { SdoDatabase } from '../db/driver.js';
 import {
   assertSelectOnly,
@@ -37,7 +40,7 @@ import {
   type CursorPayload,
 } from './cursor.js';
 import { createMiss, NOOP_MISS_SINK, type MissSink, type QueryMiss } from './miss.js';
-import { canRead, resolveRight, type Right } from './rights.js';
+import { canRead, type Right } from './rights.js';
 
 /** 一组事件 id 的因果闭包（docs/02 §13）；M0 取当前所有事件头（输入一致性令牌，非历史快照读）。 */
 export type Frontier = readonly string[];
@@ -58,9 +61,14 @@ export interface QueryArgs {
   readonly order?: unknown;
 }
 
-/** 调用上下文：谁在读、miss 去哪（M1 把 sink 换成真事件写入）。 */
+/**
+ * 调用上下文：谁在读、miss 去哪（M1 把 sink 换成真事件写入）。
+ *
+ * M3-1：`session` 是权限判定的**唯一**来源（actor/actor_kind 由会话注入，payload 自称 actor 不算）；
+ * 无 session ⇒ `filtered_by_permission`，不存在调用方声明的 `right` 回退（D-109）。
+ */
 export interface QueryContext {
-  readonly right?: unknown;
+  readonly session?: Session;
   readonly sink?: MissSink;
 }
 
@@ -73,11 +81,20 @@ export interface QueryResult {
   readonly as_of: Frontier;
   readonly view: string;
   readonly miss?: QueryMiss;
+  /**
+   * M3-6：本次因为 `human_only` 被裁掉的列名（agent 会话）。
+   *
+   * 只给列名不给值；`rows` 里这些键**不存在**（不是 null）。缺省表示没有裁剪。
+   * 与行级 `miss.reason='filtered_by_permission'` 是两件事：一行一列分开记账。
+   */
+  readonly redacted_columns?: readonly string[];
 }
 
 /** `view:'list'` 的列（目录自描述，不含 `sql`——执行细节不给调用方）。 */
 const LIST_VIEW = 'list';
-const LIST_COLUMNS = ['name', 'doc', 'columns', 'min_right', 'row_budget'] as const;
+// P3-2：`redacted_columns` 是 list 行的声明列（M3-6：被裁的目录列名），
+// 与行形状一起声明，避免“元数据少列、行里多列”。其它视图没有这一列。
+const LIST_COLUMNS = ['name', 'doc', 'columns', 'min_right', 'row_budget', 'redacted_columns'] as const;
 
 const SINGLE_RESULT_TOO_LARGE_HINT =
   '单行（含必须附带的游标/as_of）整包已超 8KB 预算；请用 select 减少列或改用更窄的视图';
@@ -167,16 +184,26 @@ function finalizePage(
   cursorArgs: CursorArgs,
   asOf: Frontier,
   viewName: string,
+  redacted: readonly string[] = [],
 ): PageOutcome {
+  const redactedField = redacted.length === 0 ? {} : { redacted_columns: redacted };
   const total = pageRows.length;
   if (total === 0) {
-    return { ok: finalizeResult({ rows: [], truncated: false, as_of: asOf, view: viewName }) };
+    return {
+      ok: finalizeResult({ rows: [], truncated: false, as_of: asOf, view: viewName, ...redactedField }),
+    };
   }
   for (let keep = total; keep >= 1; keep -= 1) {
     const truncated = hasMore || keep < total;
     const rows = pageRows.slice(0, keep) as Row[];
     if (!truncated) {
-      const result = finalizeResult({ rows, truncated: false, as_of: asOf, view: viewName });
+      const result = finalizeResult({
+        rows,
+        truncated: false,
+        as_of: asOf,
+        view: viewName,
+        ...redactedField,
+      });
       if (result.bytes <= MAX_RESULT_BYTES) return { ok: result };
       continue;
     }
@@ -188,32 +215,54 @@ function finalizePage(
       offset: offset + keep,
       last_row_hash: rowDigest(last),
     });
-    const result = finalizeResult({ rows, truncated: true, next_cursor, as_of: asOf, view: viewName });
+    const result = finalizeResult({
+      rows,
+      truncated: true,
+      next_cursor,
+      as_of: asOf,
+      view: viewName,
+      ...redactedField,
+    });
     if (result.bytes <= MAX_RESULT_BYTES) return { ok: result };
   }
   return { tooLarge: true };
 }
 
 /** 取某权限能看到的一行目录（`view:'list'` 用；按 name 升序，确定性）。 */
-function buildListRows(db: SdoDatabase, right: Right, select?: readonly string[]): Row[] {
+function buildListRows(
+  db: SdoDatabase,
+  right: Right,
+  select?: readonly string[],
+  redactHumanOnly = false,
+): Row[] {
   const selected = select ?? LIST_COLUMNS;
   const rows: Row[] = [];
   for (const view of viewsForRight(db, right)) {
+    const redacted = redactHumanOnly ? view.columns.filter((column) => column.human_only) : [];
+    const visibleColumns = redactHumanOnly
+      ? view.columns.filter((column) => !column.human_only)
+      : view.columns;
     const full: Record<string, unknown> = {
       name: view.name,
       doc: view.doc,
       // 目录原样返回（含 type）：形状不为预算让路；超 8KB 与其他视图一样截断 + 游标。
-      columns: view.columns.map((column) => ({
+      // M3-6：agent 会话的 columns 元数据只列看得见的列（与实际可查一致），
+      // 被裁的列名放 redacted_columns（显式，不是悄悄少列）。
+      columns: visibleColumns.map((column) => ({
         name: column.name,
         label: column.label,
         ...(column.unit === undefined ? {} : { unit: column.unit }),
         type: column.type,
       })),
+      ...(redacted.length === 0 ? {} : { redacted_columns: redacted.map((column) => column.name) }),
       min_right: view.min_right,
       row_budget: view.row_budget,
     };
     const row: Record<string, unknown> = {};
-    for (const column of selected) row[column] = full[column];
+    for (const column of selected) {
+      if (full[column] !== undefined) row[column] = full[column];
+    }
+    // M3-6 P3-2：`redacted_columns` 已在 LIST_COLUMNS 声明（行级只给列名、不给值）。
     rows.push(row);
   }
   return rows;
@@ -229,11 +278,19 @@ function logAccess(db: SdoDatabase, args: QueryArgs, context: QueryContext): voi
   if (typeof dbPath !== 'string' || dbPath.length === 0 || dbPath === ':memory:') {
     return;
   }
+  const session = context.session;
+  const right =
+    session === undefined
+      ? 'unauthenticated'
+      : viewRightFor(session.actor, {
+          grants: readGrants(db, session.actor),
+          ownership: readScopeOwns(db),
+        }) ?? session.actor_kind;
   recordAccessSafe(dbPath, {
     at: new Date().toISOString(),
     view: typeof args?.view === 'string' ? args.view : '',
     args,
-    right: resolveRight(context.right),
+    right,
   });
 }
 
@@ -242,7 +299,7 @@ function logAccess(db: SdoDatabase, args: QueryArgs, context: QueryContext): voi
  *
  * @example
  * query(db, { view: 'pm_queue' });                       // reader 可见
- * query(db, { view: 'review_queue' }, { right: 'decider' }); // decider 才可见
+ * query(db, { view: 'review_queue' }, { session }); // 会话有 decide/review 权才可见
  * query(db, { view: 'defects', limit: 5, cursor: page2 });   // 续查
  */
 export function query(
@@ -261,7 +318,6 @@ function runQuery(
   context: QueryContext = {},
 ): QueryResult {
   const sink = context.sink ?? NOOP_MISS_SINK;
-  const right = resolveRight(context.right);
   const frontier = currentFrontier(db);
   const view = typeof args?.view === 'string' ? args.view : '';
 
@@ -269,6 +325,29 @@ function runQuery(
     sink.record(miss);
     return finalizeResult({ rows: [], truncated: false, as_of: frontier, view, miss });
   };
+
+  // M3-1 C1/P2-4：会话是唯一身份来源；无会话不再回退 `context.right`（fail-closed）。
+  const session = context.session;
+  if (session === undefined) {
+    return failed(createMiss('filtered_by_permission', view, '缺少会话（session）：查询必须由会话身份发起，不接受调用方声明的 right'));
+  }
+  if (
+    typeof session.actor !== 'string' ||
+    session.actor.length === 0 ||
+    (session.actor_kind !== 'human' && session.actor_kind !== 'agent' && session.actor_kind !== 'service')
+  ) {
+    return failed(createMiss('filtered_by_permission', view, '会话 actor/actor_kind 不完整（fail-closed）'));
+  }
+  const sessionLevel = viewRightFor(session.actor, {
+    grants: readGrants(db, session.actor),
+    ownership: readScopeOwns(db),
+  });
+  if (sessionLevel === undefined) {
+    return failed(createMiss('filtered_by_permission', view, '会话 actor 没有任何 read/review/decide/sign 权（fail-closed）'));
+  }
+  const right: Right = sessionLevel;
+  // M3-6：只有 agent 会话做列级裁剪；human/service 照旧。会话是唯一身份来源（D-056）。
+  const viewerKind = session.actor_kind;
 
   // ---- 参数校验（C7：坏参数是结构化 miss，不是裸异常） ----
   if (typeof args?.view !== 'string' || args.view.length === 0) {
@@ -370,7 +449,7 @@ function runQuery(
         return failed(createMiss('invalid_args', view, '游标与当前参数不一致（view/select/limit）'));
       }
       const offset = cursor?.offset ?? 0;
-      listRows = buildListRows(db, right, selected);
+      listRows = buildListRows(db, right, selected, viewerKind === 'agent');
       if (cursor !== undefined && offset > 0) {
         const boundary = listRows[offset - 1];
         if (boundary === undefined || rowDigest(boundary) !== cursor.last_row_hash) {
@@ -417,7 +496,9 @@ function runQuery(
   }
 
   // ---- 权限裁剪（C3）：行不返回，但必须留痕 ----
-  if (!canRead(viewRow.min_right, right)) {
+  // M3-1 A4：视图级 read/… 权够 ⇒ 放行；不够但有会话 ⇒ 只放行 owner 行（自己的东西可读）。
+  const ownerException = !levelCovers(sessionLevel, viewRow.min_right);
+  if (!ownerException && !canRead(viewRow.min_right, right)) {
     return failed(
       createMiss('filtered_by_permission', view, `需要 ${viewRow.min_right} 权限（当前 ${right}）`),
     );
@@ -425,7 +506,6 @@ function runQuery(
 
   // ---- select：缺列是结构化 miss（C7） ----
   const requestedSelect = args.select ?? cursor?.args.select;
-  const projection = requestedSelect ?? viewRow.columns.map((column) => column.name);
   if (requestedSelect !== undefined) {
     for (const column of requestedSelect) {
       if (!viewRow.columns.some((candidate) => candidate.name === column)) {
@@ -439,6 +519,24 @@ function runQuery(
       }
     }
   }
+
+  // ---- 列级裁剪（M3-6 C2/C4）：agent 不返回 human_only 列，且记成显式事实 ----
+  const humanOnlyNames = viewRow.columns.filter((column) => column.human_only).map((column) => column.name);
+  const redactedColumns = viewerKind === 'agent' ? humanOnlyNames : [];
+  if (requestedSelect !== undefined && redactedColumns.length > 0) {
+    const denied = requestedSelect.filter((column) => redactedColumns.includes(column));
+    if (denied.length > 0) {
+      return failed(
+        createMiss(
+          'column_redacted',
+          view,
+          `列 ${denied.join(', ')} 是 human_only：agent 会话不返回该列（docs/05 §6；列不是置 null，是不出现）`,
+        ),
+      );
+    }
+  }
+  const projection =
+    requestedSelect ?? viewRow.columns.filter((column) => !redactedColumns.includes(column.name)).map((column) => column.name);
 
   // ---- 限额（C4 / A4）：默认 row_budget，显式 limit 不得超 ----
   const cap = Math.min(viewRow.row_budget, MAX_ROWS_PER_QUERY);
@@ -474,7 +572,17 @@ function runQuery(
     const rawRows = db.prepare(pageSql).all(effectiveLimit + 1, offset) as Array<Record<string, unknown>>;
     const hasMore = rawRows.length > effectiveLimit;
     pageRows = rawRows.slice(0, effectiveLimit);
-    const outcome = finalizePage(pageRows, hasMore, offset, cursorArgs, frontier, view);
+    if (ownerException) {
+      const session = context.session as Session;
+      const ownerFields = ['owner', 'actor', 'created_by', 'claimed_by', 'raised_by'] as const;
+      pageRows = pageRows.filter((row) => ownerFields.some((field) => row[field] === session.actor));
+      if (pageRows.length === 0) {
+        return failed(
+          createMiss('filtered_by_permission', view, `需要 ${viewRow.min_right} 权限；仅 owner 行可读但本页没有`),
+        );
+      }
+    }
+    const outcome = finalizePage(pageRows, hasMore, offset, cursorArgs, frontier, view, redactedColumns);
     if ('tooLarge' in outcome) {
       return failed(createMiss('result_too_large', view, SINGLE_RESULT_TOO_LARGE_HINT));
     }

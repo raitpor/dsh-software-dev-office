@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { grantFixtureRoster } from '../db/append-auth.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -119,6 +120,7 @@ function withConsistentDb(run: (db: SdoDatabase) => void, chain: readonly Event[
   const db = openEncryptedDatabase(join(dir, 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     insertEventRows(db, chain);
     const state = fold(undefined, chain).tables;
     for (const table of ['decision', 'intent', 'spec', 'task', 'release'] as const) {

@@ -1,10 +1,11 @@
+import { appendAs as append } from './append-auth.js';
 /**
  * M3-2 C4 正例：冲突裁决必须由人签 decision 驱动；agent 不能选边。
  */
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { verify } from '../../src/core/verify.js';
 import { fold } from '../../src/core/fold/index.js';
 import { readEvents } from '../../src/core/verify-events.js';

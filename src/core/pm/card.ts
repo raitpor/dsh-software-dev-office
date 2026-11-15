@@ -7,7 +7,7 @@
  */
 
 import type { SdoDatabase } from '../../db/driver.js';
-import { append } from '../../db/write.js';
+import { appendAsTool } from '../../db/write.js';
 import { hasPmRight } from './rights.js';
 import { buildPmEvent, readPmState, rowOf } from './state.js';
 import type { PmContext, PmFailure } from './types.js';
@@ -106,7 +106,7 @@ export function createCard(db: SdoDatabase, ctx: PmContext, input: CreateCardInp
       subject_id: input.subjectId ?? null,
     },
   });
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], ctx.actor, ctx.actorKind);
   if (!result.ok) {
     return pmFailure('write_failed', `${result.reason_code ?? 'append failed'}: ${result.message ?? ''}`);
   }

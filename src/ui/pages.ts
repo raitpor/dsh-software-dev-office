@@ -10,7 +10,12 @@
 
 import type { SdoDatabase } from '../db/driver.js';
 import { query } from '../query/index.js';
-import type { QueryResult, Right } from '../query/index.js';
+import type { QueryResult } from '../query/index.js';
+import { filterPmQueueRows, readReviewQueueAccess } from '../core/pm/access.js';
+import type { ApplyEntry, PmQueueAccess, RightsPort } from '../core/pm/access.js';
+export type { ApplyEntry, RightsPort } from '../core/pm/access.js';
+import type { PmQueueRow } from '../core/pm/queue.js';
+import type { Session } from '../core/auth/session.js';
 
 /** 一个数字/文本值的来源：只允许 13 个目录视图之一（A3）。 */
 export interface FigureSource {
@@ -49,6 +54,11 @@ export interface TableModel {
   readonly columns: readonly TableColumn[];
   readonly rows: readonly Readonly<Record<string, unknown>>[];
   readonly truncated: boolean;
+  /**
+   * M3-6：query 因会话身份裁掉的列名（原样传递，渲染层只提示数量，不回填值）。
+   * 缺省 = 没有列被裁。
+   */
+  readonly redacted_columns?: readonly string[];
 }
 
 export interface PageMiss {
@@ -66,14 +76,44 @@ export interface PageModel {
   readonly figures: readonly Figure[];
   readonly tables: readonly TableModel[];
   readonly misses: readonly PageMiss[];
+  /**
+   * M3-5：撤权后可见的“申请入口”（当前指向 `escalate`，M4 换真 `grant`）。
+   * 入口本身不判权；提交动作才判权（卡 C2/A2）。
+   */
+  readonly apply_entries: readonly ApplyEntry[];
   /** 页面所有读数共同的 frontier；空库为 `[]`。 */
   readonly as_of: readonly string[];
 }
 
+/**
+ * 控制台身份（M3-5/M3-6）：**session 必填**，没有会话就不许装载页面（fail-closed）。
+ * 视图级判权与列级裁剪都以 `session.actor_kind` 为唯一身份来源（D-056）。
+ */
+export interface ConsoleAccess {
+  readonly actor: string;
+  readonly rights: RightsPort;
+  readonly session: Session;
+}
+
+function requireAccess(access: ConsoleAccess | undefined): ConsoleAccess {
+  if (
+    access === undefined ||
+    typeof access.actor !== 'string' ||
+    access.actor.length === 0 ||
+    access.session === undefined ||
+    access.session.actor !== access.actor
+  ) {
+    throw new Error(
+      '控制台需要会话身份（session）：未配置 SDO_CONSOLE_ACTOR/SDO_CONSOLE_ACTOR_KIND 或会话与 actor 不一致时拒绝装载页面（fail-closed）',
+    );
+  }
+  return access;
+}
+
 const NO_ARGS: Readonly<Record<string, unknown>> = {};
 
-function queryView(db: SdoDatabase, view: string, right: unknown): QueryResult {
-  return query(db, { view }, { right: right as Right });
+function queryView(db: SdoDatabase, view: string, session: Session): QueryResult {
+  return query(db, { view }, { session });
 }
 
 function missOf(view: string, result: QueryResult): PageMiss | undefined {
@@ -129,9 +169,14 @@ function tableOf(
   return {
     source: { view, args: NO_ARGS },
     ...(title === undefined ? {} : { title }),
-    columns,
+    columns: columns.filter(
+      (column) => !(result.redacted_columns ?? []).includes(column.name),
+    ),
     rows: result.rows,
     truncated: result.truncated,
+    ...(result.redacted_columns === undefined || result.redacted_columns.length === 0
+      ? {}
+      : { redacted_columns: [...result.redacted_columns] }),
   };
 }
 
@@ -152,6 +197,13 @@ const PLAN_COLUMNS: readonly TableColumn[] = [
   { name: 'scope', label: '写域' },
 ];
 
+const TEAM_COLUMNS: readonly TableColumn[] = [
+  { name: 'actor_id', label: '身份' },
+  { name: 'kind', label: '类型' },
+  { name: 'scopes', label: '域' },
+  { name: 'rights', label: '已签决策类型' },
+];
+
 const QUEUE_COLUMNS: readonly TableColumn[] = [
   { name: 'rank', label: '优先级' },
   { name: 'title', label: '事项' },
@@ -170,14 +222,23 @@ const QUEUE_COLUMNS: readonly TableColumn[] = [
  *   并留一条 `filtered_by_permission` miss）——这是「要我决定」的入口，不是 `pm_queue`。
  * - 下表是 `pm_queue`（PM 的下一步，≤7 行，**只读**）；它不是待审队列。
  */
-export function loadOverviewPage(db: SdoDatabase, right: unknown = 'decider'): PageModel {
-  const overview = queryView(db, 'overview', right);
-  const queue = queryView(db, 'pm_queue', right);
-  const review = queryView(db, 'review_queue', right);
+export function loadOverviewPage(
+  db: SdoDatabase,
+  _right: unknown = 'decider',
+  access?: ConsoleAccess,
+): PageModel {
+  const effectiveAccess = requireAccess(access);
+  const session = effectiveAccess.session;
+  const overview = queryView(db, 'overview', session);
+  const queue = queryView(db, 'pm_queue', session);
+  const review = queryView(db, 'review_queue', session);
+  const team = queryView(db, 'team', session);
+
   const misses: PageMiss[] = [];
   for (const [view, result] of [
     ['overview', overview],
     ['pm_queue', queue],
+    ['team', team],
   ] as const) {
     const miss = missOf(view, result);
     if (miss !== undefined) misses.push(miss);
@@ -191,26 +252,52 @@ export function loadOverviewPage(db: SdoDatabase, right: unknown = 'decider'): P
     fieldFigure('open_defects', '红过（未修缺陷）', overview, 'open_defects', { unit: '条', view: 'overview' }),
     fieldFigure('blocked', '被卡卡数', overview, 'blocked', { unit: '张', view: 'overview' }),
   ];
-  if (review.miss === undefined) {
-    figures.push(rowCountFigure('to_decide', '要我决定（待审项）', review, 'review_queue'));
+
+  const reviewAccess = readReviewQueueAccess(db, effectiveAccess.rights, session);
+  const pmAccess: PmQueueAccess = filterPmQueueRows(
+    queue.rows as unknown as PmQueueRow[],
+    effectiveAccess.rights,
+  );
+  const queueRows = pmAccess.rows as unknown as readonly Readonly<Record<string, unknown>>[];
+  const applyEntries = dedupeEntries([...reviewAccess.apply_entries, ...pmAccess.apply_entries]);
+
+  if (reviewAccess.filtered) {
+    // 撤权后“待审项消失”：不出数字（M0-5 口径：有来源才出数字），只给申请入口。
+    // P2-1：判断依据是“访问被过滤”而不是“hidden 非空”——空队列 + deny-all 原本会出假 `to_decide=0`。
+    const hint =
+      reviewAccess.hidden.length > 0
+        ? `${reviewAccess.hidden.length} 条待审项不在你的域内：见下方申请入口`
+        : '当前身份没有待审队列的读取权：见下方申请入口';
+    misses.push({ view: 'review_queue', reason: 'filtered_by_permission', hint });
   } else if (reviewMiss !== undefined) {
     misses.push(reviewMiss);
+  } else {
+    figures.push(rowCountFigure('to_decide', '要我决定（待审项）', review, 'review_queue'));
   }
+
+  const teamTable = tableOf('team', team, TEAM_COLUMNS, '团队（签章状态）');
 
   return {
     id: 'overview',
     title: '总览',
     heading: 'SDO 控制台 · 总览',
     figures,
-    tables: [tableOf('pm_queue', queue, QUEUE_COLUMNS, 'PM 队列（只读）')],
+    tables: [tableOf('pm_queue', { ...queue, rows: queueRows }, QUEUE_COLUMNS, 'PM 队列（只读）'), teamTable],
     misses,
+    apply_entries: applyEntries,
     as_of: overview.as_of,
   };
 }
 
+function dedupeEntries(entries: readonly ApplyEntry[]): readonly ApplyEntry[] {
+  const seen = new Map<string, ApplyEntry>();
+  for (const entry of entries) seen.set(entry.scope, entry);
+  return [...seen.values()].sort((a, b) => a.scope.localeCompare(b.scope));
+}
+
 /** board 页（`/board`）：看每张卡做到哪了；行数本身也是一条带来源的读数。 */
-export function loadBoardPage(db: SdoDatabase, right: unknown = 'decider'): PageModel {
-  const board = queryView(db, 'board', right);
+export function loadBoardPage(db: SdoDatabase, _right: unknown = 'decider', access?: ConsoleAccess): PageModel {
+  const board = queryView(db, 'board', requireAccess(access).session);
   const misses: PageMiss[] = [];
   const miss = missOf('board', board);
   if (miss !== undefined) misses.push(miss);
@@ -221,13 +308,14 @@ export function loadBoardPage(db: SdoDatabase, right: unknown = 'decider'): Page
     figures: [rowCountFigure('board_rows', '本页行数', board, 'board')],
     tables: [tableOf('board', board, BOARD_COLUMNS)],
     misses,
+    apply_entries: [],
     as_of: board.as_of,
   };
 }
 
 /** plan 页（`/plan`）：看计划行与依赖。 */
-export function loadPlanPage(db: SdoDatabase, right: unknown = 'decider'): PageModel {
-  const plan = queryView(db, 'plan', right);
+export function loadPlanPage(db: SdoDatabase, _right: unknown = 'decider', access?: ConsoleAccess): PageModel {
+  const plan = queryView(db, 'plan', requireAccess(access).session);
   const misses: PageMiss[] = [];
   const miss = missOf('plan', plan);
   if (miss !== undefined) misses.push(miss);
@@ -238,6 +326,7 @@ export function loadPlanPage(db: SdoDatabase, right: unknown = 'decider'): PageM
     figures: [rowCountFigure('plan_rows', '本页行数', plan, 'plan')],
     tables: [tableOf('plan', plan, PLAN_COLUMNS)],
     misses,
+    apply_entries: [],
     as_of: plan.as_of,
   };
 }

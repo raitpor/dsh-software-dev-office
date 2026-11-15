@@ -24,7 +24,7 @@ import {
 import { baselineAssuranceBound, decisionBaselineHash } from '../core/independence/verify.js';
 import { GENESIS_PREV, computeEventHash, readEvents } from '../core/verify-events.js';
 import type { SdoDatabase } from '../db/driver.js';
-import { append, chainHead } from '../db/write.js';
+import { appendAsTool, chainHead } from '../db/write.js';
 import type { SignerdClient } from './client.js';
 import { fail, isSignReasonCode, type SignFailure, type SignReasonCode } from './errors.js';
 import type { ActorKind } from './protocol.js';
@@ -221,7 +221,8 @@ function buildEvent(seed: EventSeed, prev: string): Event {
 
 function appendOne(db: SdoDatabase, seed: EventSeed): { ok: true } | SignFailure {
   const event = buildEvent(seed, chainHead(db));
-  const result = append(db, [event]);
+  const kind = (seed.payload['actor_kind'] as 'human' | 'agent' | 'service' | undefined) ?? 'human';
+  const result = appendAsTool(db, [event], seed.actor, kind);
   if (!result.ok) {
     return fail(result.reason_code as SignReasonCode, result.message ?? 'append rejected');
   }
@@ -429,12 +430,15 @@ export async function signDecision(
     {
       kind: 'decision.valid',
       subject: decision.decision_id,
-      actor: input.producer,
+      // P2-1（第 2 轮）：actor 必须绑会话（=签名发起者）；生产者归属进 payload 字段，
+      // 不参与授权判定（授权仍按会话 sign 权 + 决策 scope）。
+      actor: input.actor,
       payload: {
         decision_kind: input.decision_kind,
         payload_hash: decision.payload_hash,
         frontier: input.frontier,
         payload: decision.payload,
+        producer: input.producer,
       },
       request_id: requestId,
       at,
@@ -475,7 +479,7 @@ export async function signDecision(
     },
     validEvent.hash,
   );
-  const result = append(db, [validEvent, signedEvent]);
+  const result = appendAsTool(db, [validEvent, signedEvent], input.actor, input.actor_kind);
   if (!result.ok) {
     const reason = String(result.reason_code);
     // P3：保留写网关的真实原因（之前一律折成 unknown_request 会掩盖链路/验签问题）。
@@ -671,12 +675,14 @@ export function submitStagedBatch(
       {
         kind: 'decision.valid',
         subject: item.decision_id,
-        actor: item.producer,
+        // 同 signDecision：actor=签名会话；生产者只作 payload 归属信息。
+        actor: item.actor,
         payload: {
           decision_kind: item.decision_kind,
           payload_hash: item.payload_hash,
           frontier: item.frontier,
           payload: item.payload,
+          producer: item.producer,
         },
         request_id: requestId,
         at,
@@ -716,7 +722,8 @@ export function submitStagedBatch(
     events.push(validEvent, signedEvent);
     prev = signedEvent.hash;
   }
-  const result = append(db, events);
+  const first = staged[0];
+  const result = appendAsTool(db, events, first?.actor ?? 'unknown-signer', 'human');
   if (!result.ok) {
     const reason = String(result.reason_code);
     return fail(
@@ -1022,7 +1029,7 @@ export async function counterSignDecision(
     },
     afterSign,
   );
-  const result = append(db, [signedEvent]);
+  const result = appendAsTool(db, [signedEvent], input.actor, input.actor_kind);
   if (!result.ok) {
     const reason = String(result.reason_code);
     return fail(isSignReasonCode(reason) ? reason : 'unknown_request', result.message ?? 'append rejected');

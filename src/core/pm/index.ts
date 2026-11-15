@@ -20,6 +20,28 @@ export {
 } from './queue.js';
 export type { PmAction, PmQueueRead, PmQueueRow, PmReasonCode } from './queue.js';
 
+export {
+  PM_QUEUE_SCOPE,
+  canEscalateTo,
+  denyAllRightsPort,
+  filterPmQueueRows,
+  historySnapshot,
+  readReviewQueueAccess,
+  dbRightsPort,
+  taskScopes,
+} from './access.js';
+export type {
+  AccessRight,
+  ApplyEntry,
+  HiddenReviewRow,
+  HistorySnapshot,
+  PmQueueAccess,
+  ReviewQueueAccess,
+  ReviewQueueRow,
+  RightsPort,
+  TaskScopeSet,
+} from './access.js';
+
 export { SEATS, hasPmRight, isSeatName, scopeCovered, scopesCovered, scopesOverlap, seatOf, seatViewRight } from './rights.js';
 export type { PmGrant, PmRightKind, Seat, SeatName } from './rights.js';
 
@@ -36,11 +58,14 @@ export {
   seatScopes,
   sign,
   unblockCard,
+  withdrawAttention,
 } from './act.js';
 export type {
   AssignInput,
   AttentionInput,
   AttentionOk,
+  EscalateInput,
+  WithdrawAttentionInput,
   PmWriteOk,
   RequestSignInput,
   RequestSignOk,

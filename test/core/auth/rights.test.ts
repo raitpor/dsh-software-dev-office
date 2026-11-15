@@ -121,8 +121,8 @@ test('C5：多权动作缺一即拒（freeze 需要 decide@release + sign@releas
   assert.equal(both.ok, true, JSON.stringify(both));
 });
 
-test('P1-1（D-086）：跨前缀一律拒（不猜 module↔domain 归属）', () => {
-  // 评审实测场景 1：create 需要 plan@domain，目标是 module:…（grant 在别的 domain 也不行）
+test('M3-1 C9：没有归属行时跨前缀仍拒（no_ownership，不猜 module↔domain）', () => {
+  // create 需要 plan@domain，目标是 module:…；scope_owns 空 => 无归属链
   const createOnModule = hasRight(alice, 'create', 'module:src/db', {
     matrix: MATRIX,
     grants: [grant('plan', 'domain:other')],
@@ -130,16 +130,16 @@ test('P1-1（D-086）：跨前缀一律拒（不猜 module↔domain 归属）', 
   assert.equal(createOnModule.ok, false, '跨前缀必须拒');
   if (!createOnModule.ok) {
     assert.equal(createOnModule.reason_code, 'no_permission');
-    assert.equal(createOnModule.reason, 'cross_prefix_denied');
+    assert.equal(createOnModule.reason, 'no_ownership');
   }
 
-  // 评审实测场景 2：write@module 的 grant 不能放行 release 目标
+  // write@module 的 grant 不能放行 release 目标（release 也没有归属链）
   const writeOnRelease = hasRight(alice, 'defect.record', 'release:1.0.0', {
     matrix: MATRIX,
     grants: [grant('write', 'module:src/db')],
   });
   assert.equal(writeOnRelease.ok, false, '跨前缀必须拒');
-  if (!writeOnRelease.ok) assert.equal(writeOnRelease.reason, 'cross_prefix_denied');
+  if (!writeOnRelease.ok) assert.equal(writeOnRelease.reason, 'no_ownership');
 
   // 同前缀类型但目标是 domain：grant 覆盖 domain 才放行
   const planOnDomain = hasRight(alice, 'create', 'domain:core', {
@@ -147,6 +147,45 @@ test('P1-1（D-086）：跨前缀一律拒（不猜 module↔domain 归属）', 
     grants: [grant('plan', 'domain:core')],
   });
   assert.equal(planOnDomain.ok, true, JSON.stringify(planOnDomain));
+});
+
+test('M3-1 C9：scope_owns 显式归属后跨前缀按链放行（含两跳）', () => {
+  const ownership = [
+    { child_scope: 'module:src/db', parent_scope: 'domain:core' },
+    { child_scope: 'domain:core', parent_scope: 'domain:office' },
+  ];
+  // 一跳：module → domain:core
+  const oneHop = hasRight(alice, 'create', 'module:src/db', {
+    matrix: MATRIX,
+    grants: [grant('plan', 'domain:core')],
+    ownership,
+  });
+  assert.equal(oneHop.ok, true, JSON.stringify(oneHop));
+
+  // 两跳：module → domain:core → domain:office，grant 在 office 也放行
+  const twoHop = hasRight(alice, 'dependencies', 'module:src/db', {
+    matrix: MATRIX,
+    grants: [grant('plan', 'domain:office')],
+    ownership,
+  });
+  assert.equal(twoHop.ok, true, JSON.stringify(twoHop));
+
+  // 有归属链但没有覆盖祖先的 grant => missing_grant（不是 no_ownership）
+  const noGrant = hasRight(alice, 'create', 'module:src/db', {
+    matrix: MATRIX,
+    grants: [grant('plan', 'domain:other')],
+    ownership,
+  });
+  assert.equal(noGrant.ok, false);
+  if (!noGrant.ok) assert.equal(noGrant.reason, 'missing_grant');
+
+  // 反向两跳：module:src/db 的祖先里没有 module 前缀，required=module 时判 no_ownership
+  const requiredModule = hasRight(alice, 'claim', 'module:src/db', {
+    matrix: MATRIX,
+    grants: [grant('write', 'module:src/db')],
+    ownership,
+  });
+  assert.equal(requiredModule.ok, true, JSON.stringify(requiredModule));
 });
 
 test('P1-2：dependencies 只要求 plan@domain（文档否定句里的 write@module 不参与解析）', () => {

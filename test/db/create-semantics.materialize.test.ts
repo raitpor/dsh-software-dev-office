@@ -1,3 +1,4 @@
+import { appendAs as append } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -6,7 +7,7 @@ import { valueHash } from '../../src/core/conflict/hash.js';
 import { trackedField } from '../../src/core/conflict/scope.js';
 import { computeEventHash } from '../../src/core/verify.js';
 import type { Event } from '../../src/core/fold/types.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { requiredTable } from '../../src/db/write-materialize.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { chain, currentState, withWriteDb } from './append-helpers.js';

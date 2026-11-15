@@ -1,3 +1,4 @@
+import { appendAs as append } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -11,7 +12,7 @@ import {
   MATERIALIZED_TABLES,
   SUPPORTED_KINDS,
 } from '../../src/db/write-materialize.js';
-import { append } from '../../src/db/write.js';
+
 import { chain, currentState, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 

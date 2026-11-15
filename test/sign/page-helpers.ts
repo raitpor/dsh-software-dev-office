@@ -1,3 +1,4 @@
+import { appendAs as append, grantFixtureRoster } from '../db/append-auth.js';
 /**
  * M2-6 签字页测试装配：真实 signerd（test/sign/helpers.ts）+ 已迁移库 + claim 行。
  *
@@ -13,7 +14,7 @@ import { runMigrations } from '../../src/db/migrate.js';
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import type { ClaimRow } from '../../src/claim/types.js';
 import { writeClaimRows } from '../../src/claim/gateway.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { chain, seed } from '../db/append-helpers.js';
 import { bootSignerd, type SignerdRig } from './helpers.js';
@@ -65,6 +66,7 @@ export async function withMigratedDbAsync<T>(run: (db: SdoDatabase) => Promise<T
   const db = openEncryptedDatabase(join(dir, 'sdo.db'), 'm2-6 sign page passphrase');
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     return await run(db);
   } finally {
     db.close();

@@ -1,3 +1,4 @@
+import { appendAs as append } from '../db/append-auth.js';
 /**
  * M3-4 夹具：把渲染器登记到 `renderer_catalog`。
  *
@@ -7,7 +8,7 @@
  *     `test/db/renderer.test.ts` 的 `registerRenderer` 用例里单独验）。
  *   · `registerRenderer()`（产品入口）：`src/db/renderer.ts`，需要 `admin@domain`。
  */
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { mintRendererRegistrationAuthority, rendererRegistrationPayloadHash } from '../../src/db/renderer-authority.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { chain, seed } from '../db/append-helpers.js';

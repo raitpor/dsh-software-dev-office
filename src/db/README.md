@@ -18,8 +18,8 @@
 - 打开入口（M0-6）：`src/db/open.ts` 的 `openSdoDatabase(path, passphrase, {mustExist})` 先判 `mustExist` 存在性（缺失直接报错、不留空目录），再 `ensureDbDirectory`（0700、不可写即 `SdoPathError`），最后交给 `openEncryptedDatabase`；打开成功后把**绝对路径** `sdoPath` 绑到连接上（`db.name` 是传入时的相对路径，chdir 后会漂移），`access.log` 优先用它。调用方不要绕过 `--ignore-scripts` 那条安装纪律，也不要自己 `new Database`。
 - 读留痕（M0-6）：`src/db/access-log.ts` 的 `recordAccess` 在库同目录追加 `access.log`，一行 `{at,view,args_hash,right}`（`args_hash = sha256(canonicalJson(args))`，0600、不进事件）。`sdo_query` 的唯一执行路径已接 `recordAccessSafe`：**best-effort**，日志不可写时读照常成功、每进程只打一条 stderr warning，失败计数可查（`accessLogFailureCount()`），不改 `QueryResult` 形状。该边界会丢：warning 只在本进程、计数重启即归零；M1 可接持久化告警。
 
-- 写网关（M1-0）：`src/db/write.ts` 的 `append(db, events)` 是**唯一**往 `event` 写行的入口（`grep -rn "INSERT INTO event" src/` 只命中它）。入口在一个 `BEGIN IMMEDIATE` 事务里做四件事：信封/kind 白名单（`REDUCERS`/`ACK_KINDS`，用 `Object.hasOwn` 防原型链）→ 链连续性（`prev`=当前链头、`hash`=`computeEventHash`）→ 同批重放幂等（同 id 同 hash 跳过、不同 hash 拒）→ 全量重放 `fold` 后 diff 落库；任一步失败 `ROLLBACK`，返回结构化 `reason_code`，不抛裸错。调用方已开事务时直接拒 `transaction_in_progress`（网关不嵌套事务）。
-- 拒绝码：`unknown_event_kind`/`invalid_field`/`unsupported_scope`/`event_chain_broken`/`event_hash_mismatch`/`append_conflict`（插 `event` 撞库，如同批重复 id）/`transaction_in_progress`（调用方已有未提交事务）/`database_busy`（`BEGIN IMMEDIATE` 撞别的写者，`SQLITE_BUSY`）/`materialize_failed`；M2-3 另有 `assumption_invalidated_is_derived`（派生读数不可写，D-078）与 `signature_not_from_signerd`（M2-0/C8）；拒绝码清单见 `plan/03` D-025（已登记）。失败返回 `written:0/skipped:0/attempted=通过校验条数/rolled_back:true`，`eventCount` 是调用前行数。
+- 写网关（M1-0/M3-1）：`src/db/write.ts` 的 `append(db, events, {session})` 是**唯一**往 `event` 写行的入口（`grep -rn "INSERT INTO event" src/` 只命中它）。**授权由事件 kind 决定，不接受调用方自报动作**：`src/core/auth/kind-actions.ts` 的 `KIND_ACTIONS` 给全部 supported kind 映射 `{action, scopeOf(payload)}`（scope 优先级：payload 显式 scope（前缀须与动作一致）→ task.scope_paths[0] → 单域常量），未映射的非 ACK kind ⇒ `unmapped_event_kind`；`authorizeEvent` 先按事件判 `hasRight(actor, action, scope)`（`action='sign'` 走未撤销 sign 权 + 决策 kind 对应 scope，M4 再进矩阵），再跑 `src/db/action-objects.ts` 的 `ACTION_OBJECT_CONDITIONS`（`defect.closed` 需 verify_run pass 且 closed_by=verify actor；`review.finding_verified` 需对象 producer 本人），失败码 `object_condition_failed`。`event.actor` 必须等于会话 actor；唯一白名单 `conflict.detected`（S22 落失败写入方，能力由检测路径一次性 mint）。`decision.valid` 的 actor 同样绑会话（=签名发起者/工具侧），验证生产者只放 `payload.producer`（由签名流程写入、不参与授权判定）；同批 `decision.signed` 的 actor 仍是签名者，回执绑 payload_hash/proposition_hash。`appendAsTool(db,events,actor,actor_kind)` 只给内部工具路径用（不再传 action/scope）。调用点清单 `APPEND_CALL_SITES`（`src/db/append-actions.ts`，13 条 file→kind 集合）与静态守卫测试一一对应，未登记即红；扫描局限：只看直接 `append(db`/`appendAsTool(db` 文本，动态拼接/别名调用不在静态守卫内。`scope_owns` 是**部署数据**（迁移 013 只读播种，无工具写路径，守卫测试断言 `src/` 无 INSERT；同库写者仍是可信边界）。入口在一个 `BEGIN IMMEDIATE` 事务里做四件事：信封/kind 白名单（`REDUCERS`/`ACK_KINDS`，`Object.hasOwn` 防原型链）→ 重放跳过（同 id 同 hash）→ 授权/对象条件（fresh 事件）→ 链连续性（`prev`=当前链头、`hash`=computeEventHash）→ 全量重放 `fold` 后 diff 落库；任一步失败 `ROLLBACK`，返回结构化 `reason_code`，不抛裸错。调用方已开事务时拒 `transaction_in_progress`（网关不嵌套事务）。
+- 拒绝码：`unknown_event_kind`/`invalid_field`/`unsupported_scope`/`event_chain_broken`/`event_hash_mismatch`/`append_conflict`（插 `event` 撞库，如同批重复 id）/`transaction_in_progress`（调用方已有未提交事务）/`database_busy`（`BEGIN IMMEDIATE` 撞别的写者，`SQLITE_BUSY`）/`materialize_failed`/`no_permission`（M3-1 鉴权）/`object_condition_failed`（M3-1 C8 动作对象条件）/`unmapped_event_kind`/`actor_not_from_session`（M3-1 P0/P1-2）；M2-3 另有 `assumption_invalidated_is_derived`（派生读数不可写，D-078）与 `signature_not_from_signerd`（M2-0/C8）；拒绝码清单见 `plan/03` D-025（已登记）。失败返回 `written:0/skipped:0/attempted=通过校验条数/rolled_back:true`，`eventCount` 是调用前行数。
 - 物化范围（M1-7 开闸，D-031 关闭）：`MATERIALIZED_TABLES = TABLE_NAMES − NON_MATERIALIZED`，覆盖 fold 能产出的全部表（当前 28 张）；`NON_MATERIALIZED` = `event`/`event_kind`/`claim`/`receipt`/`field_consumer`/`scenario`（事件存储、renderer 写、目录数据、设计缺口）。`SUPPORTED_KINDS` 由 `REDUCERS` 动态生成（56 个）；`ACK_KINDS`（无 reducer、无投影，如 `query_miss`）仍 `unsupported_scope`。`decision` 只落 `signature` 非空的行（D-019）：`decision.valid` 单批不落库、`decision.signed` 后才出现；`verify` 用同一口径。
 - 键按 **DDL 主键**（`PRAGMA table_info` 的 pk 序号）而不是代理 `id`：`config.key`、`snapshot_parent(snapshot_id,parent_id)`、`release_item(release_id,kind,target)`、`design_lock(spec_id,spec_version_hash)` 等无单 id 表照常 diff/删。`release` 的插入触发器只接受 `draft`/`frozen`：物化最终态时先按 `frozen` 落行，再走允许的状态迁移（delivered/rolled_back）。
 - 列对齐：`FOLD_ONLY_COLUMNS` 显式列出 fold 行比 001/004 DDL 多出的列（`intent.status`、`spec.*` 6 列、`criterion.*`、`decision.rejected_*`、`task.*` 14 列、`attention.*`、`defect.closed_at`、`goal_node.reparented_at`、`review.verified_at`、`stage_run.judged_at`、`redteam.disposed_at`、`design_lock.id`）；实际忽略列与白名单双向相等由 `test/db/write.all-tables.test.ts` 断言，漏/多登记都红。
@@ -28,6 +28,8 @@
   清单完整性由 `test/core/fold.semantics.test.ts` 守着：28 个 create kind 的 reducer 函数体必须（直接或经同文件本地 helper）走到 `createOnce(`，且逐 kind 做“同内容重放 no-op / 异内容拒”行为断言；任一把 create 改回 upsert 该测试会红（变异红证已做）。新增 create 语义 reducer 时必须同时更新 `CREATE_SEMANTICS` 并改走 `createOnce`。
 - `stage_run`（迁移 004）：`stage.entered` 时 `gate_id`/`baseline_hash` 允许空，`gate.judged` 后必填；迁移重建表时按 002 原文重装 `overview`/`pm_queue` 视图。
 - 安全网：`materialize` 在 fold 之后若发现**传入物化面以外**的表有行（测试可用 `materialize(db, {tables})` 收窄），直接 `materialize_failed`，绝不静默丢投影。**物化集 ≠ 对账集**：`VERIFIED_TABLES` 仍只对账 `task`/`spec`/`release`/`decision` 4 张（M2 按 `view_catalog` 补齐）；直插物化集外的表（如 `criterion_fixture`）`verify` 看不见。别把安全网当“全库防篡改”。
+- 动作对象条件（M3-1 C8）：`src/db/action-objects.ts` 的 `closeDefect()`（`verify_run.result='pass'` 且 `closed_by=verify_run.actor`）与 `verifyFinding()`（只认对象 `producer`）在动作实现里强制，返回 `object_condition_failed`；`docs/07` §2 这两行 required 为空，故拒因只可能是对象条件。
+- 越权直写读数（M3-1 C5）：`verify()` 对 `VERIFIED_TABLES` 另扫 `unauthorized_row`——投影表里有事件日志产不出来的行，只可能是绕过网关直写。边界：链自洽的**直接 INSERT event** 与网关写入无法区分（事件信封无独立签名、actor 自称），M4 签名信封才解。
 - 物化是**全量 diff、fold 为权威**：fold 里没有的行会从投影表删掉（`baseline` 例外：append-only 触发器会拒绝删除，属已知边界）。投影表只能由 `append` 产生；手工改行会在下一次 `append` 被覆盖（篡改由 `verify` 发现）。
 - 物化只能表达**批末状态**：中间 fold 态若违反 DDL（典型 `redteam.disposition NOT NULL`、`stage_run.gate_id` 在 004 前），单事件 append 会 `materialize_failed`；这是 M1-7 的已知边界，故 per-kind 证据在 fold 层取证（`test/db/write.supported-kinds.test.ts`），DB 侧证据用整条 world 链一次 append 的“DB 行 == fold 最终态”逐表断言。要做“中途态可物化”需后续投影对齐卡。
 - `release.frozen` 的 `frozen_by` 载荷自 M1-7 起是 **JSON 字符串数组**（DDL 存 JSON），不再是单个字符串；fold 只做结构校验（≥2 个 human 名称），不验 human 身份真伪——身份核对留 M3 actor registry（卡 C3 已写明）。
@@ -104,9 +106,15 @@
   `src/core/conflict/scope.ts` 的 `CONFLICT_TRACKED_FIELDS`；缺声明 ⇒ `conflict_scope_undeclared`
   （0 行落库）。`field` 必须是该 kind 的受管字段，否则 `invalid_field`。其余固定 payload schema 或
   一次性能力/签名路径产生的事件无法携带 CAS，伪造由能力/签名兜底（卡 M3-2 A3）。
-- **威胁模型边界（Lead m08832 裁定）**：`mintConflictDetectedAuthority` 只保证**产品代码路径**不得
-  伪造 `conflict.detected`；能 import 内部模块或直接写 SQLite 的代码已在威胁模型外（与 M2-2
-  `gate.judged` 同口径）。M4 若要把威胁模型收紧到内部模块，须把 mint 下沉进 `src/db/write.ts` 私有。
+- **威胁模型边界（Lead m08832 / m10752 裁定）**：mint 不是自由导出函数——`src/db/conflict-authority.ts`
+  只导出工厂与 `consume`，registry 实例私有在 `src/db/conflict.ts`，真 CAS 路径经 `CONFLICT_AUTHORITY.mint`
+  持有；`src/` 内除该内部调用外不出现 mint 引用。它只保证**产品代码路径**不得伪造
+  `conflict.detected`；能 import 内部模块或直接写 SQLite 的代码已在威胁模型外（与 M2-2
+  `gate.judged` 同口径）。M4 若要把威胁模型收紧到内部模块，须把 registry 下沉进 `src/db/write.ts` 私有。
+
+- **`decision.valid.payload.producer`（M3-1 P3-3，D-112）**：非空字符串；若 producer 已在 `actor`
+  表登记，kind 必须是 `agent`（human/service 冒充 ⇒ `invalid_field`、0 行）；未登记则放行（软校验，
+  夹具/读数用未登记名）。producer 是审计归属，**不参与授权**；M4 签名信封落地后改硬校验。
 - `base_hash` 比的是**该字段当前值的 hash**（`valueHash` = 规范化 JSON 的 sha256，见
   `src/core/conflict/hash.ts`），不是整行 hash。不同字段并发改互不冲突。
 - **无自豁免**：判定只看声明的 base 与当前值是否一致，与 actor 无关；同 actor 用 stale base

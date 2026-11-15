@@ -93,3 +93,34 @@ node --test lib/test/core/pm/
 
 覆盖：C1 建卡完整性、C2 权限/跨泳道、C3 幂等与不代签、C4 白名单 8 码、C5 七个
 reason_code 映射 + `unclaimed` 端到端、C6 未实现动作零写、C7 `verify` 与重放。
+
+## M3-5：撤权后的可见性（`docs/09` §16.4 判死读数 ③ 的数据层）
+
+撤权不是删行：事件与历史不动，只让“你能看到的待审项”跟着当前权限走。
+
+- **判权端口**：`src/core/pm/access.ts` 的 `RightsPort{actor, has(right, scope)}` 是唯一判权
+  入口。生产路径用 `dbRightsPort(db, actor)`（真库 `scope` 表、未撤销 grant、语义同
+  `hasRight` 的 grant 覆盖）；actor 无任何有效 grant ⇒ **显式 deny-all**。
+  M3-5 收口后 `PmContext.rights` 缺省也是 deny-all，**不存在静态席位放行回退**；测试必须
+  显式注入端口（`rightsPortFrom`/假端口）。`src/` 里由 grep 守卫测试钉死无 `seatRightsPort`（D-101 收口）。
+- **再队列过滤**：`readReviewQueueAccess(db, rights, session?)` 把 `review_queue` 行按“所属 task 的域”
+  分成 `rows`/`hidden`；给了 session 就透传给 `query()`（query 只判视图级 `min_right`，
+  行级域判定唯一在 PM 侧 `read+decide` 双查——两者维度不同，不是重复判权）；`filterPmQueueRows(rows, rights)` 隐藏“owner 是我且我已无
+  `read@domain:pm`”的行（全局行 `owner=null` 仍可见）。视图与排序口径不动（D-011）。
+- **申请入口**：`ApplyEntry{scope, action:'escalate', reason_code:'no_permission', hint}`；
+  M4 换真 `grant` 前先指向 `escalate`。入口本身不判权，提交动作判权（卡 A2）。
+- **`escalate`**：`escalate(db, ctx, input)` 必须同时有 `read@scope` 与 `escalate@scope`，
+  且 task 的域要覆盖该 scope（否则 `scope_mismatch`）。跨域升级 ⇒ `no_permission`。
+- **撤回**：`withdrawAttention(db, ctx, input)` 只能撤自己提的（reducer 兜底）、需要
+  `escalate@scope`，且 attention 所属任务的域要覆盖 `input.scope`（否则 `scope_mismatch`）；
+  写 `attention.withdrawn`，不删行。
+- **历史不变**：`historySnapshot(db)` 同时快照 decision/attention 的 id 与内容哈希，撤权前后逐字段相等
+  （测试 C3）；已签 decision 仍有效。
+- **review 行可见性**：`read` 与 `decide` **双查**（只判 decide 会泄露 proposition）；显式
+  `RightsPort.denied` 表示 deny-all（未知身份），`ReviewQueueAccess.filtered` 汇总“本次是否按权限过滤”，
+  UI 只认 `filtered`（空队列 + deny-all 也不出假 `to_decide=0`）。
+
+测试：`lib/test/core/pm/revoke.test.ts`（C1–C5）、`lib/test/ui/apply-entry.test.ts`（页面
+`data-apply-entry`、无权限不出数字）。行级可见性用假 `RightsPort` 驱动，M3-1 接线后改真；
+夹具的写权限按真实矩阵点状播种（`test/core/pm/helpers.ts` 的 `seedRights`：plan/assign/escalate@domain:core、
+write@module:core），不用大礼包。

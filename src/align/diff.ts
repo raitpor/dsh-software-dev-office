@@ -8,7 +8,7 @@
  * 它防的是“agent 在编排里替人点了接受”，不是防伪（卡 A2 / Lead m01107）。
  */
 
-import { append } from '../db/write.js';
+import { appendAsTool } from '../db/write.js';
 import type { SdoDatabase } from '../db/driver.js';
 import type { ActorKind, AlignWriteResult, DiffDisposition, DiffKind } from './gate.js';
 import {
@@ -159,7 +159,7 @@ export function disposeDiff(db: SdoDatabase, input: DisposeDiffInput): AlignWrit
     requestId,
   });
 
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], input.actor, input.actorKind);
   if (!result.ok) {
     return writeFailure(
       'write_failed',

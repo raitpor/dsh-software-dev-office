@@ -1,3 +1,4 @@
+import { appendAs as append } from '../db/append-auth.js';
 /**
  * M3-3 C1/C2/C3/C5：独立性的真路径（真 signerd、真事件链、注入时钟）。
  *
@@ -6,6 +7,7 @@
  * - C3 门禁：单签 baseline 的 stage 判定 ⇒ changes_requested + independence_unsatisfied。
  * - C5 verify：删一条 decision.signed / 把 signer 改回同一人 ⇒ 红。
  */
+import { grantFixtureRoster } from '../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -17,7 +19,7 @@ import { randomUUID } from 'node:crypto';
 import { computeEventHash } from '../../src/core/verify-events.js';
 import type { Event } from '../../src/core/fold/types.js';
 import { verify } from '../../src/core/verify.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { previewFreeze, confirmFreeze } from '../../src/db/freeze.js';
 import { buildEvent } from '../../src/db/freeze-store.js';
 import { judgeStage } from '../../src/db/gate.js';
@@ -51,8 +53,9 @@ async function withClockRig(run: (rig: ClockRig) => Promise<void>): Promise<void
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), TEST_PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     for (const actor of [TEST_ACTOR, BOB]) {
-      db.prepare("INSERT INTO actor (id, kind, display, at) VALUES (?, 'human', ?, ?)").run(
+      db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', ?, ?)").run(
         actor,
         actor,
         AT.toISOString(),

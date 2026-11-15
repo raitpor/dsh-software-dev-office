@@ -27,8 +27,8 @@ test('C7：src/align/**/*.ts 不出现写 SQL 关键词（INSERT/UPDATE/DELETE�
 });
 
 test('C7：src/align/ 的写入只经 write.ts 的 append()', () => {
-  const callers = alignSources().filter((file) => /\bappend\s*\(\s*db\b/.test(readFileSync(file, 'utf8')));
-  assert.ok(callers.length > 0, '至少 restatement.ts/diff.ts 会调用 append()');
+  const callers = alignSources().filter((file) => /\b(?:append|appendAsTool)\s*\(\s*db\b/.test(readFileSync(file, 'utf8')));
+  assert.ok(callers.length > 0, '至少 restatement.ts/diff.ts 会调用 append/appendAsTool()');
   for (const file of callers) {
     assert.match(
       readFileSync(file, 'utf8'),

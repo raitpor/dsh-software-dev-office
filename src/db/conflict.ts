@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto';
 
 import type { SdoDatabase } from './driver.js';
-import { append, chainHead } from './write.js';
+import { appendAsTool, chainHead } from './write.js';
 import { canonicalJson, sha256Hex } from '../core/fold/canonical.js';
 import type { Event } from '../core/fold/types.js';
 import { computeEventHash } from '../core/verify-events.js';
@@ -22,7 +22,14 @@ import type {
 import type { Session } from '../core/auth/session.js';
 import type { SignerdClient } from '../sign/client.js';
 import { signDecision, type DecisionRequest } from '../sign/decision.js';
-import { conflictDetectedPayloadHash, mintConflictDetectedAuthority } from './conflict-authority.js';
+import { conflictDetectedPayloadHash, createConflictAuthority } from './conflict-authority.js';
+
+/** 本模块私有：mint 只在此持有；对外只暴露 consume（写网关用）。 */
+const CONFLICT_AUTHORITY = createConflictAuthority();
+
+export function consumeConflictDetectedAuthority(eventId: string, payloadHash: string): boolean {
+  return CONFLICT_AUTHORITY.consume(eventId, payloadHash);
+}
 
 export interface ConflictResolveRequest {
   readonly conflict_id: string;
@@ -146,7 +153,7 @@ export async function resolveConflict(
     at,
     prev: chainHead(db),
   });
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], session.actor, session.actor_kind);
   if (!result.ok) {
     return fail('resolution_not_signed', `conflict.resolved append rejected: ${String(result.reason_code)}: ${result.message ?? ''}`);
   }
@@ -193,6 +200,6 @@ export function buildConflictDetectedEvent(input: {
     request_id: `req-conflict-${input.conflictId}`,
     prev: input.prev,
   };
-  mintConflictDetectedAuthority(base.id, conflictDetectedPayloadHash(base.payload));
+  CONFLICT_AUTHORITY.mint(base.id, conflictDetectedPayloadHash(base.payload));
   return { ...base, hash: computeEventHash({ ...base, hash: '' } as Event) };
 }

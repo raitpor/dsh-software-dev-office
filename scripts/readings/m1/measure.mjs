@@ -20,7 +20,8 @@ import { fold } from '../../../lib/src/core/fold/index.js';
 import { validateBaseline } from '../../../lib/src/core/baseline/index.js';
 import { registerCriterion } from '../../../lib/src/core/criteria/register.js';
 import { GENESIS_PREV, computeEventHash, readEvents } from '../../../lib/src/core/verify-events.js';
-import { append, chainHead } from '../../../lib/src/db/write.js';
+import { chainHead } from '../../../lib/src/db/write.js';
+import { appendAs as append } from '../../../lib/test/db/append-auth.js';
 import { importClaims, expectedClaimRow } from '../../../lib/src/claim/gateway.js';
 import { readExportFile } from '../../../lib/src/importer/parse.js';
 import { collectInvalidatedWorkUnits, previewChange } from '../../../lib/src/preview/index.js';
@@ -111,6 +112,8 @@ function intentSeeds(contentHash, at = AT) {
       payload_hash: intentHash,
       frontier: 'f-1',
       payload: intentPayload,
+      // M3-1 P3-3：producer 是审计归属（未登记 actor，软校验放行；不参与授权）。
+      producer: 'readings-agent',
     }, at),
     seed('m1g-d-int-signed', 'decision.signed', 'd-int', signedDecisionPayload('d-int', intentHash, 'f-1', at), at),
     seed('m1g-intent', 'intent.signed', 'INT-1', {

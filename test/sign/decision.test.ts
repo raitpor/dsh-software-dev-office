@@ -1,6 +1,8 @@
+import { appendAs as append } from '../db/append-auth.js';
 /**
  * M2-0 C3/C4/C5/C8/C9：decision 真路径——不盲签、不可代签、网关验签、verify 认账。
  */
+import { grantFixtureRoster } from '../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -15,7 +17,7 @@ import { computeEventHash } from '../../src/core/verify-events.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
-import { append, chainHead } from '../../src/db/write.js';
+import { chainHead } from '../../src/db/write.js';
 import { SignerdClient } from '../../src/sign/client.js';
 import { canonicalJson, sha256Hex } from '../../src/core/fold/canonical.js';
 import { signerdPaths } from '../../src/sign/paths.js';
@@ -45,6 +47,7 @@ async function withRigAndDb(run: (db: SdoDatabase, rig: SignerdRig) => Promise<v
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), TEST_PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     await run(db, rig);
   } finally {
     db.close();
@@ -129,6 +132,25 @@ test('C5: 调用方命题与 renderer 不一致 ⇒ no_blind_sign；一致才通
     proposition: renderProposition({ subject: 'sdo.m2', value: 'ship', consequence: '授权链变真' }),
   });
   assert.equal('reason_code' in consistent, false);
+});
+
+test('M3-1 P2-1：decision.valid 的 actor 绑签名会话，生产者归 payload.producer；signed 仍记签名者', async () => {
+  await withRigAndDb(async (db, rig) => {
+    await unlock(db, rig.client);
+    const outcome = await signDecision(db, rig.client, baseRequest(chainHead(db)));
+    assert.equal(outcome.ok, true);
+    if (!outcome.ok) return;
+    const events = rows(db, "SELECT kind, actor, payload FROM event WHERE kind IN ('decision.valid','decision.signed') ORDER BY rowid");
+    assert.equal(events.length, 2);
+    const valid = events[0] ?? {};
+    const signed = events[1] ?? {};
+    assert.equal(valid['kind'], 'decision.valid');
+    assert.equal(valid['actor'], TEST_ACTOR, 'valid.actor 必须是会话 actor（签名发起者），不是自述生产者');
+    const validPayload = JSON.parse(String(valid['payload'])) as Record<string, unknown>;
+    assert.equal(validPayload['producer'], TEST_PRODUCER, '生产者只作 payload 归属信息');
+    assert.equal(signed['kind'], 'decision.signed');
+    assert.equal(signed['actor'], TEST_ACTOR, 'signed.actor 是签名者，不受该规则影响');
+  });
 });
 
 test('C3: 未解锁 ⇒ awaiting_unlock，decision 0 行且事件 0 条', async () => {
@@ -254,6 +276,7 @@ function withPlainDb(run: (db: SdoDatabase) => void): void {
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), TEST_PASSPHRASE);
   try {
     runMigrations(db);
+    grantFixtureRoster(db);
     run(db);
   } finally {
     db.close();
@@ -432,6 +455,7 @@ test('P1-1 第 3 轮：真实两进程时序（signerd 子进程 + 并发 append
     const db = openSdoDatabase(join(dbDir, 'state', 'sdo.db'), TEST_PASSPHRASE);
     try {
       runMigrations(db);
+      grantFixtureRoster(db);
       const unlocked = await unlockSigner(db, client, {
         actor: TEST_ACTOR,
         actor_kind: 'human',

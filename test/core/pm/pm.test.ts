@@ -1,17 +1,17 @@
+import { appendAs as append } from '../../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { canonicalJson, sha256Hex } from '../../../src/core/fold/canonical.js';
 import { readEvents } from '../../../src/core/verify-events.js';
 import { verify } from '../../../src/core/verify.js';
-import { append } from '../../../src/db/write.js';
+
 import {
   PM_REASON_CODES,
   SEATS,
   actionFor,
   assignCard,
   createCard,
-  escalate,
   grant,
   hasPmRight,
   isPmUnblockable,
@@ -30,6 +30,7 @@ import {
   ev,
   eventCount,
   openTempDb,
+  pmSession,
   seedBase,
   tableCount,
   withPmDb,
@@ -199,7 +200,6 @@ test('C3 request_sign 只落请求（不产生 decision 行）；同 (计算 has
     assert.equal((request?.payload as Record<string, unknown>)['actor_kind'], 'human');
 
     assert.equal(sign().reason_code, 'not_a_signer');
-    assert.equal(escalate().reason_code, 'not_implemented');
     assert.equal(grant().reason_code, 'not_implemented');
   } finally {
     temp.close();
@@ -323,7 +323,7 @@ test('C5 七个 reason_code 都有合法动作；wait 不写事件、unclaimed �
         { actor: 'lead' },
       ),
     ]);
-    const before = readPmQueue(db, 'lead');
+    const before = readPmQueue(db, 'lead', pmSession('lead'));
     assert.equal(before.ok, true);
     if (!before.ok) return;
     const row = before.rows.find((item) => item.subject_id === 'TASK-Q');
@@ -331,7 +331,7 @@ test('C5 七个 reason_code 都有合法动作；wait 不写事件、unclaimed �
     assert.equal(row?.reason_code, 'unclaimed');
     const assigned = assignCard(db, PM, { taskId: 'TASK-Q', assignee: 'impl-core' });
     assert.equal(assigned.ok, true);
-    const after = readPmQueue(db, 'lead');
+    const after = readPmQueue(db, 'lead', pmSession('lead'));
     assert.equal(after.ok, true);
     if (!after.ok) return;
     assert.equal(after.rows.find((item) => item.subject_id === 'TASK-Q'), undefined);
@@ -367,11 +367,10 @@ test('C5 rework 幂等键 (change_id, subject) 生效', () => {
 });
 
 // C6 未实现动作零写
-test('C6 escalate/grant/sign 明确拒绝且不产生事件', () => {
+test('C6 grant/sign 明确拒绝且不产生事件（escalate 自 M3-5 起是真动作）', () => {
   withPmDb((db) => {
     seedBase(db);
     const before = eventCount(db);
-    assert.equal(escalate().reason_code, 'not_implemented');
     assert.equal(grant().reason_code, 'not_implemented');
     assert.equal(sign().reason_code, 'not_a_signer');
     assert.equal(eventCount(db), before);
@@ -407,8 +406,8 @@ test('C7 动作留痕 actor=PM；verify 绿；重放后 pm_queue 逐行相等', 
     try {
       const replay = append(second.db, events);
       assert.equal(replay.ok, true, JSON.stringify(replay));
-      const queueA = readPmQueue(first.db, 'lead');
-      const queueB = readPmQueue(second.db, 'lead');
+      const queueA = readPmQueue(first.db, 'lead', pmSession('lead'));
+      const queueB = readPmQueue(second.db, 'lead', pmSession('lead'));
       assert.equal(queueA.ok, true);
       assert.equal(queueB.ok, true);
       if (!queueA.ok || !queueB.ok) return;
@@ -469,7 +468,7 @@ test('P2-2 readPmQueue 对未知/空 actor fail-closed ⇒ no_permission', () =>
       if (result.ok) return;
       assert.equal(result.reason_code, 'no_permission');
     }
-    const lead = readPmQueue(db, 'lead');
+    const lead = readPmQueue(db, 'lead', pmSession('lead'));
     assert.equal(lead.ok, true);
   });
 });
@@ -526,7 +525,7 @@ test('C5(b) gate_red：requestRework 真落返工卡 + 事件 + 幂等', () => {
     seedBase(db);
     db.prepare(`INSERT INTO stage_run (id, stage, gate_id, baseline_hash, entered_at, exited_at, verdict, criteria, at)
       VALUES ('SR-1', 'build', 'G_build', 'b1', '2026-11-15T00:00:00Z', '2026-11-15T01:00:00Z', 'changes_requested', '[]', '2026-11-15T01:00:00Z')`).run();
-    const queue = readPmQueue(db, PM.actor);
+    const queue = readPmQueue(db, PM.actor, pmSession(PM.actor));
     assert.equal(queue.ok, true);
     if (!queue.ok) return;
     assert.ok(queue.rows.some((row) => row.reason_code === 'gate_red' && row.action === 'rework'));
@@ -615,7 +614,7 @@ test('C5(b) sampled_review：建评审卡并派给 reviewer（产物 + 事件 + 
         scope_paths: ['src/core/pm/**'],
       }),
     ]);
-    const queue = readPmQueue(db, PM.actor);
+    const queue = readPmQueue(db, PM.actor, pmSession(PM.actor));
     assert.equal(queue.ok, true);
     if (!queue.ok) return;
     assert.ok(queue.rows.some((row) => row.reason_code === 'sampled_review' && row.action === 'dispatch'));
@@ -647,7 +646,7 @@ test('C5(b) assumption_open：raiseAttention 真落 attention（幂等，不重�
     const task = createCard(db, PM, card({ seq: 30, title: '假设处置卡' }));
     assert.equal(task.ok, true);
     if (!task.ok) return;
-    const queue = readPmQueue(db, PM.actor);
+    const queue = readPmQueue(db, PM.actor, pmSession(PM.actor));
     assert.equal(queue.ok, true);
     if (!queue.ok) return;
     assert.ok(queue.rows.some((row) => row.reason_code === 'assumption_open'));
@@ -688,7 +687,7 @@ test('C5(b) waiting_human：baseline.rejected 派生行 + raiseAttention 真落 
     const task = createCard(db, PM, card({ seq: 40, title: '冻结被拒的处置卡' }));
     assert.equal(task.ok, true);
     if (!task.ok) return;
-    const queue = readPmQueue(db, PM.actor);
+    const queue = readPmQueue(db, PM.actor, pmSession(PM.actor));
     assert.equal(queue.ok, true);
     if (!queue.ok) return;
     assert.ok(queue.rows.some((row) => row.reason_code === 'waiting_human'));
@@ -731,14 +730,14 @@ test('C5(a) blocked+lease_expired：unblock 后 readPmQueue 的 blocked 行消�
     appendSeeds(db, [
       ev('task.blocked', created.task_id, { block_code: 'lease_expired' }, { actor: 'lead', at: '2026-11-14T00:00:00Z' }),
     ]);
-    const before = readPmQueue(db, PM.actor);
+    const before = readPmQueue(db, PM.actor, pmSession(PM.actor));
     assert.equal(before.ok, true);
     if (!before.ok) return;
     assert.ok(before.rows.some((row) => row.reason_code === 'blocked' && row.subject_id === created.task_id));
 
     const unblocked = unblockCard(db, PM, { taskId: created.task_id });
     assert.equal(unblocked.ok, true);
-    const after = readPmQueue(db, PM.actor);
+    const after = readPmQueue(db, PM.actor, pmSession(PM.actor));
     assert.equal(after.ok, true);
     if (!after.ok) return;
     assert.equal(

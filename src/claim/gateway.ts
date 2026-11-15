@@ -20,7 +20,7 @@ import { canonicalJson } from '../core/fold/canonical.js';
 import type { Event } from '../core/fold/types.js';
 import { computeEventHash } from '../core/verify-events.js';
 import type { SdoDatabase } from '../db/driver.js';
-import { append, chainHead } from '../db/write.js';
+import { appendAsTool, chainHead } from '../db/write.js';
 import { landingEvents } from '../importer/rebuild.js';
 import type { ExportClaim } from '../importer/parse.js';
 import { isRegisteredRenderer } from './catalog.js';
@@ -240,25 +240,32 @@ export function importClaims(db: SdoDatabase, claims: readonly ExportClaim[]): C
   }
   if (fresh.length === 0) return result({ ok: true, skipped });
 
-  const events = rebaseEvents(db, fresh.flatMap((item) => landingEvents(item.claim)));
-  const appended = append(db, events);
-  if (!appended.ok) {
-    return failure('event_rejected', appended.message ?? `append rejected: ${String(appended.reason_code)}`, {
-      skipped,
-      events_written: appended.written,
-      resumable: appended.written > 0,
-      next_step: appended.written > 0 ? 'render_only' : undefined,
-    });
+  // M3-1：每条 claim 的事件 actor = 该 claim 的 actor（会话必须等于事件 actor）。
+  // 不同 claim 的 actor 可以不同，因此按 claim 逐条 append；链头每条重算。
+  let eventsWritten = 0;
+  for (const item of fresh) {
+    const events = rebaseEvents(db, landingEvents(item.claim));
+    const actor = item.claim.actor;
+    const appended = appendAsTool(db, events, actor);
+    if (!appended.ok) {
+      return failure('event_rejected', appended.message ?? `append rejected: ${String(appended.reason_code)}`, {
+        skipped,
+        events_written: eventsWritten + appended.written,
+        resumable: eventsWritten + appended.written > 0,
+        next_step: eventsWritten + appended.written > 0 ? 'render_only' : undefined,
+      });
+    }
+    eventsWritten += appended.written;
   }
   const written = writeClaimRows(db, fresh.map((item) => item.row));
   if (!written.ok) {
-    return { ...written, skipped, events_written: appended.written, resumable: true, next_step: 'render_only' };
+    return { ...written, skipped, events_written: eventsWritten, resumable: true, next_step: 'render_only' };
   }
   return result({
     ok: true,
     written: written.written,
     skipped,
-    events_written: appended.written,
+    events_written: eventsWritten,
     claims_written: written.written,
   });
 }

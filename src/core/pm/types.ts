@@ -29,6 +29,11 @@ export interface PmContext {
   readonly producer?: string;
   /** 可注入时钟（毫秒）；用于生成确定性 subject id（P3-2）。 */
   readonly now?: () => number;
+  /**
+   * M3-5：权限端口（`docs/07` §2 的动作权）。缺省时回退到静态席位表
+   * （M3-1 交付前）；M3-1 落地后由调用方注入 `src/core/auth` 的适配器。
+   */
+  readonly rights?: import('./access.js').RightsPort;
 }
 
 export interface PmFailure {

@@ -7,7 +7,7 @@
  * 两个动作都只经 `append()` 写事件；不做物化、不碰 reducer（reducer 在 src/core/fold）。
  */
 
-import { append } from '../db/write.js';
+import { appendAsTool } from '../db/write.js';
 import type { SdoDatabase } from '../db/driver.js';
 import type { AlignmentInputEdge, AlignWriteResult } from './gate.js';
 import {
@@ -216,7 +216,7 @@ export function proposeRestatement(
     requestId,
   });
 
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], input.actor, 'human');
   if (!result.ok) {
     return writeFailure(
       'write_failed',
@@ -286,7 +286,7 @@ export function invalidateRestatement(
     requestId,
   });
 
-  const result = append(db, [event]);
+  const result = appendAsTool(db, [event], input.actor, 'human');
   if (!result.ok) {
     return writeFailure(
       'write_failed',
