@@ -1,0 +1,206 @@
+{
+  "card": "M2-G",
+  "generatedAt": "2026-11-15T02:10:10.523Z",
+  "command": "npm run readings:m2",
+  "node": "v26.13.1",
+  "readings": {
+    "R1": {
+      "id": "R1",
+      "question": "未解锁时签字 ⇒ awaiting_unlock，且 0 条 decision 行（在非空库上）",
+      "command": "node scripts/m2-readings.mjs --only R1",
+      "raw": {
+        "reason_code": "awaiting_unlock",
+        "decisions": 0,
+        "events_before": 1,
+        "events_after": 1,
+        "non_empty_db": true
+      },
+      "verdict": "pass",
+      "caveat": "数据来源：SigningPageService.confirm → signDecision → SignerdClient.sign 真路径；事件数来自 event 表，decision 行数来自 decision 表（库先由 task.created 垫成非空，排除空库恒真）。"
+    },
+    "R2": {
+      "id": "R2",
+      "question": "免密窗口内 frontier 改变后再签 ⇒ 要求重新解锁（frontier_stale/awaiting_unlock），decision 行数不变",
+      "command": "node scripts/m2-readings.mjs --only R2",
+      "raw": {
+        "first_sign": "ok",
+        "decisions_after_first": 1,
+        "second_sign": "frontier_stale",
+        "decisions_after_second": 1,
+        "window_locked_after": true,
+        "frontier_changed": true
+      },
+      "verdict": "pass",
+      "caveat": "数据来源：签字页 confirm 第二段 → signerd（窗口 frontier 失配）；decisions 由 decision 表计数，不静默续窗。"
+    },
+    "R3": {
+      "id": "R3",
+      "question": "decision 缺 proposition / proposition 与 renderer 不一致 ⇒ no_blind_sign，0 行",
+      "command": "node scripts/m2-readings.mjs --only R3",
+      "raw": {
+        "missing_or_empty_proposition": "no_blind_sign",
+        "forged_proposition": "no_blind_sign",
+        "decisions": 0
+      },
+      "verdict": "pass",
+      "caveat": "数据来源：签字页 confirm 的命题复算闸门（服务端）；空命题与伪命题两例。"
+    },
+    "R4": {
+      "id": "R4",
+      "question": "agent 凭据签字 ⇒ not_a_signer、0 decision 行，且 security.alert 真落库",
+      "command": "node scripts/m2-readings.mjs --only R4",
+      "raw": {
+        "reason_code": "not_a_signer",
+        "decisions": 0,
+        "security_alert_events": 1
+      },
+      "verdict": "pass",
+      "caveat": "数据来源：签字页 confirm 传入 actorKind=agent → signDecision 拒并落 security.alert；告警数查 event 表，不拿返回码充数。"
+    },
+    "R5": {
+      "id": "R5",
+      "question": "单次签字工具侧耗时（unlock_wait + sign）中位 ≤10s；人类样本缺失时诚实 partial",
+      "command": "node scripts/m2-readings.mjs --only R5",
+      "raw": {
+        "design": "TTL=0；5 条样本，每条 unlock → confirm；真墙钟；signDelayMs 注入",
+        "injected_delay_ms": 20,
+        "samples": 5,
+        "decisions": 5,
+        "per_sample": [
+          {
+            "unlock_wait_ms": 1,
+            "sign_ms": 20,
+            "total_ms": 21
+          },
+          {
+            "unlock_wait_ms": 1,
+            "sign_ms": 20,
+            "total_ms": 21
+          },
+          {
+            "unlock_wait_ms": 1,
+            "sign_ms": 21,
+            "total_ms": 22
+          },
+          {
+            "unlock_wait_ms": 1,
+            "sign_ms": 20,
+            "total_ms": 21
+          },
+          {
+            "unlock_wait_ms": 1,
+            "sign_ms": 21,
+            "total_ms": 22
+          }
+        ],
+        "median_total_ms": 21,
+        "median_le_10s": true,
+        "unlock_wait_positive_samples": 5,
+        "unlock_wait_zero_samples": 0,
+        "sign_ms_positive_samples": 5,
+        "human_samples": 0
+      },
+      "verdict": "partial",
+      "caveat": "数据来源：签字页 confirm → signerd 回执的 signerd_unlock_wait_ms + sign_ms（真墙钟，未冻结时钟；signDelayMs=20 注入使 sign_ms 可观测）。**没有人类样本**：不含人读命题/思考时间，G4“人签中位 ≤10s”在 M2 内不可测量，本行只证明工具侧代理 ≤10s，等 M3 影子期真实使用样本；**22ms 中位含 20ms 注入延迟（injected_delay_ms=20），不是产品耗时**；因此 verdict=partial、overall≤partial。样本设计：TTL=0，5 条各自重新解锁（unlock_wait>0 样本数见 raw）。"
+    },
+    "R6": {
+      "id": "R6",
+      "question": "免密窗口默认关闭（TTL=0 第二次签需重新授权）；显式 TTL>0 才允许一次解锁连签",
+      "command": "node scripts/m2-readings.mjs --only R6",
+      "raw": {
+        "default_ttl0": {
+          "first": "ok",
+          "second": "awaiting_unlock",
+          "decisions": 1
+        },
+        "window_ttl5": {
+          "first": "ok",
+          "second": "ok",
+          "submit": "ok",
+          "decisions": 2,
+          "unlock_wait_second": 0
+        }
+      },
+      "verdict": "pass",
+      "caveat": "数据来源：签字页 TTL=0/TTL=5 两条真路径；窗口连签用同一会话两待签项 + 一次 unlock，第二条第 signerd_unlock_wait_ms=0。"
+    },
+    "R7": {
+      "id": "R7",
+      "question": "M1 遗留 R7 复跑：gate.judged 行与 stage_run 已判行一致，verify 能对账（M1 时表不存在 ⇒ partial）",
+      "command": "node scripts/m2-readings.mjs --only R7",
+      "raw": {
+        "m1_verdict": "partial",
+        "m1_reason": "`stage_run` 表在 001 存在，0 行是真断言；`gate`/`gate.judged` 在当前迁移（001–005）不存在 ⇒ 0 行是平凡真，本读数因此记 **partial**（不是空过 pass），M2 建表后必须复跑；sdo_check 只跑 3 个真实入口（provenance/spec_set/gate req）。",
+        "m1_measured": {
+          "runs": [
+            {
+              "args": [
+                "--criterion",
+                "provenance.present"
+              ],
+              "status": 0,
+              "mode": "criterion",
+              "result": "pass",
+              "preview": true,
+              "judged": false,
+              "baseline": null
+            },
+            {
+              "args": [
+                "--criterion",
+                "spec_set.signed"
+              ],
+              "status": 0,
+              "mode": "criterion",
+              "result": "fail",
+              "preview": true,
+              "judged": false,
+              "baseline": null
+            },
+            {
+              "args": [
+                "--gate",
+                "req",
+                "--preset",
+                "waterfall"
+              ],
+              "status": 0,
+              "mode": "gate",
+              "result": "fail",
+              "preview": true,
+              "judged": false,
+              "baseline": null
+            }
+          ],
+          "counts": [
+            {
+              "table": "stage_run",
+              "exists": true,
+              "rows": 0
+            },
+            {
+              "table": "gate",
+              "exists": false,
+              "rows": 0
+            },
+            {
+              "table": "gate.judged",
+              "exists": false,
+              "rows": 0
+            }
+          ],
+          "zero": true,
+          "missing_gate_table": true
+        },
+        "m2_result": "ok",
+        "gate_judged_events": 1,
+        "judged_stage_run_rows": 1,
+        "verify_ok": true,
+        "verify_problems": 0
+      },
+      "verdict": "pass",
+      "caveat": "数据来源：真冻结核事务 → stage.entered → M2-2 门禁真路径 judgeStage（非测试直插）；gate.judged 事件数与 stage_run 判定行数分别查库。M1 读数 ⑦ partial 的原因保留在此对照。"
+    }
+  },
+  "overall": "partial"
+}
