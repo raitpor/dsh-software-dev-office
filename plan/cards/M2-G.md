@@ -4,7 +4,7 @@ seq: 26
 milestone: M2
 owner: impl-core
 write_scope: [scripts/, package.json, test/readings/, plan/milestone/, plan/cards/M2-G.md]
-status: open
+status: done
 created_at: 2026-11-14
 ---
 
