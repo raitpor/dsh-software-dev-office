@@ -15,6 +15,11 @@ import type { VerifyProblem } from '../core/verify-types.js';
 import { appliesToKinds, catalogCodes, criterionMeta, type StageKind } from '../core/criteria/catalog.js';
 import { evaluateBinding, type BindingResult, type Policy } from '../core/criteria/binding.js';
 import { evaluateDeadField } from './deadfield.js';
+import {
+  coveredSpecIdsFromDecisions,
+  coveredSpecIdsOfSigned,
+  validateAssumptionStatuses,
+} from '../core/assumption/index.js';
 
 export type CheckVerdict = 'pass' | 'fail' | 'na' | 'unknown';
 
@@ -78,14 +83,6 @@ function text(value: unknown): string {
   return typeof value === 'string' ? value : '';
 }
 
-function specIdsOf(row: Row): readonly string[] {
-  const payload = row['payload'];
-  if (payload === null || typeof payload !== 'object') return [];
-  const ids = (payload as Record<string, unknown>)['spec_ids'];
-  if (!Array.isArray(ids)) return [];
-  return ids.filter((id): id is string => typeof id === 'string');
-}
-
 function signedDecisions(state: FoldState, kind: string): readonly Row[] {
   return rowsOf(state, 'decision').filter(
     (row) =>
@@ -96,9 +93,8 @@ function signedDecisions(state: FoldState, kind: string): readonly Row[] {
 }
 
 function coveredSpecIds(decisions: readonly Row[]): readonly string[] {
-  const ids = new Set<string>();
-  for (const decision of decisions) for (const id of specIdsOf(decision)) ids.add(id);
-  return [...ids].sort();
+  // P3-③（第 2 轮）：单一实现（core/assumption），gate/check 同源。
+  return coveredSpecIdsFromDecisions(decisions);
 }
 
 function boundFrontier(decisions: readonly Row[]): boolean {
@@ -216,11 +212,17 @@ function evaluateAssumptionSetSigned(state: FoldState): Pick<CriterionCheck, 're
   const assumptions = assumptionSpecs(state);
   const assumptionIds = assumptions.map((row) => text(row['id'])).filter((id) => id.length > 0).sort();
   const reasons: CheckReason[] = [];
-  for (const row of assumptions) {
-    if (row['status'] === 'open') reasons.push({ code: 'open_assumption', detail: text(row['id']) });
+  // P3-③（第 1 轮评审）：open 检查与条件②统一由 validateAssumptionStatuses 一处产出，
+  // 不在 check 里再手写一份 open 循环（M2-4 接进来时才不会漂移）。
+  for (const problem of validateAssumptionStatuses(state)) {
+    // 对外契约：open_assumption 的 detail 是 spec id（M2-2 既有读数），条件②则保留判定说明。
+    reasons.push({
+      code: problem.code,
+      detail: problem.code === 'open_assumption' ? problem.spec_id : problem.detail,
+    });
   }
   const signed = signedDecisions(state, 'assumption_set');
-  const covered = coveredSpecIds(signed);
+  const covered = coveredSpecIdsOfSigned(state, 'assumption_set');
   if (signed.length === 0) {
     reasons.push({ code: 'assumption_set_not_signed' });
   } else {

@@ -11,6 +11,7 @@ import {
   upsert,
 } from '../guards.js';
 import type { Event, FoldWorking } from '../types.js';
+import { applyAssumptionSetRevocation } from '../../assumption/cascade.js';
 
 const DECISION_KINDS = [
   'sign', 'intent', 'plan', 'spec_set', 'assumption_set', 'freeze', 'baseline', 'waiver', 'rollback',
@@ -86,6 +87,10 @@ export function decisionRevoked(state: FoldWorking, event: Event): void {
     revoked_at: event.at,
     revoke_reason: reqString(event, payloadOf(event), 'reason'),
   });
+  // C6：撤销 assumption_set 时把该 decision 投影出的处置级联回 open（幂等派生，不另存状态）。
+  if (row['decision_kind'] === 'assumption_set') {
+    applyAssumptionSetRevocation(state, event, id);
+  }
 }
 
 export function decisionRejected(state: FoldWorking, event: Event): void {
@@ -96,6 +101,15 @@ export function decisionRejected(state: FoldWorking, event: Event): void {
   }
   if (row['status'] !== 'valid') {
     return fail(event, `decision ${id} is ${String(row['status'])}; only valid decisions can transition`);
+  }
+  // P2-1（第 1 轮评审）：已签决策不能再被 rejected——否则已投影的处置会被卡死
+  // （verify 红 assumption_decision_invalid，revoke 与 re-dispose 都被拒）。
+  // 撤销已签决策的唯一路径是 decision.revoked（带签字、级联回 open）。
+  if (String(row['signature'] ?? '').length > 0) {
+    return fail(
+      event,
+      `decision ${id} is already signed (decision_already_signed); use decision.revoked to revoke a signed decision`,
+    );
   }
   upsert(state, 'decision', id, {
     ...row,

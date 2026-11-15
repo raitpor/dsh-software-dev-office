@@ -30,7 +30,8 @@ test('P1-5 inputs 边按 hash 失效：确认后再改上游 ⇒ 回 open，幂�
   assert.equal(state.tables.spec['A-1']?.['invalidated_reason'], 'inputs hash changed');
   const keys = state.invalidatedKeys;
   assert.equal(keys.length, 1);
-  assert.equal(keys[0]?.split('|').length, 3, '幂等键是 spec_id|input_id|旧 hash');
+  // M2-3 第 1 轮 P3-①：键带 edge.kind（跨表同 id/同 hash 不能被合并）。
+  assert.equal(keys[0]?.split('|').length, 4, '幂等键是 edge.kind|spec_id|input_id|旧 hash');
 
   const replay = fold(state, []);
   assert.deepEqual(replay.invalidatedKeys, keys);

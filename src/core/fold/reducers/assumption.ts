@@ -10,6 +10,7 @@ import {
   upsert,
 } from '../guards.js';
 import { decisionPayload, requireSignedDecision } from '../decisions.js';
+import { parseDispositionEntry } from '../../assumption/index.js';
 import { TABLE_NAMES, type Event, type FoldWorking, type InputEdge, type Row } from '../types.js';
 import { rowHash } from '../canonical.js';
 import { specRow } from './spec.js';
@@ -66,29 +67,20 @@ export function assumptionRecorded(state: FoldWorking, event: Event): void {
   createOnce(state, event, 'spec', id, specRow(event, id, 'assumption'));
 }
 
-/** docs/03:70：覆盖名单只认签名载荷，不是事件回填。 */
+/**
+ * docs/03:70 / docs/04 §5.2：覆盖名单只认签名载荷的 `spec_ids[]` + `dispositions[]`。
+ * C2：**不再回退到 `covered_spec_ids`**（M1-0 第 52 轮洞：事件/载荷自带名单不可信）。
+ */
 function decisionCovers(decision: Row, assumptionId: string, disposition: string): boolean {
   const payload = decisionPayload(decision);
-  const ids = Array.isArray(payload?.['spec_ids'])
-    ? (payload['spec_ids'] as unknown[])
-    : Array.isArray(payload?.['covered_spec_ids'])
-      ? (payload['covered_spec_ids'] as unknown[])
-      : [];
+  const ids = Array.isArray(payload?.['spec_ids']) ? (payload['spec_ids'] as unknown[]) : [];
   if (!ids.includes(assumptionId)) {
     return false;
   }
-  const dispositions = Array.isArray(payload?.['dispositions'])
-    ? (payload['dispositions'] as unknown[])
-    : [];
+  const dispositions = Array.isArray(payload?.['dispositions']) ? (payload['dispositions'] as unknown[]) : [];
   return dispositions.some((item) => {
-    if (item === null || typeof item !== 'object' || Array.isArray(item)) {
-      return false;
-    }
-    const entry = item as Record<string, unknown>;
-    return (
-      (entry['spec_id'] === assumptionId || entry['id'] === assumptionId) &&
-      entry['disposition'] === disposition
-    );
+    const entry = parseDispositionEntry(item);
+    return entry !== undefined && entry.spec_id === assumptionId && entry.disposition === disposition;
   });
 }
 
@@ -123,22 +115,19 @@ export function assumptionDisposed(state: FoldWorking, event: Event): void {
   });
 }
 
-export function assumptionInvalidated(state: FoldWorking, event: Event): void {
-  const payload = payloadOf(event);
-  const id = subjectId(event);
-  const row = rowOf(state, 'spec', id);
-  if (row === undefined) {
-    return fail(event, `assumption ${id} does not exist`);
-  }
-  if (row['kind'] !== 'assumption') {
-    return fail(event, `spec ${id} is not an assumption; only assumptions can be invalidated`);
-  }
-  upsert(state, 'spec', id, {
-    ...row,
-    status: 'open',
-    invalidated_reason: reqString(event, payload, 'reason'),
-    invalidated_at: event.at,
-  });
+/**
+ * `assumption.invalidated` 是 **fold 派生读数**，不是可写事件（台账 D-078）：
+ * 失效由 `propagateInvalidations` 在 inputs hash 变化/目标消失时自动产生（回 open + 幂等键），
+ * 不允许任何人靠 append 这个 kind 撤销已签处置——否则 C4「处置是唯一迁移生产者」就是假的。
+ *
+ * kind 仍登记在 003 种子里只为旧库 FK 兼容；写网关已在入口前置拒（`assumption_invalidated_is_derived`），
+ * 这里再拒一次，保证绕过网关直接 fold 旧事件时也不会被当成状态迁移。v2.1 删 kind。
+ */
+export function assumptionInvalidated(_state: FoldWorking, event: Event): void {
+  return fail(
+    event,
+    'assumption.invalidated 是派生读数，不是可写事件（assumption_invalidated_is_derived）',
+  );
 }
 
 export const ASSUMPTION_REDUCERS = {

@@ -18,6 +18,14 @@ export function propagateInvalidations(state: FoldWorking, event: Event): void {
       const table = state.tables[edge.kind as TableName];
       const target: Row | undefined = table?.[edge.id];
       if (target === undefined) {
+        // C5：输入行消失也视为“输入变了”——落一次失效、不删边（docs/03:77）。
+        // P3-①（第 1 轮评审）：幂等键带 edge.kind——跨表同 id/同 hash 不能被合并成一条。
+      const key = `${edge.kind}|${owner}|${edge.id}|${edge.hash}`;
+        if (state.invalidatedSeen[key] !== true) {
+          state.invalidatedSeen[key] = true;
+          state.invalidatedKeys.push(key);
+          invalidated = true;
+        }
         rebuilt.push(edge);
         continue;
       }
@@ -26,7 +34,8 @@ export function propagateInvalidations(state: FoldWorking, event: Event): void {
         rebuilt.push(edge);
         continue;
       }
-      const key = `${owner}|${edge.id}|${edge.hash}`;
+      // P3-①（第 1 轮评审）：幂等键带 edge.kind——跨表同 id/同 hash 不能被合并成一条。
+      const key = `${edge.kind}|${owner}|${edge.id}|${edge.hash}`;
       if (state.invalidatedSeen[key] !== true) {
         state.invalidatedSeen[key] = true;
         state.invalidatedKeys.push(key);

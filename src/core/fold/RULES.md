@@ -17,7 +17,7 @@
 | `spec.revised` | spec | `reason` 必填；只改载荷给出的字段，未重给的保留旧值（不重建整行），assumption 保留原 status / 不存在的 spec 拒 |
 | `assumption.recorded` | spec | 只建 `status='open'` + `blast_radius`；`inputs[]` 记为派生边，且目标行已存在时 `hash` 必须等于 `rowHash(当前行)` / 带 `payload.status`、hash 不符拒 |
 | `assumption.disposed` | spec | 覆盖名单**只认签名载荷**：decision 必须 valid + `kind='assumption_set'`，`payload.spec_ids[]` 含本条、`payload.dispositions[]` 处置一致 ⇒ 写 status / 无效、不覆盖、事件自带 `covered_spec_ids`/`dispositions` ⇒ FoldError |
-| `assumption.invalidated` | spec | 行必须是 assumption，`reason` 必填，回 open / 对非 assumption 拒 |
+| `assumption.invalidated` | spec | **不可写**（D-078）：语义是派生读数，reducer 显式拒（`assumption_invalidated_is_derived`）；kind 仅保留 003 种子兼容，失效由 inputs hash 变化/目标消失自动产生；v2.1 删 kind。**升级注意（D-081）**：旧库若已有该事件，`verify` 报 `legacy_assumption_invalidated`（逐事件）而非笼统 fold 崩，该库判不可信 |
 | `contract.defined` | spec | kind=contract，`clause` 必填 / 已存在行拒 |
 | `scope.declared` | scope_decl | `stage/paths` 必填 / 缺 paths 拒 |
 | `design.locked` | design_lock | `spec_id/spec_version_hash/design_sha256` 必填 / 缺字段拒 |

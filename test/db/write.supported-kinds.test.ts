@@ -25,11 +25,40 @@ const snapshots = JSON.parse(
   readFileSync('test/fixtures/per-kind-fold.json', 'utf8'),
 ) as Record<string, Snapshot>;
 
+// M2-3/D-078：`assumption.invalidated` 仍登记在 REDUCERS（003 种子兼容、fold 里显式拒），
+// 但语义是派生读数、写网关前置拒绝，因此没有“合法写入”的 world seed 与 pinned 快照。
+const DERIVED_ONLY_KINDS = new Set(['assumption.invalidated']);
+// `gate.judged` 只能由 `judgeStage()` 真路径产生（P1 评审：没有测试缝可铸授权），
+// 因此不进 world 链与 pinned 快照；真实判定行的物化覆盖在 test/db/gate-judged.test.ts。
+const GATE_ONLY_KINDS = new Set(['gate.judged']);
+
 test('C5/C6 world chain covers every supported kind exactly once (first occurrence)', () => {
   assert.equal(kinds.length, 56, 'SUPPORTED_KINDS must stay at 56 (REDUCERS derives it)');
   for (const kind of kinds) {
+    if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind)) continue;
     assert.ok(seeds.some((event) => event.kind === kind), `world chain must contain at least one ${kind} event`);
   }
+});
+
+test('D-078: assumption.invalidated is registered but every write is rejected at the gateway', () => {
+  assert.ok(kinds.includes('assumption.invalidated'), 'kind 仍登记（003 兼容）');
+  const first = seeds[0]!;
+  const event = chain([
+    {
+      ...first,
+      id: 'e-derived-only',
+      kind: 'assumption.invalidated',
+      subject: 'A-2',
+      payload: { reason: 'inputs changed' },
+    } as (typeof seeds)[number],
+  ])[0]!;
+  return withWriteDb((db) => {
+    const result = append(db, [event]);
+    assert.equal(result.ok, false);
+    assert.equal(result.reason_code, 'assumption_invalidated_is_derived');
+    const row = db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number };
+    assert.equal(row.n, 0, '拒绝必须 0 行');
+  });
 });
 
 // C6（P1-2 评审）：每个 kind 不只看“整表变了”，要与**固定快照**逐字段相等——
@@ -38,6 +67,7 @@ test('C5/C6 world chain covers every supported kind exactly once (first occurren
 // 单事件入 DB 会遇到“中途态 DDL 非法”（如 redteam.disposition NOT NULL），
 // 所以 per-kind 效果在 fold 层取证；DB 物化由下面的 world 全链逐表对账覆盖。
 for (const kind of kinds) {
+  if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind)) continue;
   const index = seeds.findIndex((event) => event.kind === kind);
   test(`C6 ${kind} writes the pinned fold row with exact values`, () => {
     const table = requiredTable(kind);

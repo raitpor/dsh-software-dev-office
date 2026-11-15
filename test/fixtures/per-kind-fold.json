@@ -27,33 +27,6 @@
       "disposed_at": "2026-11-13T00:00:00Z"
     }
   },
-  "assumption.invalidated": {
-    "table": "spec",
-    "id": "A-2",
-    "row": {
-      "id": "A-2",
-      "kind": "assumption",
-      "intent_id": "INT-1",
-      "clause": "a2",
-      "mech_checkable": false,
-      "scenario_id": null,
-      "is_core": false,
-      "status": "open",
-      "blast_radius": "low",
-      "created_by": "actor-1",
-      "producer": "actor-1",
-      "content_hash": "ch:a2",
-      "design_artifact_sha256": null,
-      "code_artifact_sha256": null,
-      "code_artifact_ref": null,
-      "risk_flags": [],
-      "alternatives": [],
-      "no_alternative_reason": null,
-      "at": "2026-11-13T00:00:00Z",
-      "invalidated_reason": "inputs changed",
-      "invalidated_at": "2026-11-13T00:00:00Z"
-    }
-  },
   "assumption.recorded": {
     "table": "spec",
     "id": "A-1",
@@ -403,22 +376,6 @@
       "at": "2026-11-13T00:00:00Z"
     }
   },
-  "gate.judged": {
-    "table": "stage_run",
-    "id": "SR-1",
-    "row": {
-      "id": "SR-1",
-      "stage": "req",
-      "gate_id": "G_req_exit",
-      "baseline_hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
-      "entered_at": "2026-11-13T00:00:00Z",
-      "exited_at": null,
-      "verdict": "pass",
-      "criteria": [],
-      "at": "2026-11-13T00:00:00Z",
-      "judged_at": "2026-11-13T00:00:00Z"
-    }
-  },
   "goal.declared": {
     "table": "goal_node",
     "id": "GOAL-1",
@@ -747,6 +704,7 @@
       "exited_at": null,
       "verdict": null,
       "criteria": [],
+      "judged_at": null,
       "at": "2026-11-13T00:00:00Z"
     }
   },
@@ -756,14 +714,14 @@
     "row": {
       "id": "SR-1",
       "stage": "req",
-      "gate_id": "G_req_exit",
-      "baseline_hash": "sha256:cf444048af0e5282ebabc8dfafd584f2d1f73db4766756d75b786150e6990137",
+      "gate_id": null,
+      "baseline_hash": null,
       "entered_at": "2026-11-13T00:00:00Z",
       "exited_at": "2026-11-13T00:00:00Z",
       "verdict": "pass",
       "criteria": [],
-      "at": "2026-11-13T00:00:00Z",
-      "judged_at": "2026-11-13T00:00:00Z"
+      "judged_at": null,
+      "at": "2026-11-13T00:00:00Z"
     }
   },
   "task.assigned": {
