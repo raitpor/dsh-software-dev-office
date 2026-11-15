@@ -11,12 +11,13 @@ import {
   type Right,
 } from '../../src/views/catalog.js';
 
-/** docs/05 §3 的 13 个视图名（按 name 排序）。 */
+/** docs/05 §3 的 13 个视图名 + M3-4/011 登记的 conflicts（按 name 排序）。 */
 const EXPECTED_NAMES = [
   'agents',
   'alignment',
   'baseline',
   'board',
+  'conflicts',
   'defects',
   'evidence',
   'gaps',
@@ -28,12 +29,13 @@ const EXPECTED_NAMES = [
   'team',
 ];
 
-/** docs/05 §3 声明的 min_right：只有 review_queue（decider）与 gaps（reviewer）不是 reader。 */
+/** min_right：只有 review_queue（decider）与 gaps（reviewer）不是 reader；conflicts 是 reader 可见面。 */
 const EXPECTED_MIN_RIGHT: Readonly<Record<string, Right>> = {
   agents: 'reader',
   alignment: 'reader',
   baseline: 'reader',
   board: 'reader',
+  conflicts: 'reader',
   defects: 'reader',
   evidence: 'reader',
   gaps: 'reviewer',
@@ -50,9 +52,9 @@ function catalogRowCount(db: Parameters<typeof listViewCatalog>[0]): number {
   return Number(row['n']);
 }
 
-test('C1：002 迁移建 view_catalog（6 列）且有 13 行，字段齐全可解析', () => {
+test('C1：002+011 迁移建 view_catalog（6 列）且有 14 行，字段齐全可解析', () => {
   withMigratedDb((db) => {
-    assert.equal(catalogRowCount(db), 13);
+    assert.equal(catalogRowCount(db), 14);
     assert.deepEqual(columnNames(db, 'view_catalog'), [
       'name',
       'sql',
@@ -63,7 +65,7 @@ test('C1：002 迁移建 view_catalog（6 列）且有 13 行，字段齐全可�
     ]);
 
     const catalog = listViewCatalog(db);
-    assert.equal(catalog.length, 13);
+    assert.equal(catalog.length, 14);
     assert.deepEqual(
       catalog.map((view) => view.name),
       EXPECTED_NAMES,
@@ -100,17 +102,17 @@ test('C1 正例：只往目录加一条 INSERT，listViewCatalog/viewsForRight �
     ).run(JSON.stringify([{ name: 'note_id', label: '临时编号', type: 'integer' }]));
 
     const catalog = listViewCatalog(db);
-    assert.equal(catalog.length, 14);
+    assert.equal(catalog.length, 15);
 
     const readerAfter = viewsForRight(db, 'reader').map((view) => view.name);
     assert.deepEqual(readerAfter, [...readerBefore, 'ad_hoc_notes'].sort());
   });
 });
 
-test('C4：13 条视图 SQL 全部通过 assertSelectOnly', () => {
+test('C4：14 条视图 SQL 全部通过 assertSelectOnly', () => {
   withMigratedDb((db) => {
     const catalog = listViewCatalog(db);
-    assert.equal(catalog.length, 13);
+    assert.equal(catalog.length, 14);
     for (const view of catalog) {
       assertSelectOnly(view.sql);
     }
@@ -178,7 +180,7 @@ test('C6：viewsForRight 按 min_right 层级给集合（review_queue 仅 decide
     const names = (right: Right): string[] => viewsForRight(db, right).map((view) => view.name);
 
     const reader = names('reader');
-    assert.equal(reader.length, 11);
+    assert.equal(reader.length, 12);
     assert.ok(!reader.includes('review_queue'), 'reader 不应看到 review_queue');
     assert.ok(!reader.includes('gaps'), 'reader 不应看到 gaps');
     assert.deepEqual(
@@ -187,7 +189,7 @@ test('C6：viewsForRight 按 min_right 层级给集合（review_queue 仅 decide
     );
 
     const reviewer = names('reviewer');
-    assert.equal(reviewer.length, 12);
+    assert.equal(reviewer.length, 13);
     assert.ok(reviewer.includes('gaps'));
     assert.ok(!reviewer.includes('review_queue'), 'reviewer 不应看到 review_queue（decider 才可见）');
     assert.deepEqual(
@@ -196,7 +198,7 @@ test('C6：viewsForRight 按 min_right 层级给集合（review_queue 仅 decide
     );
 
     const decider = names('decider');
-    assert.equal(decider.length, 13);
+    assert.equal(decider.length, 14);
     assert.ok(decider.includes('review_queue'));
     assert.ok(decider.includes('gaps'));
     assert.deepEqual(decider, EXPECTED_NAMES);

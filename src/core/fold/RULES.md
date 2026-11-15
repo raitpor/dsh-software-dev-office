@@ -106,3 +106,21 @@
 - `baseline` 旧行 hash “永远可复算”依赖行不被改写：fold 侧 append 语义 + 库层触发器双保险。
 - `spec.revised` 的载荷契约是“只改给出的字段”，未给字段保留旧值——想清空某字段必须显式给 null。
 - `goal_node` 叶节点必须绑 `acceptance_criterion_id`（`docs/03:30`）本卡不查：叶/非叶随子节点增减而变，fold 单事件无法判定最终树；留给 M-10 verify。记 `plan/03` D-017。
+
+## 八、冲突的 fold 投影（M3-2）
+
+- `conflict.detected` 是唯一建行口：写 `conflict` 行（`status='open'`，双方 actor/摘要/各自 base），
+  同 id 同内容幂等、异内容拒（`createOnce`）；事件 actor 是失败写入方（便于追责）。
+- `conflict.resolved` 只认**已签名** `decision(kind='sign')`（`extra.conflict_resolution={conflict_id,
+  adopted_actor, note}`，D-089）：校验 conflict 行存在且 open、decision 覆盖同一 conflict_id、
+  adopted_actor 等于所选 side 的 actor；通过后只 patch `status/resolution_decision_id/resolved_by/resolved_at`，
+  不重放失败方事件。无有效签名 ⇒ fold 拒。
+- CAS 检测（`field`/`base_hash`、`conflict_scope_undeclared`、`unauthorized_conflict_detected`）在
+  写网关层，不是 fold；fold 只负责把 conflict 事件投影成表行并守住 append-only 语义。
+
+## 九、边界补充（M3-2）
+
+- `conflict` 行的 `winner_value`/`loser_value` 是 JSON 文本（DDL `json_valid`），视图按文本给出；
+  不把对象解码回 JSON 列。
+- fold 不校验 `conflict.detected` 的 payload 与真实检测过程是否一致；这由写网关的一次性能力
+  （绑 payload_hash、消费即焚）兜底。

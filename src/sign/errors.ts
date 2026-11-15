@@ -47,6 +47,13 @@ export const SIGN_REASON_CODES = [
   'socket_path_too_long',
   'socket_not_ready',
   'runtime_dir_insecure',
+  // M3-3：独立性（dual_human / solo_cooldown）
+  'independence_unsatisfied',
+  'cooldown_active',
+  'cooldown_not_applicable',
+  'signature_time_mismatch',
+  'signerd_receipt_replayed',
+  'payload_mismatch',
   // 路径与权限（spike fs-perms 同名码）
   'path_missing',
   'path_is_symlink',

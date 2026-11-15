@@ -11,7 +11,7 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { append, chainHead } from '../../src/db/write.js';
-import { chain, payloadHashOf, seed } from '../db/append-helpers.js';
+import { chain, currentState, payloadHashOf, seed } from '../db/append-helpers.js';
 import type { EventSeed } from '../db/append-helpers.js';
 
 export const PASSPHRASE = 'm1-2-align-passphrase';
@@ -38,7 +38,9 @@ export function ev(
 }
 
 export function appendSeeds(db: SdoDatabase, seeds: readonly EventSeed[]): void {
-  const result = append(db, chain(seeds, chainHead(db)));
+  // D-097：内容编辑类事件（spec.revised/criterion.revised）必须带字段级 CAS 声明；
+  // 这里由 `chain(..., currentState)` 按当前折动态补 field/base_hash，不改断言口径。
+  const result = append(db, chain(seeds, chainHead(db), currentState(db)));
   if (!result.ok) {
     throw new Error(`fixture append failed: ${result.reason_code ?? 'unknown'} ${result.message ?? ''}`);
   }

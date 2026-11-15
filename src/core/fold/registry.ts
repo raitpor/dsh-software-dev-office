@@ -11,6 +11,7 @@ import { VERIFY_REDUCERS } from './reducers/verify.js';
 import { REVIEW_REDUCERS } from './reducers/review.js';
 import { DECISION_REDUCERS } from './reducers/decision.js';
 import { RELEASE_REDUCERS } from './reducers/release.js';
+import { CONFLICT_REDUCERS } from './reducers/conflict.js';
 import { BASELINE_REDUCERS } from './reducers/baseline.js';
 import { OPS_REDUCERS } from './reducers/ops.js';
 import { CONTENT_REDUCERS } from './reducers/content.js';
@@ -29,6 +30,7 @@ const maps: ReadonlyArray<Readonly<Record<string, Reducer>>> = [
   REVIEW_REDUCERS,
   DECISION_REDUCERS,
   RELEASE_REDUCERS,
+  CONFLICT_REDUCERS,
   BASELINE_REDUCERS,
   OPS_REDUCERS,
   CONTENT_REDUCERS,

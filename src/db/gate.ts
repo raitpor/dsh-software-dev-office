@@ -15,6 +15,8 @@ import type { Event, FoldState } from '../core/fold/types.js';
 import type { VerifyProblem } from '../core/verify-types.js';
 import { evaluateStageGate, type BaselineRowLike } from '../core/gate/evaluate.js';
 import { compileGateJudged } from '../core/gate/judge.js';
+import { judgeIndependence, signaturesForDecision } from '../core/independence/judge.js';
+import { baselineAssuranceBound } from '../core/independence/verify.js';
 import { gateJudgedPayloadHash, validateGateJudgedPayload } from '../core/gate/schema.js';
 import type { GateEvaluation } from '../core/gate/types.js';
 
@@ -114,6 +116,72 @@ function frozenEventExists(state: FoldState, events: readonly Event[], hash: str
   });
 }
 
+/**
+ * M3-3：baseline 对应的冻结 decision 是否满足独立性（same judge as verify）。
+ * 找不到冻结事件的决定 id 时判不满足（fail-closed）——已冻结的 baseline 不可能没有签字。
+ */
+function judgeBaselineIndependence(
+  db: SdoDatabase,
+  state: FoldState,
+  events: readonly Event[],
+  baselineHash: string,
+): ReturnType<typeof judgeIndependence> {
+  const kinds = new Set(['baseline.frozen', 'baseline.amended', 'baseline.loosened']);
+  let decisionId: string | null = null;
+  for (const event of events) {
+    if (!kinds.has(event.kind)) continue;
+    const payload = parseJson(event.payload);
+    if (payload === null || typeof payload !== 'object') continue;
+    const body = payload as Record<string, unknown>;
+    if (body['hash'] !== baselineHash) continue;
+    if (typeof body['decision_id'] === 'string') {
+      decisionId = body['decision_id'];
+      break;
+    }
+  }
+  const matrix = (db.prepare('SELECT action, dual_human FROM right').all() as Record<string, unknown>[]).map(
+    (row) => ({ action: String(row['action']), dual_human: String(row['dual_human']) }),
+  );
+  const actorRows = db.prepare("SELECT COUNT(*) AS n FROM actor WHERE kind = 'human'").all() as Record<string, unknown>[];
+  const humanCountRaw = actorRows[0]?.['n'];
+  const humanActorCount = typeof humanCountRaw === 'number' ? humanCountRaw : 0;
+  if (decisionId === null) {
+    return {
+      ok: false,
+      required: true,
+      mode: null,
+      action: 'freeze',
+      reason_code: 'independence_unsatisfied',
+      message: `baseline ${baselineHash} 的冻结事件没有 decision_id，无法证明独立性`,
+      signature_count: 0,
+      distinct_signers: 0,
+    };
+  }
+  const row = state.tables.decision[decisionId];
+  const kind = String(row?.['decision_kind'] ?? 'freeze');
+  // P1-1：按 stage_run 记录的 baseline_hash 取那一版的 assurance，而不是链头。
+  const binding = baselineAssuranceBound(state, baselineHash);
+  if (binding.fallback) {
+    return {
+      ok: false,
+      required: true,
+      mode: null,
+      action: 'freeze',
+      reason_code: 'independence_unsatisfied',
+      message: `baseline ${baselineHash} 行不存在，无法按版本证明独立性（fail-closed）`,
+      signature_count: 0,
+      distinct_signers: 0,
+    };
+  }
+  return judgeIndependence({
+    decision_kind: kind,
+    signatures: signaturesForDecision(events, decisionId),
+    matrix,
+    assurance: binding.assurance,
+    human_actor_count: humanActorCount,
+  });
+}
+
 /** 判定一个 stage 出口并落 `gate.judged`。 */
 export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudgeResult {
   const at = request.at ?? new Date().toISOString();
@@ -165,7 +233,21 @@ export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudg
     }
   }
 
-  const evaluation = evaluateStageGate(state, baseline, stage);
+  let evaluation = evaluateStageGate(state, baseline, stage);
+  // M3-3 C3：独立性不满足 ⇒ 强制 changes_requested + 原因码。
+  // 判定与 verify 用同一个 judge，结论能从事件 + baseline 重算（不是 judge 时刻的不可复算开关）。
+  const independence = judgeBaselineIndependence(db, state, events, baseline.hash);
+  if (!independence.ok) {
+    // 缺失/非法的 assurance 也是 fail-closed（`independence_missing` / `assurance_invalid`），
+    // 不默认成 15m 放行；这些码都能从 baseline + 事件直接复算。
+    const codes = ['independence_unsatisfied', 'cooldown_active', 'independence_missing', 'assurance_invalid'];
+    const reason = codes.includes(independence.reason_code ?? '') ? independence.reason_code : 'independence_unsatisfied';
+    evaluation = {
+      ...evaluation,
+      verdict: 'changes_requested',
+      reasons: [...new Set([...evaluation.reasons, reason ?? 'independence_unsatisfied'])],
+    };
+  }
   // M2 只支持每 stage 单 gate；与 evaluate 的 `multiple_gates_unsupported` 口径一致，
   // 在这里结构化拒（compile 里的 throw 只是防御性不可达）。
   if (evaluation.reasons.includes('multiple_gates_unsupported')) {

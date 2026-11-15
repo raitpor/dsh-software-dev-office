@@ -22,7 +22,7 @@ import { verify } from '../../src/core/verify.js';
 import { runCheck, type CheckReport } from '../../src/check/index.js';
 import { disposeAssumptionSet, previewAssumptionSet } from '../../src/db/assumption.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
-import { chain, payloadHashOf, seed, withWriteDb, PASSPHRASE, type EventSeed } from './append-helpers.js';
+import { chain, payloadHashOf, seed, withWriteDb, PASSPHRASE, type EventSeed, currentState } from './append-helpers.js';
 
 function count(db: SdoDatabase, sql: string, ...params: unknown[]): number {
   const row = db.prepare(sql).get(...params) as { n: number };
@@ -178,7 +178,7 @@ test('C1 负例（db 层）：decision 缺 / 未签 / kind 错 / 已撤 ⇒ 拒�
   withWriteDb((db) => {
     const seeds = chain([...baseSeedList(), ...decisionSeedList('d-rv', payload)]);
     assert.equal(append(db, seeds).ok, true);
-    const revoked = chain([seed(9, 'decision.revoked', 'd-rv', { reason: 'withdrawn' })], chainHead(db));
+    const revoked = chain([seed(9, 'decision.revoked', 'd-rv', { reason: 'withdrawn' })], chainHead(db), currentState(db));
     assert.equal(append(db, revoked).ok, true);
     const result = disposeAssumptionSet(db, { decision_id: 'd-rv', actor: 'alice' });
     assert.equal(result.ok, false);
@@ -242,7 +242,7 @@ test('C6 撤销级联（db 层）：撤 d-as ⇒ 两行回 open + verify 绿（�
   withWriteDb((db) => {
     assert.equal(append(db, assumptionSeeds()).ok, true);
     assert.equal(disposeAssumptionSet(db, { decision_id: 'd-as', actor: 'alice', at: '2026-11-15T00:00:00Z' }).ok, true);
-    const revoked = chain([seed(9, 'decision.revoked', 'd-as', { reason: 'withdrawn' })], chainHead(db));
+    const revoked = chain([seed(9, 'decision.revoked', 'd-as', { reason: 'withdrawn' })], chainHead(db), currentState(db));
     assert.equal(append(db, revoked).ok, true);
     const rows = db.prepare("SELECT id, status FROM spec WHERE kind = 'assumption' ORDER BY id").all() as Array<Record<string, unknown>>;
     assert.deepEqual(rows, [

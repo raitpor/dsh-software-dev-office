@@ -14,6 +14,7 @@ import { GENESIS_PREV, computeEventHash, readEvents } from './verify-events.js';
 import { compareProjections } from './verify-projection.js';
 import { verifyBaselineReferences } from './baseline/verify-references.js';
 import { verifyAssumptionChain } from './assumption/verify.js';
+import { verifyIndependenceChain } from './independence/verify.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -23,7 +24,7 @@ import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types
  * 物化（只落 signed 行，口径与 `write-materialize.ts` 一致，见 `verify-projection.ts`）。
  * 其余投影表在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐。
  */
-export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release', 'decision', 'stage_run'];
+export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release', 'decision', 'stage_run', 'conflict'];
 
 export { GENESIS_PREV, computeEventHash };
 export type { VerifyDatabase, VerifyProblem, VerifyReport, VerifyStatement } from './verify-types.js';
@@ -96,6 +97,14 @@ export function verify(db: VerifyDatabase): VerifyReport {
     problems.push(...verifyAssumptionChain(events, state));
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: `assumption chain check failed: ${errorMessage(error)}` });
+  }
+
+  // M3-3 C5：独立性复算——同一套 judge 从事件 + baseline 重算，
+  // 删一条 decision.signed / 改 signer 都会在这里红（不是 judge 时刻的注入开关）。
+  try {
+    problems.push(...verifyIndependenceChain({ events, state, db }));
+  } catch (error) {
+    problems.push({ code: 'projection_check_failed', detail: `independence check failed: ${errorMessage(error)}` });
   }
 
   // M2-1 C8：baseline 按“被引用的那一版”复算 hash，并核对冻结事件/引用存在性。

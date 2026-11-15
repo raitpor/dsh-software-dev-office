@@ -3,14 +3,14 @@ import assert from 'node:assert/strict';
 
 import { append, chainHead } from '../../src/db/write.js';
 import { primaryKeyColumns } from '../../src/db/write-materialize.js';
-import { chain, seed, withWriteDb } from './append-helpers.js';
+import { chain, seed, withWriteDb, currentState } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 test('C1 config uses key as the DDL primary key: same key updates, never duplicates', () => {
   withWriteDb((db) => {
     const first = chain([seed(1, 'config.changed', 'limits.max_members', { after: 5, actor: 'alice' })]);
     assert.equal(append(db, first).ok, true);
-    const second = chain([seed(2, 'config.changed', 'limits.max_members', { after: 7, actor: 'bob' })], chainHead(db));
+    const second = chain([seed(2, 'config.changed', 'limits.max_members', { after: 7, actor: 'bob' })], chainHead(db), currentState(db));
     assert.equal(append(db, second).ok, true);
     const rows = db.prepare('SELECT * FROM config').all() as Array<{ key: string; value: number }>;
     assert.deepEqual(rows.map((row) => [row.key, row.value]), [['limits.max_members', 7]]);
@@ -61,7 +61,7 @@ test('append-only projection: an unexpected baseline row fails the next append c
       `INSERT INTO baseline (id, frozen_by, engine_version, criteria_manifest_hash, policy, criteria, gates, thresholds, assurance, prev, direction, hash, at)
        VALUES ('B-extra', '[]', 'e', 'm', '{}', '{}', '{}', '{}', '{}', NULL, NULL, 'sha256:extra', '2026-01-01')`,
     ).run();
-    const next = chain([seed(99, 'config.changed', 'limits.max_members', { after: 9, actor: 'alice' })], chainHead(db));
+    const next = chain([seed(99, 'config.changed', 'limits.max_members', { after: 9, actor: 'alice' })], chainHead(db), currentState(db));
     const result = append(db, next);
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'materialize_failed');

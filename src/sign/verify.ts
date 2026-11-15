@@ -73,24 +73,20 @@ export function verifyDecisionSignatures(
     problems.push({ code: 'receipt_chain_broken', decision_id: receipts.chainBroken, detail: '回执哈希链断裂（D-054）' });
   }
   const events = db
-    .prepare("SELECT subject, payload FROM event WHERE kind = 'decision.signed' ORDER BY rowid")
-    .all() as Array<{ subject: string; payload: unknown }>;
+    .prepare("SELECT subject, at, payload FROM event WHERE kind = 'decision.signed' ORDER BY rowid")
+    .all() as Array<{ subject: string; at: string; payload: unknown }>;
 
-  // M2 要求每个 decision 只被签一次：同一 subject 出现多条 decision.signed 视为库被篡改，
-  // 仍然对“最新一条”做完整验签，但整体必红（Lead 第 3 轮 P3）。
-  const seen = new Map<string, { subject: string; payload: unknown }>();
+  // D-092：同一 decision 的多条 decision.signed 是 dual_human 的合法形态（首签投影、
+  // 后续签名只追加）。这里对**每一条**签名做完整验签，投影行只可能与首签一致。
+  const byDecision = new Map<string, Array<{ subject: string; at: string; payload: unknown }>>();
   for (const event of events) {
-    if (seen.has(event.subject)) {
-      problems.push({
-        code: 'runtime_inconsistent',
-        decision_id: event.subject,
-        detail: '同一 decision 存在多条 decision.signed（要求唯一）',
-      });
-    }
-    seen.set(event.subject, event);
+    const list = byDecision.get(event.subject);
+    if (list === undefined) byDecision.set(event.subject, [event]);
+    else list.push(event);
   }
 
-  for (const event of seen.values()) {
+  for (const list of byDecision.values()) {
+    for (const [index, event] of list.entries()) {
     const payload = readSignedDecisionPayload(
       typeof event.payload === 'string' ? (JSON.parse(event.payload) as unknown) : event.payload,
     );
@@ -116,17 +112,39 @@ export function verifyDecisionSignatures(
       problems.push({ code: 'runtime_inconsistent', decision_id: event.subject, detail: 'decision 行不存在' });
       continue;
     }
+    // 多签：投影行保持**首签**（按事件顺序第一条）；后续签名只要求 payload_hash
+    // 与行一致（D-092）。不能用“row.signature === payload.signature”判断——那会让
+    // 投影行被篡改（signature 改掉）的单签逃过验签。
+    const isFirst = index === 0;
+    if (!isFirst && payload.payload_hash !== row['payload_hash']) {
+      problems.push({
+        code: 'runtime_inconsistent',
+        decision_id: event.subject,
+        detail: '追加签名的 payload_hash 与 decision 行不一致（D-092）',
+      });
+      continue;
+    }
     const receipt = receipts.byId.get(payload.signerd.receipt_id);
     if (receipt === undefined) {
       problems.push({ code: 'signature_unverifiable', decision_id: event.subject, detail: '回执缺失' });
       continue;
     }
+    // 第 2 轮 P1-1：事件 at / 回执 at / 载荷 signerd.at 三方一致（复制事件改 at 必红）。
+    if (event.at !== payload.signerd.at || receipt.at !== payload.signerd.at) {
+      problems.push({
+        code: 'runtime_inconsistent',
+        decision_id: event.subject,
+        detail: `事件 at=${event.at} / 回执 at=${receipt.at} / 载荷 at=${payload.signerd.at} 不一致`,
+      });
+      continue;
+    }
     if (
-      row['signature'] !== payload.signature ||
-      row['key_id'] !== payload.key_id ||
-      row['channel'] !== payload.channel ||
-      row['signer'] !== payload.signer ||
-      row['frontier'] !== payload.frontier ||
+      (isFirst &&
+        (row['signature'] !== payload.signature ||
+          row['key_id'] !== payload.key_id ||
+          row['channel'] !== payload.channel ||
+          row['signer'] !== payload.signer ||
+          row['frontier'] !== payload.frontier)) ||
       !receiptMatchesPayload(receipt, payload)
     ) {
       problems.push({
@@ -154,6 +172,7 @@ export function verifyDecisionSignatures(
         decision_id: event.subject,
         detail: `decision.payload_hash 与签名载荷不一致（row=${String(row['payload_hash'])} signed=${payload.payload_hash}）`,
       });
+    }
     }
   }
 

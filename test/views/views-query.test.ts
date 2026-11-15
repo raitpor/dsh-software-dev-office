@@ -23,15 +23,16 @@ function masterViewSql(db: Parameters<typeof listViewCatalog>[0]): Map<string, s
   );
 }
 
-test('C2：13 个视图都存在；空库对每个视图 SELECT * LIMIT 0 都不炸', () => {
+test('C2：目录 14 个视图与原生视图集合双向一致；空库对每个视图 SELECT * LIMIT 0 都不炸', () => {
   withMigratedDb((db) => {
     const catalog = listViewCatalog(db);
-    assert.equal(catalog.length, 13);
+    assert.equal(catalog.length, 14);
 
-    const nativeNames = new Set(catalog.map((view) => nativeViewName(view.name)));
-    const masters = masterViewSql(db);
-    assert.equal(masters.size, 13);
-    assert.deepEqual([...masters.keys()].sort(), [...nativeNames].sort());
+    const nativeNames = [...catalog.map((view) => nativeViewName(view.name))].sort();
+    const masters = [...masterViewSql(db).keys()].sort();
+    // P1-1 收口：目录（view_catalog）与原生视图（sqlite_master）必须是同一个集合，
+    // 既不许“建了视图没登记”（查询层看不到），也不许“登记了视图没建”（执行即炸）。
+    assert.deepEqual(masters, nativeNames);
 
     for (const view of catalog) {
       const native = nativeViewName(view.name);

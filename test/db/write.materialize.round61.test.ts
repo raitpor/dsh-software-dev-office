@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { test } from 'node:test';
 
 import type { SdoDatabase } from '../../src/db/driver.js';
+import { runMigrations } from '../../src/db/migrate.js';
+import { openSdoDatabase } from '../../src/db/open.js';
+import { registerRenderer } from '../../src/db/renderer.js';
 import { append } from '../../src/db/write.js';
 import {
   FOLD_ONLY_COLUMNS,
@@ -15,7 +21,7 @@ import { REDUCERS } from '../../src/core/fold/registry.js';
 import { GENESIS_PREV, readEvents } from '../../src/core/verify-events.js';
 import { verify } from '../../src/core/verify.js';
 import type { VerifyProblem } from '../../src/core/verify-types.js';
-import { chain, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
+import { PASSPHRASE, chain, currentState, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 test('D-053: ACK kind 在 fold 里显式忽略——投影表逐字节不变，但 seen/eventIds 记账', () => {
@@ -94,7 +100,7 @@ test('group regression: write -> same-batch replay -> append unrelated event -> 
     const replay = append(db, first);
     assert.equal(replay.ok, true);
     assert.equal(replay.skipped, 6);
-    const next = chain([seed(20, 'spec.revised', 'SPEC-1', { reason: 'r' })], first[first.length - 1]?.hash);
+    const next = chain([seed(20, 'spec.revised', 'SPEC-1', { reason: 'r' })], first[first.length - 1]?.hash, currentState(db));
     assert.equal(append(db, next).ok, true);
     const groups = chain(
       [
@@ -123,7 +129,7 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
     const first = chain(fourDomainSeeds());
     assert.equal(append(db, first).ok, true);
     db.prepare("INSERT INTO criterion (id, spec_id, kind, status_enum, remedy) VALUES ('CRIT-9', 'SPEC-1', 'functional', 'pass', 'ghost')").run();
-    const second = chain([seed(30, 'spec.revised', 'SPEC-1', { reason: 'r' })], first[first.length - 1]?.hash);
+    const second = chain([seed(30, 'spec.revised', 'SPEC-1', { reason: 'r' })], first[first.length - 1]?.hash, currentState(db));
     assert.equal(append(db, second).ok, true);
     assert.equal(count(db, 'criterion'), 1);
     assert.deepEqual(verify(db).problems, []);
@@ -133,7 +139,7 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
 test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
   withWriteDb((db) => {
     const kinds = [...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)].sort();
-    assert.equal(kinds.length, 94, 'registered kind count drift');
+    assert.equal(kinds.length, 97, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1)');
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
     let prev: string = GENESIS_PREV;
     for (const kind of kinds) {
@@ -150,6 +156,15 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
         // ACK kind 是 append-only 审计事件：网关接受、fold 不投影（C12；security.alert/auth.failed）。
         counts.ackOnly += 1;
         assert.equal(Object.hasOwn(REDUCERS, kind), false, `ack-only kind ${kind} must not have a reducer`);
+        if (kind === 'renderer.registered') {
+          // M3-4 起该 kind 必须经 registerRenderer() 的一次性能力产生（直 append ⇒
+          // unauthorized_renderer_registration）。真路径由下面的 async 用例覆盖；
+          // 本通用循环只保留“不越权写”的断言。
+          const rejected = append(db, chain([seed(counts.ackOnly, kind, 'X-1', {})]));
+          assert.equal(rejected.ok, false, 'hand-written renderer.registered must be rejected');
+          assert.equal(rejected.reason_code, 'unauthorized_renderer_registration');
+          continue;
+        }
         const [event] = chain([seed(counts.ackOnly, kind, 'X-1', {})], prev);
         assert.ok(event);
         const result = append(db, [event]);
@@ -162,8 +177,8 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
       assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
       counts.unsupported += 1;
     }
-    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 94);
-    assert.equal(count(db, 'event'), counts.ackOnly, '只有 ack kind 落 event，业务 kind 不越权写');
+    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 97);
+    assert.equal(count(db, 'event'), counts.ackOnly - 1, '只有 ack kind 落 event（renderer.registered 被能力拒，不落）');
   });
 });
 
@@ -188,3 +203,28 @@ function seedDecisionSigned(): ReturnType<typeof seed> {
 function count(db: SdoDatabase, table: 'decision' | 'criterion' | 'event'): number {
   return (db.prepare(`SELECT count(*) AS n FROM ${table}`).get() as { n: number }).n;
 }
+
+test('M3-4: renderer.registered 走真 registerRenderer() 才落链（一次性能力）', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'sdo-round61-renderer-'));
+  const db = openSdoDatabase(join(dir, 'sdo.db'), PASSPHRASE);
+  try {
+    runMigrations(db);
+    db.prepare("INSERT INTO actor (id, kind, display, at) VALUES ('admin-1', 'human', 'Admin', '2026-11-15T00:00:00Z')").run();
+    db.prepare(
+      `INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at)
+       VALUES ('admin-1', 'domain:renderers', 'admin', 'boot', '2026-11-15T00:00:00Z', NULL)`,
+    ).run();
+    const registered = await registerRenderer(db, {
+      id: 'renderer:claim-v1',
+      module_path: 'src/claim/render.ts',
+      views: ['board'],
+      actor: { id: 'admin-1', kind: 'human' },
+    });
+    assert.equal(registered.ok, true, JSON.stringify(registered));
+    assert.equal(count(db, 'event'), 1, 'real registration appends exactly one renderer.registered event');
+    assert.deepEqual(verify(db).problems, []);
+  } finally {
+    db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+});

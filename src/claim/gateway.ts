@@ -23,7 +23,7 @@ import type { SdoDatabase } from '../db/driver.js';
 import { append, chainHead } from '../db/write.js';
 import { landingEvents } from '../importer/rebuild.js';
 import type { ExportClaim } from '../importer/parse.js';
-import { isRegisteredRenderer, rendererById } from './renderers.js';
+import { isRegisteredRenderer } from './catalog.js';
 import { renderClaimRows } from './render.js';
 import type { ClaimDiff, ClaimImportResult, ClaimReason, ClaimRow, ClaimSource } from './types.js';
 
@@ -110,8 +110,9 @@ function validateRow(db: SdoDatabase, row: ClaimRow): { reason: ClaimReason; mes
 }
 
 /** 在 append 之前能挡的失败都挡掉（P1-1）：伪造渲染器时事件必须保持 0 行。 */
-function prevalidateClaim(claim: ExportClaim): ClaimReason | undefined {
-  if (!isRegisteredRendererForClaim(claim.renderer)) return 'renderer_unregistered';
+function prevalidateClaim(db: SdoDatabase, claim: ExportClaim): ClaimReason | undefined {
+  // M3-4：登记口径在 renderer_catalog（事件投影），不再是 src/claim/renderers.ts 常量。
+  if (!isRegisteredRenderer(db, claim.renderer)) return 'renderer_unregistered';
   if (
     claim.claim_no.length === 0 ||
     claim.task_id.length === 0 ||
@@ -123,11 +124,6 @@ function prevalidateClaim(claim: ExportClaim): ClaimReason | undefined {
     return 'claim_invalid';
   }
   return undefined;
-}
-
-/** 注册面需要 DB（view_catalog）校验；本函数只查常量表，由调用方再用 DB 复核。 */
-function isRegisteredRendererForClaim(id: string): boolean {
-  return rendererById(id) !== undefined;
 }
 
 /**
@@ -233,7 +229,7 @@ export function importClaims(db: SdoDatabase, claims: readonly ExportClaim[]): C
       skipped += 1;
       continue;
     }
-    const invalid = prevalidateClaim(claim);
+    const invalid = prevalidateClaim(db, claim);
     if (invalid !== undefined) {
       return failure(invalid, `claim ${claim.claim_no} rejected before append: ${invalid}`);
     }

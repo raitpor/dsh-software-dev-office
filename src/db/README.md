@@ -97,3 +97,77 @@
 - 解析器边界（D-087）：`docs/07` §2 授权格里**括号只当注释**（`dependencies` 的「（不是 `write@module`——依赖是计划，不是代码）」不参与解析）；带 `@scope` 的未知权名、或裸权名漏 `@scope` ⇒ `unknown_right_in_matrix` 解析失败（fail-closed，不静默丢权）；其余反引号 token 视为正文引用。
 - 空授权格只允许**显式白名单**（`EMPTY_REQUIRED_ACTIONS`：`defect.close` docs/07:50、`verify_finding` docs/07:52、`config.bootstrap` docs/07:48）；白名单之外的授权格解析为空（含“不是 x 而是 y”被截断、整格 `—`）⇒ `unknown_right_in_matrix`，不许静默变成“谁都能做”。
 - 矩阵目录与 `docs/07` §2 的漂移由 `test/db/auth.test.ts` 双向机器比对抓：文档多/少一行 ⇒ 解析器抛错（C2 变异红证）；DB 目录被删一行 ⇒ 比对红（变异红证）。
+
+## 冲突可见（M3-2）
+
+- **强制声明**：强制声明的是内容编辑类 kind（当前 `spec.revised[clause]`、`criterion.revised[remedy]`）；豁免的是生命周期迁移与单写者产生的事件（`task.*` 的状态迁移、`config.changed`、`goal.reparented`、`restatement.diff_dispositioned` 等），它们不并发覆盖同一字段。。清单与逐条理由见
+  `src/core/conflict/scope.ts` 的 `CONFLICT_TRACKED_FIELDS`；缺声明 ⇒ `conflict_scope_undeclared`
+  （0 行落库）。`field` 必须是该 kind 的受管字段，否则 `invalid_field`。其余固定 payload schema 或
+  一次性能力/签名路径产生的事件无法携带 CAS，伪造由能力/签名兜底（卡 M3-2 A3）。
+- **威胁模型边界（Lead m08832 裁定）**：`mintConflictDetectedAuthority` 只保证**产品代码路径**不得
+  伪造 `conflict.detected`；能 import 内部模块或直接写 SQLite 的代码已在威胁模型外（与 M2-2
+  `gate.judged` 同口径）。M4 若要把威胁模型收紧到内部模块，须把 mint 下沉进 `src/db/write.ts` 私有。
+- `base_hash` 比的是**该字段当前值的 hash**（`valueHash` = 规范化 JSON 的 sha256，见
+  `src/core/conflict/hash.ts`），不是整行 hash。不同字段并发改互不冲突。
+- **无自豁免**：判定只看声明的 base 与当前值是否一致，与 actor 无关；同 actor 用 stale base
+  写也冲突（想覆盖就带当前 base）。winner = 链上该 subject 的上一写者，loser = 本次事件 actor，
+  均从事件行取，不读 payload 自称。
+- 冲突路径**已提交**：原事件不落，改落 `conflict.detected`（一次性能力 mint 于检测器，
+  `src/db/conflict-authority.ts`；手工 append 该 kind ⇒ `unauthorized_conflict_detected`）；
+  `append()` 返回 `{ok:false, reason_code:'conflict', conflict_id, base_hash, current_hash,
+  rolled_back:false, written}`。调用方必须按 **409 语义**处理（不是“没写”），原意图留在
+  `conflicts` 视图里等人裁决。
+- 同批多事件：CAS 按 fold 逐条推进（前一条的 patch 对后一条可见），批内第二条 stale 同样冲突。
+- `conflict` 表 + `conflicts` 视图（`migrations/009_conflict.sql`）；行由 fold 投影，`verify()`
+  对账 **5 张表** `task/spec/release/decision/conflict`。直改 `conflict` 表报
+  `runtime_inconsistent/conflict`；直改 `conflicts` 视图不报（视图无状态，SQLite 拒绝写视图）。
+- `resolveConflict(db, client, {conflict_id, payload_hash, side, note?}, session)`：只允许 human
+  会话，走 `signDecision(decision_kind='sign', extra.conflict_resolution = {conflict_id,
+  adopted_actor, note})`（D-089：M3 用通用 `sign`，v2.1 若要独立 kind 再改枚举），成功后
+  append `conflict.resolved`；无有效签名 ⇒ 冲突保持 `open`。
+- `conflicts` 视图暂未注册 `view_catalog`（`sdo_query` 只执行 catalog 内 SQL）——
+  **M3-4 收口项**，届时同步 13→14 视图断言。
+- 不做自动合并；冲突**不产生** `dispute.*` 事件。
+
+## 独立性（M3-3，`docs/07` §7）
+
+- `decision.signed` 可多条（`dual_human` 载体，D-092）：第二条起 `payload_hash` 必须等于
+  decision 行（`payload_mismatch`），同 actor 同 payload 重放幂等 no-op，投影行保持首签。
+- 独立性等级只从 baseline 的 `assurance.independence` 解析（`dual_human` /
+  `solo_cooldown(Nm)` / `solo`，D-094：不是 `policy`）；缺失/非法 ⇒ 判定拒，不默认 15m。
+  门禁 `judgeStage` 在 baseline 独立性不满足时强制 `changes_requested`，`reasons` 只放码
+  （`independence_unsatisfied` / `cooldown_active` / `independence_missing` / `assurance_invalid`）。
+- `verify()` 用同一套判定复算（`src/core/independence/verify.ts`）：同一 decision 的签名
+  `payload_hash` 与行不符 ⇒ `independence_unverifiable`；删一条签名/改 signer 使不同 signer
+  不足 ⇒ `independence_unsatisfied`。策略缺失/非法归门禁 fail-closed，不在 `verify` 里把
+  M3-3 之前的旧 baseline 全判红。
+- 新拒绝码：`payload_mismatch`、`independence_unsatisfied`、`cooldown_active`、
+  `cooldown_not_applicable`（`AppendReason` + `errors.ts` 闭集）。
+- 边界（D-093）：actor 级声明，不防一人两账号；多钥留 M4。
+
+### 独立性判定（M3-3，第 1 轮评审补充）
+
+- 门禁（`judgeStage`）与 `verify` 都按**被判定对象绑定的 baseline 版本**取 `assurance`：
+  `stage_run.baseline_hash` / 冻结 decision 签名载荷的 `payload.baseline.hash`；
+  不是链头。旧库缺行时显式报 `independence_baseline_unbound`，不静默退化。
+- 门禁 fail-closed 的四码：`independence_unsatisfied` / `cooldown_active` /
+  `independence_missing` / `assurance_invalid`；缺/非法 assurance 一律 `changes_requested`，
+  `verify` 只复算“签名证据”，不替代门禁的策略判定。
+- `verify` 额外要求签名者可解析到 `actor.kind='human'`（未知/非 human ⇒ `independence_unverifiable`）。
+- 多签是 `dual_human` 的唯一载体（D-092）；写网关仍逐条验证 signerd 回执。
+- **回执一次性（第 2 轮 P1-2）**：迁移 012 的 `signerd_receipt_use(receipt_id PRIMARY KEY, event_id, decision_id, at)`
+  在 append 事务内占位；同一 receipt 第二次写入 ⇒ `signerd_receipt_replayed`（整批回滚）。
+- **签名时间三方一致（第 2 轮 P1-1）**：`event.at === receipt.at === payload.signerd.at`，
+  不一致 ⇒ `signature_time_mismatch`；`signerd_receipt_use` + 该比对一起封死改 at 重放。
+
+### 渲染器目录的投影哨兵与威胁模型（M3-4，第 2 轮评审补充）
+
+- `renderer_catalog` 是**投影表**：行只由 `renderer.registered` 事件在 append 事务内 `materialize`
+  投影（`applyRendererRegistrations`）；窗口外（含裸连接直插/直改/直删）由 011 的
+  `projection_guard` 哨兵 + 三触发器 ABORT。
+- 哨兵窗口（置位 → 写入 → 复位）整体包在事务里，`active` 复位在 `finally`；进程崩在窗口内则
+  事务回滚，不会永久停在 1。
+- **边界**：哨兵阻断的是“未在 append 事务窗口内的直写”，**不是**防同 uid 的恶意进程——
+  能执行任意 SQL 的进程可以把哨兵置 1 再直插，这已在威胁模型外（与 M2-0 同 uid 威胁模型一致）。
+  同理，`src/db/renderer-authority.ts` 的 `mint*` 是 `@internal`：产品路径不当入口调用；
+  能 import 内部模块的代码同样在威胁模型外。

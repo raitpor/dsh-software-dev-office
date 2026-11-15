@@ -50,12 +50,16 @@ export function decisionSigned(state: FoldWorking, event: Event): void {
   if (row['status'] !== 'valid') {
     return fail(event, `decision ${id} is ${String(row['status'])}; only valid decisions can be signed`);
   }
-  if (row['signature'] !== null) {
-    return fail(event, `decision ${id} is already signed; decisions are append-only`);
-  }
   const payloadHash = reqString(event, payload, 'payload_hash');
   if (payloadHash !== row['payload_hash']) {
-    return fail(event, `decision ${id} payload_hash mismatch with decision.valid`);
+    return fail(event, `decision ${id} payload_hash mismatch with decision.valid (payload_mismatch)`);
+  }
+  // M3-3：同一 decision 允许多条 `decision.signed`（`dual_human` 的载体）。
+  // M2-0 的“单次签发、签完就锁”锁的是**免密窗口绑定**，不是签名条数。
+  // 投影行保持**首签**（signature 列不覆盖、不加新列）；次数与 signer 集合由事件重算。
+  // 同 actor 同 payload 重放：幂等 no-op（不报错、不改投影）；跨 actor 的复签只记事件。
+  if (row['signature'] !== null) {
+    return;
   }
   // C12/D-047：channel 与 key_id 都从**已验签的载荷**投影（网关已核过回执）；
   // channel 对旧 fixture 允许缺省为 null，但真实签发路径必填。

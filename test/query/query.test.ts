@@ -165,19 +165,28 @@ test('C3 权限裁剪：reader 查 review_queue 被拒并留痕；decider 正常
   });
 });
 
-test('C3 目录可见性：list 对 reader=11、decider=13（超 8KB 走游标），且按 name 升序', () => {
+test('C3 目录可见性：list 对 reader=12、decider=14（超 8KB 走游标），且按 name 升序', () => {
   withMigratedDb((db) => {
-    const reader = query(db, { view: 'list' }, { right: 'reader' });
-    assert.equal(reader.miss, undefined);
-    assert.equal(reader.rows.length, 11);
-    assert.equal(reader.truncated, false);
-    assert.equal(reader.bytes, Buffer.byteLength(JSON.stringify(reader), 'utf8'));
-    assert.ok(reader.bytes <= MAX_RESULT_BYTES);
-    const readerNames = reader.rows.map((row) => String((row as Record<string, unknown>)['name']));
+    // reader 的 12 行目录已超 8KB（011 加 conflicts 后），按预算截断并给游标。
+    const readerNames: string[] = [];
+    let readerPage = query(db, { view: 'list' }, { right: 'reader' });
+    let readerCursor: string | undefined = readerPage.next_cursor;
+    for (let guard = 0; guard < 10; guard += 1) {
+      assert.equal(readerPage.miss, undefined);
+      assert.equal(readerPage.bytes, Buffer.byteLength(JSON.stringify(readerPage), 'utf8'));
+      assert.ok(readerPage.bytes <= MAX_RESULT_BYTES);
+      readerNames.push(...readerPage.rows.map((row) => String((row as Record<string, unknown>)['name'])));
+      if (readerCursor === undefined) break;
+      const nextCursor: string = readerCursor;
+      readerPage = query(db, { view: 'list', cursor: nextCursor }, { right: 'reader' });
+      readerCursor = readerPage.next_cursor;
+    }
+    assert.equal(readerNames.length, 12);
+    assert.equal(new Set(readerNames).size, 12, 'reader 目录分页不得重复');
     assert.ok(!readerNames.includes('review_queue'));
     assert.ok(!readerNames.includes('gaps'));
 
-    // decider 看到 13 行目录；恢复 columns[].type 后 13 行 JSON 超 8KB，首屏按预算截断。
+    // decider 看到 14 行目录；恢复 columns[].type 后 14 行 JSON 超 8KB，首屏按预算截断。
     const firstPage = query(db, { view: 'list' }, { right: 'decider' });
     assert.equal(firstPage.miss, undefined);
     assert.equal(firstPage.truncated, true);
@@ -198,8 +207,8 @@ test('C3 目录可见性：list 对 reader=11、decider=13（超 8KB 走游标�
       assert.ok(page.bytes <= MAX_RESULT_BYTES);
       cursor = page.next_cursor;
     }
-    assert.equal(names.length, 13);
-    assert.equal(new Set(names).size, 13, '目录分页不得重复');
+    assert.equal(names.length, 14);
+    assert.equal(new Set(names).size, 14, '目录分页不得重复');
     assert.deepEqual(names, [...names].sort((a, b) => a.localeCompare(b)));
 
     const sample = firstPage.rows[0] as Record<string, unknown>;
@@ -211,7 +220,7 @@ test('C3 目录可见性：list 对 reader=11、decider=13（超 8KB 走游标�
     // 目录自描述不含 sql 执行细节
     assert.ok(!('sql' in sample));
 
-    // `sdo_query({view:'list'})` 与列表接口的 13 个视图同名集合一致
+    // `sdo_query({view:'list'})` 与列表接口的 14 个视图同名集合一致
     const catalog = listViewCatalog(db);
     assert.deepEqual(names, catalog.map((view) => view.name));
   });
@@ -267,10 +276,10 @@ test('C7 缺视图/缺列/坏参数：三种结构化 miss，不抛裸异常', (
   });
 });
 
-test('C2/目录：13 条视图 SQL 全部通过 assertSelectOnly', () => {
+test('C2/目录：14 条视图 SQL 全部通过 assertSelectOnly', () => {
   withMigratedDb((db) => {
     const catalog = listViewCatalog(db);
-    assert.equal(catalog.length, 13);
+    assert.equal(catalog.length, 14);
     for (const view of catalog) {
       assert.doesNotThrow(() => assertSelectOnly(view.sql), view.name);
     }

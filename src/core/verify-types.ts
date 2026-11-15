@@ -27,7 +27,11 @@ export type VerifyProblemCode =
   | 'baseline_missing'
   | 'baseline_unfrozen'
   | 'assumption_disposition_missing'
-  | 'assumption_decision_invalid';
+  | 'assumption_decision_invalid'
+  /** M3-3：独立性复算（dual_human / solo_cooldown）不满足，或签名证据不自洽。 */
+  | 'independence_unsatisfied'
+  | 'independence_baseline_unbound'
+  | 'independence_unverifiable';
 
 export interface VerifyProblem {
   readonly code: VerifyProblemCode;

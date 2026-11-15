@@ -28,11 +28,28 @@
 真实授权），所以 M1 **不落库**这两类，交回 M2 迁移卡。因此
 `verify().legacy_criterion_registrations` 在本卡上应为 **0**（不是 20）。
 
-## 渲染器注册（D-034 代理）
+## 渲染器注册（M3-4 收口 D-034）
 
-`src/claim/renderers.ts` 的 `RENDERERS` 常量 ∩ `view_catalog` 里声明的视图名。
-v1 只有 `renderer:gate-result → board`。未注册 ⇒ `renderer_unregistered`。
-M2 接真正的 `renderer_catalog` 后只替换 `isRegisteredRenderer` 的实现，契约不变。
+注册面是**真目录表** `renderer_catalog(id, module_path, views[], at)`（迁移 `010`），
+不是代码常量（M1 的 `src/claim/renderers.ts` 代理已删除）。读写入口只有
+`src/db/renderer.ts`：
+
+- 登记：`registerRenderer(db, {id, module_path, views, actor})`——需要
+  `admin@domain`（复用矩阵的 `config` 动作，目标 scope `domain:renderers`；
+  S20 第四条裁定），`views[]` 必须是 `view_catalog` 已有视图名；**登记即代码**：
+  `module_path` 必须真实存在且导出 `render` 或 `renderClaimRows`（用 `import()`
+  动态校验，超时/抛错 ⇒ `renderer_module_invalid`）。
+- 投影：目录行由 `renderer.registered` 事件（ACK kind，不物化）投影而来；
+  `rebuildRendererCatalog(db)` 是唯一重建入口，事件流是唯一真源。
+- 内置渲染器 `renderer:gate-result`（v1 结论回执）是唯一例外：迁移 `010` 直接播种，
+  `rebuildRendererCatalog` 在事件重建后用 `INSERT OR IGNORE` 兜底（事件流有同 id
+  登记时事件行优先，见 D-091）。
+- 本目录只用 `src/claim/catalog.ts` 的四只读函数（委托 `src/db/renderer.ts`），
+  不自己建第二套登记表（C5 静态扫描）。
+- 未注册 ⇒ `renderer_unregistered`；`verifyClaims` 另查 `views[]` 是否覆盖
+  frontier 事件的来源视图表，不覆盖 ⇒ `views_not_covered`（带 `missing_tables`）。
+- 这条覆盖检查是**启发式**（P2-1）：只静态扫 `view_catalog.sql` 的 `FROM/JOIN`，
+  不追踪 CTE 间接来源；真覆盖以 `verifyClaims` 重算 claim 行 + 渲染器实际输出对账为准。
 
 ## 拒绝码
 

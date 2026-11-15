@@ -31,11 +31,14 @@ const DERIVED_ONLY_KINDS = new Set(['assumption.invalidated']);
 // `gate.judged` 只能由 `judgeStage()` 真路径产生（P1 评审：没有测试缝可铸授权），
 // 因此不进 world 链与 pinned 快照；真实判定行的物化覆盖在 test/db/gate-judged.test.ts。
 const GATE_ONLY_KINDS = new Set(['gate.judged']);
+// M3-2/P1-3：conflict.* 只能由真 CAS 路径产生（一次性能力），world 链不含；
+// 冲突行/解决覆盖在 test/db/conflict-*.test.ts。
+const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
 
 test('C5/C6 world chain covers every supported kind exactly once (first occurrence)', () => {
-  assert.equal(kinds.length, 56, 'SUPPORTED_KINDS must stay at 56 (REDUCERS derives it)');
+  assert.equal(kinds.length, 58, 'SUPPORTED_KINDS = REDUCERS 56 + conflict 2');
   for (const kind of kinds) {
-    if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind)) continue;
+    if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind)) continue;
     assert.ok(seeds.some((event) => event.kind === kind), `world chain must contain at least one ${kind} event`);
   }
 });
@@ -67,7 +70,7 @@ test('D-078: assumption.invalidated is registered but every write is rejected at
 // 单事件入 DB 会遇到“中途态 DDL 非法”（如 redteam.disposition NOT NULL），
 // 所以 per-kind 效果在 fold 层取证；DB 物化由下面的 world 全链逐表对账覆盖。
 for (const kind of kinds) {
-  if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind)) continue;
+  if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind)) continue;
   const index = seeds.findIndex((event) => event.kind === kind);
   test(`C6 ${kind} writes the pinned fold row with exact values`, () => {
     const table = requiredTable(kind);

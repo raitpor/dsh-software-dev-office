@@ -86,7 +86,7 @@ function readKeyringB64(home: string, keyId: string): string | undefined {
 interface ReceiptLookup {
   readonly found: boolean;
   readonly matches: boolean;
-  readonly reason?: 'home_insecure' | 'receipt_chain_broken';
+  readonly reason?: 'home_insecure' | 'receipt_chain_broken' | 'signature_time_mismatch';
   readonly message?: string;
 }
 
@@ -129,6 +129,7 @@ function lookupReceipt(
   home: string,
   payload: SignedDecisionPayload,
   decisionId: string,
+  eventAt: string | undefined,
 ): ReceiptLookup {
   const loaded = loadReceipts(home);
   if (!loaded.ok) return { found: false, matches: false, reason: loaded.reason, message: loaded.message };
@@ -136,6 +137,11 @@ function lookupReceipt(
     (entry) => entry.receipt_id === payload.signerd.receipt_id && entry.consumed !== false,
   );
   if (receipt === undefined) return { found: false, matches: false };
+  // 第 2 轮评审 P1-1：事件 at、回执 at、签名载荷 signerd.at 必须三方一致。
+  // 否则“复制一条已签名事件、只改 at、重算 hash”就能伪造冷却已过（第二次签名）。
+  if (receipt.at !== payload.signerd.at || (eventAt !== undefined && eventAt !== receipt.at)) {
+    return { found: true, matches: false, reason: 'signature_time_mismatch' };
+  }
   return {
     found: true,
     matches: receipt.decision_id === decisionId && receiptMatchesPayload(receipt, payload),
@@ -151,7 +157,8 @@ export interface ProvenanceCheck {
     | 'receipt_missing'
     | 'receipt_mismatch'
     | 'home_insecure'
-    | 'receipt_chain_broken';
+    | 'receipt_chain_broken'
+    | 'signature_time_mismatch';
   readonly message?: string;
 }
 
@@ -160,6 +167,8 @@ export function checkDecisionSignedProvenance(input: {
   readonly decision_id: string;
   readonly payload: unknown;
   readonly home?: string;
+  /** 事件信封上的 `at`（写网关传入；verify 复算同一比对）。 */
+  readonly event_at?: string;
 }): ProvenanceCheck {
   const payload = readSignedDecisionPayload(input.payload);
   if (payload === undefined) {
@@ -181,7 +190,15 @@ export function checkDecisionSignedProvenance(input: {
   if (!verifyCanonical(publicKey, message, payload.signature)) {
     return { ok: false, reason: 'bad_signature', message: 'Ed25519 验签失败' };
   }
-  const receipt = lookupReceipt(home, payload, input.decision_id);
+  // 载荷内部的 at 先与事件信封对齐（还没读回执就能拒掉大部分篡改）。
+  if (input.event_at !== undefined && input.event_at !== payload.signerd.at) {
+    return {
+      ok: false,
+      reason: 'signature_time_mismatch',
+      message: `事件 at=${input.event_at} 与签名回执 at=${payload.signerd.at} 不一致`,
+    };
+  }
+  const receipt = lookupReceipt(home, payload, input.decision_id, input.event_at);
   if (receipt.reason !== undefined) {
     return { ok: false, reason: receipt.reason, message: receipt.message };
   }

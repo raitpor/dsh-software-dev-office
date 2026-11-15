@@ -2,12 +2,14 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
 import { canonicalJson } from '../../src/core/fold/canonical.js';
+import { valueHash } from '../../src/core/conflict/hash.js';
+import { trackedField } from '../../src/core/conflict/scope.js';
 import { computeEventHash } from '../../src/core/verify.js';
 import type { Event } from '../../src/core/fold/types.js';
 import { append, chainHead } from '../../src/db/write.js';
 import { requiredTable } from '../../src/db/write-materialize.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
-import { chain, withWriteDb } from './append-helpers.js';
+import { chain, currentState, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 const seeds = worldSeeds();
@@ -46,10 +48,18 @@ function eventCount(db: SdoDatabase): number {
 }
 
 function continuation(db: SdoDatabase, base: Event, payload: unknown, suffix: string): Event {
+  const field = trackedField(base.kind);
+  let withClaim = payload;
+  if (field !== undefined) {
+    const state = currentState(db);
+    const table = requiredTable(base.kind);
+    const row = table === undefined ? undefined : state.tables[table][base.subject];
+    withClaim = { ...(typeof payload === 'object' && payload !== null ? payload : {}), field, base_hash: valueHash(row?.[field] ?? null) };
+  }
   const next: Event = {
     ...base,
     id: `${base.id}-${suffix}`,
-    payload,
+    payload: withClaim,
     prev: chainHead(db),
     hash: '',
   };

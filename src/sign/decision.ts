@@ -13,8 +13,16 @@
 import { randomUUID } from 'node:crypto';
 
 import { canonicalJson, sha256Hex } from '../core/fold/canonical.js';
+import { fold } from '../core/fold/index.js';
 import type { Event } from '../core/fold/types.js';
-import { GENESIS_PREV, computeEventHash } from '../core/verify-events.js';
+import { judgeIndependence, signaturesForDecision } from '../core/independence/judge.js';
+import {
+  cooldownMsOf,
+  effectiveMode,
+  parseIndependencePolicy,
+} from '../core/independence/policy.js';
+import { baselineAssuranceBound, decisionBaselineHash } from '../core/independence/verify.js';
+import { GENESIS_PREV, computeEventHash, readEvents } from '../core/verify-events.js';
 import type { SdoDatabase } from '../db/driver.js';
 import { append, chainHead } from '../db/write.js';
 import type { SignerdClient } from './client.js';
@@ -461,7 +469,8 @@ export async function signDecision(
         },
       },
       request_id: requestId,
-      at,
+      // 第 2 轮 P1-1：decision.signed 的事件 at 必须等于 signerd 回执 at（三方一致）。
+      at: signed.at,
       caused_by: [validEvent.id],
     },
     validEvent.hash,
@@ -728,3 +737,314 @@ export function discardStagedSignatures(
 }
 
 export { GENESIS_PREV };
+
+/**
+ * M3-3 C1/C2：对已签 decision 做**第二次签名**（dual_human 的第二个人，或
+ * solo_cooldown 冷却结束后的二次确认）。
+ *
+ * 约束（Lead 第 3 轮口径）：
+ *   - 同一 decision 的复签名必须覆盖同一个 `payload_hash`（首签内容不可换）；
+ *   - 同 actor 同 payload 重放 ⇒ 幂等返回已有签名，**不新增事件**；
+ *   - 独立性判定与门禁/verify 用同一个 `judgeIndependence`（可复算，不是注入开关）；
+ *   - 投影行保持首签，次数由事件计（reducer 侧同口径）。
+ */
+export interface CounterSignRequest {
+  readonly decision_id: string;
+  readonly actor: string;
+  readonly actor_kind: ActorKind;
+  readonly producer: string;
+  readonly frontier: string;
+  readonly channel: SignChannel;
+  readonly now?: Date;
+}
+
+export interface CounterSignOutcome {
+  readonly ok: true;
+  readonly decision_id: string;
+  readonly signer: string;
+  readonly signature: string;
+  readonly key_id: string;
+  readonly receipt_id: string;
+  readonly distinct_signers: number;
+  /** 幂等命中已有签名时为 true（没有调用 signerd）。 */
+  readonly existing: boolean;
+}
+
+function matrixRows(db: SdoDatabase): { action: string; dual_human: string }[] {
+  const rows = db.prepare('SELECT action, dual_human FROM right').all() as Record<string, unknown>[];
+  return rows.map((row) => ({ action: String(row['action']), dual_human: String(row['dual_human']) }));
+}
+
+function humanActorCount(db: SdoDatabase): number {
+  const rows = db.prepare("SELECT COUNT(*) AS n FROM actor WHERE kind = 'human'").all() as Record<string, unknown>[];
+  const value = rows[0]?.['n'];
+  return typeof value === 'number' ? value : 0;
+}
+
+interface ExistingSignatureView {
+  readonly signer: string;
+  readonly signature: string;
+  readonly key_id: string;
+  readonly receipt_id: string;
+  readonly at: string;
+  /** signerd 回执里的真时钟（P2-1：冷却只能从这个时间算，不能信调用方给的时间戳）。 */
+  readonly signerd_at: string | null;
+}
+
+function existingSignatures(events: readonly Event[], decisionId: string): ExistingSignatureView[] {
+  const result: ExistingSignatureView[] = [];
+  for (const event of events) {
+    if (event.kind !== 'decision.signed' || event.subject !== decisionId) continue;
+    const payload = event.payload as Record<string, unknown>;
+    const signer = payload['signer'];
+    const signature = payload['signature'];
+    const keyId = payload['key_id'];
+    if (typeof signer !== 'string' || typeof signature !== 'string' || typeof keyId !== 'string') continue;
+    const signerd = payload['signerd'];
+    const receiptId =
+      typeof signerd === 'object' && signerd !== null
+        ? (signerd as Record<string, unknown>)['receipt_id']
+        : undefined;
+    const signerdAt =
+      typeof signerd === 'object' && signerd !== null
+        ? (signerd as Record<string, unknown>)['at']
+        : undefined;
+    result.push({
+      signer,
+      signature,
+      key_id: keyId,
+      receipt_id: typeof receiptId === 'string' ? receiptId : '',
+      at: event.at,
+      signerd_at: typeof signerdAt === 'string' ? signerdAt : null,
+    });
+  }
+  return result;
+}
+
+export async function counterSignDecision(
+  db: SdoDatabase,
+  client: SignerdClient,
+  input: CounterSignRequest,
+): Promise<CounterSignOutcome | SignFailure | SignDivergedFailure> {
+  const now = input.now ?? new Date();
+  const at = now.toISOString();
+  if (input.actor_kind !== 'human') {
+    recordSecurityAlert(db, {
+      actor: input.actor,
+      actor_kind: input.actor_kind,
+      at,
+      detail: `非 human 尝试二次签名 decision=${input.decision_id}`,
+    });
+    return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
+  }
+
+  const events = readEvents(db, []);
+  let state;
+  try {
+    state = fold(undefined, events);
+  } catch (error) {
+    return fail('invalid_request', `cannot fold events: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  const row = state.tables.decision[input.decision_id];
+  if (row === undefined) {
+    return fail('invalid_request', `decision ${input.decision_id} 不存在`);
+  }
+  if (row['status'] !== 'valid') {
+    return fail('invalid_request', `decision ${input.decision_id} 状态为 ${String(row['status'])}，不能复签`);
+  }
+  const decisionKind = String(row['decision_kind'] ?? '');
+  const payloadHash = String(row['payload_hash'] ?? '');
+  const firstSigned = existingSignatures(events, input.decision_id);
+  const first = firstSigned[0];
+  if (first === undefined) {
+    return fail('invalid_request', `decision ${input.decision_id} 还没有首签，请用 signDecision`);
+  }
+
+  const signatures = signaturesForDecision(events, input.decision_id);
+  // P1-1：冻结类 decision 用其签名载荷里的 baseline 版本；旧库缺行时显式 fail-closed。
+  const binding = baselineAssuranceBound(state, decisionBaselineHash(state, input.decision_id));
+  if (binding.fallback && decisionBaselineHash(state, input.decision_id) !== null) {
+    return fail('independence_unsatisfied', 'decision 绑定的 baseline 版本在库里不存在（旧库缺行），无法判定独立性');
+  }
+  const judgement = judgeIndependence({
+    decision_kind: decisionKind,
+    signatures,
+    matrix: matrixRows(db),
+    assurance: binding.assurance,
+    human_actor_count: humanActorCount(db),
+  });
+  if (!judgement.required) {
+    return fail('invalid_request', `decision_kind=${decisionKind} 不要求独立性，不需要二次签名`);
+  }
+
+  const policyParsed = parseIndependencePolicy(binding.assurance);
+  if (!policyParsed.ok) {
+    return fail('independence_unsatisfied', policyParsed.message);
+  }
+  const mode = effectiveMode(policyParsed.policy);
+  if (mode === 'solo') {
+    return fail('independence_unsatisfied', 'baseline 的 assurance.independence 为 solo，不允许单人完成该动作');
+  }
+
+  const already = firstSigned.find((item) => item.signer === input.actor);
+  // dual_human：同 actor 重放 ⇒ 幂等 no-op（不新增事件、不报错）；换 actor 才计数。
+  if (mode === 'dual_human') {
+    if (already !== undefined) {
+      return {
+        ok: true,
+        decision_id: input.decision_id,
+        signer: already.signer,
+        signature: already.signature,
+        key_id: already.key_id,
+        receipt_id: already.receipt_id,
+        distinct_signers: new Set(firstSigned.map((item) => item.signer)).size,
+        existing: true,
+      };
+    }
+    if (judgement.ok) {
+      return fail('invalid_request', '独立性已满足，不需要再签名');
+    }
+    if (judgement.reason_code === 'independence_missing' || judgement.reason_code === 'assurance_invalid') {
+      return fail('independence_unsatisfied', judgement.message);
+    }
+  } else {
+    // solo_cooldown：同 actor 的第二次签名就是“二次确认”，受冷却约束；
+    // 换 actor（真的第二个人）无需冷却，`cooldown_not_applicable`。
+    const distinct = new Set(firstSigned.map((item) => item.signer)).size;
+    if (distinct >= 2) {
+      return fail('invalid_request', '已出现第二个不同 human，独立性已满足');
+    }
+    if (already !== undefined) {
+      const cooldown = cooldownMsOf(policyParsed.policy);
+      if (cooldown === null) {
+        return fail('independence_unsatisfied', 'assurance 里缺少冷却毫秒数（fail-closed）');
+      }
+      // 冷却基准 = 首签回执里的真时钟（拿不到才退回事件 at，且注释写明）。
+      const base = Date.parse(already.signerd_at ?? already.at);
+      const elapsed = now.getTime() - base;
+      if (Number.isNaN(elapsed) || elapsed < cooldown) {
+        const remaining = Number.isNaN(elapsed) ? cooldown : cooldown - elapsed;
+        return fail(
+          'cooldown_active',
+          `冷却未结束：还需 ${String(Math.ceil(remaining / 60_000))} 分钟才能二次确认`,
+        );
+      }
+    }
+  }
+
+  const head = chainHead(db);
+  if (head !== input.frontier) {
+    await client.lock(input.actor).catch(() => undefined);
+    return fail('frontier_stale', `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`);
+  }
+
+  const propositionHashValue = (() => {
+    const payload = events.find(
+      (event) => event.kind === 'decision.signed' && event.subject === input.decision_id,
+    )?.payload;
+    const value =
+      typeof payload === 'object' && payload !== null
+        ? (payload as Record<string, unknown>)['proposition_hash']
+        : undefined;
+    return typeof value === 'string' ? value : propositionHash('');
+  })();
+
+  const nonce = randomUUID();
+  const signed = await client.sign({
+    actor: input.actor,
+    actor_kind: input.actor_kind,
+    producer: input.producer,
+    decision_id: input.decision_id,
+    payload_hash: payloadHash,
+    proposition_hash: propositionHashValue,
+    frontier: input.frontier,
+    nonce,
+    channel: input.channel,
+  });
+  if (!signed.ok) return signed;
+
+  const afterSign = chainHead(db);
+  if (afterSign !== input.frontier) {
+    await client.lock(input.actor).catch(() => undefined);
+    client.discardReceiptOnFailure(signed.receipt_id);
+    return fail(
+      'frontier_stale',
+      `frontier 在签发期间变化：签名前 ${input.frontier}，签名后 ${afterSign}；请重新解锁`,
+    );
+  }
+
+  // P2-1（第 1 轮评审）：冷却必须用 signerd 回执的真时钟复核，否则调用方回填 `now`
+  // 就能绕过冷却。预检查只是快速失败；这里用 `signed.at` 做权威判定，不满足就
+  // 丢弃刚写的回执、lock、0 行。
+  if (already !== undefined) {
+    const cooldown = cooldownMsOf(policyParsed.policy);
+    const base = Date.parse(already.signerd_at ?? already.at);
+    const authoritative = Date.parse(signed.at);
+    if (cooldown !== null && (Number.isNaN(authoritative) || Number.isNaN(base) || authoritative - base < cooldown)) {
+      await client.lock(input.actor).catch(() => undefined);
+      client.discardReceiptOnFailure(signed.receipt_id);
+      const remaining = Number.isNaN(authoritative) || Number.isNaN(base) ? cooldown : cooldown - (authoritative - base);
+      return fail(
+        'cooldown_active',
+        `冷却未结束（按 signerd 回执时钟复核）：还需 ${String(Math.ceil(remaining / 60_000))} 分钟才能二次确认`,
+      );
+    }
+  }
+
+  const requestId = `req-${randomUUID()}`;
+  const signedEvent = buildEvent(
+    {
+      kind: 'decision.signed',
+      subject: input.decision_id,
+      actor: input.actor,
+      payload: {
+        payload_hash: payloadHash,
+        proposition_hash: propositionHashValue,
+        frontier: input.frontier,
+        nonce,
+        signature: signed.signature,
+        key_id: signed.key_id,
+        signer: signed.signer,
+        channel: signed.channel,
+        signerd: {
+          receipt_id: signed.receipt_id,
+          at: signed.at,
+          unlock_wait_ms: signed.unlock_wait_ms,
+          ...(signed.since_last_unlock_ms === undefined
+            ? {}
+            : { since_last_unlock_ms: signed.since_last_unlock_ms }),
+          sign_ms: signed.sign_ms,
+        },
+      },
+      request_id: requestId,
+      // P2-1：事件 at 用 signerd 回执真时钟，调用方给的 now 只用于审计告警，不进判定。
+      at: signed.at,
+    },
+    afterSign,
+  );
+  const result = append(db, [signedEvent]);
+  if (!result.ok) {
+    const reason = String(result.reason_code);
+    return fail(isSignReasonCode(reason) ? reason : 'unknown_request', result.message ?? 'append rejected');
+  }
+  const after = chainHead(db);
+  if (after !== signedEvent.hash) {
+    return {
+      ok: false,
+      reason_code: 'runtime_inconsistent',
+      message: `已落盘但提交后链头变化，需人工核对：decision ${input.decision_id}（events_written=1，期望链头 ${signedEvent.hash}，实际 ${after}）`,
+      written_decision_id: input.decision_id,
+      events_written: 1,
+    };
+  }
+  return {
+    ok: true,
+    decision_id: input.decision_id,
+    signer: signed.signer,
+    signature: signed.signature,
+    key_id: signed.key_id,
+    receipt_id: signed.receipt_id,
+    distinct_signers: new Set([...firstSigned.map((item) => item.signer), signed.signer]).size,
+    existing: false,
+  };
+}

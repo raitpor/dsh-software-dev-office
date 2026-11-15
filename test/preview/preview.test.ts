@@ -15,7 +15,7 @@ import {
   previewChange,
 } from '../../src/preview/index.js';
 import type { PreviewResult } from '../../src/preview/index.js';
-import { chain, fourDomainSeeds, seed, withWriteDb } from '../db/append-helpers.js';
+import { chain, currentState, fourDomainSeeds, seed, withWriteDb } from '../db/append-helpers.js';
 
 let counter = 1000;
 function ev(
@@ -28,7 +28,8 @@ function ev(
   return seed(counter, kind, subject, payload, overrides);
 }
 function appendSeeds(db: SdoDatabase, seeds: readonly Omit<Event, 'prev' | 'hash'>[]): Event[] {
-  const events = chain(seeds, chainHead(db));
+  // D-097：spec.revised/criterion.revised 需 CAS 声明；按当前折动态补，不改断言。
+  const events = chain(seeds, chainHead(db), currentState(db));
   const result = append(db, events);
   assert.equal(result.ok, true);
   return events;
@@ -82,7 +83,7 @@ function drainBatch(
   db: SdoDatabase,
   seeds: readonly Omit<Event, 'prev' | 'hash'>[],
 ): { batch: Event[]; result: PreviewResult } {
-  const batch = chain(seeds, chainHead(db));
+  const batch = chain(seeds, chainHead(db), currentState(db));
   return { batch, result: previewChange(db, batch) };
 }
 
@@ -240,6 +241,7 @@ test('C4 手填不算：入参自带 rework_units / reworkUnits ⇒ 结构化 in
     const batch = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'x', clause: 'clause 1 v3' })],
       chainHead(db),
+      currentState(db),
     );
     for (const options of [{ rework_units: 0 }, { reworkUnits: 2 }]) {
       assert.throws(
@@ -281,6 +283,7 @@ test('C6 对账（append 真落库）：预览 0 == 落库后重放的事后 0',
     const batch = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'upstream change', clause: 'clause 1 v5' })],
       chainHead(db),
+      currentState(db),
     );
     const preview = previewChange(db, batch);
     assert.equal(preview.reworkUnits, 0);
@@ -317,6 +320,7 @@ test('C6 对账（非零样本，真 append）：预览 3 == 落库后实际作�
     const batch = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'upstream change', clause: 'clause 1 v5' })],
       chainHead(db),
+      currentState(db),
     );
     const preview = previewChange(db, batch);
     assert.equal(preview.reworkUnits, 3);
@@ -356,6 +360,7 @@ test('批不接在当前链尾 / 事件 hash 不对 ⇒ invalid_args', () => {
     const good = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'x', clause: 'clause 1 v6' })],
       chainHead(db),
+      currentState(db),
     );
     const brokenPrev = [{ ...(good[0] as Event), prev: 'sha256:wrong' }];
     assert.throws(
@@ -377,6 +382,7 @@ test('fold 拒绝的批（如给不存在的 task 派活）⇒ 结构化 invalid
     const batch = chain(
       [ev('task.claimed', 'T404', { owner: 'dev-1' })],
       chainHead(db),
+      currentState(db),
     );
     assert.throws(
       () => previewChange(db, batch),
@@ -395,6 +401,7 @@ test('P2 重放批：append 之后再 preview / 再 append 同一批 ⇒ 两边�
     const batch = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'x', clause: 'clause 1 v3' })],
       chainHead(db),
+      currentState(db),
     );
 
     const beforeFirst = previewChange(db, batch);
@@ -421,6 +428,7 @@ test('P2 批内重复 id：preview 与 append 都拒（不落到 UNIQUE 冲突�
     const [first] = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'dup', clause: 'clause 1 v4' })],
       chainHead(db),
+      currentState(db),
     );
     assert.ok(first !== undefined);
     const duplicateBase = { ...first, prev: first.hash } as Event;
@@ -444,6 +452,7 @@ test('P3 C4：原型链上的 rework_units 也拒（`in` 而非 own property）'
     const batch = chain(
       [ev('spec.revised', 'SPEC-1', { reason: 'x', clause: 'clause 1 v5' })],
       chainHead(db),
+      currentState(db),
     );
     const protoOptions = Object.create({ rework_units: 1 }) as Record<string, unknown>;
     assert.throws(

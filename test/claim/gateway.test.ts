@@ -7,8 +7,9 @@ import { append } from '../../src/db/write.js';
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import type { ClaimRow } from '../../src/claim/types.js';
 import { expectedClaimRow, importClaims, writeClaimRows } from '../../src/claim/gateway.js';
-import { isRegisteredRenderer } from '../../src/claim/renderers.js';
+import { isRegisteredRenderer } from '../../src/claim/catalog.js';
 import { readExportFile } from '../../src/importer/parse.js';
+import { seedRenderer } from './helpers.js';
 import { chain, seed, withWriteDb } from '../db/append-helpers.js';
 
 /** 一条合法 claim 行；frontier 由调用方给（必须是库里真实存在的事件 id）。 */
@@ -39,6 +40,7 @@ test('C7 claim is append-only at the DB layer (UPDATE/DELETE rejected)', () => {
   withWriteDb((db) => {
     const [event] = chain([seed(1, 'task.created', 'TASK-1', { seq: 1, title: 't', kind: 'implement' })]);
     assert.equal(append(db, [event!]).ok, true);
+    seedRenderer(db);
     const result = writeClaimRows(db, [row([event!.id])]);
     assert.deepEqual([result.ok, result.written], [true, 1]);
     assert.throws(
@@ -68,6 +70,7 @@ test('C5 empty or unknown frontier is rejected', () => {
   withWriteDb((db) => {
     const [event] = chain([seed(1, 'task.created', 'TASK-1', { seq: 1, title: 't', kind: 'implement' })]);
     append(db, [event!]);
+    seedRenderer(db);
     const empty = writeClaimRows(db, [row([])]);
     assert.equal(empty.reason_code, 'frontier_empty');
     const unknown = writeClaimRows(db, [row(['e-does-not-exist'])]);
@@ -108,10 +111,12 @@ test('C8 claim value carries code/params only, no long prose', () => {
   }
 });
 
-test('C4 renderer registry needs both the code constant and the view', () => {
+test('C4 renderer registry reads renderer_catalog (built-in seed + event projection), not a code constant', () => {
   withWriteDb((db) => {
-    assert.equal(isRegisteredRenderer(db, 'renderer:gate-result'), true);
+    assert.equal(isRegisteredRenderer(db, 'renderer:gate-result'), true, 'built-in seeded by migration 010');
     assert.equal(isRegisteredRenderer(db, 'renderer:unknown'), false);
+    seedRenderer(db);
+    assert.equal(isRegisteredRenderer(db, 'renderer:gate-result'), true);
   });
 });
 

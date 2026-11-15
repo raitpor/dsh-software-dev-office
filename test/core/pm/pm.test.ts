@@ -486,8 +486,10 @@ test('P3-1 isPmUnblockable：空/未知/非白名单码一律 false', () => {
 // P2-3 静态读权限表与视图目录一致性守卫
 // 参照物是**人工从 docs/05 §3（13 视图 + min_right）与 docs/07 §2（席位职责）抄下的期望表**，
 // 不与 SEATS / listViewCatalog 同源；改视图目录或静态矩阵必须同时改这里。
+// `conflicts` 不在 docs/05 §3 的冻结 13 条里：它是 M3-2 新增、由 M3-4 的 011 登记进 view_catalog
+// （min_right=reader；docs/07 §5.1 只要求"可见"，无敏感字段）。仍按人工口径钉在这里，不由目录现算。
 const READER_VIEWS = [
-  'alignment', 'agents', 'baseline', 'board', 'defects', 'evidence',
+  'alignment', 'agents', 'baseline', 'board', 'conflicts', 'defects', 'evidence',
   'overview', 'plan', 'pm_gaps', 'pm_queue', 'team',
 ];
 const REVIEWER_VIEWS = [...READER_VIEWS, 'gaps'].sort();

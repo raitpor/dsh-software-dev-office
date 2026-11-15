@@ -255,11 +255,11 @@ test('已知边界：8000 字符行 + 下一页 ⇒ 行 + 定长游标整包超 
   });
 });
 
-test('C4 list 目录超预算：13 行按 8KB 截断，游标拼回全量（不削数据形状）', () => {
+test('C4 list 目录超预算：14 行按 8KB 截断，游标拼回全量（不削数据形状）', () => {
   withMigratedDb((db) => {
     const first = query(db, { view: 'list' }, { right: 'decider' });
     assert.equal(first.miss, undefined);
-    assert.equal(first.truncated, true, '13 行目录（含 columns[].type）超 8KB，必须截断');
+    assert.equal(first.truncated, true, '14 行目录（含 columns[].type）超 8KB，必须截断');
     assert.ok(first.next_cursor !== undefined, 'truncated=true 必带游标');
     assertWithinBudget(first);
     assert.ok(first.rows.length >= 1);
@@ -275,9 +275,9 @@ test('C4 list 目录超预算：13 行按 8KB 截断，游标拼回全量（不�
     const { rows, pages } = drainPages(db, 'list', { right: 'decider' });
     assert.ok(pages.length >= 2, '目录应分 ≥2 页');
     for (const page of pages) assertWithinBudget(page);
-    assert.equal(rows.length, 13);
+    assert.equal(rows.length, 14);
     const names = rows.map((row) => String((row as Record<string, unknown>)['name']));
-    assert.equal(new Set(names).size, 13, '目录分页不得重复');
+    assert.equal(new Set(names).size, 14, '目录分页不得重复');
     assert.deepEqual(names, listViewCatalog(db).map((view) => view.name));
   });
 });

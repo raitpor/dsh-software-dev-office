@@ -13,6 +13,8 @@ export type AppendReason =
   /** 调用方已开事务（`db.inTransaction`），网关不嵌套事务。 */
   | 'transaction_in_progress'
   | 'unauthorized_gate_judgement'
+  /** M3-4/P1-2：`renderer.registered` 必须由 `registerRenderer()` 的一一次性能力产生。 */
+  | 'unauthorized_renderer_registration'
   /** `BEGIN IMMEDIATE` 撞上别的写者/锁（SQLITE_BUSY），不是投影错误。 */
   | 'database_busy'
   /** kind 已登记，但其投影表不在 M1-0 的物化范围内（写网关收窄，D-031）。 */
@@ -24,7 +26,25 @@ export type AppendReason =
   /** M2-3/C4：assumption.invalidated 是 fold 派生读数，不是可写事件（D-078）。 */
   | 'assumption_invalidated_is_derived'
   /** M2-3/P2-1：已签决策不能再 rejected（撤销走 decision.revoked）。 */
-  | 'decision_already_signed';
+  | 'decision_already_signed'
+  /** M3-3/C1：同一 decision 的复签名必须覆盖同一 payload_hash（首次签名被换内容即拒）。 */
+  | 'payload_mismatch'
+  /** M3-3/C1：独立性不满足（dual_human 凑不齐两人 / baseline 策略缺失或为 solo）。 */
+  | 'independence_unsatisfied'
+  /** M3-3/C2：solo_cooldown 冷却未结束，二次确认被拒。 */
+  | 'cooldown_active'
+  /** M3-3/C2：当前模式不是 solo_cooldown，冷却检查不适用（T0→T1 迁移后的正常拒绝路径）。 */
+  | 'cooldown_not_applicable'
+  | 'signature_time_mismatch'
+  | 'signerd_receipt_replayed'
+  /** M3-2：乐观并发写冲突（409 语义）；原事件不落，conflict.detected 落链。 */
+  | 'conflict'
+  /** M3-2：受管 kind 未声明 field/base_hash（P1-2）。 */
+  | 'conflict_scope_undeclared'
+  /** M3-2：conflict.detected 不是 CAS 路径 mint 的能力（P1-3）。 */
+  | 'unauthorized_conflict_detected'
+  /** M3-2：写对象的 scope 未声明，冲突检测无法判定归属。 */
+  | 'conflict_scope_undeclared';
 // 台账 D-025 需同步登记 append_conflict / transaction_in_progress（Lead 代记）。
 
 /**
@@ -47,6 +67,10 @@ export interface AppendResult {
   readonly attempted: number;
   readonly rolled_back: boolean;
   readonly eventCount: number;
+  /** M3-2：`reason_code='conflict'` 时的结构化 409 字段。 */
+  readonly conflict_id?: string;
+  readonly base_hash?: string;
+  readonly current_hash?: string;
 }
 
 export interface AppendFailure {

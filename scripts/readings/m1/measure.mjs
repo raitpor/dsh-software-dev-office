@@ -15,6 +15,7 @@ import { fileURLToPath } from 'node:url';
 
 import { alignmentGate, disposeDiff, proposeRestatement } from '../../../lib/src/align/index.js';
 import { canonicalJson, sha256Hex } from '../../../lib/src/core/fold/canonical.js';
+import { valueHash } from '../../../lib/src/core/conflict/hash.js';
 import { fold } from '../../../lib/src/core/fold/index.js';
 import { validateBaseline } from '../../../lib/src/core/baseline/index.js';
 import { registerCriterion } from '../../../lib/src/core/criteria/register.js';
@@ -35,17 +36,31 @@ function seed(id, kind, subject, payload, at = AT) {
   return { id, at, actor: 'm1-g-fixture', kind, subject, payload, request_id: `rq-${id}` };
 }
 
+/** D-097：内容编辑类事件必须带字段级 CAS 声明（入列 kind 见 src/core/conflict/scope.ts）。 */
+const TRACKED_FIELDS = { 'spec.revised': { table: 'spec', field: 'clause' }, 'criterion.revised': { table: 'criterion', field: 'remedy' } };
+
+function trackedClaim(kind, subject, state) {
+  const tracked = TRACKED_FIELDS[kind];
+  if (tracked === undefined || state === undefined) return undefined;
+  const row = state.tables[tracked.table]?.[subject];
+  if (row === undefined) return undefined;
+  return { field: tracked.field, base_hash: valueHash(row[tracked.field] ?? null) };
+}
+
 /** 按链头补 prev/hash（不落库）；用于 previewChange 的事件批。 */
 function signedSeeds(db, seeds) {
   let prev = chainHead(db);
+  let state = fold(undefined, readEvents(db, []));
   return seeds.map((item) => {
+    const claim = trackedClaim(item.kind, item.subject, state);
+    const payload = claim === undefined ? item.payload : { ...item.payload, ...claim };
     const unsigned = {
       id: item.id,
       at: item.at ?? AT,
       actor: item.actor ?? 'm1-g-fixture',
       kind: item.kind,
       subject: item.subject,
-      payload: item.payload,
+      payload,
       caused_by: item.caused_by ?? [],
       request_id: item.request_id ?? `rq-${item.id}`,
       prev,
@@ -53,7 +68,13 @@ function signedSeeds(db, seeds) {
     };
     const hash = computeEventHash(unsigned);
     prev = hash;
-    return { ...unsigned, hash };
+    const event = { ...unsigned, hash };
+    try {
+      state = fold(state, [event]);
+    } catch {
+      state = undefined;
+    }
+    return event;
   });
 }
 

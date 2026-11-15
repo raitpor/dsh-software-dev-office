@@ -18,10 +18,15 @@ import {
 } from './fixtures.mjs';
 
 /**
- * M0 时点快照：`view_catalog` 有 13 个视图（2026-11-13）。
- * 以后加视图 → 必须手动更新本常量与这句话，否则 R1 判 fail（不让数字悄悄漂）。
+ * M0 时点快照：`view_catalog` 有 13 个视图（2026-11-13）。这是**历史证据**，常量不改。
+ * 读数测的是当前树：断言改为“历史 13 个视图必须都还在”，当前多出来的视图记进
+ * `viewsAdded[]`（M3-4 迁移 011 加的 `conflicts` 即属此类），不让数字悄悄漂。
  */
 export const M0_VIEW_COUNT = 13;
+export const M0_VIEW_NAMES = Object.freeze([
+  'agents', 'alignment', 'baseline', 'board', 'defects', 'evidence', 'gaps',
+  'overview', 'plan', 'pm_gaps', 'pm_queue', 'review_queue', 'team',
+]);
 
 /** 红证样例：结构上 1 次打开 vs 2 次打开。两者之差必须被计数器看出来。 */
 export const RED_SINGLE_SQL = 'SELECT * FROM event';
@@ -60,8 +65,14 @@ export function measureR1(db) {
       }
     : null;
 
+  const currentNames = views.map((view) => view.name).sort();
+  const missingHistorical = M0_VIEW_NAMES.filter((name) => !currentNames.includes(name));
+  const viewsAdded = currentNames.filter((name) => !M0_VIEW_NAMES.includes(name));
+
   const measured = {
-    viewCount: views.length,
+    viewCountNow: views.length,
+    viewsAdded,
+    missingHistorical,
     perView,
     overview: perView.overview,
     redProof: {
@@ -76,7 +87,7 @@ export function measureR1(db) {
   };
 
   const verdict =
-    views.length === M0_VIEW_COUNT &&
+    missingHistorical.length === 0 &&
     perView.overview !== undefined &&
     perView.overview.eventTableOpens === 0 &&
     perView.overview.eventIndexOpens === 0 &&
@@ -105,11 +116,11 @@ function runChild(scriptPath, dbPath, view, right) {
   });
 }
 
-/** R2：13 个视图全量——每视图同进程两次 + 两个独立进程各一次，逐字节比较。 */
+/** R2：当前目录全部视图——每视图同进程两次 + 两个独立进程各一次，逐字节比较；历史 13 个必须都在。 */
 export function measureR2(db, dbPath, scriptPath) {
   const views = db.prepare('SELECT name, min_right FROM view_catalog ORDER BY name').all();
   const perView = {};
-  let allEqual = views.length === M0_VIEW_COUNT;
+  let allEqual = M0_VIEW_NAMES.every((name) => views.some((view) => view.name === name));
   let shapesOk = true;
   let excerpt = '';
 

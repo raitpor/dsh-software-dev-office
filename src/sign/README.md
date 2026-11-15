@@ -165,7 +165,25 @@ sign 请求的 `frontier` 必须等于当前库链头（P1-1）；并且 **签�
 （D-058：签发期间并发 append ⇒ `frontier_stale`、丢弃回执、窗口失效、0 行）。复核通过后
 建 `decision.valid` 时 `prev` **直接用复核读到的 head**（不再读第三次），此后任何并发 append
 都会让 append 的 prev 校验失败 ⇒ `event_chain_broken`、0 行。
-同一 decision 出现多条 `decision.signed` 会被 `verify` 判红（M2 要求唯一，取最新一条验签）。
+同一 decision **允许多条** `decision.signed`（M3-3：这是 `dual_human` 的载体；M2-0 的“单签”
+指免密窗口绑定，不是签名条数）。第二条起 `payload_hash` 必须与 decision 行一致（否则
+`payload_mismatch`）；同 actor 同 payload 重放 ⇒ 幂等 no-op；投影行保持**首签**，次数与
+去重 signer 由事件重算。`counterSignDecision(db, client, {decision_id, actor, actor_kind,
+producer, frontier, channel, now?})` 是第二签入口：调用前须先为该 actor 解锁窗口。
+
+## 独立性（M3-3，`docs/07` §7）
+
+- 等级唯一来源：baseline 的 `assurance.independence`（`docs/04` §5.1，在 baseline hash 内），
+  解析 `dual_human`｜`solo_cooldown(<N>m)`（N∈[5,60]）｜`solo`；缺失/非法 ⇒ 判定拒
+  （`independence_missing`/`assurance_invalid`），**不默认 15m**。哪些动作需要独立性来自
+  M3-0 矩阵目录（`right.dual_human`），不写死。
+- `dual_human`：同一 decision 至少 2 个不同 `signer`（按 actor 去重）；同 actor 连签不计数。
+- `solo_cooldown(Nm)`：首签后 N 分钟内再签同一 decision ⇒ 拒 `cooldown_active`（带剩余），
+  到期后第二次确认即可；冷却只锁这一条 decision，不阻塞其它卡。
+- **边界（D-093）**：M2 signerd 是单钥单 home，本卡判“actor 级声明”——两个不同 actor 名
+  可以共用同一把私钥，不防一人两账号；同 uid 攻击者不在威胁模型（T0）。真正多钥留 M4。
+- 门禁：缺独立性时 `judgeStage` 出 `changes_requested` 且 `reasons` 只放码；`verify` 用同一套
+  纯函数从事件 + baseline 重算（删一条签名/改 signer ⇒ 红），`VERIFIED_TABLES` 不动。
 `runtime_inconsistent` 表示“已落盘但提交后链头变化”，返回体带 `written_decision_id` 与
 `events_written`，需人工核对。
 
@@ -177,3 +195,26 @@ sign 请求的 `frontier` 必须等于当前库链头（P1-1）；并且 **签�
   `interactions` 口径 = 本次解锁 POST 数 + 本次确认 POST（正常路径 `[2,1,1]`；同窗口重复 unlock 后首条为 3）。
   `signerd_unlock_wait_ms` / `since_last_unlock_ms` / `sign_ms` 一律逐条取回执原值（测试逐条与 `receipts.jsonl` 比对）。
   `created_at` 只决定页面展示顺序，不参与归因（同毫秒创建、乱序确认也必须归对）；`page_total_ms` 与成本 `at` 用同一注入时钟。
+
+### 独立性第 1 轮评审补充（M3-3）
+
+- **版本绑定（P1-1）**：判定独立性用的 `assurance` 取自“被判定对象绑定那一版 baseline”：
+  - `judgeStage` 用 `stage_run.baseline_hash` 指向的 baseline 行；
+  - 冻结类 decision 用其签名载荷里的 `payload.baseline.hash`；
+  - 只有旧库确实缺该行时才回退当前 head，且 core `verify` 会报 `independence_baseline_unbound`（不静默）。
+  因此 `baseline.amended` 之后，旧 decision / 旧 `stage_run` 的独立性结论不会翻转。
+- **冷却时钟（P2-1）**：`counterSignDecision` 的冷却基准与事件 `at` 都用 signerd 回执里的
+  `signed.at`（服务端真时钟）；调用方传入的 `now` 只影响审计告警，不能改变判定。
+  预检查只做快速失败，权威判定在签名返回后按回执时钟复核（不满足则丢弃回执、lock、0 行）。
+- **签名者口径（P2-2）**：core `verify` 要求每个签名者都能解析到 `actor` 表中 `kind='human'`；
+  未知 actor / 非 human 的签名判 `independence_unverifiable`。边界：M2 signerd 是单钥，
+  “两个不同 actor 名”仍是 actor 级声明（同一把钥匙可伪造成两个名字），真正多钥在 M4（D-093）。
+- **签名时间三方一致（第 2 轮 P1-1）**：`decision.signed` 的 `event.at === receipt.at === payload.signerd.at`，
+  任一不等 ⇒ 写网关拒 `signature_time_mismatch`（0 行），core `verify` 复算同一比对（`runtime_inconsistent`）。
+  未知码 `signerd_receipt_replayed`：同一 `receipt_id` 已被另一条事件使用（迁移 012 的
+  `signerd_receipt_use` 唯一约束，append 事务内占位）。二者共同封死“复制已签名事件、只改 at、重算 hash”
+  伪造冷却已过的重放。
+- **冷却按回执时钟（fail-closed）**：`signaturesForDecision` 取 `payload.signerd.at` 作为签名时间（不依赖网关保证）；该字段缺失（直插旧日志）⇒ `independence_unverifiable`，不回退 `event.at`。
+- **多签合法性（P3）**：同一 decision 的多条 `decision.signed` 是 D-092 的合法形态，
+  `verifyDecisionSignatures` 逐条验签、投影行只与首签一致；不再判 `runtime_inconsistent`。
+  `judgeIndependence` 不接收 `now` 参数，冷却只从签名 `at` 差计算（纯函数）。

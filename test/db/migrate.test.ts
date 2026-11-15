@@ -28,20 +28,20 @@ test('migrate: migration files are versioned 001..N', () => {
   const migrations = listMigrations();
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8],
-    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer)',
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12],
+    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer), M3-2 adds 009 (conflict table + conflicts view + conflict.* kinds), M3-4 adds 010 (renderer_catalog + renderer.registered ACK kind), M3-4 adds 011 (conflicts 进 view_catalog + renderer_catalog 投影守卫)',
   );
   assert.match(migrations[0]?.file ?? '', /^001_[A-Za-z0-9_-]+\.sql$/);
 });
 
-test('migrate: fresh database applies 001..008 and reports user_version = 8', () => {
+test('migrate: fresh database applies 001..012 and reports user_version = 12', () => {
   withEmptyDb((_file, _close, db) => {
     assert.equal(currentUserVersion(db), 0, 'a fresh database starts at user_version 0');
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8]);
-    assert.equal(result.userVersion, 8);
-    assert.equal(currentUserVersion(db), 8);
-    assert.equal(tableNames(db).length, 38);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.equal(result.userVersion, 12);
+    assert.equal(currentUserVersion(db), 12);
+    assert.equal(tableNames(db).length, 42);
   });
 });
 
@@ -52,9 +52,9 @@ test('migrate: second run is a no-op (idempotent, zero changes)', () => {
 
     const second = runMigrations(db);
     assert.deepEqual(second.applied, [], 'an up-to-date database must apply no migrations');
-    assert.equal(second.userVersion, 8, 'user_version must not move on a no-op run');
+    assert.equal(second.userVersion, 12, 'user_version must not move on a no-op run');
     assert.deepEqual(tableNames(db), before);
-    assert.equal(currentUserVersion(db), 8);
+    assert.equal(currentUserVersion(db), 12);
   });
 });
 
@@ -65,7 +65,7 @@ test('migrate: 004 relaxes stage_run gate columns but keeps the table', () => {
     const byName = new Map(info.map((column) => [column.name, column.notnull]));
     assert.equal(byName.get('gate_id'), 0, 'stage.entered may leave gate_id null until gate.judged');
     assert.equal(byName.get('baseline_hash'), 0, 'stage.entered may leave baseline_hash null');
-    assert.equal(tableNames(db).length, 38);
+    assert.equal(tableNames(db).length, 42);
     assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'view'").get() !== undefined, true);
   });
 });
@@ -89,14 +89,14 @@ test('migrate: 004 preserves existing stage_run rows during the rebuild (upgrade
     ).run();
 
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [4, 5, 6, 7, 8]);
-    assert.equal(result.userVersion, 8);
+    assert.deepEqual(result.applied, [4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.equal(result.userVersion, 12);
     const row = db.prepare("SELECT * FROM stage_run WHERE id = 'SR-old'").get() as Record<string, unknown>;
     assert.equal(row['stage'], 'build');
     assert.equal(row['gate_id'], 'G_build');
     assert.equal(row['baseline_hash'], 'bh-old');
     assert.equal(row['verdict'], 'pass');
-    assert.equal((db.prepare('SELECT count(*) AS n FROM sqlite_master WHERE type = \'view\'').get() as { n: number }).n, 13);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM sqlite_master WHERE type = \'view\'').get() as { n: number }).n, 14);
   });
 });
 
@@ -104,11 +104,11 @@ test('migrate: view bodies equal view_catalog.sql after 002/004 rebuilds', () =>
   withEmptyDb((_file, _close, db) => {
     runMigrations(db);
     const catalog = db.prepare('SELECT name, sql FROM view_catalog ORDER BY name').all() as Array<{ name: string; sql: string }>;
-    assert.equal(catalog.length, 13);
+    assert.equal(catalog.length, 14);
     const bodies = (db.prepare("SELECT name, sql FROM sqlite_master WHERE type = 'view'").all() as Array<{ name: string; sql: string }>).map(
       (row) => ({ name: row.name, body: row.sql.replace(/^CREATE\s+VIEW\s+[^\s]+\s+AS\s*/i, '') }),
     );
-    assert.equal(bodies.length, 13);
+    assert.equal(bodies.length, 14);
     for (const view of catalog) {
       assert.ok(
         bodies.some((actual) => actual.body === view.sql),

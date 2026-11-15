@@ -35,12 +35,11 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
     const check = checkDecisionSignedProvenance({
       decision_id: event.subject,
       payload: event.payload,
+      event_at: event.at,
     });
     if (!check.ok) {
-      return failure(
-        'signature_not_from_signerd',
-        `decision.signed 未通过 signerd 验签：${check.message ?? 'unknown'}`,
-      );
+      const code = check.reason === 'signature_time_mismatch' ? 'signature_time_mismatch' : 'signature_not_from_signerd';
+      return failure(`${code}`, `decision.signed 未通过 signerd 验签：${check.message ?? 'unknown'}`);
     }
   }
   // D-055：decision.valid 的 payload_hash 必须覆盖 payload.payload 的真实内容。

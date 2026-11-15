@@ -43,4 +43,5 @@ export const ACK_KINDS: Readonly<Record<string, string>> = {
   'i18n.fallback': '本地化回退审计事件，不投影',
   'baseline.rejected': 'baseline 表只存已冻结快照；拒绝不落表（M-10 verify 消费）',
   'request_sign': 'PM 发起的待签请求（M2-5）：只记录请求，签名仍由人做；不投影任何表',
+  'renderer.registered': '渲染器注册（M3-4）：目录行由 src/db/renderer.ts 从事件投影到 renderer_catalog，不走 fold 表',
 };

@@ -6,9 +6,10 @@
  * （`renderClaimsFromEvents`），不是重跑导入——导入会重算新 hash 并撞
  * `event_rejected / already exists with a different hash`。
  *
- * M1 的注册面只有 `renderer:gate-result`：它把 `request_id = imp:<claim_no>`
- * 的 task.created/task.claimed 事件折叠成一条结论型 claim。M2 接 renderer_catalog
- * 后可把本函数换成通用调度，`ClaimRow` 契约不变。
+ * 注册面自 M3-4 起是 `renderer_catalog`（`src/db/renderer.ts`）：`renderer:gate-result`
+ * 必须**先登记**才能写出 claim；它把 `request_id = imp:<claim_no>` 的
+ * task.created/task.claimed 事件折叠成一条结论型 claim。`M3-4` 只把常量代理换成
+ * 目录表，本函数仍是 v1 唯一渲染器，`ClaimRow` 契约不变。
  */
 import { canonicalJson } from '../core/fold/canonical.js';
 import type { SdoDatabase } from '../db/driver.js';

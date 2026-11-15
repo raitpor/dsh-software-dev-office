@@ -47,6 +47,7 @@ const PREFIX_TABLE: Readonly<Record<string, TableName>> = {
   evidence: 'evidence',
   task: 'task',
   goal: 'goal_node',
+  conflict: 'conflict',
   release: 'release',
   baseline: 'baseline',
   report: 'report',

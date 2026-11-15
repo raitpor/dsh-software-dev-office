@@ -12,7 +12,7 @@ import {
   SUPPORTED_KINDS,
 } from '../../src/db/write-materialize.js';
 import { append } from '../../src/db/write.js';
-import { chain, seed, withWriteDb } from './append-helpers.js';
+import { chain, currentState, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 function count(db: SdoDatabase, table: string): number {
@@ -34,8 +34,11 @@ const DERIVED_ONLY_KINDS = new Set(['assumption.invalidated']);
 // `gate.judged` 只能由 `judgeStage()` 真路径产生（没有测试缝可铸授权）；
 // 真实判定行/版本绑定的覆盖在 test/db/gate-judged.test.ts，本文件只验证 world 可写子集。
 const GATE_ONLY_KINDS = new Set(['gate.judged']);
+// M3-2/P1-3：conflict.* 只能由真 CAS 路径产生（一次性能力），world 链不含；
+// 冲突行/解决覆盖在 test/db/conflict-*.test.ts。
+const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
 
-test('C5/C6: world chain appends all 56 supported kinds; each target table gets real rows', () => {
+test('C5/C6: world chain appends all supported kinds; each target table gets real rows', () => {
   withWriteDb((db) => {
     const events = chain(worldSeeds());
     const result = append(db, events);
@@ -47,14 +50,15 @@ test('C5/C6: world chain appends all 56 supported kinds; each target table gets 
     assert.equal(report.eventCount, events.length);
 
     const kinds = new Set(events.map((event) => event.kind));
-    assert.equal(Object.keys(SUPPORTED_KINDS).length, 56);
-    assert.equal(kinds.size, 56 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size);
+    assert.equal(Object.keys(SUPPORTED_KINDS).length, 58);
+    assert.equal(kinds.size, 58 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size);
     for (const kind of Object.keys(SUPPORTED_KINDS)) {
-      if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind)) continue;
+      if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind)) continue;
       assert.equal(kinds.has(kind), true, `world chain is missing kind ${kind}`);
     }
     // decision.valid 按 D-019 只在 signed 后出现，行由 decision.signed 代表。
-    const tables = new Set(MATERIALIZED_TABLES.filter((table) => table !== 'decision'));
+    // conflict 行由 CAS 分支产生，world 链不含 conflict.*；见 test/db/conflict-*.test.ts。
+    const tables = new Set(MATERIALIZED_TABLES.filter((table) => table !== 'decision' && table !== 'conflict'));
     for (const table of tables) {
       assert.ok(count(db, table) > 0, `materialized table ${table} has no rows`);
     }
@@ -84,7 +88,7 @@ test('C1: id-less tables use DDL primary keys (config/snapshot_parent/release_it
     // 同一 config 键第二次 change 是更新，不是 UNIQUE 冲突。
     const next = chain([
       seed(200, 'config.changed', 'limits.max_payload_bytes', { after: 8192, actor: 'bob' }),
-    ], head(db));
+    ], head(db), currentState(db));
     assert.equal(append(db, next).ok, true);
     assert.equal(count(db, 'config'), 1);
     const row = db.prepare('SELECT value, updated_by FROM config WHERE key = ?').get('limits.max_payload_bytes');

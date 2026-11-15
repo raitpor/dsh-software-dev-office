@@ -2,13 +2,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+import { fold } from '../../src/core/fold/index.js';
+import { valueHash } from '../../src/core/conflict/hash.js';
+import { CONFLICT_TRACKED_FIELDS } from '../../src/core/conflict/scope.js';
+import { requiredTable } from '../../src/db/write-materialize.js';
 import { openSdoDatabase } from '../../src/db/open.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { canonicalJson, sha256Hex } from '../../src/core/fold/canonical.js';
 import { GENESIS_PREV, computeEventHash } from '../../src/core/verify-events.js';
-import type { Event } from '../../src/core/fold/types.js';
+import type { Event, FoldState } from '../../src/core/fold/types.js';
 import { installTestSignerd } from '../sign/fixture-signerd.js';
+import { readEvents } from '../../src/core/verify-events.js';
 
 /** D-055：decision.valid 的 payload_hash 必须覆盖 payload.payload；夹具统一用它算。 */
 export function payloadHashOf(payload: unknown): string {
@@ -20,15 +25,57 @@ export const AT = '2026-11-13T00:00:00Z';
 
 export type EventSeed = Omit<Event, 'prev' | 'hash'>;
 
-/** 把一串种子按 GENESIS 起链算好 prev/hash；返回可交给 append 的事件。 */
-export function chain(seeds: readonly EventSeed[], startPrev = GENESIS_PREV): Event[] {
+/** 当前库的折叠态：第二批次续写受管 kind 时传给 `chain(seeds, head, currentState(db))`。 */
+export function currentState(db: SdoDatabase): FoldState {
+  return fold(undefined, readEvents(db, []));
+}
+
+/**
+ * 把一串种子按 GENESIS 起链算好 prev/hash；返回可交给 append 的事件。
+ *
+ * M3-2/P1-2：受管 kind 必须声明 `field`/`base_hash`。夹具层按 fold 逐条推进
+ * 自动补 `base_hash = valueHash(当前字段值)`（显式声明优先），旧用例因此只
+ * 需关心业务字段。第二批次从既有链头续写时传 `startState`（当前折叠态），
+ * 否则从空态起算会得到假冲突。
+ */
+export function chain(
+  seeds: readonly EventSeed[],
+  startPrev = GENESIS_PREV,
+  startState?: FoldState,
+): Event[] {
   let prev = startPrev;
+  let state: FoldState | undefined = startState;
+  if (state === undefined && startPrev === GENESIS_PREV) {
+    try {
+      state = fold(undefined, []);
+    } catch {
+      state = undefined;
+    }
+  }
   return seeds.map((seed) => {
-    const event = { ...seed, prev } as Event;
+    let current = seed;
+    const field = Object.hasOwn(CONFLICT_TRACKED_FIELDS, seed.kind) ? CONFLICT_TRACKED_FIELDS[seed.kind] : undefined;
+    const payload = typeof seed.payload === 'object' && seed.payload !== null
+      ? (seed.payload as Record<string, unknown>)
+      : undefined;
+    if (field !== undefined && payload !== undefined && payload['base_hash'] === undefined && state !== undefined) {
+      const table = requiredTable(seed.kind);
+      const row = table === undefined ? undefined : state.tables[table][seed.subject];
+      current = {
+        ...seed,
+        payload: { ...payload, field, base_hash: valueHash(row?.[field] ?? null) },
+      };
+    }
+    const event = { ...current, prev } as Event;
     const hash = computeEventHash(event);
-    prev = hash;
     const built = { ...event, hash };
-    // 没有测试缝：世界链不含 gate.judged，需要判定行的测试走 `judgeStage()` 真路径。
+    try {
+      state = fold(state, [built]);
+    } catch {
+      // 故意非法的种子（网关负例）无法推进折叠态；后续事件不再自动补声明。
+      state = undefined;
+    }
+    prev = hash;
     return built;
   });
 }
@@ -61,17 +108,20 @@ function signedDecisionSeed(
   const signer = typeof source['signer'] === 'string' && source['signer'].length > 0
     ? source['signer']
     : undefined;
+  // 第 2 轮 P1-1：decision.signed 的 event.at 必须等于 signerd 回执 at。
+  // 夹具把签名时间与事件时间绑定（覆盖 at 时两边一起改），不是放宽网关校验。
+  const eventAt = typeof overrides.at === 'string' ? overrides.at : AT;
   const signed = fixture.sign({
     decision_id: subject,
     payload_hash: payloadHash,
     frontier,
     nonce,
     ...(signer === undefined ? {} : { signer }),
-    at: AT,
+    at: eventAt,
   });
   return {
     id: `e-m1-${n}`,
-    at: AT,
+    at: eventAt,
     actor: 'actor-1',
     kind: 'decision.signed',
     subject,
