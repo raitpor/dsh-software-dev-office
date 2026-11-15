@@ -133,7 +133,7 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
 test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
   withWriteDb((db) => {
     const kinds = [...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)].sort();
-    assert.equal(kinds.length, 93, 'registered kind count drift');
+    assert.equal(kinds.length, 94, 'registered kind count drift');
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
     let prev: string = GENESIS_PREV;
     for (const kind of kinds) {
@@ -162,7 +162,7 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
       assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
       counts.unsupported += 1;
     }
-    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 93);
+    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 94);
     assert.equal(count(db, 'event'), counts.ackOnly, '只有 ack kind 落 event，业务 kind 不越权写');
   });
 });

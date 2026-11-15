@@ -5,7 +5,6 @@ import { fold } from '../../src/core/fold/index.js';
 import { GENESIS_PREV, readEvents } from '../../src/core/verify-events.js';
 import type { VerifyProblem } from '../../src/core/verify-types.js';
 import { verify } from '../../src/core/verify.js';
-import { baselineHash } from '../../src/core/baseline/freeze.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import {
   FOLD_ONLY_COLUMNS,
@@ -29,6 +28,13 @@ function columns(db: SdoDatabase, table: string): string[] {
   return (db.prepare(`PRAGMA table_info(${table})`).all() as Array<{ name: string }>).map((c) => c.name);
 }
 
+// M2-3/D-078：`assumption.invalidated` 仍是 SUPPORTED_KINDS（003 兼容），但语义是派生读数、写入一律拒，
+// 因此 world 链不含它；其余 55 个 kind 仍逐一覆盖。
+const DERIVED_ONLY_KINDS = new Set(['assumption.invalidated']);
+// `gate.judged` 只能由 `judgeStage()` 真路径产生（没有测试缝可铸授权）；
+// 真实判定行/版本绑定的覆盖在 test/db/gate-judged.test.ts，本文件只验证 world 可写子集。
+const GATE_ONLY_KINDS = new Set(['gate.judged']);
+
 test('C5/C6: world chain appends all 56 supported kinds; each target table gets real rows', () => {
   withWriteDb((db) => {
     const events = chain(worldSeeds());
@@ -42,8 +48,9 @@ test('C5/C6: world chain appends all 56 supported kinds; each target table gets 
 
     const kinds = new Set(events.map((event) => event.kind));
     assert.equal(Object.keys(SUPPORTED_KINDS).length, 56);
-    assert.equal(kinds.size, 56);
+    assert.equal(kinds.size, 56 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size);
     for (const kind of Object.keys(SUPPORTED_KINDS)) {
+      if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind)) continue;
       assert.equal(kinds.has(kind), true, `world chain is missing kind ${kind}`);
     }
     // decision.valid 按 D-019 只在 signed 后出现，行由 decision.signed 代表。
@@ -138,7 +145,7 @@ test('C3: release.frozen rejects a single human signer (fold shape, not DDL)', (
   });
 });
 
-test('C4: stage_run gate fields may be null after entered and become non-null after judged', () => {
+test('C4: stage_run gate fields are null after entered (real judged row covered by gate-judged.test)', () => {
   withWriteDb((db) => {
     const seeds = worldSeeds();
     const entered = seeds.findIndex((event) => event.kind === 'stage.entered');
@@ -146,22 +153,8 @@ test('C4: stage_run gate fields may be null after entered and become non-null af
     assert.equal(append(db, chain(seeds.slice(0, entered + 1))).ok, true);
     const initial = db.prepare('SELECT gate_id, baseline_hash FROM stage_run WHERE id = ?').get('SR-1');
     assert.deepEqual({ ...(initial as object) }, { gate_id: null, baseline_hash: null });
-    const judged = seeds[entered + 1];
-    assert.equal(judged?.kind, 'gate.judged');
-    assert.equal(append(db, chain([judged as NonNullable<typeof judged>], head(db))).ok, true);
-    const after = db.prepare('SELECT gate_id, baseline_hash FROM stage_run WHERE id = ?').get('SR-1');
-    const expectedB1 = baselineHash({
-      prev: null,
-      rowDirection: null,
-      input: {
-        engine: { version: 'e1', criteria_manifest_hash: 'cmh' },
-        policy: {},
-        criteria: [],
-        gates: {},
-        thresholds: {},
-        assurance: {},
-      },
-    });
-    assert.deepEqual({ ...(after as object) }, { gate_id: 'G_req_exit', baseline_hash: expectedB1 });
+    // `gate.judged` 只能由 judgeStage() 真路径产生（P1 评审判定：无测试缝）；
+    // 判定后 gate_id/baseline_hash 非空的断言在 test/db/gate-judged.test.ts C1。
+    assert.equal(append(db, chain(seeds.slice(0, entered + 1))).skipped, entered + 1);
   });
 });

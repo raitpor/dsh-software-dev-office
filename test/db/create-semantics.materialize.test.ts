@@ -11,7 +11,6 @@ import { chain, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 const seeds = worldSeeds();
-const events = chain(seeds);
 
 interface Mutation {
   readonly field: string;
@@ -59,12 +58,13 @@ function continuation(db: SdoDatabase, base: Event, payload: unknown, suffix: st
 
 for (const [kind, mutation] of Object.entries(CASES)) {
   const index = seeds.findIndex((seed) => seed.kind === kind);
-  const prefix = events.slice(0, index + 1);
-  const base = events[index]!;
   const table = requiredTable(kind)!;
 
   test(`P1-1 ${kind}: same event id is skipped by the append gateway before fold (row unchanged)`, () => {
     withWriteDb((db) => {
+      const events = chain(seeds);
+      const prefix = events.slice(0, index + 1);
+      const base = events[index]!;
       assert.equal(append(db, prefix).ok, true);
       const rows = tableRows(db, table);
       assert.equal(append(db, [base]).ok, true, 'same event id replay must be skipped, not rejected');
@@ -74,6 +74,9 @@ for (const [kind, mutation] of Object.entries(CASES)) {
 
   test(`P1-1 ${kind}: same id with different content fails materialize and preserves the row`, () => {
     withWriteDb((db) => {
+      const events = chain(seeds);
+      const prefix = events.slice(0, index + 1);
+      const base = events[index]!;
       assert.equal(append(db, prefix).ok, true);
       const rows = tableRows(db, table);
       const replay = continuation(db, base, base.payload, 'same-content');
@@ -95,22 +98,14 @@ for (const [kind, mutation] of Object.entries(CASES)) {
 }
 
 
-test('P1-1 stage.entered 走 createOnce 后，stage.exited / gate.judged 仍能正常 patch 同一行', () => {
-  const enteredIndex = seeds.findIndex((seed) => seed.kind === 'stage.entered');
-  const judgedIndex = seeds.findIndex((seed) => seed.kind === 'gate.judged');
-  const exitedIndex = seeds.findIndex((seed) => seed.kind === 'stage.exited');
-  assert.ok(enteredIndex >= 0 && judgedIndex > enteredIndex && exitedIndex > judgedIndex);
-  const stageId = seeds[enteredIndex]!.subject;
-
+test('P1-1 stage.entered 走 createOnce 后，stage.exited 仍能 patch 同一行', () => {
+  // `gate.judged` 走 judgeStage 真路径（无测试缝），其 patch 语义在 test/db/gate-judged.test.ts 覆盖。
   withWriteDb((db) => {
-    assert.equal(append(db, events.slice(0, judgedIndex + 1)).ok, true);
-    const judged = db.prepare('SELECT * FROM stage_run WHERE id = ?').get(stageId) as Record<string, unknown>;
-    assert.equal(judged['gate_id'], 'G_req_exit');
-    assert.equal(judged['exited_at'], null, 'gate.judged 之前的 stage.entered 行还没有 exited_at');
-
-    assert.equal(append(db, events.slice(0, exitedIndex + 1)).ok, true);
-    const exited = db.prepare('SELECT * FROM stage_run WHERE id = ?').get(stageId) as Record<string, unknown>;
-    assert.equal(exited['verdict'], 'pass');
-    assert.notEqual(exited['exited_at'], null);
+    const events = chain(worldSeeds());
+    assert.equal(append(db, events).ok, true);
+    const row = db.prepare('SELECT * FROM stage_run WHERE id = ?').get('SR-1') as Record<string, unknown>;
+    assert.equal(row['verdict'], 'pass');
+    assert.notEqual(row['exited_at'], null);
+    assert.equal(row['gate_id'], null, 'world 链不含 gate.judged；判定行由 judgeStage 真路径产生');
   });
 });

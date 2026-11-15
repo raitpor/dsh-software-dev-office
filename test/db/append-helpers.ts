@@ -27,7 +27,9 @@ export function chain(seeds: readonly EventSeed[], startPrev = GENESIS_PREV): Ev
     const event = { ...seed, prev } as Event;
     const hash = computeEventHash(event);
     prev = hash;
-    return { ...event, hash };
+    const built = { ...event, hash };
+    // 没有测试缝：世界链不含 gate.judged，需要判定行的测试走 `judgeStage()` 真路径。
+    return built;
   });
 }
 

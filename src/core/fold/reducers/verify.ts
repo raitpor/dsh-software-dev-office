@@ -120,6 +120,7 @@ export function stageEntered(state: FoldWorking, event: Event): void {
     exited_at: null,
     verdict: null,
     criteria: optStringArray(event, payload, 'criteria') ?? [],
+    judged_at: null,
     at: event.at,
   });
 }
@@ -134,19 +135,35 @@ export function stageExited(state: FoldWorking, event: Event): void {
 
 export function gateJudged(state: FoldWorking, event: Event): void {
   const payload = payloadOf(event);
-  const existing = rowOf(state, 'stage_run', subjectId(event));
+  const id = subjectId(event);
+  const judgedStageRunId = reqString(event, payload, 'stage_run_id');
+  if (judgedStageRunId !== id) {
+    return fail(event, `gate.judged stage_run_id ${judgedStageRunId} does not match subject ${id}`);
+  }
+  const existing = rowOf(state, 'stage_run', id);
+  const entryHash = existing?.['baseline_hash'];
+  const recordedEntry = typeof entryHash === 'string' && entryHash.length > 0 ? entryHash : undefined;
   const gateId = optString(event, payload, 'gate_id') ?? (existing?.['gate_id'] as string | undefined);
-  const baselineHash = optString(event, payload, 'baseline_hash') ?? (existing?.['baseline_hash'] as string | undefined);
+  const baselineHash = optString(event, payload, 'baseline_hash') ?? recordedEntry;
   if (gateId === undefined || gateId === null || gateId.length === 0) {
     return fail(event, 'gate.judged requires gate_id (none on stage.entered either)');
   }
   if (baselineHash === undefined || baselineHash === null || baselineHash.length === 0) {
     return fail(event, 'gate.judged requires baseline_hash (none on stage.entered either)');
   }
-  patchRow(state, 'stage_run', subjectId(event), event, {
+  // 判定版本必须等于 stage 进入时记录的那版；否则算的是旧状态、落的是新链头。
+  if (recordedEntry !== undefined && baselineHash !== recordedEntry) {
+    return fail(
+      event,
+      `gate.judged baseline_hash ${baselineHash} does not match stage_run ${id} entry version ${recordedEntry}`,
+    );
+  }
+  const criteria = payload['criteria'];
+  patchRow(state, 'stage_run', id, event, {
     verdict: reqEnum(event, payload, 'verdict', VERDICTS),
     gate_id: gateId,
     baseline_hash: baselineHash,
+    criteria: Array.isArray(criteria) ? criteria : (existing?.['criteria'] ?? []),
     judged_at: event.at,
   });
 }

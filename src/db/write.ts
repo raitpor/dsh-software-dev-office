@@ -11,6 +11,8 @@ import type { Event } from '../core/fold/types.js';
 import { GENESIS_PREV, computeEventHash } from '../core/verify-events.js';
 import { materialize } from './write-materialize.js';
 import { checkEnvelope, errorMessage, isLockMessage } from './write-envelope.js';
+import { consumeGateJudgedAuthority } from './gate.js';
+import { gateJudgedPayloadHash, validateGateJudgedPayload } from '../core/gate/schema.js';
 import { failure, type AppendFailure, type AppendResult } from './write-types.js';
 
 export type { AppendReason, AppendResult } from './write-types.js';
@@ -99,6 +101,10 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
       if (authority !== undefined) {
         throw new AppendAbort(authority, validated);
       }
+      const rejected = checkDecisionRejectedAuthority(db, event);
+      if (rejected !== undefined) {
+        throw new AppendAbort(rejected, validated);
+      }
       const stored = byId.get(event.id);
       if (stored !== undefined) {
         if (sawNew) {
@@ -110,6 +116,34 @@ export function append(db: SdoDatabase, events: readonly Event[]): AppendResult 
         skipped += 1;
         validated += 1;
         continue;
+      }
+      if (event.kind === 'gate.judged') {
+        let payload: unknown = event.payload;
+        if (typeof payload === 'string') {
+          try {
+            payload = JSON.parse(payload);
+          } catch {
+            throw new AppendAbort(failure('invalid_field', `gate.judged ${event.id} payload is not valid JSON`), validated);
+          }
+        }
+        const validation = validateGateJudgedPayload(payload);
+        if (!validation.ok) {
+          throw new AppendAbort(failure('invalid_field', `gate.judged ${event.id}: ${validation.message}`), validated);
+        }
+        const authorized = consumeGateJudgedAuthority(
+          event.id,
+          gateJudgedPayloadHash(validation.value),
+          validation.value.stage_run_id,
+        );
+        if (!authorized) {
+          throw new AppendAbort(
+            failure(
+              'unauthorized_gate_judgement',
+              `gate.judged ${event.id} must be produced by the gate judgement flow (one-shot, content-bound)`,
+            ),
+            validated,
+          );
+        }
       }
       if (event.prev !== expectedPrev) {
         throw new AppendAbort(failure('event_chain_broken', `event ${event.id}: prev ${event.prev} does not match chain head ${expectedPrev}`), validated);
@@ -174,6 +208,25 @@ const BASELINE_FREEZE_KINDS = new Set(['baseline.frozen', 'baseline.amended', 'b
  * `docs/04` §5.2：baseline 的每一版都必须先有人签的 `decision(kind='baseline')`；
  * 事件层不是唯一入口，绕过 preview/confirm 直接 append 未签事件必须被拒（M2-1 C1）。
  */
+/**
+ * M2-3/P2-1：已签决策不能再 `decision.rejected`（否则其投影的处置被卡死）。
+ * 与 fold 里的同名守卫成对：这里让拒绝在写路径就有**可断言的码**，fold 里的守卫兜住绕过网关的旧事件。
+ */
+function checkDecisionRejectedAuthority(db: SdoDatabase, event: Event): AppendFailure | undefined {
+  if (event.kind !== 'decision.rejected') return undefined;
+  const row = db
+    .prepare('SELECT status, signature FROM decision WHERE id = ?')
+    .get(event.subject) as { status?: string; signature?: string | null } | undefined;
+  if (row === undefined) return undefined;
+  if (row.status === 'valid' && String(row.signature ?? '').length > 0) {
+    return failure(
+      'decision_already_signed',
+      `decision ${event.subject} is already signed; revoke it with decision.revoked instead of decision.rejected`,
+    );
+  }
+  return undefined;
+}
+
 function checkBaselineAuthority(
   db: SdoDatabase,
   event: Event,

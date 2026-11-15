@@ -70,12 +70,13 @@ test('C3: release.frozen requires a JSON array of at least two humans', () => {
 test('C4: gate.judged without gate_id/baseline_hash fails; with them fills the row', () => {
   const missing = new TestFolder();
   missing.push('stage.entered', 'STAGE-1', { stage: 'design' });
-  missing.push('gate.judged', 'STAGE-1', { verdict: 'pass' });
+  missing.push('gate.judged', 'STAGE-1', { stage_run_id: 'STAGE-1', verdict: 'pass' });
   expectFoldFail(() => missing.fold(), /gate\.judged requires gate_id/);
 
   const complete = new TestFolder();
   complete.push('stage.entered', 'STAGE-1', { stage: 'design' });
   complete.push('gate.judged', 'STAGE-1', {
+    stage_run_id: 'STAGE-1',
     verdict: 'pass',
     gate_id: 'gate-design',
     baseline_hash: 'h-baseline',

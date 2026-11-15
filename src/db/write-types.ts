@@ -12,6 +12,7 @@ export type AppendReason =
   | 'append_conflict'
   /** 调用方已开事务（`db.inTransaction`），网关不嵌套事务。 */
   | 'transaction_in_progress'
+  | 'unauthorized_gate_judgement'
   /** `BEGIN IMMEDIATE` 撞上别的写者/锁（SQLITE_BUSY），不是投影错误。 */
   | 'database_busy'
   /** kind 已登记，但其投影表不在 M1-0 的物化范围内（写网关收窄，D-031）。 */
@@ -19,7 +20,11 @@ export type AppendReason =
   /** 事件已落库，但 fold/投影落库失败；整批 ROLLBACK。 */
   | 'materialize_failed'
   /** M2-0/C8：decision.signed 没有 signerd 的可验证回执（验签失败）。 */
-  | 'signature_not_from_signerd';
+  | 'signature_not_from_signerd'
+  /** M2-3/C4：assumption.invalidated 是 fold 派生读数，不是可写事件（D-078）。 */
+  | 'assumption_invalidated_is_derived'
+  /** M2-3/P2-1：已签决策不能再 rejected（撤销走 decision.revoked）。 */
+  | 'decision_already_signed';
 // 台账 D-025 需同步登记 append_conflict / transaction_in_progress（Lead 代记）。
 
 /**

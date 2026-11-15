@@ -21,9 +21,13 @@ export type VerifyProblemCode =
   | 'projection_unexpected'
   | 'runtime_inconsistent'
   | 'projection_check_failed'
+  /** M2-3/D-081：旧库残留的 `assumption.invalidated` 事件（该 kind 已降为派生读数）。 */
+  | 'legacy_assumption_invalidated'
   | 'baseline_hash_mismatch'
   | 'baseline_missing'
-  | 'baseline_unfrozen';
+  | 'baseline_unfrozen'
+  | 'assumption_disposition_missing'
+  | 'assumption_decision_invalid';
 
 export interface VerifyProblem {
   readonly code: VerifyProblemCode;

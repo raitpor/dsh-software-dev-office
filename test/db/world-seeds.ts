@@ -43,7 +43,6 @@ export function worldSeeds(): EventSeed[] {
   add(...dec(12, 'd-as', 'assumption_set', { spec_ids: ['A-1'], dispositions: [{ spec_id: 'A-1', disposition: 'confirmed' }] }).map((e, i) => ({ ...e, id: `e-m1-${12 + i}` })));
   add(seed(14, 'assumption.disposed', 'A-1', { decision_id: 'd-as', disposition: 'confirmed' }));
   add(seed(15, 'assumption.recorded', 'A-2', { intent_id: 'INT-1', clause: 'a2', blast_radius: 'low', content_hash: 'ch:a2' }));
-  add(seed(16, 'assumption.invalidated', 'A-2', { reason: 'inputs changed' }));
   add(seed(17, 'restatement.recorded', 'R-1', { intent_id: 'INT-1', draft_specs: [], inputs: [] }));
   add(seed(18, 'restatement.diff_dispositioned', 'RD-1', { restatement_id: 'R-1', kind: 'agree', target_ref: 'd1', disposition: 'accept' }));
   add(seed(19, 'restatement.recorded', 'R-2', { intent_id: 'INT-1', draft_specs: [], inputs: [] }));
@@ -96,7 +95,6 @@ export function worldSeeds(): EventSeed[] {
   add(seed(54, 'redteam.recorded', 'RT-1', { subject_kind: 'spec', subject_id: 'SPEC-1', criterion_id: 'CRIT-1', criterion_fixture_id: 'CRIT-1/fx/1', use_case: 'uc1' }));
   add(seed(55, 'redteam.disposed', 'RT-1', { disposition: 'accepted' }));
   add(seed(56, 'stage.entered', 'SR-1', { stage: 'req' }));
-  add(seed(57, 'gate.judged', 'SR-1', { gate_id: 'G_req_exit', baseline_hash: H1, verdict: 'pass' }));
   add(seed(58, 'stage.exited', 'SR-1', { verdict: 'pass' }));
   add(seed(59, 'verify.passed', 'VR-1', { actor_kind: 'human', actor: 'ci', groups: [], result: 'pass' }));
   add(seed(60, 'verify.failed', 'VR-2', { actor_kind: 'human', actor: 'ci', groups: [], result: 'fail' }));
@@ -137,5 +135,7 @@ export function worldSeeds(): EventSeed[] {
   add(seed(78, 'decision.revoked', 'd-rv', { reason: 'revoked' }));
   add(seed(79, 'decision.valid', 'd-rj', { decision_kind: 'intent', payload_hash: payloadHashOf({}), frontier: 'f', payload: {} }));
   add(seed(80, 'decision.rejected', 'd-rj', { reason: 'no' }));
+  // M2-3/P1：world 链要覆盖撤销级联（assumption_set 被撤 ⇒ 处置回 open、spec 行带 invalidated_* fold-only 列）。
+  add(seed(81, 'decision.revoked', 'd-as', { reason: 'batch withdrawn' }));
   return s;
 }

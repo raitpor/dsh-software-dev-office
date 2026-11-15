@@ -67,6 +67,14 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
       );
     }
   }
+  // M2-3/C4 + D-078：`assumption.invalidated` 语义上是 fold 派生读数（inputs hash 变化时自动回 open），
+  // 不是可写事件。kind 仍保留在 003 种子里仅为旧库兼容，任何写入入口都前置拒绝（fold 里同样拒）。
+  if (event.kind === 'assumption.invalidated') {
+    return failure(
+      'assumption_invalidated_is_derived',
+      'assumption.invalidated 是 fold 派生读数，不是可写事件；失效由 inputs hash 变化自动产生（D-078）',
+    );
+  }
   // ACK kind（audit-only，如 security.alert/auth.failed）：append 成功即写 event，不投影业务表（C12）。
   if (Object.hasOwn(ACK_KINDS, event.kind)) return undefined;
   if (!Object.hasOwn(SUPPORTED_KINDS, event.kind)) {

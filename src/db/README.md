@@ -19,7 +19,7 @@
 - 读留痕（M0-6）：`src/db/access-log.ts` 的 `recordAccess` 在库同目录追加 `access.log`，一行 `{at,view,args_hash,right}`（`args_hash = sha256(canonicalJson(args))`，0600、不进事件）。`sdo_query` 的唯一执行路径已接 `recordAccessSafe`：**best-effort**，日志不可写时读照常成功、每进程只打一条 stderr warning，失败计数可查（`accessLogFailureCount()`），不改 `QueryResult` 形状。该边界会丢：warning 只在本进程、计数重启即归零；M1 可接持久化告警。
 
 - 写网关（M1-0）：`src/db/write.ts` 的 `append(db, events)` 是**唯一**往 `event` 写行的入口（`grep -rn "INSERT INTO event" src/` 只命中它）。入口在一个 `BEGIN IMMEDIATE` 事务里做四件事：信封/kind 白名单（`REDUCERS`/`ACK_KINDS`，用 `Object.hasOwn` 防原型链）→ 链连续性（`prev`=当前链头、`hash`=`computeEventHash`）→ 同批重放幂等（同 id 同 hash 跳过、不同 hash 拒）→ 全量重放 `fold` 后 diff 落库；任一步失败 `ROLLBACK`，返回结构化 `reason_code`，不抛裸错。调用方已开事务时直接拒 `transaction_in_progress`（网关不嵌套事务）。
-- 拒绝码：`unknown_event_kind`/`invalid_field`/`unsupported_scope`/`event_chain_broken`/`event_hash_mismatch`/`append_conflict`（插 `event` 撞库，如同批重复 id）/`transaction_in_progress`（调用方已有未提交事务）/`database_busy`（`BEGIN IMMEDIATE` 撞别的写者，`SQLITE_BUSY`）/`materialize_failed`；拒绝码清单见 `plan/03` D-025（已登记）。失败返回 `written:0/skipped:0/attempted=通过校验条数/rolled_back:true`，`eventCount` 是调用前行数。
+- 拒绝码：`unknown_event_kind`/`invalid_field`/`unsupported_scope`/`event_chain_broken`/`event_hash_mismatch`/`append_conflict`（插 `event` 撞库，如同批重复 id）/`transaction_in_progress`（调用方已有未提交事务）/`database_busy`（`BEGIN IMMEDIATE` 撞别的写者，`SQLITE_BUSY`）/`materialize_failed`；M2-3 另有 `assumption_invalidated_is_derived`（派生读数不可写，D-078）与 `signature_not_from_signerd`（M2-0/C8）；拒绝码清单见 `plan/03` D-025（已登记）。失败返回 `written:0/skipped:0/attempted=通过校验条数/rolled_back:true`，`eventCount` 是调用前行数。
 - 物化范围（M1-7 开闸，D-031 关闭）：`MATERIALIZED_TABLES = TABLE_NAMES − NON_MATERIALIZED`，覆盖 fold 能产出的全部表（当前 28 张）；`NON_MATERIALIZED` = `event`/`event_kind`/`claim`/`receipt`/`field_consumer`/`scenario`（事件存储、renderer 写、目录数据、设计缺口）。`SUPPORTED_KINDS` 由 `REDUCERS` 动态生成（56 个）；`ACK_KINDS`（无 reducer、无投影，如 `query_miss`）仍 `unsupported_scope`。`decision` 只落 `signature` 非空的行（D-019）：`decision.valid` 单批不落库、`decision.signed` 后才出现；`verify` 用同一口径。
 - 键按 **DDL 主键**（`PRAGMA table_info` 的 pk 序号）而不是代理 `id`：`config.key`、`snapshot_parent(snapshot_id,parent_id)`、`release_item(release_id,kind,target)`、`design_lock(spec_id,spec_version_hash)` 等无单 id 表照常 diff/删。`release` 的插入触发器只接受 `draft`/`frozen`：物化最终态时先按 `frozen` 落行，再走允许的状态迁移（delivered/rolled_back）。
 - 列对齐：`FOLD_ONLY_COLUMNS` 显式列出 fold 行比 001/004 DDL 多出的列（`intent.status`、`spec.*` 6 列、`criterion.*`、`decision.rejected_*`、`task.*` 14 列、`attention.*`、`defect.closed_at`、`goal_node.reparented_at`、`review.verified_at`、`stage_run.judged_at`、`redteam.disposed_at`、`design_lock.id`）；实际忽略列与白名单双向相等由 `test/db/write.all-tables.test.ts` 断言，漏/多登记都红。
@@ -42,3 +42,41 @@
 - 签名为前置条件在写网关有库层兜底：`baseline.frozen|amended|loosened` 必须带 `payload.decision_id`，且 decision 已签、kind='baseline'，其载荷顶层 `baseline` 的 `hash`/`prev`/`direction`/`will_change_hash`/`guarantee_delta` 与事件 payload 逐字段一致；否则 `append` 返回 `invalid_field`（事件层不是唯一入口，C1/C2）。
 - 同 hash 已冻结的重放 confirm 幂等返回已有行；`baseline_unchanged` 由 preview 返回（同内容不再签）。`verify()` 已接 baseline 引用对账（P1-2）；手改 baseline hash 会让 `verify()` 红（`baseline_hash_mismatch`）。
 - **可疑操作审计（P2-1）**：`preview_mismatch`（registry 的 raw/preview 在 confirm 间被改）落一条 `security.alert`（载荷 `{kind:'preview_mismatch', preview_id, expected_hash, actual_hash, at}`）；已消费 preview 被再次 confirm（重放）落 `security.alert`（`{kind:'preview_replay', preview_id, at}`）；`preview_expired` 只是过期，静默。这三类都**不落** `baseline.rejected`（那是“冻结尝试被 P15/结构校验拒”）。审计事件是 **best-effort**：`securityAlert` 不检查 `append` 的返回值，库异常时该告警可能静默丢失（拒签本身仍然成立、不因告警失败而放行）；要保证“每次可疑操作必有告警”需要 M3 的告警持久化通道，这里只承诺“能落就落”。
+
+## 门禁判定（M2-2）
+
+- `judgeStage(db, {stage_run_id, baseline_hash?, release_id?, actor})`：
+  全量重放 + `src/core/gate` 现算 → 登记一次性授权 → `append(gate.judged)`。
+- 判定前校验：baseline 行存在且有 `baseline.frozen|amended|loosened` 事件
+  （event payload.hash 相符、decision 已签）；否则 `baseline_not_frozen`。
+- 传 `release_id` 时 release.baseline_hash 必须同版，否则 `baseline_mismatch`。
+- `gate.judged` 只能由该流程写：裸 `append()` ⇒ `unauthorized_gate_judgement`
+  （授权是进程内注册表，重启失效，D-080：判定重启后重算即可，属已知边界而非能力缺失）。
+  mint 不导出、**没有测试缝**：测试需要判定行走 `judgeStage()` 真路径（第 2 轮评审）。
+- 写路径对 `gate.judged` 做运行时 schema 校验（verdict ∈ pass/changes_requested/na、
+  每条 reading 的 `criterion_id/verdict/reason_code` 必填、`na` 必须
+  `reason_code='not_enforced_in_m2'`、未知字段拒），校验失败 ⇒ `invalid_field`；
+  之后一次性消费 `(eventId, payload_hash, stage_run_id)` 能力，未登记 ⇒
+  `unauthorized_gate_judgement`。
+- fold 语义对账：`gate.judged.baseline_hash` 必须等于 `stage_run` 行记下的进入版本，
+  否则 fold 抛错 ⇒ 该批 `materialize_failed`（消息含 `entry version`）；
+  多 gate 时 `judgeStage()` 直接返回 `multiple_gates_unsupported`（不写事件）。
+- `at` 必须 `entered_at ≤ at ≤ 注入时钟`，越界 ⇒ `invalid_field`。
+- C10 码：`baseline_not_frozen` / `baseline_mismatch` / `core_not_effective` /
+  `gate_empty` / `unauthorized_gate_judgement`；不实现 `judgement_mismatch`
+  （判定读数由门禁现算，无外部读数可比）。
+- 重判写**新** `gate.judged` 事件，`stage_run` 行随之更新；旧事件不改。
+
+## 假设处置链（M2-3）
+
+- `previewAssumptionSet(db)`：给**人**渲染 open 假设清单（含 inputs 边与 `content_hash`）与待签载荷骨架（`spec_ids` 当前 open 集合、`dispositions` 留空、`readings_hash` 由清单摘要现算）；不写事件。
+- `disposeAssumptionSet(db, {decision_id, actor, …})`：只认**已签名**的 `decision(kind='assumption_set')`；按签名载荷的 `spec_ids[]`/`dispositions[]` 逐条校验（spec 是 assumption 且 `open`、签名覆盖该条、处置与签名一致），一次 `append` 落全部 `assumption.disposed`（同批 prev 顺序链接）。任一不满足 ⇒ **0 事件**（C7）。
+- 拒绝码：`decision_not_signed`（decision 不存在/未签）、`not_covered_by_decision`（kind 不是 assumption_set 或 `spec_ids` 未覆盖）、`disposition_mismatch`（载荷 dispositions 结构非法/为空，或与事件不一致）、`cascade_conflict`（decision 已撤销/失效，或该假设已不在 `open`）、`invalid_request`（参数/事件链折叠失败）、`write_failed`（append 返回底层错误）。
+- 事件 payload 只有 `decision_id`/`disposition`/可选 `successor_ref`；**不回填覆盖名单**（`covered_spec_ids`）：覆盖只认签名载荷（C2）。
+- 撤销级联（C6）：`decision.revoked` 命中 `assumption_set` 时，`src/core/assumption/cascade.ts` 把该 decision 投影出的非 open 假设行回 `open`（清 `decision_id`/`successor_ref`/`disposed_at`，标 `invalidated_reason='decision revoked'`）。级联是 **fold 派生**、不新增事件 kind、不落额外迁移（撤销事件本身即审计，`verify` 重放可复算）；`spec` 行的 `decision_id`/`invalidated_*` 是 fold-only 列（不落 DB，见 DDL）。
+- `spec_set` 侧的“覆盖需求集合失效、必须重签”在本卡以**判定面**表达：撤销后假设回 `open` ⇒ `assumption_set.signed`（及其所在 gate 的 core 三条）转红 ⇒ 重新签处置后才转绿；不存失效列（M2-3 无对应 DDL，D-078）。
+- `verify()` 新增双向对账：有效已签 `assumption_set` 的每条 `dispositions[]` 必须有对应 `assumption.disposed` 事件（缺 ⇒ `assumption_disposition_missing`）；每条非 open 假设行必须由有效已签 decision 的 `spec_ids/dispositions` 与 disposed 事件共同支撑（否则 `assumption_decision_invalid`）。
+- 失效 fold：假设 `inputs[]` 任一目标行 hash 变**或目标行消失** ⇒ 该假设回 `open`（`status` 是投影列，DB 落 `open`），幂等键 `(edge.kind,spec_id,input_id,旧 hash)`；恢复旧 hash 不自动复活（需新签）。
+- **`assumption.invalidated` 不可写**（D-078）：它是派生读数、不是状态迁移事件。写网关在信封校验里前置拒（`assumption_invalidated_is_derived`、0 行），reducer 同样显式拒；kind 保留登记仅为兼容 003 种子，v2.1 删。因此 confirmed 之后不存在“无签名事件把状态改回 open”的路径——C4 的唯一迁移生产者是真的。
+- **升级注意（D-081）**：M2 之前的库若写过 `assumption.invalidated`（003 曾登记该 kind），升级后 `verify` 会逐事件报 `legacy_assumption_invalidated`（objectId=事件 id，detail 说明“该 kind 已降为派生读数，请重建库或等 v2.1 清洗迁移”），该库判定为**不可信**；写网关与 fold 也不会再接受该 kind。这是“保持 fail-closed 但可读可行动”的升级口径，不是兼容写入。
+- **`decision.rejected` 只对未签决策合法**：已 `valid`+`signed` 的决策再 rejected 会被 fold 拒（`decision_already_signed`），否则其投影的处置会被卡死（verify 红 `assumption_decision_invalid`、revoke/re-dispose 都拒）。撤销已签决策一律走 `decision.revoked`（带签字、级联回 open）。

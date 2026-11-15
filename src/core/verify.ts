@@ -13,6 +13,7 @@ import type { TableName } from './fold/types.js';
 import { GENESIS_PREV, computeEventHash, readEvents } from './verify-events.js';
 import { compareProjections } from './verify-projection.js';
 import { verifyBaselineReferences } from './baseline/verify-references.js';
+import { verifyAssumptionChain } from './assumption/verify.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -22,7 +23,7 @@ import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types
  * 物化（只落 signed 行，口径与 `write-materialize.ts` 一致，见 `verify-projection.ts`）。
  * 其余投影表在 M2 接 `verify_run` 时按 `view_catalog` 通用对账补齐。
  */
-export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release', 'decision'];
+export const VERIFIED_TABLES: readonly TableName[] = ['task', 'spec', 'release', 'decision', 'stage_run'];
 
 export { GENESIS_PREV, computeEventHash };
 export type { VerifyDatabase, VerifyProblem, VerifyReport, VerifyStatement } from './verify-types.js';
@@ -55,6 +56,27 @@ export function verify(db: VerifyDatabase): VerifyReport {
     };
   }
 
+  // M2-3/D-081：`assumption.invalidated` 在 M2 起降为派生读数（写入被拒、fold 显式拒）。
+  // 旧库若在升级前写过该 kind，这里先给**可读可行动**的专门 problem，而不是让 fold 笼统崩掉。
+  const legacyInvalidated = events.filter((event) => event.kind === 'assumption.invalidated');
+  if (legacyInvalidated.length > 0) {
+    for (const event of legacyInvalidated) {
+      problems.push({
+        code: 'legacy_assumption_invalidated',
+        objectId: event.id,
+        detail:
+          `event ${event.id} uses assumption.invalidated, which is now a derived reading (D-081); ` +
+          'this database predates M2 — rebuild it, or wait for the v2.1 cleanup migration',
+      });
+    }
+    return {
+      ok: false,
+      eventCount: events.length,
+      problems,
+      legacy_criterion_registrations: countLegacyRegistrations(events),
+    };
+  }
+
   let state;
   try {
     state = fold(undefined, events);
@@ -67,6 +89,13 @@ export function verify(db: VerifyDatabase): VerifyReport {
     compareProjections(db, state, VERIFIED_TABLES, problems);
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: errorMessage(error) });
+  }
+
+  // M2-3 C8：假设处置双向核对（签名载荷 ↔ disposed 事件 ↔ 投影行）。
+  try {
+    problems.push(...verifyAssumptionChain(events, state));
+  } catch (error) {
+    problems.push({ code: 'projection_check_failed', detail: `assumption chain check failed: ${errorMessage(error)}` });
   }
 
   // M2-1 C8：baseline 按“被引用的那一版”复算 hash，并核对冻结事件/引用存在性。

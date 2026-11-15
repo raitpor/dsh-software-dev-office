@@ -652,18 +652,24 @@ export function measureR7() {
       runCheckCli(dbPath, ['--criterion', 'spec_set.signed']),
       runCheckCli(dbPath, ['--gate', 'req', '--preset', 'waterfall']),
     ];
-    const tables = ['stage_run', 'gate', 'gate.judged'];
-    const counts = tables.map((name) => ({
-      table: name,
-      exists: tableExists(db, name),
-      rows: tableExists(db, name) ? count(db, `SELECT count(*) AS n FROM "${name}"`) : 0,
-    }));
-    const zero = counts.every((item) => item.rows === 0);
-    // gate 表在 001–005 不存在：0 行是平凡真，不能算 pass（评审 P2-2）。
-    const missingGateTable = counts.some((item) => (item.table === 'gate' || item.table === 'gate.judged') && item.exists === false);
+    const judgedRows = () =>
+      count(
+        db,
+        "SELECT count(*) AS n FROM stage_run WHERE verdict IS NOT NULL OR (criteria IS NOT NULL AND criteria <> '[]')",
+      );
+    const before = judgedRows();
+    // 非平凡探针：直接插一行“被判定的” stage_run，验证查询读数会变；随后删除。
+    // 这不是判定流程取证（流程取证在 test/db/gate-judged.test.ts），只证明本读数不是恒真。
+    db.prepare(
+      "INSERT INTO stage_run (id, stage, gate_id, baseline_hash, entered_at, exited_at, verdict, criteria, at) VALUES ('R7-PROBE', 'req', 'G_probe', 'sha256:probe', 't', 't', 'pass', '[{\"criterion_id\":\"probe\"}]', 't')",
+    ).run();
+    const after = judgedRows();
+    db.prepare("DELETE FROM stage_run WHERE id = 'R7-PROBE'").run();
+    const restored = judgedRows();
+    const nonzero = before === 0 && after >= 1 && restored === before;
     return {
       id: 'R7',
-      question: 'M1 跑完 sdo_check 后 gate.judged（gate/stage_run 承载判定的表）行数为 0',
+      question: 'M1 跑完 sdo_check 后无判定行；判定行读数可从真实查询得到（非平凡）',
       command: 'node scripts/m1-readings.mjs --only R7',
       measured: {
         runs: runs.map((run) => ({
@@ -675,13 +681,14 @@ export function measureR7() {
           judged: run.json?.judged ?? null,
           baseline: run.json?.baseline ?? null,
         })),
-        counts,
-        zero,
-        missing_gate_table: missingGateTable,
+        judged_rows_before: before,
+        judged_rows_probe: after,
+        judged_rows_restored: restored,
+        nonzero,
       },
-      verdict: zero && !missingGateTable ? 'pass' : 'partial',
+      verdict: nonzero && runs.every((run) => run.status === 0) ? 'pass' : 'fail',
       caveat:
-        '`stage_run` 表在 001 存在，0 行是真断言；`gate`/`gate.judged` 在当前迁移（001–005）不存在 ⇒ 0 行是平凡真，本读数因此记 **partial**（不是空过 pass），M2 建表后必须复跑；sdo_check 只跑 3 个真实入口（provenance/spec_set/gate req）。',
+        'M1 时本读数记 partial 的理由：当时探测 gate/gate.judged 两张不存在的表，0 行是平凡真。现在改为 stage_run 判定列的真实查询：sdo_check 不写判定行（before=0），插入探针行后读数 =1（after），删除后复原；判定流程本身的取证见 test/db/gate-judged.test.ts（C1/C2/C5/C9）。',
     };
   });
 }

@@ -224,22 +224,20 @@ test('M1-G 读数：关键读数与卡面一致且是现算的', async () => {
     }
 
     const r7 = reading(report, 'R7').raw as {
-      counts: { table: string; exists: boolean; rows: number }[];
-      zero: boolean;
-      missing_gate_table: boolean;
+      judged_rows_before: number;
+      judged_rows_probe: number;
+      judged_rows_restored: number;
+      nonzero: boolean;
     };
-    assert.equal(r7.zero, true);
-    assert.ok(r7.counts.every((item) => item.rows === 0));
-    assert.equal(r7.missing_gate_table, true);
-    const gate = r7.counts.find((item) => item.table === 'gate');
-    const judged = r7.counts.find((item) => item.table === 'gate.judged');
-    assert.ok(gate && judged);
-    assert.equal(gate.exists, false);
-    assert.equal(judged.exists, false);
-    // 与迁移清单一致：M2 若加了 gate/gate.judged 表，这条会红，逼复跑读数。
+    assert.equal(r7.judged_rows_before, 0);
+    assert.equal(r7.judged_rows_probe, 1);
+    assert.equal(r7.judged_rows_restored, 0);
+    assert.equal(r7.nonzero, true);
+    // M2-2 起 R7 不再是“两表不存在 ⇒ partial”，而是 stage_run 判定列的真实查询；
+    // 迁移清单仍不得凭空建 gate/gate.judged 表（判定落 stage_run）。
     assert.equal(migrationCreatesTable('gate'), false);
     assert.equal(migrationCreatesTable('gate.judged'), false);
-    assert.equal(reading(report, 'R7').verdict, 'partial', 'gate 表不存在 ⇒ 不能空过 pass');
+    assert.equal(reading(report, 'R7').verdict, 'pass');
   } finally {
     rmSync(dir, { recursive: true, force: true });
     rmSync(home, { recursive: true, force: true });
