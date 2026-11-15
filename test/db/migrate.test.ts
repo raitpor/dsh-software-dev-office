@@ -28,20 +28,20 @@ test('migrate: migration files are versioned 001..N', () => {
   const migrations = listMigrations();
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7],
-    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind)',
+    [1, 2, 3, 4, 5, 6, 7, 8],
+    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer)',
   );
   assert.match(migrations[0]?.file ?? '', /^001_[A-Za-z0-9_-]+\.sql$/);
 });
 
-test('migrate: fresh database applies 001..007 and reports user_version = 7', () => {
+test('migrate: fresh database applies 001..008 and reports user_version = 8', () => {
   withEmptyDb((_file, _close, db) => {
     assert.equal(currentUserVersion(db), 0, 'a fresh database starts at user_version 0');
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7]);
-    assert.equal(result.userVersion, 7);
-    assert.equal(currentUserVersion(db), 7);
-    assert.equal(tableNames(db).length, 35);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8]);
+    assert.equal(result.userVersion, 8);
+    assert.equal(currentUserVersion(db), 8);
+    assert.equal(tableNames(db).length, 38);
   });
 });
 
@@ -52,9 +52,9 @@ test('migrate: second run is a no-op (idempotent, zero changes)', () => {
 
     const second = runMigrations(db);
     assert.deepEqual(second.applied, [], 'an up-to-date database must apply no migrations');
-    assert.equal(second.userVersion, 7, 'user_version must not move on a no-op run');
+    assert.equal(second.userVersion, 8, 'user_version must not move on a no-op run');
     assert.deepEqual(tableNames(db), before);
-    assert.equal(currentUserVersion(db), 7);
+    assert.equal(currentUserVersion(db), 8);
   });
 });
 
@@ -65,7 +65,7 @@ test('migrate: 004 relaxes stage_run gate columns but keeps the table', () => {
     const byName = new Map(info.map((column) => [column.name, column.notnull]));
     assert.equal(byName.get('gate_id'), 0, 'stage.entered may leave gate_id null until gate.judged');
     assert.equal(byName.get('baseline_hash'), 0, 'stage.entered may leave baseline_hash null');
-    assert.equal(tableNames(db).length, 35);
+    assert.equal(tableNames(db).length, 38);
     assert.equal(db.prepare("SELECT count(*) AS n FROM sqlite_master WHERE type = 'view'").get() !== undefined, true);
   });
 });
@@ -89,8 +89,8 @@ test('migrate: 004 preserves existing stage_run rows during the rebuild (upgrade
     ).run();
 
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [4, 5, 6, 7]);
-    assert.equal(result.userVersion, 7);
+    assert.deepEqual(result.applied, [4, 5, 6, 7, 8]);
+    assert.equal(result.userVersion, 8);
     const row = db.prepare("SELECT * FROM stage_run WHERE id = 'SR-old'").get() as Record<string, unknown>;
     assert.equal(row['stage'], 'build');
     assert.equal(row['gate_id'], 'G_build');

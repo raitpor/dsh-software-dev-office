@@ -80,3 +80,20 @@
 - **`assumption.invalidated` 不可写**（D-078）：它是派生读数、不是状态迁移事件。写网关在信封校验里前置拒（`assumption_invalidated_is_derived`、0 行），reducer 同样显式拒；kind 保留登记仅为兼容 003 种子，v2.1 删。因此 confirmed 之后不存在“无签名事件把状态改回 open”的路径——C4 的唯一迁移生产者是真的。
 - **升级注意（D-081）**：M2 之前的库若写过 `assumption.invalidated`（003 曾登记该 kind），升级后 `verify` 会逐事件报 `legacy_assumption_invalidated`（objectId=事件 id，detail 说明“该 kind 已降为派生读数，请重建库或等 v2.1 清洗迁移”），该库判定为**不可信**；写网关与 fold 也不会再接受该 kind。这是“保持 fail-closed 但可读可行动”的升级口径，不是兼容写入。
 - **`decision.rejected` 只对未签决策合法**：已 `valid`+`signed` 的决策再 rejected 会被 fold 拒（`decision_already_signed`），否则其投影的处置会被卡死（verify 红 `assumption_decision_invalid`、revoke/re-dispose 都拒）。撤销已签决策一律走 `decision.revoked`（带签字、级联回 open）。
+
+## 身份层 actor/scope/right（M3-0）
+
+- 迁移 008 建三张表（**不属 fold 投影**，不进 `TABLE_NAMES` / `SUPPORTED_KINDS`）：
+  - `actor(id, kind ∈ human/agent/service, display, at)`：谁。`kind` 由会话凭据决定（`src/core/auth/session.ts`），**payload 里出现 `actor` 一律 `actor_not_from_session`**（收口 D-056）。
+  - `scope(actor, scope, right, granted_by, at, revoked_at)`：membership + grant 合一。撤销只写 `revoked_at`、不物理删行（right 只增不减，M3-5 消费）；`PRIMARY KEY(actor, scope, right)` 保证幂等；`CHECK` 双保险拒绝 `*` 与未知前缀。
+  - `right(action, required, self_sign, dual_human, boot_only, doc_row, doc_label, at)`：**决策权矩阵目录**，数据行由迁移 008 从 `docs/07` §2 播种（21 行 → 26 个动作）；`action`/`scope`/`right` 都有 CHECK 拒绝 `*`，`required` 另有 `CHECK (instr(required, '*') = 0)`（与 `migrations/008_identity.sql:42` 逐字一致；DB 纵深防御，直插负例见 `test/db/auth.test.ts`）。
+- `src/db/auth.ts`：`enrollActor` / `grantRight` / `readMatrix` / `readGrants` / `hasRight` / `authorizeWrite`。写路径组合入口 `authorizeWrite(db, session, payload, action, scope)`：先拒 payload 自称 actor，再判权；**产品代码不得自己比较 right 字符串**（`test/db/auth.test.ts` 静态扫描 C4）。
+- **身份层自己的写路径也要授权**：`enrollActor`/`grantRight` 的调用者必须持未撤销的 `admin@domain:*`（`{by: {id,kind}}`）；工具层**没有** bootstrap 参数可传。第一个 admin 只能由 `src/db/auth-bootstrap.ts` 的 `bootstrapEnrollActor`/`bootstrapGrantRight` 在迁移/CLI 初始化时写入——该文件不是工具层 API，禁止从 query/PM/sign 或任何事件写路径 import；迁移 008 用 SQL 播种，不依赖它。无 admin 的调用者 ⇒ `no_permission` 且 0 行。
+- **接线边界**：本卡只提供判定入口与三张表；把 `hasRight`/`authorizeWrite` 接到 query 写路径、`src/db/write.ts`（仍直接收 `event.actor`）与 PM `src/core/pm/act.ts` 是 **M3-1** 的写域。
+- **“权”与“对象条件”分层（M3-0 第 4 轮裁定）**：`hasRight` 只判权。`defect.close` 要求“`verify_run` 通过之后才能写”、`verify_finding` 要求“只认对象 `producer` 本人”——这些是动作级对象条件，与权正交，矩阵不表达（`right.required` 只有权列表、没有对象条件列）。它们由 M3-1 的动作实现强制；**`hasRight` 对这两个动作返回允许 ≠ 允许写**，调用点不得只看 `hasRight` 就放行。
+- **调用方上下文是自证**：`AuthActorContext.by` 在 M3-0 没有任何凭据校验（可伪造 admin 上下文）；M3-1 必须从会话固定 actor，不接受模型/工具自报。
+- `src/core/auth/rights.ts` 的 `hasRight(actor, action, scope, ctx)` 是唯一判定入口：fail-closed（未登记动作 / 未知前缀 / 无覆盖 grant ⇒ `no_permission`，带 `action/scope/actor_kind/missing_right`）；通配（`*`、空值、非法 scope 形状）⇒ `invalid_field`。
+- scope 覆盖：`module:src/db` 覆盖 `module:src/db/x.ts`（`/` 边界前缀，不做层级树）；**跨前缀一律拒**（D-086）：目标 scope 前缀必须等于 required scope 前缀，不等 ⇒ `no_permission` 且返回体带 `reason:'cross_prefix_denied'`——本卡不猜 module↔domain 归属，M3-1 引入 membership 解析后再放开。
+- 解析器边界（D-087）：`docs/07` §2 授权格里**括号只当注释**（`dependencies` 的「（不是 `write@module`——依赖是计划，不是代码）」不参与解析）；带 `@scope` 的未知权名、或裸权名漏 `@scope` ⇒ `unknown_right_in_matrix` 解析失败（fail-closed，不静默丢权）；其余反引号 token 视为正文引用。
+- 空授权格只允许**显式白名单**（`EMPTY_REQUIRED_ACTIONS`：`defect.close` docs/07:50、`verify_finding` docs/07:52、`config.bootstrap` docs/07:48）；白名单之外的授权格解析为空（含“不是 x 而是 y”被截断、整格 `—`）⇒ `unknown_right_in_matrix`，不许静默变成“谁都能做”。
+- 矩阵目录与 `docs/07` §2 的漂移由 `test/db/auth.test.ts` 双向机器比对抓：文档多/少一行 ⇒ 解析器抛错（C2 变异红证）；DB 目录被删一行 ⇒ 比对红（变异红证）。
