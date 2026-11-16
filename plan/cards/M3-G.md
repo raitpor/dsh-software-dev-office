@@ -4,7 +4,7 @@ seq: 35
 milestone: M3
 owner: impl-core
 write_scope: [scripts/, test/readings/, package.json, plan/milestone/, plan/cards/M3-G.md]
-status: open
+status: done
 created_at: 2026-11-15
 ---
 
