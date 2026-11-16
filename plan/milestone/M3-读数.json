@@ -1,0 +1,146 @@
+{
+  "card": "M3-G",
+  "generatedAt": "2026-11-16T01:58:27.817Z",
+  "command": "npm run readings:m3",
+  "node": "v26.13.1",
+  "readings": {
+    "R1": {
+      "id": "R1",
+      "question": "两人并发改同一字段是否一个成功一个 409，且 conflicts 可见双方主张（不是 disputed）",
+      "command": "node scripts/m3-readings.mjs --only R1",
+      "raw": {
+        "seed_event_id": "ev-m3g-r1-seed",
+        "base_hash": "sha256:4a577423c41b3afc5fb50cd54da4a1575bf2c03cf820c3ba7375612d5ced97cc",
+        "worker_results": [
+          {
+            "actor": "alice",
+            "outcome": "ok",
+            "event_id": "ev-m3g-r1-alice-a1",
+            "written": 1,
+            "started_at": "2026-11-16T01:58:27.157Z"
+          },
+          {
+            "actor": "bob",
+            "outcome": "conflict",
+            "message": "conflict cf-c0122943-9ca6-4b08-a0dd-5290d7775c71 on spec/SPEC-M3G-R1.clause: stale base_hash (409 semantics)",
+            "started_at": "2026-11-16T01:58:27.157Z"
+          }
+        ],
+        "wall_clock_barrier_ms": 1200,
+        "ok_count": 1,
+        "conflict_count": 1,
+        "spec_revised_events": [
+          "ev-m3g-r1-alice-a1"
+        ],
+        "winner_event_id": "ev-m3g-r1-alice-a1",
+        "conflict_detected_event_id": "cfd-ae6917b0-e127-4751-89c3-31c75a9f3d58",
+        "conflict_row_id": "cf-c0122943-9ca6-4b08-a0dd-5290d7775c71",
+        "conflicts_view_rows": 1,
+        "subject": "spec/SPEC-M3G-R1",
+        "field": "clause",
+        "winner_actor": "alice",
+        "loser_actor": "bob",
+        "winner_value": "\"alice-edit\"",
+        "loser_value": "\"bob-edit\"",
+        "detected_actor_is_loser": true,
+        "loser_event_actor_expected": null,
+        "loser_event_actor": null,
+        "stored_clause": "alice-edit",
+        "event_table_rows": {
+          "spec_revised": 1,
+          "conflict_detected": 1
+        }
+      },
+      "verdict": "pass",
+      "caveat": "两个独立 node 进程各开同一 SQLite 库（墙钟屏障 startAt=Date.now()+1200 不是冻结时钟，是否真重叠依赖机器速度；worker 的 started_at 已写进 raw 供核对）；写失败方按 2ms 退避重试链头变化，冲突判定来自真 append 返回的 reason_code=conflict（不是本地复算）。SQLite 无 busy_timeout，锁竞争由 append_conflict 重试覆盖。"
+    },
+    "R2": {
+      "id": "R2",
+      "question": "版本冻结的独立性不成立（dual_human 缺一个签字）是否门禁红；补齐后同一 stage 复判是否转绿",
+      "command": "node scripts/m3-readings.mjs --only R2",
+      "raw": {
+        "baseline_hash": "sha256:32a941097fd11fc20a3bc5db64fc80a83b24443dd1df101913b04c30fa1c3560",
+        "baseline_row_hash": "sha256:32a941097fd11fc20a3bc5db64fc80a83b24443dd1df101913b04c30fa1c3560",
+        "baseline_row_hash_matches_preview": true,
+        "second_baseline_hash": "sha256:82e7c5776075d7940d34fc5ff25555fd798ce5903999fb164407a33b9a1da5f3",
+        "chain_head_baseline_hash": "sha256:82e7c5776075d7940d34fc5ff25555fd798ce5903999fb164407a33b9a1da5f3",
+        "chain_head_equals_b2": true,
+        "freeze_decision_id": "dec-1a4fef91-3185-4220-98c4-2ae5b3d6b14f",
+        "stage_run": "SR-M3G-R2",
+        "single_signer_verdict": "changes_requested",
+        "single_signer_reasons": [
+          "independence_unsatisfied"
+        ],
+        "gate_judged_before": 0,
+        "gate_judged_after_single": 1,
+        "single_gate_judged_event_id": "ev-gate-SR-M3G-R2-2026-11-16T09:01:00.000Z-9b7651",
+        "single_gate_judged_event_checked": true,
+        "freeze_decision_row_checked": true,
+        "unlock_bob": true,
+        "counter_sign_ok": true,
+        "freeze_signers": 2,
+        "dual_signer_verdict": "pass",
+        "dual_signer_reasons": [],
+        "gate_judged_after_both": 2,
+        "double_gate_judged_event_id": "ev-gate-SR-M3G-R2-2026-11-16T09:02:00.000Z-8b89cc",
+        "double_gate_judged_event_checked": true
+      },
+      "verdict": "pass",
+      "caveat": "README 里写了独立性判定按 baseline.frozen 事件的 decision_id 取 freeze 决策；单签红判为 changes_requested + independence_unsatisfied。注意：gate.ts 在独立性红时仍会 compile+append 一条 gate.judged（changes_requested），这是实现现状；实测 gate_judged_after_single 如实记录，不按“0 条”预期改写。先用 B1(dual_human) 冻结并绑 stage_run，再冻结 B2(solo) 成为链头后判 B1：若实现偷懒取链头 assurance，单签会误判 pass，本读数即红（已用改 lib 的变异实测）。"
+    },
+    "R3": {
+      "id": "R3",
+      "question": "撤销 decide@domain:release 后待审项是否消失、且页面显示申请入口（不是静默空页）",
+      "command": "node scripts/m3-readings.mjs --only R3",
+      "raw": {
+        "attention_id": "ATT-T-M3G-R3-mwim6v2o",
+        "task_id": "T-M3G-R3",
+        "before": {
+          "rows": 1,
+          "hidden": 0,
+          "apply_entries": 0,
+          "apply_scopes": [],
+          "page_has_apply": false,
+          "page_has_to_decide": true,
+          "filtered": false
+        },
+        "after": {
+          "rows": 0,
+          "hidden": 1,
+          "apply_entries": 1,
+          "apply_scopes": [
+            "release:R-3"
+          ],
+          "page_has_apply": true,
+          "page_has_to_decide": false,
+          "page_hidden_hint": "权限不足：看「review_queue」需要更高权限（当前不是 decider/signer）（部分待审项不在你的域内：见下方申请入口）",
+          "hidden_count_leak": false,
+          "filtered": true,
+          "miss": null
+        },
+        "revoked_scope_rows": 1,
+        "page_before_has_to_decide": true,
+        "page_before_has_apply": false,
+        "page_after_has_to_decide": false,
+        "page_after_has_apply": true
+      },
+      "verdict": "pass",
+      "caveat": "M3 没有 right.revoked 事件入口：撤权直接写 scope.revoked_at（生产 dbRightsPort 会过滤 revoked 行），这是台账 D-113 记录的边界，不是模拟。页面用生产 loadOverviewPage/renderPage 渲染。撤权后页面会提示“待审项不在你的域内”；若带具体条数即隐藏计数泄露（S25），该缺陷由 M3-7 修，本读数用 page_hidden_hint/hidden_count_leak 如实记录本次 HTML 原文。C5 边界：本机 ~/.local/state/sdo 不存在时快照只到 {exists:false}，能抓“新建生产目录”但抓不到既有目录内容变化（且只比 size+mtime）；另外 `npm run readings:m3` 默认会写 plan/milestone/M3-读数.*，C5“不碰仓库”由测试用 --out 保证（D-111 同类坑），不是脚本默认行为。"
+    },
+    "R4": {
+      "id": "R4",
+      "question": "M2 遗留 R5（单次签字人工时长）在 M3 是否已有 ≥5 个人类样本",
+      "command": "node scripts/m3-readings.mjs --only R4",
+      "raw": {
+        "m2_verdict": "partial",
+        "human_samples": 0,
+        "m2_median_ms": null,
+        "m2_caveat": "数据来源：签字页 confirm → signerd 回执的 signerd_unlock_wait_ms + sign_ms（真墙钟，未冻结时钟；signDelayMs=20 注入使 sign_ms 可观测）。**没有人类样本**：不含人读命题/思考时间，G4“人签中位 ≤10s”在 M2 内不可测量，本行只证明工具侧代理 ≤10s，等 M3 影子期真实使用样本；**22ms 中位含 20ms 注入延迟（injected_delay_ms=20），不是产品耗时**；因此 verdict=partial、overall≤partial。样本设计：TTL=0，5 条各自重新解锁（unlock_wait>0 样本数见 raw）。",
+        "sufficient": false
+      },
+      "verdict": "partial",
+      "caveat": "M3 仍无 ≥5 个人类签字样本（M2 样本数见 raw）；按 A3/D-082 不凑数，保持 partial。"
+    }
+  },
+  "overall": "partial"
+}
