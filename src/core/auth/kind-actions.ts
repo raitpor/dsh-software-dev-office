@@ -30,7 +30,7 @@ export interface KindAction {
   readonly scopeOf: (payload: Payload, ctx: KindContext) => string;
 }
 
-type ScopeKind = 'domain' | 'module' | 'release' | 'config' | 'task' | 'decision';
+type ScopeKind = 'domain' | 'module' | 'release' | 'config' | 'task' | 'decision' | 'lock';
 
 interface Spec {
   readonly action: string;
@@ -73,7 +73,22 @@ function decisionScope(payload: Payload, ctx: KindContext): string {
   return ['freeze', 'baseline', 'waiver', 'rollback'].includes(kind) ? 'release:current' : 'domain:core';
 }
 
-const SCOPE_FALLBACK: Readonly<Record<Exclude<ScopeKind, 'task' | 'decision'>, string>> = {
+/**
+ * M4-1/P2-5：锁的 scope 按前缀首段推导，不再写死 module:core：
+ * 根前缀（`.`/空）⇒ `domain:core`（只允许工作副本工具路径申请，见 db/lock.ts）；
+ * 其余 ⇒ `module:<首段>`（首段做白名单清洗，坏字符回退 module:core 并交由 C2 拒绝）。
+ */
+function lockScope(payload: Payload, ctx: KindContext): string {
+  const explicit = text(payload['scope']);
+  if (explicit !== undefined && /^(domain|module|release):/.test(explicit)) return explicit;
+  const subject = typeof ctx.subject === 'string' ? ctx.subject.replace(/\\/g, '/').toLowerCase() : '';
+  const trimmed = subject.replace(/^\.?\/+|\/+$/g, '');
+  if (trimmed === '' || trimmed === '.') return 'domain:core';
+  const first = trimmed.split('/')[0] ?? '';
+  return /^[a-z0-9][a-z0-9._-]*$/.test(first) ? `module:${first}` : 'module:core';
+}
+
+const SCOPE_FALLBACK: Readonly<Record<Exclude<ScopeKind, 'task' | 'decision' | 'lock'>, string>> = {
   domain: 'domain:core',
   module: 'module:core',
   release: 'release:current',
@@ -83,6 +98,7 @@ const SCOPE_FALLBACK: Readonly<Record<Exclude<ScopeKind, 'task' | 'decision'>, s
 function scopeFor(payload: Payload, kind: ScopeKind, ctx: KindContext): string {
   const explicit = basicScope(payload, kind);
   if (explicit !== undefined) return explicit;
+  if (kind === 'lock') return lockScope(payload, ctx);
   if (kind === 'decision') return decisionScope(payload, ctx);
   if (kind === 'task') return SCOPE_FALLBACK.module;
   return SCOPE_FALLBACK[kind];
@@ -127,6 +143,9 @@ const SPECS: Readonly<Record<string, Spec>> = {
   'goal.integrated': { action: 'propose_plan', scope: 'domain' },
   'goal.reparented': { action: 'propose_plan', scope: 'domain' },
   'intent.signed': { action: 'amend_intent', scope: 'domain' },
+  'lock.acquired': { action: 'claim', scope: 'lock' },
+  'lock.released': { action: 'claim', scope: 'lock' },
+  'lease.revoked': { action: 'dispatch', scope: 'domain' },
   'redteam.disposed': { action: 'review', scope: 'module' },
   'redteam.recorded': { action: 'review', scope: 'module' },
   'release.delivered': { action: 'freeze', scope: 'release' },

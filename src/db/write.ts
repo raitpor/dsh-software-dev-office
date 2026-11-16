@@ -34,6 +34,8 @@ import { ACK_KINDS } from '../core/fold/ack.js';
 import { KIND_ACTIONS } from '../core/auth/kind-actions.js';
 import { ACTION_OBJECT_CONDITIONS } from './action-objects.js';
 import { consumeWorkcopyAuthority, workcopyPayloadHash, WORKCOPY_TOOL_KINDS } from './workcopy-capability.js';
+import { lockToolPayloadHash, LOCK_TOOL_KINDS, LOCK_TOOL_MARKER } from './lock-capability.js';
+import { consumeLockToolAuthority } from './lock.js';
 
 /** M3-1/C2：写网关的授权会话（只要身份二元组；工具路径的 session 形态各异）。 */
 export interface AppendSession {
@@ -98,11 +100,46 @@ function authorizeEvent(
   session: AppendSession,
   state: FoldState,
 ): AppendFailure | undefined {
-  if (event.actor !== session.actor && !ACTOR_EXEMPT_KINDS.has(event.kind)) {
+  const lockToolPayload = parseEventPayload(event);
+  const isLockToolEvent =
+    (LOCK_TOOL_KINDS as readonly string[]).includes(event.kind) &&
+    lockToolPayload['initiator'] === LOCK_TOOL_MARKER;
+  // M4-1 第 3 轮 P2：工具释放事件以工具身份落库（actor='sdo-workcopy'），不能要求它等于
+  // 调用方会话 actor；能力一次性、绑 payload_hash，仍由下方工具分支消费（D-148）。
+  if (!isLockToolEvent && event.actor !== session.actor && !ACTOR_EXEMPT_KINDS.has(event.kind)) {
     return failure(
       'actor_not_from_session',
       `event ${event.id} actor=${event.actor} does not match session actor=${session.actor}`,
     );
+  }
+  // M4-1 第 2 轮 P1：根前缀的 lock.acquired 是工具专用事件。事件流敞开时，
+  // 任何有 claim 权的 actor 都能直接 append 事件伪造根锁（2026-11-16 评审复现），
+  // 所以必须在网关按一次性能力拦，而不是只看 payload.initiator 标记。
+  const isRootLockAcquired =
+    event.kind === 'lock.acquired' && (event.subject === '' || event.subject === '.');
+  if (isRootLockAcquired) {
+    const rootPayload = parseEventPayload(event);
+    const authorized =
+      rootPayload['initiator'] === LOCK_TOOL_MARKER &&
+      consumeLockToolAuthority(event.id, lockToolPayloadHash(rootPayload));
+    if (!authorized) {
+      return failure(
+        'unauthorized_root_lock',
+        `event ${event.id} root lock.acquired must be produced by acquireMainTreeLock (one-shot, payload-bound)`,
+      );
+    }
+    return undefined;
+  }
+  // M4-1/P2-5：内嵌工具路径的锁事件（releaseCardLocksAsTool 等）走一次性能力，
+  // 业务路径的 lock.* 不在此列（仍走下方矩阵动作）。
+  if (isLockToolEvent) {
+    if (!consumeLockToolAuthority(event.id, lockToolPayloadHash(lockToolPayload))) {
+      return failure(
+        'unauthorized_workcopy_event',
+        `event ${event.id} kind=${event.kind} initiator=${LOCK_TOOL_MARKER} must be produced by the workcopy tool path`,
+      );
+    }
+    return undefined;
   }
   // M4-0：workcopy.created/removed 与 snapshot.taken 是工具专用事件（docs/02 §301）。
   // 先校验一次性能力（绑 payload hash），通过后跳过矩阵动作——工具会话不需要 plan@domain。

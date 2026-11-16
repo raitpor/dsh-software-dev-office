@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { columnNames, tableNames, withMigratedDb } from './helpers.js';
 
-/** docs/03 的 25 张表 + docs/02/04/06/07/09/12 的 9 张支撑表 + view_catalog（第 35 张）+ M3-0 的身份层 3 张（actor/scope/right，第 36–38 张）+ M3-2 的 conflict（第 39 张）+ M3-4 的 renderer_catalog（第 40 张）+ 011 的 projection_guard（第 41 张）+ M3-3 的 signerd_receipt_use（第 42 张）+ M3-1 的 scope_owns（第 43 张）。 */
+/** docs/03 的 25 张表 + docs/02/04/06/07/09/12 的 9 张支撑表 + view_catalog（第 35 张）+ M3-0 的身份层 3 张（actor/scope/right，第 36–38 张）+ M3-2 的 conflict（第 39 张）+ M3-4 的 renderer_catalog（第 40 张）+ 011 的 projection_guard（第 41 张）+ M3-3 的 signerd_receipt_use（第 42 张）+ M3-1 的 scope_owns（第 43 张）+ M4-1 的 lock（第 44 张）。 */
 const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   projection_guard: ['name', 'active'],
   conflict: [
@@ -68,11 +68,12 @@ const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   right: ['action', 'required', 'self_sign', 'dual_human', 'boot_only', 'doc_row', 'doc_label', 'at'],
   signerd_receipt_use: ['receipt_id', 'event_id', 'decision_id', 'at'],
   scope_owns: ['child_scope', 'parent_scope', 'created_at'],
+  lock: ['path_prefix', 'card_id', 'actor', 'status', 'acquired_at', 'expires_at', 'released_at', 'released_by'],
 };
 
 const EXPECTED_TABLES = Object.keys(EXPECTED_COLUMNS).sort();
 
-test('schema: every expected table exists (docs/03 25 + 9 support + view_catalog + M3-0 auth 3 + M3-2 conflict + M3-4 renderer_catalog + M3-3 signerd_receipt_use + M3-1 scope_owns（第 43 张）)', () => {
+test('schema: every expected table exists (docs/03 25 + 9 support + view_catalog + M3-0 auth 3 + M3-2 conflict + M3-4 renderer_catalog + M3-3 signerd_receipt_use + M3-1 scope_owns（第 43 张）+ M4-1 lock（第 44 张）)', () => {
   withMigratedDb((db) => {
     const actual = tableNames(db);
     assert.equal(actual.length, EXPECTED_TABLES.length, `table count drift: ${JSON.stringify(actual)}`);

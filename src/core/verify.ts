@@ -16,6 +16,7 @@ import { verifyBaselineReferences } from './baseline/verify-references.js';
 import { verifyAssumptionChain } from './assumption/verify.js';
 import { verifyIndependenceChain } from './independence/verify.js';
 import { verifyVcsObjects } from './verify-vcs.js';
+import { verifyLocks } from './verify-lock.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -151,6 +152,13 @@ export function verify(db: VerifyDatabase): VerifyReport {
     problems.push(...verifyVcsObjects(db));
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: `vcs object check failed: ${errorMessage(error)}` });
+  }
+
+  // M4-1/C5：锁完整性（busy 卡无活锁 / 无卡关联的过期活锁）。
+  try {
+    problems.push(...verifyLocks(db));
+  } catch (error) {
+    problems.push({ code: 'projection_check_failed', detail: `lock check failed: ${errorMessage(error)}` });
   }
 
   // M3-3 C5：独立性复算——同一套 judge 从事件 + baseline 重算，

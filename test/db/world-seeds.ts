@@ -135,5 +135,9 @@ export function worldSeeds(): EventSeed[] {
   add(seed(80, 'decision.rejected', 'd-rj', { reason: 'no' }));
   // M2-3/P1：world 链要覆盖撤销级联（assumption_set 被撤 ⇒ 处置回 open、spec 行带 invalidated_* fold-only 列）。
   add(seed(81, 'decision.revoked', 'd-as', { reason: 'batch withdrawn' }));
+  // M4-1：锁生命周期（acquire → 撤租约标记 → release；行保留为 released）。
+  add(seed(82, 'lock.acquired', 'src/core', { card_id: 'CARD-1', acquired_at: '2026-11-15T09:00:00.000Z', expires_at: '2026-11-17T00:00:00Z' }));
+  add(seed(83, 'lease.revoked', 'CARD-1', { card_id: 'CARD-1' }));
+  add(seed(84, 'lock.released', 'src/core', { released_at: '2026-11-15T09:00:00.000Z', released_by: 'released' }));
   return s;
 }

@@ -15,6 +15,7 @@ import { CONFLICT_REDUCERS } from './reducers/conflict.js';
 import { BASELINE_REDUCERS } from './reducers/baseline.js';
 import { OPS_REDUCERS } from './reducers/ops.js';
 import { CONTENT_REDUCERS } from './reducers/content.js';
+import { LOCK_REDUCERS } from '../lock/reducer.js';
 
 export type Reducer = (state: FoldWorking, event: Event) => void;
 
@@ -34,6 +35,7 @@ const maps: ReadonlyArray<Readonly<Record<string, Reducer>>> = [
   BASELINE_REDUCERS,
   OPS_REDUCERS,
   CONTENT_REDUCERS,
+  LOCK_REDUCERS,
 ];
 
 function buildLookup(): Readonly<Record<string, Reducer>> {

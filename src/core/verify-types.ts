@@ -38,7 +38,10 @@ export type VerifyProblemCode =
   | 'vcs_object_missing'
   | 'vcs_object_hash_mismatch'
   | 'vcs_objects_dir_unresolved'
-  | 'vcs_object_graph_too_large';
+  | 'vcs_object_graph_too_large'
+  /** M4-1/C5：卡在飞却没有活锁 / 活锁归属的卡已不在飞且超过 TTL+宽限。 */
+  | 'lock_missing'
+  | 'lock_leaked';
 
 export interface VerifyProblem {
   readonly code: VerifyProblemCode;

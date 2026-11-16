@@ -1,3 +1,4 @@
+import type { WorkcopyFailureReason } from '../core/workcopy/types.js';
 /**
  * M1-0 写网关的返回契约（纯类型，无 SQL）。
  *
@@ -45,6 +46,8 @@ export type AppendReason =
   | 'unauthorized_conflict_detected'
   /** M4-0：workcopy.created/removed 与 snapshot.taken 必须来自工具路径（一次性能力）。 */
   | 'unauthorized_workcopy_event'
+  /** M4-1 第 2 轮 P1：根锁（`lock.acquired` subject `.`）只能由 `acquireMainTreeLock` 产出。 */
+  | 'unauthorized_root_lock'
   /** M3-1/C3：会话没有该批事件所需的权（reason 里带 action/scope/actor_kind）。 */
   | 'no_permission'
   /** M3-1/P0：事件 kind 在 `KIND_ACTIONS` 里没有映射（fail-closed，不许调用方自带动作）。 */
@@ -54,6 +57,9 @@ export type AppendReason =
   /** M3-1/C8：动作级对象条件不满足（defect.close 需本人复验；verify_finding 只认 producer）。 */
   | 'object_condition_failed';
 // 台账 D-025 需同步登记 append_conflict / transaction_in_progress（Lead 代记）。
+
+/** 工作副本结构化失败码（闭集定义在 `src/core/workcopy/types.ts`，D-156/D-157）。 */
+export type { WorkcopyFailureReason };
 
 /**
  * `append` 的返回契约。

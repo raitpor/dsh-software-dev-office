@@ -1015,5 +1015,47 @@
       "signed_by": null,
       "note": null
     }
+  },
+  "lock.acquired": {
+    "table": "lock",
+    "id": "src/core",
+    "row": {
+      "path_prefix": "src/core",
+      "card_id": "CARD-1",
+      "actor": "actor-1",
+      "status": "active",
+      "acquired_at": "2026-11-15T09:00:00.000Z",
+      "expires_at": "2026-11-17T00:00:00Z",
+      "released_at": null,
+      "released_by": null
+    }
+  },
+  "lock.released": {
+    "table": "lock",
+    "id": "src/core",
+    "row": {
+      "path_prefix": "src/core",
+      "card_id": "CARD-1",
+      "actor": "actor-1",
+      "status": "released",
+      "acquired_at": "2026-11-15T09:00:00.000Z",
+      "expires_at": "2026-11-17T00:00:00Z",
+      "released_at": "2026-11-15T09:00:00.000Z",
+      "released_by": "released"
+    }
+  },
+  "lease.revoked": {
+    "table": "lock",
+    "id": "src/core",
+    "row": {
+      "path_prefix": "src/core",
+      "card_id": "CARD-1",
+      "actor": "actor-1",
+      "status": "active",
+      "acquired_at": "2026-11-15T09:00:00.000Z",
+      "expires_at": "2026-11-17T00:00:00Z",
+      "released_at": null,
+      "released_by": "lease_revoked"
+    }
   }
 }

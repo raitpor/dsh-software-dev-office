@@ -53,8 +53,8 @@ test('C5/C6: world chain appends all supported kinds; each target table gets rea
     assert.equal(report.eventCount, events.length);
 
     const kinds = new Set(events.map((event) => event.kind));
-    assert.equal(Object.keys(SUPPORTED_KINDS).length, 58);
-    assert.equal(kinds.size, 58 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size - TOOL_ONLY_KINDS.size);
+    assert.equal(Object.keys(SUPPORTED_KINDS).length, 61);
+    assert.equal(kinds.size, 61 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size - TOOL_ONLY_KINDS.size);
     for (const kind of Object.keys(SUPPORTED_KINDS)) {
       if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind)) continue;
       assert.equal(kinds.has(kind), true, `world chain is missing kind ${kind}`);

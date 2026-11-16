@@ -38,7 +38,7 @@ const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
 const TOOL_ONLY_KINDS = new Set(['snapshot.taken']);
 
 test('C5/C6 world chain covers every supported kind exactly once (first occurrence)', () => {
-  assert.equal(kinds.length, 58, 'SUPPORTED_KINDS = REDUCERS 56 + conflict 2');
+  assert.equal(kinds.length, 61, 'SUPPORTED_KINDS = REDUCERS 58 + lock 2 + lease.revoked 1');
   for (const kind of kinds) {
     if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind)) continue;
     assert.ok(seeds.some((event) => event.kind === kind), `world chain must contain at least one ${kind} event`);

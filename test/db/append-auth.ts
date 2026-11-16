@@ -11,7 +11,7 @@ import type { Event } from '../../src/core/fold/types.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 
 const RIGHT_NAMES = ['read', 'write', 'review', 'decide', 'sign', 'admin', 'plan', 'assign', 'escalate'] as const;
-const SCOPES = ['domain:core', 'domain:renderers', 'module:core', 'release:current'] as const;
+const SCOPES = ['domain:core', 'domain:renderers', 'module:core', 'module:src', 'release:current'] as const;
 
 export const FIXTURE_SESSION = { actor: 'fixture-root', actor_kind: 'service' } as const;
 

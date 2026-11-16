@@ -26,6 +26,7 @@ import git from 'isomorphic-git';
 import { appendTool, elapsedMs, isBusy, lock, pathsFor, toolEvent, unlock, warnSlow, type WorkcopyPaths } from './workcopy-tool.js';
 import { appendAsTool } from './write.js';
 import { chainHead } from './write.js';
+import { acquireMainTreeLock, hasActiveLock, releaseCardLocksAsTool, releaseMainTreeLock } from './lock.js';
 import { computeEventHash } from '../core/verify-events.js';
 import type { Event } from '../core/fold/types.js';
 
@@ -93,7 +94,7 @@ export async function createWorkcopy(db: SdoDatabase, req: CreateRequest): Promi
     }, req.session, req.at), req.session);
     const timings = { read_tree_ms: elapsedMs(tRead), materialize_plus_event_ms: elapsedMs(tWrite), total_ms: elapsedMs(t0) };
     warnSlow('create', req.card, timings);
-    if (!appended.ok) return { ok: false, reason_code: appended.reason_code ?? 'append_failed', message: appended.message };
+    if (!appended.ok) return { ok: false, reason_code: 'append_failed', message: appended.message };
     return { ok: true, gitdir: paths.gitdir, workdir: paths.workdir, base_oid: baseOid, file_count: entries.length, timings };
   });
 }
@@ -135,6 +136,50 @@ export async function commitWorkcopy(db: SdoDatabase, req: CommitRequest): Promi
   });
 }
 
+/** 第 4 轮 P2：逐条释放失败要能被调用方看见，不能吞掉后删副本报成功。 */
+function describeLockFailures(failures: readonly { prefix: string; reason_code: string; message: string }[]): string {
+  return failures.map((failure) => `${failure.prefix}:${failure.reason_code}:${failure.message}`).join('; ');
+}
+
+/**
+ * 第 5 轮 P3：admit 在 snapshot.taken/workcopy.removed 已落库、仅卡锁释放失败时，
+ * 副本会被保留。重试必须幂等——在同一 base 上找到“事件链已完整（snapshot + removed）”
+ * 的唯一快照即复用，不再 append 第二份 snapshot/removed。
+ *
+ * D-156：必须按 card 过滤（snapshot.taken 的 payload.card 与 removed.subject），否则
+ * 别的卡的完整准入会被误当成本卡的；同一 card+base 出现多于一条完整准入时不能
+ * “照原流程试一把”（重试可能撞 createOnce 或把主树判脏/merge 冲突），直接报
+ * `admission_ambiguous` 交人处理。
+ */
+type CompletedAdmission =
+  | { readonly kind: 'none' }
+  | { readonly kind: 'unique'; readonly id: string; readonly git_oid: string }
+  | { readonly kind: 'ambiguous' };
+
+function completedAdmission(
+  db: SdoDatabase,
+  cardId: string,
+  baseSnapshotId: string,
+): CompletedAdmission {
+  const rows = db
+    .prepare(
+      `SELECT s.id AS id, s.git_oid AS git_oid
+         FROM snapshot s
+         JOIN snapshot_parent p ON p.snapshot_id = s.id AND p.parent_id = ?
+        WHERE EXISTS (
+                SELECT 1 FROM event e
+                 WHERE e.kind = 'snapshot.taken' AND e.subject = s.id
+                   AND json_extract(e.payload, '$.card') = ?
+              )
+          AND EXISTS (SELECT 1 FROM event e WHERE e.kind = 'workcopy.removed' AND e.subject = ?)
+        ORDER BY s.at DESC`,
+    )
+    .all(baseSnapshotId, cardId, cardId) as { id: string; git_oid: string }[];
+  if (rows.length === 0) return { kind: 'none' };
+  if (rows.length === 1) return { kind: 'unique', id: rows[0]!.id, git_oid: rows[0]!.git_oid };
+  return { kind: 'ambiguous' };
+}
+
 /** 准入：合并 → 脏主树拒 → 重写主树 → 落 snapshot.taken + workcopy.removed → 删副本。 */
 export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise<AdmitResult | FailureResult> {
   const t0 = process.hrtime.bigint();
@@ -143,6 +188,39 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
   const baseOid = snapshotOid(db, req.base_snapshot_id);
   if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing' };
   return withLock(paths, async () => {
+    const previous = completedAdmission(db, req.card, req.base_snapshot_id);
+    if (previous.kind === 'ambiguous') {
+      return {
+        ok: false,
+        reason_code: 'admission_ambiguous',
+        message: `card ${req.card} has more than one completed admission from ${req.base_snapshot_id}; resolve manually`,
+      };
+    }
+    if (previous.kind === 'unique' && fs.existsSync(paths.workdir)) {
+      const retryChanges = diffTrees(await readTree(paths.gitdir, baseOid), await readTree(paths.gitdir, previous.git_oid));
+      const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
+      if (!cardLocks.ok) {
+        return {
+          ok: false,
+          reason_code: 'lock_release_failed',
+          message: `card lock release failed after admission retry: ${describeLockFailures(cardLocks.failures)}`,
+          details: cardLocks.failures,
+        };
+      }
+      rmRepoDir(paths);
+      const retryAt = new Date().toISOString();
+      return {
+        ok: true,
+        snapshot_id: previous.id,
+        git_oid: previous.git_oid,
+        changes: retryChanges,
+        written: 0,
+        deleted: 0,
+        timings: { total_ms: elapsedMs(t0) },
+        dirty_checked_at: retryAt,
+        rewritten_at: retryAt,
+      };
+    }
     await normalizeWorkdir(req.root, paths);
     const cardOid = await commitWorkdir(paths, req.message, req.author ?? WORKCOPY_AUTHOR, baseOid);
     spillObjects(paths.gitdir, objectsDir(req.root));
@@ -158,6 +236,13 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     });
     const dirtyBefore = await dirtyCheck();
     if (!dirtyBefore.clean) return dirtyBlock(dirtyBefore);
+    // M4-1/C7（D-135/P2-3）：先取主树锁，再 merge——不能 merge 完才去拿锁。
+    const mainLock = acquireMainTreeLock(db, { card_id: req.card, session: req.session, at: req.at });
+    if (!mainLock.ok) {
+      return { ok: false, reason_code: mainLock.reason_code, message: mainLock.message, conflict: mainLock.conflict };
+    }
+    let rootHeld = true;
+    try {
     const merged = await mergeCommits(paths, objectsDir(req.root), cardOid, current.git_oid, `admit ${req.card}`, req.author ?? WORKCOPY_AUTHOR);
     if (!merged.ok) return { ok: false, reason_code: 'merge_conflict', conflicts: merged.conflicts ?? [], block_event_id: req.task_id === undefined ? undefined : blockTask(db, req.task_id, 'merge_conflict', 'three-way merge conflict', req.session, req.at) };
     const finalOid = merged.oid as string;
@@ -181,9 +266,19 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     const taken = appendTool(db, toolEvent('snapshot.taken', snapshotId, {
       git_oid: finalOid, parent_ids: [current.id], external_ref: paths.gitdir, card: req.card,
     }, req.session, req.at), req.session);
-    if (!taken.ok) return { ok: false, reason_code: taken.reason_code ?? 'append_failed', message: taken.message };
+    if (!taken.ok) return { ok: false, reason_code: 'append_failed', message: taken.message };
     const removed = appendTool(db, toolEvent('workcopy.removed', req.card, { card: req.card, reason: 'admitted', snapshot_id: snapshotId }, req.session, req.at), req.session);
-    if (!removed.ok) return { ok: false, reason_code: removed.reason_code ?? 'append_failed', message: removed.message };
+    if (!removed.ok) return { ok: false, reason_code: 'append_failed', message: removed.message };
+    const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
+    if (!cardLocks.ok) {
+      return {
+        ok: false,
+        reason_code: 'lock_release_failed',
+        message: `card lock release failed after admission: ${describeLockFailures(cardLocks.failures)}`,
+        details: cardLocks.failures,
+      };
+    }
+    rootHeld = hasActiveLock(db, '');
     rmRepoDir(paths);
     const timings = { total_ms: elapsedMs(t0) };
     warnSlow('admit', req.card, timings);
@@ -191,6 +286,9 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
       ok: true, snapshot_id: snapshotId, git_oid: finalOid, changes, written: rewritten.written, deleted: rewritten.deleted, timings,
       dirty_checked_at: dirtyCheckedAt, rewritten_at: rewrittenAt,
     };
+    } finally {
+      if (rootHeld) releaseMainTreeLock(db, { session: req.session, at: req.at });
+    }
   });
 }
 
@@ -205,7 +303,16 @@ export async function removeWorkcopy(db: SdoDatabase, req: { root: string; card:
   };
   return withLock(paths, async () => {
     const removed = appendTool(db, toolEvent('workcopy.removed', req.card, { card: req.card, reason: 'removed' }, req.session, req.at), req.session);
-    if (!removed.ok) return { ok: false, reason_code: removed.reason_code ?? 'append_failed', message: removed.message };
+    if (!removed.ok) return { ok: false, reason_code: 'append_failed', message: removed.message };
+    const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
+    if (!cardLocks.ok) {
+      return {
+        ok: false,
+        reason_code: 'lock_release_failed',
+        message: `card lock release failed: ${describeLockFailures(cardLocks.failures)}`,
+        details: cardLocks.failures,
+      };
+    }
     rmRepoDir(paths);
     return { ok: true };
   });
