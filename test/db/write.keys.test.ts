@@ -23,10 +23,10 @@ test('C1 snapshot_parent uses (snapshot_id,parent_id): replay does not duplicate
     const events = chain(worldSeeds());
     assert.equal(append(db, events).ok, true);
     const before = db.prepare('SELECT count(*) AS n FROM snapshot_parent').get() as { n: number };
-    assert.equal(before.n, 1, 'world chain links SNAP-1 -> SNAP-0 exactly once');
+    assert.equal(before.n, 0, 'snapshot 由工作副本工具产生（M4-0），world 链不含');
     assert.equal(append(db, events).ok, true, 'replay is idempotent');
     const after = db.prepare('SELECT count(*) AS n FROM snapshot_parent').get() as { n: number };
-    assert.equal(after.n, 1);
+    assert.equal(after.n, 0);
   });
 });
 

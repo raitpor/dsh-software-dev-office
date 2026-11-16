@@ -27,7 +27,6 @@ const CASES: Readonly<Record<string, Mutation>> = {
   'goal.integrated': { field: 'note', value: 'mutated' },
   'review.recorded': { field: 'reason', value: 'mutated' },
   'review.round_closed': { field: 'signer', value: 'mallory' },
-  'snapshot.taken': { field: 'git_oid', value: 'mutated' },
   // P2：DB 层再抽四个 append 主路径 kind（其余只有 fold 层证据，卡里写明）。
   'task.created': { field: 'title', value: 'mutated' },
   'criterion.registered': { field: 'remedy', value: 'mutated remedy' },

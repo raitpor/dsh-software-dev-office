@@ -179,3 +179,14 @@
   能执行任意 SQL 的进程可以把哨兵置 1 再直插，这已在威胁模型外（与 M2-0 同 uid 威胁模型一致）。
   同理，`src/db/renderer-authority.ts` 的 `mint*` 是 `@internal`：产品路径不当入口调用；
   能 import 内部模块的代码同样在威胁模型外。
+
+## 工作副本与内嵌 VCS（M4-0）
+
+- **模块**：`src/core/workcopy/{paths,crlf,tree,main-tree}.ts`（纯函数：路径/越界/CRLF/对象与树 diff/主树重写）＋ `src/db/{vcs,workcopy}.ts`（isomorphic-git 封装与生命周期）＋ `src/db/workcopy-{authority,tool}.ts`（一次性能力与工具事件）。产品代码不执行系统 `git` CLI，也不执行 hooks。
+- **目录**：`.work/<card>/`（卡工作目录）、`.sdo/vcs-cards/<card>.git/`（卡 gitdir，**每卡独立 index/HEAD**）、`.sdo/vcs-objects/`（共享 bare 对象库）。三者都被 `.gitignore` 覆盖。
+- **与设计的偏离（D-126）**：isomorphic-git v1.44 不读 `objects/info/alternates`。实现改为卡 gitdir 的 `objects` **symlink** 指向 `<root>/.sdo/vcs-objects/objects`（只读回退 + 写后 `spillObjects` 进共享库）；alternates 文件仍写一份指向共享库的自描述。效果等价于“共享对象库、卡 gitdir 不复制对象”，但机制不是原设计的 alternates 文件。Windows 走 `junction`（不需开发者模式）；创建失败抛 `VcsLinkUnsupportedError` → API 返回 `vcs_link_unsupported`，不静默降级成复制。
+- **工具专用事件（D-122）**：`workcopy.created`、`workcopy.removed`、`snapshot.taken` 只能由工具路径产生——`src/db/workcopy-capability.ts` 的工厂实例私有 `mint(payloadHash)`（P3-10：能力注册表下沉，`write.ts` 与 `workcopy-tool.ts` 都只 import 它，避免循环依赖），`src/db/workcopy.ts` 在构造事件后立刻 mint，`append` 的 `authorizeEvent` 在“其余 ACK 只做会话绑定”分支之前校验能力并把 `payload_hash` 绑定进去；失败 `unauthorized_workcopy_event`。通过后**跳过矩阵动作**（否则工具会话还得拿 `plan@domain`），但 `KIND_ACTIONS` 里 `snapshot.taken` 的 `create@domain` 映射保留——网关短路不等于矩阵行消失。裸 append 三种 kind 各一条负例见 `test/db/workcopy.edge.test.ts`。
+- **生命周期**：`createWorkcopy`（共享库→卡 gitdir→按基线检出→`workcopy.created`）、`commitWorkcopy`（文本归一 LF→卡 gitdir 提交，parent=基线）、`admitWorkcopy`（合并→判主树脏→三路合并→重写主树→`snapshot.taken`+`workcopy.removed`→删副本）、`removeWorkcopy`（status 不干净 ⇒ `dirty_workcopy` 且保留证据）。返回 `timings.total_ms`，> 2 s 时 `warnSlow` 打一行告警（不静默拖死）。
+- **主树重检出（D-120）**：`rewriteMainTree` 是 SDO 自实现的原子树重写（逐文件 blob hash 判脏 → 目标树为权威含删除 → 临时文件+rename → 不碰 `.git/`、`.sdo/`、`.work/`），**不是 `git checkout`**；v2.1 若要 checkout 语义再评估独立 main gitdir。
+- **对象库交叉校验（D-121/D-123）**：`verify()` 对每个 `snapshot.git_oid` 沿 commit→tree→子树→blob **递归**读共享对象库、解 zlib、重算 sha1；缺 ⇒ `vcs_object_missing`，内容/类型/长度不符 ⇒ `vcs_object_hash_mismatch`。有 snapshot 行却定位不到 `<工作区根>/.sdo/vcs-objects/objects`（从 DB 路径向上找）⇒ `vcs_objects_dir_unresolved`；超过 20000 个对象或深度 64 ⇒ `vcs_object_graph_too_large`（均不静默通过）。只读不修，不改 `VERIFIED_TABLES` 语义。边界：只核对 snapshot 引用到的对象图，不遍历孤立对象（GC 归 M4-1+）。
+- **阻塞码**：`merge_conflict`（三路冲突，交人）、`dirty_workcopy`（副本未回收干净）由 D-124 裁定扩进 `BLOCK_CODES`；v2.1 人签补 `docs/03` §4 枚举。`workcopy_busy` 是**瞬时 API 失败**（同卡被锁），只返回码、不落事件、不落 block，调用方自行重试。

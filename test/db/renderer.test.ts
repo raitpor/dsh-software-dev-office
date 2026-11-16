@@ -68,7 +68,7 @@ function eventCount(db: SdoDatabase): number {
 
 test('C1 migration 010/011: renderer_catalog table + renderer.registered kind + built-in renderer (idempotent)', () => {
   withMigratedDb((db) => {
-    assert.equal(currentUserVersion(db), 14, '当前链头（010/011/012 之后 M3-1 追加 013 scope_owns，M3-6 追加 014）');
+    assert.equal(currentUserVersion(db), 15, '当前链头（015 追加 task block_code 两码）');
     assert.deepEqual(columnNames(db, 'renderer_catalog'), ['id', 'module_path', 'views', 'at']);
     const kind = db.prepare("SELECT kind FROM event_kind WHERE kind = 'renderer.registered'").get();
     assert.ok(kind !== undefined, 'migration 010 must seed the ACK kind');

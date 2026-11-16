@@ -106,6 +106,9 @@ test('P1-1 清单完整性：CREATE_SEMANTICS 全部已注册、且 reducer 函�
 });
 
 for (const kind of CREATE_SEMANTICS) {
+  // M4-0：snapshot.taken 只由工作副本工具产生（一次性能力），world 链与 pinned 快照不再包含它；
+  // 其 create-once 语义由 appendTool 的单次能力路径覆盖，这里跳过事件重放用例。
+  if (kind === 'snapshot.taken') continue;
   const index = seeds.findIndex((event) => event.kind === kind);
   const before = fold(undefined, events.slice(0, index + 1));
   const base = events[index]!;

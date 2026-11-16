@@ -28,19 +28,19 @@ test('migrate: migration files are versioned 001..N', () => {
   const migrations = listMigrations();
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
-    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer), M3-2 adds 009 (conflict table + conflicts view + conflict.* kinds), M3-4 adds 010 (renderer_catalog + renderer.registered ACK kind), M3-4 adds 011 (conflicts 进 view_catalog + renderer_catalog 投影守卫), M3-6 adds 014 (view_catalog.columns[].human_only + team.rights)',
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer), M3-2 adds 009 (conflict table + conflicts view + conflict.* kinds), M3-4 adds 010 (renderer_catalog + renderer.registered ACK kind), M3-4 adds 011 (conflicts 进 view_catalog + renderer_catalog 投影守卫), M3-6 adds 014 (view_catalog.columns[].human_only + team.rights), M4-0 adds 015 (task.block_code + merge_conflict/dirty_workcopy, D-124)',
   );
   assert.match(migrations[0]?.file ?? '', /^001_[A-Za-z0-9_-]+\.sql$/);
 });
 
-test('migrate: fresh database applies 001..014 and reports user_version = 14', () => {
+test('migrate: fresh database applies 001..015 and reports user_version = 15', () => {
   withEmptyDb((_file, _close, db) => {
     assert.equal(currentUserVersion(db), 0, 'a fresh database starts at user_version 0');
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-    assert.equal(result.userVersion, 14);
-    assert.equal(currentUserVersion(db), 14);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert.equal(result.userVersion, 15);
+    assert.equal(currentUserVersion(db), 15);
     assert.equal(tableNames(db).length, 43);
   });
 });
@@ -52,9 +52,9 @@ test('migrate: second run is a no-op (idempotent, zero changes)', () => {
 
     const second = runMigrations(db);
     assert.deepEqual(second.applied, [], 'an up-to-date database must apply no migrations');
-    assert.equal(second.userVersion, 14, 'user_version must not move on a no-op run');
+    assert.equal(second.userVersion, 15, 'user_version must not move on a no-op run');
     assert.deepEqual(tableNames(db), before);
-    assert.equal(currentUserVersion(db), 14);
+    assert.equal(currentUserVersion(db), 15);
   });
 });
 
@@ -89,8 +89,8 @@ test('migrate: 004 preserves existing stage_run rows during the rebuild (upgrade
     ).run();
 
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
-    assert.equal(result.userVersion, 14);
+    assert.deepEqual(result.applied, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]);
+    assert.equal(result.userVersion, 15);
     const row = db.prepare("SELECT * FROM stage_run WHERE id = 'SR-old'").get() as Record<string, unknown>;
     assert.equal(row['stage'], 'build');
     assert.equal(row['gate_id'], 'G_build');

@@ -126,8 +126,6 @@ export function worldSeeds(): EventSeed[] {
   add(seed(72, 'decision.signed', 'd-rb', { payload_hash: rollbackHash, frontier: 'f', signer: 'alice' }));
   add(seed(73, 'release.superseded', 'REL-2', { release_id: 'REL-2', decision_id: 'd-rb', frontier: 'f', artifact_sha256: null }));
   add(seed(74, 'config.changed', 'limits.max_payload_bytes', { after: 4096, actor: 'alice' }));
-  add(seed(101, 'snapshot.taken', 'SNAP-0', { git_oid: 'base0' }));
-  add(seed(75, 'snapshot.taken', 'SNAP-1', { git_oid: 'abc123', parent_ids: ['SNAP-0'] }));
   const revokedPayload = {};
   const revokedHash = payloadHashOf(revokedPayload);
   add(seed(76, 'decision.valid', 'd-rv', { decision_kind: 'intent', payload_hash: revokedHash, frontier: 'f', payload: revokedPayload }));

@@ -43,6 +43,8 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
     reason: '阶段判定 + 关 defect 时复用的 baseline 守卫路径',
   },
   { file: 'src/db/renderer.ts', kinds: ['renderer.registered'], reason: '渲染器登记（一次性能力 + admin@domain）' },
+  { file: 'src/db/workcopy.ts', kinds: ['workcopy.created', 'workcopy.removed', 'snapshot.taken', 'task.blocked'], reason: '工作副本生命周期 + 准入 block（工具能力）' },
+  { file: 'src/db/workcopy-tool.ts', kinds: ['snapshot.taken'], reason: '基线引导快照（工具能力）' },
   {
     file: 'src/sign/decision.ts',
     kinds: ['decision.valid', 'decision.signed', 'security.alert', 'auth.failed'],

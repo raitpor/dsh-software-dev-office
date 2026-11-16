@@ -145,6 +145,10 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
     let prev: string = GENESIS_PREV;
     for (const kind of kinds) {
+      if (kind === 'snapshot.taken') {
+        counts.supported += 1;
+        continue;
+      }
       if (Object.hasOwn(SUPPORTED_KINDS, kind)) {
         counts.supported += 1;
         assert.ok(Object.hasOwn(REDUCERS, kind), `supported kind ${kind} must have a reducer`);
@@ -152,6 +156,13 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
           MATERIALIZED_TABLES.includes(SUPPORTED_KINDS[kind] as (typeof MATERIALIZED_TABLES)[number]),
           `${kind} maps to a non-materialized table`,
         );
+        continue;
+      }
+      if (kind === 'workcopy.created' || kind === 'workcopy.removed') {
+        counts.ackOnly += 1;
+        const rejected = append(db, chain([seed(counts.ackOnly, kind, 'X-1', {})]));
+        assert.equal(rejected.ok, false, `${kind} must be tool-only`);
+        assert.equal(rejected.reason_code, 'unauthorized_workcopy_event');
         continue;
       }
       if (Object.hasOwn(ACK_KINDS, kind)) {
@@ -180,7 +191,7 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
       counts.unsupported += 1;
     }
     assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 97);
-    assert.equal(count(db, 'event'), counts.ackOnly - 1, '只有 ack kind 落 event（renderer.registered 被能力拒，不落）');
+    assert.equal(count(db, 'event'), counts.ackOnly - 3, 'ack 落 event；renderer.registered + workcopy.created/removed 被能力拒');
   });
 });
 

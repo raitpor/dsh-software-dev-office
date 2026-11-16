@@ -33,6 +33,7 @@ import { scopeCovers } from '../core/auth/rights.js';
 import { ACK_KINDS } from '../core/fold/ack.js';
 import { KIND_ACTIONS } from '../core/auth/kind-actions.js';
 import { ACTION_OBJECT_CONDITIONS } from './action-objects.js';
+import { consumeWorkcopyAuthority, workcopyPayloadHash, WORKCOPY_TOOL_KINDS } from './workcopy-capability.js';
 
 /** M3-1/C2：写网关的授权会话（只要身份二元组；工具路径的 session 形态各异）。 */
 export interface AppendSession {
@@ -102,6 +103,17 @@ function authorizeEvent(
       'actor_not_from_session',
       `event ${event.id} actor=${event.actor} does not match session actor=${session.actor}`,
     );
+  }
+  // M4-0：workcopy.created/removed 与 snapshot.taken 是工具专用事件（docs/02 §301）。
+  // 先校验一次性能力（绑 payload hash），通过后跳过矩阵动作——工具会话不需要 plan@domain。
+  if ((WORKCOPY_TOOL_KINDS as readonly string[]).includes(event.kind)) {
+    if (!consumeWorkcopyAuthority(event.id, workcopyPayloadHash(parseEventPayload(event)))) {
+      return failure(
+        'unauthorized_workcopy_event',
+        `event ${event.id} kind=${event.kind} must be produced by the workcopy tool path (one-shot, content-bound)`,
+      );
+    }
+    return undefined;
   }
   // P3-3（第 3 轮）：decision.valid 的 producer 是审计归属，不参与授权；
   // 但乱填会让归因失真。硬要求非空；若 producer 已在 actor 表登记，必须是 agent

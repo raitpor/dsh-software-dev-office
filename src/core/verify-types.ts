@@ -33,7 +33,12 @@ export type VerifyProblemCode =
   /** M3-3：独立性复算（dual_human / solo_cooldown）不满足，或签名证据不自洽。 */
   | 'independence_unsatisfied'
   | 'independence_baseline_unbound'
-  | 'independence_unverifiable';
+  | 'independence_unverifiable'
+  /** M4-0/C9：内嵌 VCS 共享对象库与 snapshot.git_oid 交叉校验。 */
+  | 'vcs_object_missing'
+  | 'vcs_object_hash_mismatch'
+  | 'vcs_objects_dir_unresolved'
+  | 'vcs_object_graph_too_large';
 
 export interface VerifyProblem {
   readonly code: VerifyProblemCode;

@@ -24,7 +24,7 @@ function own(db: Db, child: string, parent: string): void {
 
 test('C9：迁移 013 建 scope_owns，链可读且两跳归属放行 plan@domain', () => {
   withMigratedDb((db) => {
-    assert.equal(db.pragma('user_version', { simple: true }), 14);
+    assert.equal(db.pragma('user_version', { simple: true }), 15);
     seed(db);
     // 空表：跨前缀 fail-closed，reason=no_ownership（不猜 module→domain）
     const before = hasRight(db, { id: 'alice', kind: 'human' }, 'create', 'module:src/db');

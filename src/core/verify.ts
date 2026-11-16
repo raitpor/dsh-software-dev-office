@@ -15,6 +15,7 @@ import { compareProjections } from './verify-projection.js';
 import { verifyBaselineReferences } from './baseline/verify-references.js';
 import { verifyAssumptionChain } from './assumption/verify.js';
 import { verifyIndependenceChain } from './independence/verify.js';
+import { verifyVcsObjects } from './verify-vcs.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -143,6 +144,13 @@ export function verify(db: VerifyDatabase): VerifyReport {
     problems.push(...verifyAssumptionChain(events, state));
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: `assumption chain check failed: ${errorMessage(error)}` });
+  }
+
+  // M4-0/C9：内嵌 VCS 共享对象库交叉校验（snapshot.git_oid 必须在库里且内容哈希对得上）。
+  try {
+    problems.push(...verifyVcsObjects(db));
+  } catch (error) {
+    problems.push({ code: 'projection_check_failed', detail: `vcs object check failed: ${errorMessage(error)}` });
   }
 
   // M3-3 C5：独立性复算——同一套 judge 从事件 + baseline 重算，

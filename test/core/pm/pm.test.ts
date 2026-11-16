@@ -45,6 +45,8 @@ const BLOCK_CODES = [
   'awaiting_signature',
   'verify_failed',
   'dirty_main_tree',
+  'merge_conflict',
+  'dirty_workcopy',
   'redteam_deferred',
 ] as const;
 const PM_UNBLOCKABLE = new Set(['lease_expired', 'lease_revoked']);

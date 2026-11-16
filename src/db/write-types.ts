@@ -43,6 +43,8 @@ export type AppendReason =
   | 'conflict_scope_undeclared'
   /** M3-2：conflict.detected 不是 CAS 路径 mint 的能力（P1-3）。 */
   | 'unauthorized_conflict_detected'
+  /** M4-0：workcopy.created/removed 与 snapshot.taken 必须来自工具路径（一次性能力）。 */
+  | 'unauthorized_workcopy_event'
   /** M3-1/C3：会话没有该批事件所需的权（reason 里带 action/scope/actor_kind）。 */
   | 'no_permission'
   /** M3-1/P0：事件 kind 在 `KIND_ACTIONS` 里没有映射（fail-closed，不许调用方自带动作）。 */

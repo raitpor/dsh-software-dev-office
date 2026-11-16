@@ -18,7 +18,9 @@ import { materializeWorkUnit } from './workunit.js';
 export const TASK_KINDS = ['implement', 'design', 'review', 'docs'] as const;
 const TASK_STATUS = ['planned', 'ready', 'in_progress', 'blocked', 'done', 'dropped'] as const;
 const BLOCK_CODES = ['lease_expired', 'lease_revoked', 'upstream_changed', 'clause_unjudged',
-  'awaiting_signature', 'verify_failed', 'dirty_main_tree', 'redteam_deferred'] as const;
+  'awaiting_signature', 'verify_failed', 'dirty_main_tree', 'redteam_deferred',
+  // D-124：docs/07:342/398 明确要求这两种 block，docs/03 §4 枚举漏项（v2.1 人签补）。
+  'merge_conflict', 'dirty_workcopy'] as const;
 const SUBJECT_KINDS = ['task', 'spec'] as const;
 const DROP_KINDS = ['never_done', 'delivered_deferred'] as const;
 
