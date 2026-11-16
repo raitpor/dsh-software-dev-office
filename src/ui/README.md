@@ -106,6 +106,10 @@ M0-4 的 D-016 曾把“列级裁剪”推到 M3。现在 `view_catalog.columns[
 - 有隐藏待审项时：`to_decide` 数字**不出现**，改为 `filtered_by_permission` miss +
   `<section class="apply">`（`data-apply-entry="<scope>"`，`<code>escalate</code>`）。
   这样保持 M0-5 “每个数字都能用 `query(view,args)` 复算”（D-102）。
+- **撤权只给申请入口，不给隐藏计数**（M3-7，S25 口径）：hint 文案是“部分待审项不在你的域内 /
+  当前身份没有待审队列的读取权”，**不出现“N 条”**——被隐藏的条数同样是对无权限者的泄露。
+  两条文案由 `src/ui/pages.ts` 的 `REVIEW_QUEUE_HINTS` 单一源导出；hint **不写具体 scope**
+  （scope 由 apply entry 的 `<code>` 展示），因此也不需要在文案里放任何标识。
 - `apply_entries` 只在总览页可能非空；`/board`、`/plan` 恒为空数组。
 - `/sign`（M2-6）是**另一套身份模型**：它不经过 `pages.ts:requireAccess`，也不需要
   `ConsoleAccess`/`SDO_CONSOLE_ACTOR`，由签字页自己的会话/签名窗口判定；因此“所有 UI 入口

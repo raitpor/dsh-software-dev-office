@@ -22,7 +22,8 @@
     "spike:crypto": "node scripts/spike/signerd-crypto.mjs",
     "spike:unix-socket": "node scripts/spike/unix-socket.mjs",
     "spike:test": "npm run build && node scripts/spike/copy-spike-tests.mjs && node --test lib/spike-test/",
-    "readings:m2": "npm run build && node scripts/m2-readings.mjs"
+    "readings:m2": "npm run build && node scripts/m2-readings.mjs",
+    "readings:m3": "npm run build && node scripts/m3-readings.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",

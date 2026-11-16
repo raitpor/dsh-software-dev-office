@@ -61,6 +61,15 @@ export interface TableModel {
   readonly redacted_columns?: readonly string[];
 }
 
+/**
+ * 撤权页面的两条 hint 文案（M3-7 单一源）：**不写任何数字/隐藏计数**，也不写具体 scope
+ * （scope 由 apply entry 的 `<code>` 展示）。测试直接引用常量锁死“不许插值”。
+ */
+export const REVIEW_QUEUE_HINTS = {
+  hidden: '部分待审项不在你的域内：见下方申请入口',
+  noRead: '当前身份没有待审队列的读取权：见下方申请入口',
+} as const;
+
 export interface PageMiss {
   readonly view: string;
   readonly reason: string;
@@ -263,11 +272,10 @@ export function loadOverviewPage(
 
   if (reviewAccess.filtered) {
     // 撤权后“待审项消失”：不出数字（M0-5 口径：有来源才出数字），只给申请入口。
+    // M3-7：连“有 N 条被隐藏”也不出——N 是隐藏计数，对已无权限的人是泄露（S25）。
     // P2-1：判断依据是“访问被过滤”而不是“hidden 非空”——空队列 + deny-all 原本会出假 `to_decide=0`。
     const hint =
-      reviewAccess.hidden.length > 0
-        ? `${reviewAccess.hidden.length} 条待审项不在你的域内：见下方申请入口`
-        : '当前身份没有待审队列的读取权：见下方申请入口';
+      reviewAccess.hidden.length > 0 ? REVIEW_QUEUE_HINTS.hidden : REVIEW_QUEUE_HINTS.noRead;
     misses.push({ view: 'review_queue', reason: 'filtered_by_permission', hint });
   } else if (reviewMiss !== undefined) {
     misses.push(reviewMiss);
