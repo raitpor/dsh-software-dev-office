@@ -17,6 +17,7 @@ import { verifyAssumptionChain } from './assumption/verify.js';
 import { verifyIndependenceChain } from './independence/verify.js';
 import { verifyVcsObjects } from './verify-vcs.js';
 import { verifyLocks } from './verify-lock.js';
+import { verifyLeases } from './verify-lease.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -159,6 +160,13 @@ export function verify(db: VerifyDatabase): VerifyReport {
     problems.push(...verifyLocks(db));
   } catch (error) {
     problems.push({ code: 'projection_check_failed', detail: `lock check failed: ${errorMessage(error)}` });
+  }
+
+  // M4-2/C7：租约完整性（busy 卡无活租约 / actor 不匹配 / 同卡多条 / 预占期被他人认领）。
+  try {
+    problems.push(...verifyLeases(db));
+  } catch (error) {
+    problems.push({ code: 'projection_check_failed', detail: `lease check failed: ${errorMessage(error)}` });
   }
 
   // M3-3 C5：独立性复算——同一套 judge 从事件 + baseline 重算，

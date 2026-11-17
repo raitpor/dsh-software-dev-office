@@ -41,7 +41,11 @@ export type VerifyProblemCode =
   | 'vcs_object_graph_too_large'
   /** M4-1/C5：卡在飞却没有活锁 / 活锁归属的卡已不在飞且超过 TTL+宽限。 */
   | 'lock_missing'
-  | 'lock_leaked';
+  | 'lock_leaked'
+  /** M4-2/C7：租约完整性（busy 卡无活租约 / actor 不匹配 / 同卡多条活租约 / 预占期被他人认领）。 */
+  | 'lease_missing'
+  | 'lease_actor_mismatch'
+  | 'lease_multiple_active';
 
 export interface VerifyProblem {
   readonly code: VerifyProblemCode;

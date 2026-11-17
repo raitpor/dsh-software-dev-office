@@ -16,6 +16,16 @@ export type AppendReason =
   | 'unauthorized_gate_judgement'
   /** M3-4/P1-2：`renderer.registered` 必须由 `registerRenderer()` 的一一次性能力产生。 */
   | 'unauthorized_renderer_registration'
+  /** M4-2/C1：`lease.issued` 必须由 dispatch 工具路径的一次性能力产生。 */
+  | 'unauthorized_lease_issue'
+  /** M4-2/C2/C6：`task.claimed` 必须持未过期且 actor/card 匹配的活租约。 */
+  | 'no_lease'
+  /** M4-2/C5：租约已过期，原 actor 不能再写。 */
+  | 'lease_expired'
+  /** M4-2 第 2 轮 P1：撤租约时租约不存在或非 active。 */
+  | 'lease_not_active'
+  /** M4-2/C3：预占期内认领者必须等于 reserved_by。 */
+  | 'not_reserved_actor'
   /** `BEGIN IMMEDIATE` 撞上别的写者/锁（SQLITE_BUSY），不是投影错误。 */
   | 'database_busy'
   /** kind 已登记，但其投影表不在 M1-0 的物化范围内（写网关收窄，D-031）。 */

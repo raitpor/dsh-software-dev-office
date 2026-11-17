@@ -47,6 +47,11 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
   { file: 'src/db/workcopy.ts', kinds: ['workcopy.created', 'workcopy.removed', 'snapshot.taken', 'task.blocked'], reason: '工作副本生命周期 + 准入 block（工具能力）' },
   { file: 'src/db/workcopy-tool.ts', kinds: ['snapshot.taken'], reason: '基线引导快照（工具能力）' },
   {
+    file: 'src/db/lease.ts',
+    kinds: ['lease.issued', 'lease.expired', 'lease.revoked', 'task.blocked', 'task.unblocked'],
+    reason: 'M4-2 租约：派发/过期/收回 + 收回后 blocked→ready（工具能力/派发权）',
+  },
+  {
     file: 'src/sign/decision.ts',
     kinds: ['decision.valid', 'decision.signed', 'security.alert', 'auth.failed'],
     reason: '签字流程：决策事件 + 两条审计 ACK',

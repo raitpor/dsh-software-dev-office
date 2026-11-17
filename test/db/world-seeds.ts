@@ -69,21 +69,20 @@ export function worldSeeds(): EventSeed[] {
   add(seed(28, 'goal.reparented', 'GOAL-3', { parent_id: 'GOAL-2', decision_id: 'd-plan2' }));
   add(seed(29, 'goal.integrated', 'INTG-1', { parent_goal_id: 'GOAL-1', child_goal_id: 'GOAL-2', state: 'connected', evidence_id: 'EVID-1' }));
   add(seed(30, 'task.created', 'TASK-1', { seq: 1, title: 't1', kind: 'implement' }));
-  add(seed(31, 'task.claimed', 'TASK-1', {}));
   add(seed(32, 'task.assigned', 'TASK-1', { assignee: 'bob', reserved_until: '2026-12-01T00:00:00Z' }));
   add(seed(33, 'task.unassigned', 'TASK-1', {}));
   add(seed(34, 'task.blocked', 'TASK-1', { block_code: 'upstream_changed', reason: 'x' }));
   add(seed(35, 'task.unblocked', 'TASK-1', {}));
-  add(seed(36, 'task.claimed', 'TASK-1', {}));
-  add(seed(37, 'task.done', 'TASK-1', { evidence_id: 'EVID-1', criterion_id: 'CRIT-1' }));
-  add(seed(38, 'task.reopened', 'TASK-1', { reason: 'rework' }));
   add(seed(39, 'task.dependencies_changed', 'TASK-1', { blocked_by: ['TASK-2'] }));
   add(seed(40, 'task.created', 'TASK-2', { seq: 2, title: 't2', kind: 'implement', status: 'ready' }));
   add(seed(41, 'task.dropped', 'TASK-2', { drop_kind: 'never_done', reason: 'cancelled' }));
-  add(seed(42, 'task.created', 'TASK-3', { seq: 3, title: 't3', kind: 'implement' }));
-  add(seed(43, 'task.claimed', 'TASK-3', {}));
+  add(seed(42, 'task.created', 'TASK-3', { seq: 3, title: 't3', kind: 'implement', status: 'in_progress' }));
   add(seed(44, 'task.done', 'TASK-3', {}));
   add(seed(45, 'task.dropped', 'TASK-3', { drop_kind: 'delivered_deferred', reason: 'later', credential: 'EVID-1' }));
+  // M4-2（裁定 A）：claim 只由真派发链覆盖；这里用 created(status=in_progress) 保留 done/reopened/work_unit 的真实例。
+  add(seed(90, 'task.created', 'TASK-4', { seq: 4, title: 't4', kind: 'implement', status: 'in_progress' }));
+  add(seed(91, 'task.done', 'TASK-4', { evidence_id: 'EVID-1', criterion_id: 'CRIT-1' }));
+  add(seed(92, 'task.reopened', 'TASK-4', { reason: 'rework' }));
   add(seed(46, 'report.recorded', 'REP-1', { task_id: 'TASK-1', state: 'progress', note: 'ok' }));
   add(seed(47, 'attention.raised', 'ATT-1', { task_id: 'TASK-1', asked_of: 'bob', question: 'which?', options: ['a', 'b'], expires_at: '2026-12-01T00:00:00Z' }));
   add(seed(48, 'attention.answered', 'ATT-1', { answer: 'a' }));
@@ -135,9 +134,9 @@ export function worldSeeds(): EventSeed[] {
   add(seed(80, 'decision.rejected', 'd-rj', { reason: 'no' }));
   // M2-3/P1：world 链要覆盖撤销级联（assumption_set 被撤 ⇒ 处置回 open、spec 行带 invalidated_* fold-only 列）。
   add(seed(81, 'decision.revoked', 'd-as', { reason: 'batch withdrawn' }));
-  // M4-1：锁生命周期（acquire → 撤租约标记 → release；行保留为 released）。
+  // M4-1：锁生命周期。lease.* 是工具专用事件（网关一次性能力），world 链不伪造；
+  // 租约语义由 test/db/lease.test.ts 走真 dispatch 路径覆盖（TOOL_ONLY_KINDS 同步）。
   add(seed(82, 'lock.acquired', 'src/core', { card_id: 'CARD-1', acquired_at: '2026-11-15T09:00:00.000Z', expires_at: '2026-11-17T00:00:00Z' }));
-  add(seed(83, 'lease.revoked', 'CARD-1', { card_id: 'CARD-1' }));
-  add(seed(84, 'lock.released', 'src/core', { released_at: '2026-11-15T09:00:00.000Z', released_by: 'released' }));
+  add(seed(83, 'lock.released', 'src/core', { released_at: '2026-11-15T09:00:00.000Z', released_by: 'released' }));
   return s;
 }

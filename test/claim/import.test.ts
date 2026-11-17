@@ -8,9 +8,10 @@ import { importClaims } from '../../src/claim/gateway.js';
 import { CLAIM_COLUMNS, type ClaimRow } from '../../src/claim/types.js';
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { withWriteDb } from '../db/append-helpers.js';
-import { seedRenderer } from './helpers.js';
+import { dispatchLeasesForClaims, seedRenderer } from './helpers.js';
 
 const parsed = readExportFile('test/fixtures/v1-export.json');
+
 
 interface Diff {
   path: string;
@@ -31,6 +32,7 @@ function compare(expected: ClaimRow, stored: ClaimRow): Diff[] {
 test('C1 the 20 v1 claims rebuild to 20/20 identical rows', () => {
   withWriteDb((db) => {
     seedRenderer(db);
+    dispatchLeasesForClaims(db, parsed.claims);
     const result = importClaims(db, parsed.claims);
     assert.equal(result.ok, true, result.message ?? "");
     assert.deepEqual(
@@ -62,6 +64,7 @@ test('C1 the 20 v1 claims rebuild to 20/20 identical rows', () => {
 test('C2 rebuild events go through append(): real chain, no imp: in prev, verify green', () => {
   withWriteDb((db) => {
     seedRenderer(db);
+    dispatchLeasesForClaims(db, parsed.claims);
     const result = importClaims(db, parsed.claims);
     assert.equal(result.ok, true, result.message ?? "");
     const events = db
@@ -69,7 +72,8 @@ test('C2 rebuild events go through append(): real chain, no imp: in prev, verify
       .all() as Array<{ id: string; kind: string; prev: string }>;
     const taskEvents = events.filter((event) => event.kind === 'task.created' || event.kind === 'task.claimed');
     // 1 条 renderer.registered 播种事件 + 每条 claim 的 created/claimed 两条。
-    assert.equal(events.length, parsed.claims.length * 2 + 1);
+    assert.equal(events.length, parsed.claims.length * 3 + 1);
+    // 1 条 renderer + 每 claim 的 lease.issued/created/claimed。
     assert.equal(taskEvents.length, parsed.claims.length * 2);
     assert.equal(events.every((event) => !event.prev.startsWith('imp:')), true);
     assert.equal(taskEvents.every((event) => event.kind === 'task.created' || event.kind === 'task.claimed'), true);
@@ -84,6 +88,7 @@ test('C2 rebuild events go through append(): real chain, no imp: in prev, verify
 test('C6 rerun is a no-op; same id with different content is claim_conflict', () => {
   withWriteDb((db) => {
     seedRenderer(db);
+    dispatchLeasesForClaims(db, parsed.claims);
     const first = importClaims(db, parsed.claims);
     assert.equal(first.ok, true, first.message ?? "");
     const second = importClaims(db, parsed.claims);

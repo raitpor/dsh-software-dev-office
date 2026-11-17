@@ -132,22 +132,9 @@ function lockReleased(state: FoldWorking, event: Event): void {
  * 本 reducer 把该 card 的活锁标 `released_by='lease_revoked'`，**不**改成 released
  * ——语义是“这个持有者失格，但同一份证据/前缀仍被占着直到重新认领或显式释放”。
  */
-function leaseRevoked(state: FoldWorking, event: Event): void {
-  const payload = payloadOf(event);
-  const cardId = optString(event, payload, 'card_id') ?? event.subject;
-  if (cardId.length === 0) {
-    return fail(event, 'lease.revoked requires payload.card_id or a non-empty subject');
-  }
-  for (const [prefix, row] of Object.entries(state.tables.lock)) {
-    if (row['card_id'] !== cardId || row['status'] !== 'active') {
-      continue;
-    }
-    patchRow(state, 'lock', prefix, event, { released_by: 'lease_revoked' });
-  }
-}
+
 
 export const LOCK_REDUCERS = {
   'lock.acquired': lockAcquired,
   'lock.released': lockReleased,
-  'lease.revoked': leaseRevoked,
 } as const;

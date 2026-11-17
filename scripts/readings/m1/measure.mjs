@@ -22,6 +22,7 @@ import { registerCriterion } from '../../../lib/src/core/criteria/register.js';
 import { GENESIS_PREV, computeEventHash, readEvents } from '../../../lib/src/core/verify-events.js';
 import { chainHead } from '../../../lib/src/db/write.js';
 import { appendAs as append } from '../../../lib/test/db/append-auth.js';
+import { dispatchLease, revokeLease } from '../../../lib/src/db/lease.js';
 import { importClaims, expectedClaimRow } from '../../../lib/src/claim/gateway.js';
 import { readExportFile } from '../../../lib/src/importer/parse.js';
 import { collectInvalidatedWorkUnits, previewChange } from '../../../lib/src/preview/index.js';
@@ -197,9 +198,31 @@ function safeJson(text) {
 // ---------------------------------------------------------------------------
 // ① claim 重建 20/20（6 列逐字段 + as_of_frontier 只校验事件 id 存在）
 // ---------------------------------------------------------------------------
+
+/** M4-2/C2：v1 回执重放前，按 claim 的 (task,actor) 真派发租约。 */
+function dispatchClaimLeases(db, claims) {
+  for (const claim of claims) {
+    const active = db
+      .prepare("SELECT id, actor FROM lease WHERE card_id = ? AND status = 'active' ORDER BY issued_at DESC LIMIT 1")
+      .get(claim.task_id);
+    if (active !== undefined && active.actor === claim.actor) continue;
+    if (active !== undefined) {
+      const revoked = revokeLease(db, { actor: 'fixture-root', actor_kind: 'service' }, active.id, claim.at);
+      if (!revoked.ok) throw new Error(`lease revoke failed: ${String(revoked.reason_code)}`);
+    }
+    const dispatched = dispatchLease(
+      db,
+      { actor: 'fixture-root', actor_kind: 'service' },
+      { card: claim.task_id, actor: claim.actor, scope: 'domain:core', at: claim.at, ttl_s: 315_360_000 },
+    );
+    if (!dispatched.ok) throw new Error(`lease dispatch failed: ${String(dispatched.reason_code)}`);
+  }
+}
+
 export function measureR1() {
   return withTempDb(({ db }) => {
     const parsed = readExportFile(join(ROOT, 'test/fixtures/v1-export.json'));
+    dispatchClaimLeases(db, parsed.claims);
     const imported = importClaims(db, parsed.claims);
     const rows = parsed.claims.map((claim) => {
       const claimId = `claim:${claim.claim_no}`;
@@ -545,9 +568,18 @@ function seedUnitTasks(db, specs) {
         title: `任务 ${n}`,
         kind: 'implement',
       }, '2026-11-13T08:57:00.000Z'),
-      seed(`m1g-claim-${n}`, 'task.claimed', `T${n}`, { owner: 'alice' }, '2026-11-13T08:58:00.000Z'),
       criterionSeed(`CRIT-${n}`, specId, '2026-11-13T08:58:30.000Z'),
       evidenceSeed(`EV-${n}`, `CRIT-${n}`, '2026-11-13T08:59:00.000Z'),
+    ]);
+    // M4-2/C2：认领必须持租约——读数走真派发路径（不伪造 lease 行）。
+    const dispatched = dispatchLease(
+      db,
+      { actor: 'fixture-root', actor_kind: 'service' },
+      { card: `T${n}`, actor: 'm1-g-fixture', scope: 'domain:core', at: '2026-11-13T08:58:00.000Z', ttl_s: 315_360_000 },
+    );
+    if (!dispatched.ok) throw new Error(`lease dispatch failed: ${String(dispatched.reason_code)}`);
+    appendSeeds(db, [
+      seed(`m1g-claim-${n}`, 'task.claimed', `T${n}`, { owner: 'alice' }, '2026-11-13T08:58:00.000Z'),
       seed(`m1g-done-${n}`, 'task.done', `T${n}`, {
         criterion_id: `CRIT-${n}`,
         evidence_id: `EV-${n}`,

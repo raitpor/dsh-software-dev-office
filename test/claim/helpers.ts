@@ -1,4 +1,7 @@
 import { appendAs as append } from '../db/append-auth.js';
+import assert from 'node:assert/strict';
+import { dispatchLease, revokeLease } from '../../src/db/lease.js';
+import type { ExportClaim } from '../../src/importer/parse.js';
 /**
  * M3-4 夹具：把渲染器登记到 `renderer_catalog`。
  *
@@ -42,4 +45,25 @@ export function seedRenderer(db: SdoDatabase, def: SeedRendererDef = GATE_RENDER
     throw new Error(`seedRenderer append failed: ${result.reason_code} ${result.message ?? ''}`);
   }
   return event!.id;
+}
+
+
+/** M4-2/C2：claim 必须持租约；导入前按夹具 claim 的 (task, actor) 预派发。 */
+export function dispatchLeasesForClaims(db: SdoDatabase, claims: readonly ExportClaim[]): void {
+  for (const claim of claims) {
+    const active = db
+      .prepare("SELECT id, actor FROM lease WHERE card_id = ? AND status = 'active' ORDER BY issued_at DESC LIMIT 1")
+      .get(claim.task_id) as { id: string; actor: string } | undefined;
+    if (active !== undefined && active.actor === claim.actor) continue;
+    if (active !== undefined) {
+      const revoked = revokeLease(db, { actor: 'fixture-root', actor_kind: 'service' }, active.id, claim.at);
+      assert.equal(revoked.ok, true, JSON.stringify(revoked));
+    }
+    const dispatched = dispatchLease(
+      db,
+      { actor: 'fixture-root', actor_kind: 'service' },
+      { card: claim.task_id, actor: claim.actor, scope: 'domain:core', at: claim.at, ttl_s: 315_360_000 },
+    );
+    assert.equal(dispatched.ok, true, JSON.stringify(dispatched));
+  }
 }

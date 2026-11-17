@@ -30,7 +30,7 @@ export interface KindAction {
   readonly scopeOf: (payload: Payload, ctx: KindContext) => string;
 }
 
-type ScopeKind = 'domain' | 'module' | 'release' | 'config' | 'task' | 'decision' | 'lock';
+type ScopeKind = 'domain' | 'module' | 'release' | 'config' | 'task' | 'decision' | 'lock' | 'lease' | 'unit';
 
 interface Spec {
   readonly action: string;
@@ -44,13 +44,14 @@ const text = (value: unknown): string | undefined =>
 function prefixOf(kind: ScopeKind): string {
   if (kind === 'domain' || kind === 'config') return 'domain:';
   if (kind === 'release') return 'release:';
+  if (kind === 'unit') return '';
   return 'module:';
 }
 
 function basicScope(payload: Payload, kind: ScopeKind): string | undefined {
   const explicit = text(payload['scope']);
   // 显式 scope 与动作所需前缀不符时忽略（否则 cross-prefix 会被误判成 no_ownership）。
-  if (explicit !== undefined && explicit.startsWith(prefixOf(kind))) return explicit;
+  if (explicit !== undefined && (kind === 'unit' ? /^(domain|module|release):/.test(explicit) : explicit.startsWith(prefixOf(kind)))) return explicit;
   if (kind === 'task') {
     const paths = payload['scope_paths'];
     if (Array.isArray(paths)) {
@@ -62,6 +63,13 @@ function basicScope(payload: Payload, kind: ScopeKind): string | undefined {
 }
 
 /** 决策事件的作用域：decision 行在 fold 里；未落地时按决策类别推（载荷 decision_kind）。 */
+/** 撤租约的 scope 唯一来源是租约行（M4-2 第 2 轮 P1）；取不到时由 write.ts 拒。 */
+function leaseScope(payload: Payload, ctx: KindContext): string {
+  const leaseId = text(payload['lease_id']);
+  const row = leaseId === undefined ? undefined : ctx.state?.tables.lease[leaseId];
+  return row === undefined ? '' : String(row['scope'] ?? '');
+}
+
 function decisionScope(payload: Payload, ctx: KindContext): string {
   const explicit = text(payload['scope']);
   if (explicit !== undefined) return explicit;
@@ -88,7 +96,7 @@ function lockScope(payload: Payload, ctx: KindContext): string {
   return /^[a-z0-9][a-z0-9._-]*$/.test(first) ? `module:${first}` : 'module:core';
 }
 
-const SCOPE_FALLBACK: Readonly<Record<Exclude<ScopeKind, 'task' | 'decision' | 'lock'>, string>> = {
+const SCOPE_FALLBACK: Readonly<Record<Exclude<ScopeKind, 'task' | 'decision' | 'lock' | 'lease' | 'unit'>, string>> = {
   domain: 'domain:core',
   module: 'module:core',
   release: 'release:current',
@@ -100,7 +108,9 @@ function scopeFor(payload: Payload, kind: ScopeKind, ctx: KindContext): string {
   if (explicit !== undefined) return explicit;
   if (kind === 'lock') return lockScope(payload, ctx);
   if (kind === 'decision') return decisionScope(payload, ctx);
+  if (kind === 'lease') return leaseScope(payload, ctx);
   if (kind === 'task') return SCOPE_FALLBACK.module;
+  if (kind === 'unit') return 'domain:core';
   return SCOPE_FALLBACK[kind];
 }
 
@@ -145,7 +155,9 @@ const SPECS: Readonly<Record<string, Spec>> = {
   'intent.signed': { action: 'amend_intent', scope: 'domain' },
   'lock.acquired': { action: 'claim', scope: 'lock' },
   'lock.released': { action: 'claim', scope: 'lock' },
-  'lease.revoked': { action: 'dispatch', scope: 'domain' },
+  'lease.revoked': { action: 'assign', scope: 'lease' },
+  'lease.issued': { action: 'dispatch', scope: 'unit' },
+  'lease.expired': { action: 'dispatch', scope: 'unit' },
   'redteam.disposed': { action: 'review', scope: 'module' },
   'redteam.recorded': { action: 'review', scope: 'module' },
   'release.delivered': { action: 'freeze', scope: 'release' },

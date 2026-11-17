@@ -42,6 +42,7 @@ export const TABLE_NAMES = [
   'goal_node',
   'integration',
   'work_unit',
+  'lease',
   'stage_run',
   'attention',
   'report',

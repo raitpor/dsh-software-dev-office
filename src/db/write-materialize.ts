@@ -64,7 +64,7 @@ const PREFIX_TABLE: Readonly<Record<string, TableName>> = {
   design: 'design_lock',
   restatement: 'restatement',
   lock: 'lock',
-  lease: 'lock',
+  lease: 'lease',
 };
 
 const KIND_TABLE_OVERRIDES: Readonly<Record<string, TableName>> = {

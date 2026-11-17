@@ -23,7 +23,7 @@ import { REDUCERS } from '../../src/core/fold/registry.js';
 import { GENESIS_PREV, readEvents } from '../../src/core/verify-events.js';
 import { verify } from '../../src/core/verify.js';
 import type { VerifyProblem } from '../../src/core/verify-types.js';
-import { PASSPHRASE, chain, currentState, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
+import { PASSPHRASE, chain, claimWithLease, currentState, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 test('D-053: ACK kind 在 fold 里显式忽略——投影表逐字节不变，但 seen/eventIds 记账', () => {
@@ -73,6 +73,7 @@ test('P1/D-019: decision.valid alone writes no decision row; signed batch materi
 test('P2-10: ignored fold columns equal FOLD_ONLY_COLUMNS (explicit whitelist, all tables)', () => {
   withWriteDb((db) => {
     assert.equal(append(db, chain(worldSeeds())).ok, true);
+    assert.equal(claimWithLease(db, { card: 'TASK-1', actor: 'alice', at: '2026-11-13T00:00:00Z' }).claim.ok, true);
     const problems: VerifyProblem[] = [];
     const state = fold(undefined, readEvents(db, problems));
     for (const table of MATERIALIZED_TABLES) {

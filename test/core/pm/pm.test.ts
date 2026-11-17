@@ -5,6 +5,10 @@ import { test } from 'node:test';
 import { canonicalJson, sha256Hex } from '../../../src/core/fold/canonical.js';
 import { readEvents } from '../../../src/core/verify-events.js';
 import { verify } from '../../../src/core/verify.js';
+import { dispatchLease, revokeLease } from '../../../src/db/lease.js';
+import type { SdoDatabase } from '../../../src/db/driver.js';
+import { chainHead } from '../../../src/db/write.js';
+import { chain } from '../../db/append-helpers.js';
 
 import {
   PM_REASON_CODES,
@@ -24,6 +28,34 @@ import {
   writableAction,
 } from '../../../src/core/pm/index.js';
 import type { PmContext } from '../../../src/core/pm/index.js';
+/** M4-2/C2：派发=认领前必须先有租约；测试侧按 (card, assignee) 预派发。 */
+function assignWithLease(
+  db: SdoDatabase,
+  ctx: PmContext,
+  input: Parameters<typeof assignCard>[2],
+) {
+  const at = '2026-01-01T00:00:00Z';
+  const active = db
+    .prepare("SELECT id, actor FROM lease WHERE card_id = ? AND status = 'active' ORDER BY issued_at DESC LIMIT 1")
+    .get(input.taskId) as { id: string; actor: string } | undefined;
+  const session = { actor: 'lead', actor_kind: 'human' as const };
+  if (active !== undefined && active.actor !== ctx.actor) {
+    const revoked = revokeLease(db, session, active.id, at);
+    assert.equal(revoked.ok, true, JSON.stringify(revoked));
+  }
+  if (active === undefined || active.actor !== ctx.actor) {
+    const dispatched = dispatchLease(db, session, {
+      card: input.taskId,
+      actor: ctx.actor,
+      scope: 'module:core',
+      at,
+      ttl_s: 315_360_000,
+    });
+    assert.equal(dispatched.ok, true, JSON.stringify(dispatched));
+  }
+  return assignCard(db, ctx, input);
+}
+
 import { viewsForRight } from '../../../src/views/catalog.js';
 import {
   appendSeeds,
@@ -97,14 +129,14 @@ test('C2 越权派发 ⇒ no_permission（卡状态不变）；同泳道 ⇒ 通
     const created = createCard(db, PM, card({ seq: 2, scopePaths: ['src/core/**'] }));
     assert.equal(created.ok, true);
     if (!created.ok) return;
-    const denied = assignCard(db, PM, { taskId: created.task_id, assignee: 'impl-surface' });
+    const denied = assignWithLease(db, PM, { taskId: created.task_id, assignee: 'impl-surface' });
     assert.equal(denied.ok, false);
     if (denied.ok) return;
     assert.equal(denied.reason_code, 'no_permission');
     assert.equal(taskRow(db, created.task_id)['status'], 'planned');
     assert.equal(taskRow(db, created.task_id)['owner'], null);
 
-    const ok = assignCard(db, PM, { taskId: created.task_id, assignee: 'impl-core' });
+    const ok = assignWithLease(db, PM, { taskId: created.task_id, assignee: 'impl-core' });
     assert.equal(ok.ok, true);
     assert.equal(taskRow(db, created.task_id)['status'], 'in_progress');
     assert.equal(taskRow(db, created.task_id)['owner'], 'impl-core');
@@ -117,11 +149,11 @@ test('C2 跨泳道已预占冲突 ⇒ 事先 scope_mismatch', () => {
     const a = createCard(db, PM, card({ seq: 3, scopePaths: ['src/core/**'] }));
     assert.equal(a.ok, true);
     if (!a.ok) return;
-    assert.equal(assignCard(db, PM, { taskId: a.task_id, assignee: 'impl-core' }).ok, true);
+    assert.equal(assignWithLease(db, PM, { taskId: a.task_id, assignee: 'impl-core' }).ok, true);
     const b = createCard(db, PM, card({ seq: 4, title: '冲突卡', scopePaths: ['src/core/**'] }));
     assert.equal(b.ok, true);
     if (!b.ok) return;
-    const blocked = assignCard(db, PM, { taskId: b.task_id, assignee: 'lead' });
+    const blocked = assignWithLease(db, PM, { taskId: b.task_id, assignee: 'lead' });
     assert.equal(blocked.ok, false);
     if (blocked.ok) return;
     assert.equal(blocked.reason_code, 'scope_mismatch');
@@ -135,8 +167,8 @@ test('C2 只读评审卡可派给 reviewer（写域豁免），且未经授权�
     const review = createCard(db, PM, card({ seq: 5, title: '评审卡', kind: 'review', scopePaths: ['src/core/**'] }));
     assert.equal(review.ok, true);
     if (!review.ok) return;
-    assert.equal(assignCard(db, PM, { taskId: review.task_id, assignee: 'reviewer' }).ok, true);
-    const unknown = assignCard(db, PM, { taskId: review.task_id, assignee: 'nobody' });
+    assert.equal(assignWithLease(db, PM, { taskId: review.task_id, assignee: 'reviewer' }).ok, true);
+    const unknown = assignWithLease(db, PM, { taskId: review.task_id, assignee: 'nobody' });
     assert.equal(unknown.ok, false);
     if (!unknown.ok) assert.equal(unknown.reason_code, 'no_such_seat');
   });
@@ -331,7 +363,7 @@ test('C5 七个 reason_code 都有合法动作；wait 不写事件、unclaimed �
     const row = before.rows.find((item) => item.subject_id === 'TASK-Q');
     assert.notEqual(row, undefined);
     assert.equal(row?.reason_code, 'unclaimed');
-    const assigned = assignCard(db, PM, { taskId: 'TASK-Q', assignee: 'impl-core' });
+    const assigned = assignWithLease(db, PM, { taskId: 'TASK-Q', assignee: 'impl-core' });
     assert.equal(assigned.ok, true);
     const after = readPmQueue(db, 'lead', pmSession('lead'));
     assert.equal(after.ok, true);
@@ -387,7 +419,7 @@ test('C7 动作留痕 actor=PM；verify 绿；重放后 pm_queue 逐行相等', 
     const created = createCard(first.db, PM, card({ seq: 60, title: '重放卡' }));
     assert.equal(created.ok, true);
     if (!created.ok) return;
-    assert.equal(assignCard(first.db, PM, { taskId: created.task_id, assignee: 'impl-core' }).ok, true);
+    assert.equal(assignWithLease(first.db, PM, { taskId: created.task_id, assignee: 'impl-core' }).ok, true);
     appendSeeds(first.db, [
       ev('task.blocked', created.task_id, { block_code: 'lease_expired' }, { actor: 'lead', at: '2026-11-14T01:00:00Z' }),
     ]);
@@ -406,7 +438,17 @@ test('C7 动作留痕 actor=PM；verify 绿；重放后 pm_queue 逐行相等', 
 
     const second = openTempDb();
     try {
-      const replay = append(second.db, events);
+      // M4-2：lease.* 是工具能力事件，不能从历史日志裸重放；重放前用真派发补租约，
+      // 并跳过工具事件本身（它们不投影到 pm_queue）。重放语义=fold/队列一致，不是字节一致。
+      const replayed = events.filter((event) => !event.kind.startsWith('lease.'));
+      const dispatched = dispatchLease(
+        second.db,
+        { actor: 'lead', actor_kind: 'human' },
+        { card: created.task_id, actor: 'lead', scope: 'module:core', at: '2026-01-01T00:00:00Z', ttl_s: 315_360_000 },
+      );
+      assert.equal(dispatched.ok, true, JSON.stringify(dispatched));
+      const seeds = replayed.map(({ prev: _prev, hash: _hash, ...seed }) => seed);
+      const replay = append(second.db, chain(seeds, chainHead(second.db)));
       assert.equal(replay.ok, true, JSON.stringify(replay));
       const queueA = readPmQueue(first.db, 'lead', pmSession('lead'));
       const queueB = readPmQueue(second.db, 'lead', pmSession('lead'));
@@ -624,7 +666,7 @@ test('C5(b) sampled_review：建评审卡并派给 reviewer（产物 + 事件 + 
     const review = createCard(db, PM, card({ seq: 20, kind: 'review', title: '评审 TASK-2' }));
     assert.equal(review.ok, true);
     if (!review.ok) return;
-    const assigned = assignCard(db, PM, { taskId: review.task_id, assignee: 'reviewer' });
+    const assigned = assignWithLease(db, PM, { taskId: review.task_id, assignee: 'reviewer' });
     assert.equal(assigned.ok, true);
     const row = fullTaskRow(db, review.task_id);
     assert.equal(row?.['kind'], 'review');

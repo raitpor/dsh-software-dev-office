@@ -36,6 +36,13 @@ import { ACTION_OBJECT_CONDITIONS } from './action-objects.js';
 import { consumeWorkcopyAuthority, workcopyPayloadHash, WORKCOPY_TOOL_KINDS } from './workcopy-capability.js';
 import { lockToolPayloadHash, LOCK_TOOL_KINDS, LOCK_TOOL_MARKER } from './lock-capability.js';
 import { consumeLockToolAuthority } from './lock.js';
+import {
+  LEASE_TOOL_KINDS,
+  LEASE_TOOL_MARKER,
+  leasePayloadHash,
+} from './lease-capability.js';
+import { consumeLeaseAuthority } from './lease.js';
+import { claimGuard } from '../core/lease/claim-guard.js';
 
 /** M3-1/C2：写网关的授权会话（只要身份二元组；工具路径的 session 形态各异）。 */
 export interface AppendSession {
@@ -141,6 +148,33 @@ function authorizeEvent(
     }
     return undefined;
   }
+  // M4-2/C1+C5：租约工具事件（lease.issued/expired）+ 收回/过期的伴随 task.blocked/unblocked
+  // 只认 `src/db/lease.ts` 私有实例铸造的一次性能力（绑 payload_hash），通过后跳过矩阵动作。
+  const leasePayload = parseEventPayload(event);
+  // lease.issued/expired 没有业务写入口：任何一条都必须带工具标记且能消费能力，
+  // 否则即使有 assign 权也不许直接 append（C1：dispatch 是唯一入口）。
+  const isLeaseToolEvent =
+    (LEASE_TOOL_KINDS as readonly string[]).includes(event.kind) &&
+    leasePayload['initiator'] === LEASE_TOOL_MARKER;
+  const isLeaseKind = (LEASE_TOOL_KINDS as readonly string[]).includes(event.kind);
+  const isLeaseCompanion =
+    (event.kind === 'task.blocked' || event.kind === 'task.unblocked') &&
+    leasePayload['lease_tool'] === LEASE_TOOL_MARKER;
+  if (isLeaseKind || isLeaseCompanion) {
+    if (!isLeaseToolEvent && !isLeaseCompanion) {
+      return failure(
+        'unauthorized_lease_issue',
+        `event ${event.id} kind=${event.kind} must be produced by the lease tool path (one-shot, payload-bound)`,
+      );
+    }
+    if (!consumeLeaseAuthority(event.id, leasePayloadHash(leasePayload))) {
+      return failure(
+        'unauthorized_lease_issue',
+        `event ${event.id} kind=${event.kind} must be produced by the lease tool path (one-shot, payload-bound)`,
+      );
+    }
+    return undefined;
+  }
   // M4-0：workcopy.created/removed 与 snapshot.taken 是工具专用事件（docs/02 §301）。
   // 先校验一次性能力（绑 payload hash），通过后跳过矩阵动作——工具会话不需要 plan@domain。
   if ((WORKCOPY_TOOL_KINDS as readonly string[]).includes(event.kind)) {
@@ -175,7 +209,24 @@ function authorizeEvent(
     if (Object.hasOwn(ACK_KINDS, event.kind)) return undefined;
     return failure('unmapped_event_kind', `event kind ${event.kind} has no KIND_ACTIONS mapping (fail-closed)`);
   }
-  const scope = mapped.scopeOf(parseEventPayload(event), { state, subject: event.subject });
+  let scope = mapped.scopeOf(parseEventPayload(event), { state, subject: event.subject });
+  if (event.kind === 'lease.revoked') {
+    // M4-2 第 2 轮 P1：撤租约的 scope 唯一来源是租约行（不是 payload），动作统一 assign。
+    const leasePayload = parseEventPayload(event);
+    const leaseId = typeof leasePayload['lease_id'] === 'string' ? leasePayload['lease_id'] : undefined;
+    const leaseRow = leaseId === undefined ? undefined : state.tables.lease[leaseId];
+    if (leaseRow === undefined) {
+      return failure('lease_not_active', `lease.revoked payload.lease_id ${leaseId ?? '(missing)'} does not exist`);
+    }
+    if (leaseRow['status'] !== 'active') {
+      return failure('lease_not_active', `lease ${leaseId} is ${String(leaseRow['status'])}; only active can be revoked`);
+    }
+    const rowScope = String(leaseRow['scope'] ?? '');
+    if (leasePayload['scope'] !== undefined && leasePayload['scope'] !== rowScope) {
+      return failure('invalid_field', `lease.revoked payload.scope ${String(leasePayload['scope'])} does not match lease ${leaseId} scope ${rowScope}`);
+    }
+    scope = rowScope;
+  }
   // sign 不是矩阵动作（docs/07 §2 没有行）：只认“在该 scope 上持未撤销 sign 权”，不做前缀推断。
   if (mapped.action === 'sign') {
     if (!hasSignRight(db, session.actor, scope)) {
@@ -197,6 +248,13 @@ function authorizeEvent(
       'no_permission',
       `append denied: actor=${session.actor} kind=${session.actor_kind} event_kind=${event.kind} action=${mapped.action} scope=${scope} reason=${decision.reason ?? 'missing_grant'} (${decision.message})`,
     );
+  }
+  // M4-2/C2+C3+C6：认领必须有活租约；预占期内只允许 reserved_by 认领（预占≠授权）。
+  // D-159（Lead 裁定）：闸恒开，不做激活边界——冷启动库同样必须先 lease.issued；
+  // 历史夹具走测试助手 claimWithLease / appendWithLeases，不在产品里开后门。
+  if (event.kind === 'task.claimed') {
+    const guard = claimGuard(state, event.subject, event.actor, event.at);
+    if (guard !== undefined) return failure(guard.reason_code, guard.message);
   }
   const condition = ACTION_OBJECT_CONDITIONS[event.kind];
   if (condition !== undefined) {

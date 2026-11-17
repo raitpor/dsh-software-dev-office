@@ -14,10 +14,11 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import { runMigrations } from '../../src/db/migrate.js';
 import { verify } from '../../src/core/verify.js';
 import { cardWorkdir } from '../../src/core/workcopy/paths.js';
-import { acquireLock, acquireMainTreeLock, releaseLock, releaseMainTreeLock, revokeLeaseLocks, rootLockPrecheck, WORKCOPY_TOOL_ACTOR } from '../../src/db/lock.js';
+import { acquireLock, acquireMainTreeLock, releaseLock, releaseMainTreeLock, rootLockPrecheck, WORKCOPY_TOOL_ACTOR } from '../../src/db/lock.js';
+import { dispatchLease, revokeLease } from '../../src/db/lease.js';
 import { appendTool, toolEvent } from '../../src/db/workcopy-tool.js';
 import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy, removeWorkcopy } from '../../src/db/workcopy.js';
-import { AT, PASSPHRASE, chain, seed } from './append-helpers.js';
+import { AT, PASSPHRASE, chain, claimWithLease, seed } from './append-helpers.js';
 import { appendAs, grantAll, grantFixtureRoster } from './append-auth.js';
 import { chainHead } from '../../src/db/write.js';
 
@@ -105,7 +106,9 @@ async function withRepo(run: (ctx: { root: string; db: SdoDatabase }) => Promise
 test('C4: lease.revoked keeps the lock active; same actor re-claims, another actor still conflicts', () => {
   withDb((db) => {
     assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'CARD-A', session: HUMAN('alice'), at: AT }).ok, true);
-    assert.equal(revokeLeaseLocks(db, { card_id: 'CARD-A', session: SESSION, at: AT }).ok, true);
+    const dispatched = dispatchLease(db, SESSION, { card: 'CARD-A', actor: 'alice', scope: 'domain:core', at: AT });
+    assert.equal(dispatched.ok, true, JSON.stringify(dispatched));
+    assert.equal(revokeLease(db, SESSION, dispatched.lease_id, AT).ok, true);
     const row = db.prepare("SELECT status, released_by FROM lock WHERE path_prefix = 'src/core'").get() as { status: string; released_by: string };
     assert.equal(row.status, 'active');
     assert.equal(row.released_by, 'lease_revoked');
@@ -319,8 +322,8 @@ test('C5 verify: lock_missing for a busy card that used locking but holds none',
   withDb((db) => {
     assert.equal(appendAs(db, chain([
       seed(1, 'task.created', 'TASK-L1', { seq: 900, title: 'lock', kind: 'implement', scope_paths: ['a.txt'] }),
-      seed(2, 'task.claimed', 'TASK-L1', {}),
     ], chainHead(db))).ok, true);
+    assert.equal(claimWithLease(db, { card: 'TASK-L1', actor: 'actor-1', at: AT }).claim.ok, true);
     assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'TASK-L1', session: SESSION, at: AT }).ok, true);
     assert.equal(releaseLock(db, { prefix: 'src/core', session: SESSION, at: AT }).ok, true);
     const result = verify(db);
@@ -347,8 +350,8 @@ test('C5/P2-6: lock_leaked reports an expired active lock even while its card is
   withDb((db) => {
     assert.equal(appendAs(db, chain([
       seed(1, 'task.created', 'TASK-L2', { seq: 901, title: 'lock', kind: 'implement', scope_paths: ['a.txt'] }),
-      seed(2, 'task.claimed', 'TASK-L2', {}),
     ], chainHead(db))).ok, true);
+    assert.equal(claimWithLease(db, { card: 'TASK-L2', actor: 'actor-1', at: AT }).claim.ok, true);
     assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'TASK-L2', session: SESSION, at: AT }).ok, true);
     assert.equal(appendAs(db, chain([
       seed(9, 'security.alert', 'SVC', { code: 'x', message: 'advance clock' }, { at: '2026-11-15T04:00:00.000Z' }),
@@ -366,8 +369,8 @@ test('C5/P2-7: lock_missing only fires for cards that historically acquired a lo
     // 一张从未申请过锁的 in_progress 卡（M4-1 之前的历史形态）不进入检查。
     assert.equal(appendAs(db, chain([
       seed(1, 'task.created', 'TASK-L3', { seq: 902, title: 'lock', kind: 'implement', scope_paths: ['a.txt'] }),
-      seed(2, 'task.claimed', 'TASK-L3', {}),
     ], chainHead(db))).ok, true);
+    assert.equal(claimWithLease(db, { card: 'TASK-L3', actor: 'actor-1', at: AT }).claim.ok, true);
     // 另一个卡的历史锁事件激活锁检查（acquire+release 后无活锁）。
     assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'OTHER-CARD', session: SESSION, at: AT }).ok, true);
     assert.equal(releaseLock(db, { prefix: 'src/core', session: SESSION, at: AT }).ok, true);

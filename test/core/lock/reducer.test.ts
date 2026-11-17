@@ -36,7 +36,8 @@ test('C1: a second active lock on the same prefix is rejected (no silent overwri
 test('C4: lease.revoked marks released_by but keeps the lock active', () => {
   const state = fold(undefined, chain([
     ACQ(1, 'src/core', 'CARD-1', 'alice'),
-    seed(2, 'lease.revoked', 'CARD-1', { card_id: 'CARD-1' }),
+    seed(2, 'lease.issued', 'CARD-1', { card: 'CARD-1', actor: 'alice', scope: 'domain:core', frontier: 'sha256:f', ttl_s: 3600, expires_at: '2026-11-17T10:00:00Z' }),
+    seed(3, 'lease.revoked', 'CARD-1', { lease_id: 'e-m1-2', card_id: 'CARD-1', scope: 'domain:core', revoked_by: 'actor-1' }),
   ]));
   const row = state.tables.lock['src/core'];
   assert.equal(row?.['status'], 'active');
@@ -44,12 +45,12 @@ test('C4: lease.revoked marks released_by but keeps the lock active', () => {
 });
 
 test('C4: same actor can re-claim after lease revocation; another actor still conflicts', () => {
-  const base = [ACQ(1, 'src/core', 'CARD-1', 'alice'), seed(2, 'lease.revoked', 'CARD-1', { card_id: 'CARD-1' })];
-  const reclaimed = fold(undefined, chain([...base, ACQ(3, 'src/core', 'CARD-1', 'alice')]));
+  const base = [ACQ(1, 'src/core', 'CARD-1', 'alice'), seed(2, 'lease.issued', 'CARD-1', { card: 'CARD-1', actor: 'alice', scope: 'domain:core', frontier: 'sha256:f', ttl_s: 3600, expires_at: '2026-11-17T10:00:00Z' }), seed(3, 'lease.revoked', 'CARD-1', { lease_id: 'e-m1-2', card_id: 'CARD-1', scope: 'domain:core', revoked_by: 'actor-1' })];
+  const reclaimed = fold(undefined, chain([...base, ACQ(4, 'src/core', 'CARD-1', 'alice')]));
   assert.equal(reclaimed.tables.lock['src/core']?.['status'], 'active');
   assert.equal(reclaimed.tables.lock['src/core']?.['released_by'], null);
   assert.throws(
-    () => fold(undefined, chain([...base, ACQ(3, 'src/core', 'CARD-2', 'bob')])),
+    () => fold(undefined, chain([...base, ACQ(4, 'src/core', 'CARD-2', 'bob')])),
     /is held by /,
   );
 });

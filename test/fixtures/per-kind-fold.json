@@ -734,8 +734,8 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
-      "status": "in_progress",
+      "owner": null,
+      "status": "planned",
       "blocked_by": [],
       "scope_paths": [],
       "inputs": [],
@@ -743,7 +743,6 @@
       "subject_id": null,
       "block_code": null,
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": "bob",
       "reserved_until": "2026-12-01T00:00:00Z"
     }
@@ -758,7 +757,7 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
+      "owner": null,
       "status": "blocked",
       "blocked_by": [],
       "scope_paths": [],
@@ -767,7 +766,6 @@
       "subject_id": null,
       "block_code": "upstream_changed",
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": null,
       "reserved_until": null,
       "blocked_reason": "x",
@@ -829,8 +827,8 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
-      "status": "in_progress",
+      "owner": null,
+      "status": "ready",
       "blocked_by": [
         "TASK-2"
       ],
@@ -840,16 +838,11 @@
       "subject_id": null,
       "block_code": null,
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": null,
       "reserved_until": null,
       "blocked_reason": null,
       "blocked_at": "2026-11-13T00:00:00Z",
-      "unblocked_at": "2026-11-13T00:00:00Z",
-      "evidence_id": "EVID-1",
-      "done_at": "2026-11-13T00:00:00Z",
-      "reopened_reason": "rework",
-      "reopened_at": "2026-11-13T00:00:00Z"
+      "unblocked_at": "2026-11-13T00:00:00Z"
     }
   },
   "task.done": {
@@ -862,23 +855,22 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
-      "status": "done",
-      "blocked_by": [],
+      "owner": null,
+      "status": "ready",
+      "blocked_by": [
+        "TASK-2"
+      ],
       "scope_paths": [],
       "inputs": [],
       "subject_kind": null,
       "subject_id": null,
       "block_code": null,
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": null,
       "reserved_until": null,
       "blocked_reason": null,
       "blocked_at": "2026-11-13T00:00:00Z",
-      "unblocked_at": "2026-11-13T00:00:00Z",
-      "evidence_id": "EVID-1",
-      "done_at": "2026-11-13T00:00:00Z"
+      "unblocked_at": "2026-11-13T00:00:00Z"
     }
   },
   "task.dropped": {
@@ -916,25 +908,22 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
-      "status": "in_progress",
-      "blocked_by": [],
+      "owner": null,
+      "status": "ready",
+      "blocked_by": [
+        "TASK-2"
+      ],
       "scope_paths": [],
       "inputs": [],
       "subject_kind": null,
       "subject_id": null,
       "block_code": null,
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": null,
       "reserved_until": null,
       "blocked_reason": null,
       "blocked_at": "2026-11-13T00:00:00Z",
-      "unblocked_at": "2026-11-13T00:00:00Z",
-      "evidence_id": "EVID-1",
-      "done_at": "2026-11-13T00:00:00Z",
-      "reopened_reason": "rework",
-      "reopened_at": "2026-11-13T00:00:00Z"
+      "unblocked_at": "2026-11-13T00:00:00Z"
     }
   },
   "task.unassigned": {
@@ -947,8 +936,8 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
-      "status": "in_progress",
+      "owner": null,
+      "status": "planned",
       "blocked_by": [],
       "scope_paths": [],
       "inputs": [],
@@ -956,7 +945,6 @@
       "subject_id": null,
       "block_code": null,
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": null,
       "reserved_until": null
     }
@@ -971,7 +959,7 @@
       "kind": "implement",
       "created_by": "actor-1",
       "producer": "actor-1",
-      "owner": "actor-1",
+      "owner": null,
       "status": "ready",
       "blocked_by": [],
       "scope_paths": [],
@@ -980,7 +968,6 @@
       "subject_id": null,
       "block_code": null,
       "at": "2026-11-13T00:00:00Z",
-      "claimed_at": "2026-11-13T00:00:00Z",
       "reserved_by": null,
       "reserved_until": null,
       "blocked_reason": null,
@@ -1045,17 +1032,55 @@
     }
   },
   "lease.revoked": {
-    "table": "lock",
-    "id": "src/core",
+    "table": "lease",
+    "id": "e-m1-83",
     "row": {
-      "path_prefix": "src/core",
+      "id": "e-m1-83",
       "card_id": "CARD-1",
-      "actor": "actor-1",
+      "actor": "alice",
+      "scope": "domain:core",
+      "frontier": "f",
+      "ttl_s": 14400,
+      "issued_at": "2026-11-13T00:00:00Z",
+      "expires_at": "2026-11-13T04:00:00Z",
+      "status": "revoked",
+      "revoked_at": "2026-11-13T00:00:00Z",
+      "revoked_by": "actor-1"
+    }
+  },
+  "lease.issued": {
+    "table": "lease",
+    "id": "e-m1-83",
+    "row": {
+      "id": "e-m1-83",
+      "card_id": "CARD-1",
+      "actor": "alice",
+      "scope": "domain:core",
+      "frontier": "f",
+      "ttl_s": 14400,
+      "issued_at": "2026-11-13T00:00:00Z",
+      "expires_at": "2026-11-13T04:00:00Z",
       "status": "active",
-      "acquired_at": "2026-11-15T09:00:00.000Z",
-      "expires_at": "2026-11-17T00:00:00Z",
-      "released_at": null,
-      "released_by": "lease_revoked"
+      "revoked_at": null,
+      "revoked_by": null
+    }
+  },
+  "lease.expired": {
+    "table": "lease",
+    "id": "e-m1-86",
+    "row": {
+      "id": "e-m1-86",
+      "card_id": "CARD-L2",
+      "actor": "bob",
+      "scope": "domain:core",
+      "frontier": "f",
+      "ttl_s": 14400,
+      "issued_at": "2026-11-13T00:00:00Z",
+      "expires_at": "2026-11-13T04:00:00Z",
+      "status": "expired",
+      "revoked_at": null,
+      "revoked_by": null,
+      "expired_at": "2026-11-13T00:00:00Z"
     }
   }
 }

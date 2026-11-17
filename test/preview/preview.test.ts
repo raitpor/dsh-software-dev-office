@@ -16,7 +16,14 @@ import {
   previewChange,
 } from '../../src/preview/index.js';
 import type { PreviewResult } from '../../src/preview/index.js';
-import { chain, currentState, fourDomainSeeds, seed, withWriteDb } from '../db/append-helpers.js';
+import {
+  claimWithLease,
+  chain,
+  currentState,
+  fourDomainSeeds,
+  seed,
+  withWriteDb,
+} from '../db/append-helpers.js';
 
 let counter = 1000;
 function ev(
@@ -30,10 +37,37 @@ function ev(
 }
 function appendSeeds(db: SdoDatabase, seeds: readonly Omit<Event, 'prev' | 'hash'>[]): Event[] {
   // D-097：spec.revised/criterion.revised 需 CAS 声明；按当前折动态补，不改断言。
-  const events = chain(seeds, chainHead(db), currentState(db));
-  const result = append(db, events);
-  assert.equal(result.ok, true);
-  return events;
+  // M4-2/C2：认领必须先由真 dispatchLease 落租约（A 方案），因此这里遇到 task.claimed
+  // 就分段续链：前缀批正常 append → 用 claimWithLease 落 lease+claim → 余下继续。
+  const written: Event[] = [];
+  let rest = [...seeds];
+  while (rest.length > 0) {
+    const claimAt = rest.findIndex((seedEvent) => seedEvent.kind === 'task.claimed');
+    if (claimAt < 0) {
+      const events = chain(rest, chainHead(db), currentState(db));
+      assert.equal(append(db, events).ok, true);
+      written.push(...events);
+      break;
+    }
+    const prefix = rest.slice(0, claimAt);
+    if (prefix.length > 0) {
+      const events = chain(prefix, chainHead(db), currentState(db));
+      assert.equal(append(db, events).ok, true);
+      written.push(...events);
+    }
+    const claimSeed = rest[claimAt]!;
+    const before = readEvents(db, []).length;
+    const result = claimWithLease(db, {
+      card: claimSeed.subject,
+      actor: claimSeed.actor,
+      at: String(claimSeed.at),
+      payload: (claimSeed.payload ?? {}) as Record<string, unknown>,
+    });
+    assert.equal(result.claim.ok, true, result.claim.message ?? "");
+    written.push(...readEvents(db, []).slice(before));
+    rest = rest.slice(claimAt + 1);
+  }
+  return written;
 }
 
 function seedThreeWorkUnits(db: SdoDatabase): void {

@@ -7,9 +7,15 @@ import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { readExportFile } from '../../src/importer/parse.js';
 import { landingEvents } from '../../src/importer/rebuild.js';
 import { importClaims, rebaseEvents, renderClaimsFromEvents } from '../../src/claim/gateway.js';
+import type { ExportClaim } from '../../src/importer/parse.js';
+
+function importWithLeases(db: import('../../src/db/driver.js').SdoDatabase, claims: readonly ExportClaim[]) {
+  dispatchLeasesForClaims(db, claims);
+  return importClaims(db, claims);
+}
 import { verifyClaims } from '../../src/claim/verify.js';
 import { withWriteDb } from '../db/append-helpers.js';
-import { seedRenderer } from './helpers.js';
+import { dispatchLeasesForClaims, seedRenderer } from './helpers.js';
 
 const parsed = readExportFile('test/fixtures/v1-export.json');
 
@@ -28,7 +34,7 @@ function insertClaim(
 test('verifyClaims: normal import is green', () => {
   withWriteDb((db) => {
     seedRenderer(db);
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     const report = verifyClaims(db);
     assert.deepEqual(report.problems, []);
     assert.equal(report.ok, true);
@@ -38,7 +44,7 @@ test('verifyClaims: normal import is green', () => {
 test('P1-2: a directly inserted claim with a missing frontier event is caught', () => {
   withWriteDb((db) => {
     seedRenderer(db);
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     insertClaim(db, 'claim:forged-frontier', '["e-missing"]');
     const report = verifyClaims(db);
     assert.equal(report.ok, false);
@@ -52,7 +58,7 @@ test('P1-2: a directly inserted claim with a missing frontier event is caught', 
 test('P1-2: an unregistered derived_by is caught', () => {
   withWriteDb((db) => {
     seedRenderer(db);
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     insertClaim(db, 'claim:forged-renderer', '["anything"]', 'renderer:forged');
     const report = verifyClaims(db);
     assert.equal(report.ok, false);
@@ -63,10 +69,11 @@ test('P1-2: an unregistered derived_by is caught', () => {
 test('P1-1 recover: events landed, claims missing -> render-only fills 20 and does not add events', () => {
   withWriteDb((db) => {
     seedRenderer(db);
+    dispatchLeasesForClaims(db, parsed.claims);
     const events = rebaseEvents(db, parsed.claims.flatMap((claim) => landingEvents(claim)));
     assert.equal(append(db, events).ok, true);
     const eventCount = (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
-    assert.equal(eventCount, 41, '1 renderer.registered seed + 40 claim events');
+    assert.equal(eventCount, 61, '1 renderer + 20 leases + 40 claim events');
     assert.equal((db.prepare('SELECT count(*) AS n FROM claim').get() as { n: number }).n, 0);
 
     const render = renderClaimsFromEvents(db);
@@ -89,20 +96,20 @@ test('P1-1 truthful reporting: post-append claim failure reports 40 events and s
       `CREATE TRIGGER reject_one BEFORE INSERT ON claim WHEN NEW.id = '${firstId}'
        BEGIN SELECT RAISE(ABORT, 'injected claim failure'); END;`,
     );
-    const failed = importClaims(db, parsed.claims);
+    const failed = importWithLeases(db, parsed.claims);
     assert.equal(failed.ok, false);
     assert.equal(failed.events_written, 40, 'events really landed');
     assert.equal(failed.claims_written, 0);
     assert.equal(failed.resumable, true);
     assert.equal(failed.next_step, 'render_only');
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 41);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 61);
     assert.equal((db.prepare('SELECT count(*) AS n FROM claim').get() as { n: number }).n, 0);
 
     db.exec('DROP TRIGGER reject_one');
     const recovered = renderClaimsFromEvents(db);
     assert.deepEqual([recovered.ok, recovered.written, recovered.events_written], [true, 20, 0]);
     assert.equal(verifyClaims(db).ok, true);
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 41);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 61);
   });
 });
 
@@ -127,7 +134,7 @@ function dropClaimGuards(db: import('../../src/db/driver.js').SdoDatabase): void
 test('P2: a deleted claim row is reported as missing (and core verify stays green)', () => {
   withWriteDb((db) => {
     seedRenderer(db);
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     const removed = `claim:${parsed.claims[3]!.claim_no}`;
     dropClaimGuards(db);
     db.prepare('DELETE FROM claim WHERE id = ?').run(removed);
@@ -142,7 +149,7 @@ test('P2: a deleted claim row is reported as missing (and core verify stays gree
 test('P2: a mutated claim column is reported as mismatch with the field list', () => {
   withWriteDb((db) => {
     seedRenderer(db);
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     const target = `claim:${parsed.claims[0]!.claim_no}`;
     dropClaimGuards(db);
     db.prepare('UPDATE claim SET actor = ? WHERE id = ?').run('mallory', target);
@@ -157,7 +164,7 @@ test('P2: a mutated claim column is reported as mismatch with the field list', (
 test('P2: an unregistered derived_by is reported as both unregistered_renderer and mismatch', () => {
   withWriteDb((db) => {
     seedRenderer(db);
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     const target = `claim:${parsed.claims[1]!.claim_no}`;
     dropClaimGuards(db);
     db.prepare('UPDATE claim SET derived_by = ? WHERE id = ?').run('renderer:forged', target);
@@ -173,7 +180,7 @@ test('P2: an unregistered derived_by is reported as both unregistered_renderer a
 test('C4 views[] must cover the source view tables: release alone does not cover task', () => {
   withWriteDb((db) => {
     seedRenderer(db, { id: 'renderer:gate-result', module_path: 'src/claim/render.ts', views: ['release'] });
-    assert.equal(importClaims(db, parsed.claims).ok, true);
+    assert.equal(importWithLeases(db, parsed.claims).ok, true);
     const report = verifyClaims(db);
     assert.equal(report.ok, false);
     const problem = report.problems.find((candidate) => candidate.reason === 'views_not_covered');

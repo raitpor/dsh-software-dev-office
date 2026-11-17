@@ -35,12 +35,27 @@ const GATE_ONLY_KINDS = new Set(['gate.judged']);
 // M3-2/P1-3：conflict.* 只能由真 CAS 路径产生（一次性能力），world 链不含；
 // 冲突行/解决覆盖在 test/db/conflict-*.test.ts。
 const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
-const TOOL_ONLY_KINDS = new Set(['snapshot.taken']);
+const TOOL_ONLY_KINDS = new Set(['snapshot.taken', 'lease.issued', 'lease.expired', 'lease.revoked']);
+// M4-2 裁定 A：world 链不再伪造认领；task.claimed 由真派发链覆盖（test/db/lease.test.ts 的 C2/C3/C6）。
+const CLAIM_COVERED_KINDS = new Set(['task.claimed']);
+
+test('P3-4: every CLAIM_COVERED_KINDS kind is actually exercised in the claim/lease suites', () => {
+  // 覆盖豁免不能只是“把 kind 加进集合”：集合里的每个 kind 必须在 claim/lease 真链用例里
+  // 至少出现一次字面量（从用例删掉但仍留在集合 ⇒ 这里红）。
+  const sources = [
+    readFileSync('test/db/lease.test.ts', 'utf8'),
+    readFileSync('test/db/append-helpers.ts', 'utf8'),
+  ].join('\n');
+  for (const kind of CLAIM_COVERED_KINDS) {
+    assert.ok(sources.includes(`'${kind}'`), `CLAIM_COVERED_KINDS entry ${kind} is not actually exercised in test/db/lease.test.ts`);
+  }
+});
 
 test('C5/C6 world chain covers every supported kind exactly once (first occurrence)', () => {
-  assert.equal(kinds.length, 61, 'SUPPORTED_KINDS = REDUCERS 58 + lock 2 + lease.revoked 1');
+  assert.equal(kinds.length, 63, 'SUPPORTED_KINDS = REDUCERS 58 + lock 2 + lease.revoked 1 + lease.issued/expired 2');
   for (const kind of kinds) {
     if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind)) continue;
+    if (CLAIM_COVERED_KINDS.has(kind)) continue;
     assert.ok(seeds.some((event) => event.kind === kind), `world chain must contain at least one ${kind} event`);
   }
 });
@@ -72,7 +87,7 @@ test('D-078: assumption.invalidated is registered but every write is rejected at
 // 单事件入 DB 会遇到“中途态 DDL 非法”（如 redteam.disposition NOT NULL），
 // 所以 per-kind 效果在 fold 层取证；DB 物化由下面的 world 全链逐表对账覆盖。
 for (const kind of kinds) {
-  if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind)) continue;
+  if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind) || CLAIM_COVERED_KINDS.has(kind)) continue;
   const index = seeds.findIndex((event) => event.kind === kind);
   test(`C6 ${kind} writes the pinned fold row with exact values`, () => {
     const table = requiredTable(kind);

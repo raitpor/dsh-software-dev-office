@@ -15,6 +15,10 @@ import { GENESIS_PREV, computeEventHash } from '../../src/core/verify-events.js'
 import type { Event, FoldState } from '../../src/core/fold/types.js';
 import { installTestSignerd } from '../sign/fixture-signerd.js';
 import { readEvents } from '../../src/core/verify-events.js';
+import { chainHead } from '../../src/db/write.js';
+import { buildEvent } from '../../src/db/freeze-store.js';
+import { dispatchLease } from '../../src/db/lease.js';
+import { appendAs } from './append-auth.js';
 
 /** D-055：decision.valid 的 payload_hash 必须覆盖 payload.payload；夹具统一用它算。 */
 export function payloadHashOf(payload: unknown): string {
@@ -238,4 +242,43 @@ export function withWriteDb(run: (db: SdoDatabase) => void): void {
     db.close();
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+/**
+ * M4-2 裁定 A：认领必须经真派发链（claim 闸恒开）。先 dispatchLease（工具能力，
+ * 不伪造 lease 事件），再 append(task.claimed)，两者都用执行时链头，不做 rechain。
+ * 返回 step 级结果，便于测试断言失败码。
+ */
+let LEGACY_CLAIM_SEQ = 0;
+export function claimWithLease(
+  db: SdoDatabase,
+  input: {
+    card: string;
+    actor: string;
+    at: string;
+    scope?: string;
+    ttl_s?: number;
+    payload?: Record<string, unknown>;
+  },
+): { lease: ReturnType<typeof dispatchLease>; claim: ReturnType<typeof appendAs> } {
+  const scope = input.scope ?? 'domain:core';
+  const lease = dispatchLease(db, { actor: 'fixture-root', actor_kind: 'service' }, {
+    card: input.card,
+    actor: input.actor,
+    scope,
+    ttl_s: input.ttl_s ?? 4 * 60 * 60,
+    at: input.at,
+  });
+  if (!lease.ok) throw new Error(`claimWithLease dispatch failed: ${lease.reason_code} ${lease.message ?? ''}`);
+  const event = buildEvent({
+    id: `e-claim-${input.card}-${input.at}${LEGACY_CLAIM_SEQ++}`,
+    kind: 'task.claimed',
+    subject: input.card,
+    actor: input.actor,
+    at: input.at,
+    caused_by: [],
+    request_id: `req-claim-${input.card}`,
+    payload: input.payload ?? {},
+  }, chainHead(db));
+  return { lease, claim: appendAs(db, [event]) };
 }

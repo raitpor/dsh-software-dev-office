@@ -128,3 +128,4 @@ export function rightsPortFrom(actor: string, grants: readonly RightGrant[]): Ri
     },
   };
 }
+

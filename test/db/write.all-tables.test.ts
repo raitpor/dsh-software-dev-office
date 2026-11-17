@@ -13,7 +13,7 @@ import {
   SUPPORTED_KINDS,
 } from '../../src/db/write-materialize.js';
 
-import { chain, currentState, seed, withWriteDb } from './append-helpers.js';
+import { chain, claimWithLease, currentState, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 function count(db: SdoDatabase, table: string): number {
@@ -39,7 +39,8 @@ const GATE_ONLY_KINDS = new Set(['gate.judged']);
 // 冲突行/解决覆盖在 test/db/conflict-*.test.ts。
 const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
 // M4-0：snapshot.taken 改由工作副本工具产生（一次性能力），world 链不含。
-const TOOL_ONLY_KINDS = new Set(['snapshot.taken']);
+const TOOL_ONLY_KINDS = new Set(['snapshot.taken', 'lease.issued', 'lease.expired', 'lease.revoked']);
+const CLAIM_COVERED_KINDS = new Set(['task.claimed']); // test/db/lease.test.ts 真派发链
 
 test('C5/C6: world chain appends all supported kinds; each target table gets real rows', () => {
   withWriteDb((db) => {
@@ -53,15 +54,15 @@ test('C5/C6: world chain appends all supported kinds; each target table gets rea
     assert.equal(report.eventCount, events.length);
 
     const kinds = new Set(events.map((event) => event.kind));
-    assert.equal(Object.keys(SUPPORTED_KINDS).length, 61);
-    assert.equal(kinds.size, 61 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size - TOOL_ONLY_KINDS.size);
+    assert.equal(Object.keys(SUPPORTED_KINDS).length, 63);
+    assert.equal(kinds.size, 63 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size - TOOL_ONLY_KINDS.size - CLAIM_COVERED_KINDS.size);
     for (const kind of Object.keys(SUPPORTED_KINDS)) {
-      if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind)) continue;
+      if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind) || CLAIM_COVERED_KINDS.has(kind)) continue;
       assert.equal(kinds.has(kind), true, `world chain is missing kind ${kind}`);
     }
     // decision.valid 按 D-019 只在 signed 后出现，行由 decision.signed 代表。
     // conflict 行由 CAS 分支产生，world 链不含 conflict.*；见 test/db/conflict-*.test.ts。
-    const tables = new Set(MATERIALIZED_TABLES.filter((table) => table !== 'decision' && table !== 'conflict' && table !== 'snapshot' && table !== 'snapshot_parent'));
+    const tables = new Set(MATERIALIZED_TABLES.filter((table) => table !== 'decision' && table !== 'conflict' && table !== 'snapshot' && table !== 'snapshot_parent' && table !== 'lease'));
     for (const table of tables) {
       assert.ok(count(db, table) > 0, `materialized table ${table} has no rows`);
     }
@@ -103,6 +104,9 @@ test('C2: actual fold-only columns equal FOLD_ONLY_COLUMNS for every materialize
   withWriteDb((db) => {
     const events = chain(worldSeeds());
     assert.equal(append(db, events).ok, true);
+    // M4-2 裁定 A：world 链不含 task.claimed；这里用真派发链补一条，保留 claimed_at 列的 fold-only 证据。
+    const claimed = claimWithLease(db, { card: 'TASK-1', actor: 'alice', at: '2026-11-13T00:00:00Z' });
+    assert.equal(claimed.claim.ok, true, claimed.claim.message ?? '');
     const problems: VerifyProblem[] = [];
     const state = fold(undefined, readEvents(db, problems));
     for (const table of MATERIALIZED_TABLES) {

@@ -439,34 +439,6 @@ export function releaseCardLocksAsTool(
   return { ok: failures.length === 0, released, failures };
 }
 
-/** 撤租约：lease.revoked 由 fold 标记 released_by，行保持 active（同 actor 可重领，C4）。 */
-export function revokeLeaseLocks(
-  db: SdoDatabase,
-  input: { card_id: string; session: LockSession; at: string },
-): { ok: true } | LockFailure {
-  for (let attempt = 0; attempt < 5; attempt += 1) {
-    const event = buildEvent(
-      {
-        id: `lease.revoked:${input.card_id}:${randomUUID()}`,
-        at: input.at,
-        actor: input.session.actor,
-        kind: 'lease.revoked',
-        subject: input.card_id,
-        payload: { card_id: input.card_id },
-        caused_by: [],
-        request_id: `lease:${input.card_id}:${input.at}`,
-      },
-      chainHead(db),
-    );
-    const result = append(db, [event], { session: input.session });
-    if (result.ok) return { ok: true };
-    if (result.reason_code !== 'event_chain_broken' && result.reason_code !== 'append_conflict') {
-      return { ok: false, reason_code: 'append_failed', message: `${result.reason_code}: ${result.message}` };
-    }
-  }
-  return { ok: false, reason_code: 'append_failed', message: 'append retry exhausted' };
-}
-
 /** 当前是否有该前缀的活锁（调用方清理/断言用，只读）。 */
 export function hasActiveLock(db: SdoDatabase, prefix: string): boolean {
   return readActive(db).some((row) => row.path_prefix === prefix);

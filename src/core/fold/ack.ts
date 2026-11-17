@@ -19,8 +19,6 @@ export const ACK_KINDS: Readonly<Record<string, string>> = {
   'restore.done': '运维审计事件，不投影',
   'store.unlocked': '存储保密审计事件，不投影',
   'store.open_suspected': '存储保密审计事件，不投影',
-  'lease.issued': '同上',
-  'lease.expired': '同上',
   'agent.spawned': '代理池视图（M0-3）由运行时数据算，本卡不物化',
   'agent.reused': '同上',
   'agent.pick_declined': '同上',
