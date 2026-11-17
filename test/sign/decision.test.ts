@@ -111,7 +111,7 @@ test('D-062：extra 键与固定字段重名 ⇒ invalid_field、0 行、链上�
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason_code, 'invalid_field');
     assert.equal(rows(db, 'SELECT id FROM decision').length, 0);
-    assert.equal(rows(db, 'SELECT id FROM event').length, 0, '碰撞必须在 prepare 阶段拒，链上零事件');
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 0, '碰撞必须在 prepare 阶段拒，链上零事件');
   });
 });
 
@@ -159,7 +159,7 @@ test('C3: 未解锁 ⇒ awaiting_unlock，decision 0 行且事件 0 条', async 
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason_code, 'awaiting_unlock');
     assert.equal(rows(db, 'SELECT id FROM decision').length, 0);
-    assert.equal(rows(db, 'SELECT id FROM event').length, 0);
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 0);
   });
 });
 
@@ -231,7 +231,7 @@ test('C8: 裸 append decision.signed（假签名）⇒ signature_not_from_signer
     const result = append(db, [withHash]);
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason_code, 'signature_not_from_signerd');
-    assert.equal(rows(db, 'SELECT id FROM event').length, 0);
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 0);
     assert.equal(rows(db, 'SELECT id FROM decision').length, 0);
   });
 });
@@ -330,7 +330,7 @@ test('D-055: decision.valid 的 payload_hash 与 payload 不符 ⇒ append 拒 i
     const result = append(db, [{ ...event, hash: computeEventHash(event) }]);
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason_code, 'invalid_field');
-    assert.equal(rows(db, 'SELECT id FROM event').length, 0);
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 0);
   });
 });
 
@@ -411,7 +411,7 @@ test('P1-1 第 3 轮：client.sign 内部并发 append ⇒ 签后复核 frontier
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason_code, 'frontier_stale');
     assert.equal(rows(db, 'SELECT id FROM decision').length, 0, '签后复核失败不得留下 decision 行');
-    assert.equal(rows(db, 'SELECT id FROM event').length, 1, '只允许那条并发 alert（不得写 valid/signed）');
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 1, '只允许那条并发 alert（不得写 valid/signed）');
     assert.equal(readFileSync(rig.paths.receiptsFile, 'utf8').trim(), receiptsBefore, 'orphan 回执必须被丢弃');
     const status = await rig.client.status();
     assert.equal(status.ok, true);
@@ -473,7 +473,7 @@ test('P1-1 第 3 轮：真实两进程时序（signerd 子进程 + 并发 append
       assert.equal(outcome.ok, false);
       if (!outcome.ok) assert.equal(outcome.reason_code, 'frontier_stale');
       assert.equal(rows(db, 'SELECT id FROM decision').length, 0);
-      assert.equal(rows(db, 'SELECT id FROM event').length, 1);
+      assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 1);
     } finally {
       db.close();
     }
@@ -529,7 +529,7 @@ test('P2-1 第 3 轮：append 已提交但提交后链头漂移 ⇒ runtime_inco
     assert.equal(diverged.events_written, 2);
     assert.match(diverged.message ?? '', /人工核对/u);
     assert.equal(rows(db, 'SELECT id FROM decision WHERE id = ?', diverged.written_decision_id).length, 1);
-    assert.equal(rows(db, 'SELECT id FROM event').length, 2);
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 2);
   });
 });
 
@@ -663,7 +663,7 @@ test('P1 第 4 轮：复核后、建事件前链头被推进 ⇒ event_chain_bro
     assert.equal(outcome.ok, false);
     if (!outcome.ok) assert.equal(outcome.reason_code, 'event_chain_broken');
     assert.equal(rows(db, 'SELECT id FROM decision').length, 0, 'prev 失配必须 0 行');
-    assert.equal(rows(db, 'SELECT id FROM event').length, 1, '链上只允许注入的那条 alert');
+    assert.equal(rows(db, 'SELECT id FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').length, 1, '链上只允许注入的那条 alert');
   });
 });
 

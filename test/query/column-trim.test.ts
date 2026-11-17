@@ -1,3 +1,4 @@
+import { seedViewerRights } from '../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -51,13 +52,7 @@ interface GrantRow {
 
 /** 权限来自 scope 表（M3-1 的 viewRightFor）：read ⇒ reader 级。 */
 function seedGrants(db: Db, rows: readonly GrantRow[]): void {
-  for (const row of rows) {
-    db.prepare('INSERT INTO actor (id, kind, display, at) VALUES (?, ?, NULL, ?)').run(row.actor, row.kind, AT);
-    db.prepare(
-      `INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at)
-       VALUES (?, 'domain:core', ?, 'migration', ?, NULL)`,
-    ).run(row.actor, row.right, AT);
-  }
+  seedViewerRights(db, rows.map((row) => ({ actor: row.actor, scope: 'domain:core', right: row.right })));
 }
 
 test('M3-6 C2: agent 结果不含 human_only 列，human/service 照旧', () => {

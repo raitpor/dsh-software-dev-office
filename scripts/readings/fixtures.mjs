@@ -12,6 +12,7 @@ import { join } from 'node:path';
 
 import { fold } from '../../lib/src/core/fold/index.js';
 import { GENESIS_PREV, computeEventHash } from '../../lib/src/core/verify.js';
+import { chainHead } from '../../lib/src/db/write.js';
 import { runMigrations } from '../../lib/src/db/migrate.js';
 import { openSdoDatabase } from '../../lib/src/db/open.js';
 
@@ -120,7 +121,7 @@ export function insertFoldRows(db, events) {
 }
 
 /** 在临时目录建一个已迁移的加密库；`run` 返回后自动关库、删目录。 */
-export function withTempDb(run) {
+export function withTempDb(run, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'sdo-m0-g-'));
   const dbPath = join(dir, 'state', 'sdo.db');
   let db;
@@ -128,7 +129,9 @@ export function withTempDb(run) {
     // open 也可能抛（错口令/目录不可写）：放在 try 里，保证临时目录一定被清掉。
     db = openSdoDatabase(dbPath, PASSPHRASE);
     runMigrations(db);
-    grantFixtureRoster(db);
+    // M4-4：默认预置授权（事件使 `as_of`/事件数变多）；M0 读数用手工链直插事件且不判权，
+    // 不能混入预置授权事件（否则 prev 链从 genesis 起就对不上），显式传 `{roster:false}`。
+    if (options.roster !== false) grantFixtureRoster(db);
     return run({ db, dbPath, dir });
   } finally {
     if (db !== undefined) db.close();
@@ -144,6 +147,19 @@ export { insertEvents };
  */
 const RIGHT_ACTION = { reader: 'read', reviewer: 'review', decider: 'decide', signer: 'sign' };
 
+/** 旧读数夹具（M0）：补一条 `right.granted` 事件，让 `verify` 的授权对账能过（M4-4/C5）。 */
+function ensureGrantEvent(db, actor, right, at) {
+  const id = `e-readings-grant-${actor}-${right}`;
+  const exists = db.prepare('SELECT 1 AS one FROM event WHERE id = ?').get(id);
+  if (exists !== undefined) return;
+  const payload = { grantee: actor, right, scope: 'domain:core', granted_by: 'migration' };
+  const unsigned = {
+    id, at, actor: 'migration', kind: 'right.granted', subject: actor, payload,
+    caused_by: [], request_id: `rq-${id}`, prev: chainHead(db), hash: '',
+  };
+  insertEvents(db, [{ ...unsigned, hash: computeEventHash(unsigned) }]);
+}
+
 export function sessionFor(db, right = 'reader', actor = `readings-${right}`) {
   const action = RIGHT_ACTION[right];
   if (action === undefined) throw new Error(`unknown right: ${right}`);
@@ -152,5 +168,6 @@ export function sessionFor(db, right = 'reader', actor = `readings-${right}`) {
   db.prepare(
     "INSERT OR IGNORE INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, 'domain:core', ?, 'migration', ?, NULL)",
   ).run(actor, action, at);
+  ensureGrantEvent(db, actor, action, at);
   return { actor, actor_kind: 'human', session_id: `sess-${actor}`, credential: 'readings-credential' };
 }

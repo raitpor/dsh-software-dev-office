@@ -28,9 +28,16 @@ import {
 import { conflictDetectedPayloadHash } from './conflict-authority.js';
 import { gateJudgedPayloadHash, validateGateJudgedPayload } from '../core/gate/schema.js';
 import { failure, type AppendFailure, type AppendResult } from './write-types.js';
-import { hasRight, readGrants } from './auth.js';
+import { applyRightEvents, hasRight, readGrants } from './auth.js';
 import { scopeCovers } from '../core/auth/rights.js';
 import { ACK_KINDS } from '../core/fold/ack.js';
+import {
+  consumeRightChangeAuthority,
+  parseRightChangeEvent,
+  RIGHT_GRANTED,
+  RIGHT_REVOKED,
+  rightChangePayloadHash,
+} from '../core/auth/rights-events.js';
 import { KIND_ACTIONS } from '../core/auth/kind-actions.js';
 import { ACTION_OBJECT_CONDITIONS } from './action-objects.js';
 import { consumeWorkcopyAuthority, workcopyPayloadHash, WORKCOPY_TOOL_KINDS } from './workcopy-capability.js';
@@ -192,6 +199,20 @@ function authorizeEvent(
       return failure(
         'not_public_face_writer',
         `event ${event.id} kind=${event.kind} must be produced by the public face writer path (one-shot, payload-bound)`,
+      );
+    }
+    return undefined;
+  }
+  // M4-4/C1：right.granted/revoked 只认 `src/db/auth.ts` 的授权 API 铸造的一次性能力
+  // （绑 event id + payload hash）；裸 append 即使有 admin@domain 权也拒 unauthorized_right_change。
+  if (event.kind === RIGHT_GRANTED || event.kind === RIGHT_REVOKED) {
+    const rightPayload = parseEventPayload(event);
+    const parsed = parseRightChangeEvent(event.kind, rightPayload);
+    if (!parsed.ok) return failure('invalid_field', parsed.message);
+    if (!consumeRightChangeAuthority(event.id, rightChangePayloadHash(rightPayload))) {
+      return failure(
+        'unauthorized_right_change',
+        `event ${event.id} kind=${event.kind} must be produced by grantRight/revokeRight/backfillGrants (one-shot, payload-bound)`,
       );
     }
     return undefined;
@@ -670,6 +691,9 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
       // M3-4/P1-3：renderer.registered 是 ACK，fold 物化不会碰 renderer_catalog；
       // 在 append 事务内、提交前显式投影，直写目录表由迁移 011 的哨兵触发器挡。
       applyRendererRegistrations(db, fresh);
+      // M4-4：right.granted/revoked 是 ACK，scope 行的唯一生产者是本投影（D-113）；
+      // 直改 scope 表不会被抹掉，但会被 verify 对账抓出来（C5）。
+      applyRightEvents(db, fresh);
     } catch (error) {
       throw new AppendAbort(failure('materialize_failed', errorMessage(error)), validated);
     }

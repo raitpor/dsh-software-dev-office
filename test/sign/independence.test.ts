@@ -484,7 +484,7 @@ test('第 2 轮 P1：复制已签名事件改 at / 重放同一回执 ⇒ 都被
     assert.ok(row);
     const payload = JSON.parse(String(row['payload'])) as Record<string, unknown>;
     const countEvents = (): number =>
-      Number((rows(db, 'SELECT count(*) AS n FROM event')[0] as Record<string, unknown>)['n'] ?? -1);
+      Number((rows(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')')[0] as Record<string, unknown>)['n'] ?? -1);
     const before = countEvents();
 
     const cloneWith = (at: string): Record<string, unknown> => {
@@ -578,7 +578,7 @@ test('第 2 轮 P1-2：append 失败回滚后，同一回执仍可用（占位�
     };
 
     const countEvents = (): number =>
-      Number(rows(db, 'SELECT count(*) AS n FROM event')[0]?.['n'] ?? -1);
+      Number(rows(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')')[0]?.['n'] ?? -1);
     const before = countEvents();
     // 同一批第二条事件 id 与第一条相同 ⇒ INSERT 冲突，事务回滚（claimReceipt 已在事务内插入）。
     const first = build(randomUUID());

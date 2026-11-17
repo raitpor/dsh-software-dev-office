@@ -143,11 +143,11 @@ test('C7 原子性：任一处置不满足 open ⇒ 整批拒、0 行、链头�
     // 先合法处置 A-1/A-2，再把已 confirmed 的 A-1 拿出来重放一次：整批必须拒。
     assert.equal(disposeAssumptionSet(db, { decision_id: 'd-as', actor: 'alice', at: '2026-11-15T00:00:00Z' }).ok, true);
     const head = chainHead(db);
-    const eventCount = count(db, 'SELECT count(*) AS n FROM event');
+    const eventCount = count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')');
     const result = disposeAssumptionSet(db, { decision_id: 'd-as', actor: 'alice' });
     assert.equal(result.ok, false);
     if (!result.ok) assert.equal(result.reason_code, 'cascade_conflict');
-    assert.equal(count(db, 'SELECT count(*) AS n FROM event'), eventCount);
+    assert.equal(count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')'), eventCount);
     assert.equal(chainHead(db), head);
   });
 });
@@ -163,7 +163,7 @@ test('C1 负例（db 层）：decision 缺 / 未签 / kind 错 / 已撤 ⇒ 拒�
     const notSigned = disposeAssumptionSet(db, { decision_id: 'd-un', actor: 'alice' });
     assert.equal(notSigned.ok, false);
     if (!notSigned.ok) assert.equal(notSigned.reason_code, 'decision_not_signed');
-    assert.equal(count(db, 'SELECT count(*) AS n FROM event'), baseSeedList().length + 1);
+    assert.equal(count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')'), baseSeedList().length + 1);
   });
 
   withWriteDb((db) => {
@@ -262,12 +262,12 @@ test('P1 第 1 轮：confirmed 后 append assumption.invalidated ⇒ 网关拒�
     assert.equal(append(db, assumptionSeeds()).ok, true);
     assert.equal(disposeAssumptionSet(db, { decision_id: 'd-as', actor: 'alice', at: '2026-11-15T00:00:00Z' }).ok, true);
     const before = chainHead(db);
-    const eventsBefore = count(db, 'SELECT count(*) AS n FROM event');
+    const eventsBefore = count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')');
     const forged = chain([seed(95, 'assumption.invalidated', 'A-1', { reason: 'forged rollback' })], before);
     const result = append(db, forged);
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'assumption_invalidated_is_derived');
-    assert.equal(count(db, 'SELECT count(*) AS n FROM event'), eventsBefore, '拒绝必须 0 行');
+    assert.equal(count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')'), eventsBefore, '拒绝必须 0 行');
     assert.equal(chainHead(db), before);
     const row = db.prepare("SELECT status FROM spec WHERE id = 'A-1'").get() as { status: string };
     assert.equal(row.status, 'confirmed', '已签处置不得被无签名事件撤销');
@@ -290,11 +290,11 @@ test('P3-② 第 1 轮：同批第二条 insert 撞 event.id ⇒ 整批回滚 0 
       prev: first.hash,
       hash: computeEventHash({ ...first, prev: first.hash, hash: '' }),
     };
-    const eventsBefore = count(db, 'SELECT count(*) AS n FROM event');
+    const eventsBefore = count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')');
     const result = append(db, [first, second]);
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'append_conflict');
-    assert.equal(count(db, 'SELECT count(*) AS n FROM event'), eventsBefore, '事务内失败必须整批回滚（0 行）');
+    assert.equal(count(db, 'SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')'), eventsBefore, '事务内失败必须整批回滚（0 行）');
   });
 });
 

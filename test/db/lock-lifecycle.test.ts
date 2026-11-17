@@ -201,11 +201,11 @@ test('P3(5th): two completed admissions for the same card+base fail closed as ad
       const removed = appendTool(db, toolEvent('workcopy.removed', 'CARD-AMB', { card: 'CARD-AMB', reason: 'admitted', snapshot_id: sid }, SESSION, AT), SESSION);
       assert.equal(removed.ok, true, JSON.stringify(removed));
     }
-    const before = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
     const admitted = await admitWorkcopy(db, { root, card: 'CARD-AMB', base_snapshot_id: 'SNAP-BASE', scope_paths: ['a.txt'], message: 'ambiguous', session: SESSION, at: AT });
     assert.equal(admitted.ok, false, JSON.stringify(admitted));
     if (!admitted.ok) assert.equal(admitted.reason_code, 'admission_ambiguous');
-    const after = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+    const after = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
     assert.equal(after, before, 'ambiguous admission must not append any event');
     assert.equal(fs.existsSync(cardWorkdir(root, 'CARD-AMB')), true, 'workcopy must be kept for human resolution');
   });

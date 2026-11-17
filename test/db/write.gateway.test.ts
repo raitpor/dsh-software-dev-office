@@ -10,7 +10,7 @@ import { verify } from '../../src/core/verify.js';
 import { chain, seed, fourDomainSeeds, withWriteDb } from './append-helpers.js';
 
 function eventCount(db: SdoDatabase): number {
-  return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+  return (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 }
 
 function count(db: SdoDatabase, sql: string): number {

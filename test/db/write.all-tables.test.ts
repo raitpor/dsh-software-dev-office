@@ -13,7 +13,7 @@ import {
   SUPPORTED_KINDS,
 } from '../../src/db/write-materialize.js';
 
-import { chain, claimWithLease, currentState, seed, withWriteDb } from './append-helpers.js';
+import { chain, claimWithLease, countEventsExcluding, currentState, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 function count(db: SdoDatabase, table: string): number {
@@ -50,10 +50,10 @@ test('C5/C6: world chain appends all supported kinds; each target table gets rea
     const result = append(db, events);
     assert.equal(result.ok, true, result.message ?? '');
     assert.equal(result.written, events.length);
-    assert.equal(count(db, 'event'), events.length);
+    assert.equal(countEventsExcluding(db), events.length);
     const report = verify(db);
     assert.equal(report.ok, true, JSON.stringify(report.problems.slice(0, 3)));
-    assert.equal(report.eventCount, events.length);
+    assert.equal(report.eventCount, count(db, 'event'));
 
     const kinds = new Set(events.map((event) => event.kind));
     assert.equal(Object.keys(SUPPORTED_KINDS).length, 64);
@@ -80,7 +80,7 @@ test('C4: same batch replay is idempotent (zero writes, zero new events)', () =>
     assert.equal(replay.ok, true);
     assert.equal(replay.written, 0);
     assert.equal(replay.skipped, events.length);
-    assert.equal(count(db, 'event'), events.length);
+    assert.equal(countEventsExcluding(db), events.length);
   });
 });
 
@@ -128,7 +128,7 @@ test('C7: append-only projection rejects same id with different content and roll
   withWriteDb((db) => {
     const events = chain(worldSeeds());
     assert.equal(append(db, events).ok, true);
-    const before = count(db, 'event');
+    const before = countEventsExcluding(db);
     const conflict = chain([
       seed(300, 'restatement.diff_dispositioned', 'RD-1', {
         restatement_id: 'R-1', kind: 'agree', target_ref: 'd1', disposition: 'reject',
@@ -139,7 +139,7 @@ test('C7: append-only projection rejects same id with different content and roll
     assert.equal(result.reason_code, 'materialize_failed');
     assert.match(result.message ?? '', /already exists with different content/u);
     assert.equal(result.rolled_back, true);
-    assert.equal(count(db, 'event'), before);
+    assert.equal(countEventsExcluding(db), before);
     assert.equal(verify(db).ok, true);
   });
 });
@@ -154,7 +154,7 @@ test('C3: release.frozen rejects a single human signer (fold shape, not DDL)', (
     const result = append(db, events);
     assert.equal(result.ok, false);
     assert.match(result.message ?? '', /at least two humans/u);
-    assert.equal(count(db, 'event'), 0);
+    assert.equal(countEventsExcluding(db), 0);
   });
 });
 
@@ -163,11 +163,12 @@ test('C4: stage_run gate fields are null after entered (real judged row covered 
     const seeds = worldSeeds();
     const entered = seeds.findIndex((event) => event.kind === 'stage.entered');
     assert.ok(entered >= 0);
-    assert.equal(append(db, chain(seeds.slice(0, entered + 1))).ok, true);
+    const first = chain(seeds.slice(0, entered + 1));
+    assert.equal(append(db, first).ok, true);
     const initial = db.prepare('SELECT gate_id, baseline_hash FROM stage_run WHERE id = ?').get('SR-1');
     assert.deepEqual({ ...(initial as object) }, { gate_id: null, baseline_hash: null });
     // `gate.judged` 只能由 judgeStage() 真路径产生（P1 评审判定：无测试缝）；
     // 判定后 gate_id/baseline_hash 非空的断言在 test/db/gate-judged.test.ts C1。
-    assert.equal(append(db, chain(seeds.slice(0, entered + 1))).skipped, entered + 1);
+    assert.equal(append(db, first).skipped, entered + 1);
   });
 });

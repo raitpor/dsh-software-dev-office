@@ -3,7 +3,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { test } from 'node:test';
 
-import { withMigratedDb } from '../db/helpers.js';
+import { withViewerDb } from '../db/helpers.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { assertSelectOnly, listViewCatalog } from '../../src/views/catalog.js';
 import { MAX_RESULT_BYTES, query, type MissSink, type QueryMiss } from '../../src/query/index.js';
@@ -93,7 +93,7 @@ const BASELINE_COLUMNS = [
 ];
 
 test('C1 只执行目录 SQL：baseline 与 001 表同名，仍读到视图语义', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     seedBaseline(db);
     const result = query(db, { view: 'baseline' }, { session: asViewer(db) });
     assert.equal(result.miss, undefined);
@@ -126,7 +126,7 @@ test('C1 源码里没有 FROM <视图名> 插值，也不解析原生视图名',
 });
 
 test('C2 目录里塞 DELETE：被拒且不执行', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     seedDefects(db, 1);
     const { sink, misses } = collector();
     db.prepare(
@@ -147,7 +147,7 @@ test('C2 目录里塞 DELETE：被拒且不执行', () => {
 });
 
 test('C3 权限裁剪：reader 查 review_queue 被拒并留痕；decider 正常返回', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     seedAttention(db);
 
     const reader = collector();
@@ -167,7 +167,7 @@ test('C3 权限裁剪：reader 查 review_queue 被拒并留痕；decider 正常
 });
 
 test('C3 目录可见性：list 对 reader=12、decider=14（超 8KB 走游标），且按 name 升序', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     // reader 的 12 行目录已超 8KB（011 加 conflicts 后），按预算截断并给游标。
     const readerNames: string[] = [];
     let readerPage = query(db, { view: 'list' }, { session: asViewer(db, 'reader-view', 'read') });
@@ -228,13 +228,17 @@ test('C3 目录可见性：list 对 reader=12、decider=14（超 8KB 走游标�
 });
 
 test('C6 as_of：必带、同一 as_of 两次逐字节相同、旧 as_of 是结构化 miss', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     seedDefects(db, 2);
     seedEventChain(db);
     // 事件链 E1(prev='') ← E2，frontier 只有头 E2。
     const first = query(db, { view: 'defects' }, { session: asViewer(db) });
     const second = query(db, { view: 'defects' }, { session: asViewer(db) });
-    assert.deepEqual(first.as_of, ['E2']);
+    // 建库预置的基线授权也进事件链（A2），as_of 断言只看业务事件。
+    const grantIds = new Set(
+      (db.prepare("SELECT id FROM event WHERE kind IN ('right.granted','right.revoked')").all() as Array<{ id: string }>).map((row) => row.id),
+    );
+    assert.deepEqual(first.as_of.filter((id) => !grantIds.has(id)), ['E2']);
     assert.deepEqual(first, second);
 
     const byAsOf = query(db, { view: 'defects', as_of: first.as_of }, { session: asViewer(db) });
@@ -248,7 +252,7 @@ test('C6 as_of：必带、同一 as_of 两次逐字节相同、旧 as_of 是结�
 });
 
 test('C7 缺视图/缺列/坏参数：三种结构化 miss，不抛裸异常', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     seedDefects(db, 3);
     const { sink, misses } = collector();
 
@@ -278,7 +282,7 @@ test('C7 缺视图/缺列/坏参数：三种结构化 miss，不抛裸异常', (
 });
 
 test('C2/目录：14 条视图 SQL 全部通过 assertSelectOnly', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const catalog = listViewCatalog(db);
     assert.equal(catalog.length, 14);
     for (const view of catalog) {

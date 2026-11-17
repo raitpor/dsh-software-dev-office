@@ -1,3 +1,4 @@
+import { seedRights } from './append-auth.js';
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
@@ -9,13 +10,10 @@ type Db = Parameters<Parameters<typeof withMigratedDb>[0]>[0];
 const AT = '2026-11-15T00:00:00.000Z';
 
 function seed(db: Db): void {
-  db.prepare("INSERT INTO actor (id, kind, display, at) VALUES ('alice', 'human', NULL, ?)").run(AT);
-  db.prepare(
-    "INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES ('alice', 'domain:office', 'plan', 'migration', ?, NULL)",
-  ).run(AT);
-  db.prepare(
-    "INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES ('alice', 'module:src/db', 'write', 'migration', ?, NULL)",
-  ).run(AT);
+  seedRights(db, [
+    { actor: 'alice', scope: 'domain:office', right: 'plan' },
+    { actor: 'alice', scope: 'module:src/db', right: 'write' },
+  ]);
 }
 
 function own(db: Db, child: string, parent: string): void {
@@ -24,7 +22,7 @@ function own(db: Db, child: string, parent: string): void {
 
 test('C9：迁移 013 建 scope_owns，链可读且两跳归属放行 plan@domain', () => {
   withMigratedDb((db) => {
-    assert.equal(db.pragma('user_version', { simple: true }), 18);
+    assert.equal(db.pragma('user_version', { simple: true }), 19);
     seed(db);
     // 空表：跨前缀 fail-closed，reason=no_ownership（不猜 module→domain）
     const before = hasRight(db, { id: 'alice', kind: 'human' }, 'create', 'module:src/db');

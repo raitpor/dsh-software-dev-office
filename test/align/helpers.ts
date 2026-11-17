@@ -49,7 +49,7 @@ export function appendSeeds(db: SdoDatabase, seeds: readonly EventSeed[]): void 
 }
 
 export function eventCount(db: SdoDatabase): number {
-  const row = db.prepare('SELECT count(*) AS n FROM event').get() as { n: number };
+  const row = db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number };
   return row.n;
 }
 

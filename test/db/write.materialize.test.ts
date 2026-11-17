@@ -8,6 +8,7 @@ import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { fold } from '../../src/core/fold/index.js';
 import type { Row, TableName } from '../../src/core/fold/types.js';
 import { readEvents } from '../../src/core/verify-events.js';
+import { countEventsExcluding } from './append-helpers.js';
 import { verify } from '../../src/core/verify.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { chain, fourDomainSeeds, withWriteDb } from './append-helpers.js';
@@ -66,7 +67,9 @@ test('C6 verify is green before and after every accepted append', () => {
     assert.equal(result.ok, true);
     const report = verify(db);
     assert.equal(report.ok, true, JSON.stringify(report.problems));
-    assert.equal(report.eventCount, 6);
+    assert.equal(countEventsExcluding(db), 6);
+    const totalEvents = (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+    assert.equal(report.eventCount, totalEvents, 'eventCount 是库内事件总数（含 A2 建库预置的授权事件）');
   });
 });
 

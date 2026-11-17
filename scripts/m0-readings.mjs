@@ -55,15 +55,15 @@ function seed(db) {
 
 function runMain(outPrefix) {
   const results = {};
-  results['R1'] = withTempDb(({ db }) => measureR1(db));
+  results['R1'] = withTempDb(({ db }) => measureR1(db), { roster: false });
   results['R2'] = withTempDb(({ db, dbPath }) => {
     seed(db);
     return measureR2(db, dbPath, SCRIPT);
-  });
+  }, { roster: false });
   results['R3'] = withTempDb(({ db, dbPath }) => {
     seed(db);
     return measureR3(db, dbPath);
-  });
+  }, { roster: false });
   results['R4'] = measureR4();
 
   const r1 = results['R1'].measured;

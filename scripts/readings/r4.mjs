@@ -38,5 +38,5 @@ export function measureR4() {
         ? 'partial'
         : 'fail';
     return { verdict, measured };
-  });
+  }, { roster: false });
 }

@@ -1,5 +1,7 @@
+import { seedRights } from './append-auth.js';
 import { grantFixtureRoster } from './append-auth.js';
 import { appendAs as append } from './append-auth.js';
+import { chainHead } from '../../src/db/write.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,10 +22,10 @@ import { ACK_KINDS } from '../../src/core/fold/ack.js';
 import { canonicalJson } from '../../src/core/fold/canonical.js';
 import { fold } from '../../src/core/fold/index.js';
 import { REDUCERS } from '../../src/core/fold/registry.js';
-import { GENESIS_PREV, readEvents } from '../../src/core/verify-events.js';
+import { readEvents } from '../../src/core/verify-events.js';
 import { verify } from '../../src/core/verify.js';
 import type { VerifyProblem } from '../../src/core/verify-types.js';
-import { PASSPHRASE, chain, claimWithLease, currentState, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
+import { PASSPHRASE, chain, claimWithLease, countEventsExcluding, currentState, fourDomainSeeds, payloadHashOf, seed, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
 test('D-053: ACK kind 在 fold 里显式忽略——投影表逐字节不变，但 seen/eventIds 记账', () => {
@@ -42,7 +44,7 @@ test('P1/C12: ACK kind（query_miss）是 append-only 审计事件，不投影�
     const result = append(db, chain([seed(1, 'query_miss', 'Q-1', {})]));
     assert.equal(result.ok, true);
     assert.equal(result.written, 1);
-    assert.equal(count(db, 'event'), 1);
+    assert.equal(countEventsExcluding(db), 1);
     assert.deepEqual(verify(db).problems, []);
   });
 });
@@ -122,7 +124,7 @@ test('group regression: write -> same-batch replay -> append unrelated event -> 
       next[next.length - 1]?.hash,
     );
     assert.equal(append(db, groups).ok, true);
-    assert.equal(count(db, 'event'), 9);
+    assert.equal(countEventsExcluding(db), 9);
     assert.deepEqual(verify(db).problems, []);
   });
 });
@@ -142,9 +144,9 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
 test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
   withWriteDb((db) => {
     const kinds = [...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)].sort();
-    assert.equal(kinds.length, 100, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1 + M4-3 publicface 3)');
+    assert.equal(kinds.length, 102, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1 + M4-3 publicface 3 + M4-4 right.* 2)');
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
-    let prev: string = GENESIS_PREV;
+    let prev: string = chainHead(db);
     for (const kind of kinds) {
       if (kind === 'snapshot.taken') {
         counts.supported += 1;
@@ -164,6 +166,16 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
         const rejected = append(db, chain([seed(counts.ackOnly, kind, 'X-1', {})]));
         assert.equal(rejected.ok, false, `${kind} must be tool-only`);
         assert.equal(rejected.reason_code, 'unauthorized_workcopy_event');
+        continue;
+      }
+      if (kind === 'right.granted' || kind === 'right.revoked') {
+        counts.ackOnly += 1;
+        const payload = kind === 'right.granted'
+          ? { grantee: 'alice', right: 'read', scope: 'domain:core', granted_by: 'fixture-root' }
+          : { grantee: 'alice', right: 'read', scope: 'domain:core', revoked_by: 'fixture-root' };
+        const rejected = append(db, chain([seed(counts.ackOnly, kind, 'alice', payload)]));
+        assert.equal(rejected.ok, false, 'hand-written right.* must be rejected');
+        assert.equal(rejected.reason_code, 'unauthorized_right_change');
         continue;
       }
       if (kind === 'publicface.executed') {
@@ -198,8 +210,8 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
       assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
       counts.unsupported += 1;
     }
-    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 100);
-    assert.equal(count(db, 'event'), counts.ackOnly - 4, 'ack 落 event；renderer.registered + workcopy.created/removed + publicface.executed 被能力拒');
+    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 102, 'M4-4 新增 right.granted/right.revoked 两个 ACK（能力守卫直 append 拒）');
+    assert.equal(countEventsExcluding(db), counts.ackOnly - 6, 'ack 落 event；renderer.registered + workcopy.created/removed + publicface.executed + right.granted/revoked 被能力拒');
   });
 });
 
@@ -231,11 +243,7 @@ test('M3-4: renderer.registered 走真 registerRenderer() 才落链（一次性�
   try {
     runMigrations(db);
     grantFixtureRoster(db);
-    db.prepare("INSERT INTO actor (id, kind, display, at) VALUES ('admin-1', 'human', 'Admin', '2026-11-15T00:00:00Z')").run();
-    db.prepare(
-      `INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at)
-       VALUES ('admin-1', 'domain:renderers', 'admin', 'boot', '2026-11-15T00:00:00Z', NULL)`,
-    ).run();
+    seedRights(db, [{ actor: 'admin-1', scope: 'domain:renderers', right: 'admin' }]);
     const registered = await registerRenderer(db, {
       id: 'renderer:claim-v1',
       module_path: 'src/claim/render.ts',
@@ -243,7 +251,7 @@ test('M3-4: renderer.registered 走真 registerRenderer() 才落链（一次性�
       actor: { id: 'admin-1', kind: 'human' },
     });
     assert.equal(registered.ok, true, JSON.stringify(registered));
-    assert.equal(count(db, 'event'), 1, 'real registration appends exactly one renderer.registered event');
+    assert.equal(countEventsExcluding(db), 1, 'real registration appends exactly one renderer.registered event');
     assert.deepEqual(verify(db).problems, []);
   } finally {
     db.close();

@@ -94,7 +94,7 @@ test('C3: bare appends of the three tool kinds are rejected and leave zero event
       assert.equal(result.ok, false, kind);
       if (result.ok) continue;
       assert.equal(result.reason_code, 'unauthorized_workcopy_event');
-      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, 1, 'only bootstrap snapshot event');
+      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, 1, 'only bootstrap snapshot event');
     }
     assert.equal(verify(db).ok, true);
     assert.equal(existsSync(join(root, '.sdo', 'sdo.db')), true);

@@ -67,9 +67,12 @@ test('C2 rebuild events go through append(): real chain, no imp: in prev, verify
     dispatchLeasesForClaims(db, parsed.claims);
     const result = importClaims(db, parsed.claims);
     assert.equal(result.ok, true, result.message ?? "");
-    const events = db
+    // M4-4：建库预置的授权事件（right.granted）不属于本用例的“导入链”，按 D-189 排除。
+    const events = (db
       .prepare('SELECT id, kind, prev FROM event ORDER BY rowid')
-      .all() as Array<{ id: string; kind: string; prev: string }>;
+      .all() as Array<{ id: string; kind: string; prev: string }>).filter(
+      (event) => !event.kind.startsWith('right.'),
+    );
     const taskEvents = events.filter((event) => event.kind === 'task.created' || event.kind === 'task.claimed');
     // 1 条 renderer.registered 播种事件 + 每条 claim 的 created/claimed 两条。
     assert.equal(events.length, parsed.claims.length * 3 + 1);

@@ -58,14 +58,22 @@ export function readRow(db, sql, ...params) {
   return db.prepare(sql).get(...params);
 }
 
-/** 一条读数运行：临时目录新库 + migrations + 常用 actor 全权。 */
-export async function withM3Db(run) {
+/**
+ * 一条读数运行：临时目录新库 + migrations + 常用 actor 全权。
+ *
+ * `roster:false` 时只注册 actor 而不预置授权——用于 `review_queue` 这类「整包 ≤8KB」读数：
+ * `as_of` 是完整事件 id 列表，600 条授权事件会把 8KB 预算挤爆（M4-4 起事件化授权后的新约束），
+ * 这类读数改为按需 `seedRights` 只给本读数用到的 actor。
+ */
+export async function withM3Db(run, options = {}) {
   const dir = mkdtempSync(join(tmpdir(), 'sdo-m3g-'));
   const db = openSdoDatabase(join(dir, 'state', 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
-    grantFixtureRoster(db);
-    grantAll(db, 'reviewee');
+    if (options.roster !== false) {
+      grantFixtureRoster(db);
+      grantAll(db, 'reviewee');
+    }
     return await run({ db, dir });
   } finally {
     db.close();

@@ -28,19 +28,19 @@ test('migrate: migration files are versioned 001..N', () => {
   const migrations = listMigrations();
   assert.deepEqual(
     migrations.map((migration) => migration.version),
-    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18],
-    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer), M3-2 adds 009 (conflict table + conflicts view + conflict.* kinds), M3-4 adds 010 (renderer_catalog + renderer.registered ACK kind), M3-4 adds 011 (conflicts 进 view_catalog + renderer_catalog 投影守卫), M3-6 adds 014 (view_catalog.columns[].human_only + team.rights), M4-0 adds 015 (task.block_code + merge_conflict/dirty_workcopy, D-124), M4-1 adds 016 (lock table + lock.acquired/lock.released reducers), M4-2 adds 017 (lease table + lease.issued/expired reducers), M4-3 adds 018 (public_face registry + public_face_writer + publicface.* kinds)',
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19],
+    'M0-3 adds 002 (views), M1-0 adds 003 (event_kind seed), M1-7 adds 004 (stage_run nullable gate), M1-6 adds 005 (claim append-only guards), M2-0 adds 006 (security.alert + decision.channel), M2-5 adds 007 (request_sign ACK kind), M3-0 adds 008 (actor/scope/right identity layer), M3-2 adds 009 (conflict table + conflicts view + conflict.* kinds), M3-4 adds 010 (renderer_catalog + renderer.registered ACK kind), M3-4 adds 011 (conflicts 进 view_catalog + renderer_catalog 投影守卫), M3-6 adds 014 (view_catalog.columns[].human_only + team.rights), M4-0 adds 015 (task.block_code + merge_conflict/dirty_workcopy, D-124), M4-1 adds 016 (lock table + lock.acquired/lock.released reducers), M4-2 adds 017 (lease table + lease.issued/expired reducers), M4-3 adds 018 (public_face registry + public_face_writer + publicface.* kinds), M4-4 adds 019 (right.granted/right.revoked + scope.revoked_by))',
   );
   assert.match(migrations[0]?.file ?? '', /^001_[A-Za-z0-9_-]+\.sql$/);
 });
 
-test('migrate: fresh database applies 001..018 and reports user_version = 18', () => {
+test('migrate: fresh database applies 001..019 and reports user_version = 19', () => {
   withEmptyDb((_file, _close, db) => {
     assert.equal(currentUserVersion(db), 0, 'a fresh database starts at user_version 0');
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
-    assert.equal(result.userVersion, 18);
-    assert.equal(currentUserVersion(db), 18);
+    assert.deepEqual(result.applied, [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    assert.equal(result.userVersion, 19);
+    assert.equal(currentUserVersion(db), 19);
     assert.equal(tableNames(db).length, 47);
   });
 });
@@ -52,9 +52,9 @@ test('migrate: second run is a no-op (idempotent, zero changes)', () => {
 
     const second = runMigrations(db);
     assert.deepEqual(second.applied, [], 'an up-to-date database must apply no migrations');
-    assert.equal(second.userVersion, 18, 'user_version must not move on a no-op run');
+    assert.equal(second.userVersion, 19, 'user_version must not move on a no-op run');
     assert.deepEqual(tableNames(db), before);
-    assert.equal(currentUserVersion(db), 18);
+    assert.equal(currentUserVersion(db), 19);
   });
 });
 
@@ -89,8 +89,8 @@ test('migrate: 004 preserves existing stage_run rows during the rebuild (upgrade
     ).run();
 
     const result = runMigrations(db);
-    assert.deepEqual(result.applied, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18]);
-    assert.equal(result.userVersion, 18);
+    assert.deepEqual(result.applied, [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19]);
+    assert.equal(result.userVersion, 19);
     const row = db.prepare("SELECT * FROM stage_run WHERE id = 'SR-old'").get() as Record<string, unknown>;
     assert.equal(row['stage'], 'build');
     assert.equal(row['gate_id'], 'G_build');

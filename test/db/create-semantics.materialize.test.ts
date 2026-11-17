@@ -44,7 +44,7 @@ function tableRows(db: SdoDatabase, table: string): string {
 }
 
 function eventCount(db: SdoDatabase): number {
-  return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+  return (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 }
 
 function continuation(db: SdoDatabase, base: Event, payload: unknown, suffix: string): Event {

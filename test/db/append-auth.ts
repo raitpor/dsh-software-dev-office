@@ -3,35 +3,113 @@
  * - 测试里的 `append(...)` 统一换成 `appendAs`，默认用一个持有全权的 fixture root 会话；
  * - 需要验证拒绝的用例显式传 `authz`。
  */
-import { append, type AppendAuthz } from '../../src/db/write.js';
+import { GENESIS_PREV } from '../../src/core/verify-events.js';
+import { append, chainHead, type AppendAuthz } from '../../src/db/write.js';
+import { computeEventHash } from '../../src/core/verify-events.js';
+import { backfillGrants } from '../../src/db/auth-bootstrap.js';
 import { scopeCovers } from '../../src/core/auth/rights.js';
 import type { RightsPort } from '../../src/core/pm/access.js';
 import type { AppendResult } from '../../src/db/write-types.js';
 import type { Event } from '../../src/core/fold/types.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 
-const RIGHT_NAMES = ['read', 'write', 'review', 'decide', 'sign', 'admin', 'plan', 'assign', 'escalate'] as const;
-const SCOPES = ['domain:core', 'domain:renderers', 'module:core', 'module:src', 'release:current'] as const;
-
 export const FIXTURE_SESSION = { actor: 'fixture-root', actor_kind: 'service' } as const;
 
 export const FIXTURE_AUTHZ: AppendAuthz = { session: FIXTURE_SESSION };
 
-/** 给夹具 actor 播全权（幂等；测试库已迁移后才调用）。 */
+/** 矩阵 scope 列 → 具体 scope 的覆盖集（M4-4/A2：基线授权只按矩阵最小闭集播种）。 */
+const SCOPE_EQUIVALENTS: Readonly<Record<string, readonly string[]>> = {
+  module: ['module:core', 'module:src'],
+  domain: ['domain:core', 'domain:renderers'],
+  release: ['release:current'],
+  scope: ['module:core', 'module:src', 'domain:core', 'release:current'],
+};
+
+/** 测试视图 actor（query/ui 夹具）在 `withViewerDb` 建库时预置的最小权集。 */
+export const VIEWER_ACTORS = ['viewer', 'reader-view', 'decider-view'] as const;
+
+interface RequiredEntry { readonly right: string; readonly scope: string }
+
+/** 按矩阵 `required` 的并集算出基线最小闭集（外加 read@domain:core 供查询路径）。 */
+export function baselineGrants(db: SdoDatabase): readonly RightGrant[] {
+  const rows = db.prepare('SELECT required FROM right').all() as Array<{ required: string }>;
+  const keys = new Set<string>();
+  const add = (right: string, matrixScope: string): void => {
+    for (const scope of SCOPE_EQUIVALENTS[matrixScope] ?? []) keys.add(`${scope}|${right}`);
+  };
+  for (const row of rows) {
+    let entries: unknown;
+    try { entries = JSON.parse(row.required); } catch { continue; }
+    if (!Array.isArray(entries)) continue;
+    for (const entry of entries as RequiredEntry[]) {
+      if (typeof entry?.right !== 'string' || typeof entry?.scope !== 'string') continue;
+      add(entry.right, entry.scope);
+    }
+  }
+  add('read', 'domain');
+  return [...keys].map((key) => {
+    const [scope, right] = key.split('|') as [string, string];
+    return { actor: '', scope, right };
+  });
+}
+
+const FIXTURE_AT = '2026-11-13T00:00:00Z';
+const VIEWER_GRANTS: readonly RightGrant[] = [
+  { actor: 'viewer', scope: 'domain:core', right: 'read' },
+  { actor: 'reader-view', scope: 'domain:core', right: 'read' },
+  { actor: 'decider-view', scope: 'domain:core', right: 'decide' },
+];
+
+function insertGrantRow(db: SdoDatabase, grant: RightGrant): void {
+  db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', NULL, ?)").run(grant.actor, FIXTURE_AT);
+  db.prepare(
+    "INSERT OR IGNORE INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, ?, ?, 'fixture', ?, NULL)",
+  ).run(grant.actor, grant.scope, grant.right, FIXTURE_AT);
+}
+
+function hasAnyGrant(db: SdoDatabase, actor: string): boolean {
+  return db.prepare('SELECT 1 AS one FROM scope WHERE actor = ? LIMIT 1').get(actor) !== undefined;
+}
+
+/** 只播 `scope` 行（不 append）：读路径夹具库专用（A2 护栏：`withViewerDb` 里禁止 append）。 */
+export function seedViewerRights(db: SdoDatabase, grants: readonly RightGrant[] = VIEWER_GRANTS): void {
+  for (const grant of grants) insertGrantRow(db, grant);
+}
+
+/** 读路径库的基线授权（只插行、不写事件；`withViewerDb` 专用）。 */
+export function seedViewerGrants(db: SdoDatabase): void {
+  seedViewerRights(db);
+}
+
+/**
+ * 给夹具 actor 播基线授权（A2：矩阵 `required` 并集的最小闭集，而不是 45 格全灌）。
+ *
+ * 若该 actor 已有任何 scope 行 ⇒ 直接返回：A2 的建库预置（`withWriteDb`/`grantFixtureRoster`）
+ * 已经把行和对应事件都播好，重复 append 只会把链头往前推、打乱调用方预计算的种子链。
+ */
 export function grantAll(db: SdoDatabase, actor: string): void {
   try {
-    db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', NULL, '2026-11-13T00:00:00Z')").run(actor);
-    for (const scope of SCOPES) {
-      for (const right of RIGHT_NAMES) {
-        db.prepare(
-          "INSERT OR IGNORE INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, ?, ?, 'fixture', '2026-11-13T00:00:00Z', NULL)",
-        ).run(actor, scope, right);
-      }
-    }
+    const missing = baselineGrants(db).filter((grant) => db.prepare(
+      'SELECT 1 AS one FROM scope WHERE actor = ? AND scope = ? AND right = ? LIMIT 1',
+    ).get(actor, grant.scope, grant.right) === undefined);
+    if (missing.length === 0) return;
+    for (const grant of missing) insertGrantRow(db, { ...grant, actor });
+    backfillGrants(db);
   } catch (error) {
     // 写锁测试故意先占住库：授权行通常已播好，播种失败不改变被测的 append 行为。
     if ((error as { code?: string }).code !== 'SQLITE_BUSY' && (error as { code?: string }).code !== 'SQLITE_LOCKED') throw error;
   }
+}
+
+/** 按库当前链头重排整批：只改 prev/hash，payload、id、actor、at 均不变。 */
+function rebaseChain(db: SdoDatabase, events: readonly Event[]): Event[] {
+  let prev = chainHead(db);
+  return events.map((event) => {
+    const unsigned = { ...event, prev, hash: '' };
+    const hash = computeEventHash(unsigned);
+    prev = hash;
+    return { ...unsigned, hash };
+  });
 }
 
 /**
@@ -45,10 +123,33 @@ export function appendAs(db: SdoDatabase, events: readonly Event[], authz: Appen
     return append(db, events, authz);
   }
   const actors = [...new Set(events.map((event) => event.actor))];
-  const single = actors.length === 1 ? actors[0] : undefined;
+  let headBefore: string | undefined;
+  try { headBefore = chainHead(db); } catch { headBefore = undefined; }
+  for (const actor of actors) grantAll(db, actor);
+  // 补授权会 append `right.granted` 事件、把链头前移；此时调用方预计算的 prev/hash 已过期，
+  // 按新链头重排后再入网关（payload/id 不变）。链头没动时保持原样（重复事件才能被幂等跳过）。
+  // 两种情况要按新链头重排：①补授权把链头推走；②调用方在未锚定 ACTIVE_DB 的库上
+  // 从 genesis 建批次（此时首条 prev 已不是链头）。若批次里的事件已存在（重复 append 测幂等），
+  // 保持原样让网关按 id 跳过。
+  let headNow: string | undefined;
+  try { headNow = chainHead(db); } catch { headNow = undefined; }
+  const firstPrev = events[0]?.prev;
+  let anyExists = true;
+  try {
+    anyExists = events.some((event) => db.prepare('SELECT 1 AS one FROM event WHERE id = ? LIMIT 1').get(event.id) !== undefined);
+  } catch {
+    // event 表被测试故意改名（回滚用例）：交给 append 自己报错，夹具不插手。
+    anyExists = true;
+  }
+  // 只重排两种合法批次：①补授权推走链头；②未锚定 ACTIVE_DB、从 GENESIS 起建的批次。
+  // 伪造的 prev（非 GENESIS、非链头）必须原样交给网关拒绝，不能被夹具“修正”。
+  const needsRebase = headBefore !== undefined && headNow !== undefined
+    && (headNow !== headBefore || (firstPrev === GENESIS_PREV && firstPrev !== headNow && !anyExists));
+  const rebased = needsRebase ? rebaseChain(db, events) : events;
+  const rebasedActors = [...new Set(rebased.map((event) => event.actor))];
+  const single = rebasedActors.length === 1 ? rebasedActors[0] : undefined;
   if (single !== undefined) {
-    grantAll(db, single);
-    return append(db, events, { session: { actor: single, actor_kind: authz.session.actor_kind } });
+    return append(db, rebased, { session: { actor: single, actor_kind: authz.session.actor_kind } });
   }
   let written = 0;
   let skipped = 0;
@@ -57,9 +158,8 @@ export function appendAs(db: SdoDatabase, events: readonly Event[], authz: Appen
   for (let index = 0; index < events.length;) {
     const actor = events[index]?.actor ?? authz.session.actor;
     let end = index;
-    while (end < events.length && events[end]?.actor === actor) end += 1;
-    grantAll(db, actor);
-    last = append(db, events.slice(index, end), { session: { actor, actor_kind: authz.session.actor_kind } });
+    while (end < rebased.length && rebased[end]?.actor === actor) end += 1;
+    last = append(db, rebased.slice(index, end), { session: { actor, actor_kind: authz.session.actor_kind } });
     written += last.written;
     skipped += last.skipped;
     attempted += last.attempted;
@@ -81,7 +181,13 @@ const ROSTER = [
  * M3-1 的拒绝用例必须用不在 ROSTER 里的 actor（如 'ghost'）或显式撤销授权。
  */
 export function grantFixtureRoster(db: SdoDatabase): void {
-  for (const actor of ROSTER) grantAll(db, actor);
+  const actors = [...ROSTER, ...VIEWER_ACTORS];
+  for (const actor of actors) {
+    if (hasAnyGrant(db, actor)) continue;
+    for (const grant of baselineGrants(db)) insertGrantRow(db, { ...grant, actor });
+  }
+  for (const grant of VIEWER_GRANTS) insertGrantRow(db, grant);
+  backfillGrants(db);
 }
 
 /** 显式给某个会话 actor 播权（endpoint 测试用）。 */
@@ -104,14 +210,13 @@ export interface RightGrant {
 }
 
 export function seedRights(db: SdoDatabase, grants: readonly RightGrant[]): void {
-  const actorInsert = db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', NULL, '2026-11-13T00:00:00Z')");
-  const grantInsert = db.prepare(
-    "INSERT OR IGNORE INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, ?, ?, 'fixture', '2026-11-13T00:00:00Z', NULL)",
-  );
-  for (const grant of grants) {
-    actorInsert.run(grant.actor);
-    grantInsert.run(grant.actor, grant.scope, grant.right);
-  }
+  // A2：已存在的行不再 append（append 会 materialize 全表，清掉测试直插的夹具数据）。
+  const fresh = grants.filter((grant) => db.prepare(
+    'SELECT 1 AS one FROM scope WHERE actor = ? AND scope = ? AND right = ? LIMIT 1',
+  ).get(grant.actor, grant.scope, grant.right) === undefined);
+  if (fresh.length === 0) return;
+  for (const grant of fresh) insertGrantRow(db, grant);
+  backfillGrants(db);
 }
 
 /**

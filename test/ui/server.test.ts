@@ -10,6 +10,7 @@ import type { AddressInfo } from 'node:net';
 import { openEncryptedDatabase } from '../../src/db/driver.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
 import { runMigrations } from '../../src/db/migrate.js';
+import { seedViewerGrants } from '../db/append-auth.js';
 import { createConsoleServer } from '../../src/ui/server.js';
 import type { ConsoleServerOptions } from '../../src/ui/server.js';
 import { PASSPHRASE } from '../db/helpers.js';
@@ -21,12 +22,13 @@ interface ConsoleHandle {
   close(): Promise<void>;
 }
 
-/** `withMigratedDb` 是同步的；HTTP 测试要 async，这里用同样的 tmp 库 + 迁移模式。 */
-async function withMigratedDbAsync(run: (db: SdoDatabase) => Promise<void>): Promise<void> {
+/** `withMigratedDbAsync` 是同步的；HTTP 测试要 async，这里用同样的 tmp 库 + 迁移模式。 */
+async function withMigratedDbAsyncAsync(run: (db: SdoDatabase) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), 'sdo-ui-server-'));
   const db = openEncryptedDatabase(join(dir, 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
+    seedViewerGrants(db);
     await run(db);
   } finally {
     db.close();
@@ -65,7 +67,7 @@ function countRows(db: SdoDatabase, table: 'event' | 'task'): number {
 }
 
 test('C1：GET /、/board、/plan 都返回 200，含标题与至少一个带来源的读数', async () => {
-  await withMigratedDbAsync(async (db) => {
+  await withMigratedDbAsyncAsync(async (db) => {
     const console = await startConsole(db);
     try {
       for (const [path, pageId] of [
@@ -116,7 +118,7 @@ test('P1 fail-closed：`serve.js` 未设置 SDO_CONSOLE_ACTOR ⇒ 进程 exit 1 
 });
 
 test('C1 负例：未知路径 404，非 GET 405（Allow: GET）', async () => {
-  await withMigratedDbAsync(async (db) => {
+  await withMigratedDbAsyncAsync(async (db) => {
     const console = await startConsole(db);
     try {
       const notFound = await fetch(`${console.base}/definitely-not-a-page`);
@@ -133,13 +135,14 @@ test('C1 负例：未知路径 404，非 GET 405（Allow: GET）', async () => {
 });
 
 test('C3：页面请求不改库——请求前后 event / task 行数不变', async () => {
-  await withMigratedDbAsync(async (db) => {
+  await withMigratedDbAsyncAsync(async (db) => {
+    const console = await startConsole(db);
+    // A2：授权事件先落库（否则夹子数据会被下一次 materialize 清掉），再插业务数据。
     seedEvent(db);
     db.prepare(
       "INSERT INTO task (id, seq, title, kind, created_by, status, at) VALUES ('T1', 1, '卡一', 'implement', 'pm', 'ready', '2026-11-13T00:00:00Z')",
     ).run();
     const before = { event: countRows(db, 'event'), task: countRows(db, 'task') };
-    const console = await startConsole(db);
     try {
       for (const path of ['/', '/board', '/plan']) {
         const response = await fetch(`${console.base}${path}`);
@@ -154,11 +157,11 @@ test('C3：页面请求不改库——请求前后 event / task 行数不变', a
 });
 
 test('C1：三页数据来自 query——有数据时 HTML 里出现 overview 的读数', async () => {
-  await withMigratedDbAsync(async (db) => {
+  await withMigratedDbAsyncAsync(async (db) => {
+    grantAll(db, 'ui-lead');
     db.prepare(
       "INSERT INTO task (id, seq, title, kind, created_by, status, at) VALUES ('T1', 1, '进行中的卡', 'implement', 'pm', 'in_progress', '2026-11-13T00:00:00Z')",
     ).run();
-    grantAll(db, 'ui-lead');
     const console = await startConsole(db, { actor: 'ui-lead' });
     try {
       const html = await (await fetch(`${console.base}/`)).text();

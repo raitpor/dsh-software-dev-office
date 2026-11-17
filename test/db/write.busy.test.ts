@@ -12,7 +12,7 @@ import { openSdoDatabase } from '../../src/db/open.js';
 import { chain, seed, PASSPHRASE } from './append-helpers.js';
 
 function eventCount(db: Parameters<typeof append>[0]): number {
-  return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+  return (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 }
 
 test('P2-7: BEGIN IMMEDIATE hitting a writer lock returns database_busy', () => {

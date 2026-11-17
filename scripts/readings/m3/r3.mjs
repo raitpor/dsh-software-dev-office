@@ -2,9 +2,10 @@
  * M3-G R3 · 撤销权限后待审项消失且显示“申请入口”。
  *
  * 真路径：dbRightsPort + readReviewQueueAccess + loadOverviewPage + renderPage。
- * 撤权表示：`scope.revoked_at`（M3 无 right.revoked 事件入口，台账 D-113 记边界）。
+ * 撤权表示：M4-4 起走 `revokeRight()` 事件入口（`right.revoked` + 事务内投影 scope.revoked_at）。
  */
 import { chainHead } from '../../../lib/src/db/write.js';
+import { revokeRight } from '../../../lib/src/db/auth.js';
 import { buildEvent } from '../../../lib/src/db/freeze-store.js';
 import { raiseAttention } from '../../../lib/src/core/pm/act.js';
 import { dbRightsPort, readReviewQueueAccess } from '../../../lib/src/core/pm/access.js';
@@ -24,6 +25,10 @@ function appendEvents(db, events) {
 export async function measureR3() {
   return await withM3Db(async ({ db }) => {
     seedRights(db, [
+      { actor: 'fixture-root', scope: 'domain:core', right: 'admin' },
+      { actor: 'fixture-root', scope: 'module:core', right: 'escalate' },
+      { actor: 'fixture-root', scope: 'module:core', right: 'write' },
+      { actor: 'alice', scope: 'domain:core', right: 'plan' },
       { actor: ACTOR, scope: 'domain:core', right: 'read' },
       { actor: ACTOR, scope: 'domain:core', right: 'decide' },
       { actor: ACTOR, scope: 'domain:pm', right: 'read' },
@@ -65,9 +70,12 @@ export async function measureR3() {
     const before = readReviewQueueAccess(db, dbRightsPort(db, ACTOR), session);
     const pageBefore = renderPage(loadOverviewPage(db, 'decider', { actor: ACTOR, rights: dbRightsPort(db, ACTOR), session }));
 
-    db.prepare(
-      "UPDATE scope SET revoked_at = ? WHERE actor = ? AND scope = 'release:R-3' AND right = 'decide' AND revoked_at IS NULL",
-    ).run(AT, ACTOR);
+    const revoked = revokeRight(
+      db,
+      { actor: ACTOR, right: 'decide', scope: 'release:R-3', revoked_by: 'fixture-root', at: AT },
+      { by: { id: 'fixture-root', kind: 'service' } },
+    );
+    if (revoked.ok !== true) throw new Error(`revokeRight failed: ${JSON.stringify(revoked)}`);
 
     const after = readReviewQueueAccess(db, dbRightsPort(db, ACTOR), session);
     const pageAfter = renderPage(loadOverviewPage(db, 'decider', { actor: ACTOR, rights: dbRightsPort(db, ACTOR), session }));
@@ -127,7 +135,7 @@ export async function measureR3() {
       command: 'node scripts/m3-readings.mjs --only R3',
       measured,
       verdict: pass ? 'pass' : 'fail',
-      caveat: 'M3 没有 right.revoked 事件入口：撤权直接写 scope.revoked_at（生产 dbRightsPort 会过滤 revoked 行），这是台账 D-113 记录的边界，不是模拟。页面用生产 loadOverviewPage/renderPage 渲染。撤权后页面会提示“待审项不在你的域内”；若带具体条数即隐藏计数泄露（S25），该缺陷由 M3-7 修，本读数用 page_hidden_hint/hidden_count_leak 如实记录本次 HTML 原文。C5 边界：本机 ~/.local/state/sdo 不存在时快照只到 {exists:false}，能抓“新建生产目录”但抓不到既有目录内容变化（且只比 size+mtime）；另外 `npm run readings:m3` 默认会写 plan/milestone/M3-读数.*，C5“不碰仓库”由测试用 --out 保证（D-111 同类坑），不是脚本默认行为。',
+      caveat: 'M4-4 起撤权走 revokeRight() 事件入口（right.revoked + 事务内投影 scope.revoked_at，D-113 已收口）；生产 dbRightsPort 会过滤 revoked 行，不是模拟。页面用生产 loadOverviewPage/renderPage 渲染。撤权后页面会提示“待审项不在你的域内”；若带具体条数即隐藏计数泄露（S25），该缺陷由 M3-7 修，本读数用 page_hidden_hint/hidden_count_leak 如实记录本次 HTML 原文。C5 边界：本机 ~/.local/state/sdo 不存在时快照只到 {exists:false}，能抓“新建生产目录”但抓不到既有目录内容变化（且只比 size+mtime）；另外 `npm run readings:m3` 默认会写 plan/milestone/M3-读数.*，C5“不碰仓库”由测试用 --out 保证（D-111 同类坑），不是脚本默认行为。',
     };
-  });
+  }, { roster: false });
 }

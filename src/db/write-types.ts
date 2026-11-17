@@ -30,6 +30,10 @@ export type AppendReason =
   | 'not_public_face_writer'
   /** M4-3/C2：卡写域命中公共面登记前缀。 */
   | 'public_face_readonly'
+  /** M4-4/C1：`right.granted`/`right.revoked` 必须由授权 API 的一次性能力产生。 */
+  | 'unauthorized_right_change'
+  /** M4-4/C2：不能撤掉该 domain 上最后一个 admin 权（0 事件）。 */
+  | 'last_admin_right'
   /** `BEGIN IMMEDIATE` 撞上别的写者/锁（SQLITE_BUSY），不是投影错误。 */
   | 'database_busy'
   /** kind 已登记，但其投影表不在 M1-0 的物化范围内（写网关收窄，D-031）。 */

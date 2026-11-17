@@ -29,6 +29,8 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
   },
   { file: 'src/core/pm/card.ts', kinds: ['task.created'], reason: '建卡' },
   { file: 'src/db/action-objects.ts', kinds: ['defect.closed', 'review.finding_verified'], reason: 'C8 对象条件动作' },
+  { file: 'src/db/auth.ts', kinds: ['right.granted', 'right.revoked'], reason: 'M4-4：权限授予/撤销事件（唯一生产路径）' },
+  { file: 'src/db/auth-bootstrap.ts', kinds: ['right.granted', 'right.revoked'], reason: 'M4-4：存量 scope 行一次性背填为事件' },
   { file: 'src/db/assumption.ts', kinds: ['assumption.disposed'], reason: '假设处置（复述写路径）' },
   { file: 'src/db/conflict.ts', kinds: ['conflict.detected', 'conflict.resolved'], reason: '冲突检测/裁决（带一次性能力）' },
   { file: 'src/db/freeze-store.ts', kinds: ['baseline.rejected'], reason: '冻结预览被拒的审计事件' },

@@ -43,16 +43,26 @@ export function currentState(db: SdoDatabase): FoldState {
  * 需关心业务字段。第二批次从既有链头续写时传 `startState`（当前折叠态），
  * 否则从空态起算会得到假冲突。
  */
+let ACTIVE_DB: SdoDatabase | undefined;
+
 export function chain(
   seeds: readonly EventSeed[],
-  startPrev = GENESIS_PREV,
+  startPrev?: string,
   startState?: FoldState,
 ): Event[] {
-  let prev = startPrev;
+  const anchored = startPrev === undefined && ACTIVE_DB !== undefined;
+  const resolvedPrev = startPrev ?? (ACTIVE_DB === undefined ? GENESIS_PREV : chainHead(ACTIVE_DB));
+  let prev = resolvedPrev;
   let state: FoldState | undefined = startState;
-  if (state === undefined && startPrev === GENESIS_PREV) {
+  if (state === undefined && resolvedPrev === GENESIS_PREV) {
     try {
       state = fold(undefined, []);
+    } catch {
+      state = undefined;
+    }
+  } else if (state === undefined && anchored) {
+    try {
+      state = fold(undefined, readEvents(ACTIVE_DB!, []));
     } catch {
       state = undefined;
     }
@@ -237,7 +247,12 @@ export function withWriteDb(run: (db: SdoDatabase) => void): void {
   try {
     runMigrations(db);
     grantFixtureRoster(db);
-    run(db);
+    ACTIVE_DB = db;
+    try {
+      run(db);
+    } finally {
+      ACTIVE_DB = undefined;
+    }
   } finally {
     db.close();
     rmSync(dir, { recursive: true, force: true });
@@ -281,4 +296,16 @@ export function claimWithLease(
     payload: input.payload ?? {},
   }, chainHead(db));
   return { lease, claim: appendAs(db, [event]) };
+}
+
+/** 授权事件是建库预置（A2），断言业务事件数时显式排除。 */
+export const AUTH_EVENT_KINDS = ['right.granted', 'right.revoked'] as const;
+
+export function countEventsExcluding(
+  db: SdoDatabase,
+  kinds: readonly string[] = AUTH_EVENT_KINDS,
+): number {
+  const marks = kinds.map(() => '?').join(',');
+  const row = db.prepare(`SELECT count(*) AS n FROM event WHERE kind NOT IN (${marks})`).get(...kinds) as { n: number };
+  return row.n;
 }

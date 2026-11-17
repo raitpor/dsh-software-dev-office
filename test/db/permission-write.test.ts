@@ -29,7 +29,7 @@ function events(db: SdoDatabase, seeds: Parameters<typeof chain>[0]): Event[] {
 }
 
 function eventCount(db: SdoDatabase): number {
-  return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+  return (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 }
 
 function sourceFiles(dir: string, out: string[] = []): string[] {
@@ -213,7 +213,11 @@ test('P0 sign 收口：decision.valid 必须持该决策作用域的 sign 权', 
     assert.match(wrongScope.message ?? '', /action=sign scope=domain:core/);
 
     seedRights(db, [{ actor: 'sinner', scope: 'domain:core', right: 'sign' }]);
-    const ok = append(db, intentDecision, { session: { actor: 'sinner', actor_kind: 'human' } });
+    // A2：seedRights 会 append 授权事件、推进链头，所以重签前要按新链头重建批次。
+    const intentAgain = events(db, [
+      seed(1, 'decision.valid', 'd-intent', { decision_kind: 'intent', payload_hash: 'ph', payload: {}, frontier: 'f' }, { actor: 'sinner' }),
+    ]);
+    const ok = append(db, intentAgain, { session: { actor: 'sinner', actor_kind: 'human' } });
     assert.equal(ok.ok, true, JSON.stringify(ok));
 
     const freezeDecision = events(db, [

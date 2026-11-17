@@ -1,3 +1,4 @@
+import { seedRights } from './append-auth.js';
 import { grantFixtureRoster } from './append-auth.js';
 import { appendAs as append } from './append-auth.js';
 /**
@@ -53,22 +54,16 @@ const STRANGER = { id: 'mallory', kind: 'human' } as const;
 
 /** 插 actor + 一条 `admin@domain:renderers` grant（hasRight 的输入是数据）。 */
 function grantAdmin(db: SdoDatabase): void {
-  db.prepare("INSERT OR IGNORE INTO actor (id, kind, display, at) VALUES (?, 'human', 'Admin', '2026-11-15T00:00:00Z')").run(
-    ADMIN.id,
-  );
-  db.prepare(
-    `INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at)
-     VALUES (?, ?, 'admin', 'boot', '2026-11-15T00:00:00Z', NULL)`,
-  ).run(ADMIN.id, 'domain:renderers');
+  seedRights(db, [{ actor: ADMIN.id, scope: 'domain:renderers', right: 'admin' }]);
 }
 
 function eventCount(db: SdoDatabase): number {
-  return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+  return (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 }
 
 test('C1 migration 010/011: renderer_catalog table + renderer.registered kind + built-in renderer (idempotent)', () => {
   withMigratedDb((db) => {
-    assert.equal(currentUserVersion(db), 18, '当前链头（017 lease）');
+    assert.equal(currentUserVersion(db), 19, '当前链头（019 right events）');
     assert.deepEqual(columnNames(db, 'renderer_catalog'), ['id', 'module_path', 'views', 'at']);
     const kind = db.prepare("SELECT kind FROM event_kind WHERE kind = 'renderer.registered'").get();
     assert.ok(kind !== undefined, 'migration 010 must seed the ACK kind');

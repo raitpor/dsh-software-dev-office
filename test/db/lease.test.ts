@@ -78,7 +78,7 @@ test('C1: dispatchLease issues a lease; raw lease.issued is rejected (unauthoriz
     const rejected = appendAs(db, [forged], { session: alice });
     assert.equal(rejected.ok, false);
     if (!rejected.ok) assert.equal(rejected.reason_code, 'unauthorized_lease_issue');
-    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, 2);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, 2);
   });
 });
 
@@ -167,7 +167,7 @@ test('C4: revokeLease ⇒ blocked(lease_revoked) → ready; verify clean; forged
     );
     const rejected = appendAs(db, [forged], { session: alice });
     assert.equal(rejected.ok, false);
-    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, 8);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, 8);
   });
 });
 
@@ -233,11 +233,11 @@ test('P1: expireLease cannot run early and requires assign on the lease scope', 
     const dispatched = dispatchLease(db, alice, { card: 'CARD-L1', actor: 'alice', scope: 'domain:core', at: AT });
     assert.equal(dispatched.ok, true);
     const leaseId = (db.prepare('SELECT id FROM lease').get() as { id: string }).id;
-    const before = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+    const before = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
     const early = expireLease(db, alice, leaseId, '2026-11-13T01:00:00Z');
     assert.equal(early.ok, false);
     if (!early.ok) assert.equal(early.reason_code, 'lease_not_expired');
-    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, before);
+    assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, before);
     const denied = expireLease(db, { actor: 'mallory', actor_kind: 'human' }, leaseId, '2026-11-13T04:00:01Z');
     assert.equal(denied.ok, false);
     if (!denied.ok) assert.equal(denied.reason_code, 'no_permission');

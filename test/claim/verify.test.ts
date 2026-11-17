@@ -72,14 +72,14 @@ test('P1-1 recover: events landed, claims missing -> render-only fills 20 and do
     dispatchLeasesForClaims(db, parsed.claims);
     const events = rebaseEvents(db, parsed.claims.flatMap((claim) => landingEvents(claim)));
     assert.equal(append(db, events).ok, true);
-    const eventCount = (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+    const eventCount = (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
     assert.equal(eventCount, 61, '1 renderer + 20 leases + 40 claim events');
     assert.equal((db.prepare('SELECT count(*) AS n FROM claim').get() as { n: number }).n, 0);
 
     const render = renderClaimsFromEvents(db);
     assert.equal(render.ok, true, render.message ?? '');
     assert.deepEqual([render.written, render.skipped, render.events_written], [20, 0, 0]);
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, eventCount);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventCount);
     assert.equal((db.prepare('SELECT count(*) AS n FROM claim').get() as { n: number }).n, 20);
     assert.equal(verifyClaims(db).ok, true);
 
@@ -102,14 +102,14 @@ test('P1-1 truthful reporting: post-append claim failure reports 40 events and s
     assert.equal(failed.claims_written, 0);
     assert.equal(failed.resumable, true);
     assert.equal(failed.next_step, 'render_only');
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 61);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, 61);
     assert.equal((db.prepare('SELECT count(*) AS n FROM claim').get() as { n: number }).n, 0);
 
     db.exec('DROP TRIGGER reject_one');
     const recovered = renderClaimsFromEvents(db);
     assert.deepEqual([recovered.ok, recovered.written, recovered.events_written], [true, 20, 0]);
     assert.equal(verifyClaims(db).ok, true);
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 61);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, 61);
   });
 });
 
@@ -122,7 +122,7 @@ test('P1-1 prevalidation: forged renderer rejects before append, zero events', (
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'renderer_unregistered');
     assert.equal(result.events_written, 0);
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, 0);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, 0);
     assert.equal((db.prepare('SELECT count(*) AS n FROM claim').get() as { n: number }).n, 0);
   });
 });

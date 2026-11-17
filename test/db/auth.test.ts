@@ -34,9 +34,9 @@ function byAction(entries: readonly MatrixEntry[]): Map<string, MatrixEntry> {
   return new Map(entries.map((entry) => [entry.action, entry]));
 }
 
-test('C1：迁移 008 建三张表，user_version=18（当前链头），二次运行 no-op（幂等）', () => {
+test('C1：迁移 008 建三张表，user_version=19（当前链头），二次运行 no-op（幂等）', () => {
   withMigratedDb((db) => {
-    assert.equal(db.pragma('user_version', { simple: true }), 18, '当前链头（015 由 M4-0、016/017 由 M4-1/M4-2、018 由 M4-3 追加）');
+    assert.equal(db.pragma('user_version', { simple: true }), 19, '当前链头（M4-4 追加 019）');
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('actor','scope','right') ORDER BY name")
       .all() as Array<{ name: string }>;
@@ -46,7 +46,7 @@ test('C1：迁移 008 建三张表，user_version=18（当前链头），二次�
     );
     const second = runMigrations(db);
     assert.deepEqual(second.applied, []);
-    assert.equal(second.userVersion, 18);
+    assert.equal(second.userVersion, 19);
     const count = (name: string): number =>
       (db.prepare(`SELECT count(*) AS n FROM ${name}`).get() as { n: number }).n;
     assert.equal(count('right'), 26, '矩阵目录播种 26 个动作');
@@ -235,12 +235,16 @@ test('守卫：bootstrap 入口只许迁移/CLI 与 auth 测试引用', () => {
       const source = readFileSync(path, 'utf8');
       if (!source.includes('auth-bootstrap')) continue;
       if (relative === 'src/db/auth-bootstrap.ts') continue;
+      // append-actions.ts 只是调用点登记表里的一个文件名字符串，不是 import。
+      if (relative === 'src/db/append-actions.ts') continue;
       if (relative.startsWith('src/')) {
         offenders.push(`${relative}（产品代码不得 import 内部 bootstrap 入口）`);
         continue;
       }
-      if (relative.startsWith('test/') && relative !== 'test/db/auth.test.ts' && relative !== 'test/db/helpers.ts') {
-        offenders.push(`${relative}（测试里只允许 auth.test.ts 使用 bootstrap 种子）`);
+      // append-auth.ts 是夹具播种入口（M4-4 A2：建库预置授权 / 去重背填），
+      // 它不暴露给产品代码；auth.test.ts / right-events.test.ts 之外不允许别的测试自建 bootstrap 种子。
+      if (relative.startsWith('test/') && relative !== 'test/db/auth.test.ts' && relative !== 'test/db/helpers.ts' && relative !== 'test/db/append-auth.ts' && relative !== 'test/db/right-events.test.ts') {
+        offenders.push(`${relative}（测试里只允许 auth.test.ts / append-auth.ts 使用 bootstrap 种子）`);
       }
     }
   };

@@ -1,5 +1,4 @@
 import assert from 'node:assert/strict';
-import { grantFixtureRoster } from '../db/append-auth.js';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -120,7 +119,7 @@ function withConsistentDb(run: (db: SdoDatabase) => void, chain: readonly Event[
   const db = openEncryptedDatabase(join(dir, 'sdo.db'), PASSPHRASE);
   try {
     runMigrations(db);
-    grantFixtureRoster(db);
+    // 直插事件夹具：不预置授权事件（否则链从 genesis 起会与 grant 事件冲突）。
     insertEventRows(db, chain);
     const state = fold(undefined, chain).tables;
     for (const table of ['decision', 'intent', 'spec', 'task', 'release'] as const) {
@@ -140,7 +139,7 @@ test('C4 正例：事件链与投影一致 ⇒ ok，事件数正确', () => {
   withConsistentDb((db) => {
     const report = verify(db);
 
-    assert.equal(report.ok, true);
+    assert.equal(report.ok, true, JSON.stringify(report.problems));
     assert.equal(report.eventCount, 6);
     assert.deepEqual(report.problems, []);
   });

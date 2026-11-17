@@ -1,4 +1,5 @@
 import { grantFixtureRoster } from './append-auth.js';
+import { chainHead } from '../../src/db/write.js';
 import { appendAs as append } from './append-auth.js';
 /**
  * M3-2 C1 两进程：两个独立 node 进程、两个 SQLite 连接写同一库文件，
@@ -69,7 +70,7 @@ test('C1 two processes: one write wins, the stale one becomes a visible conflict
     try {
       runMigrations(db);
       grantFixtureRoster(db);
-      assert.equal(append(db, chain(fourDomainSeeds())).ok, true);
+      assert.equal(append(db, chain(fourDomainSeeds(), chainHead(db))).ok, true);
       const state = fold(undefined, readEvents(db, []));
       const row = state.tables.spec['SPEC-1'];
       if (row === undefined) throw new Error('SPEC-1 missing');

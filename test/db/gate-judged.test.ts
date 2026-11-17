@@ -123,11 +123,11 @@ test('C2/C10: 裸 append gate.judged ⇒ unauthorized_gate_judgement，不落行
   await withFreezeRig(async (rig) => {
     const preview = await freezeWaterfall(rig);
     enterStage(rig.db, 'SR-1', 'req', AT, preview.hash);
-    const before = rows(rig.db, "SELECT count(*) AS n FROM event")[0]!['n'];
+    const before = rows(rig.db, "SELECT count(*) AS n FROM event WHERE kind NOT IN ('right.granted','right.revoked')")[0]!['n'];
     const result = append(rig.db, [gateEvent(rig.db, 'ev-naked-gate', AT)]);
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'unauthorized_gate_judgement');
-    assert.equal(rows(rig.db, "SELECT count(*) AS n FROM event")[0]!['n'], before);
+    assert.equal(rows(rig.db, "SELECT count(*) AS n FROM event WHERE kind NOT IN ('right.granted','right.revoked')")[0]!['n'], before);
     assert.equal(rows(rig.db, "SELECT count(*) AS n FROM event WHERE kind = 'gate.judged'")[0]!['n'], 0);
   });
 });

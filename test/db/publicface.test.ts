@@ -135,13 +135,13 @@ test('C5: a request never writes card-owned rows (no snapshot/workcopy side effe
     createCard(db, 'T-M43-C5');
     const before = {
       snapshots: (db.prepare('SELECT count(*) AS n FROM snapshot').get() as { n: number }).n,
-      events: (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n,
+      events: (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n,
     };
     const request = requestPublicFace(db, alice, { card: 'T-M43-C5', intent: { kind: 'register_criterion' }, diff: '+', at: AT });
     assert.equal(request.ok, true);
     const after = {
       snapshots: (db.prepare('SELECT count(*) AS n FROM snapshot').get() as { n: number }).n,
-      events: (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n,
+      events: (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n,
     };
     assert.equal(after.snapshots, before.snapshots, '公共面申请不得产生 snapshot');
     assert.equal(after.events, before.events + 1, '只允许一条申请事件');

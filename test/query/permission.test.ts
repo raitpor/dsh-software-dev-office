@@ -1,3 +1,4 @@
+import { seedViewerRights } from '../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -11,8 +12,6 @@ import { listViewCatalog } from '../../src/views/catalog.js';
 import { query } from '../../src/query/index.js';
 import type { QueryContext } from '../../src/query/execute.js';
 import { PASSPHRASE } from '../db/helpers.js';
-
-const AT = '2026-11-15T00:00:00.000Z';
 
 function withMigratedDb(run: (db: ReturnType<typeof openSdoDatabase>) => void): void {
   const dir = mkdtempSync(join(tmpdir(), 'sdo-m3-1-query-'));
@@ -31,10 +30,7 @@ function session(actor: string): { actor: string; actor_kind: 'human'; session_i
 }
 
 function grant(db: ReturnType<typeof openSdoDatabase>, actor: string, right: string): void {
-  db.prepare("INSERT INTO actor (id, kind, display, at) VALUES (?, 'human', NULL, ?)").run(actor, AT);
-  db.prepare(
-    "INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, 'domain:core', ?, 'migration', ?, NULL)",
-  ).run(actor, right, AT);
+  seedViewerRights(db, [{ actor, scope: 'domain:core', right }]);
 }
 
 test('M3-1 C1: view_catalog 里每个 min_right 都在映射表里（防漂移）', () => {

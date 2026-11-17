@@ -440,7 +440,9 @@ test('C7 动作留痕 actor=PM；verify 绿；重放后 pm_queue 逐行相等', 
     try {
       // M4-2：lease.* 是工具能力事件，不能从历史日志裸重放；重放前用真派发补租约，
       // 并跳过工具事件本身（它们不投影到 pm_queue）。重放语义=fold/队列一致，不是字节一致。
-      const replayed = events.filter((event) => !event.kind.startsWith('lease.'));
+      const replayed = events.filter(
+        (event) => !event.kind.startsWith('lease.') && !event.kind.startsWith('right.'),
+      );
       const dispatched = dispatchLease(
         second.db,
         { actor: 'lead', actor_kind: 'human' },

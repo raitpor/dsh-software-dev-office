@@ -16,7 +16,7 @@ import type { Event } from '../../src/core/fold/types.js';
 import { chain, fourDomainSeeds, seed, withWriteDb } from './append-helpers.js';
 
 function eventCount(db: SdoDatabase): number {
-  return (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+  return (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 }
 
 function specRowHash(db: SdoDatabase): string {
@@ -67,7 +67,7 @@ test('C1: concurrent writes on the same field — one ok, one conflict with stru
     assert.equal(second.base_hash, base);
     assert.ok(second.current_hash);
     assert.equal(second.rolled_back, false, '冲突路径已提交（写方按 409 处理）');
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, before + 2);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, before + 2);
 
     const conflict = db.prepare('SELECT * FROM conflicts WHERE id = ?').get(second.conflict_id) as Record<string, unknown>;
     assert.ok(conflict, 'conflict row must be projected from conflict.detected');

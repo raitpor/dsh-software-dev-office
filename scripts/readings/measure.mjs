@@ -189,7 +189,7 @@ export function measureR3(db, dbPath) {
     bad[1] = { ...bad[1], hash: 'sha256:deadbeef' };
     insertEvents(hashDb, bad);
     return verify(hashDb);
-  });
+  }, { roster: false });
   const hash = hashReport.problems.find((problem) => problem.code === 'event_hash_mismatch');
 
   const measured = {

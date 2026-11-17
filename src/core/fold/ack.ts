@@ -41,4 +41,6 @@ export const ACK_KINDS: Readonly<Record<string, string>> = {
   'publicface.executed': '公共面执行：单写者能力路径；不投影业务表（D-030 物化表只由 reducer 产生）',
   'request_sign': 'PM 发起的待签请求（M2-5）：只记录请求，签名仍由人做；不投影任何表',
   'renderer.registered': '渲染器注册（M3-4）：目录行由 src/db/renderer.ts 从事件投影到 renderer_catalog，不走 fold 表',
+  'right.granted': '权限授予（M4-4）：scope 行由 src/db/auth.ts 在 append 事务内投影，不走 fold 表（D-113）',
+  'right.revoked': '权限撤销（M4-4）：只写 revoked_at/revoked_by，不删行；投影同上（D-113）',
 };

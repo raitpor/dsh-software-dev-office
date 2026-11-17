@@ -49,6 +49,12 @@ export type VerifyProblemCode =
   | 'lock_missing'
   | 'lock_leaked'
   /** M4-2/C7：租约完整性（busy 卡无活租约 / actor 不匹配 / 同卡多条活租约 / 预占期被他人认领）。 */
+  /** M4-4/C5：right.* 事件流 vs scope 表（missing/extra/mismatch/untracked）。 */
+  | 'right_projection_missing'
+  | 'right_projection_extra'
+  | 'right_projection_mismatch'
+  | 'right_grant_untracked'
+  | 'right_actor_mismatch'
   | 'lease_missing'
   | 'lease_actor_mismatch'
   | 'lease_multiple_active';

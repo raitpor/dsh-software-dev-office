@@ -1,4 +1,4 @@
-import { appendAs as append, grantFixtureRoster } from '../db/append-auth.js';
+import { appendAs as append, grantAll, grantFixtureRoster } from '../db/append-auth.js';
 /**
  * M2-6 签字页测试装配：真实 signerd（test/sign/helpers.ts）+ 已迁移库 + claim 行。
  *
@@ -28,6 +28,8 @@ export interface ClaimSeedResult {
 
 /** 为一条 task 写一个 claim 行（`renderer:gate-result` 已在注册表里）。 */
 export function seedClaim(db: SdoDatabase, taskId = 'TASK-1', claimNo = 'TEST-1'): ClaimSeedResult {
+  // A2：先把事件 actor 的授权以真事件落库（推进链头），再按新链头建批次。
+  grantAll(db, 'actor-1');
   const [event] = chain([seed(1, 'task.created', taskId, { seq: 1, title: 't', kind: 'implement' })], chainHead(db));
   if (event === undefined) throw new Error('seedClaim: 事件生成失败');
   const appended = append(db, [event]);
@@ -50,6 +52,7 @@ export function seedClaim(db: SdoDatabase, taskId = 'TASK-1', claimNo = 'TEST-1'
 
 /** 追加一条无关事件，用来推 frontier。 */
 export function bumpFrontier(db: SdoDatabase, taskId = 'TASK-2'): string {
+  grantAll(db, 'actor-1');
   const [event] = chain(
     [seed(2, 'task.created', taskId, { seq: 2, title: 't2', kind: 'implement' })],
     chainHead(db),

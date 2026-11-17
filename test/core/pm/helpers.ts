@@ -22,10 +22,10 @@ export { appendCriterion, appendIntent, appendRequirement, appendSeeds, ev };
 export const PM_PASSPHRASE = 'm2-5-pm-passphrase';
 
 /** PM 测试里会真写事件的 actor（按真实矩阵点状授权，见 `openTempDb`）。 */
-const PM_FIXTURE_ACTORS = ['impl-core', 'lead', 'reviewer'] as const;
+const PM_FIXTURE_ACTORS = ['impl-core', 'lead', 'reviewer', 'align-fixture-actor'] as const;
 
 export function eventCount(db: SdoDatabase): number {
-  const row = db.prepare('SELECT count(*) AS n FROM event').get() as { n: number };
+  const row = db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number };
   return row.n;
 }
 
@@ -54,7 +54,6 @@ export function openTempDb(passphrase = PM_PASSPHRASE): TempDb {
     { actor, scope: 'domain:core', right: 'plan' as const },
     { actor, scope: 'module:core', right: 'assign' as const },
     { actor, scope: 'module:core', right: 'escalate' as const },
-    { actor, scope: 'module:core', right: 'withdraw_attention' as const },
     { actor, scope: 'module:core', right: 'write' as const },
     { actor, scope: 'domain:core', right: 'read' as const },
     { actor, scope: 'domain:core', right: 'decide' as const },

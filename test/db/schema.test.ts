@@ -64,7 +64,7 @@ const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   view_catalog: ['name', 'sql', 'columns', 'doc', 'min_right', 'row_budget'],
   renderer_catalog: ['id', 'module_path', 'views', 'at'],
   actor: ['id', 'kind', 'display', 'at'],
-  scope: ['actor', 'scope', 'right', 'granted_by', 'at', 'revoked_at'],
+  scope: ['actor', 'scope', 'right', 'granted_by', 'at', 'revoked_at', 'revoked_by'],
   right: ['action', 'required', 'self_sign', 'dual_human', 'boot_only', 'doc_row', 'doc_label', 'at'],
   signerd_receipt_use: ['receipt_id', 'event_id', 'decision_id', 'at'],
   scope_owns: ['child_scope', 'parent_scope', 'created_at'],

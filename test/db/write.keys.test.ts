@@ -56,7 +56,7 @@ test('C1 a table without a primary key fails closed instead of guessing a key', 
 test('append-only projection: an unexpected baseline row fails the next append cleanly', () => {
   withWriteDb((db) => {
     assert.equal(append(db, chain(worldSeeds())).ok, true);
-    const eventCount = (db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n;
+    const eventCount = (db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
     // 手工插一行事件外的 baseline（baseline 没有 INSERT 触发器，只有 UPDATE/DELETE）。
     db.prepare(
       `INSERT INTO baseline (id, frozen_by, engine_version, criteria_manifest_hash, policy, criteria, gates, thresholds, assurance, prev, direction, hash, at)
@@ -67,7 +67,7 @@ test('append-only projection: an unexpected baseline row fails the next append c
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'materialize_failed');
     assert.match(result.message ?? '', /baseline rows are append-only|append-only/);
-    assert.equal((db.prepare('SELECT count(*) AS n FROM event').get() as { n: number }).n, eventCount);
+    assert.equal((db.prepare('SELECT count(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventCount);
     const config = db.prepare("SELECT count(*) AS n FROM config WHERE key = 'limits.max_members'").get() as { n: number };
     assert.equal(config.n, 0, 'failed append must not leave the new config key behind');
   });

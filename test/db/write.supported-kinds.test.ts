@@ -10,6 +10,7 @@ import { fold } from '../../src/core/fold/index.js';
 import type { FoldState } from '../../src/core/fold/types.js';
 import { verify } from '../../src/core/verify.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
+import { chainHead } from '../../src/db/write.js';
 import { chain, withWriteDb } from './append-helpers.js';
 import { worldSeeds } from './world-seeds.js';
 
@@ -76,7 +77,7 @@ test('D-078: assumption.invalidated is registered but every write is rejected at
     const result = append(db, [event]);
     assert.equal(result.ok, false);
     assert.equal(result.reason_code, 'assumption_invalidated_is_derived');
-    const row = db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number };
+    const row = db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number };
     assert.equal(row.n, 0, '拒绝必须 0 行');
   });
 });
@@ -152,9 +153,12 @@ function visibleFoldRows(state: FoldState, table: string): Record<string, Record
 
 test('C6 world append: materialized rows equal the fold final state for every table', () => {
   withWriteDb((db) => {
-    assert.equal(append(db, events).ok, true);
+    // A2 建库预置授权后链头不是 genesis：world 批次按库内当前链头构建。
+    const batch = chain(seeds, chainHead(db));
+    const appended = append(db, batch);
+    assert.equal(appended.ok, true, appended.message ?? '');
     assert.equal(verify(db).ok, true);
-    const state = fold(undefined, events);
+    const state = fold(undefined, batch);
     for (const table of MATERIALIZED_TABLES) {
       const pk = primaryKeyColumns(db, table);
       const columns = columnsOf(db, table);

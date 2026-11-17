@@ -7,6 +7,7 @@
  * 用产品路径 `dbRightsPort(db, actor)`（真库 grant）构造 ConsoleAccess，不是假端口。
  */
 
+import { seedViewerRights } from '../db/append-auth.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -52,10 +53,11 @@ function seed(db: Db): void {
     ['alice', 'human'],
   ] as const) {
     db.prepare('INSERT INTO actor (id, kind, display, at) VALUES (?, ?, NULL, ?)').run(actor, kind, AT);
-    db.prepare(
-      "INSERT INTO scope (actor, scope, right, granted_by, at, revoked_at) VALUES (?, 'domain:core', 'read', 'migration', ?, NULL)",
-    ).run(actor, AT);
   }
+  seedViewerRights(db, [
+    { actor: 'bot', scope: 'domain:core', right: 'read' },
+    { actor: 'alice', scope: 'domain:core', right: 'read' },
+  ]);
 }
 
 function session(actor: string, kind: Session['actor_kind']): Session {

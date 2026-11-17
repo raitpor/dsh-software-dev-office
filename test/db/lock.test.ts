@@ -184,11 +184,11 @@ test('P1-1: overlapping acquire fails in fold — no row, no event, no orphan lo
       grantAll(db, 'alice');
       grantAll(db, 'bob');
       assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'CARD-A', session: SESSION('alice'), at: AT }).ok, true);
-      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
       const child = acquireLock(db, { prefix: 'src/core/auth', card_id: 'CARD-B', session: SESSION('bob'), at: AT });
       assert.equal(child.ok, false);
       if (!child.ok) assert.equal(child.reason_code, 'lock_conflict');
-      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, eventsBefore, 'failed acquire must not append an event');
+      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventsBefore, 'failed acquire must not append an event');
       assert.equal((db.prepare("SELECT COUNT(*) AS n FROM lock WHERE status = 'active'").get() as { n: number }).n, 1, 'only the holder row remains');
       const orphan = db.prepare("SELECT COUNT(*) AS n FROM lock WHERE actor = 'bob'").get() as { n: number };
       assert.equal(orphan.n, 0, 'no orphan row for the rejected acquirer');
@@ -250,7 +250,7 @@ test('P1-1: fold itself rejects overlapping lock.acquired (append rolls back; no
       grantAll(db, 'alice');
       grantAll(db, 'bob');
       assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'CARD-A', session: SESSION('alice'), at: AT }).ok, true);
-      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
       const rowsBefore = (db.prepare('SELECT COUNT(*) AS n FROM lock').get() as { n: number }).n;
       const event = buildEvent({
         id: 'lock.acquired:src/core/auth:fold-test',
@@ -265,7 +265,7 @@ test('P1-1: fold itself rejects overlapping lock.acquired (append rolls back; no
       const result = append(db, [event], { session: SESSION('bob') });
       assert.equal(result.ok, false, JSON.stringify(result));
       assert.equal(result.written, 0, 'no event may be committed when the fold rejects');
-      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, eventsBefore);
+      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventsBefore);
       assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lock').get() as { n: number }).n, rowsBefore);
       assert.equal((db.prepare("SELECT COUNT(*) AS n FROM lock WHERE actor = 'bob'").get() as { n: number }).n, 0);
     } finally {
@@ -285,7 +285,7 @@ test('P1-2: fold guards lock.released by actor — a non-holder release event is
       grantAll(db, 'alice');
       grantAll(db, 'bob');
       assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'CARD-A', session: SESSION('alice'), at: AT }).ok, true);
-      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
       const event = buildEvent({
         id: 'lock.released:src/core:fold-test',
         at: AT,
@@ -298,7 +298,7 @@ test('P1-2: fold guards lock.released by actor — a non-holder release event is
       }, chainHead(db));
       const result = append(db, [event], { session: SESSION('bob') });
       assert.equal(result.ok, false, JSON.stringify(result));
-      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, eventsBefore);
+      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventsBefore);
       assert.equal((db.prepare("SELECT status FROM lock WHERE path_prefix = 'src/core'").get() as { status: string }).status, 'active');
       assert.equal(releaseLock(db, { prefix: 'src/core', session: SESSION('alice'), at: AT }).ok, true);
     } finally {
@@ -317,7 +317,7 @@ test('P1(2nd): a business append cannot forge the root lock — capability, not 
     try {
       runMigrations(db);
       grantAll(db, 'bob');
-      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
       for (const initiator of [undefined, 'sdo-workcopy']) {
         const payload: Record<string, unknown> = {
           card_id: 'CARD-ROOT-FAKE', acquired_at: AT, expires_at: '2026-11-17T00:00:00.000Z', scope: 'domain:core',
@@ -338,7 +338,7 @@ test('P1(2nd): a business append cannot forge the root lock — capability, not 
         assert.equal(result.reason_code, 'unauthorized_root_lock');
         assert.equal(result.written, 0);
       }
-      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, eventsBefore);
+      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventsBefore);
       assert.equal((db.prepare('SELECT COUNT(*) AS n FROM lock').get() as { n: number }).n, 0);
     } finally {
       db.close();
@@ -379,7 +379,7 @@ test('P2(2nd): same actor with a different card is a conflict, not an idempotent
       runMigrations(db);
       grantAll(db, 'alice');
       assert.equal(acquireLock(db, { prefix: 'src/core', card_id: 'CARD-A', session: SESSION('alice'), at: AT }).ok, true);
-      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n;
+      const eventsBefore = (db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n;
 
       const api = acquireLock(db, { prefix: 'src/core', card_id: 'CARD-B', session: SESSION('alice'), at: AT });
       assert.equal(api.ok, false, JSON.stringify(api));
@@ -398,7 +398,7 @@ test('P2(2nd): same actor with a different card is a conflict, not an idempotent
       const appended = append(db, [event], { session: SESSION('alice') });
       assert.equal(appended.ok, false, JSON.stringify(appended));
       assert.equal(appended.written, 0);
-      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event').get() as { n: number }).n, eventsBefore);
+      assert.equal((db.prepare('SELECT COUNT(*) AS n FROM event WHERE kind NOT IN (\'right.granted\',\'right.revoked\')').get() as { n: number }).n, eventsBefore);
       const row = db.prepare("SELECT card_id, status FROM lock WHERE path_prefix = 'src/core'").get() as { card_id: string; status: string };
       assert.equal(row.card_id, 'CARD-A');
       assert.equal(row.status, 'active');

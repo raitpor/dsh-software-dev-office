@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 
-import { withMigratedDb } from '../db/helpers.js';
+import { withViewerDb } from '../db/helpers.js';
 import { query } from '../../src/query/index.js';
 import type { QueryResult } from '../../src/query/index.js';
 import type { SdoDatabase } from '../../src/db/driver.js';
@@ -18,12 +18,12 @@ import type { Figure, PageModel } from '../../src/ui/pages.js';
 import { renderPage } from '../../src/ui/render.js';
 import { dbRightsPort } from '../../src/core/pm/access.js';
 import { pmSession } from '../core/pm/helpers.js';
-import { seedRights } from '../db/append-auth.js';
+import { seedViewerRights } from '../db/append-auth.js';
 
 const ACCESS_RIGHTS = ['read', 'review', 'decide'] as const;
 
 function accessFor(db: SdoDatabase, actor: string, rights: readonly ('read'|'review'|'decide')[] = ACCESS_RIGHTS) {
-  seedRights(db, rights.map((right) => ({ actor, scope: 'domain:core', right })));
+  seedViewerRights(db, rights.map((right) => ({ actor, scope: 'domain:core', right })));
   return { actor, rights: dbRightsPort(db, actor), session: pmSession(actor) };
 }
 
@@ -110,7 +110,7 @@ function seed(db: SdoDatabase): void {
 }
 
 test('C2：空库三页的每个读数都能用 query(view,args) 复算，且为显式空态', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     const overview = loadOverviewPage(db, RIGHT, ACCESS);
     assertFiguresRecomputable(db, overview, ACCESS.session);
@@ -137,7 +137,7 @@ test('C2：空库三页的每个读数都能用 query(view,args) 复算，且为
 });
 
 test('C2：有数据时三个必答数字与 overview 逐字段相等（卡数/红过/待确认），board/plan 跟上', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
     const overview = loadOverviewPage(db, RIGHT, ACCESS);
@@ -172,7 +172,7 @@ test('C2：有数据时三个必答数字与 overview 逐字段相等（卡数/�
 });
 
 test('C2：模板不写死数字——改模型里的值，渲染结果跟着变', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
     const model = loadOverviewPage(db, RIGHT, ACCESS);
@@ -192,7 +192,7 @@ test('C2：模板不写死数字——改模型里的值，渲染结果跟着变
 });
 
 test('C2：同一模型两次渲染逐字节相同（同 as_of 确定性）', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
     const model = loadPlanPage(db, RIGHT, ACCESS);
@@ -201,7 +201,7 @@ test('C2：同一模型两次渲染逐字节相同（同 as_of 确定性）', ()
 });
 
 test('C2：读数来源只允许目录里的视图名（A3）', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     seed(db);
     const catalogNames = new Set(listViewCatalog(db).map((view) => view.name));
@@ -217,7 +217,7 @@ test('C2：读数来源只允许目录里的视图名（A3）', () => {
 });
 
 test('空库与有数据的渲染结果不同（负例：写死数字的模板不可能通过）', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     const emptyHtml = renderPage(loadOverviewPage(db, RIGHT, ACCESS));
     seed(db);
@@ -230,7 +230,7 @@ test('空库与有数据的渲染结果不同（负例：写死数字的模板�
 
 
 test('C2 口径表：每个数字的 id→{view,field} 显式钉死；label 含“待确认”的不得来自 blocked', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     const page = loadOverviewPage(db, RIGHT, ACCESS);
     assert.deepEqual(
@@ -269,7 +269,7 @@ test('C2 口径表：每个数字的 id→{view,field} 显式钉死；label 含�
 });
 
 test('C2：decider 有「要我决定」数字（review_queue 行数）；reader 拿不到时显式权限 miss', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     const decider = loadOverviewPage(db, 'decider', ACCESS);
     const toDecide = decider.figures.find((figure) => figure.id === 'to_decide');
@@ -290,7 +290,7 @@ test('C2：decider 有「要我决定」数字（review_queue 行数）；reader
 });
 
 test('P2-3：页脚不写死视图数量（目录会变，页脚不能撒谎）', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const ACCESS = accessFor(db, ACC_ACTOR);
     const html = renderPage(loadOverviewPage(db, RIGHT, ACCESS));
     assert.doesNotMatch(html, /13 个视图/);
@@ -299,7 +299,7 @@ test('P2-3：页脚不写死视图数量（目录会变，页脚不能撒谎）'
 });
 
 test('P2-1 fail-closed：缺 session / session 与 actor 不一致 ⇒ 拒绝装载页面（不静默跳过过滤）', () => {
-  withMigratedDb((db) => {
+  withViewerDb((db) => {
     const noSession = { actor: 'ghost', rights: { actor: 'ghost', has: () => false } };
     assert.throws(
       () => loadOverviewPage(db, RIGHT, noSession as unknown as Parameters<typeof loadOverviewPage>[2]),

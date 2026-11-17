@@ -19,6 +19,7 @@ import { verifyVcsObjects } from './verify-vcs.js';
 import { verifyLocks } from './verify-lock.js';
 import { verifyPublicFace } from './verify-publicface.js';
 import { verifyLeases } from './verify-lease.js';
+import { verifyRightProjections } from './verify-rights.js';
 import type { VerifyDatabase, VerifyProblem, VerifyReport } from './verify-types.js';
 
 /**
@@ -108,6 +109,10 @@ export function verify(db: VerifyDatabase): VerifyReport {
 
   // M2-3/D-081：`assumption.invalidated` 在 M2 起降为派生读数（写入被拒、fold 显式拒）。
   // 旧库若在升级前写过该 kind，这里先给**可读可行动**的专门 problem，而不是让 fold 笼统崩掉。
+  // M4-4/C5：right.* 事件流 vs scope 表（四码）；放在 fold 之前：损坏的 right 事件
+  // 不能让整份报告只剩一个笼统 fold_failed。
+  problems.push(...verifyRightProjections(db, events));
+
   const legacyInvalidated = events.filter((event) => event.kind === 'assumption.invalidated');
   if (legacyInvalidated.length > 0) {
     for (const event of legacyInvalidated) {
