@@ -27,6 +27,7 @@ import { appendTool, elapsedMs, isBusy, lock, pathsFor, toolEvent, unlock, warnS
 import { appendAsTool } from './write.js';
 import { chainHead } from './write.js';
 import { acquireMainTreeLock, hasActiveLock, releaseCardLocksAsTool, releaseMainTreeLock } from './lock.js';
+import { publicFaceHits, readPublicFace } from '../core/publicface/catalog.js';
 import { computeEventHash } from '../core/verify-events.js';
 import type { Event } from '../core/fold/types.js';
 
@@ -69,6 +70,26 @@ async function withLock<T>(paths: WorkcopyPaths, body: () => Promise<T>): Promis
   }
 }
 
+/**
+ * M4-3 第 1 轮 P1-2：写域只认 `task` 行（fold 从 `task.created` 投影），不认调用方参数。
+ * 行不存在 ⇒ `task_not_found`；`scope_paths` 为空 ⇒ `scope_undeclared`（空写域等于没约束）。
+ */
+function taskScopePaths(db: SdoDatabase, cardId: string): { ok: true; paths: string[] } | FailureResult {
+  const row = db.prepare('SELECT scope_paths FROM task WHERE id = ?').get(cardId) as { scope_paths?: unknown } | undefined;
+  if (row === undefined) return { ok: false, reason_code: 'task_not_found', message: `task ${cardId} does not exist` };
+  if (typeof row.scope_paths !== 'string') return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} has no scope_paths` };
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(row.scope_paths);
+  } catch {
+    return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} scope_paths is not valid JSON` };
+  }
+  if (!Array.isArray(parsed) || parsed.length === 0) return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} scope_paths must be a non-empty array` };
+  const paths = parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
+  if (paths.length !== parsed.length) return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} scope_paths contains non-string entries` };
+  return { ok: true, paths };
+}
+
 /** 认领：建卡 gitdir + 共享对象库 + 检出基线 + `workcopy.created`。 */
 export async function createWorkcopy(db: SdoDatabase, req: CreateRequest): Promise<CreateResult | FailureResult> {
   const t0 = process.hrtime.bigint();
@@ -76,6 +97,8 @@ export async function createWorkcopy(db: SdoDatabase, req: CreateRequest): Promi
   if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
   const baseOid = snapshotOid(db, req.base_snapshot_id);
   if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing', message: req.base_snapshot_id };
+  const scope = taskScopePaths(db, req.card);
+  if (!scope.ok) return scope;
   await ensureSharedRepo(objectsDir(req.root));
   return withLock(paths, async () => {
     try {
@@ -90,7 +113,7 @@ export async function createWorkcopy(db: SdoDatabase, req: CreateRequest): Promi
     const tWrite = process.hrtime.bigint();
     const appended = appendTool(db, toolEvent('workcopy.created', req.card, {
       card: req.card, gitdir: paths.gitdir, workdir: paths.workdir,
-      base_snapshot_id: req.base_snapshot_id, base_oid: baseOid, scope_paths: req.scope_paths,
+      base_snapshot_id: req.base_snapshot_id, base_oid: baseOid, scope_paths: scope.paths,
     }, req.session, req.at), req.session);
     const timings = { read_tree_ms: elapsedMs(tRead), materialize_plus_event_ms: elapsedMs(tWrite), total_ms: elapsedMs(t0) };
     warnSlow('create', req.card, timings);
@@ -123,6 +146,19 @@ export async function commitWorkcopy(db: SdoDatabase, req: CommitRequest): Promi
   if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
   const baseOid = snapshotOid(db, req.base_snapshot_id);
   if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing' };
+  const scope = taskScopePaths(db, req.card);
+  if (!scope.ok) return scope;
+  const entries = readPublicFace(db);
+  // M4-3/C2：写域与公共面登记不相交；拒绝在拿锁/写主树之前。
+  const faceHits = publicFaceHits(scope.paths, entries);
+  if (faceHits.length > 0) {
+    return {
+      ok: false,
+      reason_code: 'public_face_readonly',
+      message: `card ${req.card} scope_paths hit public face: ${faceHits.join(', ')}; request the change via requestPublicFace`,
+      hits: faceHits,
+    };
+  }
   return withLock(paths, async () => {
     const tNorm = process.hrtime.bigint();
     await normalizeWorkdir(req.root, paths);
@@ -187,6 +223,19 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
   if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
   const baseOid = snapshotOid(db, req.base_snapshot_id);
   if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing' };
+  const scope = taskScopePaths(db, req.card);
+  if (!scope.ok) return scope;
+  const entries = readPublicFace(db);
+  // M4-3/C2：写域与公共面登记不相交；拒绝在拿锁/写主树之前。
+  const faceHits = publicFaceHits(scope.paths, entries);
+  if (faceHits.length > 0) {
+    return {
+      ok: false,
+      reason_code: 'public_face_readonly',
+      message: `card ${req.card} scope_paths hit public face: ${faceHits.join(', ')}; request the change via requestPublicFace`,
+      hits: faceHits,
+    };
+  }
   return withLock(paths, async () => {
     const previous = completedAdmission(db, req.card, req.base_snapshot_id);
     if (previous.kind === 'ambiguous') {
@@ -198,6 +247,8 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     }
     if (previous.kind === 'unique' && fs.existsSync(paths.workdir)) {
       const retryChanges = diffTrees(await readTree(paths.gitdir, baseOid), await readTree(paths.gitdir, previous.git_oid));
+      const retryFace = publicFaceHits(retryChanges.map((change) => change.path), entries);
+      if (retryFace.length > 0) return { ok: false, reason_code: 'public_face_readonly', message: `card ${req.card} diff hit public face: ${retryFace.join(', ')}`, hits: retryFace };
       const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
       if (!cardLocks.ok) {
         return {
@@ -225,7 +276,10 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     const cardOid = await commitWorkdir(paths, req.message, req.author ?? WORKCOPY_AUTHOR, baseOid);
     spillObjects(paths.gitdir, objectsDir(req.root));
     const changes = diffTrees(await readTree(paths.gitdir, baseOid), await readTree(paths.gitdir, cardOid));
-    if (!isSubset(changes.map((change) => change.path), req.scope_paths)) return { ok: false, reason_code: 'scope_violation', changes };
+    if (!isSubset(changes.map((change) => change.path), scope.paths)) return { ok: false, reason_code: 'scope_violation', changes };
+    // P1-1 第二道闸：写域可以合法但仍把公共面文件带进 diff（宽写域/文件级集合判断）。
+    const diffFace = publicFaceHits(changes.map((change) => change.path), entries);
+    if (diffFace.length > 0) return { ok: false, reason_code: 'public_face_readonly', message: `card ${req.card} diff hit public face: ${diffFace.join(', ')}`, hits: diffFace };
     const current = currentBaseline(db);
     if (current === undefined) return { ok: false, reason_code: 'snapshot_missing' };
     const currentEntries: TreeEntry[] = await readTree(paths.gitdir, current.git_oid);

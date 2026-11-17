@@ -3,7 +3,7 @@ import { test } from 'node:test';
 
 import { columnNames, tableNames, withMigratedDb } from './helpers.js';
 
-/** docs/03 的 25 张表 + docs/02/04/06/07/09/12 的 9 张支撑表 + view_catalog（第 35 张）+ M3-0 的身份层 3 张（actor/scope/right，第 36–38 张）+ M3-2 的 conflict（第 39 张）+ M3-4 的 renderer_catalog（第 40 张）+ 011 的 projection_guard（第 41 张）+ M3-3 的 signerd_receipt_use（第 42 张）+ M3-1 的 scope_owns（第 43 张）+ M4-1 的 lock（第 44 张）+ M4-2 的 lease（第 45 张）。 */
+/** docs/03 的 25 张表 + docs/02/04/06/07/09/12 的 9 张支撑表 + view_catalog（第 35 张）+ M3-0 的身份层 3 张（actor/scope/right，第 36–38 张）+ M3-2 的 conflict（第 39 张）+ M3-4 的 renderer_catalog（第 40 张）+ 011 的 projection_guard（第 41 张）+ M3-3 的 signerd_receipt_use（第 42 张）+ M3-1 的 scope_owns（第 43 张）+ M4-1 的 lock（第 44 张）+ M4-2 的 lease（第 45 张）+ M4-3 的 public_face（第 46 张）与 public_face_writer（第 47 张）。 */
 const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   projection_guard: ['name', 'active'],
   conflict: [
@@ -70,6 +70,8 @@ const EXPECTED_COLUMNS: Readonly<Record<string, readonly string[]>> = {
   scope_owns: ['child_scope', 'parent_scope', 'created_at'],
   lock: ['path_prefix', 'card_id', 'actor', 'status', 'acquired_at', 'expires_at', 'released_at', 'released_by'],
   lease: ['id', 'card_id', 'actor', 'scope', 'frontier', 'ttl_s', 'issued_at', 'expires_at', 'status', 'revoked_at', 'revoked_by', 'expired_at'],
+  public_face: ['prefix', 'note', 'since'],
+  public_face_writer: ['id', 'actor', 'held_since', 'note'],
 };
 
 const EXPECTED_TABLES = Object.keys(EXPECTED_COLUMNS).sort();

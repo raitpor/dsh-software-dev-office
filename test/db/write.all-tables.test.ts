@@ -39,7 +39,9 @@ const GATE_ONLY_KINDS = new Set(['gate.judged']);
 // 冲突行/解决覆盖在 test/db/conflict-*.test.ts。
 const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
 // M4-0：snapshot.taken 改由工作副本工具产生（一次性能力），world 链不含。
-const TOOL_ONLY_KINDS = new Set(['snapshot.taken', 'lease.issued', 'lease.expired', 'lease.revoked']);
+// 单写者行由 bootstrap 事件建立（能力路径），world 链不伪造；空表仍参与 fold↔DB 对账。
+const BOOTSTRAP_ONLY_TABLES = new Set(['public_face_writer']);
+const TOOL_ONLY_KINDS = new Set(['snapshot.taken', 'lease.issued', 'lease.expired', 'lease.revoked', 'publicface.executed', 'publicface.writer_changed']);
 const CLAIM_COVERED_KINDS = new Set(['task.claimed']); // test/db/lease.test.ts 真派发链
 
 test('C5/C6: world chain appends all supported kinds; each target table gets real rows', () => {
@@ -54,15 +56,15 @@ test('C5/C6: world chain appends all supported kinds; each target table gets rea
     assert.equal(report.eventCount, events.length);
 
     const kinds = new Set(events.map((event) => event.kind));
-    assert.equal(Object.keys(SUPPORTED_KINDS).length, 63);
-    assert.equal(kinds.size, 63 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size - TOOL_ONLY_KINDS.size - CLAIM_COVERED_KINDS.size);
+    assert.equal(Object.keys(SUPPORTED_KINDS).length, 64);
+    assert.equal(kinds.size, 66 - DERIVED_ONLY_KINDS.size - GATE_ONLY_KINDS.size - CONFLICT_ONLY_KINDS.size - TOOL_ONLY_KINDS.size - CLAIM_COVERED_KINDS.size);
     for (const kind of Object.keys(SUPPORTED_KINDS)) {
       if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind) || CLAIM_COVERED_KINDS.has(kind)) continue;
       assert.equal(kinds.has(kind), true, `world chain is missing kind ${kind}`);
     }
     // decision.valid 按 D-019 只在 signed 后出现，行由 decision.signed 代表。
     // conflict 行由 CAS 分支产生，world 链不含 conflict.*；见 test/db/conflict-*.test.ts。
-    const tables = new Set(MATERIALIZED_TABLES.filter((table) => table !== 'decision' && table !== 'conflict' && table !== 'snapshot' && table !== 'snapshot_parent' && table !== 'lease'));
+    const tables = new Set(MATERIALIZED_TABLES.filter((table) => table !== 'decision' && table !== 'conflict' && table !== 'snapshot' && table !== 'snapshot_parent' && table !== 'lease' && !BOOTSTRAP_ONLY_TABLES.has(table)));
     for (const table of tables) {
       assert.ok(count(db, table) > 0, `materialized table ${table} has no rows`);
     }

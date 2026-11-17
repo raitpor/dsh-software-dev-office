@@ -16,6 +16,7 @@ import { BASELINE_REDUCERS } from './reducers/baseline.js';
 import { OPS_REDUCERS } from './reducers/ops.js';
 import { CONTENT_REDUCERS } from './reducers/content.js';
 import { LOCK_REDUCERS } from '../lock/reducer.js';
+import { publicFaceWriterChanged } from '../publicface/writer.js';
 import { LEASE_REDUCERS } from '../lease/reducer.js';
 
 export type Reducer = (state: FoldWorking, event: Event) => void;
@@ -38,6 +39,7 @@ const maps: ReadonlyArray<Readonly<Record<string, Reducer>>> = [
   CONTENT_REDUCERS,
   LOCK_REDUCERS,
   LEASE_REDUCERS,
+  { 'publicface.writer_changed': publicFaceWriterChanged },
 ];
 
 function buildLookup(): Readonly<Record<string, Reducer>> {

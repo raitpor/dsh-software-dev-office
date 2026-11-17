@@ -35,7 +35,7 @@ const GATE_ONLY_KINDS = new Set(['gate.judged']);
 // M3-2/P1-3：conflict.* 只能由真 CAS 路径产生（一次性能力），world 链不含；
 // 冲突行/解决覆盖在 test/db/conflict-*.test.ts。
 const CONFLICT_ONLY_KINDS = new Set(['conflict.detected', 'conflict.resolved']);
-const TOOL_ONLY_KINDS = new Set(['snapshot.taken', 'lease.issued', 'lease.expired', 'lease.revoked']);
+const TOOL_ONLY_KINDS = new Set(['snapshot.taken', 'lease.issued', 'lease.expired', 'lease.revoked', 'publicface.executed', 'publicface.writer_changed']);
 // M4-2 裁定 A：world 链不再伪造认领；task.claimed 由真派发链覆盖（test/db/lease.test.ts 的 C2/C3/C6）。
 const CLAIM_COVERED_KINDS = new Set(['task.claimed']);
 
@@ -52,7 +52,7 @@ test('P3-4: every CLAIM_COVERED_KINDS kind is actually exercised in the claim/le
 });
 
 test('C5/C6 world chain covers every supported kind exactly once (first occurrence)', () => {
-  assert.equal(kinds.length, 63, 'SUPPORTED_KINDS = REDUCERS 58 + lock 2 + lease.revoked 1 + lease.issued/expired 2');
+  assert.equal(kinds.length, 64, 'SUPPORTED_KINDS = REDUCERS 58 + lock 2 + lease.revoked 1 + lease.issued/expired 2');
   for (const kind of kinds) {
     if (DERIVED_ONLY_KINDS.has(kind) || GATE_ONLY_KINDS.has(kind) || CONFLICT_ONLY_KINDS.has(kind) || TOOL_ONLY_KINDS.has(kind)) continue;
     if (CLAIM_COVERED_KINDS.has(kind)) continue;

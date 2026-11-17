@@ -17,7 +17,7 @@ import { cardWorkdir } from '../../src/core/workcopy/paths.js';
 import { acquireLock, acquireMainTreeLock, releaseLock, releaseMainTreeLock, rootLockPrecheck, WORKCOPY_TOOL_ACTOR } from '../../src/db/lock.js';
 import { dispatchLease, revokeLease } from '../../src/db/lease.js';
 import { appendTool, toolEvent } from '../../src/db/workcopy-tool.js';
-import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy, removeWorkcopy } from '../../src/db/workcopy.js';
+import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy, removeWorkcopy } from './workcopy-calls.js';
 import { AT, PASSPHRASE, chain, claimWithLease, seed } from './append-helpers.js';
 import { appendAs, grantAll, grantFixtureRoster } from './append-auth.js';
 import { chainHead } from '../../src/db/write.js';

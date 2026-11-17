@@ -138,5 +138,7 @@ export function worldSeeds(): EventSeed[] {
   // 租约语义由 test/db/lease.test.ts 走真 dispatch 路径覆盖（TOOL_ONLY_KINDS 同步）。
   add(seed(82, 'lock.acquired', 'src/core', { card_id: 'CARD-1', acquired_at: '2026-11-15T09:00:00.000Z', expires_at: '2026-11-17T00:00:00Z' }));
   add(seed(83, 'lock.released', 'src/core', { released_at: '2026-11-15T09:00:00.000Z', released_by: 'released' }));
+  // M4-3：公共面申请是常规写事件（ACK）；executed/writer_changed 走单写者能力路径，world 链不伪造。
+  add(seed(85, 'publicface.requested', 'CARD-1', { card: 'CARD-1', intent: { kind: 'register_criterion' }, intent_hash: 'sha256:m4-3-world', diff: '+ criterion row', scope: 'module:core', requested_at: '2026-11-15T09:00:00Z' }));
   return s;
 }

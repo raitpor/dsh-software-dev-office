@@ -57,6 +57,7 @@ export const TABLE_NAMES = [
   'release_item',
   'conflict',
   'lock',
+  'public_face_writer',
 ] as const;
 
 export type TableName = (typeof TABLE_NAMES)[number];

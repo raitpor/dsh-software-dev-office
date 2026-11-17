@@ -135,6 +135,9 @@ const SPECS: Readonly<Record<string, Spec>> = {
   'baseline.frozen': { action: 'freeze', scope: 'release' },
   'baseline.loosened': { action: 'freeze', scope: 'release' },
   'config.changed': { action: 'config', scope: 'domain' },
+  // M4-3/C4：writer_changed 由单写者能力路径短路（网关先消费能力，再跳过矩阵）；
+  // 这里保留一个已存在的管理动作名作为“设计矩阵里有这一行”的记录，不新增矩阵行。
+  'publicface.writer_changed': { action: 'config', scope: 'unit' },
   'conflict.detected': { action: 'adopt_review', scope: 'module' },
   'conflict.resolved': { action: 'adopt_review', scope: 'module' },
   'contract.defined': { action: 'create', scope: 'domain' },
@@ -195,6 +198,10 @@ const SPECS: Readonly<Record<string, Spec>> = {
  * 审计事件不投影业务行”放行（附录：卡 M3-1 A5 / D-108 边界）。
  */
 const ACK_SPECS: Readonly<Record<string, Spec>> = {
+  // M4-3/C3：申请是常规写，复用矩阵的 write@module 动作行 `claim`（不新增矩阵行；scope 由 payload.scope 给出）。
+  'publicface.requested': { action: 'claim', scope: 'module' },
+  // M4-3/C4：执行只认单写者能力；映射存在是为了“已登记动作”的可审计记录。
+  'publicface.executed': { action: 'claim', scope: 'module' },
   'request_sign': { action: 'propose_plan', scope: 'domain' },
   'renderer.registered': { action: 'config', scope: 'config' },
 };

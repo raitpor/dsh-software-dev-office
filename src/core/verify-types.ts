@@ -40,6 +40,12 @@ export type VerifyProblemCode =
   | 'vcs_objects_dir_unresolved'
   | 'vcs_object_graph_too_large'
   /** M4-1/C5：卡在飞却没有活锁 / 活锁归属的卡已不在飞且超过 TTL+宽限。 */
+  | 'public_face_scope_overlap'
+  | 'public_face_writer_missing'
+  | 'public_face_writer_extra'
+  | 'public_face_writer_mismatch'
+  /** M4-3/C6：公共面申请长期未执行（超过阈值）。 */
+  | 'public_face_request_stale'
   | 'lock_missing'
   | 'lock_leaked'
   /** M4-2/C7：租约完整性（busy 卡无活租约 / actor 不匹配 / 同卡多条活租约 / 预占期被他人认领）。 */

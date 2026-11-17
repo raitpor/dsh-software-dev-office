@@ -142,7 +142,7 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
 test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
   withWriteDb((db) => {
     const kinds = [...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)].sort();
-    assert.equal(kinds.length, 97, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1)');
+    assert.equal(kinds.length, 100, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1 + M4-3 publicface 3)');
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
     let prev: string = GENESIS_PREV;
     for (const kind of kinds) {
@@ -164,6 +164,13 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
         const rejected = append(db, chain([seed(counts.ackOnly, kind, 'X-1', {})]));
         assert.equal(rejected.ok, false, `${kind} must be tool-only`);
         assert.equal(rejected.reason_code, 'unauthorized_workcopy_event');
+        continue;
+      }
+      if (kind === 'publicface.executed') {
+        counts.ackOnly += 1;
+        const rejected = append(db, chain([seed(counts.ackOnly, kind, 'X-1', {})]));
+        assert.equal(rejected.ok, false, 'hand-written publicface.executed must be rejected');
+        assert.equal(rejected.reason_code, 'not_public_face_writer');
         continue;
       }
       if (Object.hasOwn(ACK_KINDS, kind)) {
@@ -191,8 +198,8 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
       assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
       counts.unsupported += 1;
     }
-    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 97);
-    assert.equal(count(db, 'event'), counts.ackOnly - 3, 'ack 落 event；renderer.registered + workcopy.created/removed 被能力拒');
+    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 100);
+    assert.equal(count(db, 'event'), counts.ackOnly - 4, 'ack 落 event；renderer.registered + workcopy.created/removed + publicface.executed 被能力拒');
   });
 });
 

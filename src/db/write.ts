@@ -34,6 +34,12 @@ import { ACK_KINDS } from '../core/fold/ack.js';
 import { KIND_ACTIONS } from '../core/auth/kind-actions.js';
 import { ACTION_OBJECT_CONDITIONS } from './action-objects.js';
 import { consumeWorkcopyAuthority, workcopyPayloadHash, WORKCOPY_TOOL_KINDS } from './workcopy-capability.js';
+import { consumePublicFaceAuthority } from './publicface.js';
+import {
+  publicFacePayloadHash,
+  PUBLICFACE_TOOL_KINDS,
+  PUBLICFACE_TOOL_MARKER,
+} from './publicface-capability.js';
 import { lockToolPayloadHash, LOCK_TOOL_KINDS, LOCK_TOOL_MARKER } from './lock-capability.js';
 import { consumeLockToolAuthority } from './lock.js';
 import {
@@ -171,6 +177,21 @@ function authorizeEvent(
       return failure(
         'unauthorized_lease_issue',
         `event ${event.id} kind=${event.kind} must be produced by the lease tool path (one-shot, payload-bound)`,
+      );
+    }
+    return undefined;
+  }
+  // M4-3/C4：公共面执行/单写者切换只认单写者能力路径的一次性能力（绑 payload_hash）。
+  // 直 append 即使有 config/write 权也必须拒 not_public_face_writer（防止第二条写路）。
+  if ((PUBLICFACE_TOOL_KINDS as readonly string[]).includes(event.kind)) {
+    const publicPayload = parseEventPayload(event);
+    const authorized =
+      publicPayload['initiator'] === PUBLICFACE_TOOL_MARKER &&
+      consumePublicFaceAuthority(event.id, publicFacePayloadHash(publicPayload));
+    if (!authorized) {
+      return failure(
+        'not_public_face_writer',
+        `event ${event.id} kind=${event.kind} must be produced by the public face writer path (one-shot, payload-bound)`,
       );
     }
     return undefined;

@@ -52,6 +52,11 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
     reason: 'M4-2 租约：派发/过期/收回 + 收回后 blocked→ready（工具能力/派发权）',
   },
   {
+    file: 'src/db/publicface.ts',
+    kinds: ['publicface.requested', 'publicface.executed', 'publicface.writer_changed'],
+    reason: 'M4-3 公共面申请 / 单写者执行与交棒（能力路径 + reducer 投影）',
+  },
+  {
     file: 'src/sign/decision.ts',
     kinds: ['decision.valid', 'decision.signed', 'security.alert', 'auth.failed'],
     reason: '签字流程：决策事件 + 两条审计 ACK',

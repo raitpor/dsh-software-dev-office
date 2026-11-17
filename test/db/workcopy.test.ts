@@ -1,7 +1,7 @@
 /** M4-0：工作副本最小闭环（C1/C2/C3/C4/C5/C6/C7/C9）。 */
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
-import { mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, existsSync, writeFileSync, readdirSync, lstatSync, realpathSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { test } from 'node:test';
@@ -14,7 +14,8 @@ import { runMigrations } from '../../src/db/migrate.js';
 import { AT, chain, PASSPHRASE } from './append-helpers.js';
 import { appendAs, grantAll, grantFixtureRoster } from './append-auth.js';
 import { chainHead } from '../../src/db/write.js';
-import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy, removeWorkcopy } from '../../src/db/workcopy.js';
+import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy, removeWorkcopy, seedTaskRow } from './workcopy-calls.js';
+import { admitWorkcopy as rawAdmitWorkcopy, createWorkcopy as rawCreateWorkcopy } from '../../src/db/workcopy.js';
 import { cardGitdir, cardWorkdir, objectsDir } from '../../src/core/workcopy/paths.js';
 import { countObjects, initCardRepo, readRawObject, readTree } from '../../src/db/vcs.js';
 import { isBinary, normalizeText } from '../../src/core/workcopy/crlf.js';
@@ -122,7 +123,7 @@ test('C4: completion diff ⊆ scope; out-of-scope write ⇒ scope_violation, no 
 
 test('C7: admission rewrites main tree, takes snapshot, removes workcopy in one batch', async () => {
   await withRepo(async ({ root, db }) => {
-    await createWorkcopy(db, { root, card: 'C-M4-3', base_snapshot_id: 'SNAP-BASE', scope_paths: ['a.txt'], session: SESSION, at: AT });
+    await createWorkcopy(db, { root, card: 'C-M4-3', base_snapshot_id: 'SNAP-BASE', scope_paths: ['a.txt', 'docs/x.md'], session: SESSION, at: AT });
     writeFileSync(join(cardWorkdir(root, 'C-M4-3'), 'a.txt'), 'v2\n');
     rmSync(join(cardWorkdir(root, 'C-M4-3'), 'docs/x.md'));
     const admitted = await admitWorkcopy(db, {
@@ -290,6 +291,49 @@ test('P1-4: 新文件（非基线已有）也做 CRLF 归一，树内是 LF blob
     const blob = tree.find((entry) => entry.path === 'new.txt');
     assert.notEqual(blob, undefined);
     assert.equal(blob?.content.toString('utf8'), 'n1\nn2\n');
+  });
+});
+
+test('C2(M4-3): 写域命中公共面 ⇒ 准入拒 public_face_readonly，主树不动', async () => {
+  await withRepo(async ({ root, db }) => {
+    // P1-1 的真实形态：卡写域比公共面**宽**（src/core ⊃ src/core/criteria/）。
+    const publicPath = 'src/core/criteria/register.ts';
+    await createWorkcopy(db, { root, card: 'C-M43-PF', base_snapshot_id: 'SNAP-BASE', scope_paths: ['src/core'], session: SESSION, at: AT });
+    mkdirSync(join(cardWorkdir(root, 'C-M43-PF'), 'src', 'core', 'criteria'), { recursive: true });
+    writeFileSync(join(cardWorkdir(root, 'C-M43-PF'), publicPath), '// edit\n');
+    const before = readFileSync(join(root, 'a.txt'), 'utf8');
+    const snapshotsBefore = (db.prepare('SELECT count(*) AS n FROM snapshot').get() as { n: number }).n;
+    const admitted = await admitWorkcopy(db, {
+      root, card: 'C-M43-PF', base_snapshot_id: 'SNAP-BASE', scope_paths: ['src/core'], message: 'public face', session: SESSION, at: AT,
+    });
+    assert.equal(admitted.ok, false);
+    if (!admitted.ok) {
+      assert.equal(admitted.reason_code, 'public_face_readonly');
+      assert.deepEqual((admitted['hits'] as string[]), ['src/core/criteria/', 'src/core/fold/reducers/verify.ts']);
+    }
+    assert.equal(readFileSync(join(root, 'a.txt'), 'utf8'), before, 'main tree must not be written');
+    assert.equal(existsSync(join(root, publicPath)), false, 'public face file must not be checked out/written');
+    const snapshotsAfter = (db.prepare('SELECT count(*) AS n FROM snapshot').get() as { n: number }).n;
+    assert.equal(snapshotsAfter, snapshotsBefore, 'rejected admission must not take a snapshot');
+  });
+});
+
+test('M4-3 P1-2: write scope comes from the task row; missing/empty ⇒ structured failures', async () => {
+  await withRepo(async ({ root, db }) => {
+    const noTask = await rawCreateWorkcopy(db, { root, card: 'C-NO-TASK', base_snapshot_id: 'SNAP-BASE', session: SESSION, at: AT });
+    assert.equal(noTask.ok, false);
+    if (!noTask.ok) assert.equal(noTask.reason_code, 'task_not_found');
+    seedTaskRow(db, 'C-EMPTY', []);
+    const empty = await rawCreateWorkcopy(db, { root, card: 'C-EMPTY', base_snapshot_id: 'SNAP-BASE', session: SESSION, at: AT });
+    assert.equal(empty.ok, false);
+    if (!empty.ok) assert.equal(empty.reason_code, 'scope_undeclared');
+    // 行内 scope 是唯一权威：调用方没有 scope 参数可绕。
+    seedTaskRow(db, 'C-AUTH', ['a.txt']);
+    assert.equal((await rawCreateWorkcopy(db, { root, card: 'C-AUTH', base_snapshot_id: 'SNAP-BASE', session: SESSION, at: AT })).ok, true);
+    rmSync(join(cardWorkdir(root, 'C-AUTH'), 'docs', 'x.md'));
+    const admitted = await rawAdmitWorkcopy(db, { root, card: 'C-AUTH', base_snapshot_id: 'SNAP-BASE', message: 'delete docs', session: SESSION, at: AT });
+    assert.equal(admitted.ok, false);
+    if (!admitted.ok) assert.equal(admitted.reason_code, 'scope_violation');
   });
 });
 

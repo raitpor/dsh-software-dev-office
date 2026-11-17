@@ -37,6 +37,8 @@ export const ACK_KINDS: Readonly<Record<string, string>> = {
   'redaction.applied': '脱敏审计事件，不投影',
   'i18n.fallback': '本地化回退审计事件，不投影',
   'baseline.rejected': 'baseline 表只存已冻结快照；拒绝不落表（M-10 verify 消费）',
+  'publicface.requested': '公共面申请：单写者队列输入；不投影业务表，C6 从事件流查' ,
+  'publicface.executed': '公共面执行：单写者能力路径；不投影业务表（D-030 物化表只由 reducer 产生）',
   'request_sign': 'PM 发起的待签请求（M2-5）：只记录请求，签名仍由人做；不投影任何表',
   'renderer.registered': '渲染器注册（M3-4）：目录行由 src/db/renderer.ts 从事件投影到 renderer_catalog，不走 fold 表',
 };

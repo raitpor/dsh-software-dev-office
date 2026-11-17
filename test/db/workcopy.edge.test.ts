@@ -15,7 +15,7 @@ import { runMigrations } from '../../src/db/migrate.js';
 import { AT, chain, PASSPHRASE, seed } from './append-helpers.js';
 import { appendAs, grantAll, grantFixtureRoster } from './append-auth.js';
 import { chainHead } from '../../src/db/write.js';
-import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy } from '../../src/db/workcopy.js';
+import { bootstrapBaseline, createWorkcopy, commitWorkcopy, admitWorkcopy } from './workcopy-calls.js';
 import { cardGitdir, cardWorkdir, objectsDir } from '../../src/core/workcopy/paths.js';
 import { readdir } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';

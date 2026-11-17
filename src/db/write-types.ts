@@ -26,6 +26,10 @@ export type AppendReason =
   | 'lease_not_active'
   /** M4-2/C3：预占期内认领者必须等于 reserved_by。 */
   | 'not_reserved_actor'
+  /** M4-3/C4：公共面写入只能由当前单写者能力路径执行。 */
+  | 'not_public_face_writer'
+  /** M4-3/C2：卡写域命中公共面登记前缀。 */
+  | 'public_face_readonly'
   /** `BEGIN IMMEDIATE` 撞上别的写者/锁（SQLITE_BUSY），不是投影错误。 */
   | 'database_busy'
   /** kind 已登记，但其投影表不在 M1-0 的物化范围内（写网关收窄，D-031）。 */

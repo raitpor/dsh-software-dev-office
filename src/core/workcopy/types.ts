@@ -21,7 +21,6 @@ export interface CreateRequest {
   readonly link?: CreateLinkOptions;
   readonly card: string;
   readonly base_snapshot_id: string;
-  readonly scope_paths: readonly string[];
   readonly session: WorkcopySession;
   readonly at: string;
 }
@@ -44,6 +43,11 @@ export type WorkcopyFailureReason =
   | 'dirty_workcopy'
   | 'merge_conflict'
   | 'scope_violation'
+  /** M4-3 第 1 轮 P1-2：卡行不存在 / 卡写域为空（空写域等于没约束，不能放行）。 */
+  | 'task_not_found'
+  | 'scope_undeclared'
+  /** M4-3/C2：写域命中公共面前缀，拒绝在拿锁/写主树之前。 */
+  | 'public_face_readonly'
   | 'workcopy_busy'
   | 'snapshot_missing'
   | 'vcs_link_unsupported'
@@ -78,7 +82,6 @@ export interface CommitRequest {
   readonly root: string;
   readonly card: string;
   readonly base_snapshot_id: string;
-  readonly scope_paths: readonly string[];
   readonly message: string;
   readonly author?: WorkcopyAuthor;
 }
