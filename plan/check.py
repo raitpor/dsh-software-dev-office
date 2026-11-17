@@ -16,6 +16,11 @@ R3：`plan/cards/<卡号>.md` 的「准入」段里写的前置卡，必须是 `
 （允许卡表多出依赖，不允许卡面写卡表没有的）。2026-11-16 计划评审 P1-2 抓到的形态：
 卡表写 `M4-2 ← M4-0`，卡面准入却要求 M4-0 与 M4-1 都收卡——两边不是一条，派工时会按哪边都行。
 
+R5：以 `|` 开头的行必须落在某张表里（表头 + 分隔行 + 连续行）。表被空行或
+非表格行截断时，后半段会渲染成普通段落、整张表塌掉；而按“每一段各自列数一致”看
+（R1 的口径）它可能仍然绿——2026-11-17 台账 D-144 起就是这样坏的：每插一批条目都
+留了空行，`plan/check.py` 一直通过，人眼直到翻到那一页才发现。R5 补的就是这半格。
+
 R4：`plan/cards/<卡号>.md` 的「判据」「证据」段里点名的仓库路径，必须落在该卡的
 `write_scope`、`plan/00` 的「共享写域登记」表，或台账里的显式扩权内。
 2026-11-16 计划评审 P1-1 的形态：判据要求改 `src/core/verify*.ts`，写域里没有——
@@ -348,12 +353,54 @@ def check_scope(cards_dir: Path, plan_doc: Path) -> list[str]:
     return problems
 
 
+# ---------- R5：以 | 开头的行必须在表里 ----------
+
+def check_orphan_rows(text: str, name: str) -> list[str]:
+    """R5：游离的表格行 = 表被打断。空行截断、段落插进表中间，都会让它发生。"""
+    lines = text.split("\n")
+    covered: set[int] = set()
+    fence = False
+    i = 0
+    while i < len(lines):
+        if mdtable._FENCE.match(lines[i]):
+            fence = not fence
+            covered.add(i)
+            i += 1
+            continue
+        if fence:
+            covered.add(i)
+            i += 1
+            continue
+        if lines[i].lstrip().startswith("|") and i + 1 < len(lines) and mdtable._SEP.match(lines[i + 1].strip()):
+            covered.add(i)
+            covered.add(i + 1)
+            j = i + 2
+            while j < len(lines) and lines[j].lstrip().startswith("|"):
+                covered.add(j)
+                j += 1
+            i = j
+            continue
+        i += 1
+
+    problems = []
+    for idx, line in enumerate(lines):
+        if idx in covered or not line.lstrip().startswith("|"):
+            continue
+        problems.append(
+            f"{name}: 第 {idx + 1} 行以 | 开头，但它不在任何表格里"
+            f"（表格被空行或非表格行截断 ⇒ 后半段会渲染成普通段落）"
+        )
+    return problems
+
+
 def main() -> int:
     bad: list[str] = []
     files = sorted(PLAN.rglob("*.md"))
     for path in files:
         text = path.read_text(encoding="utf-8")
-        bad.extend(mdtable.scan(text, str(path.relative_to(ROOT))))
+        name = str(path.relative_to(ROOT))
+        bad.extend(mdtable.scan(text, name))
+        bad.extend(check_orphan_rows(text, name))
 
     bad.extend(check_dependencies(PLAN_DOC))
     bad.extend(check_admission(PLAN_DOC, PLAN / "cards"))
@@ -365,7 +412,7 @@ def main() -> int:
             print(f"  {item}")
         return 1
 
-    print(f"plan 检查通过：{len(files)} 篇文档，表格列数一致（R1）、里程碑依赖边可回指（R2）、卡面准入与卡表依赖一致（R3）、判据点名文件在写域内（R4）")
+    print(f"plan 检查通过：{len(files)} 篇文档，表格列数一致（R1）、里程碑依赖边可回指（R2）、卡面准入与卡表依赖一致（R3）、判据点名文件在写域内（R4）、表格行都在表里（R5）")
     return 0
 
 
