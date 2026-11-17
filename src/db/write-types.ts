@@ -18,6 +18,7 @@ export type AppendReason =
   | 'unauthorized_renderer_registration'
   /** M4-2/C1：`lease.issued` 必须由 dispatch 工具路径的一次性能力产生。 */
   | 'unauthorized_lease_issue'
+  | 'unauthorized_agent_event'
   /** M4-2/C2/C6：`task.claimed` 必须持未过期且 actor/card 匹配的活租约。 */
   | 'no_lease'
   /** M4-2/C5：租约已过期，原 actor 不能再写。 */

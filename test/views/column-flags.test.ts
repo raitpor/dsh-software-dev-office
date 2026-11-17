@@ -25,7 +25,7 @@ function withMigratedDb(run: (db: ReturnType<typeof openSdoDatabase>) => void): 
 
 test('M3-6 C1: 迁移 014 后每列都带 boolean human_only，且目录与代码白名单一致', () => {
   withMigratedDb((db) => {
-    assert.equal(currentUserVersion(db), 19, '当前链头（019 right events）');
+    assert.equal(currentUserVersion(db), 20, '当前链头（019 right events）');
     const catalog = listViewCatalog(db);
     assert.ok(catalog.length > 0);
 
@@ -85,7 +85,7 @@ test('M3-6 C1: 014 幂等（二次迁移 no-op，标记不漂移）', () => {
     }));
     const second = runMigrations(db);
     assert.deepEqual(second.applied, []);
-    assert.equal(currentUserVersion(db), 19);
+    assert.equal(currentUserVersion(db), 20);
     const after = listViewCatalog(db).map((view) => ({
       name: view.name,
       flags: view.columns.map((column) => [column.name, column.human_only]),

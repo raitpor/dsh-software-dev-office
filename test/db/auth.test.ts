@@ -34,9 +34,9 @@ function byAction(entries: readonly MatrixEntry[]): Map<string, MatrixEntry> {
   return new Map(entries.map((entry) => [entry.action, entry]));
 }
 
-test('C1：迁移 008 建三张表，user_version=19（当前链头），二次运行 no-op（幂等）', () => {
+test('C1：迁移 008 建三张表，user_version=20（当前链头），二次运行 no-op（幂等）', () => {
   withMigratedDb((db) => {
-    assert.equal(db.pragma('user_version', { simple: true }), 19, '当前链头（M4-4 追加 019）');
+    assert.equal(db.pragma('user_version', { simple: true }), 20, '当前链头（M4-7 追加 020）');
     const tables = db
       .prepare("SELECT name FROM sqlite_master WHERE type = 'table' AND name IN ('actor','scope','right') ORDER BY name")
       .all() as Array<{ name: string }>;
@@ -46,7 +46,7 @@ test('C1：迁移 008 建三张表，user_version=19（当前链头），二次�
     );
     const second = runMigrations(db);
     assert.deepEqual(second.applied, []);
-    assert.equal(second.userVersion, 19);
+    assert.equal(second.userVersion, 20);
     const count = (name: string): number =>
       (db.prepare(`SELECT count(*) AS n FROM ${name}`).get() as { n: number }).n;
     assert.equal(count('right'), 26, '矩阵目录播种 26 个动作');

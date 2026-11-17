@@ -59,6 +59,11 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
     reason: 'M4-3 公共面申请 / 单写者执行与交棒（能力路径 + reducer 投影）',
   },
   {
+    file: 'src/db/agent.ts',
+    kinds: ['agent.spawned', 'agent.reused', 'agent.pick_declined', 'agent.spawn_streak'],
+    reason: 'M4-7 派发读数：新起/复用/pick declined + 连续新起告警（事件现算，无 agent 表）',
+  },
+  {
     file: 'src/sign/decision.ts',
     kinds: ['decision.valid', 'decision.signed', 'security.alert', 'auth.failed'],
     reason: '签字流程：决策事件 + 两条审计 ACK',

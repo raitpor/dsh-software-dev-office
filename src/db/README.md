@@ -229,3 +229,11 @@
 - **verify（C6）**：`verifyPublicFace` 在 `public_face` 表存在时启用：任何 `task.scope_paths` 命中登记项 ⇒ `public_face_scope_overlap`；`publicface.requested` 无对应 `executed` 且距 `max(event.at)` 超过 **7 天** ⇒ `public_face_request_stale`；`public_face_writer` 投影对账 ⇒ `public_face_writer_missing/extra/mismatch`。只读不修。
 - **已知边界**：`publicface.requested` 允许任意源卡发起（低权申请，执行才是闸，D-185）；`public_face` 的只读由 `projection_guard.active` 控制，同库写者可自行打开（与 renderer_catalog 同款边界，D-186）；`public_face` 不是 fold 表，verify 不对账登记内容本身。
 - **CAP 能力边界**：`src/db/publicface-capability.ts` 只导出 marker/kinds/哈希/工厂类型；实例与 mint 在 `publicface.ts` 私有，产品代码拿不到；两码（`public_face_readonly`、`not_public_face_writer`）在 `src/db/write-types.ts`/`src/core/workcopy/types.ts` 闭集内。
+
+
+## 派发告警与读数（M4-7）
+
+- `agent.spawned` / `agent.spawn_streak` 是**能力事件**：`src/db/agent.ts` 写入前 mint 一次性能力（绑 `payload_hash`），`src/db/write.ts` 消费；裸 `append` 一律 `unauthorized_agent_event`、0 事件。其余 `agent.reused` / `agent.pick_declined` 仍为 ACK 审计事件（D-194）。
+- `agent.spawned.payload.snapshot` 是调用方提供的**自洽证据**，不是池真源；M4 只校验理由与快照一致，不证明实际池状态（D-200）。
+- `gaps`（020 重建）新增两类：`pick_declined_streak`（同 `dispatch_id` 的 declined 条数，>1 才出现）与 `spawn_streak`（连续新起次数，阈值 3）。count 语义：前四类=事件出现次数，`pick_declined_streak`=条数，`spawn_streak`=连续次数（`payload.count`）。等价性由 `test/db/gaps-equivalence.test.ts` 锁住（D-198）。
+- 读数：`node scripts/m4-readings.mjs --only R-pick`；默认输出 `plan/milestone/M4-读数.{json,md}`，测试/取证用 `--out <临时前缀>`。

@@ -27,6 +27,7 @@ export const ACK_KINDS: Readonly<Record<string, string>> = {
   'agent.parked': '同上',
   'agent.retired': '同上',
   'agent.handoff': '同上',
+  'agent.spawn_streak': 'M4-7 告警：gaps 视图消费；ACK 不物化（卡 M4-7 A2）',
   'change.proposed': '变更链由后续卡消费',
   'change.applied': '同上',
   'node.reset': '图模型节点表的维护事件，M0-2 不建图表',

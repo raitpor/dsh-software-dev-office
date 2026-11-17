@@ -144,7 +144,7 @@ test('P2-2: stale projection rows are deleted by the next append (spec table)', 
 test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-only (three-way)', () => {
   withWriteDb((db) => {
     const kinds = [...Object.keys(REDUCERS), ...Object.keys(ACK_KINDS)].sort();
-    assert.equal(kinds.length, 102, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1 + M4-3 publicface 3 + M4-4 right.* 2)');
+    assert.equal(kinds.length, 103, 'registered kind count drift (94 + conflict 2 + M3-4 renderer 1 + M4-3 publicface 3 + M4-4 right.* 2 + M4-7 agent.spawn_streak 1)');
     const counts = { supported: 0, unsupported: 0, ackOnly: 0 };
     let prev: string = chainHead(db);
     for (const kind of kinds) {
@@ -189,6 +189,13 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
         // ACK kind 是 append-only 审计事件：网关接受、fold 不投影（C12；security.alert/auth.failed）。
         counts.ackOnly += 1;
         assert.equal(Object.hasOwn(REDUCERS, kind), false, `ack-only kind ${kind} must not have a reducer`);
+        if (kind === 'agent.spawned' || kind === 'agent.spawn_streak') {
+          // M4-7 起这两个 kind 必须经 recordAgentSpawn() 的一次性能力产生（裸 append 拒）。
+          const rejected = append(db, chain([seed(counts.ackOnly, kind, 'X-1', {})]));
+          assert.equal(rejected.ok, false, `${kind} must be capability-gated`);
+          assert.equal(rejected.reason_code, 'unauthorized_agent_event');
+          continue;
+        }
         if (kind === 'renderer.registered') {
           // M3-4 起该 kind 必须经 registerRenderer() 的一次性能力产生（直 append ⇒
           // unauthorized_renderer_registration）。真路径由下面的 async 用例覆盖；
@@ -210,8 +217,8 @@ test('P1/C1/C12: every registered kind is supported / unsupported_scope / ack-on
       assert.equal(result.reason_code, 'unsupported_scope', `kind ${kind} should be rejected by scope`);
       counts.unsupported += 1;
     }
-    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 102, 'M4-4 新增 right.granted/right.revoked 两个 ACK（能力守卫直 append 拒）');
-    assert.equal(countEventsExcluding(db), counts.ackOnly - 6, 'ack 落 event；renderer.registered + workcopy.created/removed + publicface.executed + right.granted/revoked 被能力拒');
+    assert.equal(counts.supported + counts.unsupported + counts.ackOnly, 103, 'M4-4 新增 right.granted/right.revoked 两个 ACK（能力守卫直 append 拒）');
+    assert.equal(countEventsExcluding(db), counts.ackOnly - 8, 'ack 落 event；renderer.registered + workcopy.created/removed + publicface.executed + right.granted/revoked + agent.spawned/spawn_streak 被能力拒');
   });
 });
 

@@ -48,6 +48,8 @@ import {
   PUBLICFACE_TOOL_MARKER,
 } from './publicface-capability.js';
 import { lockToolPayloadHash, LOCK_TOOL_KINDS, LOCK_TOOL_MARKER } from './lock-capability.js';
+import { consumeAgentEventAuthority } from './agent.js';
+import { AGENT_TOOL_KINDS, agentPayloadHash } from './agent-authority.js';
 import { consumeLockToolAuthority } from './lock.js';
 import {
   LEASE_TOOL_KINDS,
@@ -219,6 +221,18 @@ function authorizeEvent(
   }
   // M4-0：workcopy.created/removed 与 snapshot.taken 是工具专用事件（docs/02 §301）。
   // 先校验一次性能力（绑 payload hash），通过后跳过矩阵动作——工具会话不需要 plan@domain。
+  // M4-7/P1-1：agent.spawned/agent.spawn_streak 无投影表（ACK），但不能裸 append——
+  // `payload.snapshot` 由调用方给，规则（C1 复算）若只在 wrapper 里就等于没堵。一次性能力绑
+  // payload_hash，仅 `src/db/agent.ts` 的私有实例铸造；裸 append ⇒ unauthorized_agent_event。
+  if ((AGENT_TOOL_KINDS as readonly string[]).includes(event.kind)) {
+    if (!consumeAgentEventAuthority(event.id, agentPayloadHash(parseEventPayload(event)))) {
+      return failure(
+        'unauthorized_agent_event',
+        `event ${event.id} kind=${event.kind} must be produced by recordAgentSpawn (one-shot, payload-bound)`,
+      );
+    }
+    return undefined;
+  }
   if ((WORKCOPY_TOOL_KINDS as readonly string[]).includes(event.kind)) {
     if (!consumeWorkcopyAuthority(event.id, workcopyPayloadHash(parseEventPayload(event)))) {
       return failure(
