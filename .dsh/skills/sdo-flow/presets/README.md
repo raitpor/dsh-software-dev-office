@@ -16,8 +16,11 @@ pre·set = 预先设定好的**阶段与出口判据**。这里的三份对应 S
 
 - 表里每行 = 该 gate 的一条判据，列：判据 / 判定 / 证据（命令或 `文件:行`）/ 改回去会怎样。
 - 全部 pass（或 partial 已被签接受）⇒ 才能进下一阶段；否则**停在本阶段**。
-- 全局 core 三条（`spec_set.signed`、`assumption_set.signed`、`provenance.present`）在每个出口都要过，判定方式：人签 + 意图/计划/假设文件存在。
+- 全局 core 三条（`spec_set.signed`、`assumption_set.signed`、`provenance.present`）在每个出口都要过。
+  无插件判定：`spec_set.signed` = 计划已人签（S 号）；`assumption_set.signed` = 意图 §7 假设表已随该签确认且每条写“不成立怎么办”；`provenance.present` = 每个判定都有命令或 `文件:行`。
 
 ## 与插件的对应
 
-每份 preset 文件末尾有等价的 `policy` YAML 片段；将来装回插件时直接粘进 baseline，字段名一致。
+每份 preset 末尾的 `policy` YAML 是**结构可迁移**：`stages[].id/kinds/after`、`gates{}` 字段与插件一致；
+但 `gates` 的 `criteria` 要按 `docs/08` §1.1 展开成判据数组后才能放进 baseline（P15 要求每个 gate 至少一条已注册判据）。
+所以不是“粘上就能用”，见 `references/07` 的“不得为了看起来等价而伪造”。

@@ -6,6 +6,10 @@ write_scope: [<文件或目录>]
 ## 意图
 <这张卡让什么成立>
 
+## 风险标记
+
+risk_flags：`high_risk` / `sampled` / `release_touching`（有任一 ⇒ 不许停在 explore 段）
+
 ## 对齐
 - 该做：…
 - 不该做：…

@@ -1,24 +1,42 @@
 # waterfall（瀑布）
 
-用途：需求明确、变更昂贵的项目。**做完一段才开下一段**。
+用途：需求明确、变更昂贵的项目。**做完一段才开下一段。**
 
-## 阶段与出口
+## 出口勾选表（无插件即门禁）
 
-| stage | kinds | 出口 gate | 出口判据（勾选表行） |
+### `req[requirement]` 出口 `G_req_exit`（9 条，全 all_of、不可豁免）
+
+| # | 判据 | 判定 | 证据 |
 |---|---|---|---|
-| `req` | requirement | `G_req_exit` | 需求完整、意图复述一致、对齐例子齐、清单有范围、风险意图已明示、红队项已处置、core 三条 |
-| `design` | design | `G_design_exit` | 设计可追溯、覆盖需求、无需求蔓延、备选方案已声明、节点验收已绑、core 三条 |
-| `build` | implement | `G_build_exit` | 任务完成、假设已处置、授权已复验、core 三条 |
-| `verify` | review | `G_verify_exit` | 评审轮次绑树、该评审的卡已评审、core 三条 |
-| `deliver` | deliver | `G_deliver_exit` | 代码与设计一致、集成清单齐、授权已复验、core 三条 |
+| 1 | `stage.requirement_complete` | | |
+| 2 | `intent.restated_consistent` | | |
+| 3 | `alignment.examples_present` | | |
+| 4 | `spec_set.signed`（core） | | |
+| 5 | `scope.present` | | |
+| 6 | `intent.explicit_for_risk` | | |
+| 7 | `redteam.disposed` | | |
+| 8 | `provenance.present`（core） | | |
+| 9 | `assumption_set.signed`（core） | | |
 
-## 无插件执行要点
+### `design[design]` 出口 `G_design_exit`（8 条）
 
-- 每一段结束写一节 `## 出口 G_<stage>_exit`（在卡或读数文件里），逐行勾选 + 证据。
-- 上一段没过，**不开下一段的卡**；开了就是违约，记台账。
-- 需求变更 ⇒ 回到 `req` 重走，不许在 `build` 里静默改需求（那是需求蔓延）。
+`stage.design_traceable`、`design.covers_spec`、`design.no_spec_creep`、`design.alternatives_declared`、`node.acceptance_bound`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
 
-## 等价 policy（装回插件时用）
+### `build[implement]` 出口 `G_build_exit`（6 条）
+
+`task.complete`、`assumption.disposed`、`mandate.revalidated`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+
+### `verify[review]` 出口 `G_verify_exit`（5 条）
+
+`review.round_bound`、`review.required`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+
+### `deliver[deliver]` 出口 `G_deliver_exit`（6 条）
+
+`design.code_matches`、`node.integration_listed`、`mandate.revalidated`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+
+判法：每行填 判定（pass/partial/fail）+ 证据（命令或 `文件:行`）；全 pass（或 partial 已被签接受）才开下一段。
+
+## 等价 policy（结构可迁移；`criteria` 已按 §1.1 展开）
 
 ```yaml
 policy:
@@ -31,6 +49,9 @@ policy:
     - { id: verify,  kinds: [review],      after: [build] }
     - { id: deliver, kinds: [deliver],     after: [verify] }
   gates:
-    req: [G_req_exit]; design: [G_design_exit]; build: [G_build_exit]
-    verify: [G_verify_exit]; deliver: [G_deliver_exit]
+    req:     [{ id: G_req_exit, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, provenance.present, assumption_set.signed] }]
+    design:  [{ id: G_design_exit, policy_mode: all_of, waivable: false, criteria: [stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound, spec_set.signed, provenance.present, assumption_set.signed] }]
+    build:   [{ id: G_build_exit, policy_mode: all_of, waivable: false, criteria: [task.complete, assumption.disposed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
+    verify:  [{ id: G_verify_exit, policy_mode: all_of, waivable: false, criteria: [review.round_bound, review.required, spec_set.signed, provenance.present, assumption_set.signed] }]
+    deliver: [{ id: G_deliver_exit, policy_mode: all_of, waivable: false, criteria: [design.code_matches, node.integration_listed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
 ```

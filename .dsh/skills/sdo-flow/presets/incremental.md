@@ -2,25 +2,44 @@
 
 用途：需求/设计先做一次，实现与验证分批走。
 
-## 阶段与出口
+## 出口勾选表
 
-| stage | kinds | 出口 gate | 出口判据 |
-|---|---|---|---|
-| `req_design` | requirement, design | `G_req_design` | 需求完整 + 设计可追溯 + core 三条 |
-| `build` | implement | `G_build_exit` | 任务完成、假设处置、授权复验、core 三条 |
-| `verify` | review | `G_verify_exit` | 评审轮次绑树、该评审的卡已评审、core 三条 |
-| `integrate` | deliver | `G_integrate` | 集成清单、代码与设计一致、授权复验、core 三条 |
+### `req_design[requirement,design]` 出口 `G_req_design`（14 条）
+
+| # | 判据 |
+|---|---|
+| 1 | `stage.requirement_complete` |
+| 2 | `intent.restated_consistent` |
+| 3 | `alignment.examples_present` |
+| 4 | `spec_set.signed`（core） |
+| 5 | `scope.present` |
+| 6 | `intent.explicit_for_risk` |
+| 7 | `redteam.disposed` |
+| 8 | `assumption_set.signed`（core） |
+| 9 | `provenance.present`（core） |
+| 10 | `stage.design_traceable` |
+| 11 | `design.covers_spec` |
+| 12 | `design.no_spec_creep` |
+| 13 | `design.alternatives_declared` |
+| 14 | `node.acceptance_bound` |
+
+### `build[implement]` 出口 `G_build_exit`（6 条）
+
+`task.complete`、`assumption.disposed`、`mandate.revalidated`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+
+### `verify[review]` 出口 `G_verify_exit`（5 条）
+
+`review.round_bound`、`review.required`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+
+### `integrate[deliver]` 出口 `G_integrate`（6 条）
+
+`node.integration_listed`、`design.code_matches`、`mandate.revalidated`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
 
 ## 并行在哪
 
-**不在 policy 里**。多条线的并行是“同一 stage 下多张卡同时开工”，属于派发层：
-- 每张卡写 `owner` 与 `write_scope`；写域相交的两张卡**不许同时开工**（无锁环境，靠人守）。
-- 阶段性同步点：`req_design` 出口、每次 `integrate`。
-
-## 无插件执行要点
-
-- 每批（lane）结束时写一节 `## integrate <批号>`：集成清单 + 回归命令 + 结论。
-- 回归失败 ⇒ 本批不 integrate；修完重跑，不许“先合后修”。
+**不在 policy 里**。多线并行是“同一 stage 下多张卡同时开工”，属于派发层：
+- 每张卡写 `owner` 与 `write_scope`；写域相交的两张卡不许同时开工（无锁环境，靠人守）。
+- 同步点：`req_design` 出口、每次 `integrate`。
 
 ## 等价 policy
 
@@ -34,6 +53,8 @@ policy:
     - { id: verify,     kinds: [review],             after: [build] }
     - { id: integrate,  kinds: [deliver],            after: [verify] }
   gates:
-    req_design: [G_req_design]; build: [G_build_exit]
-    verify: [G_verify_exit]; integrate: [G_integrate]
+    req_design: [{ id: G_req_design, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, provenance.present, stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound] }]
+    build:      [{ id: G_build_exit, policy_mode: all_of, waivable: false, criteria: [task.complete, assumption.disposed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
+    verify:     [{ id: G_verify_exit, policy_mode: all_of, waivable: false, criteria: [review.round_bound, review.required, spec_set.signed, provenance.present, assumption_set.signed] }]
+    integrate:  [{ id: G_integrate, policy_mode: all_of, waivable: false, criteria: [node.integration_listed, design.code_matches, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
 ```

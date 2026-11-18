@@ -2,24 +2,44 @@
 
 用途：先用最小代价把东西跑起来，再决定要不要产品化。
 
-## 阶段与出口
+## 出口勾选表
 
-| stage | kinds | 出口 gate | 出口判据 |
-|---|---|---|---|
-| `explore` | implement | `G_explore_exit` | **只判“可观察”**：任务完成 + core 三条 |
-| `harden` | requirement, design, implement, review | `G_harden_exit` | **全量**：需求/设计/实现/评审+core 三条 |
-| `deliver` | deliver | `G_deliver_exit` | 代码与设计一致、集成清单、授权复验、core 三条 |
+### `explore[implement]` 出口 `G_explore_exit`（4 条，只判“可观察”）
+
+`task.complete`（含可复跑的观察命令）、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+
+### `harden[requirement,design,implement,review]` 出口 `G_harden_exit`（19 条，全量）
+
+| # | 判据 |
+|---|---|
+| 1 | `stage.requirement_complete` |
+| 2 | `intent.restated_consistent` |
+| 3 | `alignment.examples_present` |
+| 4 | `spec_set.signed`（core） |
+| 5 | `scope.present` |
+| 6 | `intent.explicit_for_risk` |
+| 7 | `redteam.disposed` |
+| 8 | `assumption_set.signed`（core） |
+| 9 | `stage.design_traceable` |
+| 10 | `design.covers_spec` |
+| 11 | `design.no_spec_creep` |
+| 12 | `design.alternatives_declared` |
+| 13 | `node.acceptance_bound` |
+| 14 | `task.complete` |
+| 15 | `assumption.disposed` |
+| 16 | `mandate.revalidated` |
+| 17 | `review.round_bound` |
+| 18 | `review.required` |
+| 19 | `provenance.present`（core） |
+
+### `deliver[deliver]` 出口 `G_deliver_exit`（6 条）
+
+`design.code_matches`、`node.integration_listed`、`mandate.revalidated`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
 
 ## 边界（不是漏洞）
 
 `explore` 的 gate 里没有 `review.required`。所以**高风险卡、实现类设计条款、与发布相关的卡、被抽样命中的卡，都不许停在 explore**，必须在 `harden` 收口。
-判法（无插件版）：开卡时在卡面写 `risk_flags`；只要非空，卡的出口节点就是 `harden`。
-
-## 无插件执行要点
-
-- `explore` 允许“丑但能跑”，但**必须留下可复跑的观察证据**（命令 + 输出），否则 `task.complete` 不算 pass。
-- 进 `harden` 时，`explore` 的产物当草稿：需求与设计要补到“能追溯到意图”，代码要补测试与边界。
-- 决定不做产品化 ⇒ 显式关里程碑（写读数），不许“放着不管”。
+无插件判法：开卡时在卡面写 `risk_flags`；非空 ⇒ 出口节点写 `harden`。
 
 ## 等价 policy
 
@@ -32,5 +52,7 @@ policy:
     - { id: harden,  kinds: [requirement, design, implement, review], after: [explore] }
     - { id: deliver, kinds: [deliver], after: [harden] }
   gates:
-    explore: [G_explore_exit]; harden: [G_harden_exit]; deliver: [G_deliver_exit]
+    explore: [{ id: G_explore_exit, policy_mode: all_of, waivable: false, criteria: [task.complete, spec_set.signed, provenance.present, assumption_set.signed] }]
+    harden:  [{ id: G_harden_exit, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound, task.complete, assumption.disposed, mandate.revalidated, review.round_bound, review.required, provenance.present] }]
+    deliver: [{ id: G_deliver_exit, policy_mode: all_of, waivable: false, criteria: [design.code_matches, node.integration_listed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
 ```
