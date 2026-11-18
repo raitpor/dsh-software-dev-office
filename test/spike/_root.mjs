@@ -1,20 +1,25 @@
-// spike 测试的公共路径工具：从当前文件向上找仓库根（package.json name=sdo-v2）。
+// spike 测试的公共路径工具：从当前文件向上找仓库根。
+// P1-2：按目录特征（migrations/001_init.sql + plan/00-*.md）识别，不再硬编码包名；
 // 这样同一份测试在 test/spike/ 源码位置和 lib/spike-test/ 构建产物位置都能跑。
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync } from 'node:fs';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+
+function hasPlanEntry(dir) {
+  const plan = join(dir, 'plan');
+  if (!existsSync(plan)) return false;
+  try {
+    return readdirSync(plan).some((name) => /^00-.*\.md$/.test(name));
+  } catch {
+    return false;
+  }
+}
 
 export function findRepoRoot(start = dirname(fileURLToPath(import.meta.url))) {
   let current = resolve(start);
   for (;;) {
-    const pkgPath = join(current, 'package.json');
-    if (existsSync(pkgPath)) {
-      try {
-        const pkg = JSON.parse(readFileSync(pkgPath, 'utf8'));
-        if (pkg.name === 'sdo-v2') return current;
-      } catch {
-        /* 继续向上 */
-      }
+    if (existsSync(join(current, 'migrations', '001_init.sql')) && hasPlanEntry(current)) {
+      return current;
     }
     const parent = dirname(current);
     if (parent === current) throw new Error(`repo root not found from ${start}`);

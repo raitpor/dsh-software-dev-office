@@ -1,8 +1,8 @@
 {
-  "name": "sdo-v2",
-  "version": "0.2.0",
+  "name": "dsh-software-dev-office",
+  "version": "0.4.0",
   "private": true,
-  "description": "SDO v2 · 真源与视图内核（M0 骨架）",
+  "description": "SDO v2 · event-sourced work ledger (Cordis bundle adapter)",
   "type": "module",
   "engines": {
     "node": ">=22"
@@ -24,7 +24,8 @@
     "spike:test": "npm run build && node scripts/spike/copy-spike-tests.mjs && node --test lib/spike-test/",
     "readings:m2": "npm run build && node scripts/m2-readings.mjs",
     "readings:m3": "npm run build && node scripts/m3-readings.mjs",
-    "readings:m4": "npm run build && node scripts/m4-readings.mjs"
+    "readings:m4": "npm run build && node scripts/m4-readings.mjs",
+    "plugin:digest": "node scripts/plugin/host-digest.mjs"
   },
   "dependencies": {
     "@node-rs/argon2": "^2.2.2",
@@ -34,5 +35,30 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "typescript": "^7.0.2"
-  }
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "exports": {
+    ".": {
+      "require": "./index.cjs",
+      "import": "./index.js"
+    },
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "index.cjs",
+    "cordis.patch.yml",
+    "locale",
+    "icon.svg",
+    "lib",
+    "migrations",
+    "scripts/signerd.mjs",
+    "README.md"
+  ],
+  "main": "index.cjs"
 }

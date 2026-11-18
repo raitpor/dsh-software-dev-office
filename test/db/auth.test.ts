@@ -235,6 +235,8 @@ test('守卫：bootstrap 入口只许迁移/CLI 与 auth 测试引用', () => {
       const source = readFileSync(path, 'utf8');
       if (!source.includes('auth-bootstrap')) continue;
       if (relative === 'src/db/auth-bootstrap.ts') continue;
+      // M5-0：插件零配置 bootstrap 适配器是受控的初始化入口（审计：卡片 C16/台账 D-262）。
+      if (relative === 'src/plugin/bootstrap.ts') continue;
       // append-actions.ts 只是调用点登记表里的一个文件名字符串，不是 import。
       if (relative === 'src/db/append-actions.ts') continue;
       if (relative.startsWith('src/')) {

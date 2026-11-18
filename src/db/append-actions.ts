@@ -12,6 +12,8 @@
 // 源码里的**单行单引号字面量** `kind: 'x.y'`；模板字符串、变量拼接、别名转发扫不到。
 // 因此它证明的是“没有显式写出未登记的 kind”，不是全静态覆盖——新增调用点仍须人工登记。
 
+import { SUPPORTED_KINDS } from './write-materialize.js';
+
 export interface AppendCallSite {
   readonly file: string;
   readonly kinds: readonly string[];
@@ -30,6 +32,7 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
   { file: 'src/core/pm/card.ts', kinds: ['task.created'], reason: '建卡' },
   { file: 'src/db/action-objects.ts', kinds: ['defect.closed', 'review.finding_verified'], reason: 'C8 对象条件动作' },
   { file: 'src/db/auth.ts', kinds: ['right.granted', 'right.revoked'], reason: 'M4-4：权限授予/撤销事件（唯一生产路径）' },
+  { file: 'src/plugin/signing.ts', kinds: ['request_sign'], reason: 'M5-0 插件提案写入 request_sign ACK（agent 通道）' },
   { file: 'src/db/auth-bootstrap.ts', kinds: ['right.granted', 'right.revoked'], reason: 'M4-4：存量 scope 行一次性背填为事件' },
   { file: 'src/db/assumption.ts', kinds: ['assumption.disposed'], reason: '假设处置（复述写路径）' },
   { file: 'src/db/conflict.ts', kinds: ['conflict.detected', 'conflict.resolved'], reason: '冲突检测/裁决（带一次性能力）' },
@@ -62,6 +65,11 @@ export const APPEND_CALL_SITES: readonly AppendCallSite[] = [
     file: 'src/db/agent.ts',
     kinds: ['agent.spawned', 'agent.reused', 'agent.pick_declined', 'agent.spawn_streak'],
     reason: 'M4-7 派发读数：新起/复用/pick declined + 连续新起告警（事件现算，无 agent 表）',
+  },
+  {
+    file: 'src/plugin/tools.ts',
+    kinds: Object.keys(SUPPORTED_KINDS),
+    reason: 'M5-0 工具面 sdo_append：kind 由调用参数给出，逐条过 KIND_ACTIONS/网关；这里是全部 supported kind',
   },
   {
     file: 'src/sign/decision.ts',
