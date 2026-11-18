@@ -4,7 +4,7 @@
  *
  * 用法：
  *   node scripts/m4-readings.mjs                  # 跑全部，写 plan/milestone/M4-读数.{json,md}
- *   node scripts/m4-readings.mjs --only R-pick        # 单跑一条，stdout 输出 {id,raw}
+ *   node scripts/m4-readings.mjs --only R-pick        # 单跑一条，stdout 输出 {id,raw,verdict,caveat}
  *   node scripts/m4-readings.mjs --out <prefix>   # 改输出前缀
  *
  * 退出码：fail ⇒ 1；partial/pass ⇒ 0（口径同 M0-G/M1-G）。
@@ -106,7 +106,7 @@ async function main() {
 
   if (options.only !== undefined) {
     const result = await runOne(options.only);
-    process.stdout.write(`${JSON.stringify({ id: result.id, raw: result.measured })}\n`);
+    process.stdout.write(`${JSON.stringify({ id: result.id, raw: result.measured, verdict: result.verdict, caveat: result.caveat })}\n`);
     return;
   }
 
