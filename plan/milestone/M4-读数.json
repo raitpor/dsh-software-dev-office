@@ -1,6 +1,6 @@
 {
   "card": "M4-G",
-  "generatedAt": "2026-11-18T03:10:01.170Z",
+  "generatedAt": "2026-11-18T03:15:46.882Z",
   "command": "node scripts/m4-readings.mjs",
   "node": "v26.13.1",
   "readings": {
@@ -269,7 +269,7 @@
       "raw": {
         "sample_file": "/home/raiptor/gitrepo/dsh-plugins/dsh-plugins/packages/dsh-software-dev-office/plan/milestone/M4-人类样本.json",
         "receipts_file": "/home/raiptor/.local/state/sdo/signerd/receipts.jsonl",
-        "generatedAt": "2026-11-18T03:10:01.170Z",
+        "generatedAt": "2026-11-18T03:15:46.881Z",
         "samples_total": 0,
         "humans": 0,
         "humans_unverified": 0,
