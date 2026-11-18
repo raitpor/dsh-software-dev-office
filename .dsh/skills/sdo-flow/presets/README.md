@@ -22,5 +22,5 @@ pre·set = 预先设定好的**阶段与出口判据**。这里的三份对应 S
 ## 与插件的对应
 
 每份 preset 末尾的 `policy` YAML 是**结构可迁移**：`stages[].id/kinds/after`、`gates{}` 字段与插件一致；
-但 `gates` 的 `criteria` 要按 `docs/08` §1.1 展开成判据数组后才能放进 baseline（P15 要求每个 gate 至少一条已注册判据）。
+各 gate 的 `criteria` **已按 `docs/08` §1.1 展开**；入 baseline 前只需核对每个判据 id 已在插件里注册（P15 要求每个 gate 至少一条已注册判据）。
 所以不是“粘上就能用”，见 `references/07` 的“不得为了看起来等价而伪造”。
