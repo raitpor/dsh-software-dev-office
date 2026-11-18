@@ -338,7 +338,17 @@ def check_scope(cards_dir: Path, plan_doc: Path) -> list[str]:
                     variants = _expand_braces(token)
                     # 子目录路径只判“真实存在”的（`src/co`、`src/core2` 这种是判据里的对照物）；
                     # 根级文件（无 `/`）即使是本卡要新建的也判——否则新卡的根级清单文件永远逃过 R4。
-                    if "/" in token and not any((ROOT / v.rstrip("/")).exists() for v in variants):
+                    # 根级文件与 `plan/` 下的路径不要求已存在：前者是本卡要新建的清单文件，
+                    # 后者是 M5-x 才产出的记录（如 `plan/milestone/M5-安装.md`）。
+                    if (
+                        "/" in token
+                        and not token.startswith("plan/")
+                        and not any((ROOT / v.rstrip("/")).exists() for v in variants)
+                    ):
+                        continue
+                    # `plan/` 文档是 PM 独占的只读输入：卡面可以点名引用（如 `plan/00` 的口径、
+                    # `plan/milestone/M5-安装.md` 的产物位置），但不进任何实现卡的 write_scope。
+                    if token.startswith("plan/"):
                         continue
                     if all(any(_path_hit(v, one) for one in scope) for v in variants):
                         continue
