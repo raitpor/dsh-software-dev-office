@@ -218,7 +218,11 @@ def check_admission(plan_doc: Path, cards_dir: Path) -> list[str]:
 
 # ---------- R4：判据点名的文件 ⊆ write_scope ∪ 共享写域登记 ----------
 
-_SCOPE_PATH = re.compile(r"^(src|test|migrations|scripts|package\.json|package-lock\.json)", re.I)
+_SCOPE_PATH = re.compile(
+    r"^(?:src|test|migrations|scripts|plan)/"          # 目录内的路径
+    r"|^[A-Za-z0-9_.\-]+\.(?:json|ya?ml|js|mjs|cjs|ts|md)$",  # 根级文件（cordis.patch.yml、index.js、CODES.md…）
+    re.I,
+)
 
 
 def _write_scope(path: Path) -> list[str]:
@@ -332,8 +336,9 @@ def check_scope(cards_dir: Path, plan_doc: Path) -> list[str]:
                     if not _SCOPE_PATH.match(token) or "node_modules" in token or " " in token:
                         continue
                     variants = _expand_braces(token)
-                    # 只判“真实存在的路径”：`src/co`、`src/core2` 这种是判据里的对照物，不是文件
-                    if not any((ROOT / v.rstrip("/")).exists() for v in variants):
+                    # 子目录路径只判“真实存在”的（`src/co`、`src/core2` 这种是判据里的对照物）；
+                    # 根级文件（无 `/`）即使是本卡要新建的也判——否则新卡的根级清单文件永远逃过 R4。
+                    if "/" in token and not any((ROOT / v.rstrip("/")).exists() for v in variants):
                         continue
                     if all(any(_path_hit(v, one) for one in scope) for v in variants):
                         continue
