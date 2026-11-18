@@ -1,6 +1,0 @@
-{
-  "meta": {
-    "title": "SDO work ledger",
-    "description": "Event-sourced development ledger: query views, verify the chain, and append through the write gateway."
-  }
-}

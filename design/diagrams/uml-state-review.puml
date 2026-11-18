@@ -1,8 +1,0 @@
-@startuml
-hide empty description
-[*] --> open
-open --> open : finding 追加 / 逐条核实
-open --> closed : close(verdict)
-note right of closed : verdict ∈ {pass, changes_requested} 是属性，不是状态
-closed --> [*]
-@enduml
