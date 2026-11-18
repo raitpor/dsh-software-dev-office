@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-6：签字页的**命题渲染器**（C1；docs/06 §5）。
  *
@@ -23,7 +24,7 @@ export interface ClaimRecord {
 
 export type ClaimResolveFailure = {
   readonly ok: false;
-  readonly reason_code: 'claim_not_found' | 'claim_invalid' | 'renderer_unregistered';
+  readonly reason_code: typeof CODE.claim_not_found | typeof CODE.claim_invalid | typeof CODE.renderer_unregistered;
   readonly message: string;
 };
 
@@ -35,23 +36,23 @@ const CLAIM_SELECT =
 /** 逐 id 读 claim 行（顺序稳定：按 id 排序）；缺任意一条 ⇒ fail-closed。 */
 export function loadClaimRecords(db: SdoDatabase, claimIds: readonly string[]): ClaimResolveResult {
   if (claimIds.length === 0) {
-    return { ok: false, reason_code: 'claim_invalid', message: '至少需要一个 claim 作为命题依据' };
+    return { ok: false, reason_code: CODE.claim_invalid, message: '至少需要一个 claim 作为命题依据' };
   }
   const unique = [...new Set(claimIds)].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
   if (unique.length !== claimIds.length) {
-    return { ok: false, reason_code: 'claim_invalid', message: 'claim_ids 不得重复' };
+    return { ok: false, reason_code: CODE.claim_invalid, message: 'claim_ids 不得重复' };
   }
   const claims: ClaimRecord[] = [];
   for (const id of unique) {
     if (typeof id !== 'string' || id.trim().length === 0) {
-      return { ok: false, reason_code: 'claim_invalid', message: 'claim_ids 必须是非空字符串' };
+      return { ok: false, reason_code: CODE.claim_invalid, message: 'claim_ids 必须是非空字符串' };
     }
     const row = db.prepare(CLAIM_SELECT).get(id) as ClaimRecord | undefined;
     if (row === undefined) {
-      return { ok: false, reason_code: 'claim_not_found', message: `claim ${id} 不存在` };
+      return { ok: false, reason_code: CODE.claim_not_found, message: `claim ${id} 不存在` };
     }
     if (row.derived_by.trim().length === 0) {
-      return { ok: false, reason_code: 'renderer_unregistered', message: `claim ${id} 没有渲染器` };
+      return { ok: false, reason_code: CODE.renderer_unregistered, message: `claim ${id} 没有渲染器` };
     }
     claims.push(row);
   }
@@ -107,7 +108,7 @@ export interface ResolvedClaimDecision {
 export type ResolvedClaimDecisionResult =
   | { readonly ok: true; readonly resolved: ResolvedClaimDecision }
   | ClaimResolveFailure
-  | { readonly ok: false; readonly reason_code: 'no_blind_sign'; readonly message: string };
+  | { readonly ok: false; readonly reason_code: typeof CODE.no_blind_sign; readonly message: string };
 
 /**
  * 把「claim 集合 + 差异 + 后果」解析成可签的结构化字段。
@@ -117,10 +118,10 @@ export type ResolvedClaimDecisionResult =
  */
 export function resolveClaimDecision(db: SdoDatabase, draft: ClaimDecisionDraft): ResolvedClaimDecisionResult {
   if (draft.difference.trim().length === 0) {
-    return { ok: false, reason_code: 'no_blind_sign', message: '四元组缺差异（difference）' };
+    return { ok: false, reason_code: CODE.no_blind_sign, message: '四元组缺差异（difference）' };
   }
   if (draft.consequence.trim().length === 0) {
-    return { ok: false, reason_code: 'no_blind_sign', message: '四元组缺后果（consequence）' };
+    return { ok: false, reason_code: CODE.no_blind_sign, message: '四元组缺后果（consequence）' };
   }
   const loaded = loadClaimRecords(db, draft.claim_ids);
   if (!loaded.ok) return loaded;

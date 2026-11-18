@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M3-4 · 渲染器注册目录（真源，收口 D-034）。
  *
@@ -81,10 +82,10 @@ export interface RendererCatalogRow {
 export interface RendererRegisterFailure {
   readonly ok: false;
   readonly reason_code:
-    | 'invalid_field'
-    | 'renderer_module_invalid'
-    | 'renderer_views_unknown'
-    | 'renderer_conflict'
+    | typeof CODE.invalid_field
+    | typeof CODE.renderer_module_invalid
+    | typeof CODE.renderer_views_unknown
+    | typeof CODE.renderer_conflict
     | 'no_permission'
     | 'event_rejected';
   readonly message: string;
@@ -356,23 +357,22 @@ export async function registerRenderer(
   input: RegisterRendererInput,
 ): Promise<RendererRegisterResult> {
   if (!RENDERER_ID.test(input.id)) {
-    return fail('invalid_field', `renderer id must look like renderer:<name>: ${input.id}`);
+    return fail(CODE.invalid_field, `renderer id must look like renderer:<name>: ${input.id}`);
   }
   if (!isNonEmptyString(input.module_path)) {
-    return fail('invalid_field', 'module_path must be a non-empty string');
+    return fail(CODE.invalid_field, 'module_path must be a non-empty string');
   }
   if (input.views.length === 0 || input.views.some((view) => !isNonEmptyString(view))) {
-    return fail('invalid_field', 'views must be a non-empty array of view names');
+    return fail(CODE.invalid_field, 'views must be a non-empty array of view names');
   }
   if (new Set(input.views).size !== input.views.length) {
-    return fail('invalid_field', 'views must not contain duplicates');
+    return fail(CODE.invalid_field, 'views must not contain duplicates');
   }
   const views = [...input.views];
 
   const decision = hasRight(db, input.actor, RENDERER_PERMISSION_ACTION, RENDERER_REGISTRY_SCOPE);
   if (!decision.ok) {
-    return fail(
-      'no_permission',
+    return fail(CODE.no_permission,
       `registering a renderer requires ${RENDERER_PERMISSION_ACTION}@${RENDERER_REGISTRY_SCOPE}: ${decision.message}`,
     );
   }
@@ -413,7 +413,7 @@ export async function registerRenderer(
   // P1-2：登记能力绑规范化载荷摘要，写网关在 append 事务内消费（直 append 无能力 ⇒ 拒）。
   const payloadHash = rendererRegistrationPayloadHash(event.payload);
   if (payloadHash === undefined) {
-    return fail('invalid_field', `renderer ${input.id}: registration payload is not canonicalizable`);
+    return fail(CODE.invalid_field, `renderer ${input.id}: registration payload is not canonicalizable`);
   }
   mintRendererRegistrationAuthority(payloadHash);
   const appended = appendAsTool(db, [event], input.actor.id, input.actor.kind);

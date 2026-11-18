@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M3-3 独立性判定（纯函数，无 IO/时钟/随机；`now` 由调用方注入）。
  *
@@ -17,7 +18,6 @@ import {
   parseIndependencePolicy,
   requiresIndependence,
   type IndependenceMode,
-  type IndependencePolicyError,
   type MatrixDualRow,
 } from './policy.js';
 
@@ -31,12 +31,7 @@ export interface IndependenceSignature {
   readonly frontier: string | null;
 }
 
-export type IndependenceReasonCode =
-  | IndependencePolicyError
-  | 'independence_unsatisfied'
-  | 'cooldown_active'
-  | 'cooldown_not_applicable'
-  | 'independence_unverifiable';
+
 
 export interface IndependenceJudgement {
   readonly ok: boolean;
@@ -85,7 +80,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode: null,
       action,
-      reason_code: 'independence_unsatisfied',
+      reason_code: CODE.independence_unsatisfied,
       message: `矩阵未登记动作 ${action}，无法判定独立性（fail-closed）`,
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -124,7 +119,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode,
       action,
-      reason_code: 'independence_unsatisfied',
+      reason_code: CODE.independence_unsatisfied,
       message: `baseline 的 assurance.independence 为 solo，动作 ${action} 不允许单人完成`,
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -138,7 +133,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode,
       action,
-      reason_code: 'independence_unverifiable',
+      reason_code: CODE.independence_unverifiable,
       message: '签名载荷缺少 signerd 回执时间（payload.signerd.at），无法判定独立性（fail-closed）',
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -157,7 +152,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
         required: true,
         mode,
         action,
-        reason_code: 'independence_unsatisfied',
+        reason_code: CODE.independence_unsatisfied,
         message: '同一 decision 的签名覆盖了不同的 payload_hash（证据不自洽）',
         signature_count: signatures.length,
         distinct_signers: distinct.size,
@@ -182,7 +177,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode,
       action,
-      reason_code: 'independence_unsatisfied',
+      reason_code: CODE.independence_unsatisfied,
       message: `动作 ${action} 需要 2 个不同 human，目前只有 ${distinct.size} 个`,
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -207,7 +202,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode,
       action,
-      reason_code: 'independence_unsatisfied',
+      reason_code: CODE.independence_unsatisfied,
       message: `solo_cooldown：首次签名已记录，等待冷却结束后的二次确认（${String(input.human_actor_count)} 个 human）`,
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -223,7 +218,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode,
       action,
-      reason_code: 'assurance_invalid',
+      reason_code: CODE.assurance_invalid,
       message: 'solo_cooldown 模式缺少冷却毫秒数（内部状态异常，fail-closed）',
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -237,7 +232,7 @@ export function judgeIndependence(input: JudgeIndependenceInput): IndependenceJu
       required: true,
       mode,
       action,
-      reason_code: 'cooldown_active',
+      reason_code: CODE.cooldown_active,
       message: `冷却未结束：还需 ${String(Math.ceil(remaining / 60_000))} 分钟才能二次确认`,
       signature_count: signatures.length,
       distinct_signers: distinct.size,
@@ -293,3 +288,14 @@ export function signaturesForDecision(
   }
   return result;
 }
+
+
+export const IndependenceReasonCode_CODES = [
+  CODE.assurance_invalid,
+  CODE.cooldown_active,
+  CODE.cooldown_not_applicable,
+  CODE.independence_missing,
+  CODE.independence_unsatisfied,
+  CODE.independence_unverifiable,
+] as const;
+export type IndependenceReasonCode = (typeof IndependenceReasonCode_CODES)[number];

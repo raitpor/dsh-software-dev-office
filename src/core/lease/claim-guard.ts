@@ -1,10 +1,11 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M4-2/C2、C3、C6：task.claimed 的前置（纯函数，输入是逐条推进的 fold state）。
  * 预占 ≠ 授权：预占期内只有 reserved_by 能认领；认领还必须持未过期且 actor/card 匹配的租约。
  */
 import type { FoldState } from '../fold/types.js';
 
-export type ClaimGuardFailureCode = 'no_lease' | 'lease_expired' | 'not_reserved_actor';
+
 
 export interface ClaimGuardFailure {
   readonly reason_code: ClaimGuardFailureCode;
@@ -27,7 +28,7 @@ export function claimGuard(
   const reservedUntil = text(task['reserved_until']);
   if (reservedBy !== undefined && reservedUntil !== undefined && Date.parse(reservedUntil) > Date.parse(at) && reservedBy !== actor) {
     return {
-      reason_code: 'not_reserved_actor',
+      reason_code: CODE.not_reserved_actor,
       message: `task ${cardId} is reserved by ${reservedBy} until ${reservedUntil}; actor ${actor} cannot claim it`,
     };
   }
@@ -43,10 +44,18 @@ export function claimGuard(
     if (status === 'expired' || (status === 'active' && Date.parse(expiresAt) <= Date.parse(at))) sawExpired = true;
   }
   if (!sawLeaseForActor) {
-    return { reason_code: 'no_lease', message: `task ${cardId} cannot be claimed by ${actor} without a lease (docs/07 §13)` };
+    return { reason_code: CODE.no_lease, message: `task ${cardId} cannot be claimed by ${actor} without a lease (docs/07 §13)` };
   }
   if (sawExpired) {
-    return { reason_code: 'lease_expired', message: `lease for task ${cardId} actor ${actor} has expired` };
+    return { reason_code: CODE.lease_expired, message: `lease for task ${cardId} actor ${actor} has expired` };
   }
-  return { reason_code: 'no_lease', message: `lease for task ${cardId} actor ${actor} is not active` };
+  return { reason_code: CODE.no_lease, message: `lease for task ${cardId} actor ${actor} is not active` };
 }
+
+
+export const ClaimGuardFailureCode_CODES = [
+  CODE.lease_expired,
+  CODE.no_lease,
+  CODE.not_reserved_actor,
+] as const;
+export type ClaimGuardFailureCode = (typeof ClaimGuardFailureCode_CODES)[number];

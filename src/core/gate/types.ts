@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * M2-2 门禁判定数据类型（纯数据，无 IO）。
  *
@@ -6,13 +7,7 @@
  */
 export type GateReadingVerdict = 'pass' | 'fail' | 'na';
 
-export type GateReadingReasonCode =
-  | 'not_enforced_in_m2'
-  | 'criterion_not_effective'
-  | 'policy_mode_any_of'
-  | 'waivable_gate'
-  | 'core_not_effective'
-  | 'checked';
+
 
 export interface GateReading {
   readonly criterion_id: string;
@@ -36,3 +31,14 @@ export interface GateEvaluation {
   /** 判定级原因码：core_not_effective / gate_empty / stage_unknown 等。 */
   readonly reasons: readonly string[];
 }
+
+
+export const GateReadingReasonCode_CODES = [
+  CODE.checked,
+  CODE.core_not_effective,
+  CODE.criterion_not_effective,
+  CODE.not_enforced_in_m2,
+  CODE.policy_mode_any_of,
+  CODE.waivable_gate,
+] as const;
+export type GateReadingReasonCode = (typeof GateReadingReasonCode_CODES)[number];

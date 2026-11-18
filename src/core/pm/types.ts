@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * M2-5 · PM 最小环路的公共类型。
  *
@@ -9,19 +10,7 @@
 /** 身份类别由进程配置/会话固定，**不从请求载荷取**（D-056）。 */
 export type PmActorKind = 'human' | 'agent';
 
-export type PmFailureCode =
-  | 'invalid_args'
-  | 'invalid_field'
-  | 'card_incomplete'
-  | 'no_permission'
-  | 'scope_mismatch'
-  | 'not_a_signer'
-  | 'not_unblockable_by_pm'
-  | 'not_implemented'
-  | 'task_not_found'
-  | 'invalid_state'
-  | 'no_such_seat'
-  | 'write_failed';
+
 
 export interface PmContext {
   readonly actor: string;
@@ -45,3 +34,20 @@ export interface PmFailure {
 export function pmFailure(reason_code: PmFailureCode, message: string): PmFailure {
   return { ok: false, reason_code, message };
 }
+
+
+export const PmFailureCode_CODES = [
+  CODE.card_incomplete,
+  CODE.invalid_args,
+  CODE.invalid_field,
+  CODE.invalid_state,
+  CODE.no_permission,
+  CODE.no_such_seat,
+  CODE.not_a_signer,
+  CODE.not_implemented,
+  CODE.not_unblockable_by_pm,
+  CODE.scope_mismatch,
+  CODE.task_not_found,
+  CODE.write_failed,
+] as const;
+export type PmFailureCode = (typeof PmFailureCode_CODES)[number];

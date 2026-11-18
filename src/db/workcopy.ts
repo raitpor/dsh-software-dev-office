@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M4-0：工作副本生命周期（docs/07 §12）。
  *
@@ -76,17 +77,17 @@ async function withLock<T>(paths: WorkcopyPaths, body: () => Promise<T>): Promis
  */
 function taskScopePaths(db: SdoDatabase, cardId: string): { ok: true; paths: string[] } | FailureResult {
   const row = db.prepare('SELECT scope_paths FROM task WHERE id = ?').get(cardId) as { scope_paths?: unknown } | undefined;
-  if (row === undefined) return { ok: false, reason_code: 'task_not_found', message: `task ${cardId} does not exist` };
-  if (typeof row.scope_paths !== 'string') return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} has no scope_paths` };
+  if (row === undefined) return { ok: false, reason_code: CODE.task_not_found, message: `task ${cardId} does not exist` };
+  if (typeof row.scope_paths !== 'string') return { ok: false, reason_code: CODE.scope_undeclared, message: `task ${cardId} has no scope_paths` };
   let parsed: unknown;
   try {
     parsed = JSON.parse(row.scope_paths);
   } catch {
-    return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} scope_paths is not valid JSON` };
+    return { ok: false, reason_code: CODE.scope_undeclared, message: `task ${cardId} scope_paths is not valid JSON` };
   }
-  if (!Array.isArray(parsed) || parsed.length === 0) return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} scope_paths must be a non-empty array` };
+  if (!Array.isArray(parsed) || parsed.length === 0) return { ok: false, reason_code: CODE.scope_undeclared, message: `task ${cardId} scope_paths must be a non-empty array` };
   const paths = parsed.filter((item): item is string => typeof item === 'string' && item.length > 0);
-  if (paths.length !== parsed.length) return { ok: false, reason_code: 'scope_undeclared', message: `task ${cardId} scope_paths contains non-string entries` };
+  if (paths.length !== parsed.length) return { ok: false, reason_code: CODE.scope_undeclared, message: `task ${cardId} scope_paths contains non-string entries` };
   return { ok: true, paths };
 }
 
@@ -94,9 +95,9 @@ function taskScopePaths(db: SdoDatabase, cardId: string): { ok: true; paths: str
 export async function createWorkcopy(db: SdoDatabase, req: CreateRequest): Promise<CreateResult | FailureResult> {
   const t0 = process.hrtime.bigint();
   const paths = pathsFor(req.root, req.card);
-  if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
+  if (isBusy(paths)) return { ok: false, reason_code: CODE.workcopy_busy };
   const baseOid = snapshotOid(db, req.base_snapshot_id);
-  if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing', message: req.base_snapshot_id };
+  if (baseOid === undefined) return { ok: false, reason_code: CODE.snapshot_missing, message: req.base_snapshot_id };
   const scope = taskScopePaths(db, req.card);
   if (!scope.ok) return scope;
   await ensureSharedRepo(objectsDir(req.root));
@@ -117,7 +118,7 @@ export async function createWorkcopy(db: SdoDatabase, req: CreateRequest): Promi
     }, req.session, req.at), req.session);
     const timings = { read_tree_ms: elapsedMs(tRead), materialize_plus_event_ms: elapsedMs(tWrite), total_ms: elapsedMs(t0) };
     warnSlow('create', req.card, timings);
-    if (!appended.ok) return { ok: false, reason_code: 'append_failed', message: appended.message };
+    if (!appended.ok) return { ok: false, reason_code: CODE.append_failed, message: appended.message };
     return { ok: true, gitdir: paths.gitdir, workdir: paths.workdir, base_oid: baseOid, file_count: entries.length, timings };
   });
 }
@@ -143,9 +144,9 @@ async function gitIgnored(root: string, filepath: string): Promise<boolean> {
 export async function commitWorkcopy(db: SdoDatabase, req: CommitRequest): Promise<CommitResult | FailureResult> {
   const t0 = process.hrtime.bigint();
   const paths = pathsFor(req.root, req.card);
-  if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
+  if (isBusy(paths)) return { ok: false, reason_code: CODE.workcopy_busy };
   const baseOid = snapshotOid(db, req.base_snapshot_id);
-  if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing' };
+  if (baseOid === undefined) return { ok: false, reason_code: CODE.snapshot_missing };
   const scope = taskScopePaths(db, req.card);
   if (!scope.ok) return scope;
   const entries = readPublicFace(db);
@@ -154,7 +155,7 @@ export async function commitWorkcopy(db: SdoDatabase, req: CommitRequest): Promi
   if (faceHits.length > 0) {
     return {
       ok: false,
-      reason_code: 'public_face_readonly',
+      reason_code: CODE.public_face_readonly,
       message: `card ${req.card} scope_paths hit public face: ${faceHits.join(', ')}; request the change via requestPublicFace`,
       hits: faceHits,
     };
@@ -220,9 +221,9 @@ function completedAdmission(
 export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise<AdmitResult | FailureResult> {
   const t0 = process.hrtime.bigint();
   const paths = pathsFor(req.root, req.card);
-  if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
+  if (isBusy(paths)) return { ok: false, reason_code: CODE.workcopy_busy };
   const baseOid = snapshotOid(db, req.base_snapshot_id);
-  if (baseOid === undefined) return { ok: false, reason_code: 'snapshot_missing' };
+  if (baseOid === undefined) return { ok: false, reason_code: CODE.snapshot_missing };
   const scope = taskScopePaths(db, req.card);
   if (!scope.ok) return scope;
   const entries = readPublicFace(db);
@@ -231,7 +232,7 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
   if (faceHits.length > 0) {
     return {
       ok: false,
-      reason_code: 'public_face_readonly',
+      reason_code: CODE.public_face_readonly,
       message: `card ${req.card} scope_paths hit public face: ${faceHits.join(', ')}; request the change via requestPublicFace`,
       hits: faceHits,
     };
@@ -241,19 +242,19 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     if (previous.kind === 'ambiguous') {
       return {
         ok: false,
-        reason_code: 'admission_ambiguous',
+        reason_code: CODE.admission_ambiguous,
         message: `card ${req.card} has more than one completed admission from ${req.base_snapshot_id}; resolve manually`,
       };
     }
     if (previous.kind === 'unique' && fs.existsSync(paths.workdir)) {
       const retryChanges = diffTrees(await readTree(paths.gitdir, baseOid), await readTree(paths.gitdir, previous.git_oid));
       const retryFace = publicFaceHits(retryChanges.map((change) => change.path), entries);
-      if (retryFace.length > 0) return { ok: false, reason_code: 'public_face_readonly', message: `card ${req.card} diff hit public face: ${retryFace.join(', ')}`, hits: retryFace };
+      if (retryFace.length > 0) return { ok: false, reason_code: CODE.public_face_readonly, message: `card ${req.card} diff hit public face: ${retryFace.join(', ')}`, hits: retryFace };
       const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
       if (!cardLocks.ok) {
         return {
           ok: false,
-          reason_code: 'lock_release_failed',
+          reason_code: CODE.lock_release_failed,
           message: `card lock release failed after admission retry: ${describeLockFailures(cardLocks.failures)}`,
           details: cardLocks.failures,
         };
@@ -276,16 +277,16 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     const cardOid = await commitWorkdir(paths, req.message, req.author ?? WORKCOPY_AUTHOR, baseOid);
     spillObjects(paths.gitdir, objectsDir(req.root));
     const changes = diffTrees(await readTree(paths.gitdir, baseOid), await readTree(paths.gitdir, cardOid));
-    if (!isSubset(changes.map((change) => change.path), scope.paths)) return { ok: false, reason_code: 'scope_violation', changes };
+    if (!isSubset(changes.map((change) => change.path), scope.paths)) return { ok: false, reason_code: CODE.scope_violation, changes };
     // P1-1 第二道闸：写域可以合法但仍把公共面文件带进 diff（宽写域/文件级集合判断）。
     const diffFace = publicFaceHits(changes.map((change) => change.path), entries);
-    if (diffFace.length > 0) return { ok: false, reason_code: 'public_face_readonly', message: `card ${req.card} diff hit public face: ${diffFace.join(', ')}`, hits: diffFace };
+    if (diffFace.length > 0) return { ok: false, reason_code: CODE.public_face_readonly, message: `card ${req.card} diff hit public face: ${diffFace.join(', ')}`, hits: diffFace };
     const current = currentBaseline(db);
-    if (current === undefined) return { ok: false, reason_code: 'snapshot_missing' };
+    if (current === undefined) return { ok: false, reason_code: CODE.snapshot_missing };
     const currentEntries: TreeEntry[] = await readTree(paths.gitdir, current.git_oid);
     const dirtyCheck = async (): Promise<MainTreeDiff> => diffMainTree(req.root, currentEntries, (path) => gitIgnored(req.root, path));
     const dirtyBlock = (diff: MainTreeDiff): FailureResult => ({
-      ok: false, reason_code: 'dirty_main_tree', diff,
+      ok: false, reason_code: CODE.dirty_main_tree, diff,
       block_event_id: req.task_id === undefined ? undefined : blockTask(db, req.task_id, 'dirty_main_tree', 'main tree is dirty', req.session, req.at),
     });
     const dirtyBefore = await dirtyCheck();
@@ -298,9 +299,9 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     let rootHeld = true;
     try {
     const merged = await mergeCommits(paths, objectsDir(req.root), cardOid, current.git_oid, `admit ${req.card}`, req.author ?? WORKCOPY_AUTHOR);
-    if (!merged.ok) return { ok: false, reason_code: 'merge_conflict', conflicts: merged.conflicts ?? [], block_event_id: req.task_id === undefined ? undefined : blockTask(db, req.task_id, 'merge_conflict', 'three-way merge conflict', req.session, req.at) };
+    if (!merged.ok) return { ok: false, reason_code: CODE.merge_conflict, conflicts: merged.conflicts ?? [], block_event_id: req.task_id === undefined ? undefined : blockTask(db, req.task_id, 'merge_conflict', 'three-way merge conflict', req.session, req.at) };
     const finalOid = merged.oid as string;
-    if (!objectsHas(objectsDir(req.root), finalOid)) return { ok: false, reason_code: 'vcs_object_missing' };
+    if (!objectsHas(objectsDir(req.root), finalOid)) return { ok: false, reason_code: CODE.vcs_object_missing };
     const finalEntries: TreeEntry[] = await readTree(paths.gitdir, finalOid);
     // merge 之后重扫重判（P1-2）：不能复用 merge 前的 dirty 快照。
     const dirtyCheckedAt = new Date().toISOString();
@@ -320,14 +321,14 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
     const taken = appendTool(db, toolEvent('snapshot.taken', snapshotId, {
       git_oid: finalOid, parent_ids: [current.id], external_ref: paths.gitdir, card: req.card,
     }, req.session, req.at), req.session);
-    if (!taken.ok) return { ok: false, reason_code: 'append_failed', message: taken.message };
+    if (!taken.ok) return { ok: false, reason_code: CODE.append_failed, message: taken.message };
     const removed = appendTool(db, toolEvent('workcopy.removed', req.card, { card: req.card, reason: 'admitted', snapshot_id: snapshotId }, req.session, req.at), req.session);
-    if (!removed.ok) return { ok: false, reason_code: 'append_failed', message: removed.message };
+    if (!removed.ok) return { ok: false, reason_code: CODE.append_failed, message: removed.message };
     const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
     if (!cardLocks.ok) {
       return {
         ok: false,
-        reason_code: 'lock_release_failed',
+        reason_code: CODE.lock_release_failed,
         message: `card lock release failed after admission: ${describeLockFailures(cardLocks.failures)}`,
         details: cardLocks.failures,
       };
@@ -349,20 +350,20 @@ export async function admitWorkcopy(db: SdoDatabase, req: AdmitRequest): Promise
 /** 收尾：不干净就拒（保留证据），干净才落 workcopy.removed 并删目录。 */
 export async function removeWorkcopy(db: SdoDatabase, req: { root: string; card: string; task_id?: string; session: WorkcopySession; at: string }): Promise<{ ok: true } | FailureResult> {
   const paths = pathsFor(req.root, req.card);
-  if (isBusy(paths)) return { ok: false, reason_code: 'workcopy_busy' };
+  if (isBusy(paths)) return { ok: false, reason_code: CODE.workcopy_busy };
   const status = await workdirStatus(paths);
   if (!status.clean) return {
-    ok: false, reason_code: 'dirty_workcopy', dirty: status.dirty, has_stash: status.hasStash,
+    ok: false, reason_code: CODE.dirty_workcopy, dirty: status.dirty, has_stash: status.hasStash,
     block_event_id: req.task_id === undefined ? undefined : blockTask(db, req.task_id, 'dirty_workcopy', 'workcopy has uncommitted changes', req.session, req.at),
   };
   return withLock(paths, async () => {
     const removed = appendTool(db, toolEvent('workcopy.removed', req.card, { card: req.card, reason: 'removed' }, req.session, req.at), req.session);
-    if (!removed.ok) return { ok: false, reason_code: 'append_failed', message: removed.message };
+    if (!removed.ok) return { ok: false, reason_code: CODE.append_failed, message: removed.message };
     const cardLocks = releaseCardLocksAsTool(db, { card_id: req.card, at: req.at });
     if (!cardLocks.ok) {
       return {
         ok: false,
-        reason_code: 'lock_release_failed',
+        reason_code: CODE.lock_release_failed,
         message: `card lock release failed: ${describeLockFailures(cardLocks.failures)}`,
         details: cardLocks.failures,
       };

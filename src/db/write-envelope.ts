@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 写网关的信封校验（M1-0）：字段形状 → kind 注册 → 本卡物化范围（`SUPPORTED_KINDS`）。
  * 独立成文件是为了让 `write.ts` 只留事务/链/物化编排（单文件 <200 行）。
@@ -16,18 +17,18 @@ function isNonEmptyString(value: unknown): value is string {
 }
 
 export function checkEnvelope(event: Event): AppendFailure | undefined {
-  if (!isNonEmptyString(event.id)) return failure('invalid_field', 'event.id must be a non-empty string');
+  if (!isNonEmptyString(event.id)) return failure(CODE.invalid_field, 'event.id must be a non-empty string');
   for (const field of ['at', 'actor', 'kind', 'subject', 'request_id', 'prev', 'hash'] as const) {
     if (!isNonEmptyString(event[field])) {
-      return failure('invalid_field', `${field} must be a non-empty string`);
+      return failure(CODE.invalid_field, `${field} must be a non-empty string`);
     }
   }
   if (!Array.isArray(event.caused_by) || event.caused_by.some((item) => typeof item !== 'string')) {
-    return failure('invalid_field', 'caused_by must be an array of event ids');
+    return failure(CODE.invalid_field, 'caused_by must be an array of event ids');
   }
   // Object.hasOwn 防原型链：kind='toString' 不能命中 Object.prototype。
   if (!Object.hasOwn(REDUCERS, event.kind) && !Object.hasOwn(ACK_KINDS, event.kind)) {
-    return failure('unknown_event_kind', `unknown event kind ${event.kind}`);
+    return failure(CODE.unknown_event_kind, `unknown event kind ${event.kind}`);
   }
   // C8：decision.signed 必须带 signerd 的可验证回执（受信公钥 + Ed25519 + 回执逐字段一致）。
   // 只有裸 append 的“随便一个 signature 字符串”在这里被拒，0 行落库。
@@ -47,21 +48,20 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
   if (event.kind === 'decision.valid') {
     const payload = event.payload as unknown;
     if (typeof payload !== 'object' || payload === null || Array.isArray(payload)) {
-      return failure('invalid_field', 'decision.valid.payload must be an object');
+      return failure(CODE.invalid_field, 'decision.valid.payload must be an object');
     }
     const record = payload as Record<string, unknown>;
     const declared = record['payload_hash'];
     if (!isNonEmptyString(declared)) {
-      return failure('invalid_field', 'decision.valid.payload_hash must be a non-empty string');
+      return failure(CODE.invalid_field, 'decision.valid.payload_hash must be a non-empty string');
     }
     const inner = record['payload'];
     if (typeof inner !== 'object' || inner === null || Array.isArray(inner)) {
-      return failure('invalid_field', 'decision.valid.payload.payload must be an object');
+      return failure(CODE.invalid_field, 'decision.valid.payload.payload must be an object');
     }
     const expected = `sha256:${sha256Hex(canonicalJson(inner))}`;
     if (declared !== expected) {
-      return failure(
-        'invalid_field',
+      return failure(CODE.invalid_field,
         `decision.valid.payload_hash 与 payload 内容不一致（D-055）：declared=${declared} expected=${expected}`,
       );
     }
@@ -69,8 +69,7 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
   // M2-3/C4 + D-078：`assumption.invalidated` 语义上是 fold 派生读数（inputs hash 变化时自动回 open），
   // 不是可写事件。kind 仍保留在 003 种子里仅为旧库兼容，任何写入入口都前置拒绝（fold 里同样拒）。
   if (event.kind === 'assumption.invalidated') {
-    return failure(
-      'assumption_invalidated_is_derived',
+    return failure(CODE.assumption_invalidated_is_derived,
       'assumption.invalidated 是 fold 派生读数，不是可写事件；失效由 inputs hash 变化自动产生（D-078）',
     );
   }
@@ -78,8 +77,7 @@ export function checkEnvelope(event: Event): AppendFailure | undefined {
   if (Object.hasOwn(ACK_KINDS, event.kind)) return undefined;
   if (!Object.hasOwn(SUPPORTED_KINDS, event.kind)) {
     const project = requiredTable(event.kind) ?? 'no fold projection (ACK kind)';
-    return failure(
-      'unsupported_scope',
+    return failure(CODE.unsupported_scope,
       `event kind ${event.kind} projects to ${project}; ` +
         `materialized tables are ${MATERIALIZED_TABLES.join('/')} (C5)`,
     );

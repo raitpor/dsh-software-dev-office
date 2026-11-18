@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M4-7/C1：`agent.spawned.new_reason` 的机器复算。规则逐字照 docs/12 §3（第 77–79 行），
  * 数据不足时按卡 M4-7「C1 复算表」fail-closed，不自行放宽。
@@ -18,7 +19,7 @@ export type SpawnReasonCheck =
   | { readonly ok: true; readonly reason: SpawnReason }
   | {
       readonly ok: false;
-      readonly reason_code: 'invalid_field' | 'spawn_reason_mismatch';
+      readonly reason_code: typeof CODE.invalid_field | typeof CODE.spawn_reason_mismatch;
       readonly message: string;
       readonly details?: readonly string[];
     };
@@ -106,12 +107,12 @@ export function validateSpawnReason(input: SpawnReasonInput): SpawnReasonCheck {
   if (typeof reason !== 'string' || !(SPAWN_REASONS as readonly string[]).includes(reason)) {
     return {
       ok: false,
-      reason_code: 'invalid_field',
+      reason_code: CODE.invalid_field,
       message: `agent.spawned.new_reason must be one of ${SPAWN_REASONS.join(', ')}`,
     };
   }
   const parsed = parseSnapshot(input.snapshot);
-  if (!parsed.ok) return { ok: false, reason_code: 'invalid_field', message: parsed.message };
+  if (!parsed.ok) return { ok: false, reason_code: CODE.invalid_field, message: parsed.message };
   const snapshot = parsed.snapshot;
   const requiredSkills = input.required_skills ?? [];
   const candidates = reusableCandidates(snapshot, requiredSkills);
@@ -121,7 +122,7 @@ export function validateSpawnReason(input: SpawnReasonInput): SpawnReasonCheck {
   };
   const mismatch = (message: string, details: readonly string[] = []): SpawnReasonCheck => ({
     ok: false,
-    reason_code: 'spawn_reason_mismatch',
+    reason_code: CODE.spawn_reason_mismatch,
     message,
     details,
   });

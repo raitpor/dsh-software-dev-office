@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M3-1/C8：动作级对象条件（不往矩阵加条件列，在动作实现里强制）。
  *
@@ -23,12 +24,12 @@ export interface ActionSession {
 
 export interface ObjectConditionFailure {
   readonly ok: false;
-  readonly reason_code: 'object_condition_failed';
+  readonly reason_code: typeof CODE.object_condition_failed;
   readonly message: string;
 }
 
 function fail(message: string): ObjectConditionFailure {
-  return { ok: false, reason_code: 'object_condition_failed', message };
+  return { ok: false, reason_code: CODE.object_condition_failed, message };
 }
 
 function text(value: unknown): string | undefined {

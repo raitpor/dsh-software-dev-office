@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M3-0 · 身份层存储（迁移 008 的三张表）。
  *
@@ -45,7 +46,7 @@ import {
   type RightRevokedPayload,
 } from '../core/auth/rights-events.js';
 
-export type AuthReason = 'invalid_field' | 'no_permission' | 'last_admin_right' | 'write_failed';
+
 
 export interface AuthFailureResult {
   readonly ok: false;
@@ -92,14 +93,14 @@ function actorExists(db: SdoDatabase, actor: string): boolean {
 function requireDomainAdmin(db: SdoDatabase, auth: AuthActorContext, what: string): AuthFailureResult | undefined {
   const by = auth.by;
   if (by === undefined || typeof by.id !== 'string' || by.id.length === 0) {
-    return fail('no_permission', `${what}需要调用者身份（admin@domain）`);
+    return fail(CODE.no_permission, `${what}需要调用者身份（admin@domain）`);
   }
   const row = db
     .prepare(
       "SELECT 1 AS one FROM scope WHERE actor = ? AND right = 'admin' AND revoked_at IS NULL AND scope LIKE 'domain:%' LIMIT 1",
     )
     .get(by.id);
-  if (row === undefined) return fail('no_permission', `${what}需要调用者持 admin@domain（${by.id}）`);
+  if (row === undefined) return fail(CODE.no_permission, `${what}需要调用者持 admin@domain（${by.id}）`);
   return undefined;
 }
 
@@ -107,13 +108,13 @@ function requireDomainAdmin(db: SdoDatabase, auth: AuthActorContext, what: strin
 export function enrollActor(db: SdoDatabase, input: EnrollActorInput, auth: AuthActorContext): AuthResult {
   const authorized = requireDomainAdmin(db, auth, '登记 actor');
   if (authorized !== undefined) return authorized;
-  if (!isNonEmptyText(input.actor)) return fail('invalid_field', 'actor 不能为空');
-  if (input.actor.includes('*')) return fail('invalid_field', 'actor 不接受通配');
-  if (!isActorKind(input.kind)) return fail('invalid_field', `actor_kind 非法：${String(input.kind)}`);
+  if (!isNonEmptyText(input.actor)) return fail(CODE.invalid_field, 'actor 不能为空');
+  if (input.actor.includes('*')) return fail(CODE.invalid_field, 'actor 不接受通配');
+  if (!isActorKind(input.kind)) return fail(CODE.invalid_field, `actor_kind 非法：${String(input.kind)}`);
   const existing = db.prepare('SELECT kind FROM actor WHERE id = ?').get(input.actor) as { kind?: string } | undefined;
   if (existing !== undefined) {
     if (existing.kind !== input.kind) {
-      return fail('invalid_field', `actor 已登记且 kind 不同：${input.actor}（${String(existing.kind)} ≠ ${input.kind}）`);
+      return fail(CODE.invalid_field, `actor 已登记且 kind 不同：${input.actor}（${String(existing.kind)} ≠ ${input.kind}）`);
     }
     return { ok: true };
   }
@@ -149,13 +150,13 @@ function requireRightChangeAuthority(
 ): AuthFailureResult | undefined {
   const by = auth.by;
   if (by === undefined || !isNonEmptyText(by.id)) {
-    return fail('no_permission', `${what}需要调用者身份（config@domain）`);
+    return fail(CODE.no_permission, `${what}需要调用者身份（config@domain）`);
   }
   const authScope = rightChangeAuthScope(scope);
-  if (authScope === undefined) return fail('invalid_field', `${what}的 scope 非法：${scope}`);
+  if (authScope === undefined) return fail(CODE.invalid_field, `${what}的 scope 非法：${scope}`);
   const decision = hasRight(db, { id: by.id, kind: by.kind }, 'config', authScope);
   if (!decision.ok) {
-    return fail('no_permission', `${what}需要 ${by.id} 持 config@domain（被操作 scope=${scope} ⇒ 授权 scope=${authScope}）`);
+    return fail(CODE.no_permission, `${what}需要 ${by.id} 持 config@domain（被操作 scope=${scope} ⇒ 授权 scope=${authScope}）`);
   }
   return undefined;
 }
@@ -170,7 +171,7 @@ function appendRightChange(
   at: string,
 ): AuthResult {
   const by = session.by;
-  if (by === undefined) return fail('no_permission', '写路径需要调用者身份');
+  if (by === undefined) return fail(CODE.no_permission, '写路径需要调用者身份');
   const event: Event = buildEvent(
     {
       id: randomUUID(),
@@ -188,9 +189,9 @@ function appendRightChange(
   const result = append(db, [event], { session: { actor: by.id, actor_kind: by.kind } });
   if (!result.ok) {
     return fail(
-      result.reason_code === 'invalid_field' || result.reason_code === 'no_permission'
+      result.reason_code === CODE.invalid_field || result.reason_code === CODE.no_permission
         ? result.reason_code
-        : 'write_failed',
+        : CODE.write_failed,
       result.message ?? String(result.reason_code),
     );
   }
@@ -202,20 +203,20 @@ function appendRightChange(
  * 通配一律拒（卡 C6）；重复授予按事件重放（投影幂等复位 `revoked_at`）。
  */
 export function grantRight(db: SdoDatabase, input: GrantRightInput, auth: AuthActorContext): AuthResult {
-  if (!isNonEmptyText(input.actor)) return fail('invalid_field', 'actor 不能为空');
+  if (!isNonEmptyText(input.actor)) return fail(CODE.invalid_field, 'actor 不能为空');
   const operator = auth.by?.id;
-  if (operator === undefined || operator.length === 0) return fail('no_permission', '授权需要调用者身份');
+  if (operator === undefined || operator.length === 0) return fail(CODE.no_permission, '授权需要调用者身份');
   if (input.granted_by !== undefined && input.granted_by !== operator) {
-    return fail('invalid_field', `granted_by 必须等于当前会话 actor（${operator}）`);
+    return fail(CODE.invalid_field, `granted_by 必须等于当前会话 actor（${operator}）`);
   }
   if (!isNonEmptyText(input.right) || !(RIGHT_NAMES as readonly string[]).includes(input.right)) {
-    return fail('invalid_field', `未知/非法 right：${String(input.right)}`);
+    return fail(CODE.invalid_field, `未知/非法 right：${String(input.right)}`);
   }
   const scope = parseScope(input.scope);
-  if (!scope.ok) return fail('invalid_field', scope.message);
+  if (!scope.ok) return fail(CODE.invalid_field, scope.message);
   const authorized = requireRightChangeAuthority(db, auth, input.scope, '授权');
   if (authorized !== undefined) return authorized;
-  if (!actorExists(db, input.actor)) return fail('invalid_field', `actor 未登记：${input.actor}`);
+  if (!actorExists(db, input.actor)) return fail(CODE.invalid_field, `actor 未登记：${input.actor}`);
   return appendRightChange(
     db,
     auth,
@@ -237,24 +238,24 @@ export function grantRight(db: SdoDatabase, input: GrantRightInput, auth: AuthAc
  * 重复撤销已撤销的权 ⇒ 幂等 no-op（不再补事件）。
  */
 export function revokeRight(db: SdoDatabase, input: RevokeRightInput, auth: AuthActorContext): AuthResult {
-  if (!isNonEmptyText(input.actor)) return fail('invalid_field', 'actor 不能为空');
+  if (!isNonEmptyText(input.actor)) return fail(CODE.invalid_field, 'actor 不能为空');
   const operator = auth.by?.id;
-  if (operator === undefined || operator.length === 0) return fail('no_permission', '撤权需要调用者身份');
+  if (operator === undefined || operator.length === 0) return fail(CODE.no_permission, '撤权需要调用者身份');
   if (input.revoked_by !== undefined && input.revoked_by !== operator) {
-    return fail('invalid_field', `revoked_by 必须等于当前会话 actor（${operator}）`);
+    return fail(CODE.invalid_field, `revoked_by 必须等于当前会话 actor（${operator}）`);
   }
   if (!isNonEmptyText(input.right) || !(RIGHT_NAMES as readonly string[]).includes(input.right)) {
-    return fail('invalid_field', `未知/非法 right：${String(input.right)}`);
+    return fail(CODE.invalid_field, `未知/非法 right：${String(input.right)}`);
   }
   const scope = parseScope(input.scope);
-  if (!scope.ok) return fail('invalid_field', scope.message);
+  if (!scope.ok) return fail(CODE.invalid_field, scope.message);
   const authorized = requireRightChangeAuthority(db, auth, input.scope, '撤权');
   if (authorized !== undefined) return authorized;
-  if (!actorExists(db, input.actor)) return fail('invalid_field', `actor 未登记：${input.actor}`);
+  if (!actorExists(db, input.actor)) return fail(CODE.invalid_field, `actor 未登记：${input.actor}`);
   const row = db
     .prepare('SELECT granted_by, at, revoked_at FROM scope WHERE actor = ? AND scope = ? AND right = ?')
     .get(input.actor, input.scope, input.right) as { granted_by?: string; at?: string; revoked_at?: string | null } | undefined;
-  if (row === undefined) return fail('invalid_field', `没有可撤销的授权：${input.actor} ${input.right}@${input.scope}`);
+  if (row === undefined) return fail(CODE.invalid_field, `没有可撤销的授权：${input.actor} ${input.right}@${input.scope}`);
   if (row.revoked_at !== null) return { ok: true };
   if (input.right === 'admin' && scope.value.prefix === 'domain') {
     const others = db
@@ -263,7 +264,7 @@ export function revokeRight(db: SdoDatabase, input: RevokeRightInput, auth: Auth
       )
       .get(input.actor, input.scope);
     if (others === undefined) {
-      return fail('last_admin_right', `拒绝撤销 ${input.scope} 上最后一个 admin 权（${input.actor}）`);
+      return fail(CODE.last_admin_right, `拒绝撤销 ${input.scope} 上最后一个 admin 权（${input.actor}）`);
     }
   }
   return appendRightChange(
@@ -416,3 +417,12 @@ export function authorizeWrite(
   const decision = hasRight(db, { id: identity.actor, kind: identity.actor_kind }, action, scope);
   return decision.ok ? { ok: true, actor: { id: identity.actor, kind: identity.actor_kind } } : decision;
 }
+
+
+export const AuthReason_CODES = [
+  CODE.invalid_field,
+  CODE.last_admin_right,
+  CODE.no_permission,
+  CODE.write_failed,
+] as const;
+export type AuthReason = (typeof AuthReason_CODES)[number];

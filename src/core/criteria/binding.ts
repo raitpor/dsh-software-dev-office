@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * 有效绑定（M1-1 / C4–C7）。真源：`docs/04` §6「有效绑定」五条件：
  * ① 已注册；② 某 gate 的 `criteria[]` 含它；③ 该 gate 的 stage 与 `applies_to` 有交集；
@@ -38,15 +39,7 @@ export interface Policy {
   readonly gates: readonly Gate[];
 }
 
-export type BindingReason =
-  | 'not_registered'
-  | 'not_in_gate'
-  | 'stage_not_applicable'
-  | 'policy_mode_any_of'
-  | 'waivable_gate'
-  | 'stage_gap'
-  | 'missing_required_kind'
-  | 'invalid_policy';
+
 
 export interface BindingResult {
   readonly criterion_id: string;
@@ -147,3 +140,16 @@ export function evaluateCoreBinding(input: BindingInput): readonly BindingResult
 export function coreEffectiveCount(input: BindingInput): number {
   return evaluateCoreBinding(input).filter((result) => result.effective).length;
 }
+
+
+export const BindingReason_CODES = [
+  CODE.invalid_policy,
+  CODE.missing_required_kind,
+  CODE.not_in_gate,
+  CODE.not_registered,
+  CODE.policy_mode_any_of,
+  CODE.stage_gap,
+  CODE.stage_not_applicable,
+  CODE.waivable_gate,
+] as const;
+export type BindingReason = (typeof BindingReason_CODES)[number];

@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M3-3 独立性策略（纯数据解析，无 IO）。
  *
@@ -62,14 +63,14 @@ export function parseIndependencePolicy(assurance: unknown): ParsedIndependenceP
   if (!picked.present) {
     return {
       ok: false,
-      reason_code: 'independence_missing',
+      reason_code: CODE.independence_missing,
       message: 'baseline 的 assurance.independence 缺失，无法判定独立性',
     };
   }
   if (typeof picked.raw !== 'string' || picked.raw.trim().length === 0) {
     return {
       ok: false,
-      reason_code: 'assurance_invalid',
+      reason_code: CODE.assurance_invalid,
       message: `assurance.independence 形状非法：${JSON.stringify(picked.raw)}（允许 dual_human / solo_cooldown(Nm) / solo）`,
     };
   }
@@ -80,7 +81,7 @@ export function parseIndependencePolicy(assurance: unknown): ParsedIndependenceP
   if (match === null) {
     return {
       ok: false,
-      reason_code: 'assurance_invalid',
+      reason_code: CODE.assurance_invalid,
       message: `assurance.independence 形状非法：${raw}（允许 dual_human / solo_cooldown(Nm) / solo）`,
     };
   }
@@ -88,7 +89,7 @@ export function parseIndependencePolicy(assurance: unknown): ParsedIndependenceP
   if (!Number.isInteger(minutes) || minutes < MIN_COOLDOWN_MINUTES || minutes > MAX_COOLDOWN_MINUTES) {
     return {
       ok: false,
-      reason_code: 'assurance_invalid',
+      reason_code: CODE.assurance_invalid,
       message: `assurance.independence 冷却分钟数越界：${String(minutes)}（允许 ${String(MIN_COOLDOWN_MINUTES)}–${String(MAX_COOLDOWN_MINUTES)}）`,
     };
   }

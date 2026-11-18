@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-3 假设处置链的写动作（docs/03:66-77、docs/04 §5.2、docs/06:189）。
  *
@@ -26,13 +27,7 @@ import type { VerifyProblem } from '../core/verify-types.js';
 import { canonicalJson, sha256Hex } from '../core/fold/canonical.js';
 import { dispositionEntries, parseDispositionsStrict, specIdsOfDecision } from '../core/assumption/index.js';
 
-export type AssumptionWriteReason =
-  | 'decision_not_signed'
-  | 'not_covered_by_decision'
-  | 'disposition_mismatch'
-  | 'cascade_conflict'
-  | 'invalid_request'
-  | 'write_failed';
+
 
 export interface AssumptionWriteFailure {
   readonly ok: false;
@@ -118,7 +113,7 @@ export function previewAssumptionSet(db: SdoDatabase): PreviewResult {
   const problems: VerifyProblem[] = [];
   const state = stateOf(db, problems);
   if (problems.length > 0) {
-    return failure('invalid_request', `事件链/折叠失败：${problems[0]?.detail ?? 'unknown'}`);
+    return failure(CODE.invalid_request, `事件链/折叠失败：${problems[0]?.detail ?? 'unknown'}`);
   }
   const items: AssumptionPreviewItem[] = [];
   for (const id of Object.keys(state.tables.spec).sort()) {
@@ -206,15 +201,15 @@ function makeEvent(
  */
 export function disposeAssumptionSet(db: SdoDatabase, input: DisposeAssumptionSetInput): DisposeAssumptionSetResult | AssumptionWriteFailure {
   if (typeof input.decision_id !== 'string' || input.decision_id.length === 0) {
-    return failure('invalid_request', 'decision_id 必须是非空字符串');
+    return failure(CODE.invalid_request, 'decision_id 必须是非空字符串');
   }
   if (typeof input.actor !== 'string' || input.actor.length === 0) {
-    return failure('invalid_request', 'actor 必须是非空字符串');
+    return failure(CODE.invalid_request, 'actor 必须是非空字符串');
   }
   const problems: VerifyProblem[] = [];
   const state = stateOf(db, problems);
   if (problems.length > 0) {
-    return failure('invalid_request', `事件链/折叠失败：${problems[0]?.detail ?? 'unknown'}`);
+    return failure(CODE.invalid_request, `事件链/折叠失败：${problems[0]?.detail ?? 'unknown'}`);
   }
   const checked = checkDecision(state, input.decision_id);
   if ('ok' in checked) return checked;
@@ -261,7 +256,7 @@ export function disposeAssumptionSet(db: SdoDatabase, input: DisposeAssumptionSe
   if (!result.ok) {
     return {
       ok: false,
-      reason_code: 'write_failed',
+      reason_code: CODE.write_failed,
       message: `${String(result.reason_code)}：${result.message ?? 'append rejected'}`,
     };
   }
@@ -274,3 +269,14 @@ export function disposeAssumptionSet(db: SdoDatabase, input: DisposeAssumptionSe
   };
 }
 
+
+
+export const AssumptionWriteReason_CODES = [
+  CODE.cascade_conflict,
+  CODE.decision_not_signed,
+  CODE.disposition_mismatch,
+  CODE.invalid_request,
+  CODE.not_covered_by_decision,
+  CODE.write_failed,
+] as const;
+export type AssumptionWriteReason = (typeof AssumptionWriteReason_CODES)[number];

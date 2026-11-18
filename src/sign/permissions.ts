@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 权限与路径校验（C2，spike `scripts/spike/fs-perms.mjs` 的产品化）。
  *
@@ -91,7 +92,7 @@ export function ensureOwnerOnlyDir(path: string): void {
   try {
     assertOwnerOnlyDir(path);
   } catch (error) {
-    if (error instanceof SignError && error.reason_code === 'path_missing') {
+    if (error instanceof SignError && error.reason_code === CODE.path_missing) {
       mkdirSync(dirname(path), { recursive: true });
       createOwnerOnlyDir(path);
       return;

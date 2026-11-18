@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * signerd 进程本体（C1/C2/C4/C5/C6/C7/C11；docs/06 §3）。
  *
@@ -141,7 +142,7 @@ async function handleRequest(
   options: { now: () => Date; signDelayMs: number },
 ): Promise<SignerdResponse> {
   if (!store.verifyCapability(request.capability)) {
-    return fail('invalid_request', 'capability 不匹配，拒绝请求');
+    return fail(CODE.invalid_request, 'capability 不匹配，拒绝请求');
   }
   if (request.op === 'status') {
     const window = store.unlockWindow;
@@ -160,29 +161,29 @@ async function handleRequest(
   }
   if (request.op === 'unlock') {
     if (request.actor_kind === 'agent') {
-      return fail('not_a_signer', 'agent 不能解锁签名密钥（no_proxy_sign）');
+      return fail(CODE.not_a_signer, 'agent 不能解锁签名密钥（no_proxy_sign）');
     }
     const outcome = await store.unlock(request.actor, request.passphrase, request.frontier);
     return { ok: true, op: 'unlock', ...outcome };
   }
   // sign
   if (request.actor_kind === 'agent') {
-    return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
+    return fail(CODE.not_a_signer, 'agent 不能触发签名（no_proxy_sign）');
   }
   if (request.producer === request.actor) {
-    return fail('not_a_signer', 'producer 不能给自己签发（no_proxy_sign）');
+    return fail(CODE.not_a_signer, 'producer 不能给自己签发（no_proxy_sign）');
   }
   const window = store.unlockWindow;
   if (window === undefined || !store.unlocked) {
-    return fail('awaiting_unlock', '未解锁，先 unlock 再 sign');
+    return fail(CODE.awaiting_unlock, '未解锁，先 unlock 再 sign');
   }
   if (window.actor !== request.actor) {
-    return fail('not_a_signer', `解锁的 actor ${window.actor} 与请求 actor ${request.actor} 不一致`);
+    return fail(CODE.not_a_signer, `解锁的 actor ${window.actor} 与请求 actor ${request.actor} 不一致`);
   }
   const checked = checkWindow(window, { frontier: request.frontier, now: options.now() });
   if (!checked.ok) {
     store.lock();
-    return fail('frontier_stale', checked.message);
+    return fail(CODE.frontier_stale, checked.message);
   }
   const timing = store.beginSignTiming();
   const { unlock_wait_ms, since_last_unlock_ms } = timing;
@@ -271,7 +272,7 @@ function handleConnection(socket: Socket, store: SignerdStore, options: { now: (
             response = asFailure(error);
           }
         } else {
-          response = fail('invalid_request', '请求无法解析');
+          response = fail(CODE.invalid_request, '请求无法解析');
         }
         if (!socket.destroyed) socket.write(`${JSON.stringify(response)}\n`);
       })();

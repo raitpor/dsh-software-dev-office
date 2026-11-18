@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M4-2：派发租约。`lease.issued` 是唯一入口（C1）；claim 前置在网关（C2/C3/C6）。
  * 收回/过期会带同批 `task.blocked(lease_*)` + `task.unblocked`，工作副本不动（C4/C5）。
@@ -106,7 +107,7 @@ export function dispatchLease(
 ): LeaseResult {
   const grant = hasRight(db, { id: session.actor, kind: session.actor_kind }, 'assign', input.scope);
   if (!grant.ok) {
-    return { ok: false, reason_code: 'no_permission', message: `dispatch denied: action=assign scope=${input.scope} (${grant.message})` };
+    return { ok: false, reason_code: CODE.no_permission, message: `dispatch denied: action=assign scope=${input.scope} (${grant.message})` };
   }
   const ttlS = input.ttl_s ?? DEFAULT_LEASE_TTL_S;
   const expiresAt = new Date(Date.parse(input.at) + ttlS * 1000).toISOString();
@@ -132,7 +133,7 @@ export function dispatchLease(
   const event = buildEvent(initiated, chainHead(db));
   AUTHORITY.mint(event.id, leasePayloadHash(payload));
   const failed = appendAll(db, session, [event]);
-  if (failed !== undefined) return { ok: false, reason_code: failed.reason_code ?? 'append_failed', message: failed.message ?? 'append failed' };
+  if (failed !== undefined) return { ok: false, reason_code: failed.reason_code ?? CODE.append_failed, message: failed.message ?? 'append failed' };
   return { ok: true, lease_id: event.id, expires_at: expiresAt };
 }
 
@@ -144,19 +145,19 @@ function terminalLease(
   kind: 'lease.expired' | 'lease.revoked',
 ): LeaseResult {
   const lease = readLease(db, leaseId);
-  if (lease === undefined) return { ok: false, reason_code: 'lease_missing', message: `lease ${leaseId} does not exist` };
-  if (lease.status !== 'active') return { ok: false, reason_code: 'lease_not_active', message: `lease ${leaseId} is ${lease.status}` };
+  if (lease === undefined) return { ok: false, reason_code: CODE.lease_missing, message: `lease ${leaseId} does not exist` };
+  if (lease.status !== 'active') return { ok: false, reason_code: CODE.lease_not_active, message: `lease ${leaseId} is ${lease.status}` };
   if (kind === 'lease.revoked') {
     const grant = hasRight(db, { id: session.actor, kind: session.actor_kind }, 'assign', lease.scope);
-    if (!grant.ok) return { ok: false, reason_code: 'no_permission', message: `revoke denied: action=assign scope=${lease.scope} (${grant.message})` };
+    if (!grant.ok) return { ok: false, reason_code: CODE.no_permission, message: `revoke denied: action=assign scope=${lease.scope} (${grant.message})` };
   }
   if (kind === 'lease.expired') {
     // M4-2/P1：过期只能由“已到期”触发，且写者必须有该 scope 的 assign 权（与 revoke 同口径）。
     if (Date.parse(at) < Date.parse(lease.expires_at)) {
-      return { ok: false, reason_code: 'lease_not_expired', message: `lease ${leaseId} expires_at ${lease.expires_at}; at ${at} is too early` };
+      return { ok: false, reason_code: CODE.lease_not_expired, message: `lease ${leaseId} expires_at ${lease.expires_at}; at ${at} is too early` };
     }
     const grant = hasRight(db, { id: session.actor, kind: session.actor_kind }, 'assign', lease.scope);
-    if (!grant.ok) return { ok: false, reason_code: 'no_permission', message: `expire denied: action=assign scope=${lease.scope} (${grant.message})` };
+    if (!grant.ok) return { ok: false, reason_code: CODE.no_permission, message: `expire denied: action=assign scope=${lease.scope} (${grant.message})` };
   }
   const payload =
     kind === 'lease.expired'
@@ -183,7 +184,7 @@ function terminalLease(
     event.hash,
   );
   const failed = appendAll(db, session, [event, ...companions]);
-  if (failed !== undefined) return { ok: false, reason_code: failed.reason_code ?? 'append_failed', message: failed.message ?? 'append failed' };
+  if (failed !== undefined) return { ok: false, reason_code: failed.reason_code ?? CODE.append_failed, message: failed.message ?? 'append failed' };
   return { ok: true, lease_id: leaseId, expires_at: lease.expires_at };
 }
 

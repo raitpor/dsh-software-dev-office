@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * 判据注册门槛（M1-1 / C2/C3）。真源：`docs/04` §2「注册门槛（五条，缺一不许 active）」。
  *
@@ -23,17 +24,7 @@ export interface Fixture {
   readonly expected_status: FixtureStatus;
 }
 
-export type RegistrationReason =
-  | 'criterion_invalid'
-  | 'guarantee_invalid'
-  | 'fixtures_invalid'
-  | 'no_positive_fixture'
-  | 'no_negative_fixture'
-  | 'fixture_mismatch'
-  | 'budget_exceeded'
-  | 'fixtures_missing'
-  | 'unknown_criterion'
-  | 'guarantee_mismatch';
+
 
 export interface RegistrationRequest {
   readonly criterion_id: string;
@@ -185,7 +176,7 @@ export function registerCriterion(
   if (elapsed_ms >= budget) {
     return {
       ok: false,
-      reason_code: 'budget_exceeded',
+      reason_code: CODE.budget_exceeded,
       message: `slowest fixture median ${elapsed_ms.toFixed(2)}ms >= ${budget}ms budget`,
       elapsed_ms,
       samples: measured.medians,
@@ -193,3 +184,18 @@ export function registerCriterion(
   }
   return { ok: true, elapsed_ms, samples: measured.medians };
 }
+
+
+export const RegistrationReason_CODES = [
+  CODE.budget_exceeded,
+  CODE.criterion_invalid,
+  CODE.fixture_mismatch,
+  CODE.fixtures_invalid,
+  CODE.fixtures_missing,
+  CODE.guarantee_invalid,
+  CODE.guarantee_mismatch,
+  CODE.no_negative_fixture,
+  CODE.no_positive_fixture,
+  CODE.unknown_criterion,
+] as const;
+export type RegistrationReason = (typeof RegistrationReason_CODES)[number];

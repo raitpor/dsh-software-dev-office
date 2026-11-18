@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 写网关的验签侧（C8/C9；Lead 裁决：本文件只做验签，不加业务规则、不读业务表）。
  *
@@ -110,7 +111,7 @@ function loadReceipts(home: string): { ok: true; receipts: SignerdReceipt[] } | 
     if (line.trim().length === 0) continue;
     const receipt = parseReceipt(line);
     if (receipt === undefined) {
-      return { ok: false, reason: 'receipt_chain_broken', message: '回执文件含无法解析的行（可能被篡改）' };
+      return { ok: false, reason: CODE.receipt_chain_broken, message: '回执文件含无法解析的行（可能被篡改）' };
     }
     receipts.push(receipt);
   }
@@ -118,7 +119,7 @@ function loadReceipts(home: string): { ok: true; receipts: SignerdReceipt[] } | 
   if (!chain.ok) {
     return {
       ok: false,
-      reason: 'receipt_chain_broken',
+      reason: CODE.receipt_chain_broken,
       message: `回执哈希链在第 ${String(chain.brokenAt)} 条断裂（expected=${String(chain.expected)} actual=${String(chain.actual)}）`,
     };
   }
@@ -140,7 +141,7 @@ function lookupReceipt(
   // 第 2 轮评审 P1-1：事件 at、回执 at、签名载荷 signerd.at 必须三方一致。
   // 否则“复制一条已签名事件、只改 at、重算 hash”就能伪造冷却已过（第二次签名）。
   if (receipt.at !== payload.signerd.at || (eventAt !== undefined && eventAt !== receipt.at)) {
-    return { found: true, matches: false, reason: 'signature_time_mismatch' };
+    return { found: true, matches: false, reason: CODE.signature_time_mismatch };
   }
   return {
     found: true,
@@ -194,7 +195,7 @@ export function checkDecisionSignedProvenance(input: {
   if (input.event_at !== undefined && input.event_at !== payload.signerd.at) {
     return {
       ok: false,
-      reason: 'signature_time_mismatch',
+      reason: CODE.signature_time_mismatch,
       message: `事件 at=${input.event_at} 与签名回执 at=${payload.signerd.at} 不一致`,
     };
   }
@@ -213,7 +214,7 @@ export function checkDecisionSignedProvenance(input: {
 
 /** 写网关使用的失败形状（统一码，细节写进 message 供日志）。 */
 export function provenanceFailure(check: ProvenanceCheck): SignFailure {
-  return fail('signature_not_from_signerd', `拒绝决策签名：${check.message ?? '未通过验签'}`);
+  return fail(CODE.signature_not_from_signerd, `拒绝决策签名：${check.message ?? '未通过验签'}`);
 }
 
 export { requireEnvelopeShape };

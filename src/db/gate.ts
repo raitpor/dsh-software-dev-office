@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-2 门禁判定落库（C1/C2/C9）：先算后写。
  *
@@ -33,14 +34,7 @@ export interface GateJudgeRequest {
   readonly now?: string;
 }
 
-export type GateJudgeReason =
-  | 'stage_run_missing'
-  | 'baseline_not_frozen'
-  | 'baseline_mismatch'
-  | 'invalid_field'
-  | 'unauthorized_gate_judgement'
-  | 'multiple_gates_unsupported'
-  | 'append_failed';
+
 
 export interface GateJudgeResult {
   readonly ok: boolean;
@@ -151,7 +145,7 @@ function judgeBaselineIndependence(
       required: true,
       mode: null,
       action: 'freeze',
-      reason_code: 'independence_unsatisfied',
+      reason_code: CODE.independence_unsatisfied,
       message: `baseline ${baselineHash} 的冻结事件没有 decision_id，无法证明独立性`,
       signature_count: 0,
       distinct_signers: 0,
@@ -167,7 +161,7 @@ function judgeBaselineIndependence(
       required: true,
       mode: null,
       action: 'freeze',
-      reason_code: 'independence_unsatisfied',
+      reason_code: CODE.independence_unsatisfied,
       message: `baseline ${baselineHash} 行不存在，无法按版本证明独立性（fail-closed）`,
       signature_count: 0,
       distinct_signers: 0,
@@ -193,10 +187,10 @@ export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudg
   const stage = String(stageRun['stage']);
   const enteredAt = String(stageRun['entered_at'] ?? '');
   if (enteredAt.length > 0 && at < enteredAt) {
-    return fail('invalid_field', `judgement at ${at} is before stage_run.entered_at ${enteredAt}`);
+    return fail(CODE.invalid_field, `judgement at ${at} is before stage_run.entered_at ${enteredAt}`);
   }
   if (at > now) {
-    return fail('invalid_field', `judgement at ${at} is in the future (now ${now})`);
+    return fail(CODE.invalid_field, `judgement at ${at} is in the future (now ${now})`);
   }
 
   // 判定版本 = stage.entered 记下的那版（P2-1）；显式传入必须与它相等。
@@ -241,7 +235,7 @@ export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudg
     // 缺失/非法的 assurance 也是 fail-closed（`independence_missing` / `assurance_invalid`），
     // 不默认成 15m 放行；这些码都能从 baseline + 事件直接复算。
     const codes = ['independence_unsatisfied', 'cooldown_active', 'independence_missing', 'assurance_invalid'];
-    const reason = codes.includes(independence.reason_code ?? '') ? independence.reason_code : 'independence_unsatisfied';
+    const reason = codes.includes(independence.reason_code ?? '') ? independence.reason_code : CODE.independence_unsatisfied;
     evaluation = {
       ...evaluation,
       verdict: 'changes_requested',
@@ -255,7 +249,7 @@ export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudg
   }
   const payload = compileGateJudged(evaluation, request.stage_run_id);
   const validation = validateGateJudgedPayload(payload);
-  if (!validation.ok) return { ...fail('invalid_field', validation.message), evaluation };
+  if (!validation.ok) return { ...fail(CODE.invalid_field, validation.message), evaluation };
   const payloadHash = gateJudgedPayloadHash(validation.value);
   const eventId = `ev-gate-${request.stage_run_id}-${at}-${Math.random().toString(16).slice(2, 8)}`;
   mintGateJudgedAuthority(eventId, payloadHash, request.stage_run_id);
@@ -274,7 +268,19 @@ export function judgeStage(db: SdoDatabase, request: GateJudgeRequest): GateJudg
   );
   const appended = appendAsTool(db, [event], request.actor);
   if (!appended.ok) {
-    return { ...fail('append_failed', appended.message ?? appended.reason_code ?? 'append failed'), evaluation };
+    return { ...fail(CODE.append_failed, appended.message ?? appended.reason_code ?? 'append failed'), evaluation };
   }
   return { ok: true, event_id: eventId, evaluation };
 }
+
+
+export const GateJudgeReason_CODES = [
+  CODE.append_failed,
+  CODE.baseline_mismatch,
+  CODE.baseline_not_frozen,
+  CODE.invalid_field,
+  CODE.multiple_gates_unsupported,
+  CODE.stage_run_missing,
+  CODE.unauthorized_gate_judgement,
+] as const;
+export type GateJudgeReason = (typeof GateJudgeReason_CODES)[number];

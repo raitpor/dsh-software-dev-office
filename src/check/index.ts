@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * `sdo_check` 公开入口（M1-4 C1–C3）。
  *
@@ -18,7 +19,7 @@ import {
 } from './evaluate.js';
 import { evaluateGate, isPresetId, presetPolicy, type GateCheck } from './gate.js';
 
-export type CheckFailureCode = 'unknown_criterion' | 'unknown_stage' | 'unknown_preset' | 'invalid_args';
+
 
 export interface CheckFailure {
   readonly ok: false;
@@ -52,14 +53,14 @@ export function runCheck(db: SdoDatabase, options: RunCheckOptions): CheckReport
   const hasCriterion = options.criterion !== undefined;
   const hasGate = options.gate !== undefined;
   if (hasCriterion === hasGate) {
-    return { ok: false, reason_code: 'invalid_args', message: '需要且只需要 --criterion <id> 或 --gate <stage> 之一' };
+    return { ok: false, reason_code: CODE.invalid_args, message: '需要且只需要 --criterion <id> 或 --gate <stage> 之一' };
   }
 
   const presetId = options.preset ?? 'waterfall';
   if (!isPresetId(presetId)) {
     return {
       ok: false,
-      reason_code: 'unknown_preset',
+      reason_code: CODE.unknown_preset,
       message: `未知 preset：${presetId}（可用：${Object.keys(PRESETS).join(', ')}）`,
     };
   }
@@ -81,7 +82,7 @@ export function runCheck(db: SdoDatabase, options: RunCheckOptions): CheckReport
     if (!known) {
       return {
         ok: false,
-        reason_code: 'unknown_criterion',
+        reason_code: CODE.unknown_criterion,
         message: `未知判据：${criterionId}`,
       };
     }
@@ -93,7 +94,7 @@ export function runCheck(db: SdoDatabase, options: RunCheckOptions): CheckReport
   if (gate === undefined) {
     return {
       ok: false,
-      reason_code: 'unknown_stage',
+      reason_code: CODE.unknown_stage,
       message: `preset ${presetId} 没有 stage：${String(options.gate)}`,
     };
   }
@@ -113,3 +114,12 @@ export {
   type CriterionCheck,
 } from './evaluate.js';
 export { DEAD_FIELD_TABLES, ENGINE_WRITERS, evaluateDeadField, type DeadFieldReport } from './deadfield.js';
+
+
+export const CheckFailureCode_CODES = [
+  CODE.invalid_args,
+  CODE.unknown_criterion,
+  CODE.unknown_preset,
+  CODE.unknown_stage,
+] as const;
+export type CheckFailureCode = (typeof CheckFailureCode_CODES)[number];

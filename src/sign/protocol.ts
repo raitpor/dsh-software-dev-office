@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * signerd 与插件之间的 JSON-per-line 协议（docs/06 §3.1；C1）。
  *
@@ -118,20 +119,20 @@ export function parseRequest(line: string): ParseResult {
   try {
     value = JSON.parse(line) as unknown;
   } catch {
-    return { failure: { ok: false, reason_code: 'invalid_request', message: '请求不是合法 JSON' } };
+    return { failure: { ok: false, reason_code: CODE.invalid_request, message: '请求不是合法 JSON' } };
   }
   if (!isRecord(value)) {
-    return { failure: { ok: false, reason_code: 'invalid_request', message: '请求必须是 JSON 对象' } };
+    return { failure: { ok: false, reason_code: CODE.invalid_request, message: '请求必须是 JSON 对象' } };
   }
   const op = value['op'];
   const capability = stringField(value, 'capability');
   if (capability === undefined) {
-    return { failure: { ok: false, reason_code: 'invalid_request', message: '缺少 capability' } };
+    return { failure: { ok: false, reason_code: CODE.invalid_request, message: '缺少 capability' } };
   }
   if (op === 'status') return { request: { op, capability } };
   if (op === 'lock') {
     const actor = stringField(value, 'actor');
-    if (actor === undefined) return { failure: { ok: false, reason_code: 'invalid_request', message: 'lock 缺少 actor' } };
+    if (actor === undefined) return { failure: { ok: false, reason_code: CODE.invalid_request, message: 'lock 缺少 actor' } };
     return { request: { op, capability, actor } };
   }
   if (op === 'unlock') {
@@ -140,7 +141,7 @@ export function parseRequest(line: string): ParseResult {
     const frontier = stringField(value, 'frontier');
     const actor_kind = value['actor_kind'];
     if (actor === undefined || passphrase === undefined || frontier === undefined || !isActorKind(actor_kind)) {
-      return { failure: { ok: false, reason_code: 'invalid_request', message: 'unlock 字段不全' } };
+      return { failure: { ok: false, reason_code: CODE.invalid_request, message: 'unlock 字段不全' } };
     }
     return { request: { op, capability, actor, actor_kind, passphrase, frontier } };
   }
@@ -165,7 +166,7 @@ export function parseRequest(line: string): ParseResult {
       !isActorKind(actor_kind) ||
       !isSignChannelValue(channel)
     ) {
-      return { failure: { ok: false, reason_code: 'invalid_request', message: 'sign 字段不全' } };
+      return { failure: { ok: false, reason_code: CODE.invalid_request, message: 'sign 字段不全' } };
     }
     return {
       request: {
@@ -183,5 +184,5 @@ export function parseRequest(line: string): ParseResult {
       },
     };
   }
-  return { failure: { ok: false, reason_code: 'unknown_request', message: `未知 op ${String(op)}` } };
+  return { failure: { ok: false, reason_code: CODE.unknown_request, message: `未知 op ${String(op)}` } };
 }

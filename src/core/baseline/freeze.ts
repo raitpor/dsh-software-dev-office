@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * baseline 冻结的纯逻辑部分（M2-1）：preview 计算 → confirm 绑定 → 事件/decision 载荷。
  *
@@ -7,19 +8,9 @@
 import { canonicalJson, sha256Hex } from '../fold/canonical.js';
 import { classifyDirection, type DirectionBody, type FreezeDirection } from './direction.js';
 import { validateBaseline } from './index.js';
-import type { BaselineReasonCode, GuaranteeDelta, P15Result } from './types.js';
+import type { GuaranteeDelta, P15Result } from './types.js';
 
-export type FreezeReasonCode =
-  | BaselineReasonCode
-  | 'payload_changed'
-  | 'direction_mismatch'
-  | 'baseline_unchanged'
-  | 'no_blind_sign'
-  | 'baseline_append_failed'
-  | 'preview_expired'
-  | 'preview_consumed'
-  | 'preview_mismatch'
-  | 'frontier_stale';
+
 
 export interface BaselineRowLike {
   readonly id: string;
@@ -180,7 +171,7 @@ export function previewBaseline(
     const first = (p15.reason_codes[0] ?? 'invalid_baseline') as FreezeReasonCode;
     return { ok: false, reason_code: first, message: `P15 校验未通过：${p15.reason_codes.join(', ')}`, reason_codes: p15.reason_codes };
   }
-  if (!isRecord(input)) return { ok: false, reason_code: 'invalid_baseline', message: 'baseline 必须是对象' };
+  if (!isRecord(input)) return { ok: false, reason_code: CODE.invalid_baseline, message: 'baseline 必须是对象' };
   const body = normalizeBody(input);
   const before = options.current === null ? null : normalizeBodyFromRow(options.current);
   const verdict = classifyDirection(before, body);
@@ -195,7 +186,7 @@ export function previewBaseline(
       input,
     });
     if (sameAsCurrent === options.current.hash) {
-      return { ok: false, reason_code: 'baseline_unchanged', message: '与当前 baseline 内容完全相同' };
+      return { ok: false, reason_code: CODE.baseline_unchanged, message: '与当前 baseline 内容完全相同' };
     }
   }
   const will_change = computeWillChange(before, body, verdict);
@@ -255,21 +246,21 @@ export function confirmBaseline(
   declaredDirection?: string,
 ): BaselinePreview | FreezeFailure {
   if (preview.payload_hash !== expectedPayloadHash) {
-    return { ok: false, reason_code: 'payload_changed', message: 'confirm 的 payload_hash 与 preview 不一致' };
+    return { ok: false, reason_code: CODE.payload_changed, message: 'confirm 的 payload_hash 与 preview 不一致' };
   }
   if (declaredDirection !== undefined) {
     const declared = DECLARED[declaredDirection];
     if (declared === undefined || declared !== preview.direction) {
       return {
         ok: false,
-        reason_code: 'direction_mismatch',
+        reason_code: CODE.direction_mismatch,
         message: `调用方声明方向 ${declaredDirection}，工具判定为 ${preview.direction}`,
       };
     }
   }
   const baseline = preview.decision_baseline;
   if (baseline['will_change_hash'] === undefined || baseline['guarantee_delta'] === undefined) {
-    return { ok: false, reason_code: 'no_blind_sign', message: 'baseline 签名载荷缺 will_change_hash 或 guarantee_delta' };
+    return { ok: false, reason_code: CODE.no_blind_sign, message: 'baseline 签名载荷缺 will_change_hash 或 guarantee_delta' };
   }
   return preview;
 }
@@ -298,3 +289,30 @@ export function baselineEventPayload(preview: BaselinePreview, input: Record<str
     guarantee_delta: preview.guarantee_delta,
   };
 }
+
+
+export const FreezeReasonCode_CODES = [
+  CODE.artifact_kinds_incomplete,
+  CODE.baseline_append_failed,
+  CODE.baseline_unchanged,
+  CODE.core_not_effective,
+  CODE.criterion_unregistered,
+  CODE.direction_mismatch,
+  CODE.duplicate_gate_id,
+  CODE.engine_missing,
+  CODE.frontier_stale,
+  CODE.gate_empty,
+  CODE.invalid_baseline,
+  CODE.na_stages_mismatch,
+  CODE.no_blind_sign,
+  CODE.payload_changed,
+  CODE.preview_consumed,
+  CODE.preview_expired,
+  CODE.preview_mismatch,
+  CODE.review_params_invalid,
+  CODE.stage_bad_after,
+  CODE.stage_bad_kind,
+  CODE.stage_no_gate,
+  CODE.stage_unknown,
+] as const;
+export type FreezeReasonCode = (typeof FreezeReasonCode_CODES)[number];

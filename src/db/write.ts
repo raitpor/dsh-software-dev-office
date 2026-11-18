@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M1-0 唯一写入口：`append(db, events)`。真源：docs/02 §10–§12。
  * 三件事一次收束：①不认识的 kind 进不来（`unknown_event_kind`）；②链不许断
@@ -97,14 +98,14 @@ function parseEventPayload(event: Event): Record<string, unknown> {
 
 function sessionFailure(authz: AppendAuthz | undefined): AppendFailure | undefined {
   if (authz === undefined) {
-    return failure('no_permission', 'authz_missing: append requires {session} (fail-closed)');
+    return failure(CODE.no_permission, 'authz_missing: append requires {session} (fail-closed)');
   }
   const session = authz.session;
   if (
     typeof session?.actor !== 'string' || session.actor.length === 0 ||
     (session.actor_kind !== 'human' && session.actor_kind !== 'agent' && session.actor_kind !== 'service')
   ) {
-    return failure('no_permission', 'authz_missing: session.actor / actor_kind are required (fail-closed)');
+    return failure(CODE.no_permission, 'authz_missing: session.actor / actor_kind are required (fail-closed)');
   }
   return undefined;
 }
@@ -129,8 +130,7 @@ function authorizeEvent(
   // M4-1 第 3 轮 P2：工具释放事件以工具身份落库（actor='sdo-workcopy'），不能要求它等于
   // 调用方会话 actor；能力一次性、绑 payload_hash，仍由下方工具分支消费（D-148）。
   if (!isLockToolEvent && event.actor !== session.actor && !ACTOR_EXEMPT_KINDS.has(event.kind)) {
-    return failure(
-      'actor_not_from_session',
+    return failure(CODE.actor_not_from_session,
       `event ${event.id} actor=${event.actor} does not match session actor=${session.actor}`,
     );
   }
@@ -145,8 +145,7 @@ function authorizeEvent(
       rootPayload['initiator'] === LOCK_TOOL_MARKER &&
       consumeLockToolAuthority(event.id, lockToolPayloadHash(rootPayload));
     if (!authorized) {
-      return failure(
-        'unauthorized_root_lock',
+      return failure(CODE.unauthorized_root_lock,
         `event ${event.id} root lock.acquired must be produced by acquireMainTreeLock (one-shot, payload-bound)`,
       );
     }
@@ -156,8 +155,7 @@ function authorizeEvent(
   // 业务路径的 lock.* 不在此列（仍走下方矩阵动作）。
   if (isLockToolEvent) {
     if (!consumeLockToolAuthority(event.id, lockToolPayloadHash(lockToolPayload))) {
-      return failure(
-        'unauthorized_workcopy_event',
+      return failure(CODE.unauthorized_workcopy_event,
         `event ${event.id} kind=${event.kind} initiator=${LOCK_TOOL_MARKER} must be produced by the workcopy tool path`,
       );
     }
@@ -177,14 +175,12 @@ function authorizeEvent(
     leasePayload['lease_tool'] === LEASE_TOOL_MARKER;
   if (isLeaseKind || isLeaseCompanion) {
     if (!isLeaseToolEvent && !isLeaseCompanion) {
-      return failure(
-        'unauthorized_lease_issue',
+      return failure(CODE.unauthorized_lease_issue,
         `event ${event.id} kind=${event.kind} must be produced by the lease tool path (one-shot, payload-bound)`,
       );
     }
     if (!consumeLeaseAuthority(event.id, leasePayloadHash(leasePayload))) {
-      return failure(
-        'unauthorized_lease_issue',
+      return failure(CODE.unauthorized_lease_issue,
         `event ${event.id} kind=${event.kind} must be produced by the lease tool path (one-shot, payload-bound)`,
       );
     }
@@ -198,8 +194,7 @@ function authorizeEvent(
       publicPayload['initiator'] === PUBLICFACE_TOOL_MARKER &&
       consumePublicFaceAuthority(event.id, publicFacePayloadHash(publicPayload));
     if (!authorized) {
-      return failure(
-        'not_public_face_writer',
+      return failure(CODE.not_public_face_writer,
         `event ${event.id} kind=${event.kind} must be produced by the public face writer path (one-shot, payload-bound)`,
       );
     }
@@ -210,10 +205,9 @@ function authorizeEvent(
   if (event.kind === RIGHT_GRANTED || event.kind === RIGHT_REVOKED) {
     const rightPayload = parseEventPayload(event);
     const parsed = parseRightChangeEvent(event.kind, rightPayload);
-    if (!parsed.ok) return failure('invalid_field', parsed.message);
+    if (!parsed.ok) return failure(CODE.invalid_field, parsed.message);
     if (!consumeRightChangeAuthority(event.id, rightChangePayloadHash(rightPayload))) {
-      return failure(
-        'unauthorized_right_change',
+      return failure(CODE.unauthorized_right_change,
         `event ${event.id} kind=${event.kind} must be produced by grantRight/revokeRight/backfillGrants (one-shot, payload-bound)`,
       );
     }
@@ -226,8 +220,7 @@ function authorizeEvent(
   // payload_hash，仅 `src/db/agent.ts` 的私有实例铸造；裸 append ⇒ unauthorized_agent_event。
   if ((AGENT_TOOL_KINDS as readonly string[]).includes(event.kind)) {
     if (!consumeAgentEventAuthority(event.id, agentPayloadHash(parseEventPayload(event)))) {
-      return failure(
-        'unauthorized_agent_event',
+      return failure(CODE.unauthorized_agent_event,
         `event ${event.id} kind=${event.kind} must be produced by recordAgentSpawn (one-shot, payload-bound)`,
       );
     }
@@ -235,8 +228,7 @@ function authorizeEvent(
   }
   if ((WORKCOPY_TOOL_KINDS as readonly string[]).includes(event.kind)) {
     if (!consumeWorkcopyAuthority(event.id, workcopyPayloadHash(parseEventPayload(event)))) {
-      return failure(
-        'unauthorized_workcopy_event',
+      return failure(CODE.unauthorized_workcopy_event,
         `event ${event.id} kind=${event.kind} must be produced by the workcopy tool path (one-shot, content-bound)`,
       );
     }
@@ -249,12 +241,11 @@ function authorizeEvent(
   if (event.kind === 'decision.valid') {
     const producer = parseEventPayload(event)['producer'];
     if (typeof producer !== 'string' || producer.length === 0) {
-      return failure('invalid_field', `event ${event.id} decision.valid.payload.producer must be a non-empty string`);
+      return failure(CODE.invalid_field, `event ${event.id} decision.valid.payload.producer must be a non-empty string`);
     }
     const row = db.prepare('SELECT kind FROM actor WHERE id = ?').get(producer) as { kind?: string } | undefined;
     if (row !== undefined && row.kind !== 'agent') {
-      return failure(
-        'invalid_field',
+      return failure(CODE.invalid_field,
         `event ${event.id} decision.valid.payload.producer=${producer} is actor kind ${String(row.kind)}; producer must be an agent`,
       );
     }
@@ -263,7 +254,7 @@ function authorizeEvent(
   if (mapped === undefined) {
     // 其余 ACK 是审计/派生通知：只做会话绑定，不投影任何物化行（边界见卡 A5 / D-108）。
     if (Object.hasOwn(ACK_KINDS, event.kind)) return undefined;
-    return failure('unmapped_event_kind', `event kind ${event.kind} has no KIND_ACTIONS mapping (fail-closed)`);
+    return failure(CODE.unmapped_event_kind, `event kind ${event.kind} has no KIND_ACTIONS mapping (fail-closed)`);
   }
   let scope = mapped.scopeOf(parseEventPayload(event), { state, subject: event.subject });
   if (event.kind === 'lease.revoked') {
@@ -272,36 +263,34 @@ function authorizeEvent(
     const leaseId = typeof leasePayload['lease_id'] === 'string' ? leasePayload['lease_id'] : undefined;
     const leaseRow = leaseId === undefined ? undefined : state.tables.lease[leaseId];
     if (leaseRow === undefined) {
-      return failure('lease_not_active', `lease.revoked payload.lease_id ${leaseId ?? '(missing)'} does not exist`);
+      return failure(CODE.lease_not_active, `lease.revoked payload.lease_id ${leaseId ?? '(missing)'} does not exist`);
     }
     if (leaseRow['status'] !== 'active') {
-      return failure('lease_not_active', `lease ${leaseId} is ${String(leaseRow['status'])}; only active can be revoked`);
+      return failure(CODE.lease_not_active, `lease ${leaseId} is ${String(leaseRow['status'])}; only active can be revoked`);
     }
     const rowScope = String(leaseRow['scope'] ?? '');
     if (leasePayload['scope'] !== undefined && leasePayload['scope'] !== rowScope) {
-      return failure('invalid_field', `lease.revoked payload.scope ${String(leasePayload['scope'])} does not match lease ${leaseId} scope ${rowScope}`);
+      return failure(CODE.invalid_field, `lease.revoked payload.scope ${String(leasePayload['scope'])} does not match lease ${leaseId} scope ${rowScope}`);
     }
     scope = rowScope;
   }
   // sign 不是矩阵动作（docs/07 §2 没有行）：只认“在该 scope 上持未撤销 sign 权”，不做前缀推断。
   if (mapped.action === 'sign') {
     if (!hasSignRight(db, session.actor, scope)) {
-      return failure(
-        'no_permission',
+      return failure(CODE.no_permission,
         `append denied: actor=${session.actor} kind=${session.actor_kind} event_kind=${event.kind} action=sign scope=${scope} reason=missing_grant (requires a non-revoked sign right on ${scope})`,
       );
     }
     const condition = ACTION_OBJECT_CONDITIONS[event.kind];
     if (condition !== undefined) {
       const failedCondition = condition(state, event, session);
-      if (failedCondition !== undefined) return failure('object_condition_failed', failedCondition.message);
+      if (failedCondition !== undefined) return failure(CODE.object_condition_failed, failedCondition.message);
     }
     return undefined;
   }
   const decision = hasRight(db, { id: session.actor, kind: session.actor_kind }, mapped.action, scope);
   if (!decision.ok) {
-    return failure(
-      'no_permission',
+    return failure(CODE.no_permission,
       `append denied: actor=${session.actor} kind=${session.actor_kind} event_kind=${event.kind} action=${mapped.action} scope=${scope} reason=${decision.reason ?? 'missing_grant'} (${decision.message})`,
     );
   }
@@ -316,7 +305,7 @@ function authorizeEvent(
   if (condition !== undefined) {
     const failedCondition = condition(state, event, session);
     if (failedCondition !== undefined) {
-      return failure('object_condition_failed', failedCondition.message);
+      return failure(CODE.object_condition_failed, failedCondition.message);
     }
   }
   return undefined;
@@ -398,12 +387,11 @@ function claimReceipt(db: SdoDatabase, receiptId: string, event: Event): AppendF
   } catch (error) {
     const message = errorMessage(error);
     if (/UNIQUE constraint failed: signerd_receipt_use\.receipt_id|PRIMARY KEY/i.test(message)) {
-      return failure(
-        'signerd_receipt_replayed',
+      return failure(CODE.signerd_receipt_replayed,
         `signerd 回执 ${receiptId} 已被另一条事件使用（禁止复制签名事件重放）`,
       );
     }
-    return failure('materialize_failed', message);
+    return failure(CODE.materialize_failed, message);
   }
 }
 
@@ -442,7 +430,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
 
   if (db.inTransaction) {
     return failed(
-      failure('transaction_in_progress', 'append must own the transaction; caller already has one open'),
+      failure(CODE.transaction_in_progress, 'append must own the transaction; caller already has one open'),
       0,
       db,
     );
@@ -502,10 +490,10 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
       const stored = byId.get(event.id);
       if (stored !== undefined) {
         if (sawNew) {
-          throw new AppendAbort(failure('event_chain_broken', `event ${event.id} of a replay batch must precede new events`), validated);
+          throw new AppendAbort(failure(CODE.event_chain_broken, `event ${event.id} of a replay batch must precede new events`), validated);
         }
         if (stored !== event.hash) {
-          throw new AppendAbort(failure('event_hash_mismatch', `event ${event.id} already exists with a different hash`), validated);
+          throw new AppendAbort(failure(CODE.event_hash_mismatch, `event ${event.id} already exists with a different hash`), validated);
         }
         skipped += 1;
         validated += 1;
@@ -515,7 +503,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
       try {
         authState = stateForAuth();
       } catch (error) {
-        throw new AppendAbort(failure('materialize_failed', `authorization fold failed: ${errorMessage(error)}`), validated);
+        throw new AppendAbort(failure(CODE.materialize_failed, `authorization fold failed: ${errorMessage(error)}`), validated);
       }
       const denied = authorizeEvent(db, event, session, authState);
       if (denied !== undefined) {
@@ -543,12 +531,12 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
           try {
             payload = JSON.parse(payload);
           } catch {
-            throw new AppendAbort(failure('invalid_field', `gate.judged ${event.id} payload is not valid JSON`), validated);
+            throw new AppendAbort(failure(CODE.invalid_field, `gate.judged ${event.id} payload is not valid JSON`), validated);
           }
         }
         const validation = validateGateJudgedPayload(payload);
         if (!validation.ok) {
-          throw new AppendAbort(failure('invalid_field', `gate.judged ${event.id}: ${validation.message}`), validated);
+          throw new AppendAbort(failure(CODE.invalid_field, `gate.judged ${event.id}: ${validation.message}`), validated);
         }
         const authorized = consumeGateJudgedAuthority(
           event.id,
@@ -557,8 +545,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
         );
         if (!authorized) {
           throw new AppendAbort(
-            failure(
-              'unauthorized_gate_judgement',
+            failure(CODE.unauthorized_gate_judgement,
               `gate.judged ${event.id} must be produced by the gate judgement flow (one-shot, content-bound)`,
             ),
             validated,
@@ -572,7 +559,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
             payload = JSON.parse(payload);
           } catch {
             throw new AppendAbort(
-              failure('invalid_field', `renderer.registered ${event.id} payload is not valid JSON`),
+              failure(CODE.invalid_field, `renderer.registered ${event.id} payload is not valid JSON`),
               validated,
             );
           }
@@ -580,8 +567,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
         const payloadHash = rendererRegistrationPayloadHash(payload);
         if (payloadHash === undefined || !consumeRendererRegistrationAuthority(payloadHash)) {
           throw new AppendAbort(
-            failure(
-              'unauthorized_renderer_registration',
+            failure(CODE.unauthorized_renderer_registration,
               `renderer.registered ${event.id} must be produced by registerRenderer() (one-shot, content-bound)`,
             ),
             validated,
@@ -593,8 +579,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
         const payload = envelopePayload(event);
         if (!consumeConflictDetectedAuthority(event.id, conflictDetectedPayloadHash(payload))) {
           throw new AppendAbort(
-            failure(
-              'unauthorized_conflict_detected',
+            failure(CODE.unauthorized_conflict_detected,
               `conflict.detected ${event.id} must be produced by the CAS path (one-shot, content-bound)`,
             ),
             validated,
@@ -611,8 +596,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
           const claim = extractConflictClaim(event);
           if (tracked !== undefined && claim === undefined) {
             throw new AppendAbort(
-              failure(
-                'conflict_scope_undeclared',
+              failure(CODE.conflict_scope_undeclared,
                 `${event.kind} patches an existing row; payload must declare field and base_hash`,
               ),
               validated,
@@ -620,8 +604,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
           }
           if (tracked !== undefined && claim !== undefined && claim.field !== tracked) {
             throw new AppendAbort(
-              failure(
-                'invalid_field',
+              failure(CODE.invalid_field,
                 `${event.kind} must declare field=${tracked} (got ${claim.field})`,
               ),
               validated,
@@ -662,11 +645,11 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
         }
       }
       if (event.prev !== expectedPrev) {
-        throw new AppendAbort(failure('event_chain_broken', `event ${event.id}: prev ${event.prev} does not match chain head ${expectedPrev}`), validated);
+        throw new AppendAbort(failure(CODE.event_chain_broken, `event ${event.id}: prev ${event.prev} does not match chain head ${expectedPrev}`), validated);
       }
       const computed = computeEventHash(event);
       if (computed !== event.hash) {
-        throw new AppendAbort(failure('event_hash_mismatch', `event ${event.id}: hash does not match computeEventHash`), validated);
+        throw new AppendAbort(failure(CODE.event_hash_mismatch, `event ${event.id}: hash does not match computeEventHash`), validated);
       }
       expectedPrev = event.hash;
       sawNew = true;
@@ -697,7 +680,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
         );
       }
     } catch (error) {
-      throw new AppendAbort(failure('append_conflict', errorMessage(error)), validated);
+      throw new AppendAbort(failure(CODE.append_conflict, errorMessage(error)), validated);
     }
 
     try {
@@ -709,7 +692,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
       // 直改 scope 表不会被抹掉，但会被 verify 对账抓出来（C5）。
       applyRightEvents(db, fresh);
     } catch (error) {
-      throw new AppendAbort(failure('materialize_failed', errorMessage(error)), validated);
+      throw new AppendAbort(failure(CODE.materialize_failed, errorMessage(error)), validated);
     }
     db.exec('COMMIT');
     const eventCount = countEvents(db);
@@ -718,7 +701,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
         ? { ok: true, written, skipped, attempted: validated, rolled_back: false, eventCount }
         : {
             ok: false,
-            reason_code: 'conflict',
+            reason_code: CODE.conflict,
             message: `conflict ${detected.conflict_id} on ${detected.subject}.${detected.field}: stale base_hash (409 semantics)`,
             conflict_id: detected.conflict_id,
             base_hash: detected.base_hash,
@@ -734,7 +717,7 @@ export function append(db: SdoDatabase, events: readonly Event[], authz: AppendA
     result =
       error instanceof AppendAbort
         ? failed(error.failure, error.attempted, db, rolled)
-        : failed(failure('materialize_failed', errorMessage(error)), 0, db, rolled);
+        : failed(failure(CODE.materialize_failed, errorMessage(error)), 0, db, rolled);
   } finally {
     // 兜底：无论从哪条路径离开，都不把连接留在事务里（P1-1）。
     rollbackQuietly(db);
@@ -759,8 +742,7 @@ function checkDecisionRejectedAuthority(db: SdoDatabase, event: Event): AppendFa
     .get(event.subject) as { status?: string; signature?: string | null } | undefined;
   if (row === undefined) return undefined;
   if (row.status === 'valid' && String(row.signature ?? '').length > 0) {
-    return failure(
-      'decision_already_signed',
+    return failure(CODE.decision_already_signed,
       `decision ${event.subject} is already signed; revoke it with decision.revoked instead of decision.rejected`,
     );
   }
@@ -779,7 +761,7 @@ function checkBaselineAuthority(
   const decisionId = fields['decision_id'];
   const hash = fields['hash'];
   if (typeof decisionId !== 'string' || decisionId.length === 0) {
-    return failure('invalid_field', `${event.kind} requires payload.decision_id (signed baseline decision)`);
+    return failure(CODE.invalid_field, `${event.kind} requires payload.decision_id (signed baseline decision)`);
   }
   let decisionPayload: unknown;
   let decisionKind: unknown;
@@ -802,7 +784,7 @@ function checkBaselineAuthority(
     const valid = batch.find((candidate) => candidate.kind === 'decision.valid' && candidate.subject === decisionId);
     const signed = batch.find((candidate) => candidate.kind === 'decision.signed' && candidate.subject === decisionId);
     if (valid === undefined || signed === undefined) {
-      return failure('invalid_field', `${event.kind} decision ${decisionId} is not signed`);
+      return failure(CODE.invalid_field, `${event.kind} decision ${decisionId} is not signed`);
     }
     const validPayload = valid.payload;
     const outer = validPayload !== null && typeof validPayload === 'object' ? (validPayload as Record<string, unknown>) : {};
@@ -820,27 +802,27 @@ function checkBaselineAuthority(
         ? (extra['baseline'] as Record<string, unknown>)
         : {};
   if (!hasSignature) {
-    return failure('invalid_field', `${event.kind} decision ${decisionId} is not signed`);
+    return failure(CODE.invalid_field, `${event.kind} decision ${decisionId} is not signed`);
   }
   if (decisionKind !== 'baseline') {
-    return failure('invalid_field', `decision ${decisionId} must be kind baseline`);
+    return failure(CODE.invalid_field, `decision ${decisionId} must be kind baseline`);
   }
   const eventPrev = fields['prev'] ?? null;
   const eventDirection = fields['direction'] ?? null;
   if (typeof hash !== 'string' || baseline['hash'] !== hash) {
-    return failure('invalid_field', `${event.kind} hash does not match the signed baseline decision payload`);
+    return failure(CODE.invalid_field, `${event.kind} hash does not match the signed baseline decision payload`);
   }
   if ((baseline['prev'] ?? null) !== eventPrev) {
-    return failure('invalid_field', `${event.kind} prev does not match the signed baseline decision payload`);
+    return failure(CODE.invalid_field, `${event.kind} prev does not match the signed baseline decision payload`);
   }
   if ((baseline['direction'] ?? null) !== eventDirection) {
-    return failure('invalid_field', `${event.kind} direction does not match the signed baseline decision payload`);
+    return failure(CODE.invalid_field, `${event.kind} direction does not match the signed baseline decision payload`);
   }
   if (baseline['will_change_hash'] !== fields['will_change_hash']) {
-    return failure('invalid_field', `${event.kind} will_change_hash does not match the signed baseline decision payload`);
+    return failure(CODE.invalid_field, `${event.kind} will_change_hash does not match the signed baseline decision payload`);
   }
   if (JSON.stringify(baseline['guarantee_delta']) !== JSON.stringify(fields['guarantee_delta'])) {
-    return failure('invalid_field', `${event.kind} guarantee_delta does not match the signed baseline decision payload`);
+    return failure(CODE.invalid_field, `${event.kind} guarantee_delta does not match the signed baseline decision payload`);
   }
   return undefined;
 }

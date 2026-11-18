@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M3-5 · 撤权后的队列可见性（纯数据层，权限通过端口注入）。
  *
@@ -100,7 +101,7 @@ export interface ApplyEntry {
   readonly scope: string;
   /** M4 换真 `grant` 前的入口动作：`escalate`（A2）。 */
   readonly action: 'escalate';
-  readonly reason_code: 'no_permission';
+  readonly reason_code: typeof CODE.no_permission;
   readonly hint: string;
 }
 
@@ -108,7 +109,7 @@ function applyEntry(scope: string): ApplyEntry {
   return {
     scope,
     action: 'escalate',
-    reason_code: 'no_permission',
+    reason_code: CODE.no_permission,
     hint: `你对 ${scope} 没有权限：向有该域权限的人申请（M4 前先走 escalate）`,
   };
 }
@@ -116,7 +117,7 @@ function applyEntry(scope: string): ApplyEntry {
 export interface HiddenReviewRow {
   readonly item_id: string;
   readonly scopes: readonly string[];
-  readonly reason_code: 'no_permission';
+  readonly reason_code: typeof CODE.no_permission;
 }
 
 export interface ReviewQueueAccess {
@@ -185,7 +186,7 @@ export function readReviewQueueAccess(
       rows.push(toReviewRow(raw, scopes));
       continue;
     }
-    hidden.push({ item_id: String(raw['item_id']), scopes, reason_code: 'no_permission' });
+    hidden.push({ item_id: String(raw['item_id']), scopes, reason_code: CODE.no_permission });
     for (const scope of scopes) entries.set(scope, applyEntry(scope));
   }
   if (denied && entries.size === 0) entries.set(PM_QUEUE_SCOPE, applyEntry(PM_QUEUE_SCOPE));

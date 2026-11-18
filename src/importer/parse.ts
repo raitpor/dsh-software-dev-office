@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * v1 只读导出（`sdo1 export`）的解析层。
  *
@@ -33,23 +34,7 @@ export type TaskKind = (typeof TASK_KINDS)[number];
 /** M0 只认“结论型回执”：predicate=done、value=true。 */
 export const CONCLUSION_PREDICATE = 'done';
 
-export type ImportErrorCode =
-  | 'io'
-  | 'json'
-  | 'format'
-  | 'unknown_kind'
-  | 'field'
-  | 'unsupported_conclusion'
-  | 'duplicate_claim'
-  | 'sample'
-  | 'sample_too_small'
-  | 'structure'
-  | 'rebuild'
-  | 'seq_invalid'
-  | 'seq_conflict'
-  | 'seq_gap'
-  | 'invalid_field'
-  | 'usage';
+
 
 export interface ImportErrorDetails {
   /** record 在导出 `records[]` 里的下标（0 起）。 */
@@ -372,3 +357,24 @@ export function readExportFile(path: string): ParsedExport {
   }
   return parseExportText(text, path);
 }
+
+
+export const ImportErrorCode_CODES = [
+  CODE.duplicate_claim,
+  CODE.field,
+  CODE.format,
+  CODE.invalid_field,
+  CODE.io,
+  CODE.json,
+  CODE.rebuild,
+  CODE.sample,
+  CODE.sample_too_small,
+  CODE.seq_conflict,
+  CODE.seq_gap,
+  CODE.seq_invalid,
+  CODE.structure,
+  CODE.unknown_kind,
+  CODE.unsupported_conclusion,
+  CODE.usage,
+] as const;
+export type ImportErrorCode = (typeof ImportErrorCode_CODES)[number];

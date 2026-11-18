@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * signerd 的持久存储（C2/C9）：私钥信封、受信公钥 keyring、签名回执、capability。
  *
@@ -176,7 +177,7 @@ export class SignerdStore {
         unlock_ms: Date.now() - started,
       };
     } catch (error) {
-      if (error instanceof SignError && error.reason_code === 'bad_passphrase') {
+      if (error instanceof SignError && error.reason_code === CODE.bad_passphrase) {
         this.failedAttempts += 1;
         if (this.failedAttempts >= MAX_FAILED_ATTEMPTS) {
           this.rateLimitedUntil = now.getTime() + RATE_LIMIT_MS;

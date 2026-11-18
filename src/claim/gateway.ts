@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M1-6：渲染器网关——`claim` 行的唯一写入口（docs/03 §3）。
  *
@@ -96,7 +97,7 @@ function frontierIds(row: ClaimRow): string[] | undefined {
 /** C4/C5：渲染器注册 + 前沿非空且每个事件 id 存在。 */
 function validateRow(db: SdoDatabase, row: ClaimRow): { reason: ClaimReason; message: string } | undefined {
   if (!isRegisteredRenderer(db, row.derived_by)) {
-    return { reason: 'renderer_unregistered', message: `derived_by ${row.derived_by} is not a registered renderer` };
+    return { reason: CODE.renderer_unregistered, message: `derived_by ${row.derived_by} is not a registered renderer` };
   }
   const ids = frontierIds(row);
   if (ids === undefined) {
@@ -156,7 +157,7 @@ export function writeClaimRows(db: SdoDatabase, rows: readonly ClaimRow[]): Clai
     db.exec('COMMIT');
   } catch (error) {
     if (db.inTransaction) db.exec('ROLLBACK');
-    return failure('claim_invalid', `claim write failed: ${error instanceof Error ? error.message : String(error)}`);
+    return failure(CODE.claim_invalid, `claim write failed: ${error instanceof Error ? error.message : String(error)}`);
   }
   return result({ ok: true, written, skipped, claims_written: written });
 }
@@ -183,7 +184,7 @@ export function renderClaimsFromEvents(db: SdoDatabase): ClaimImportResult {
   if (!written.ok) {
     // 恢复失败：没有新事件可写；claim_conflict 是终局（存储行与事件重算结果不一致，重跑渲染也解不开），
     // 其余失败（如注入的 INSERT 失败）事件仍在，可以再跑一次 render-only。
-    const retryable = written.reason_code !== 'claim_conflict';
+    const retryable = written.reason_code !== CODE.claim_conflict;
     return {
       ...written,
       events_written: 0,
@@ -234,7 +235,7 @@ export function importClaims(db: SdoDatabase, claims: readonly ExportClaim[]): C
       return failure(invalid, `claim ${claim.claim_no} rejected before append: ${invalid}`);
     }
     if (!isRegisteredRenderer(db, claim.renderer)) {
-      return failure('renderer_unregistered', `claim ${claim.claim_no}: renderer ${claim.renderer} is not registered`);
+      return failure(CODE.renderer_unregistered, `claim ${claim.claim_no}: renderer ${claim.renderer} is not registered`);
     }
     fresh.push({ claim, row });
   }

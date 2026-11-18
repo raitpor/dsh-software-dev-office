@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-4 C4/C6 · 晚到条款链（准入拦截）。
  *
@@ -134,8 +135,8 @@ export interface ClauseUnjudgedDetail {
 
 export type AdmissionResult =
   | { readonly ok: true; readonly checked: readonly string[] }
-  | { readonly ok: false; readonly reason_code: 'clause_unjudged'; readonly details: readonly ClauseUnjudgedDetail[] }
-  | { readonly ok: false; readonly reason_code: 'task_not_found'; readonly details: readonly [] };
+  | { readonly ok: false; readonly reason_code: typeof CODE.clause_unjudged; readonly details: readonly ClauseUnjudgedDetail[] }
+  | { readonly ok: false; readonly reason_code: typeof CODE.task_not_found; readonly details: readonly [] };
 
 const ADMISSION_SPEC_KINDS: ReadonlySet<string> = new Set(['requirement', 'design']);
 
@@ -147,7 +148,7 @@ const ADMISSION_SPEC_KINDS: ReadonlySet<string> = new Set(['requirement', 'desig
  */
 export function checkAdmission(state: FoldState, taskId: string): AdmissionResult {
   if (state.tables.task[taskId] === undefined) {
-    return { ok: false, reason_code: 'task_not_found', details: [] };
+    return { ok: false, reason_code: CODE.task_not_found, details: [] };
   }
   const specs = referencedSpecIds(state, taskId).filter((id) => {
     const row = state.tables.spec[id];
@@ -166,7 +167,7 @@ export function checkAdmission(state: FoldState, taskId: string): AdmissionResul
       details.push({ spec_id: specId, cause: 'reading_before_revision', revised_at: revisedAt, reading_at: reading.at });
     }
   }
-  if (details.length > 0) return { ok: false, reason_code: 'clause_unjudged', details };
+  if (details.length > 0) return { ok: false, reason_code: CODE.clause_unjudged, details };
   return { ok: true, checked: specs };
 }
 

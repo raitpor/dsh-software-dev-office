@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * M2-3 C8：`assumption.disposed` 投影与事件链的双向核对。
  *
@@ -14,7 +15,11 @@
 import type { Event, FoldState, Row } from '../fold/types.js';
 import { dispositionEntries, dispositionFor, isDisposition, specIdsOfDecision } from './index.js';
 
-export type AssumptionVerifyProblemCode = 'assumption_disposition_missing' | 'assumption_decision_invalid';
+export const ASSUMPTION_VERIFY_PROBLEM_CODES = [
+  CODE.assumption_decision_invalid,
+  CODE.assumption_disposition_missing,
+] as const;
+export type AssumptionVerifyProblemCode = (typeof ASSUMPTION_VERIFY_PROBLEM_CODES)[number];
 
 export interface AssumptionVerifyProblem {
   readonly code: AssumptionVerifyProblemCode;

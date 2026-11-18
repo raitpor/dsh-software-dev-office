@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M3-2 · 冲突的库层装配：读冲突行、生成 detected 事件、人签裁决。
  *
@@ -114,7 +115,7 @@ export async function resolveConflict(
   }
   const expected = conflictResolutionPayloadHash(request.conflict_id, request.side);
   if (session.actor_kind !== 'human') {
-    return fail('resolution_not_signed', 'conflict resolution requires a human session; agents cannot select a side');
+    return fail(CODE.resolution_not_signed, 'conflict resolution requires a human session; agents cannot select a side');
   }
   if (request.payload_hash !== expected) {
     return fail('conflict_invalid', `payload_hash does not match conflict ${request.conflict_id} / side ${request.side}`);
@@ -142,7 +143,7 @@ export async function resolveConflict(
     now,
   });
   if (!signed.ok) {
-    return fail('resolution_not_signed', `signing failed: ${signed.reason_code}: ${signed.message}`);
+    return fail(CODE.resolution_not_signed, `signing failed: ${signed.reason_code}: ${signed.message}`);
   }
 
   const event = buildConflictResolvedEvent({
@@ -155,7 +156,7 @@ export async function resolveConflict(
   });
   const result = appendAsTool(db, [event], session.actor, session.actor_kind);
   if (!result.ok) {
-    return fail('resolution_not_signed', `conflict.resolved append rejected: ${String(result.reason_code)}: ${result.message ?? ''}`);
+    return fail(CODE.resolution_not_signed, `conflict.resolved append rejected: ${String(result.reason_code)}: ${result.message ?? ''}`);
   }
   return { ok: true, conflict_id: request.conflict_id, decision_id: signed.decision_id, side: request.side };
 }

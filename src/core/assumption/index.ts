@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * M2-3 假设处置链的纯函数层（docs/03:66-77、docs/04 §5.2、docs/06:189）。
  *
@@ -125,7 +126,7 @@ export function assumptionCoverageMissing(state: FoldState, covered: ReadonlySet
     .sort();
 }
 
-export type AssumptionStatusProblemCode = 'open_assumption' | 'assumption_status_not_backed';
+
 
 export interface AssumptionStatusProblem {
   readonly code: AssumptionStatusProblemCode;
@@ -181,3 +182,10 @@ export function validateAssumptionStatuses(state: FoldState): readonly Assumptio
   }
   return problems;
 }
+
+
+export const AssumptionStatusProblemCode_CODES = [
+  CODE.assumption_status_not_backed,
+  CODE.open_assumption,
+] as const;
+export type AssumptionStatusProblemCode = (typeof AssumptionStatusProblemCode_CODES)[number];

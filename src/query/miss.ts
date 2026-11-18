@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 结构化 `miss` 与 `MissSink`（M0-4，判据 C3/C7）。
  *
@@ -8,15 +9,7 @@
  */
 
 /** 缺什么、为什么缺；新增 reason 必须同时写进 `src/query/README.md`。 */
-export type MissReason =
-  | 'view_not_found'
-  | 'column_not_found'
-  | 'invalid_args'
-  | 'filtered_by_permission'
-  | 'column_redacted'
-  | 'stale_as_of'
-  | 'unsafe_view_sql'
-  | 'result_too_large';
+
 
 /** 一条结构化 miss（docs/05 §5 的 payload 形状；task/actor 由 M1 写网关补）。 */
 export interface QueryMiss {
@@ -51,3 +44,16 @@ export function createMiss(
     ...(detail === undefined ? {} : { detail }),
   };
 }
+
+
+export const MissReason_CODES = [
+  CODE.column_not_found,
+  CODE.column_redacted,
+  CODE.filtered_by_permission,
+  CODE.invalid_args,
+  CODE.result_too_large,
+  CODE.stale_as_of,
+  CODE.unsafe_view_sql,
+  CODE.view_not_found,
+] as const;
+export type MissReason = (typeof MissReason_CODES)[number];

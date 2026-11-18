@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * sign 层 verify（C9）：认得出“这条 decision.signed 是不是 signerd 产的”。
  *
@@ -21,11 +22,7 @@ import {
 } from './receipt.js';
 import { checkDecisionSignedProvenance, readSignedDecisionPayload } from './provenance.js';
 
-export type SignatureProblemCode =
-  | 'runtime_inconsistent'
-  | 'signature_unverifiable'
-  | 'signerd_home_insecure'
-  | 'receipt_chain_broken';
+
 
 export interface SignatureProblem {
   readonly code: SignatureProblemCode;
@@ -214,3 +211,12 @@ function loadReceipts(home: string): LoadedReceipts {
   }
   return { byId };
 }
+
+
+export const SignatureProblemCode_CODES = [
+  CODE.receipt_chain_broken,
+  CODE.runtime_inconsistent,
+  CODE.signature_unverifiable,
+  CODE.signerd_home_insecure,
+] as const;
+export type SignatureProblemCode = (typeof SignatureProblemCode_CODES)[number];

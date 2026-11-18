@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M3-0 · 唯一权限判定入口 `hasRight`（卡 C4/C5/C6）。
  *
@@ -49,7 +50,7 @@ export interface RightAllow {
   readonly dual_human: DualHuman;
 }
 
-export type RightDenyCode = 'no_permission' | 'invalid_field';
+
 
 export interface RightDeny {
   readonly ok: false;
@@ -60,14 +61,18 @@ export interface RightDeny {
   readonly message: string;
   readonly missing_right?: RightName;
   /** 失败原因细分（如跨前缀拒绝）；保留 reason_code 供调用方粗判。 */
-  readonly reason?:
-    | 'cross_prefix_denied'
-    | 'no_ownership'
-    | 'unknown_action'
-    | 'unknown_prefix'
-    | 'boot_only'
-    | 'missing_grant';
+  readonly reason?: RightDenyReason;
 }
+
+export const RIGHT_DENY_REASONS = [
+  CODE.cross_prefix_denied,
+  CODE.no_ownership,
+  CODE.unknown_action,
+  CODE.unknown_prefix,
+  CODE.boot_only,
+  CODE.missing_grant,
+] as const;
+export type RightDenyReason = (typeof RIGHT_DENY_REASONS)[number];
 
 export type RightDecision = RightAllow | RightDeny;
 
@@ -92,25 +97,25 @@ export interface ScopeParseFailure {
 /** 解析 `<prefix>:<path>`；通配/空/含空白 ⇒ invalid_field，未知前缀 ⇒ no_permission。 */
 export function parseScope(scope: string): { readonly ok: true; readonly value: ParsedScope } | ScopeParseFailure {
   if (typeof scope !== 'string' || scope.length === 0) {
-    return { ok: false, reason_code: 'invalid_field', message: 'scope 不能为空' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'scope 不能为空' };
   }
   if (scope.includes('*')) {
-    return { ok: false, reason_code: 'invalid_field', message: `scope 不接受通配：${scope}` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `scope 不接受通配：${scope}` };
   }
   if (/\s/.test(scope)) {
-    return { ok: false, reason_code: 'invalid_field', message: `scope 不得含空白：${scope}` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `scope 不得含空白：${scope}` };
   }
   const match = /^([a-z]+):(.+)$/.exec(scope);
   if (match === null) {
-    return { ok: false, reason_code: 'invalid_field', message: `scope 形状必须是 <prefix>:<path>：${scope}` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `scope 形状必须是 <prefix>:<path>：${scope}` };
   }
   const prefix = match[1] ?? '';
   const path = match[2] ?? '';
   if (!PREFIX_SET.has(prefix)) {
-    return { ok: false, reason_code: 'no_permission', message: `未知 scope 前缀：${prefix}` };
+    return { ok: false, reason_code: CODE.no_permission, message: `未知 scope 前缀：${prefix}` };
   }
   if (path.startsWith('/') || path.endsWith('/')) {
-    return { ok: false, reason_code: 'invalid_field', message: `scope 路径不得以 / 开头或结尾：${scope}` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `scope 路径不得以 / 开头或结尾：${scope}` };
   }
   return { ok: true, value: { prefix: prefix as ScopePrefix, path } };
 }
@@ -193,11 +198,11 @@ export function hasRight(actor: ActorRef, action: string, scope: string, ctx: Ri
     return deny('invalid_field', actor, action, scope, `actor 不接受通配：${actor.id}`);
   }
   const parsed = parseScope(scope);
-  if (!parsed.ok) return { ...deny(parsed.reason_code, actor, action, scope, parsed.message), reason: 'unknown_prefix' };
+  if (!parsed.ok) return { ...deny(parsed.reason_code, actor, action, scope, parsed.message), reason: CODE.unknown_prefix };
 
   const entry = ctx.matrix.find((row) => row.action === action);
   if (entry === undefined) {
-    return { ...deny('no_permission', actor, action, scope, `未登记动作：${action}（矩阵即数据，未登记一律拒）`), reason: 'unknown_action' };
+    return { ...deny(CODE.no_permission, actor, action, scope, `未登记动作：${action}（矩阵即数据，未登记一律拒）`), reason: CODE.unknown_action };
   }
   if (entry.boot_only && actor.id !== 'migration') {
     return deny('no_permission', actor, action, scope, `${action} 是迁移 boot 动作，只允许 boot 系统 actor`);
@@ -239,7 +244,7 @@ export function hasRight(actor: ActorRef, action: string, scope: string, ctx: Ri
             : `缺少权 ${required.right}@${required.scope}（scope ${scope}）`,
           required.right,
         ),
-        reason: noOwnership ? 'no_ownership' : 'missing_grant',
+        reason: noOwnership ? CODE.no_ownership : CODE.missing_grant,
       };
     }
   }
@@ -252,3 +257,10 @@ export function hasRight(actor: ActorRef, action: string, scope: string, ctx: Ri
     dual_human: entry.dual_human,
   };
 }
+
+
+export const RightDenyCode_CODES = [
+  CODE.invalid_field,
+  CODE.no_permission,
+] as const;
+export type RightDenyCode = (typeof RightDenyCode_CODES)[number];

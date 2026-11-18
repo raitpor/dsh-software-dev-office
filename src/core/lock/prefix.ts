@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M4-1/C2+C6：锁前缀的规范化与按路径段的相交判定。
  *
@@ -13,7 +14,7 @@
 
 export interface PrefixFailure {
   readonly ok: false;
-  readonly reason_code: 'invalid_field';
+  readonly reason_code: typeof CODE.invalid_field;
   readonly message: string;
 }
 
@@ -27,7 +28,7 @@ export type PrefixResult = PrefixOk | PrefixFailure;
 const MAX_PREFIX_LENGTH = 1024;
 
 function failure(message: string): PrefixFailure {
-  return { ok: false, reason_code: 'invalid_field', message };
+  return { ok: false, reason_code: CODE.invalid_field, message };
 }
 
 /**

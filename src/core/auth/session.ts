@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /** M3-0 · 身份类型：actor 来自会话，不从 payload 自称（收口 D-056）。 */
 
 export const ACTOR_KINDS = ['human', 'agent', 'service'] as const;
@@ -14,7 +15,7 @@ export interface Session {
   readonly credential: string;
 }
 
-export type AuthFailureCode = 'actor_not_from_session' | 'invalid_field';
+
 
 export interface AuthFailure {
   readonly ok: false;
@@ -35,13 +36,13 @@ export function isActorKind(value: unknown): value is ActorKind {
 /** 从会话取 actor 身份；会话本身非法 ⇒ invalid_field（fail-closed）。 */
 export function identityFromSession(session: Session): SessionIdentity | AuthFailure {
   if (typeof session.actor !== 'string' || session.actor.length === 0) {
-    return { ok: false, reason_code: 'invalid_field', message: '会话缺少 actor' };
+    return { ok: false, reason_code: CODE.invalid_field, message: '会话缺少 actor' };
   }
   if (!isActorKind(session.actor_kind)) {
-    return { ok: false, reason_code: 'invalid_field', message: `会话 actor_kind 非法：${String(session.actor_kind)}` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `会话 actor_kind 非法：${String(session.actor_kind)}` };
   }
   if (typeof session.session_id !== 'string' || session.session_id.length === 0) {
-    return { ok: false, reason_code: 'invalid_field', message: '会话缺少 session_id' };
+    return { ok: false, reason_code: CODE.invalid_field, message: '会话缺少 session_id' };
   }
   return { ok: true, actor: session.actor, actor_kind: session.actor_kind };
 }
@@ -55,7 +56,7 @@ export function rejectPayloadActor(payload: unknown): AuthFailure | undefined {
   if (!Object.hasOwn(payload, 'actor')) return undefined;
   return {
     ok: false,
-    reason_code: 'actor_not_from_session',
+    reason_code: CODE.actor_not_from_session,
     message: '写路径不接受 payload 的 actor；actor 必须来自会话凭据',
   };
 }
@@ -66,3 +67,10 @@ export function writeIdentity(session: Session, payload: unknown): SessionIdenti
   if (rejected !== undefined) return rejected;
   return identityFromSession(session);
 }
+
+
+export const AuthFailureCode_CODES = [
+  CODE.actor_not_from_session,
+  CODE.invalid_field,
+] as const;
+export type AuthFailureCode = (typeof AuthFailureCode_CODES)[number];

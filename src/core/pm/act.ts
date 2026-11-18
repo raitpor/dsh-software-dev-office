@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M2-5 · PM 动作：预占/派发、解阻塞、请求签字、升级给人（attention）、rework。
  *
@@ -284,7 +285,7 @@ export function raiseAttention(
 
 export interface StubOk {
   readonly ok: false;
-  readonly reason_code: 'not_implemented' | 'not_a_signer';
+  readonly reason_code: typeof CODE.not_implemented | typeof CODE.not_a_signer;
   readonly message: string;
 }
 
@@ -390,7 +391,7 @@ export function withdrawAttention(
 export function grant(): StubOk {
   return {
     ok: false,
-    reason_code: 'not_implemented',
+    reason_code: CODE.not_implemented,
     message: 'grant 在 M4 前恒空；M2 的权限只来自静态 right 表',
   };
 }
@@ -399,7 +400,7 @@ export function grant(): StubOk {
 export function sign(): StubOk {
   return {
     ok: false,
-    reason_code: 'not_a_signer',
+    reason_code: CODE.not_a_signer,
     message: 'PM 不能代签；签字由人经 signerd 完成',
   };
 }

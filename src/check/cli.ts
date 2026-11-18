@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * `sdo_check` CLI（M1-4 C1、C4；`npm run check`）。
  *
@@ -55,7 +56,7 @@ function fail(reasonCode: string, message: string, pretty: boolean, exitCode: nu
 function main(): void {
   const parsed = parseArgs(process.argv.slice(2));
   if (!parsed.ok) {
-    fail('invalid_args', parsed.message, false, 2);
+    fail(CODE.invalid_args, parsed.message, false, 2);
     return;
   }
   const args = parsed.args;

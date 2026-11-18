@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-4 C5 · `spec_set` 集合签字载荷的**工具渲染**（模型无写入口）。
  *
@@ -40,11 +41,11 @@ export interface SpecSetPayload {
 export type SpecSetRenderFailure = {
   readonly ok: false;
   readonly reason_code:
-    | 'invalid_field'
-    | 'spec_ids_mismatch'
-    | 'spec_not_found'
-    | 'clause_unjudged'
-    | 'no_requirement';
+    | typeof CODE.invalid_field
+    | typeof CODE.spec_ids_mismatch
+    | typeof CODE.spec_not_found
+    | typeof CODE.clause_unjudged
+    | typeof CODE.no_requirement;
   readonly message: string;
 };
 
@@ -82,11 +83,11 @@ export function collectClauseReadings(
   const readings: ClauseReading[] = [];
   for (const specId of [...specIds].sort()) {
     if (state.tables.spec[specId] === undefined) {
-      return { ok: false, reason_code: 'spec_not_found', message: `spec ${specId} not found` };
+      return { ok: false, reason_code: CODE.spec_not_found, message: `spec ${specId} not found` };
     }
     const version = specVersionHash(state, specId);
     if (version === undefined) {
-      return { ok: false, reason_code: 'spec_not_found', message: `spec ${specId} not found` };
+      return { ok: false, reason_code: CODE.spec_not_found, message: `spec ${specId} not found` };
     }
     const byCriterion = new Map<string, PreWorkReading>();
     for (const reading of preWorkReadingsForSpec(state, specId)) {
@@ -95,7 +96,7 @@ export function collectClauseReadings(
     if (byCriterion.size === 0) {
       return {
         ok: false,
-        reason_code: 'clause_unjudged',
+        reason_code: CODE.clause_unjudged,
         message: `requirement ${specId} has no pre-work reading; every requirement must be judged before signing`,
       };
     }
@@ -144,39 +145,39 @@ export function specSetContentHashOf(input: {
  */
 export function renderSpecSetPayload(state: FoldState, input: unknown): SpecSetRenderResult {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) {
-    return { ok: false, reason_code: 'invalid_field', message: 'spec_set payload input must be an object' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'spec_set payload input must be an object' };
   }
   const raw = input as Record<string, unknown>;
   for (const key of FORBIDDEN) {
     if (Object.hasOwn(raw, key)) {
       return {
         ok: false,
-        reason_code: 'invalid_field',
+        reason_code: CODE.invalid_field,
         message: `renderSpecSetPayload renders ${key} itself; the caller must not supply it`,
       };
     }
   }
   const specIds = asStringArray(raw['spec_ids']);
   if (specIds === undefined) {
-    return { ok: false, reason_code: 'invalid_field', message: 'spec_ids must be a string array' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'spec_ids must be a string array' };
   }
   const frontier = asStringArray(raw['as_of_frontier']);
   if (frontier === undefined) {
-    return { ok: false, reason_code: 'invalid_field', message: 'as_of_frontier must be a string array' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'as_of_frontier must be a string array' };
   }
   const dispositions = raw['dispositions'] === undefined ? [] : raw['dispositions'];
   if (!Array.isArray(dispositions)) {
-    return { ok: false, reason_code: 'invalid_field', message: 'dispositions must be an array' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'dispositions must be an array' };
   }
   const expected = currentRequirementSpecIds(state);
   const wanted = [...specIds].sort();
   if (expected.length === 0) {
-    return { ok: false, reason_code: 'no_requirement', message: 'there is no requirement spec to sign' };
+    return { ok: false, reason_code: CODE.no_requirement, message: 'there is no requirement spec to sign' };
   }
   if (wanted.length !== expected.length || wanted.some((id, index) => id !== expected[index])) {
     return {
       ok: false,
-      reason_code: 'spec_ids_mismatch',
+      reason_code: CODE.spec_ids_mismatch,
       message: `spec_ids must cover exactly the current requirements: expected [${expected.join(', ')}]`,
     };
   }
@@ -187,14 +188,14 @@ export function renderSpecSetPayload(state: FoldState, input: unknown): SpecSetR
   if (covered.length !== expected.length || covered.some((id, index) => id !== expected[index])) {
     return {
       ok: false,
-      reason_code: 'clause_unjudged',
+      reason_code: CODE.clause_unjudged,
       message: `clause_readings must cover every requirement: expected [${expected.join(', ')}]`,
     };
   }
   if (readings.length === 0) {
     return {
       ok: false,
-      reason_code: 'clause_unjudged',
+      reason_code: CODE.clause_unjudged,
       message: 'no pre-work reading for the current requirements',
     };
   }
@@ -224,11 +225,11 @@ export type SpecSetVerifyResult =
   | {
       readonly ok: false;
       readonly reason_code:
-        | 'invalid_field'
-        | 'readings_hash_mismatch'
-        | 'content_hash_mismatch'
-        | 'spec_ids_mismatch'
-        | 'clause_readings_incomplete';
+    | typeof CODE.invalid_field
+    | typeof CODE.readings_hash_mismatch
+    | typeof CODE.content_hash_mismatch
+    | typeof CODE.spec_ids_mismatch
+    | typeof CODE.clause_readings_incomplete;
       readonly message: string;
     };
 
@@ -238,7 +239,7 @@ export type SpecSetVerifyResult =
  */
 export function verifySpecSetPayload(payload: unknown): SpecSetVerifyResult {
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { ok: false, reason_code: 'invalid_field', message: 'payload must be an object' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'payload must be an object' };
   }
   const raw = payload as Record<string, unknown>;
   const specIds = asStringArray(raw['spec_ids']);
@@ -248,7 +249,7 @@ export function verifySpecSetPayload(payload: unknown): SpecSetVerifyResult {
   const readingsHash = text(raw['readings_hash']);
   const contentHash = text(raw['content_hash']);
   if (specIds === undefined || frontier === undefined || !Array.isArray(readings) || !Array.isArray(dispositions)) {
-    return { ok: false, reason_code: 'invalid_field', message: 'payload shape is invalid' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'payload shape is invalid' };
   }
   // P1：载荷必须覆盖 spec_ids 里的每一条 requirement；缺一条都拒（防“签了未判条款”）。
   const covered = [
@@ -264,13 +265,13 @@ export function verifySpecSetPayload(payload: unknown): SpecSetVerifyResult {
   if (covered.length !== wanted.length || covered.some((id, index) => id !== wanted[index])) {
     return {
       ok: false,
-      reason_code: 'clause_readings_incomplete',
+      reason_code: CODE.clause_readings_incomplete,
       message: `clause_readings must cover every spec_id: expected [${wanted.join(', ')}]`,
     };
   }
   const recomputedReadings = readingsHashOf(readings as ClauseReading[]);
   if (recomputedReadings !== readingsHash) {
-    return { ok: false, reason_code: 'readings_hash_mismatch', message: 'clause_readings do not match readings_hash' };
+    return { ok: false, reason_code: CODE.readings_hash_mismatch, message: 'clause_readings do not match readings_hash' };
   }
   const recomputedContent = specSetContentHashOf({
     spec_ids: specIds,
@@ -279,7 +280,7 @@ export function verifySpecSetPayload(payload: unknown): SpecSetVerifyResult {
     as_of_frontier: frontier,
   });
   if (recomputedContent !== contentHash) {
-    return { ok: false, reason_code: 'content_hash_mismatch', message: 'payload does not match content_hash' };
+    return { ok: false, reason_code: CODE.content_hash_mismatch, message: 'payload does not match content_hash' };
   }
   return { ok: true };
 }

@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 身份层 **迁移/CLI 初始化专用** 入口（M3-0 第 2 轮评审 P2-1）。
  *
@@ -23,7 +24,7 @@ import { buildEvent } from './freeze-store.js';
 import { append, chainHead } from './write.js';
 import type { AuthFailureResult, AuthResult, EnrollActorInput, GrantRightInput } from './auth.js';
 
-function fail(reason_code: 'invalid_field' | 'no_permission', message: string): AuthFailureResult {
+function fail(reason_code: typeof CODE.invalid_field | typeof CODE.no_permission, message: string): AuthFailureResult {
   return { ok: false, reason_code, message };
 }
 
@@ -34,12 +35,12 @@ function isNonEmptyText(value: unknown): value is string {
 /** 仅迁移/CLI 初始化：登记第一个 actor（不检查调用者 admin）。 */
 export function bootstrapEnrollActor(db: SdoDatabase, input: EnrollActorInput): AuthResult {
   if (!isNonEmptyText(input.actor) || input.actor.includes('*')) {
-    return fail('invalid_field', 'actor 不能为空且不接受通配');
+    return fail(CODE.invalid_field, 'actor 不能为空且不接受通配');
   }
-  if (!isActorKind(input.kind)) return fail('invalid_field', `actor_kind 非法：${String(input.kind)}`);
+  if (!isActorKind(input.kind)) return fail(CODE.invalid_field, `actor_kind 非法：${String(input.kind)}`);
   const existing = db.prepare('SELECT kind FROM actor WHERE id = ?').get(input.actor) as { kind?: string } | undefined;
   if (existing !== undefined) {
-    if (existing.kind !== input.kind) return fail('invalid_field', `actor 已登记且 kind 不同：${input.actor}`);
+    if (existing.kind !== input.kind) return fail(CODE.invalid_field, `actor 已登记且 kind 不同：${input.actor}`);
     return { ok: true };
   }
   db.prepare('INSERT INTO actor (id, kind, display, at) VALUES (?, ?, ?, ?)').run(
@@ -54,15 +55,15 @@ export function bootstrapEnrollActor(db: SdoDatabase, input: EnrollActorInput): 
 /** 仅迁移/CLI 初始化：授予第一个 `admin@domain`（不检查调用者 admin）。 */
 export function bootstrapGrantRight(db: SdoDatabase, input: GrantRightInput): AuthResult {
   if (!isNonEmptyText(input.actor) || !isNonEmptyText(input.granted_by)) {
-    return fail('invalid_field', 'actor/granted_by 不能为空');
+    return fail(CODE.invalid_field, 'actor/granted_by 不能为空');
   }
   if (!isNonEmptyText(input.right) || !(RIGHT_NAMES as readonly string[]).includes(input.right)) {
-    return fail('invalid_field', `未知/非法 right：${String(input.right)}`);
+    return fail(CODE.invalid_field, `未知/非法 right：${String(input.right)}`);
   }
   const scope = parseScope(input.scope);
-  if (!scope.ok) return fail('invalid_field', scope.message);
+  if (!scope.ok) return fail(CODE.invalid_field, scope.message);
   const actor = db.prepare('SELECT 1 AS one FROM actor WHERE id = ?').get(input.actor);
-  if (actor === undefined) return fail('invalid_field', `actor 未登记：${input.actor}`);
+  if (actor === undefined) return fail(CODE.invalid_field, `actor 未登记：${input.actor}`);
   // M4-4/A3：bootstrap 也只经唯一写入口落 `right.granted`（不再直插 scope 行）；
   // 一次性能力绑 event id + payload hash，网关对裸 append 仍拒 unauthorized_right_change。
   const at = input.at ?? new Date().toISOString();
@@ -82,7 +83,7 @@ export function bootstrapGrantRight(db: SdoDatabase, input: GrantRightInput): Au
   );
   mintRightChangeAuthority(event.id, rightChangePayloadHash(payload));
   const result = append(db, [event], { session: { actor: input.granted_by, actor_kind: 'service' } });
-  if (!result.ok) return fail(result.reason_code === 'invalid_field' || result.reason_code === 'no_permission' ? result.reason_code : 'invalid_field', result.message ?? 'append rejected');
+  if (!result.ok) return fail(result.reason_code === CODE.invalid_field || result.reason_code === CODE.no_permission ? result.reason_code : CODE.invalid_field, result.message ?? 'append rejected');
   return { ok: true };
 }
 
@@ -128,14 +129,14 @@ export function backfillGrants(db: SdoDatabase, options: { at?: string } = {}): 
   try {
     events = readEvents(db, problems);
   } catch (error) {
-    return { ok: false, appended: 0, skipped: 0, reason_code: 'write_failed', message: String(error) };
+    return { ok: false, appended: 0, skipped: 0, reason_code: CODE.write_failed, message: String(error) };
   }
   if (problems.length > 0) {
     return {
       ok: false,
       appended: 0,
       skipped: 0,
-      reason_code: 'event_chain_broken',
+      reason_code: CODE.event_chain_broken,
       message: problems.map((problem) => problem.code).join(','),
     };
   }

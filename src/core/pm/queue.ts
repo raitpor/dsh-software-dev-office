@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M2-5 · 读 `pm_queue` 视图 + reason_code → 动作映射。
  *
@@ -58,7 +59,7 @@ export interface PmQueueRow {
 
 export type PmQueueRead =
   | { readonly ok: true; readonly rows: readonly PmQueueRow[]; readonly asOf: readonly string[]; readonly truncated: boolean }
-  | (PmFailure & { readonly reason_code: 'no_permission' | 'invalid_args' });
+  | (PmFailure & { readonly reason_code: typeof CODE.no_permission | typeof CODE.invalid_args });
 
 function toRow(raw: Readonly<Record<string, unknown>>): PmQueueRow {
   const blockedRaw = raw['blocked_by'];
@@ -93,14 +94,14 @@ export function readPmQueue(db: SdoDatabase, actor: string, session?: Session): 
   if (right === undefined) {
     return {
       ok: false,
-      reason_code: 'no_permission',
+      reason_code: CODE.no_permission,
       message: `unknown actor ${JSON.stringify(actor)}: no static seat, refusing to read pm_queue`,
     };
   }
   if (session === undefined) {
     return {
       ok: false,
-      reason_code: 'no_permission',
+      reason_code: CODE.no_permission,
       message: 'readPmQueue requires a session: query authorization is session-only',
     };
   }

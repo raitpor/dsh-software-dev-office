@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 插件侧的决策签发流程（C3/C4/C5/C6；docs/06 §6）。
  *
@@ -143,14 +144,14 @@ export function prepareDecision(
   options: PrepareOptions = {},
 ): PreparedDecision | SignFailure {
   if (!nonEmpty(input.subject) || !nonEmpty(input.value)) {
-    return fail('no_blind_sign', '命题缺少 subject/value');
+    return fail(CODE.no_blind_sign, '命题缺少 subject/value');
   }
   const evidence = input.evidence.filter(nonEmpty);
   if (evidence.length === 0 || evidence.length !== input.evidence.length) {
-    return fail('no_blind_sign', '四元组缺证据（evidence 必须非空且不含空项）');
+    return fail(CODE.no_blind_sign, '四元组缺证据（evidence 必须非空且不含空项）');
   }
-  if (!nonEmpty(input.difference)) return fail('no_blind_sign', '四元组缺差异（difference）');
-  if (!nonEmpty(input.consequence)) return fail('no_blind_sign', '四元组缺后果（consequence）');
+  if (!nonEmpty(input.difference)) return fail(CODE.no_blind_sign, '四元组缺差异（difference）');
+  if (!nonEmpty(input.consequence)) return fail(CODE.no_blind_sign, '四元组缺后果（consequence）');
   const rendered =
     options.proposition ??
     renderProposition({
@@ -159,16 +160,16 @@ export function prepareDecision(
       consequence: input.consequence,
     });
   if (input.proposition !== undefined && input.proposition !== rendered) {
-    return fail('no_blind_sign', '调用方给的 proposition 与 renderer 渲染结果不一致');
+    return fail(CODE.no_blind_sign, '调用方给的 proposition 与 renderer 渲染结果不一致');
   }
   for (const key of Object.keys(input.extra ?? {})) {
     if (FIXED_PAYLOAD_FIELDS.has(key)) {
-      return fail('invalid_field', `extra 键与固定字段重名：${key}`);
+      return fail(CODE.invalid_field, `extra 键与固定字段重名：${key}`);
     }
   }
   if (input.decision_kind === 'baseline') {
     const problem = baselineEvidenceProblem(input.extra);
-    if (problem !== undefined) return fail('no_blind_sign', problem);
+    if (problem !== undefined) return fail(CODE.no_blind_sign, problem);
   }
   const payload = {
     decision_kind: input.decision_kind,
@@ -285,7 +286,7 @@ export async function unlockSigner(
       at: now.toISOString(),
       detail: 'agent 尝试解锁 signerd',
     });
-    return fail('not_a_signer', 'agent 不能解锁签名密钥（no_proxy_sign）');
+    return fail(CODE.not_a_signer, 'agent 不能解锁签名密钥（no_proxy_sign）');
   }
   const response = await client.unlock({
     actor: input.actor,
@@ -294,7 +295,7 @@ export async function unlockSigner(
     frontier: input.frontier,
   });
   if (!response.ok) {
-    if (response.reason_code === 'bad_passphrase' || response.reason_code === 'rate_limited') {
+    if (response.reason_code === CODE.bad_passphrase || response.reason_code === CODE.rate_limited) {
       recordAuthFailure(db, { actor: input.actor, at: now.toISOString(), reason: response.reason_code });
     }
     return response;
@@ -352,7 +353,7 @@ export async function signDecision(
       at,
       detail: `agent 尝试签发 decision_kind=${input.decision_kind}`,
     });
-    return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
+    return fail(CODE.not_a_signer, 'agent 不能触发签名（no_proxy_sign）');
   }
   let preparedInput = input;
   let prepareOptions: PrepareOptions = {};
@@ -363,11 +364,11 @@ export async function signDecision(
       consequence: input.consequence,
     });
     if (!resolved.ok) {
-      if (resolved.reason_code === 'no_blind_sign') return fail('no_blind_sign', resolved.message);
-      return fail('no_blind_sign', `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
+      if (resolved.reason_code === CODE.no_blind_sign) return fail(CODE.no_blind_sign, resolved.message);
+      return fail(CODE.no_blind_sign, `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
     }
     if (input.proposition !== undefined && input.proposition !== resolved.resolved.proposition) {
-      return fail('no_blind_sign', '调用方给的 proposition 与 claim 渲染器结果不一致');
+      return fail(CODE.no_blind_sign, '调用方给的 proposition 与 claim 渲染器结果不一致');
     }
     preparedInput = {
       ...input,
@@ -391,8 +392,7 @@ export async function signDecision(
   if (head !== input.frontier) {
     // 窗口也要失效：尽力让 signerd 回 locked，避免“链已变、窗口还开着”。
     await client.lock(input.actor).catch(() => undefined);
-    return fail(
-      'frontier_stale',
+    return fail(CODE.frontier_stale,
       `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`,
     );
   }
@@ -419,8 +419,7 @@ export async function signDecision(
     // 回执清理是尽力而为：读/写失败不能把失败路径变成异常（第 4/5 轮 P2-2；
     // 该方法内部已吞掉 IO/解析错误并写 stderr 警告）。
     client.discardReceiptOnFailure(signed.receipt_id);
-    return fail(
-      'frontier_stale',
+    return fail(CODE.frontier_stale,
       `frontier 在签发期间变化：签名前 ${input.frontier}，签名后 ${afterSign}；请重新解锁`,
     );
   }
@@ -484,7 +483,7 @@ export async function signDecision(
     const reason = String(result.reason_code);
     // P3：保留写网关的真实原因（之前一律折成 unknown_request 会掩盖链路/验签问题）。
     return fail(
-      isSignReasonCode(reason) ? reason : 'unknown_request',
+      isSignReasonCode(reason) ? reason : CODE.unknown_request,
       result.message ?? 'append rejected',
     );
   }
@@ -494,7 +493,7 @@ export async function signDecision(
   if (after !== signedEvent.hash) {
     return {
       ok: false,
-      reason_code: 'runtime_inconsistent',
+      reason_code: CODE.runtime_inconsistent,
       message: `已落盘但提交后链头变化，需人工核对：decision ${decision.decision_id}（events_written=2，期望链头 ${signedEvent.hash}，实际 ${after}）`,
       written_decision_id: decision.decision_id,
       events_written: 2,
@@ -560,7 +559,7 @@ export async function stageDecision(
       at,
       detail: `agent 尝试签发 decision_kind=${input.decision_kind}`,
     });
-    return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
+    return fail(CODE.not_a_signer, 'agent 不能触发签名（no_proxy_sign）');
   }
   let preparedInput = input;
   let prepareOptions: PrepareOptions = {};
@@ -571,11 +570,11 @@ export async function stageDecision(
       consequence: input.consequence,
     });
     if (!resolved.ok) {
-      if (resolved.reason_code === 'no_blind_sign') return fail('no_blind_sign', resolved.message);
-      return fail('no_blind_sign', `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
+      if (resolved.reason_code === CODE.no_blind_sign) return fail(CODE.no_blind_sign, resolved.message);
+      return fail(CODE.no_blind_sign, `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
     }
     if (input.proposition !== undefined && input.proposition !== resolved.resolved.proposition) {
-      return fail('no_blind_sign', '调用方给的 proposition 与 claim 渲染器结果不一致');
+      return fail(CODE.no_blind_sign, '调用方给的 proposition 与 claim 渲染器结果不一致');
     }
     preparedInput = {
       ...input,
@@ -596,7 +595,7 @@ export async function stageDecision(
   const head = chainHead(db);
   if (head !== input.frontier) {
     await client.lock(input.actor).catch(() => undefined);
-    return fail('frontier_stale', `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`);
+    return fail(CODE.frontier_stale, `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`);
   }
   const signed = await client.sign({
     actor: input.actor,
@@ -614,7 +613,7 @@ export async function stageDecision(
   if (afterSign !== input.frontier) {
     await client.lock(input.actor).catch(() => undefined);
     client.discardReceiptOnFailure(signed.receipt_id);
-    return fail('frontier_stale', `frontier 在签发期间变化：签名前 ${input.frontier}，签名后 ${afterSign}；请重新解锁`);
+    return fail(CODE.frontier_stale, `frontier 在签发期间变化：签名前 ${input.frontier}，签名后 ${afterSign}；请重新解锁`);
   }
   return {
     ok: true,
@@ -658,16 +657,16 @@ export function submitStagedBatch(
   staged: readonly StagedSignature[],
   frontier: string,
 ): SubmitStagedResult | SignFailure {
-  if (staged.length === 0) return fail('invalid_request', '没有可提交的签名');
+  if (staged.length === 0) return fail(CODE.invalid_request, '没有可提交的签名');
   const head = chainHead(db);
   if (head !== frontier) {
-    return fail('frontier_stale', `提交前 frontier 已变：会话 ${frontier}，当前链头 ${head}；整批拒，0 条 decision`);
+    return fail(CODE.frontier_stale, `提交前 frontier 已变：会话 ${frontier}，当前链头 ${head}；整批拒，0 条 decision`);
   }
   const events: Event[] = [];
   let prev = head;
   for (const item of staged) {
     if (item.frontier !== frontier) {
-      return fail('frontier_stale', '会话内签名的 frontier 不一致，整批拒');
+      return fail(CODE.frontier_stale, '会话内签名的 frontier 不一致，整批拒');
     }
     const at = item.receipt_at;
     const requestId = `req-${randomUUID()}`;
@@ -727,7 +726,7 @@ export function submitStagedBatch(
   if (!result.ok) {
     const reason = String(result.reason_code);
     return fail(
-      isSignReasonCode(reason) ? reason : 'unknown_request',
+      isSignReasonCode(reason) ? reason : CODE.unknown_request,
       result.message ?? 'append rejected',
       { append_reason_code: reason },
     );
@@ -842,7 +841,7 @@ export async function counterSignDecision(
       at,
       detail: `非 human 尝试二次签名 decision=${input.decision_id}`,
     });
-    return fail('not_a_signer', 'agent 不能触发签名（no_proxy_sign）');
+    return fail(CODE.not_a_signer, 'agent 不能触发签名（no_proxy_sign）');
   }
 
   const events = readEvents(db, []);
@@ -850,28 +849,28 @@ export async function counterSignDecision(
   try {
     state = fold(undefined, events);
   } catch (error) {
-    return fail('invalid_request', `cannot fold events: ${error instanceof Error ? error.message : String(error)}`);
+    return fail(CODE.invalid_request, `cannot fold events: ${error instanceof Error ? error.message : String(error)}`);
   }
   const row = state.tables.decision[input.decision_id];
   if (row === undefined) {
-    return fail('invalid_request', `decision ${input.decision_id} 不存在`);
+    return fail(CODE.invalid_request, `decision ${input.decision_id} 不存在`);
   }
   if (row['status'] !== 'valid') {
-    return fail('invalid_request', `decision ${input.decision_id} 状态为 ${String(row['status'])}，不能复签`);
+    return fail(CODE.invalid_request, `decision ${input.decision_id} 状态为 ${String(row['status'])}，不能复签`);
   }
   const decisionKind = String(row['decision_kind'] ?? '');
   const payloadHash = String(row['payload_hash'] ?? '');
   const firstSigned = existingSignatures(events, input.decision_id);
   const first = firstSigned[0];
   if (first === undefined) {
-    return fail('invalid_request', `decision ${input.decision_id} 还没有首签，请用 signDecision`);
+    return fail(CODE.invalid_request, `decision ${input.decision_id} 还没有首签，请用 signDecision`);
   }
 
   const signatures = signaturesForDecision(events, input.decision_id);
   // P1-1：冻结类 decision 用其签名载荷里的 baseline 版本；旧库缺行时显式 fail-closed。
   const binding = baselineAssuranceBound(state, decisionBaselineHash(state, input.decision_id));
   if (binding.fallback && decisionBaselineHash(state, input.decision_id) !== null) {
-    return fail('independence_unsatisfied', 'decision 绑定的 baseline 版本在库里不存在（旧库缺行），无法判定独立性');
+    return fail(CODE.independence_unsatisfied, 'decision 绑定的 baseline 版本在库里不存在（旧库缺行），无法判定独立性');
   }
   const judgement = judgeIndependence({
     decision_kind: decisionKind,
@@ -881,16 +880,16 @@ export async function counterSignDecision(
     human_actor_count: humanActorCount(db),
   });
   if (!judgement.required) {
-    return fail('invalid_request', `decision_kind=${decisionKind} 不要求独立性，不需要二次签名`);
+    return fail(CODE.invalid_request, `decision_kind=${decisionKind} 不要求独立性，不需要二次签名`);
   }
 
   const policyParsed = parseIndependencePolicy(binding.assurance);
   if (!policyParsed.ok) {
-    return fail('independence_unsatisfied', policyParsed.message);
+    return fail(CODE.independence_unsatisfied, policyParsed.message);
   }
   const mode = effectiveMode(policyParsed.policy);
   if (mode === 'solo') {
-    return fail('independence_unsatisfied', 'baseline 的 assurance.independence 为 solo，不允许单人完成该动作');
+    return fail(CODE.independence_unsatisfied, 'baseline 的 assurance.independence 为 solo，不允许单人完成该动作');
   }
 
   const already = firstSigned.find((item) => item.signer === input.actor);
@@ -909,30 +908,29 @@ export async function counterSignDecision(
       };
     }
     if (judgement.ok) {
-      return fail('invalid_request', '独立性已满足，不需要再签名');
+      return fail(CODE.invalid_request, '独立性已满足，不需要再签名');
     }
-    if (judgement.reason_code === 'independence_missing' || judgement.reason_code === 'assurance_invalid') {
-      return fail('independence_unsatisfied', judgement.message);
+    if (judgement.reason_code === CODE.independence_missing || judgement.reason_code === CODE.assurance_invalid) {
+      return fail(CODE.independence_unsatisfied, judgement.message);
     }
   } else {
     // solo_cooldown：同 actor 的第二次签名就是“二次确认”，受冷却约束；
     // 换 actor（真的第二个人）无需冷却，`cooldown_not_applicable`。
     const distinct = new Set(firstSigned.map((item) => item.signer)).size;
     if (distinct >= 2) {
-      return fail('invalid_request', '已出现第二个不同 human，独立性已满足');
+      return fail(CODE.invalid_request, '已出现第二个不同 human，独立性已满足');
     }
     if (already !== undefined) {
       const cooldown = cooldownMsOf(policyParsed.policy);
       if (cooldown === null) {
-        return fail('independence_unsatisfied', 'assurance 里缺少冷却毫秒数（fail-closed）');
+        return fail(CODE.independence_unsatisfied, 'assurance 里缺少冷却毫秒数（fail-closed）');
       }
       // 冷却基准 = 首签回执里的真时钟（拿不到才退回事件 at，且注释写明）。
       const base = Date.parse(already.signerd_at ?? already.at);
       const elapsed = now.getTime() - base;
       if (Number.isNaN(elapsed) || elapsed < cooldown) {
         const remaining = Number.isNaN(elapsed) ? cooldown : cooldown - elapsed;
-        return fail(
-          'cooldown_active',
+        return fail(CODE.cooldown_active,
           `冷却未结束：还需 ${String(Math.ceil(remaining / 60_000))} 分钟才能二次确认`,
         );
       }
@@ -942,7 +940,7 @@ export async function counterSignDecision(
   const head = chainHead(db);
   if (head !== input.frontier) {
     await client.lock(input.actor).catch(() => undefined);
-    return fail('frontier_stale', `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`);
+    return fail(CODE.frontier_stale, `frontier 已过期：库链头 ${head}，请求 ${input.frontier}；请重新解锁`);
   }
 
   const propositionHashValue = (() => {
@@ -974,8 +972,7 @@ export async function counterSignDecision(
   if (afterSign !== input.frontier) {
     await client.lock(input.actor).catch(() => undefined);
     client.discardReceiptOnFailure(signed.receipt_id);
-    return fail(
-      'frontier_stale',
+    return fail(CODE.frontier_stale,
       `frontier 在签发期间变化：签名前 ${input.frontier}，签名后 ${afterSign}；请重新解锁`,
     );
   }
@@ -991,8 +988,7 @@ export async function counterSignDecision(
       await client.lock(input.actor).catch(() => undefined);
       client.discardReceiptOnFailure(signed.receipt_id);
       const remaining = Number.isNaN(authoritative) || Number.isNaN(base) ? cooldown : cooldown - (authoritative - base);
-      return fail(
-        'cooldown_active',
+      return fail(CODE.cooldown_active,
         `冷却未结束（按 signerd 回执时钟复核）：还需 ${String(Math.ceil(remaining / 60_000))} 分钟才能二次确认`,
       );
     }
@@ -1032,13 +1028,13 @@ export async function counterSignDecision(
   const result = appendAsTool(db, [signedEvent], input.actor, input.actor_kind);
   if (!result.ok) {
     const reason = String(result.reason_code);
-    return fail(isSignReasonCode(reason) ? reason : 'unknown_request', result.message ?? 'append rejected');
+    return fail(isSignReasonCode(reason) ? reason : CODE.unknown_request, result.message ?? 'append rejected');
   }
   const after = chainHead(db);
   if (after !== signedEvent.hash) {
     return {
       ok: false,
-      reason_code: 'runtime_inconsistent',
+      reason_code: CODE.runtime_inconsistent,
       message: `已落盘但提交后链头变化，需人工核对：decision ${input.decision_id}（events_written=1，期望链头 ${signedEvent.hash}，实际 ${after}）`,
       written_decision_id: input.decision_id,
       events_written: 1,

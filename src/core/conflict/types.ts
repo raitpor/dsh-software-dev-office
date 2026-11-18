@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * M3-2 · 冲突可见的类型与常量。
  *
@@ -17,13 +18,7 @@ export type ConflictStatus = (typeof CONFLICT_STATUSES)[number];
 export const CONFLICT_SIDES = ['winner', 'loser'] as const;
 export type ConflictSide = (typeof CONFLICT_SIDES)[number];
 
-export type ConflictReason =
-  | 'conflict'
-  | 'conflict_invalid'
-  | 'conflict_not_found'
-  | 'conflict_already_resolved'
-  | 'resolution_not_signed'
-  | 'resolution_payload_mismatch';
+
 
 /** `conflict` 表的一行（DB 投影口径）。 */
 export interface ConflictRow {
@@ -94,3 +89,14 @@ export function isConflictStatus(value: unknown): value is ConflictStatus {
 export function isConflictSide(value: unknown): value is ConflictSide {
   return typeof value === 'string' && (CONFLICT_SIDES as readonly string[]).includes(value);
 }
+
+
+export const ConflictReason_CODES = [
+  CODE.conflict,
+  CODE.conflict_already_resolved,
+  CODE.conflict_invalid,
+  CODE.conflict_not_found,
+  CODE.resolution_not_signed,
+  CODE.resolution_payload_mismatch,
+] as const;
+export type ConflictReason = (typeof ConflictReason_CODES)[number];

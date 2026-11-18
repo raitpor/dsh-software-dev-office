@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /** M4-0：工作副本 API 的纯类型（db/workcopy 与测试共用）。 */
 import type { TreeChange } from './tree.js';
 
@@ -38,30 +39,11 @@ export interface CreateResult {
  * 判定：`admitWorkcopy`/`commitWorkcopy`/`removeWorkcopy` 的 `ok:false` 只返回这些码；
  * append 网关的细码不透传，一律归一为 `append_failed`（message 保留原文）。
  */
-export type WorkcopyFailureReason =
-  | 'dirty_main_tree'
-  | 'dirty_workcopy'
-  | 'merge_conflict'
-  | 'scope_violation'
-  /** M4-3 第 1 轮 P1-2：卡行不存在 / 卡写域为空（空写域等于没约束，不能放行）。 */
-  | 'task_not_found'
-  | 'scope_undeclared'
-  /** M4-3/C2：写域命中公共面前缀，拒绝在拿锁/写主树之前。 */
-  | 'public_face_readonly'
-  | 'workcopy_busy'
-  | 'snapshot_missing'
-  | 'vcs_link_unsupported'
-  | 'vcs_object_missing'
-  | 'append_failed'
-  /** 主树锁失败原样上抛（M4-1 接线，D-157）。 */
-  | 'lock_conflict'
-  | 'lock_missing'
-  | 'no_permission'
-  | 'invalid_field'
-  /** 同 card + 同 base 出现多于一条完整准入，重试无法判定复用哪条（D-156）。 */
-  | 'admission_ambiguous'
-  /** 卡锁逐前缀释放失败；逐条原因见 `details`（D-158）。 */
-  | 'lock_release_failed';
+export const WORKCOPY_FAILURE_REASONS = [
+  CODE.admission_ambiguous, CODE.append_failed, CODE.dirty_main_tree, CODE.dirty_workcopy, CODE.invalid_field, CODE.lock_conflict, CODE.lock_missing, CODE.lock_release_failed, CODE.merge_conflict, CODE.no_permission, CODE.public_face_readonly, CODE.scope_undeclared, CODE.scope_violation, CODE.snapshot_missing, CODE.task_not_found, CODE.vcs_link_unsupported, CODE.vcs_object_missing, CODE.workcopy_busy,
+] as const;
+
+export type WorkcopyFailureReason = (typeof WORKCOPY_FAILURE_REASONS)[number];
 
 /** 卡锁逐前缀释放的结构化失败项（M4-1 第 5 轮复审 P2，D-158）。 */
 export interface LockReleaseFailure {

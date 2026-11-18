@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M4-3：公共面申请的 API 与单写者能力路径。
  *
@@ -110,10 +111,10 @@ export function bootstrapPublicFaceWriter(
   input: { readonly to: string; readonly at: string; readonly note?: string },
 ): PublicFaceResult {
   if (currentWriter(db) !== undefined) {
-    return { ok: false, reason_code: 'writer_exists', message: 'public face writer is already assigned' };
+    return { ok: false, reason_code: CODE.writer_exists, message: 'public face writer is already assigned' };
   }
   if (input.to === session.actor) {
-    return { ok: false, reason_code: 'invalid_field', message: 'bootstrap must hand the writer role to a different actor' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'bootstrap must hand the writer role to a different actor' };
   }
   const result = appendToolEvent(db, session, writerEvent(db, session, { from: null, to: input.to, at: input.at, note: input.note }));
   return result.ok ? { ...result, writer: input.to } : result;
@@ -127,13 +128,13 @@ export function transferPublicFaceWriter(
 ): PublicFaceResult {
   const writer = currentWriter(db);
   if (writer === undefined) {
-    return { ok: false, reason_code: 'not_public_face_writer', message: 'no public face writer has been assigned' };
+    return { ok: false, reason_code: CODE.not_public_face_writer, message: 'no public face writer has been assigned' };
   }
   if (writer !== session.actor) {
-    return { ok: false, reason_code: 'not_public_face_writer', message: `session ${session.actor} is not the public face writer (${writer})` };
+    return { ok: false, reason_code: CODE.not_public_face_writer, message: `session ${session.actor} is not the public face writer (${writer})` };
   }
   if (input.to === writer) {
-    return { ok: false, reason_code: 'invalid_field', message: 'to must differ from the current writer' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'to must differ from the current writer' };
   }
   const result = appendToolEvent(db, session, writerEvent(db, session, { from: writer, to: input.to, at: input.at, note: input.note }));
   return result.ok ? { ...result, writer: input.to } : result;
@@ -147,7 +148,7 @@ export function requestPublicFace(
 ): PublicFaceResult {
   const row = db.prepare('SELECT scope_paths FROM task WHERE id = ?').get(input.card) as TaskScopeRow | undefined;
   if (row === undefined) {
-    return { ok: false, reason_code: 'invalid_field', message: `task ${input.card} does not exist` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `task ${input.card} does not exist` };
   }
   const scope = moduleScopeOf(row);
   const hash = intentHash(input.intent);
@@ -200,13 +201,13 @@ export function executePublicFaceChange(
 ): PublicFaceResult {
   const writer = currentWriter(db);
   if (writer === undefined || writer !== session.actor) {
-    return { ok: false, reason_code: 'not_public_face_writer', message: `session ${session.actor} is not the public face writer` };
+    return { ok: false, reason_code: CODE.not_public_face_writer, message: `session ${session.actor} is not the public face writer` };
   }
   const request = db
     .prepare("SELECT id, payload FROM event WHERE id = ? AND kind = 'publicface.requested'")
     .get(input.request_id) as { id: string; payload: string } | undefined;
   if (request === undefined) {
-    return { ok: false, reason_code: 'invalid_field', message: `public face request ${input.request_id} does not exist` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `public face request ${input.request_id} does not exist` };
   }
   // P2-2：同一 request 只执行一次；重复执行幂等返回原事件（不再落第二条）。
   const already = db
@@ -220,7 +221,7 @@ export function executePublicFaceChange(
     const payload = JSON.parse(request.payload) as Record<string, unknown>;
     card = typeof payload['card'] === 'string' ? payload['card'] : '';
   } catch {
-    return { ok: false, reason_code: 'invalid_field', message: 'request payload is not JSON' };
+    return { ok: false, reason_code: CODE.invalid_field, message: 'request payload is not JSON' };
   }
   const event = buildEvent(
     {

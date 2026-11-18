@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M4-7：agent.* 事件写入封装与两条告警的现算。
  *
@@ -43,7 +44,7 @@ export type AgentResult =
     }
   | {
       readonly ok: false;
-      readonly reason_code: 'invalid_field' | 'spawn_reason_mismatch' | 'append_failed';
+      readonly reason_code: typeof CODE.invalid_field | typeof CODE.spawn_reason_mismatch | typeof CODE.append_failed;
       readonly message: string;
       readonly details?: readonly string[];
     };
@@ -135,7 +136,7 @@ function appendEvents(
       ok: false,
       result: {
         ok: false,
-        reason_code: 'append_failed',
+        reason_code: CODE.append_failed,
         message: appended.message ?? 'append failed',
         ...(appended.reason_code === undefined ? {} : { details: [`reason_code=${appended.reason_code}`] }),
       },
@@ -156,7 +157,7 @@ function appendOne(
 export function recordAgentSpawn(db: SdoDatabase, session: AgentSession, input: SpawnInput): AgentResult {
   const scopeFiles = cardScopeFiles(db, input.card);
   if (scopeFiles === undefined) {
-    return { ok: false, reason_code: 'invalid_field', message: `task ${input.card} not found or scope_paths invalid` };
+    return { ok: false, reason_code: CODE.invalid_field, message: `task ${input.card} not found or scope_paths invalid` };
   }
   const eventsBefore = readEvents(db, []);
   const check = validateSpawnReason({

@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-6 签字页的服务端状态机（C1–C6、C8；docs/05 签字交互、docs/06 §5/§6/§7）。
  *
@@ -293,17 +294,16 @@ export class SigningPageService {
    */
   async createRequest(draft: SigningDraft): Promise<{ ok: true; item: PublicPendingItem } | SignFailure> {
     if (typeof draft.claim_ids !== 'object' || !Array.isArray(draft.claim_ids) || draft.claim_ids.length === 0) {
-      return fail('invalid_request', '待签项必须带非空 claim_ids');
+      return fail(CODE.invalid_request, '待签项必须带非空 claim_ids');
     }
     const decisionKind = draft.decision_kind;
     if (!(DECISION_KINDS as readonly string[]).includes(decisionKind)) {
-      return fail('invalid_request', `未知 decision_kind：${String(decisionKind)}`);
+      return fail(CODE.invalid_request, `未知 decision_kind：${String(decisionKind)}`);
     }
     // P2-1：TTL=0 已解锁的会话里不允许再增加待签项（多条目需要 TTL>0 的免密窗口）。
     if (this.unlocksSinceLastConfirm > 0 && this.windowTtlMinutes === 0 && this.session.all().length >= 1) {
       this.needsWindow = true;
-      return fail(
-        'ttl_requires_window',
+      return fail(CODE.ttl_requires_window,
         `TTL=0 时一次解锁只授权一条；本次会话已有 ${this.session.all().length} 条，请开免密窗口（TTL>0）后重新解锁`,
         { staged: this.staged.size, requested: this.session.all().length + 1 },
       );
@@ -314,22 +314,22 @@ export class SigningPageService {
       consequence: draft.consequence,
     });
     if (!resolved.ok) {
-      return fail('no_blind_sign', `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
+      return fail(CODE.no_blind_sign, `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
     }
     const willChange = [...(draft.will_change ?? [])];
     const guaranteeDelta = draft.guarantee_delta ?? null;
     if (decisionKind === 'baseline') {
       // docs/06 §5：没有 guarantee_delta 的 baseline 签名不可签发；影响面也必须展示。
       if (!isGuaranteeDeltaShape(guaranteeDelta)) {
-        return fail('no_blind_sign', 'baseline 冻结缺少 guarantee_delta（1/2/3 的 kept/degraded）');
+        return fail(CODE.no_blind_sign, 'baseline 冻结缺少 guarantee_delta（1/2/3 的 kept/degraded）');
       }
       if (willChange.length === 0) {
-        return fail('no_blind_sign', 'baseline 冻结缺少 will_change（这一签会改什么）');
+        return fail(CODE.no_blind_sign, 'baseline 冻结缺少 will_change（这一签会改什么）');
       }
     }
     const frontier = chainHead(this.db);
     if (this.sessionFrontier !== undefined && this.sessionFrontier !== frontier) {
-      return fail('invalid_request', '链头已推进：请先提交或放弃当前会话，再重新预览');
+      return fail(CODE.invalid_request, '链头已推进：请先提交或放弃当前会话，再重新预览');
     }
     const at = this.now().toISOString();
     const extra: Record<string, unknown> = { ...(draft.extra ?? {}) };
@@ -415,27 +415,25 @@ export class SigningPageService {
   }): Promise<ConfirmationResult | SignFailure> {
     const item = this.session.get(input.requestId);
     if (item === undefined) {
-      return fail('invalid_request', '待签项不存在（刷新后需重新预览）');
+      return fail(CODE.invalid_request, '待签项不存在（刷新后需重新预览）');
     }
     const actor = input.actor.trim().length > 0 ? input.actor : (this.lastHumanActor ?? '');
     if (actor.length === 0) {
-      return fail('awaiting_unlock', '还没有签字人：先解锁签名器');
+      return fail(CODE.awaiting_unlock, '还没有签字人：先解锁签名器');
     }
     // P2-1：TTL=0 的一次性授权只能签一条。守卫放在 createRequest 与 confirm 两处：
     // 预览可以先把多条登记出来（此时还没解锁、TTL 未知），但确认时必须拒。
     if (this.unlocksSinceLastConfirm > 0 && this.windowTtlMinutes === 0) {
       if (this.session.all().length > 1) {
         this.needsWindow = true;
-        return fail(
-          'ttl_requires_window',
+        return fail(CODE.ttl_requires_window,
           `TTL=0 时一次解锁只授权一条；本批 ${this.session.all().length} 条需要开免密窗口（TTL>0）后重新解锁`,
           { staged: this.staged.size, requested: this.session.all().length },
         );
       }
       if (this.staged.size >= 1) {
         this.needsWindow = true;
-        return fail(
-          'ttl_requires_window',
+        return fail(CODE.ttl_requires_window,
           'TTL=0 时一次解锁只授权一条：本会话已经签过一条，再进行第二条需要重开免密窗口（TTL>0）',
           { staged: this.staged.size, requested: this.session.all().length },
         );
@@ -448,7 +446,7 @@ export class SigningPageService {
       const lockActor = input.actor.trim().length > 0 ? input.actor : (this.lastHumanActor ?? item.draft.actor);
       await this.client.lock(lockActor).catch(() => undefined);
       this.discardStaged();
-      return fail('frontier_stale', 'frontier 已推进：待签项过期，请重新解锁并重新预览');
+      return fail(CODE.frontier_stale, 'frontier 已推进：待签项过期，请重新解锁并重新预览');
     }
     const resolved = resolveClaimDecision(this.db, {
       claim_ids: item.draft.claim_ids,
@@ -456,10 +454,10 @@ export class SigningPageService {
       consequence: item.draft.consequence,
     });
     if (!resolved.ok) {
-      return fail('no_blind_sign', `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
+      return fail(CODE.no_blind_sign, `命题渲染失败（${resolved.reason_code}）：${resolved.message}`);
     }
     if (input.proposition !== resolved.resolved.proposition) {
-      return fail('no_blind_sign', '提交的命题与 claim 渲染器结果不一致');
+      return fail(CODE.no_blind_sign, '提交的命题与 claim 渲染器结果不一致');
     }
     const extra: Record<string, unknown> = { ...(item.draft.extra ?? {}) };
     if (item.guarantee_delta !== null) {
@@ -487,10 +485,10 @@ export class SigningPageService {
     );
     if ('reason_code' in recomputed) return recomputed;
     if (recomputed.payload_hash !== item.payload_hash) {
-      return fail('payload_changed', '签字内容与预览时不一致（payload_hash 变了），请重新预览');
+      return fail(CODE.payload_changed, '签字内容与预览时不一致（payload_hash 变了），请重新预览');
     }
     if (input.payloadHash !== item.payload_hash) {
-      return fail('payload_changed', '提交的 payload_hash 与待签项不一致，请重新预览');
+      return fail(CODE.payload_changed, '提交的 payload_hash 与待签项不一致，请重新预览');
     }
 
     const stagedResult = await stageDecision(this.db, this.client, {
@@ -511,7 +509,7 @@ export class SigningPageService {
       now: this.now(),
     });
     if (!stagedResult.ok) {
-      if (stagedResult.reason_code === 'frontier_stale') {
+      if (stagedResult.reason_code === CODE.frontier_stale) {
         this.discardStaged();
       }
       return stagedResult;
@@ -544,9 +542,9 @@ export class SigningPageService {
   /** 人点“提交这批”：整批已确认才允许；落库一次完成（N=1 时 confirm 已自动提交）。 */
   async submit(): Promise<ConfirmationResult | SignFailure> {
     const items = this.session.all();
-    if (items.length === 0) return fail('invalid_request', '没有待签项可提交');
+    if (items.length === 0) return fail(CODE.invalid_request, '没有待签项可提交');
     if (this.staged.size !== items.length) {
-      return fail('invalid_request', '还有待签项没有确认；批量签名必须逐条确认后再提交');
+      return fail(CODE.invalid_request, '还有待签项没有确认；批量签名必须逐条确认后再提交');
     }
     const submitted = this.submitStagedBatchOrFail();
     if (!submitted.ok) return submitted;
@@ -591,7 +589,7 @@ export class SigningPageService {
         value !== undefined,
       )
       .sort((left, right) => left.entry.sign_seq - right.entry.sign_seq);
-    if (ordered.length !== items.length) return fail('invalid_request', '还有待签项没有确认');
+    if (ordered.length !== items.length) return fail(CODE.invalid_request, '还有待签项没有确认');
     const staged = ordered.map((value) => value.entry.signature);
     const frontier = items[0]?.frontier ?? chainHead(this.db);
     const submitted = submitStagedBatch(this.db, staged, frontier);

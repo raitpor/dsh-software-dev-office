@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M1-6 P1-2：claim 的独立对账（不改 `src/core/verify.ts` 的分层）。
  *
@@ -13,14 +14,7 @@ import { claimViewsCoverage, isRegisteredRenderer } from './catalog.js';
 import { frontierIdsOf, renderClaimRows } from './render.js';
 import { CLAIM_COLUMNS, type ClaimColumn, type ClaimRow } from './types.js';
 
-export type ClaimProblemReason =
-  | 'missing'
-  | 'unexpected'
-  | 'mismatch'
-  | 'unregistered_renderer'
-  | 'frontier_empty'
-  | 'frontier_unknown'
-  | 'views_not_covered';
+
 
 export interface ClaimProblem {
   readonly reason: ClaimProblemReason;
@@ -76,3 +70,15 @@ export function verifyClaims(db: SdoDatabase): ClaimVerifyReport {
   }
   return { ok: problems.length === 0, problems };
 }
+
+
+export const ClaimProblemReason_CODES = [
+  CODE.frontier_empty,
+  CODE.frontier_unknown,
+  CODE.mismatch,
+  CODE.missing,
+  CODE.unexpected,
+  CODE.unregistered_renderer,
+  CODE.views_not_covered,
+] as const;
+export type ClaimProblemReason = (typeof ClaimProblemReason_CODES)[number];

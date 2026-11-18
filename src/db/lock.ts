@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M4-1：锁的 DB 服务（事件是唯一真源）。
  *
@@ -49,7 +50,7 @@ export interface LockConflict {
 
 export interface LockFailure {
   readonly ok: false;
-  readonly reason_code: 'invalid_field' | 'no_permission' | 'lock_conflict' | 'lock_missing' | 'append_failed';
+  readonly reason_code: typeof CODE.invalid_field | typeof CODE.no_permission | typeof CODE.lock_conflict | typeof CODE.lock_missing | typeof CODE.append_failed;
   readonly message: string;
   readonly conflict?: LockConflict;
 }
@@ -169,11 +170,11 @@ function appendBusiness(
   for (let attempt = 0; attempt < 5; attempt += 1) {
     const result = append(db, [buildLockEvent(db, kind, prefix, payload, session, at)], { session });
     if (result.ok) return { ok: true };
-    if (result.reason_code !== 'event_chain_broken' && result.reason_code !== 'append_conflict') {
+    if (result.reason_code !== CODE.event_chain_broken && result.reason_code !== CODE.append_conflict) {
       return { ok: false, reason_code: result.reason_code ?? 'append_failed', message: result.message ?? '' };
     }
   }
-  return { ok: false, reason_code: 'append_failed', message: 'append retry exhausted' };
+  return { ok: false, reason_code: CODE.append_failed, message: 'append retry exhausted' };
 }
 
 function appendToolLock(
@@ -190,11 +191,11 @@ function appendToolLock(
     LOCK_TOOL_AUTHORITY.mint(event.id, lockToolPayloadHash(event.payload));
     const result = appendAsTool(db, [event], actor, 'service');
     if (result.ok) return { ok: true };
-    if (result.reason_code !== 'event_chain_broken' && result.reason_code !== 'append_conflict') {
+    if (result.reason_code !== CODE.event_chain_broken && result.reason_code !== CODE.append_conflict) {
       return { ok: false, reason_code: result.reason_code ?? 'append_failed', message: result.message ?? '' };
     }
   }
-  return { ok: false, reason_code: 'append_failed', message: 'append retry exhausted' };
+  return { ok: false, reason_code: CODE.append_failed, message: 'append retry exhausted' };
 }
 
 function failureFromAppend(
@@ -206,12 +207,12 @@ function failureFromAppend(
   if (row !== undefined) {
     return {
       ok: false,
-      reason_code: 'lock_conflict',
+      reason_code: CODE.lock_conflict,
       message: `path prefix ${display(row.path_prefix)} is held`,
       conflict: conflictOf(row),
     };
   }
-  return { ok: false, reason_code: 'append_failed', message: `${fallback.reason_code}: ${fallback.message}` };
+  return { ok: false, reason_code: CODE.append_failed, message: `${fallback.reason_code}: ${fallback.message}` };
 }
 
 function normalizeOrFail(value: unknown): PrefixResult {
@@ -224,12 +225,12 @@ export function acquireLock(
   input: { prefix: unknown; card_id: string; session: LockSession; at: string; ttl_ms?: number },
 ): LockOk | LockFailure {
   const normalized = normalizeOrFail(input.prefix);
-  if (!normalized.ok) return { ok: false, reason_code: 'invalid_field', message: normalized.message };
+  if (!normalized.ok) return { ok: false, reason_code: CODE.invalid_field, message: normalized.message };
   const prefix = normalized.prefix;
   if (prefix === ROOT_PREFIX) {
     return {
       ok: false,
-      reason_code: 'no_permission',
+      reason_code: CODE.no_permission,
       message: 'root lock is reserved for the workcopy tool path (acquireMainTreeLock)',
     };
   }
@@ -238,7 +239,7 @@ export function acquireLock(
   if (pre.kind === 'conflict') {
     return {
       ok: false,
-      reason_code: 'lock_conflict',
+      reason_code: CODE.lock_conflict,
       message: `path prefix ${display(pre.row.path_prefix)} is held`,
       conflict: conflictOf(pre.row),
     };
@@ -301,7 +302,7 @@ export function acquireMainTreeLock(
   if (blocking !== undefined) {
     return {
       ok: false,
-      reason_code: 'lock_conflict',
+      reason_code: CODE.lock_conflict,
       message: `path prefix ${display(blocking.path_prefix)} is held`,
       conflict: conflictOf(blocking),
     };
@@ -331,19 +332,19 @@ export function releaseLock(
   input: { prefix: unknown; session: LockSession; at: string; released_by?: string },
 ): LockOk | LockFailure {
   const normalized = normalizeOrFail(input.prefix);
-  if (!normalized.ok) return { ok: false, reason_code: 'invalid_field', message: normalized.message };
+  if (!normalized.ok) return { ok: false, reason_code: CODE.invalid_field, message: normalized.message };
   const prefix = normalized.prefix;
   if (prefix === ROOT_PREFIX) {
-    return { ok: false, reason_code: 'no_permission', message: 'root lock is released through releaseMainTreeLock' };
+    return { ok: false, reason_code: CODE.no_permission, message: 'root lock is released through releaseMainTreeLock' };
   }
   const row = readActive(db).find((candidate) => candidate.path_prefix === prefix);
   if (row === undefined) {
-    return { ok: false, reason_code: 'lock_missing', message: `no active lock at ${display(prefix)}` };
+    return { ok: false, reason_code: CODE.lock_missing, message: `no active lock at ${display(prefix)}` };
   }
   if (row.actor !== input.session.actor) {
     return {
       ok: false,
-      reason_code: 'no_permission',
+      reason_code: CODE.no_permission,
       message: `lock ${display(prefix)} is held by ${row.actor}; actor ${input.session.actor} cannot release it`,
     };
   }
@@ -355,7 +356,7 @@ export function releaseLock(
     input.session,
     input.at,
   );
-  if (!appended.ok) return { ok: false, reason_code: 'append_failed', message: appended.message };
+  if (!appended.ok) return { ok: false, reason_code: CODE.append_failed, message: appended.message };
   return { ok: true, prefix, row: { ...asRow(row), released_by: input.released_by ?? 'released' } };
 }
 
@@ -369,7 +370,7 @@ export function releaseMainTreeLock(
   if (row.actor !== input.session.actor) {
     return {
       ok: false,
-      reason_code: 'no_permission',
+      reason_code: CODE.no_permission,
       message: `root lock is held by ${row.actor}; actor ${input.session.actor} cannot release it`,
     };
   }
@@ -381,7 +382,7 @@ export function releaseMainTreeLock(
     input.session.actor,
     input.at,
   );
-  if (!appended.ok) return { ok: false, reason_code: 'append_failed', message: appended.message };
+  if (!appended.ok) return { ok: false, reason_code: CODE.append_failed, message: appended.message };
   return { ok: true };
 }
 
@@ -397,11 +398,11 @@ function appendToolRelease(
     LOCK_TOOL_AUTHORITY.mint(event.id, lockToolPayloadHash(event.payload));
     const result = appendAsTool(db, [event], WORKCOPY_TOOL_ACTOR, 'service');
     if (result.ok) return { ok: true };
-    if (result.reason_code !== 'event_chain_broken' && result.reason_code !== 'append_conflict') {
+    if (result.reason_code !== CODE.event_chain_broken && result.reason_code !== CODE.append_conflict) {
       return { ok: false, reason_code: result.reason_code ?? 'append_failed', message: result.message ?? '' };
     }
   }
-  return { ok: false, reason_code: 'append_failed', message: 'append retry exhausted' };
+  return { ok: false, reason_code: CODE.append_failed, message: 'append retry exhausted' };
 }
 
 export interface CardLockReleaseFailures {

@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * baseline 冻结事务（M2-1）：preview → confirm → 人签 → 新行（`docs/05` `baseline_freeze`）。
  *
@@ -155,7 +156,7 @@ export async function confirmFreeze(
     return { ok: true, baseline: toRow(existing[0]!), message: 'baseline unchanged (already frozen)' };
   }
   if (chainHead(db) !== found.frontier) {
-    return failure('payload_changed', 'preview 已过期：链头在 preview 后变化');
+    return failure(CODE.payload_changed, 'preview 已过期：链头在 preview 后变化');
   }
 
   const eventId = `ev-baseline-${recomputed.id}-${at}`;
@@ -199,7 +200,7 @@ export async function confirmFreeze(
   const clean = since.length === expectedKinds.length &&
     since.every((row, index) => row['kind'] === expectedKinds[index] && row['subject'] === signed.decision_id);
   if (!clean) {
-    return failure('frontier_stale', '签名期间链被其他写入推进；baseline 行未落，已签 decision 留作审计', {
+    return failure(CODE.frontier_stale, '签名期间链被其他写入推进；baseline 行未落，已签 decision 留作审计', {
       decision_id: signed.decision_id,
     });
   }

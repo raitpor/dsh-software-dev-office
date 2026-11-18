@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M1-6：v1 → `claim` 重建的共享类型（docs/03 §3）。
  *
@@ -9,13 +10,7 @@
 import type { ExportClaim } from '../importer/parse.js';
 
 /** 渲染器未注册。M1 的注册面 = `RENDERERS` 常量 ∩ `view_catalog` 的 view 名（D-034）。 */
-export type ClaimReason =
-  | 'renderer_unregistered'
-  | 'frontier_empty'
-  | 'frontier_unknown'
-  | 'claim_conflict'
-  | 'claim_invalid'
-  | 'event_rejected';
+
 
 export const CLAIM_COLUMNS = [
   'id',
@@ -70,3 +65,14 @@ export interface ClaimExpectation {
 }
 
 export type ClaimSource = ExportClaim;
+
+
+export const ClaimReason_CODES = [
+  CODE.claim_conflict,
+  CODE.claim_invalid,
+  CODE.event_rejected,
+  CODE.frontier_empty,
+  CODE.frontier_unknown,
+  CODE.renderer_unregistered,
+] as const;
+export type ClaimReason = (typeof ClaimReason_CODES)[number];

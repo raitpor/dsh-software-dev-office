@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M3-2 · 裁决（纯函数）：只认人签 decision；工具不自动选边。
  *
@@ -30,7 +31,7 @@ export function actorForSide(actors: ConflictActors, side: ConflictSide): string
 
 export type ResolutionCheck =
   | { readonly ok: true; readonly value: SignedResolution }
-  | { readonly ok: false; readonly reason_code: 'resolution_not_signed' | 'resolution_payload_mismatch'; readonly message: string };
+  | { readonly ok: false; readonly reason_code: typeof CODE.resolution_not_signed | typeof CODE.resolution_payload_mismatch; readonly message: string };
 
 function nonEmpty(value: unknown): value is string {
   return typeof value === 'string' && value.length > 0;
@@ -44,29 +45,29 @@ export function verifyResolutionDecision(
   actors: ConflictActors,
 ): ResolutionCheck {
   if (decision === undefined) {
-    return { ok: false, reason_code: 'resolution_not_signed', message: `decision for conflict ${conflictId} does not exist` };
+    return { ok: false, reason_code: CODE.resolution_not_signed, message: `decision for conflict ${conflictId} does not exist` };
   }
   if (decision['status'] !== 'valid') {
-    return { ok: false, reason_code: 'resolution_not_signed', message: `decision ${String(decision['id'])} is not valid` };
+    return { ok: false, reason_code: CODE.resolution_not_signed, message: `decision ${String(decision['id'])} is not valid` };
   }
   for (const field of ['signature', 'key_id', 'signer'] as const) {
     if (!nonEmpty(decision[field])) {
       return {
         ok: false,
-        reason_code: 'resolution_not_signed',
+        reason_code: CODE.resolution_not_signed,
         message: `decision ${String(decision['id'])} is not signed; conflict stays open`,
       };
     }
   }
   const payload = decision['payload'];
   if (payload === null || typeof payload !== 'object' || Array.isArray(payload)) {
-    return { ok: false, reason_code: 'resolution_payload_mismatch', message: 'decision payload is not an object' };
+    return { ok: false, reason_code: CODE.resolution_payload_mismatch, message: 'decision payload is not an object' };
   }
   const nested = (payload as Record<string, unknown>)['conflict_resolution'];
   if (nested === null || typeof nested !== 'object' || Array.isArray(nested)) {
     return {
       ok: false,
-      reason_code: 'resolution_payload_mismatch',
+      reason_code: CODE.resolution_payload_mismatch,
       message: `decision ${String(decision['id'])} payload has no conflict_resolution`,
     };
   }
@@ -75,14 +76,14 @@ export function verifyResolutionDecision(
   if (!nonEmpty(adoptedActor)) {
     return {
       ok: false,
-      reason_code: 'resolution_payload_mismatch',
+      reason_code: CODE.resolution_payload_mismatch,
       message: `decision ${String(decision['id'])} payload has no adopted_actor`,
     };
   }
   if (resignation['note'] !== undefined && typeof resignation['note'] !== 'string') {
     return {
       ok: false,
-      reason_code: 'resolution_payload_mismatch',
+      reason_code: CODE.resolution_payload_mismatch,
       message: `decision ${String(decision['id'])} payload.note must be a string`,
     };
   }
@@ -90,14 +91,14 @@ export function verifyResolutionDecision(
   if (adoptedActor !== expectedActor) {
     return {
       ok: false,
-      reason_code: 'resolution_payload_mismatch',
+      reason_code: CODE.resolution_payload_mismatch,
       message: `decision ${String(decision['id'])} adopts ${String(adoptedActor)}, not the ${side} actor ${expectedActor}`,
     };
   }
   if (resignation['conflict_id'] !== conflictId) {
     return {
       ok: false,
-      reason_code: 'resolution_payload_mismatch',
+      reason_code: CODE.resolution_payload_mismatch,
       message: `decision ${String(decision['id'])} targets another conflict`,
     };
   }

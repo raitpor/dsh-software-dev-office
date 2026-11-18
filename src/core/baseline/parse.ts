@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * baseline JSON 的形状收窄（M1-3）：只在内存里把 unknown 收成结构化字段，不做 IO。
  *
@@ -42,7 +43,7 @@ export interface Parsed {
  * 结构错时只回一个码：`stage_bad_kind`（stage 形状）/ `duplicate_gate_id`（gates[] 重复 id）/
  * `invalid_baseline`（其余结构）。三者都短路，不产业务码/级联码。
  */
-export type StructuralCode = 'stage_bad_kind' | 'duplicate_gate_id' | 'invalid_baseline';
+
 
 export type ParseOutcome =
   | { readonly ok: true; readonly baseline: Parsed }
@@ -135,3 +136,11 @@ function hasArtifactKinds(value: unknown): boolean {
   const record = asRecord(value);
   return required.every((kind) => kind in record);
 }
+
+
+export const StructuralCode_CODES = [
+  CODE.duplicate_gate_id,
+  CODE.invalid_baseline,
+  CODE.stage_bad_kind,
+] as const;
+export type StructuralCode = (typeof StructuralCode_CODES)[number];

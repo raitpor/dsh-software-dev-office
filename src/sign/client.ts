@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 插件侧（非 signerd 进程）的 unix socket 客户端（C1/C4；docs/06 §3.1）。
  *
@@ -133,15 +134,15 @@ export class SignerdClient {
           } else if (isRecord(parsed) && parsed['ok'] === false) {
             finish(parsed as unknown as SignerdResponse);
           } else {
-            finish(fail('unknown_request', 'signerd 返回了无法识别的响应'));
+            finish(fail(CODE.unknown_request, 'signerd 返回了无法识别的响应'));
           }
         } catch {
-          finish(fail('unknown_request', 'signerd 响应不是合法 JSON'));
+          finish(fail(CODE.unknown_request, 'signerd 响应不是合法 JSON'));
         }
       });
-      socket.once('timeout', () => finish(fail('socket_not_ready', `连接 ${this.paths.socket} 超时`)));
+      socket.once('timeout', () => finish(fail(CODE.socket_not_ready, `连接 ${this.paths.socket} 超时`)));
       socket.once('error', (error: NodeJS.ErrnoException) => {
-        finish(fail('socket_not_ready', `连接 ${this.paths.socket} 失败：${error.code ?? error.message}`));
+        finish(fail(CODE.socket_not_ready, `连接 ${this.paths.socket} 失败：${error.code ?? error.message}`));
       });
     });
   }

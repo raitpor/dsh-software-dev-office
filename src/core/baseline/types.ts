@@ -1,3 +1,4 @@
+import { CODE } from '../errors/codes.js';
 /**
  * P15 静态校验器的输入/输出形状（M1-3）。
  * 真源：`docs/04` §5.1（baseline 冻结什么）、§5.2（规则）、§6（有效绑定）。
@@ -32,20 +33,7 @@ export type GuaranteeStatus = 'kept' | 'degraded';
  * 结构错只出一个码（`stage_bad_kind` / `invalid_baseline`）、delta 三项统一 degraded、
  * 不产业务码/级联码；业务码只在结构合法时出现（口径见 `validate.ts` 与 README）。
  */
-export type BaselineReasonCode =
-  | 'stage_bad_kind'
-  | 'duplicate_gate_id'
-  | 'stage_bad_after'
-  | 'stage_unknown'
-  | 'stage_no_gate'
-  | 'gate_empty'
-  | 'criterion_unregistered'
-  | 'artifact_kinds_incomplete'
-  | 'na_stages_mismatch'
-  | 'engine_missing'
-  | 'review_params_invalid'
-  | 'core_not_effective'
-  | 'invalid_baseline';
+
 
 export interface GuaranteeDelta {
   readonly 1: GuaranteeStatus;
@@ -76,3 +64,21 @@ export function isStageKind(value: unknown): value is KnownStageKind {
 export function isStageKindList(value: unknown): value is readonly KnownStageKind[] {
   return Array.isArray(value) && value.length > 0 && value.every(isStageKind);
 }
+
+
+export const BaselineReasonCode_CODES = [
+  CODE.artifact_kinds_incomplete,
+  CODE.core_not_effective,
+  CODE.criterion_unregistered,
+  CODE.duplicate_gate_id,
+  CODE.engine_missing,
+  CODE.gate_empty,
+  CODE.invalid_baseline,
+  CODE.na_stages_mismatch,
+  CODE.review_params_invalid,
+  CODE.stage_bad_after,
+  CODE.stage_bad_kind,
+  CODE.stage_no_gate,
+  CODE.stage_unknown,
+] as const;
+export type BaselineReasonCode = (typeof BaselineReasonCode_CODES)[number];

@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-0 sign 层的稳定拒绝码与失败形状（C10）。
  *
@@ -7,59 +8,61 @@
 
 export const SIGN_REASON_CODES = [
   // 签字链（docs/06 §6 §3）
-  'awaiting_unlock',
-  'not_a_signer',
-  'no_blind_sign',
+  
+  CODE.awaiting_unlock,
+  CODE.not_a_signer,
+  CODE.no_blind_sign,
   // M2-6 C2：confirm 绑定的 hash 与当前内容不一致（两段式不可绕）。
-  'payload_changed',
+  CODE.payload_changed,
   // M2-6 第 1 轮 P2-1：TTL=0 时一次解锁只授权一条；多条需开免密窗口（TTL>0）。
-  'ttl_requires_window',
-  'frontier_stale',
-  'signature_not_from_signerd',
-  'signature_unverifiable',
-  'runtime_inconsistent',
+  CODE.ttl_requires_window,
+  CODE.frontier_stale,
+  CODE.signature_not_from_signerd,
+  CODE.signature_unverifiable,
+  CODE.runtime_inconsistent,
   // 写网关真实原因透传（第 4 轮 P2-1）：签后复核通过但 append 时 prev 已被并发推进。
-  'event_chain_broken',
+  CODE.event_chain_broken,
   // signerd 自身
-  'bad_passphrase',
-  'rate_limited',
-  'locked',
-  'invalid_request',
-  'invalid_field',
-  'unknown_request',
-  'store_not_initialized',
-  'key_missing',
-  'key_file_insecure',
-  'key_dir_insecure',
-  'dir_perm_insecure',
-  'file_perm_insecure',
-  'key_envelope_invalid',
-  'receipt_not_found',
-  'signerd_already_running',
-  'signerd_lock_insecure',
+  CODE.bad_passphrase,
+  CODE.rate_limited,
+  CODE.locked,
+  CODE.invalid_request,
+  CODE.invalid_field,
+  CODE.unknown_request,
+  CODE.store_not_initialized,
+  CODE.key_missing,
+  CODE.key_file_insecure,
+  CODE.key_dir_insecure,
+  CODE.dir_perm_insecure,
+  CODE.file_perm_insecure,
+  CODE.key_envelope_invalid,
+  CODE.receipt_not_found,
+  CODE.signerd_already_running,
+  CODE.signerd_lock_insecure,
   // D-054：信任根被改动 / 回执链断裂
-  'signerd_home_insecure',
-  'receipt_chain_broken',
+  CODE.signerd_home_insecure,
+  CODE.receipt_chain_broken,
   // 平台与路径（C2/C5）
-  'platform_unsupported',
-  'socket_dir_insecure',
-  'socket_perm_insecure',
-  'socket_path_too_long',
-  'socket_not_ready',
-  'runtime_dir_insecure',
+  CODE.platform_unsupported,
+  CODE.socket_dir_insecure,
+  CODE.socket_perm_insecure,
+  CODE.socket_path_too_long,
+  CODE.socket_not_ready,
+  CODE.runtime_dir_insecure,
   // M3-3：独立性（dual_human / solo_cooldown）
-  'independence_unsatisfied',
-  'cooldown_active',
-  'cooldown_not_applicable',
-  'signature_time_mismatch',
-  'signerd_receipt_replayed',
-  'payload_mismatch',
+  CODE.independence_unsatisfied,
+  CODE.cooldown_active,
+  CODE.cooldown_not_applicable,
+  CODE.signature_time_mismatch,
+  CODE.signerd_receipt_replayed,
+  CODE.payload_mismatch,
   // 路径与权限（spike fs-perms 同名码）
-  'path_missing',
-  'path_is_symlink',
-  'path_not_directory',
-  'path_not_regular_file',
-  'path_owner_mismatch',
+  CODE.path_missing,
+  CODE.path_is_symlink,
+  CODE.path_not_directory,
+  CODE.path_not_regular_file,
+  CODE.path_owner_mismatch,
+
 ] as const;
 
 export type SignReasonCode = (typeof SIGN_REASON_CODES)[number];

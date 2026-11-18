@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * M2-6 签字页 HTTP 壳（node:http，零第三方依赖；C7/C8）。
  *
@@ -118,7 +119,7 @@ export function createSigningServer(options: SigningServerOptions): Server {
       if (method !== 'POST') {
         response.statusCode = 405;
         response.setHeader('allow', 'GET, HEAD, POST');
-        sendJson(response, 405, { ok: false, reason_code: 'invalid_request', message: '只接受 GET/HEAD/POST' });
+        sendJson(response, 405, { ok: false, reason_code: CODE.invalid_request, message: '只接受 GET/HEAD/POST' });
         return;
       }
       const raw = await readBody(request);
@@ -130,11 +131,11 @@ export function createSigningServer(options: SigningServerOptions): Server {
         try {
           parsed = raw.length === 0 ? {} : JSON.parse(raw);
         } catch {
-          sendJson(response, 400, { ok: false, reason_code: 'invalid_request', message: '请求不是合法 JSON' });
+          sendJson(response, 400, { ok: false, reason_code: CODE.invalid_request, message: '请求不是合法 JSON' });
           return;
         }
         if (!isRecord(parsed)) {
-          sendJson(response, 400, { ok: false, reason_code: 'invalid_request', message: '请求体必须是 JSON 对象' });
+          sendJson(response, 400, { ok: false, reason_code: CODE.invalid_request, message: '请求体必须是 JSON 对象' });
           return;
         }
         body = parsed;
@@ -142,7 +143,7 @@ export function createSigningServer(options: SigningServerOptions): Server {
       if (hasBatchShape(body)) {
         sendJson(response, 200, {
           ok: false,
-          reason_code: 'invalid_request',
+          reason_code: CODE.invalid_request,
           message: '签字页不支持批量/“全部同意”提交；一次只签一条',
         });
         return;
@@ -150,11 +151,11 @@ export function createSigningServer(options: SigningServerOptions): Server {
       if (path === '/sign/requests') {
         const claimIds = body['claim_ids'];
         if (typeof body['decision_kind'] !== 'string' || typeof body['actor'] !== 'string' || typeof body['producer'] !== 'string') {
-          sendJson(response, 200, { ok: false, reason_code: 'invalid_request', message: '缺少 decision_kind/actor/producer' });
+          sendJson(response, 200, { ok: false, reason_code: CODE.invalid_request, message: '缺少 decision_kind/actor/producer' });
           return;
         }
         if (!Array.isArray(claimIds) || claimIds.some((id) => typeof id !== 'string')) {
-          sendJson(response, 200, { ok: false, reason_code: 'invalid_request', message: 'claim_ids 必须是字符串数组' });
+          sendJson(response, 200, { ok: false, reason_code: CODE.invalid_request, message: 'claim_ids 必须是字符串数组' });
           return;
         }
         const draft: SigningDraft = {
@@ -184,7 +185,7 @@ export function createSigningServer(options: SigningServerOptions): Server {
         const actor = body['actor'];
         const passphrase = body['passphrase'];
         if (typeof actor !== 'string' || typeof passphrase !== 'string') {
-          sendJson(response, 200, { ok: false, reason_code: 'invalid_request', message: '缺少 actor/passphrase' });
+          sendJson(response, 200, { ok: false, reason_code: CODE.invalid_request, message: '缺少 actor/passphrase' });
           return;
         }
         const outcome = await service.unlock({ actor, passphrase });
@@ -225,7 +226,7 @@ export function createSigningServer(options: SigningServerOptions): Server {
         if (typeof requestId !== 'string' || typeof proposition !== 'string' || typeof payloadHash !== 'string') {
           sendJson(response, 200, {
             ok: false,
-            reason_code: 'invalid_request',
+            reason_code: CODE.invalid_request,
             message: '确认必须带 request_id/proposition/payload_hash',
           });
           return;

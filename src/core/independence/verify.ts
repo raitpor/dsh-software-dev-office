@@ -1,3 +1,4 @@
+import { CODE } from '../../core/errors/codes.js';
 /**
  * M3-3 C5：独立性复算（纯函数 + 只读 DB 查询）。
  *
@@ -139,7 +140,7 @@ export function verifyIndependenceChain(input: IndependenceCheckInput): VerifyPr
       });
     }
     // P2-2：签名者必须能解析到 `actor` 表里的 human；未知 actor / 非 human 的签名不能算独立性证据。
-    if (check.required && (check.ok || check.reason_code === 'independence_unsatisfied' || check.reason_code === 'cooldown_active')) {
+    if (check.required && (check.ok || check.reason_code === CODE.independence_unsatisfied || check.reason_code === CODE.cooldown_active)) {
       for (const signature of signatures) {
         const actorRow = rowsOf(
           input.db.prepare('SELECT kind FROM actor WHERE id = ?').all(signature.signer),
@@ -156,14 +157,14 @@ export function verifyIndependenceChain(input: IndependenceCheckInput): VerifyPr
     // 策略缺失/非法（`independence_missing`/`assurance_invalid`）归门禁的 fail-closed 判定，
     // verify 只复算“签名证据是否支撑独立性”，避免把 M3-3 前的旧 baseline（无 assurance）
     // 全部判红。
-    if (!check.ok && check.reason_code === 'independence_unverifiable') {
+    if (!check.ok && check.reason_code === CODE.independence_unverifiable) {
       problems.push({
         code: 'independence_unverifiable',
         objectId: decisionId,
         detail: `${String(row['decision_kind'] ?? '')}：${check.message}`,
       });
     }
-    if (!check.ok && (check.reason_code === 'independence_unsatisfied' || check.reason_code === 'cooldown_active')) {
+    if (!check.ok && (check.reason_code === CODE.independence_unsatisfied || check.reason_code === CODE.cooldown_active)) {
       problems.push({
         code: 'independence_unsatisfied',
         objectId: decisionId,

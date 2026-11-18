@@ -1,3 +1,4 @@
+import { CODE } from '../core/errors/codes.js';
 /**
  * 对齐三件套（M1-2）：复述 / 例子 / 回指。
  *
@@ -20,22 +21,7 @@ import type { SdoDatabase } from '../db/driver.js';
 import { chainHead } from '../db/write.js';
 
 /** 门与写动作的结构化失败码（对齐相关；`invalid_args` 也覆盖草案/参数形状）。 */
-export type AlignReason =
-  | 'invalid_args'
-  | 'not_human'
-  | 'intent_not_found'
-  | 'restatement_not_found'
-  | 'restatement_missing'
-  | 'restatement_too_late'
-  | 'restatement_invalidated'
-  | 'stale_restatement'
-  | 'diff_unprocessed'
-  | 'diff_deferred'
-  | 'diff_already_disposed'
-  | 'diff_conflict'
-  | 'examples_missing'
-  | 'stale_reason'
-  | 'write_failed';
+
 
 export const DIFF_KINDS = ['agree', 'missing', 'extra', 'conflict'] as const;
 export const DIFF_DISPOSITIONS = ['accept', 'reject', 'defer'] as const;
@@ -625,3 +611,23 @@ function countFixtures(state: FoldState): Map<string, FixtureCounts> {
   }
   return counts;
 }
+
+
+export const AlignReason_CODES = [
+  CODE.diff_already_disposed,
+  CODE.diff_conflict,
+  CODE.diff_deferred,
+  CODE.diff_unprocessed,
+  CODE.examples_missing,
+  CODE.intent_not_found,
+  CODE.invalid_args,
+  CODE.not_human,
+  CODE.restatement_invalidated,
+  CODE.restatement_missing,
+  CODE.restatement_not_found,
+  CODE.restatement_too_late,
+  CODE.stale_reason,
+  CODE.stale_restatement,
+  CODE.write_failed,
+] as const;
+export type AlignReason = (typeof AlignReason_CODES)[number];
