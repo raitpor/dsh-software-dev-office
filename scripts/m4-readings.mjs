@@ -1,11 +1,14 @@
 #!/usr/bin/env node
 /**
- * M4-7 · 复用读数（卡 plan/cards/M4-7.md）
+ * M4-G · 里程碑判死读数（卡 plan/cards/M4-G.md）
  *
  * 用法：
  *   node scripts/m4-readings.mjs                  # 跑全部，写 plan/milestone/M4-读数.{json,md}
- *   node scripts/m4-readings.mjs --only R-pick        # 单跑一条，stdout 输出 {id,raw,verdict,caveat}
- *   node scripts/m4-readings.mjs --out <prefix>   # 改输出前缀
+ *   node scripts/m4-readings.mjs --only R1        # 单跑一条，stdout 输出 {id,raw,verdict,caveat}
+ *   node scripts/m4-readings.mjs --out <prefix>   # 改输出前缀（测试/取证用临时前缀，避免覆盖已签生成物）
+ *
+ * 变异（红证用，正常复跑不会触发）：
+ *   M4_G_MUTATION=R1|R2|R3|R4 node scripts/m4-readings.mjs --only <该条>
  *
  * 退出码：fail ⇒ 1；partial/pass ⇒ 0（口径同 M0-G/M1-G）。
  */
@@ -63,7 +66,7 @@ function toEntry(result) {
 
 function toMarkdown(report, verdict) {
   const lines = [
-    '# M4-7 复用读数（M4-7）',
+    '# M4 里程碑判死读数（M4-G）',
     '',
     `- generatedAt: ${report.generatedAt}`,
     `- command: \`${report.command}\``,
@@ -72,7 +75,8 @@ function toMarkdown(report, verdict) {
     '',
     '> 每条含：问题 / 复跑命令 / 原始输出（raw）/ verdict / caveat。',
     '> 数据集为临时目录新库（HOME 一并指向临时目录），不碰生产库与仓库内 `*.db`（C6）。',
-    '> R-pick 在临时目录新库上走真写入（`dispatchLease` → `recordAgent*`），再由事件流现算 pick_declined 窗口计数与连续新起告警（C6）。',
+    '> R1–R4 全走真进程/真库/产品 API；R1 的两个独立 node 子进程经屏障同时抢锁，最终值从 SQLite 读回。',
+    '> 两条遗留（R-legacy1/R-legacy2）照实 partial 时不伪造样本、不伪造 gate 表。',
     '',
   ];
   for (const id of MODES) {
@@ -100,13 +104,14 @@ function toMarkdown(report, verdict) {
 async function main() {
   const options = parseArgs(process.argv.slice(2));
   if (options.help === true) {
-    process.stdout.write('node scripts/m4-readings.mjs [--only R-pick..R4] [--out <prefix>]\n');
+    process.stdout.write('node scripts/m4-readings.mjs [--only R1|R2|R3|R4|R-legacy1|R-legacy2|R-pick|R-human] [--out <prefix>]\n');
     return;
   }
 
   if (options.only !== undefined) {
     const result = await runOne(options.only);
     process.stdout.write(`${JSON.stringify({ id: result.id, raw: result.measured, verdict: result.verdict, caveat: result.caveat })}\n`);
+    process.exitCode = result.verdict === 'fail' ? 1 : 0;
     return;
   }
 
@@ -115,13 +120,13 @@ async function main() {
     readings[id] = toEntry(await runOne(id));
   }
   const report = {
-    card: 'M4-7',
+    card: 'M4-G',
     generatedAt: new Date().toISOString(),
     command: 'node scripts/m4-readings.mjs',
     node: process.version,
     readings,
   };
-  const overall = overallFor(MODES.map((id) => readings[id].verdict));
+  const overall = overallFor(Object.fromEntries(MODES.map((id) => [id, readings[id].verdict])));
 
   const jsonPath = `${options.out}.json`;
   const mdPath = `${options.out}.md`;
