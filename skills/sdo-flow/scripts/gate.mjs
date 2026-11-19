@@ -151,6 +151,7 @@ function checkGate(file, gateId, wantCriteria, problems, warnings) {
       problems.push(`${file}: ${crit} 判 pass 但证据为空/占位（证据必须是命令或 文件:行）`);
     else if (j.verdict === "partial" && (!j.evidence || PLACEHOLDERS.test(j.evidence.trim())))
       problems.push(`${file}: ${crit} 判 partial 但没写证据与缺口`);
+    else if (j.verdict === "fail") problems.push(`${file}: ${crit} 判 fail`);
   }
   if (wantCriteria) {
     for (const c of wantCriteria) if (!seen.has(c)) problems.push(`${file}: 缺判据 ${c}（preset 的 gate 要求）`);
