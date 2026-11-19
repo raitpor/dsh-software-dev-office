@@ -7,6 +7,7 @@
 //   ledger  偏差台账（--open 只看未修）
 //   signs   签字索引
 //   plan    计划摘要（判死读数 + 卡表）
+//   next    现在能开工什么（可开工/被依赖卡住/待签收/待签文件/未修台账）
 import fs from "node:fs";
 import path from "node:path";
 
@@ -25,6 +26,9 @@ const argv = process.argv.slice(2);
 const cmd = argv.find((a) => !a.startsWith("--")) || "state";
 const asJson = argv.includes("--json");
 const onlyOpen = argv.includes("--open");
+const mi = argv.indexOf("--milestone");
+const milestoneArg = mi >= 0 ? argv[mi + 1] : "M4";
+if (mi >= 0 && (!milestoneArg || milestoneArg.startsWith("--") || !/^M\d+$/.test(milestoneArg))) { console.error("--milestone 需要一个里程碑号（如 M4）"); process.exit(2); }
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const lines = (p) => read(p).split(/\r?\n/);
@@ -82,9 +86,9 @@ function cards() {
   if (!exists(".sdo/cards")) return [];
   return fs.readdirSync(path.join(ROOT, ".sdo/cards")).filter((f) => f.endsWith(".md")).sort().map((f) => {
     const p = `.sdo/cards/${f}`; const text = read(p);
-    const st = text.match(/^status:\s*(open|done)/m);
+    const st = text.match(/^status:\s*([A-Za-z_-]+)/m);
     const owner = text.match(/^owner:\s*(.+)$/m);
-    const deps = text.match(/依赖[:：]\s*(.+)$/m);
+    const deps = text.match(/^\s*(?:[-*]\s*)?依赖[:：]\s*(.+)$/m);
     // 最近评审：优先取「## 评审」段里最后一句判词；没有段/判词就留空（board 显示 —）
     const secParts = text.split(/^##\s+/m).find((x) => x.startsWith("评审"));
     const sec = secParts ? secParts.split(/\n/).slice(1).join("\n") : "";
@@ -116,7 +120,10 @@ function signs() {
     const time = text.match(/^\s*(?:[-*]\s*)?时间[:：]\s*(.+)$/m);
     const opt = text.match(/^\s*(?:[-*]\s*)?选项[:：]\s*(.+)$/m);
     const obj = text.match(/^\s*(?:[-*]\s*)?被签对象[:：]\s*(.+)$/m);
-    return { file: `.sdo/sign/${f}`, time: time ? time[1].trim() : "", option: opt ? opt[1].trim() : "", object: obj ? obj[1].trim() : "" };
+    const title = text.match(/^#\s*(.+)$/m);
+    const scopes = [...text.matchAll(/^\s*(?:[-*]\s*)?范围[:：]\s*(.+)$/gm)].map((m) => m[1].trim());
+    return { file: `.sdo/sign/${f}`, time: time ? time[1].trim() : "", option: opt ? opt[1].trim() : "", object: obj ? obj[1].trim() : "",
+      title: title ? title[1].trim() : "", scope: scopes.join("；") };
   });
 }
 
@@ -151,9 +158,206 @@ function milestone() {
   return { name: m ? m[1].trim() : "", readings: rd ? rd.rows.map((r) => ({ id: r[0], question: r[1], how: r[2] })) : [] };
 }
 
+function closedLedgerIds(rows) {
+  const closed = new Set();
+  for (const r of rows) {
+    const m = /^关闭\s+(D-\d+)/.exec(r.how || "");
+    if (m) closed.add(m[1]);
+  }
+  return closed;
+}
+function isOpenLedgerRow(row, closedIds = new Set()) {
+  if (!row) return false;
+  if (row.kind !== "defect" && row.kind !== "gap") return false;
+  if (["fixed", "closed", "superseded"].includes(row.status)) return false;
+  return !closedIds.has(row.id);
+}
+function dnum(id) { const m = /^D-(\d+)$/.exec(id || ""); return m ? Number(m[1]) : NaN; }
+
 const CS = cards(), LG = ledger(), SG = signs(), RD = readings(), MS = milestone();
 const openCards = CS.filter((c) => c.status !== "done");
-const openLedger = LG.filter((r) => r.status === "open" || (r.kind === "defect" && r.status !== "fixed"));
+const CLOSED_IDS = closedLedgerIds(LG);
+const openLedger = LG.filter((r) => isOpenLedgerRow(r, CLOSED_IDS));
+
+// ---- next 的解析辅助 ----
+function stripParens(s) {
+  let out = s;
+  for (;;) { const n = out.replace(/[（(][^）)]*[）)]/g, ""); if (n === out) break; out = n; }
+  return out;
+}
+function parseDeps(cellText) {
+  const text = stripParens(String(cellText || "").replace(/`/g, "")).replace(/\b[0-9a-f]{7,}\b/gi, "");
+  const ids = [];
+  const range = /M(\d+)-(\d+)\s*(?:…|\.\.\.|~|—|至)\s*M?(\d+)-(\d+)/g;
+  for (const m of text.matchAll(range)) {
+    if (m[1] !== m[3]) continue;
+    for (let n = Number(m[2]); n <= Number(m[4]); n++) ids.push(`M${m[1]}-${n}`);
+  }
+  const rest = text.replace(range, "");
+  for (const part of rest.split(/[、,，]/)) {
+    const s = part.trim();
+    if (!s) continue;
+    const one = /^M(\d+)-(\d+)$/.exec(s);
+    if (one) { ids.push(`M${one[1]}-${one[2]}`); continue; }
+    const gate = /^M(\d+)-G$/.exec(s);
+    if (gate) ids.push(`M${gate[1]}-G`);
+  }
+  return [...new Set(ids)];
+}
+function milestoneBlocks() {
+  const plan = ".sdo/01-计划.md";
+  if (!exists(plan)) return [];
+  const ls = lines(plan);
+  const starts = [];
+  for (let i = 0; i < ls.length; i++) {
+    const m = /^(#{1,2})\s*(?:追加里程碑[:：]\s*)?(M\d+)(?![\d.])\b/.exec(ls[i]);
+    if (m) starts.push({ line: i, id: m[2] });
+  }
+  return starts.map((s, k) => ({
+    id: s.id,
+    text: ls.slice(s.line, k + 1 < starts.length ? starts[k + 1].line : ls.length).join("\n"),
+  }));
+}
+function planCardDeps(milestoneId) {
+  const plan = ".sdo/01-计划.md";
+  if (!exists(plan)) return { deps: new Map(), exists: false };
+  const ls = lines(plan);
+  const starts = [];
+  for (let i = 0; i < ls.length; i++) {
+    const m = /^(#{1,2})\s*(?:追加里程碑[:：]\s*)?(M\d+)(?![\d.])\b/.exec(ls[i]);
+    if (m) starts.push({ line: i, id: m[2] });
+  }
+  const at = starts.findIndex((s) => s.id === milestoneId);
+  if (at < 0) return { deps: new Map(), exists: false };
+  const seg = ls.slice(starts[at].line, at + 1 < starts.length ? starts[at + 1].line : ls.length);
+  let header = null, headerLine = -1;
+  for (let i = 0; i < seg.length - 1; i++) {
+    if (!seg[i].trim().startsWith("|") || !isSep(seg[i + 1])) continue;
+    const h = cells(seg[i]);
+    if (h.some((x) => x.includes("卡")) && h.some((x) => x.includes("依赖"))) { header = h; headerLine = i; break; }
+  }
+  if (!header) return { deps: new Map(), exists: false };
+  const cardCol = header.findIndex((h) => h.includes("卡"));
+  const depCol = header.findIndex((h) => h.includes("依赖"));
+  const deps = new Map();
+  for (let i = headerLine + 2; i < seg.length && seg[i].trim().startsWith("|"); i++) {
+    if (isSep(seg[i])) continue;
+    const r = cells(seg[i]);
+    const id = (r[cardCol] || "").replace(/`/g, "").trim();
+    if (!/^M\d+-(?:\d+|G)$/.test(id)) continue;
+    deps.set(id, parseDeps(r[depCol] || ""));
+  }
+  return { deps, exists: true };
+}
+function signMatchesCard(sg, id, word) {
+  for (const text of [sg.title, sg.scope]) {
+    const re = /M(\d+)-(\d+)(?!\d)/g;
+    for (const m of text.matchAll(re)) {
+      if (`M${m[1]}-${m[2]}` === id && text.includes(word)) return true;
+    }
+  }
+  return false;
+}
+function signNumber(sg) {
+  const m = /(S\d+)/.exec(`${sg.file} ${sg.title}`);
+  return m ? m[1] : "?";
+}
+function signForMilestone(sg, id, kind) {
+  const m = /^M(\d+)$/.exec(id);
+  if (!m) return false;
+  const n = m[1];
+  if (kind === "计划") {
+    return new RegExp(`^S[\\d-]+\\s*·\\s*M${n}\\s*计划`).test(sg.title)
+      || new RegExp(`^S[\\d-]+\\s*·\\s*计划签字（M${n}）`).test(sg.title);
+  }
+  if (kind === "门") {
+    return new RegExp(`^S[\\d-]+\\s*·\\s*M${n}\\s*门`).test(sg.title)
+      || new RegExp(`^S[\\d-]+\\s*M${n}\\s*门签`).test(sg.title);
+  }
+  return false;
+}
+let nextExit = 0;
+function nextView(milestoneId) {
+  const blocks = milestoneBlocks();
+  const block = blocks.find((b) => b.id === milestoneId);
+  if (!block) { console.error(`找不到 ${milestoneId} 里程碑段：.sdo/01-计划.md`); process.exit(2); }
+  const { deps: planDepsMap, exists: hasPlanTable } = planCardDeps(milestoneId);
+  if (!hasPlanTable) { console.error(`找不到 ${milestoneId} 卡表：.sdo/01-计划.md`); process.exit(2); }
+  const byId = new Map(CS.map((c) => [c.id, c]));
+  const cardFaceDeps = new Map(CS.map((c) => [c.id, parseDeps(c.deps)]));
+  if (hasPlanTable) {
+    for (const [id, pdeps] of planDepsMap) {
+      const cdeps = cardFaceDeps.get(id);
+      if (!cdeps) continue;
+      const a = [...pdeps].sort().join(","), b = [...cdeps].sort().join(",");
+      if (a !== b) console.error(`对照：${id} 卡面「依赖：${cdeps.join("、") || "无"}」≠ 计划表「${pdeps.join("、") || "无"}」，以计划表为准`);
+    }
+  }
+  const depSatisfied = (id) => {
+    const c = byId.get(id);
+    if (c) return c.status === "done";
+    const gate = /^M(\d+)-G$/.exec(id);
+    if (gate) return SG.some((s) => signForMilestone(s, `M${gate[1]}`, "门"));
+    return false;
+  };
+  const ready = [], blocked = [], signing = [], filesPending = [], inProgress = [], unknown = [];
+  for (const c of CS) {
+    if (c.status === "done") {
+      if (!SG.some((s) => signMatchesCard(s, c.id, "收卡"))) signing.push(c.id);
+    } else if (c.status === "open") {
+      const ds = planDepsMap.get(c.id) ?? [];
+      const unmet = ds.filter((d) => !depSatisfied(d));
+      if (unmet.length) blocked.push(`${c.id} · 缺 ${unmet.join("、")}`);
+      else ready.push(c.id);
+    } else if (c.status === "in_progress") {
+      inProgress.push(c.id);
+    } else {
+      unknown.push(`${c.id} · status=${c.status}`);
+    }
+  }
+  for (const b of milestoneBlocks()) {
+    const st = /^\s*(?:[-*]\s*)?状态[:：]\s*(.+)$/m.exec(b.text);
+    if (!st) { unknown.push(`${b.id} · 计划段缺「状态：」行`); continue; }
+    const planSign = SG.find((s) => signForMilestone(s, b.id, "计划"));
+    const gateSign = SG.find((s) => signForMilestone(s, b.id, "门"));
+    filesPending.push(`${b.id} 计划：${planSign ? `已签 ${signNumber(planSign)}` : "待签"}`);
+    filesPending.push(`${b.id} 门：${gateSign ? `已签 ${signNumber(gateSign)}` : "待签"}`);
+  }
+  const ledgerOpen = [...openLedger].sort((a, b) => {
+    const x = dnum(a.id), y = dnum(b.id);
+    if (Number.isNaN(x) || Number.isNaN(y)) return a.id.localeCompare(b.id);
+    return x - y;
+  });
+  const sections = [
+    ["可开工", ready],
+    ["被依赖卡住", blocked],
+    ["待签收", signing],
+    ["待签文件", filesPending],
+    ["未修台账", ledgerOpen.map((r) => `${r.id} · ${r.kind}/${r.status} · ${r.what}`)],
+  ];
+  const extras = [["进行中", inProgress], ["未知状态", unknown]];
+  const expected = ["可开工", "被依赖卡住", "待签收", "待签文件", "未修台账"];
+  if (sections.length !== 5 || sections.map(([n]) => n).join("|") !== expected.join("|")) {
+    console.error("内部错误：next 五节不完整"); process.exit(1);
+  }
+  nextExit = unknown.length ? 1 : 0;
+  const json = { command: "next", 可开工: ready, 被依赖卡住: blocked, 待签收: signing, 待签文件: filesPending,
+    未修台账: ledgerOpen.map((r) => r.id), 进行中: inProgress, 未知状态: unknown };
+  const human = [`# next（${milestoneId}）`, ""];
+  for (const [name, items] of sections) human.push(`## ${name}`, ...(items.length ? items.map((x) => `- ${x}`) : ["无"]), "");
+  for (const [name, items] of extras) {
+    if (!items.length) continue;
+    human.push(`## ${name}`, ...items.map((x) => (name === "进行中" ? `[进行中] ${x}` : `未知状态：${x}`)), "");
+  }
+  const rendered = human.join("\n");
+  let last = -1;
+  for (const name of expected) {
+    const at = rendered.indexOf(`## ${name}\n`);
+    if (at < 0 || at < last) { console.error(`内部错误：next 渲染缺节或顺序错（${name}）`); process.exit(1); }
+    last = at;
+  }
+  return { human: rendered, json };
+}
 
 const out = {
   state() {
@@ -205,15 +409,20 @@ const out = {
       ...t.map((r) => `| ${r.id} | ${r.question} | ${r.how} |`), "",
       `卡：${CS.length} 张（open ${openCards.length}）。完整卡表见 ${exists(".sdo/01-计划.md") ? ".sdo/01-计划.md" : "—"}。`].join("\n");
   },
+  next() { return nextView(milestoneArg).human; },
 }[cmd];
 
 if (!out) {
-  console.error(`未知视图：${cmd}。可用：state / board / queue / ledger / signs / plan`);
+  console.error(`未知视图：${cmd}。可用：state / board / queue / ledger / signs / plan / next`);
   process.exit(2);
 }
-const data = out();
+const nextResult = cmd === "next" ? nextView(milestoneArg) : null;
+const data = cmd === "next" ? nextResult.human : out();
 if (warnRagged.length && !asJson) console.error(`WARN  表列数不齐（已按表头补齐，跑 check.mjs 修）：\n  ${warnRagged.join("\n  ")}`);
 if (asJson) {
-  const obj = { command: cmd, milestone: MS.name, cards: CS, ledger: LG, signs: SG, readings: RD };
+  const obj = cmd === "next"
+    ? nextResult.json
+    : { command: cmd, milestone: MS.name, cards: CS, ledger: LG, signs: SG, readings: RD };
   console.log(JSON.stringify(obj, null, 2));
 } else console.log(data);
+if (cmd === "next" && nextExit !== 0) process.exit(nextExit);

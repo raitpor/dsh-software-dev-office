@@ -116,9 +116,11 @@ node <skill>/scripts/gate.mjs             # 阶段门：默认判所有勾选表
 node <skill>/scripts/gate.mjs --list      # 只列 preset 的 gate 与现有勾选表，不判
 node <skill>/scripts/gate.mjs G_req_exit  # 只查一道 gate；--file 指定文件；--json 出机器可读
 node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图；任意视图加 --json
+node <skill>/scripts/view.mjs next   # 现在能开工什么：可开工/被依赖卡住/待签收/待签文件/未修台账；未知状态 ⇒ exit 1
 node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）
 node <skill>/scripts/card.mjs new|evidence                 # 卡骨架与证据行：同判据一行、重复原地更新；--run 真跑（30s 超时）
 node <skill>/scripts/sign.mjs draft --milestone M4          # 签字材料 draft：只出事实到 stdout、不写文件；退出码 0/1/2
+node <skill>/scripts/check.mjs --plan [--milestone M4]  # 计划↔卡面漂移：卡表/依赖/写域/路径；漂移 exit 1，环境/参数 exit 2
 ```
 
 `<skill>` 是这套流程包在你项目里的实际目录（例如 `skills/sdo-flow`）。**收卡与出门前各跑一次**；红了先修，别绕过。
