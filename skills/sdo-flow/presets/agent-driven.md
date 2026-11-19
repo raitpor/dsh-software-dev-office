@@ -28,7 +28,7 @@
 | 4 | `spec_set.signed`（core） | 计划已人签（S 号） |
 | 5 | `scope.present` | 计划写了范围与不做什么 |
 | 6 | `intent.explicit_for_risk` | 风险项写死，不写“视情况” |
-| 7 | `redteam.disposed` | 反方意见逐条有处置 |
+| 7 | `redteam.disposed` | 反方意见逐条有处置；**无 redteam 记录时判 `na` 并写理由，不视为通过** |
 | 8 | `assumption_set.signed`（core） | 假设表每条写“不成立怎么办” |
 | 9 | `provenance.present`（core） | 后续每条判定都要有命令或 `文件:行` |
 | 10 | `stage.design_traceable` | 每张卡能回指意图条目 |
