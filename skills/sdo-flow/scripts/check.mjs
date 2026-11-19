@@ -440,6 +440,217 @@ function checkFrontmatter() {
     }
   }
 }
+
+function planExit2(msg) { console.error(msg); process.exit(2); }
+
+function planMilestone() {
+  const rest = ARGV.filter((a) => a !== "--plan");
+  let m = "M4";
+  for (let i = 0; i < rest.length; i++) {
+    if (rest[i] === "--milestone") {
+      if (!rest[i + 1] || rest[i + 1].startsWith("--")) planExit2("--milestone 需要一个值（如 M4）");
+      m = rest[++i];
+    } else planExit2(`--plan 未知参数：${rest[i]}`);
+  }
+  if (!/^M\d+$/.test(m)) planExit2(`--milestone 格式应为 M<数字>：${m}`);
+  return m;
+}
+
+function planSection(milestone) {
+  const lines = read(".sdo/01-计划.md");
+  const startRe = new RegExp(`^##\\s*${milestone}(?![\\d-])`);
+  const start = lines.findIndex((l) => startRe.test(l));
+  if (start < 0) planExit2(`.sdo/01-计划.md 里找不到里程碑段：${milestone}`);
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) if (/^##\s*M\d+(?![\d-])/.test(lines[i])) { end = i; break; }
+  return { lines, start, end };
+}
+
+function stripNotes(s) {
+  let t = String(s).replace(/`/g, "");
+  for (;;) {
+    const n = t.replace(/[（(][^（()）]*[)）]/g, "");
+    if (n === t) break;
+    t = n;
+  }
+  return t.trim();
+}
+
+const PLAN_ROOTS = [".sdo", "skills", "src", "docs", "design", "probe", "plan", "test", "migrations"];
+function normalizePlanPath(raw) {
+  let t = stripNotes(raw).replace(/\\/g, "/").trim();
+  const dir = /\/$/.test(t) || /\/\*\*?$/.test(t);
+  t = t.replace(/\/+$/, "").replace(/\/\*\*?$/, "").replace(/^\.\//, "");
+  if (!t) return { p: "", dir: false };
+  const top = t.split("/")[0];
+  const rootFile = ["README.md", "package.json", "package-lock.json", "SKILL.md", "Makefile", "LICENSE"].includes(t);
+  if (!rootFile && !PLAN_ROOTS.includes(top)) t = `skills/sdo-flow/${t}`;
+  return { p: t, dir };
+}
+
+function splitScope(cell) {
+  const out = [];
+  for (const part of String(cell).split(/、|,/)) {
+    const raw = part.trim();
+    if (!raw) continue;
+    out.push(raw);
+  }
+  return out;
+}
+
+function planCardTable(milestone) {
+  const { lines, start, end } = planSection(milestone);
+  let head = -1;
+  for (let i = start; i < end; i++) {
+    if (!lines[i].trim().startsWith("|")) continue;
+    const h = cells(lines[i]).map((x) => x.replace(/`/g, "").trim());
+    if (h.includes("卡") && h.includes("依赖") && h.includes("写域")) { head = i; break; }
+  }
+  if (head < 0) planExit2(`计划 ${milestone} 段没有卡表（卡/依赖/写域）`);
+  const header = cells(lines[head]).map((x) => x.replace(/`/g, "").trim());
+  const rows = [];
+  for (let i = head + 1; i < end; i++) {
+    const raw = lines[i].trim();
+    if (!raw.startsWith("|")) break;
+    if (isSep(raw)) continue;
+    const c = cells(raw);
+    const id = (c[header.indexOf("卡")] || "").trim();
+    if (!/^M\d+-(?:\d+|G)$/.test(id)) continue;
+    rows.push({ id, deps: c[header.indexOf("依赖")] || "", scope: c[header.indexOf("写域")] || "", line: i + 1 });
+  }
+  if (!rows.length) planExit2(`计划 ${milestone} 段的卡表没有数据行`);
+  return { lines, rows };
+}
+
+function planParseDeps(text) {
+  let t = stripNotes(text);
+  t = t.replace(/M(\d+)-(\d+)\s*…\s*M\1-(\d+)/g, (_, m, a, b) => {
+    const out = [];
+    for (let i = Number(a); i <= Number(b); i++) out.push(`M${m}-${i}`);
+    return out.join("、");
+  });
+  return [...new Set([...t.matchAll(/M\d+-(?:\d+|G)/g)].map((m) => m[0]))];
+}
+
+function planCardInfo(id) {
+  const p = `.sdo/cards/${id}.md`;
+  if (!exists(p)) return null;
+  const lines = read(p);
+  let scopeRaw = "", scopeLine = 0, refsRaw = "", refsLine = 0, depLine = 0, depRaw = "", previewLine = 0;
+  let inPreview = false;
+  for (let i = 0; i < lines.length; i++) {
+    const l = lines[i];
+    if (/^write_scope:/.test(l)) { scopeRaw = l.replace(/^write_scope:\s*/, ""); scopeLine = i + 1; }
+    if (/^read_refs:/.test(l)) { refsRaw = l.replace(/^read_refs:\s*/, ""); refsLine = i + 1; }
+    if (/^##\s*预览/.test(l)) { inPreview = true; previewLine = i + 1; continue; }
+    if (/^##\s/.test(l) && !/^##\s*预览/.test(l)) inPreview = false;
+    if (!inPreview && /^依赖[:：]/.test(l)) { depRaw = l.replace(/^依赖[:：]\s*/, ""); depLine = i + 1; }
+  }
+  const m = scopeRaw.match(/^\[(.*)\]\s*$/);
+  const scopeItems = m ? splitScope(m[1]) : [];
+  const rm = refsRaw.match(/^\[(.*)\]\s*$/);
+  const readItems = rm ? splitScope(rm[1]) : [];
+  return { lines, scopeItems, readItems, scopeLine, refsLine, depLine, depRaw, previewLine };
+}
+
+function planSplitPathTokens(span) {
+  const out = [];
+  for (const raw of String(span).split(/\s+/)) {
+    let t = stripNotes(raw).replace(/^[：:，,。;；]+|[：:，,。;；]+$/g, "");
+    t = t.replace(/:\d+(?:-\d+)?$/, "");
+    if (!t || /[<>…*`]/.test(t)) continue;
+    if (/^(?:https?:|node:|npm|git|\.\.|\/)/.test(t)) continue;
+    if (/\//.test(t)) out.push(t);
+    else if (/^(?:README\.md|package\.json|package-lock\.json|Makefile|LICENSE)$/.test(t)) out.push(t);
+  }
+  return out;
+}
+
+function planBacktickPath(span) {
+  let t = String(span).trim().replace(/^["'`]+|["'`]+$/g, "");
+  t = t.replace(/:[0-9]+(?:-[0-9]+)?$/, "").replace(/^[：:，,。;；]+|[：:，,。;；]+$/g, "");
+  if (!t || /\s/.test(t)) return "";
+  if (/[<>…*`"'（）()：:，,。;；、]/.test(t)) return "";
+  if (/^(?:https?:|node:|npm|git|\.\.|\/)/.test(t)) return "";
+  if (/\/$/.test(t)) return "";
+  if (!/\//.test(t) && !/^(?:README\.md|package\.json|package-lock\.json|Makefile|LICENSE)$/.test(t)) return "";
+  return t;
+}
+
+function planCovers(pathRaw, scopes) {
+  const n = normalizePlanPath(pathRaw);
+  if (!n.p) return true;
+  return scopes.some((s) => s.p === n.p || (s.dir && n.p.startsWith(`${s.p}/`)));
+}
+
+function checkPlan() {
+  const milestone = planMilestone();
+  if (!exists(".sdo/01-计划.md")) planExit2("计划文件不存在：.sdo/01-计划.md");
+  const table = planCardTable(milestone);
+  const planPath = ".sdo/01-计划.md";
+  const tableIds = new Set(table.rows.map((r) => r.id));
+
+  // C1 双向一致
+  const cardIds = fs.readdirSync(path.join(ROOT, ".sdo/cards"))
+    .filter((f) => new RegExp(`^${milestone}-(?:\\d+|G)\\.md$`).test(f))
+    .map((f) => f.replace(/\.md$/, ""));
+  for (const r of table.rows) if (!exists(`.sdo/cards/${r.id}.md`)) err(planPath, r.line, `卡表有卡无文件：${r.id}`);
+  for (const id of cardIds) if (!tableIds.has(id)) err(`.sdo/cards/${id}.md`, 1, `卡不在本里程碑卡表：${id}`);
+
+  const infos = new Map();
+  for (const r of table.rows) infos.set(r.id, planCardInfo(r.id));
+  for (const id of cardIds) if (!infos.has(id)) infos.set(id, planCardInfo(id));
+
+  // C2 依赖 / C3 路径 / C6 写域
+  for (const r of table.rows) {
+    const info = infos.get(r.id);
+    if (!info) continue;
+    const planDeps = planParseDeps(r.deps);
+    const cardDeps = planParseDeps(info.depRaw);
+    const a = [...planDeps].sort(), b = [...cardDeps].sort();
+    if (a.join() !== b.join()) {
+      err(`.sdo/cards/${r.id}.md`, info.depLine || 1, `依赖与计划卡表不一致：卡表=[${a.join("、")}] 卡面=[${b.join("、")}]`);
+    }
+    const myM = Number(r.id.match(/^M(\d+)-/)[1]);
+    const myN = /-(\d+)$/.test(r.id) ? Number(r.id.match(/-(\d+)$/)[1]) : Number.POSITIVE_INFINITY;
+    for (const d of cardDeps) {
+      const dm = d.match(/^M(\d+)-(\d+)$/);
+      if (!dm || Number(dm[1]) !== myM) continue;
+      if (Number(dm[2]) > myN) err(`.sdo/cards/${r.id}.md`, info.depLine || 1, `前向依赖：${r.id} 依赖 ${d}（在本卡之后）`);
+    }
+
+    const scopes = [...info.scopeItems, ...info.readItems].map((s) => normalizePlanPath(s)).filter((s) => s.p);
+    let inC3 = false;
+    for (let i = 0; i < info.lines.length; i++) {
+      const l = info.lines[i];
+      if (/^##\s/.test(l)) { inC3 = /^##\s*(?:判据|证据|预览)\s*$/.test(l); continue; }
+      if (!inC3) continue;
+      if (/反例|示例|例如|对照/.test(l)) continue;
+      for (const span of l.matchAll(/`([^`]+)`/g)) {
+        const p = planBacktickPath(span[1]);
+        if (p && !planCovers(p, scopes)) err(`.sdo/cards/${r.id}.md`, i + 1, `判据点名的路径不在 write_scope/read_refs：${p}`);
+      }
+    }
+
+    const planScope = splitScope(r.scope)
+      .filter((x) => !/运行时/.test(x))
+      .map((s) => normalizePlanPath(s)).filter((s) => s.p).map((s) => s.p).sort();
+    const cardScope = info.scopeItems
+      .filter((x) => !/运行时/.test(x))
+      .map((s) => normalizePlanPath(s)).filter((s) => s.p).map((s) => s.p).sort();
+    if (planScope.join() !== cardScope.join()) {
+      err(`.sdo/cards/${r.id}.md`, info.scopeLine || 1, `write_scope 与计划卡表不一致：计划=[${planScope.join("、")}] 卡面=[${cardScope.join("、")}]`);
+    }
+  }
+
+  for (const e of ERR) console.log(`ERROR ${e}`);
+  console.log(`\n检查完成（--plan ${milestone}）：${ERR.length} 个漂移`);
+  process.exit(ERR.length ? 1 : 0);
+}
+
+if (ARGV.includes("--plan")) {
+  checkPlan();
+}
 const files = mdFiles();
 for (const p of files) checkTables(p, read(p));
 checkFrontmatter();
