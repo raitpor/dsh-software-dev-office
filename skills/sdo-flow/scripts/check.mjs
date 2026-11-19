@@ -134,6 +134,8 @@ function checkLedger(p) {
   }
   if (hdrAt < 0) return err(p, 0, "找不到台账表头（含 id 的表）");
   const seen = [];
+  const rows = [];
+  const closedBy = new Set();
   for (let i = hdrAt + 2; i < lines.length; i++) {
     if (!lines[i].trim().startsWith("|")) continue;
     const c = cells(lines[i].trim());
@@ -145,8 +147,16 @@ function checkLedger(p) {
     seen.push(id);
     if (!KINDS.has(c[cols.kind])) err(p, i + 1, `kind 不合法：${c[cols.kind]}`);
     if (!STATUS.has(c[cols.status])) err(p, i + 1, `状态不合法：${c[cols.status]}`);
-    if (c[cols.kind] === "defect" && c[cols.status] === "open") warn(p, i + 1, `${id} 是未修 defect`);
+    const fixText = (c[cols.how] || "").trim();
+    const mClose = /^关闭\s+(D-\d+)/.exec(fixText);
+    if (mClose) closedBy.add(mClose[1]);
+    rows.push({ id, kind: c[cols.kind], status: c[cols.status], line: i + 1 });
     if (!c[cols.where]) err(p, i + 1, "位置为空");
+  }
+  for (const r of rows) {
+    if (r.kind === "defect" && r.status === "open" && !closedBy.has(r.id)) {
+      warn(p, r.line, `${r.id} 是未修 defect`);
+    }
   }
 }
 
