@@ -1,17 +1,17 @@
 ---
 name: sdo-flow
 description: Use when a project needs SDO discipline (intent → reviewed plan → cards → two-round review → human sign → milestone readings) but the SDO plugin, its sdo_* tools, or its database are unavailable — the file-backed fallback where Markdown ledgers replace event tables, ask_user_question options replace signatures, and reproducible commands replace machine gates.
-whenToUse: 需要“先对齐再动手、每步可审计、防漂移”的项目管理，但装不了 SDO 插件（无 sdo_* 工具、无数据库），或要把这套流程带到别人的仓库/临时会话时。
+whenToUse: 需要“先对齐再动手、每步可审计、防漂移”的项目管理，用文件与命令把流程落地的场景（客户机器、临时会话、别人的仓库、纯 Web 会话）。
 ---
 
-# SDO 流程（无插件版）
+# SDO 流程（文件与命令实现）
 
 一句话：**文件是真源，账本代替事件表，问答代替签名，命令代替门禁。**
 
 ## 0. 何时用 / 何时不用
 
-- **用**：装不了 SDO 插件；临时会话；别人的仓库；需要把流程带走的场景。
-- **不用**：已装 SDO 插件（直接用插件，本 skill 是降级替代）；一次性小改动（半小时内、无审计要求）。
+- **用**：需要把流程带走；临时会话；别人的仓库；不方便引入额外运行环境的场景。
+- **不用**：一次性小改动（半小时内、无审计要求）；团队已有更严格的合规流程（不要两套并行）。
 
 ## 1. 先看边界（读一遍再开工）
 
@@ -21,7 +21,7 @@ whenToUse: 需要“先对齐再动手、每步可审计、防漂移”的项目
 | 可审计 | 追加式 Markdown 账本 + 日期 + 出处 | 账本可改；只靠 git 历史与提交时间 |
 | 防漂移 | 判据清单 + 可复跑命令 + 计划评审 | 没有机器门禁，靠人按清单判读 |
 
-完整降级表见 `references/07-无工具降级清单.md`。**不要**把这些边界写成“等价”。
+完整边界表见 `references/07-边界与自证.md`。**不要**把边界写成“已经解决”。
 
 ## 2. 先选流程 preset（阶段与出口）
 
@@ -38,7 +38,7 @@ whenToUse: 需要“先对齐再动手、每步可审计、防漂移”的项目
 
 ```
 sdo/
-  00-意图.md          立项：目标/非目标/降级/判据/假设/待确认
+  00-意图.md          立项：目标/非目标/三条保证/判据/假设/待确认
   01-计划.md          里程碑、卡表、依赖边、写域
   cards/<卡号>.md     一卡一文件（意图/判据/假设/证据/判定/评审）
   台账.md             偏差台账：gap / defect / explain，7 列
@@ -95,11 +95,20 @@ sdo/
 | `references/04-计划与卡.md` | 计划评审八项自检、卡面字段、依赖与写域 |
 | `references/05-读数与里程碑门.md` | 读数格式、树冻结、哈希、门签 |
 | `references/06-偏差台账.md` | kind、7 列、编号、口径统一 |
-| `references/07-无工具降级清单.md` | 能力→替代映射（query/append/verify/judge/signerd） |
+| `references/07-边界与自证.md` | 六条边界、四条「挡不住」、三条硬阻塞 |
 | `references/08-移植到新仓库.md` | 三步初始化、最小集 |
-| `presets/README.md` | 三个流程 preset 怎么选、无插件怎么执行 |
+| `presets/README.md` | 三个流程 preset 怎么选、出口勾选表怎么填 |
 
-## 10. 收卡/收门前自检
+## 10. 文本检查器
+
+```bash
+python3 .dsh/skills/sdo-flow/scripts/check.py            # 台账/表格/签字/卡/读数
+python3 .dsh/skills/sdo-flow/scripts/check.py --presets   # 再比对 preset 与设计文档
+```
+它只查**格式与结构**（列数、id 递增、必备字段、verdict 有没有写），不判断证据真假。
+收卡与出门前各跑一次；红了先修，别绕过。
+
+## 11. 收卡/收门前自检
 
 1. 意图与计划都有签字文件？ 2. 选定了 preset 且本阶段出口表填完？ 3. 每条判据都能判死？ 4. 每个判定都有命令或 `文件:行`？
 5. 台账记了？ 6. 有没有“模型自签/自审”混进来？ 7. 一卡两笔、且已脱敏？

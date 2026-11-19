@@ -39,7 +39,7 @@
 ## 边界（不是漏洞）
 
 `explore` 的 gate 里没有 `review.required`。所以**高风险卡、实现类设计条款、与发布相关的卡、被抽样命中的卡，都不许停在 explore**，必须在 `harden` 收口。
-无插件判法：开卡时在卡面写 `risk_flags`；非空 ⇒ 出口节点写 `harden`。
+判法：开卡时在卡面写 `risk_flags`；非空 ⇒ 出口节点写 `harden`。
 
 ## 等价 policy
 
