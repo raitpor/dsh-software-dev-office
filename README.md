@@ -14,7 +14,7 @@
 ## 怎么用
 
 1. 拷 `skills/sdo-flow/` 到你的 agent 能找到的位置：
-   - 支持 skill 目录：`skills/`（DSH 则是 `.dsh/skills/`；Claude Code 是 `.claude/skills/`）
+   - 支持 skill 目录的 agent：把 `skills/sdo-flow/` 放进它约定的 skills 目录（或软链过去）
    - 只有单一指令文件：把 `SKILL.md` 并进 `AGENTS.md` / `CLAUDE.md`，`references/` 放同目录
 2. 在项目里建 `.sdo/`，从 `skills/sdo-flow/templates/` 拷出意图/计划/卡/台账，按 `references/08-移植到新仓库.md` 的三步初始化。
 3. 让 agent 先读 `SKILL.md`，按七步循环走；每次人签都用三选一（签 / 改 / 不签）。
