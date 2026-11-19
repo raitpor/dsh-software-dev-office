@@ -77,8 +77,13 @@ function cards() {
     const st = text.match(/^status:\s*(open|done)/m);
     const owner = text.match(/^owner:\s*(.+)$/m);
     const deps = text.match(/依赖[:：]\s*(.+)$/m);
-    const R = text.match(/评审[:：]?\s*([^\n]*)$/m);
-    const rel = text.match(/评审者[:：]\s*([^\n|]*)/);
+    // 最近评审：优先取「## 评审」段里最后一句判词；没有段/判词就留空（board 显示 —）
+    const secParts = text.split(/^##\s+/m).find((x) => x.startsWith("评审"));
+    const sec = secParts ? secParts.split(/\n/).slice(1).join("\n") : "";
+    const verdicts = [...sec.matchAll(/[^\n]*(可收卡|可提交|改完再审|拒绝)[^\n]*/g)].map((m) => m[0].trim());
+    const lastVerdict = verdicts.length ? verdicts[verdicts.length - 1].replace(/^[-*]\s*/, "").slice(0, 60) : "";
+    const R = lastVerdict ? [null, lastVerdict] : null;
+    const rel = text.match(/^\s*[-*]?\s*评审者[:：][ \t]*([^\n|]*)/m);
     const accepted = /可收卡|可提交/.test(text);
     return { id: f.replace(/\.md$/, ""), status: st ? st[1] : "?", owner: owner ? owner[1].trim() : "", deps: deps ? deps[1].trim() : "",
       review: R ? R[1].trim() : "", reviewer: rel ? rel[1].trim() : "", accepted };
@@ -100,9 +105,9 @@ function signs() {
   if (!exists(".sdo/sign")) return [];
   return fs.readdirSync(path.join(ROOT, ".sdo/sign")).filter((f) => f.endsWith(".md")).sort().map((f) => {
     const text = read(`.sdo/sign/${f}`);
-    const time = text.match(/^-\s*时间[:：]\s*(.+)$/m);
-    const opt = text.match(/^-\s*选项[:：]\s*(.+)$/m);
-    const obj = text.match(/^-\s*被签对象[:：]\s*(.+)$/m);
+    const time = text.match(/^\s*(?:[-*]\s*)?时间[:：]\s*(.+)$/m);
+    const opt = text.match(/^\s*(?:[-*]\s*)?选项[:：]\s*(.+)$/m);
+    const obj = text.match(/^\s*(?:[-*]\s*)?被签对象[:：]\s*(.+)$/m);
     return { file: `.sdo/sign/${f}`, time: time ? time[1].trim() : "", option: opt ? opt[1].trim() : "", object: obj ? obj[1].trim() : "" };
   });
 }

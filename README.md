@@ -27,32 +27,38 @@
 1. agent 的技能列表里出现 `sdo-flow`；
 2. 能读到 `SKILL.md` 正文（随便抽读一节）。
 
-不出现就先跑 `node <skill>/scripts/check.mjs`，frontmatter 那条检查会指出问题。
+不出现就先跑 `node <skill>/scripts/check.mjs`：它**始终会检查脚本自己所在的那个 skill 目录**的 frontmatter（即使 skill 装在用户级、不在项目里），会指出 `: ` 这类问题。`--presets` 也从脚本自身目录找 `presets/`，所以安装布局（`.dsh/skills/sdo-flow/`）与开发布局（`skills/sdo-flow/`）都能跑。
 
 **更新**：改了仓库里的 `skills/sdo-flow/` 之后，重新覆盖安装位置的目录即可（例如 `rm -rf .dsh/skills/sdo-flow && cp -r skills/sdo-flow .dsh/skills/sdo-flow`）；安装目录属于本机环境，不要提交进仓库。
 
 ### 2. 在项目里初始化
 
 ```bash
-# 建流程目录（按用途分子目录，不要平铺）
+# 0) 先确认 skill 装在哪：下面用 SKILL 指它（示例是项目级安装）
+SKILL=.dsh/skills/sdo-flow
+
+# 1) 建流程目录（按用途分子目录，不要平铺）
 mkdir -p .sdo/cards .sdo/sign .sdo/readings .sdo/review .sdo/gates
 
-# 从模板拷出骨架，按用途改名
-T=skills/sdo-flow/templates
-cp $T/00-意图.md   .sdo/00-意图.md
-cp $T/01-计划.md   .sdo/01-计划.md
-cp $T/台账.md      .sdo/台账.md
-cp $T/board.md     .sdo/看板.md
-cp $T/readings.md  .sdo/readings/<M>-读数.md
-cp $T/card.md      .sdo/cards/<卡号>.md        # 每张卡一份
-cp $T/review.md    .sdo/review/<M>-计划.md     # 计划评审与卡评审各一份
-cp $T/gates.md     .sdo/gates/<M>.md           # 每段出口勾选表（与读数分开：读数门要 overall）
-cp $T/sign.md      .sdo/sign/S<n>.md           # 每次人签一份
+# 2) 起步三件（这一步就能跑检查器）
+cp $SKILL/templates/00-意图.md  .sdo/00-意图.md
+cp $SKILL/templates/01-计划.md  .sdo/01-计划.md
+cp $SKILL/templates/台账.md     .sdo/台账.md
+
+# 3) 第一次写卡时再加（每张一份）
+cp $SKILL/templates/card.md     .sdo/cards/<卡号>.md
+
+# 4) 到第一次人签 / 第一次计划评审 / 第一次读数时再拷（不要提前拷：模板里的占位会被检查器当真值报错）
+cp $SKILL/templates/sign.md     .sdo/sign/S<n>.md
+cp $SKILL/templates/review.md   .sdo/review/<M>-计划.md
+cp $SKILL/templates/gates.md    .sdo/gates/<M>.md      # 出口勾选表（与读数分开：读数门要 overall）
+cp $SKILL/templates/readings.md .sdo/readings/<M>-读数.md
+cp $SKILL/templates/board.md    .sdo/看板.md
 ```
 
 然后用编辑器写 `.sdo/00-意图.md`（目标/非目标/三条保证/判据/假设），把复述给人、问签；**没签不动工**。
 
-**最小集（只想先试）**：只留 `.sdo/00-意图.md`（立项 + 人签）、`.sdo/cards/C-01.md`（第一张卡）、`.sdo/台账.md`（可以空表）也能跑；里程碑门与读数等第二次再用。
+**最小集（只想先试）**：`.sdo/` 目录 + `00-意图.md` + `cards/M1-0.md`（卡号 `<M>-<n>`，见 references/01） + `台账.md`，并保留空的 `.sdo/sign/` 目录——第一次跑检查器只会有 1 条 WARN（“还没有签字文件，初始化期可接受”），签完 S1 即消失。里程碑读数与出口勾选表等用到时再拷模板。
 
 **多人/多会话**：一卡一文件，台账是唯一共享追加文件（冲突保留双方行、按 id 排序）；签字文件只由签字人写（代笔须人确认并注明）；评审者与作者不同分支/会话。
 

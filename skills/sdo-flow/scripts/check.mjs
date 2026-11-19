@@ -7,6 +7,7 @@
 // --presets <文件>：与外部判据源逐条比对（可用设计稿 §1.1 原文）
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 
 function findRoot(start) {
   let d = start;
@@ -19,10 +20,12 @@ function findRoot(start) {
 }
 const ROOT = findRoot(process.cwd());
 if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先按 sdo-flow 初始化"); process.exit(2); }
+const SELF = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // <skill> 目录（脚本可在项目外）
+const SELF_REL = path.relative(ROOT, SELF).split(path.sep).join("/");
 const ARGV = process.argv.slice(2);
 const ERR = [], WARN = [];
 const KINDS = new Set(["gap", "defect", "explain"]);
-const STATUS = new Set(["open", "accepted", "fixed", "closed"]);
+const STATUS = new Set(["open", "accepted", "fixed", "closed", "superseded"]);
 const err = (p, l, m) => ERR.push(`${p}:${l}: ${m}`);
 const warn = (p, l, m) => WARN.push(`${p}:${l}: ${m}`);
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8").split(/\r?\n/);
@@ -43,6 +46,7 @@ function skillDirs() {
       walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
     }
   })("", 0);
+  if (SELF_REL && !SELF_REL.startsWith("..") && !out.includes(SELF_REL)) out.push(SELF_REL);
   return out;
 }
 
@@ -66,15 +70,24 @@ function mdFiles() {
 }
 
 function cells(line) {
-  let s = line.trim();
-  if (s.startsWith("|")) s = s.slice(1);
-  if (s.endsWith("|")) s = s.slice(0, -1);
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
   const out = [];
   let cur = "", esc = false, code = false;
-  for (const ch of s) {
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
     if (esc) { cur += ch; esc = false; continue; }
     if (ch === "\\") { cur += ch; esc = true; continue; }
-    if (ch === "`") { code = !code; cur += ch; continue; }
+    if (ch === "`") {
+      // 反引号连写（``` / ``）整体算一个定界符，避免奇数个反引号把后续 | 吞掉
+      let j = i;
+      while (t[j + 1] === "`") j++;
+      cur += t.slice(i, j + 1);
+      if (j - i + 1 < 3) code = !code; // 三个及以上是围栏标记，不算行内代码
+      i = j;
+      continue;
+    }
     if (ch === "|" && !code) { out.push(cur); cur = ""; continue; }
     cur += ch;
   }
@@ -84,9 +97,11 @@ function cells(line) {
 const isSep = (l) => l !== undefined && /^\s*\|[\s:|-]+\|\s*$/.test(l);
 
 function checkTables(p, lines) {
-  let tbl = null;
+  let tbl = null, fence = false;
   for (let i = 0; i < lines.length; i++) {
     const s = lines[i].trim(), ln = i + 1;
+    if (/^(```|~~~)/.test(s)) { fence = !fence; tbl = null; continue; }
+    if (fence) continue;
     if (s.startsWith("|")) {
       const n = cells(s).length;
       if (tbl === null) {
@@ -137,15 +152,28 @@ function checkLedger(p) {
 
 function checkSigns() {
   const d = ".sdo/sign";
-  if (!exists(d)) return err(d, 0, "缺签字目录");
+  const doneCard0 = exists(".sdo/cards") && fs.readdirSync(path.join(ROOT, ".sdo/cards")).filter((f) => f.endsWith(".md"))
+    .some((f) => /^status:\s*(done|in_progress)\b/m.test(fs.readFileSync(path.join(ROOT, ".sdo/cards", f), "utf8")));
+  const hasReadings0 = exists(".sdo/readings") && fs.readdirSync(path.join(ROOT, ".sdo/readings")).some((f) => f.endsWith(".md"));
+  if (!exists(d)) return (doneCard0 || hasReadings0) ? err(d, 0, "缺签字目录") : warn(d, 0, "缺 .sdo/sign/（初始化期可接受：签 S1 前建）");
   const files = fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith(".md")).sort();
-  if (!files.length) err(d, 0, "没有签字文件");
+  if (!files.length) {
+    const doneCard = exists(".sdo/cards") && fs.readdirSync(path.join(ROOT, ".sdo/cards")).filter((f) => f.endsWith(".md"))
+      .some((f) => /^status:\s*done/m.test(fs.readFileSync(path.join(ROOT, ".sdo/cards", f), "utf8")));
+    const hasReadings = exists(".sdo/readings") && fs.readdirSync(path.join(ROOT, ".sdo/readings")).some((f) => f.endsWith(".md"));
+    if (doneCard || hasReadings) err(d, 0, "没有签字文件（已有 done 卡/读数，不能没有生效签字）");
+    else warn(d, 0, "还没有签字文件（初始化期可接受：写完意图后请人签 S1，再写计划）");
+  }
   let effective = 0;
   for (const f of files) {
     const p = `${d}/${f}`, text = read(p).join("\n");
     for (const k of ["时间", "选项", "被签对象"]) {
       if (!new RegExp(`^\\s*-?\\s*${k}[:：]\\s*\\S`, "m").test(text)) err(p, 0, `缺字段或值为空：${k}（应写成「- ${k}：…」）`);
     }
+    const tm = text.match(/^\s*-?\s*时间[:：]\s*([^\n]*)$/m);
+    const bm = text.match(/^\s*-?\s*被签对象[:：]\s*([^\n]*)$/m);
+    if (tm && /[<>]/.test(tm[1])) err(p, 0, "时间还是模板占位（<…>）：必须填真实时刻（ISO8601 带时区）");
+    if (bm && /[<>]/.test(bm[1])) err(p, 0, "被签对象还是模板占位（<…>）：必须填真实 commit / 文件哈希");
     const om = text.match(/选项[:：]\s*([^\n]*)/);
     const opt = om ? om[1] : "";
     if (/[<>]/.test(opt)) err(p, 0, "选项还是模板占位（<…>）：必须填真人回答的三选一");
@@ -163,8 +191,8 @@ function checkCards() {
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
     for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
-    const sm = text.match(/^status:\s*(open|done)/m);
-    if (!sm) err(p, 0, "缺 status: open|done");
+    const sm = text.match(/^status:\s*(open|in_progress|done)/m);
+    if (!sm) err(p, 0, "缺 status: open|in_progress|done");
     if (sm && sm[1] === "done") {
       // 证据表至少一行数据（表头 + 分隔行之后）
       const at = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
@@ -178,6 +206,39 @@ function checkCards() {
         }
       }
       if (!rows) warn(p, 0, "status: done 但证据表没有数据行");
+      // done 卡：判据段点名的每条 Cx，都要在证据表里有一行非空命令/文件:行
+      const critSec = (() => {
+        const a = lines.findIndex((l) => /^##\s*判据(?:\s|$)/.test(l.trim()));
+        if (a < 0) return "";
+        const b = lines.findIndex((l, i) => i > a && /^##\s/.test(l.trim()));
+        return lines.slice(a + 1, b < 0 ? undefined : b).join("\n");
+      })();
+      const critIds = [];
+      for (const m of critSec.matchAll(/\b(C\d+)\s*[–—~-]\s*C?(\d+)\b/g)) {
+        for (let n = +m[1].slice(1); n <= +m[2]; n++) critIds.push(`C${n}`);
+      }
+      for (const m of critSec.matchAll(/\bC(\d+)\b/g)) critIds.push(`C${m[1]}`);
+      const critSet = [...new Set(critIds)];
+      if (critIds.length) {
+        const at2 = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
+        const evRows = [];
+        if (at2 >= 0) for (let i = at2 + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
+          const s2 = lines[i].trim();
+          if (s2.startsWith("|") && !isSep(s2)) evRows.push(cells(s2));
+        }
+        const filled = new Set();
+        for (const r of evRows) {
+          const id = (r[0] || "").replace(/`/g, "").trim();
+          const rest = r.slice(1).map((x) => x.trim()).filter(Boolean).join(" ");
+          // 证据行首格可写「C1」「C1–C3」「C1、C2」
+          const rowIds = new Set();
+          for (const m of id.matchAll(/C(\d+)\s*[–—~-]\s*C?(\d+)/g)) for (let n = +m[1]; n <= +m[2]; n++) rowIds.add(`C${n}`);
+          for (const m of id.matchAll(/C(\d+)/g)) rowIds.add(`C${m[1]}`);
+          if (rest && !/^[—–-]$/.test(rest)) for (const x of rowIds) if (critSet.includes(x)) filled.add(x);
+        }
+        const missing = critSet.filter((id) => !filled.has(id));
+        if (missing.length) err(p, 0, `status: done 但判据没有可复跑证据：${missing.join("、")}（证据表每行须写命令或 文件:行）`);
+      }
       const rel = lines.findIndex((l) => /^##\s*评审(?:\s|$)/.test(l.trim()));
       const relText = rel >= 0 ? lines.slice(rel, rel + 20).join("\n") : "";
       if (!/评审者[:：]/.test(relText)) warn(p, 0, "评审段缺「评审者」（须写明独立性；无第二席位时写「自审（非独立）」）");
@@ -200,11 +261,42 @@ function checkReadings() {
     const m1 = lines[idx].match(/overall\b[^A-Za-z\n]*(pass|partial|fail)\b/i);
     if (m1) v = m1[1];
     else {
-      const m2 = (lines[idx + 1] || "").match(/^\s*[*_`\s:：|—–-]*(pass|partial|fail)\b/i);
-      if (m2) v = m2[1];
+      // 允许中间夹空行（最多 2 行）
+      for (let k = 1; k <= 2 && !v; k++) {
+        const m2 = (lines[idx + k] || "").match(/^\s*[*_`\s:：|—–-]*(pass|partial|fail)\b/i);
+        if (m2) v = m2[1];
+      }
     }
     if (!v) err(p, idx + 1, "overall 的取值必须是 pass/partial/fail（可同行，或写在紧接的下一行）");
-    if (!V.test(lines.join("\n"))) err(p, 0, "缺逐条 verdict（pass/partial/fail）");
+    if (/[<>]/.test(lines.join("\n"))) err(p, 0, "还有模板占位（<…>）：读数必须写实测值与命令，不留占位");
+    if (/\bTODO\b/.test(lines.join("\n"))) err(p, 0, "还有 TODO：读数必须给结论（未做就写 partial 并说明）");
+    // 逐条读数：每个 `## R…` 段内必须有 verdict（overall 行不算）
+    let cur = null; const secs = [];
+    for (const l of lines) {
+      const m = l.match(/^##\s+(.*)$/);
+      if (m) { cur = { title: m[1].trim(), body: [] }; secs.push(cur); }
+      else if (cur) cur.body.push(l);
+    }
+    const items = secs.filter((x) => /^R\d+/i.test(x.title));
+    // 两种写法都接受：①每个 `## R…` 段内写 verdict；②表格行 `| R1 | … | pass |`
+    const tableRows = [...lines.join("\n").matchAll(/^\|\s*(R\d+)\s*\|[^\n]*$/gim)].map((m) => m[0]);
+    const rowVerdict = (row) => {
+      const cs = cells(row);
+      const last = (cs[cs.length - 1] || "").match(/\b(pass|partial|fail)\b/i);
+      return last ? last[1].toLowerCase() : ((row.match(/\b(pass|partial|fail)\b/i) || [])[1] || "").toLowerCase();
+    };
+    if (!items.length && !tableRows.length) err(p, 0, "缺逐条读数（每条形如「## R1 …」段内写 verdict，或表格行「| R1 | … | pass |」）");
+    for (const it of items) if (!V.test(it.body.join("\n"))) err(p, 0, `读数段「${it.title}」内缺 verdict（pass/partial/fail）`);
+    for (const row of tableRows) if (!V.test(row)) err(p, 0, `读数表格行缺 verdict：${row.slice(0, 40)}`);
+    // overall 必须由逐条推出来：任一条 fail ⇒ overall=fail；否则任一条 partial ⇒ overall=partial
+    if (v) {
+      const per = [...items.map((it) => {
+        const m = it.body.join("\n").match(/verdict[:：]\s*\W*(pass|partial|fail)\b/i) || it.body.join("\n").match(/\b(pass|partial|fail)\b/i);
+        return m ? m[1].toLowerCase() : "";
+      }), ...tableRows.map(rowVerdict)].filter(Boolean);
+      if (per.includes("fail") && v.toLowerCase() !== "fail") err(p, idx + 1, `overall=${v} 与逐条不一致：有读数判 fail ⇒ overall 必须是 fail`);
+      else if (!per.includes("fail") && per.includes("partial") && v.toLowerCase() === "pass") err(p, idx + 1, `overall=pass 与逐条不一致：有读数判 partial ⇒ overall 必须是 partial`);
+    }
   }
 }
 
@@ -247,10 +339,13 @@ function checkPresets() {
     }
   }
 
+  if (doc && !Object.keys(docGates).length && !Object.keys(docStages).length) {
+    return err("presets", 0, `判据源格式不支持：${ext} 里找不到「G_x: { criteria: [...] }」或「| waterfall | … |」形态的片段（设计稿需先摘出 §1.1）`);
+  }
   for (const f of PRESET_FILES) {
     const key = f.replace(".md", "");
-    const p = `skills/sdo-flow/presets/${f}`;
-    const text = read(p).join("\n");
+    const p = `presets/${f}`;
+    const text = fs.readFileSync(path.join(SELF, "presets", f), "utf8");
 
     const gotStages = {};
     for (const m of text.matchAll(/^###\s*`([a-z_]+)\[([^\]]*)\]`/gm)) {
@@ -301,10 +396,12 @@ function getPresetGates(key) {
 
 // SKILL.md 的 YAML frontmatter：一个 ": " 就能让严格 YAML 解析失败，整个 skill 会被静默忽略
 function checkFrontmatter() {
-  for (const dir of skillDirs()) {
-    const p = `${dir}/SKILL.md`;
-    if (!exists(p)) continue;
-    const lines = read(p);
+  const dirs = [SELF, ...skillDirs().map((d) => path.join(ROOT, d))];
+  for (const dir of [...new Set(dirs)]) {
+    const abs = path.join(dir, "SKILL.md");
+    const p = path.relative(ROOT, abs).split(path.sep).join("/") || "SKILL.md";
+    if (!fs.existsSync(abs)) continue;
+    const lines = fs.readFileSync(abs, "utf8").split(/\r?\n/);
     if (lines[0].trim() !== "---") { err(p, 1, "缺少 YAML frontmatter（首行应为 ---）"); continue; }
     const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
     if (end < 0) { err(p, 1, "frontmatter 没有结束的 ---"); continue; }
