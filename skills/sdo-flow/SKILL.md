@@ -118,6 +118,7 @@ node <skill>/scripts/gate.mjs G_req_exit  # 只查一道 gate；--file 指定文
 node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图；任意视图加 --json
 node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）
 node <skill>/scripts/card.mjs new|evidence                 # 卡骨架与证据行：同判据一行、重复原地更新；--run 真跑（30s 超时）
+node <skill>/scripts/sign.mjs draft --milestone M4          # 签字材料 draft：只出事实到 stdout、不写文件；退出码 0/1/2
 ```
 
 `<skill>` 是这套流程包在你项目里的实际目录（例如 `skills/sdo-flow`）。**收卡与出门前各跑一次**；红了先修，别绕过。
