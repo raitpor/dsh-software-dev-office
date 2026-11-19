@@ -177,8 +177,8 @@ function checkSigns() {
     const om = text.match(/选项[:：]\s*([^\n]*)/);
     const opt = om ? om[1] : "";
     if (/[<>]/.test(opt)) err(p, 0, "选项还是模板占位（<…>）：必须填真人回答的三选一");
-    else if (!/(签|改|不签)/.test(opt)) err(p, 0, "选项不是三选一（签… / 改… / 不签…）");
-    if (/不签/.test(opt)) continue; // 「不签」不是生效签字，不计入
+    else if (!/^\s*(?:[-*]\s*)?[*_`]*\s*(签|改|不签)[：:]/.test(opt)) err(p, 0, "选项必须以「签：/改：/不签：」开头（不允许“未签/待签/代签”）");
+    if (/^\s*(?:[-*]\s*)?[*_`]*\s*不签[：:]/.test(opt)) continue; // 「不签」不是生效签字，不计入
     effective++;
     if (!/^\s*-?\s*方式[^：:\n]{0,24}[:：]\s*\S/m.test(text)) warn(p, 0, "建议写明方式（本人 / 代笔（须写确认方式））");
   }

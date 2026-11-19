@@ -48,17 +48,17 @@ cp $SKILL/templates/台账.md     .sdo/台账.md
 # 3) 第一次写卡时再加（每张一份）
 cp $SKILL/templates/card.md     .sdo/cards/<卡号>.md
 
-# 4) 到第一次人签 / 第一次计划评审 / 第一次读数时再拷（不要提前拷：模板里的占位会被检查器当真值报错）
+# 4) 到第一次人签 / 第一次计划评审 / 第一次读数时再拷（sign 与 readings 提前拷会被占位检查报错；gates/review/board 不会）
 cp $SKILL/templates/sign.md     .sdo/sign/S<n>.md
 cp $SKILL/templates/review.md   .sdo/review/<M>-计划.md
 cp $SKILL/templates/gates.md    .sdo/gates/<M>.md      # 出口勾选表（与读数分开：读数门要 overall）
-cp $SKILL/templates/readings.md .sdo/readings/<M>-读数.md
+cp $SKILL/templates/readings.md .sdo/readings/<M>.md
 cp $SKILL/templates/board.md    .sdo/看板.md
 ```
 
 然后用编辑器写 `.sdo/00-意图.md`（目标/非目标/三条保证/判据/假设），把复述给人、问签；**没签不动工**。
 
-**最小集（只想先试）**：`.sdo/` 目录 + `00-意图.md` + `cards/M1-0.md`（卡号 `<M>-<n>`，见 references/01） + `台账.md`，并保留空的 `.sdo/sign/` 目录——第一次跑检查器只会有 1 条 WARN（“还没有签字文件，初始化期可接受”），签完 S1 即消失。里程碑读数与出口勾选表等用到时再拷模板。
+**最小集（只想先试）**：`.sdo/` 目录 + `00-意图.md` + `cards/M1-0.md`（卡号 `<M>-<n>`，见 references/01） + `台账.md`，并保留空的 `.sdo/sign/` 目录——第一次跑检查器会有 2 条 WARN（“还没有签字文件”与“还没有读数”，都是初始化期可接受），随 S1 与首次读数消失。里程碑读数与出口勾选表等用到时再拷模板。
 
 **多人/多会话**：一卡一文件，台账是唯一共享追加文件（冲突保留双方行、按 id 排序）；签字文件只由签字人写（代笔须人确认并注明）；评审者与作者不同分支/会话。
 
