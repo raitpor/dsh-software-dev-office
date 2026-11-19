@@ -118,7 +118,6 @@ function checkCards() {
     const p = `${d}/${f}`, text = read(p).join("\n");
     for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
     if (!/^status:\s*(open|done)/m.test(text)) err(p, 0, "缺 status: open|done");
-    if (!text.includes("判定")) err(p, 0, "缺「判定」段");
   }
 }
 
