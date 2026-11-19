@@ -4,9 +4,8 @@ description: >-
   Use when a project needs SDO discipline (intent -> reviewed plan -> cards ->
   two-round review -> human sign -> milestone readings) and you want it carried
   entirely in files: Markdown ledgers as the source of truth, option-based
-  questions as signatures, and reproducible commands as gates. Works with any
-  agent and any repository; no plugin, no database, no special tools beyond
-  git (optional) and node (for the two checker scripts).
+  questions as signatures, and reproducible commands as gates. Works in any
+  agent and any repository, with nothing beyond the files themselves.
 whenToUse: >-
   需要“先对齐再动手、每步可审计、防漂移”的项目管理，用文件与命令把流程落地时
   （客户机器、临时会话、别人的仓库、纯 Web 会话）。
@@ -16,13 +15,11 @@ whenToUse: >-
 
 一句话：**文件是真源，账本代替事件表，问答代替签名，命令代替门禁。**
 
-## 0. 这是什么
+## 0. 本文讲什么
 
-一套**纯文本**的项目管理流程：规则在 `SKILL.md` 与 `references/`，一步一文件，人证用问答选项，门禁用可复跑命令。它不假设任何运行时（插件、数据库、专用工具都不需要）。
+只讲**项目管理流程本身**：顺序、判据、人签、两轮评审、偏差台账、读数门。所有产物都在项目里的 `.sdo/`（见 §4）。
 
-项目产物固定放 **`.sdo/`**：`00-意图.md`、`01-计划.md`、`cards/`、`sign/`、`readings/`、`review/`、`台账.md`。
-
-把它放进你的 agent 或另一个仓库的步骤，见仓库 `README.md`。
+流程之外的事（这套东西是什么、怎么放进你的 agent、附带工具、最小集）见仓库 `README.md`，本文不重复。
 
 ## 1. 何时用 / 何时不用
 
@@ -95,7 +92,7 @@ whenToUse: >-
 
 - 评审者必须是**没写这段的人/会话**；没有独立席位就明写“自审，非独立”。判词三选一：可收卡 / 改完再审 / 拒绝；问题分 P0–P3，每条带 `文件:行号` 或可复现命令。“可以提交”只对**它看过的那棵树**成立；改一行就要复认。
 
-## 10. 参考资源（按需加载，不要整包读）
+## 10. 参考资源（按需加载）
 
 | 文件 | 什么时候看 |
 |---|---|
@@ -106,22 +103,10 @@ whenToUse: >-
 | `references/05-读数与里程碑门.md` | 读数格式、树冻结、哈希、门签 |
 | `references/06-偏差台账.md` | kind、7 列、编号、口径统一 |
 | `references/07-边界与自证.md` | 边界、四条「挡不住」、三条硬阻塞 |
-| `references/08-移植到新仓库.md` | 三步初始化、最小集 |
 
-## 11. 文本检查器与快捷视图
+## 11. 证据要可复跑
 
-```bash
-node <skill>/scripts/check.mjs            # 台账/表格/签字/卡/读数（默认只查 .sdo/ 与带 SKILL.md 的 skill 目录）
-node <skill>/scripts/check.mjs --presets   # preset 与发布快照比对（可再传外部判据源文件）
-node <skill>/scripts/check.mjs --all       # 连仓库其它 .md 一起查（默认不查，免被别人的文档绊倒）
-```
-`<skill>` 是这套 skill 在你项目/宿主里的实际目录（例如 `skills/sdo-flow`）。
-只需要 `node`；没有 Node 时退回人工，并在签字文件写“检查方式：人工”。只查**格式与结构**，不判断证据真假。
-收卡与出门前各跑一次；红了先修，别绕过。
-
-**快捷视图**（把 `.sdo/` 的文件拼成一屏，省得每次翻五个文件）：
-
-`view.mjs` 六个只读视图：`state`（总览）、`queue`（待办）、`board`、`ledger --open`、`signs`、`plan`；任意视图加 `--json` 出结构化数据。
+门禁、收卡、读数的每条 pass 都要能落到一条**别人能重跑的命令**或一个 `文件:行`；写不出命令的，判 partial 并写“缺什么”。没有附带工具时，手工命令同样算证据。
 
 ## 12. 收卡/收门前自检
 

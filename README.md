@@ -33,18 +33,52 @@
 
 ### 2. 在项目里初始化
 
-1. 建 `.sdo/`：`mkdir -p .sdo/cards .sdo/sign .sdo/readings .sdo/review .sdo/gates`；
-2. 从 `skills/sdo-flow/templates/` 拷出意图/计划/台账/看板，按 `references/08-移植到新仓库.md` 的三步初始化；
-3. 让 agent 先读 `SKILL.md`，按七步循环走；每次人签都用三选一（签 / 改 / 不签）。
+```bash
+# 建流程目录（按用途分子目录，不要平铺）
+mkdir -p .sdo/cards .sdo/sign .sdo/readings .sdo/review .sdo/gates
 
-可选：`node <skill>/scripts/check.mjs`（账本/表格/签字/卡/读数 + preset 自洽）与 `node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan`（快捷视图，`--json` 可解析）。
+# 从模板拷出骨架，按用途改名
+T=skills/sdo-flow/templates
+cp $T/00-意图.md   .sdo/00-意图.md
+cp $T/01-计划.md   .sdo/01-计划.md
+cp $T/台账.md      .sdo/台账.md
+cp $T/board.md     .sdo/看板.md
+cp $T/readings.md  .sdo/readings/<M>-读数.md
+cp $T/card.md      .sdo/cards/<卡号>.md        # 每张卡一份
+cp $T/review.md    .sdo/review/<M>-计划.md     # 计划评审与卡评审各一份
+cp $T/gates.md     .sdo/gates/<M>.md           # 每段出口勾选表（与读数分开：读数门要 overall）
+cp $T/sign.md      .sdo/sign/S<n>.md           # 每次人签一份
+```
+
+然后用编辑器写 `.sdo/00-意图.md`（目标/非目标/三条保证/判据/假设），把复述给人、问签；**没签不动工**。
+
+**最小集（只想先试）**：只留 `.sdo/00-意图.md`（立项 + 人签）、`.sdo/cards/C-01.md`（第一张卡）、`.sdo/台账.md`（可以空表）也能跑；里程碑门与读数等第二次再用。
+
+**多人/多会话**：一卡一文件，台账是唯一共享追加文件（冲突保留双方行、按 id 排序）；签字文件只由签字人写（代笔须人确认并注明）；评审者与作者不同分支/会话。
+
+## 检查器与快捷视图
+
+```bash
+node <skill>/scripts/check.mjs             # 台账/表格/签字/卡/读数（默认只查 .sdo/ 与带 SKILL.md 的 skill 目录）
+node <skill>/scripts/check.mjs --presets   # preset 与发布快照比对（可再传外部判据源文件）
+node <skill>/scripts/check.mjs --all       # 连仓库其它 .md 一起查（默认不查，免被别人的文档绊倒）
+node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图，--json 出结构化数据
+```
+
+只查**格式与结构**，不判断证据真假；需要 `node`，没有时退回人工并在签字文件写“检查方式：人工”。脚本是可选辅助，流程本身不依赖它——证据仍以“可复跑命令或 `文件:行`”为准。
+
+## 适用与成本
+
+- **值**：多会话、多 agent、要审计、要交接时——它把“谁在什么时候同意了什么”“为什么改了口径”落到文件与 git 历史里。
+- **不值**：一次性小改、单人当天收尾的活——每张卡固定要 5 份文件、两轮评审、追问人签，重型流程会压过事情本身。
+- 若已有更严格的合规流程，不要两套并行。
 
 ## 目录
 
 ```
 skills/sdo-flow/
   SKILL.md            入口：这是什么 / 边界 / 选 preset / 七步 / 人签 / 判据 / 台账 / 两轮评审 / 自检
-  references/01…08    按需加载：真源与账本、判据与门禁、签字与评审、计划与卡、读数与里程碑门、偏差台账、边界与自证、移植
+  references/01…07    按需加载：真源与账本、判据与门禁、签字与评审、计划与卡、读数与里程碑门、偏差台账、边界与自证
   presets/            瀑布 / 快速原型 / 增量：阶段序列 + 每个出口的判据勾选表 + 可迁移 policy
   templates/          9 份模板：意图 / 计划 / 卡 / 台账 / 看板 / gates / 读数 / 评审 / 签字
   scripts/check.mjs   文本检查器（Node 零依赖；--presets 校验 preset 自洽与发布快照）
