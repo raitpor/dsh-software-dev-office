@@ -116,6 +116,7 @@ node <skill>/scripts/gate.mjs             # 阶段门：默认判所有勾选表
 node <skill>/scripts/gate.mjs --list      # 只列 preset 的 gate 与现有勾选表，不判
 node <skill>/scripts/gate.mjs G_req_exit  # 只查一道 gate；--file 指定文件；--json 出机器可读
 node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图；任意视图加 --json
+node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）
 ```
 
 `<skill>` 是这套流程包在你项目里的实际目录（例如 `skills/sdo-flow`）。**收卡与出门前各跑一次**；红了先修，别绕过。
