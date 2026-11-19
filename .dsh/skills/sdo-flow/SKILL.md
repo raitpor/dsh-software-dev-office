@@ -99,7 +99,7 @@ sdo/
 | `references/08-移植到新仓库.md` | 三步初始化、最小集 |
 | `presets/README.md` | 三个流程 preset 怎么选、出口勾选表怎么填 |
 
-## 10. 文本检查器
+## 10. 文本检查器与快捷视图
 
 ```bash
 node .dsh/skills/sdo-flow/scripts/check.mjs            # 台账/表格/签字/卡/读数
@@ -107,6 +107,18 @@ node .dsh/skills/sdo-flow/scripts/check.mjs --presets   # 再比对 preset 与�
 ```
 零依赖、Windows/Linux 通用（宿主本身跑 Node，必有 `node`）。它只查**格式与结构**（列数、id 递增、必备字段、verdict 有没有写），不判断证据真假。
 收卡与出门前各跑一次；红了先修，别绕过。
+
+**快捷视图**（把 `sdo/` 的文件拼成 agent 好读的一屏，省得每次翻五个文件）：
+
+```bash
+node .dsh/skills/sdo-flow/scripts/view.mjs state    # 总览：卡/台账/签字/读数
+node .dsh/skills/sdo-flow/scripts/view.mjs queue    # 待办：open 卡、未修台账、缺签字
+node .dsh/skills/sdo-flow/scripts/view.mjs board    # 卡板
+node .dsh/skills/sdo-flow/scripts/view.mjs ledger --open
+node .dsh/skills/sdo-flow/scripts/view.mjs signs    # 签字索引
+node .dsh/skills/sdo-flow/scripts/view.mjs plan     # 判死读数 + 卡表摘要
+```
+任何视图加 `--json` 输出结构化数据（给脚本或后续处理用）。视图只读，不改文件。
 
 ## 11. 收卡/收门前自检
 
