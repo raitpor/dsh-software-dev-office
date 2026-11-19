@@ -2,7 +2,8 @@
 // 门禁检查：把某张出口勾选表（.sdo/gates/<M>.md）与计划里的 preset 逐条对账。
 //
 // 用法（项目内任意目录）：
-//   node <skill>/scripts/gate.mjs                 # 列出计划里引用的 gate 与现有勾选表状态
+//   node <skill>/scripts/gate.mjs                 # 默认：判所有勾选表（有 fail/缺项 ⇒ exit 1）
+//   node <skill>/scripts/gate.mjs --list          # 只列出计划里引用的 gate 与现有勾选表
 //   node <skill>/scripts/gate.mjs G_frame_exit    # 检查指定 gate（按 gate id 找到对应文件/段落）
 //   node <skill>/scripts/gate.mjs --file .sdo/gates/M1.md
 //   node <skill>/scripts/gate.mjs G_frame_exit --json
@@ -94,37 +95,48 @@ function parseGateFile(file, gateId) {
     end = next < 0 ? lines.length : next;
   }
   const rows = [];
+  let idx = { crit: 0, verdict: -1, evidence: -1 };
   for (let i = start; i < end; i++) {
     const l = lines[i].trim();
     if (!l.startsWith("|") || isSep(l)) continue;
     const c = cells(l);
     if (!c.length) continue;
-    if (/^(#|判据|编号)$/.test(c[0]) || /判据说明/.test(c[1] || "")) continue; // 表头
+    if (/^(#|判据|编号)$/.test(c[0]) || /判据说明/.test(c[1] || "")) { idx = headerIndex(c); continue; } // 表头
     rows.push(c);
   }
-  return rows;
+  return { rows, idx };
 }
 
-// 判定列：取最后出现 pass/partial/fail 的格；证据列取含命令/文件:行的格
-function judgeRow(cellsArr) {
-  const norm = (x) => (x || "").toLowerCase();
-  let verdict = "";
-  for (const c of cellsArr) { const m = norm(c).match(/\b(pass|partial|fail)\b/); if (m) verdict = m[1]; }
+// 列按表头定位：判定列=表头含“判定/结论/状态”，证据列=含“证据/命令/复跑”。取不到就报错，不猜。
+function headerIndex(header) {
+  const norm = (x) => (x || "").replace(/[\s`*_]/g, "");
+  return {
+    crit: header.findIndex((h) => /判据|检查项|条目/.test(norm(h))),
+    verdict: header.findIndex((h) => /判定|结论|状态/.test(norm(h))),
+    evidence: header.findIndex((h) => /证据|命令|复跑|依据/.test(norm(h))),
+  };
+}
+function judgeRow(cellsArr, idx) {
+  const verdictCell = idx.verdict >= 0 ? cellsArr[idx.verdict] || "" : "";
+  const m = verdictCell.toLowerCase().match(/\b(pass|partial|fail)\b/);
   const plain = (x) => (x || "").replace(/`/g, "");
-  const crit = plain(cellsArr[0]).match(/[a-z_]+\.[a-z_]+/)?.[0] || plain(cellsArr[1]).match(/[a-z_]+\.[a-z_]+/)?.[0] || "";
-  const evidence = cellsArr.find((c) => /`|文件:|:\d+/.test(c) && !/\b(pass|partial|fail)\b/i.test(c)) || "";
-  return { crit, verdict, evidence };
+  const crit = plain(idx.crit >= 0 ? cellsArr[idx.crit] : cellsArr[0]).match(/[a-z_]+\.[a-z_]+/)?.[0] || "";
+  const evidence = idx.evidence >= 0 ? (cellsArr[idx.evidence] || "") : "";
+  return { crit, verdict: m ? m[1] : "", evidence };
 }
 
 const CORE = ["spec_set.signed", "assumption_set.signed", "provenance.present"];
 const PLACEHOLDERS = /^(|<.*>|—|-|无|略|无证据|todo|tbd|待补|看过了)$/i;
 
 function checkGate(file, gateId, wantCriteria, problems, warnings) {
-  const rows = parseGateFile(file, gateId);
-  if (!rows) { problems.push(`${file}: 找不到 gate ${gateId} 的勾选表`); return { rows: [], fails: [], partials: [] }; }
+  const parsed = parseGateFile(file, gateId);
+  if (!parsed) { problems.push(`${file}: 找不到 gate ${gateId} 的勾选表`); return { rows: [], fails: [], partials: [] }; }
+  const { rows, idx } = parsed;
+  if (idx.verdict < 0) { problems.push(`${file}: ${gateId} 的表头里没有“判定/结论/状态”列（不能从别的列猜）`); return { rows: [], fails: [], partials: [] }; }
+  if (idx.evidence < 0) { problems.push(`${file}: ${gateId} 的表头里没有“证据/命令/复跑/依据”列（不能从别的列猜）`); return { rows: [], fails: [], partials: [] }; }
   const seen = new Map();
   for (const r of rows) {
-    const j = judgeRow(r);
+    const j = judgeRow(r, idx);
     if (!j.crit) {
       // 允许“说明行”（没有判据名），但判定列必须有值，否则算缺项
       if (!j.verdict) problems.push(`${file}: 有一行既没有判据名也没有判定`);
@@ -154,10 +166,10 @@ function checkGate(file, gateId, wantCriteria, problems, warnings) {
   return { rows: [...seen.entries()].map(([crit, j]) => ({ crit, ...j })), fails, partials };
 }
 
-// 人签接受 partial：第 3 节存在且选项以“签：”开头
+// 人签接受 partial：第 3 节存在且选项是「签：接受…」（不是“签：不签/签：返工”这类前缀巧合）
 function signatureAcceptsPartial(file, text) {
   const sec = text.split(/^##\s*3\./m)[1] || "";
-  return /^\s*[-*]?\s*选项[：:]\s*[*_`]*\s*签[：:]/m.test(sec);
+  return /^\s*[-*]?\s*选项[：:]\s*[*_`]*\s*签[：:]\s*[*_`]*\s*接受/m.test(sec);
 }
 
 // ---------- 主流程 ----------
@@ -165,7 +177,7 @@ const plan = planInfo();
 const byFile = ARGV.includes("--file") ? ARGV[ARGV.indexOf("--file") + 1] : null;
 const wanted = ARGV.find((a) => /^G_[a-z_]+$/.test(a)) || null;
 
-if (ARGV.includes("--list") || (!byFile && !wanted)) {
+if (ARGV.includes("--list")) {
   const crit = presetCriteria(plan?.preset);
   const files = gateFiles();
   const lines = [];
@@ -183,12 +195,14 @@ const problems = [], warnings = [], results = [];
 const targets = byFile ? [byFile] : gateFiles();
 if (!targets.length) die("没有 .sdo/gates/*.md");
 
+if (!plan?.preset) die("计划里没有写 preset：<name>（无法知道该 gate 要求哪些判据）");
 const critMap = presetCriteria(plan?.preset);
 for (const f of targets) {
   if (!fs.existsSync(path.join(ROOT, f))) die(`文件不存在：${f}`);
   const text = read(f);
   const gids = wanted ? [wanted] : [...new Set([...text.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1]))];
   if (!gids.length) { problems.push(`${f}: 找不到 gate id（应写 G_xxx）`); continue; }
+  if (wanted && !new RegExp(`\\b${wanted}\\b`).test(text)) { problems.push(`${f}: 找不到 gate ${wanted}（文件里没有这个 id）`); continue; }
   for (const gid of gids) {
     const want = critMap?.[gid] || null;
     const r = checkGate(f, gid, want, problems, warnings);
