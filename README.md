@@ -58,14 +58,7 @@ cp $T/sign.md      .sdo/sign/S<n>.md           # 每次人签一份
 
 ## 检查器与快捷视图
 
-```bash
-node <skill>/scripts/check.mjs             # 台账/表格/签字/卡/读数（默认只查 .sdo/ 与带 SKILL.md 的 skill 目录）
-node <skill>/scripts/check.mjs --presets   # preset 与发布快照比对（可再传外部判据源文件）
-node <skill>/scripts/check.mjs --all       # 连仓库其它 .md 一起查（默认不查，免被别人的文档绊倒）
-node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图，--json 出结构化数据
-```
-
-只查**格式与结构**，不判断证据真假；需要 `node`，没有时退回人工并在签字文件写“检查方式：人工”。脚本是可选辅助，流程本身不依赖它——证据仍以“可复跑命令或 `文件:行`”为准。
+随包提供两个零依赖 Node 脚本：`check.mjs`（台账/表格/签字/卡/读数，`--presets` 比 preset 与发布快照）与 `view.mjs`（六个只读视图）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工，安装目录里的脚本随包一起拷。
 
 ## 适用与成本
 
