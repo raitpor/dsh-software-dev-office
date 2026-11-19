@@ -30,14 +30,22 @@ const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const lines = (p) => read(p).split(/\r?\n/);
 
 function cells(line) {
-  let s = line.trim();
-  if (s.startsWith("|")) s = s.slice(1);
-  if (s.endsWith("|")) s = s.slice(0, -1);
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
   const out = []; let cur = "", esc = false, code = false;
-  for (const ch of s) {
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
     if (esc) { cur += ch; esc = false; continue; }
     if (ch === "\\") { cur += ch; esc = true; continue; }
-    if (ch === "`") { code = !code; cur += ch; continue; }
+    if (ch === "`") {
+      let j = i;
+      while (t[j + 1] === "`") j++;
+      cur += t.slice(i, j + 1);
+      if (j - i + 1 < 3) code = !code; // 三个及以上是围栏标记，不算行内代码
+      i = j;
+      continue;
+    }
     if (ch === "|" && !code) { out.push(cur); cur = ""; continue; }
     cur += ch;
   }
