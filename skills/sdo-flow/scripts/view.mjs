@@ -46,7 +46,8 @@ function cells(line) {
 }
 const isSep = (l) => l !== undefined && /^\s*\|[\s:|-]+\|\s*$/.test(l);
 
-/** 抽出文件里第一张表头含 key 的表 → [ {header:[], rows:[[]], at} ] */
+const warnRagged = [];
+/** 抽出文件里的表（列数不齐的行补齐并在末尾提示，不再整表丢弃） */
 function tables(p) {
   const ls = lines(p); const out = [];
   for (let i = 0; i < ls.length; i++) {
@@ -57,7 +58,12 @@ function tables(p) {
       if (isSep(ls[j])) continue;
       rows.push(cells(ls[j]));
     }
-    if (rows.length && rows.every((r) => r.length === header.length)) out.push({ header, rows, at: i + 1 });
+    if (rows.length) {
+      const ragged = rows.filter((r) => r.length !== header.length).length;
+      if (ragged) warnRagged.push(`${p}:${i + 1}: ${ragged} 行列数 ≠ 表头 ${header.length}`);
+      rows.forEach((r) => { while (r.length < header.length) r.push(""); });
+      out.push({ header, rows, at: i + 1 });
+    }
     i = j;
   }
   return out;
@@ -72,7 +78,10 @@ function cards() {
     const owner = text.match(/^owner:\s*(.+)$/m);
     const deps = text.match(/依赖[:：]\s*(.+)$/m);
     const R = text.match(/评审[:：]?\s*([^\n]*)$/m);
-    return { id: f.replace(/\.md$/, ""), status: st ? st[1] : "?", owner: owner ? owner[1].trim() : "", deps: deps ? deps[1].trim() : "", review: R ? R[1].trim() : "" };
+    const rel = text.match(/评审者[:：]\s*([^\n|]*)/);
+    const accepted = /可收卡|可提交/.test(text);
+    return { id: f.replace(/\.md$/, ""), status: st ? st[1] : "?", owner: owner ? owner[1].trim() : "", deps: deps ? deps[1].trim() : "",
+      review: R ? R[1].trim() : "", reviewer: rel ? rel[1].trim() : "", accepted };
   });
 }
 
@@ -103,9 +112,20 @@ function readings() {
   const out = [];
   for (const f of fs.readdirSync(path.join(ROOT, ".sdo/readings")).filter((x) => x.endsWith(".md")).sort()) {
     const text = read(`.sdo/readings/${f}`);
-    const overall = text.match(/overall[^\n]*?(pass|partial|fail)/i);
-    const items = [...text.matchAll(/\b(R\d+)\b[^\n]*?\b(pass|partial|fail)\b/gi)].map((m) => ({ id: m[1], verdict: m[2].toLowerCase() }));
-    out.push({ file: `.sdo/readings/${f}`, overall: overall ? overall[1].toLowerCase() : "", items });
+    const ls = text.split(/\r?\n/);
+    const HEAD = /^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?[*_`]*overall\b/i;
+    const at = ls.findIndex((l) => HEAD.test(l));
+    let v = "";
+    if (at >= 0) {
+      const m1 = ls[at].match(/overall\b[^A-Za-z\n]*(pass|partial|fail)\b/i);
+      const m2 = (ls[at + 1] || "").match(/^\s*[*_`\s:：|—–-]*(pass|partial|fail)\b/i);
+      v = (m1 ? m1[1] : m2 ? m2[1] : "").toLowerCase();
+    }
+    const items = [...text.matchAll(/^\|\s*(R\d+)\s*\|([^\n]*)$/gim)].map((m) => {
+      const vm = m[2].match(/\b(pass|partial|fail)\b/i);
+      return { id: m[1], verdict: vm ? vm[1].toLowerCase() : "" };
+    });
+    out.push({ file: `.sdo/readings/${f}`, overall: v, items });
   }
   return out;
 }
@@ -146,7 +166,15 @@ const out = {
     for (const c of openCards) items.push(`- [卡] ${c.id}（${c.status}）${c.owner ? ` · ${c.owner}` : ""}`);
     for (const r of openLedger) items.push(`- [台账] ${r.id} ${r.kind} · ${r.what}`);
     if (!SG.length) items.push("- [签字] 还没有任何签字文件（流程第 1 步就卡住了）");
-    if (RD.some((r) => !r.overall)) items.push("- [读数] 有读数文件缺 overall");
+    for (const c of CS.filter((x) => x.status === "done")) {
+      if (!c.accepted) items.push(`- [卡] ${c.id} 是 done 但评审段没有「可收卡/可提交」判词`);
+      if (!c.reviewer) items.push(`- [卡] ${c.id} 评审段缺「评审者」（独立性无法核对）`);
+      else if (c.owner && c.reviewer.includes(c.owner)) items.push(`- [卡] ${c.id} 的评审者与 owner 相同（自审）`);
+    }
+    for (const r of RD) {
+      if (!r.overall) items.push(`- [读数] ${r.file} 缺 overall（要独立一行：## overall：pass/partial/fail）`);
+      else if (r.items.some((i) => !i.verdict)) items.push(`- [读数] ${r.file} 有读数行缺 verdict`);
+    }
     return [`# 待办队列（${items.length}）`, "", ...(items.length ? items : ["- （空）"])].join("\n");
   },
   ledger() {
@@ -171,6 +199,7 @@ if (!out) {
   process.exit(2);
 }
 const data = out();
+if (warnRagged.length && !asJson) console.error(`WARN  表列数不齐（已按表头补齐，跑 check.mjs 修）：\n  ${warnRagged.join("\n  ")}`);
 if (asJson) {
   const obj = { command: cmd, milestone: MS.name, cards: CS, ledger: LG, signs: SG, readings: RD };
   console.log(JSON.stringify(obj, null, 2));

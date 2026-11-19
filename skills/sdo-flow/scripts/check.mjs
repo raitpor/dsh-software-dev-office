@@ -1,12 +1,12 @@
 #!/usr/bin/env node
 // sdo-flow 文本检查器（Node 18+，零依赖，Windows/Linux 通用）
-// 用法（项目内任意目录）：node <skill>/scripts/check.mjs [--presets [判据源文件]]
+// 用法（项目内任意目录）：node <skill>/scripts/check.mjs [--presets [判据源文件]] [--all]
 // 退出码：0 全过；1 有错误；2 找不到 .sdo/。只读，不改文件。
-// --presets 不带参数：校验三份 preset 自洽（stage/gate 唯一、kinds 合法、criteria 非空、条数与发布快照一致）
-// --presets <文件>：与外部判据源逐条比对（可用设计稿的 §1.1 原文）
+// 扫描范围：默认只查 .sdo/ 与本项目里带 SKILL.md 的 skill 目录（避让他人文档）；--all 才扫整个仓库。
+// --presets 不带参数：校验三份 preset 与发布快照（stage 集合、gate 集合、criteria 逐条名称）
+// --presets <文件>：与外部判据源逐条比对（可用设计稿 §1.1 原文）
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
 
 function findRoot(start) {
   let d = start;
@@ -19,24 +19,50 @@ function findRoot(start) {
 }
 const ROOT = findRoot(process.cwd());
 if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先按 sdo-flow 初始化"); process.exit(2); }
+const ARGV = process.argv.slice(2);
 const ERR = [], WARN = [];
 const KINDS = new Set(["gap", "defect", "explain"]);
 const STATUS = new Set(["open", "accepted", "fixed", "closed"]);
 const err = (p, l, m) => ERR.push(`${p}:${l}: ${m}`);
 const warn = (p, l, m) => WARN.push(`${p}:${l}: ${m}`);
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8").split(/\r?\n/);
+const exists = (p) => fs.existsSync(path.join(ROOT, p));
+
+// 找到项目内所有“带 SKILL.md 的 skill 目录”（最多下探 3 层）
+function skillDirs() {
+  const out = [];
+  (function walk(dir, depth) {
+    const abs = path.join(ROOT, dir);
+    let entries;
+    try { entries = fs.readdirSync(abs, { withFileTypes: true }); } catch { return; }
+    if (entries.some((e) => e.isFile() && e.name === "SKILL.md")) { out.push(dir); return; }
+    if (depth >= 3) return;
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      if (["node_modules", ".git", "lib", "dist"].includes(e.name)) continue;
+      walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
+    }
+  })("", 0);
+  return out;
+}
 
 function mdFiles() {
   const out = [];
-  (function walk(dir) {
-    for (const e of fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
-      if (e.name === ".git" || e.name === "node_modules" || e.name === "lib") continue;
-      const rel = dir ? `${dir}/${e.name}` : e.name;
-      if (e.isDirectory()) walk(rel);
-      else if (e.name.endsWith(".md")) out.push(rel);
-    }
-  })("");
-  return out;
+  const roots = ARGV.includes("--all") ? [""] : [".sdo", ...skillDirs()];
+  for (const root of roots) {
+    if (root && !exists(root)) continue;
+    (function walk(dir) {
+      let entries;
+      try { entries = fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }); } catch { return; }
+      for (const e of entries) {
+        if (e.name === ".git" || e.name === "node_modules" || e.name === "lib" || e.name === "dist") continue;
+        const rel = dir ? `${dir}/${e.name}` : e.name;
+        if (e.isDirectory()) walk(rel);
+        else if (e.name.endsWith(".md")) out.push(rel);
+      }
+    })(root);
+  }
+  return [...new Set(out)];
 }
 
 function cells(line) {
@@ -76,7 +102,7 @@ function checkTables(p, lines) {
 const alias = { id: "id", ID: "id", kind: "kind", 类型: "kind", 位置: "where", 现象: "what", 影响: "why", 处置: "how", 状态: "status", status: "status" };
 
 function checkLedger(p) {
-  if (!fs.existsSync(path.join(ROOT, p))) return err(p, 0, "缺文件");
+  if (!exists(p)) return err(p, 0, "缺文件");
   const lines = read(p);
   let hdrAt = -1; const cols = {};
   for (let i = 0; i < lines.length; i++) {
@@ -111,61 +137,114 @@ function checkLedger(p) {
 
 function checkSigns() {
   const d = ".sdo/sign";
-  if (!fs.existsSync(path.join(ROOT, d))) return err(d, 0, "缺签字目录");
+  if (!exists(d)) return err(d, 0, "缺签字目录");
   const files = fs.readdirSync(path.join(ROOT, d)).filter((f) => f.endsWith(".md")).sort();
   if (!files.length) err(d, 0, "没有签字文件");
+  let effective = 0;
   for (const f of files) {
     const p = `${d}/${f}`, text = read(p).join("\n");
     for (const k of ["时间", "选项", "被签对象"]) {
       if (!new RegExp(`^\\s*-?\\s*${k}[:：]\\s*\\S`, "m").test(text)) err(p, 0, `缺字段或值为空：${k}（应写成「- ${k}：…」）`);
     }
-    if (!/选项[:：].*(签|改|不签)/.test(text)) err(p, 0, "选项不是三选一（签/改/不签）");
+    const om = text.match(/选项[:：]\s*([^\n]*)/);
+    const opt = om ? om[1] : "";
+    if (/[<>]/.test(opt)) err(p, 0, "选项还是模板占位（<…>）：必须填真人回答的三选一");
+    else if (!/(签|改|不签)/.test(opt)) err(p, 0, "选项不是三选一（签… / 改… / 不签…）");
+    if (/不签/.test(opt)) continue; // 「不签」不是生效签字，不计入
+    effective++;
+    if (!/^\s*-?\s*方式[^：:\n]{0,24}[:：]\s*\S/m.test(text)) warn(p, 0, "建议写明方式（本人 / 代笔（须写确认方式））");
   }
+  if (files.length && effective === 0) err(d, 0, "没有生效签字（只有「不签」或占位）");
 }
 
 function checkCards() {
   const d = ".sdo/cards";
-  if (!fs.existsSync(path.join(ROOT, d))) return warn(d, 0, "还没有卡（里程碑早期可接受）");
+  if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
-    const p = `${d}/${f}`, text = read(p).join("\n");
+    const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
     for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
-    if (!/^status:\s*(open|done)/m.test(text)) err(p, 0, "缺 status: open|done");
+    const sm = text.match(/^status:\s*(open|done)/m);
+    if (!sm) err(p, 0, "缺 status: open|done");
+    if (sm && sm[1] === "done") {
+      // 证据表至少一行数据（表头 + 分隔行之后）
+      const at = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
+      let rows = 0;
+      if (at >= 0) {
+        let inTbl = false;
+        for (let i = at + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
+          const s = lines[i].trim();
+          if (s.startsWith("|")) { if (inTbl && !isSep(s)) rows++; else inTbl = true; }
+          else if (s) inTbl = false;
+        }
+      }
+      if (!rows) warn(p, 0, "status: done 但证据表没有数据行");
+      const rel = lines.findIndex((l) => /^##\s*评审(?:\s|$)/.test(l.trim()));
+      const relText = rel >= 0 ? lines.slice(rel, rel + 20).join("\n") : "";
+      if (!/评审者[:：]/.test(relText)) warn(p, 0, "评审段缺「评审者」（须写明独立性；无第二席位时写「自审（非独立）」）");
+    }
   }
 }
 
+const VERDICT = /\b(pass|partial|fail)\b/i;
 function checkReadings() {
   const d = ".sdo/readings";
-  if (!fs.existsSync(path.join(ROOT, d))) return warn(d, 0, "还没有读数（里程碑门前可接受）");
+  if (!exists(d)) return warn(d, 0, "还没有读数（里程碑门前可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
-    const p = `${d}/${f}`, text = read(p).join("\n");
-    if (!/overall/i.test(text)) err(p, 0, "缺 overall 判定");
-    if (!/\b(pass|partial|fail)\b/i.test(text)) err(p, 0, "缺逐条 verdict（pass/partial/fail）");
+    const p = `${d}/${f}`, lines = read(p);
+    // overall 必须是独立的一行（标题/列表项），不能是表格某格里的字样
+    const HEAD = /^\s*(?:#{1,6}\s*)?(?:[-*]\s*)?[*_`]*overall\b/i;
+    const idx = lines.findIndex((l) => HEAD.test(l));
+    if (idx < 0) { err(p, 0, "缺 overall 判定（应为独立一行，如「## overall：pass」）"); continue; }
+    const V = /\b(pass|partial|fail)\b/i;
+    let v = null;
+    const m1 = lines[idx].match(/overall\b[^A-Za-z\n]*(pass|partial|fail)\b/i);
+    if (m1) v = m1[1];
+    else {
+      const m2 = (lines[idx + 1] || "").match(/^\s*[*_`\s:：|—–-]*(pass|partial|fail)\b/i);
+      if (m2) v = m2[1];
+    }
+    if (!v) err(p, idx + 1, "overall 的取值必须是 pass/partial/fail（可同行，或写在紧接的下一行）");
+    if (!V.test(lines.join("\n"))) err(p, 0, "缺逐条 verdict（pass/partial/fail）");
   }
 }
 
 const PRESET_FILES = ["waterfall.md", "prototype.md", "incremental.md"];
 const KNOWN_KINDS = new Set(["requirement", "design", "implement", "review", "deliver", "verify", "vet", "docs"]);
-// 发布快照：与 skill 一起冻结的 gate 条数（改它要一次人签，不允许悄悄放宽）
-const SNAPSHOT = { G_req_exit: 9, G_design_exit: 8, G_build_exit: 6, G_verify_exit: 5, G_deliver_exit: 6, G_explore_exit: 4, G_harden_exit: 19, G_req_design: 14, G_integrate: 6 };
+// 发布快照：与 skill 一起冻结（改它要一次人签，不允许悄悄放宽/换名）
+const SNAPSHOT_STAGES = {
+  waterfall: "req[requirement] design[design] build[implement] verify[review] deliver[deliver]",
+  prototype: "explore[implement] harden[requirement,design,implement,review] deliver[deliver]",
+  incremental: "req_design[requirement,design] build[implement] verify[review] integrate[deliver]",
+};
+const SNAPSHOT_CRITERIA = {
+  G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed",
+  G_design_exit: "stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound spec_set.signed provenance.present assumption_set.signed",
+  G_build_exit: "task.complete assumption.disposed mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
+  G_verify_exit: "review.round_bound review.required spec_set.signed provenance.present assumption_set.signed",
+  G_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
+  G_explore_exit: "task.complete spec_set.signed provenance.present assumption_set.signed",
+  G_harden_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound task.complete assumption.disposed mandate.revalidated review.round_bound review.required provenance.present",
+  G_req_design: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound",
+  G_integrate: "node.integration_listed design.code_matches mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
+};
 
 function checkPresets() {
-  const argv = process.argv.slice(2);
-  const i = argv.indexOf("--presets");
-  const ext = argv[i + 1] && !argv[i + 1].startsWith("--") ? argv[i + 1] : null;
+  const i = ARGV.indexOf("--presets");
+  const ext = ARGV[i + 1] && !ARGV[i + 1].startsWith("--") ? ARGV[i + 1] : null;
   let doc = null;
   if (ext) {
     if (!fs.existsSync(path.resolve(ROOT, ext))) return err("presets", 0, `判据源不存在：${ext}`);
     doc = fs.readFileSync(path.resolve(ROOT, ext), "utf8");
   }
-  const docStages = {};
-  if (doc) for (const m of doc.matchAll(/^\|\s*`(waterfall|prototype|incremental)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|/gm)) {
-    docStages[m[1]] = {};
-    for (const s of m[2].matchAll(/([a-z_]+)\[([^\]]*)\]/g)) docStages[m[1]][s[1]] = s[2].split(",").map((x) => x.trim()).filter(Boolean);
-  }
-  const docGates = {};
-  if (doc) for (const m of doc.matchAll(/(G_[a-z_]+):\s*\{([\s\S]*?)\}/g)) {
-    const cm = m[2].match(/criteria:\s*\[([\s\S]*?)\]/);
-    if (cm) docGates[m[1]] = [...cm[1].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
+  const docStages = {}, docGates = {};
+  if (doc) {
+    for (const m of doc.matchAll(/^\|\s*`(waterfall|prototype|incremental)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|/gm)) {
+      docStages[m[1]] = [...m[2].matchAll(/([a-z_]+)\[([^\]]*)\]/g)].map((s) => `${s[1]}[${s[2].split(",").map((x) => x.trim()).filter(Boolean).join(",")}]`).join(" ");
+    }
+    for (const m of doc.matchAll(/(G_[a-z_]+):\s*\{([\s\S]*?)\}/g)) {
+      const cm = m[2].match(/criteria:\s*\[([\s\S]*?)\]/);
+      if (cm) docGates[m[1]] = [...cm[1].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]).join(" ");
+    }
   }
 
   for (const f of PRESET_FILES) {
@@ -183,38 +262,47 @@ function checkPresets() {
     }
     if (!Object.keys(gotStages).length) err(p, 0, "没有任何 ### `sid[kinds]` 形式的 stage");
 
+    const gotSeq = Object.entries(gotStages).map(([id, ks]) => `${id}[${ks.join(",")}]`).join(" ");
+    const wantSeq = SNAPSHOT_STAGES[key];
+    if (gotSeq !== wantSeq) err(p, 0, `stage 序列与发布快照不一致（多/少/改名/换 kinds 都要人签）：\n  本文件 ${gotSeq || "（空）"}\n  快照   ${wantSeq}`);
+
     const gates = [...text.matchAll(/id:\s*(G_[a-z_]+)([^}]*)criteria:\s*\[([^\]]*)\]/g)];
-    const seen = new Set();
+    if (!gates.length) err(p, 0, "没有任何 gate（id/criteria）");
+    const gateIds = gates.map(([, gid]) => gid).sort();
+    const wantGates = Object.keys(SNAPSHOT_CRITERIA).filter((g) => getPresetGates(key).includes(g)).sort();
+    if (gateIds.join() !== wantGates.join()) err(p, 0, `gate 集合与发布快照不一致：本文件 [${gateIds.join(", ") || "空"}]，快照应为 [${wantGates.join(", ")}]`);
+
     for (const [, gid, , body] of gates) {
-      if (seen.has(gid)) err(p, 0, `gate id 重复：${gid}`);
-      seen.add(gid);
-      const got = [...body.matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
-      if (!got.length) err(p, 0, `${gid} 的 criteria 是空的（至少要有 core 三条）`);
-      if (!got.includes("spec_set.signed")) err(p, 0, `${gid} 的 criteria 缺 core 判据 spec_set.signed`);
-      const want = SNAPSHOT[gid];
+      const got = [...body.matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]).join(" ");
+      const want = SNAPSHOT_CRITERIA[gid];
       if (want === undefined) err(p, 0, `gate ${gid} 不在发布快照里（新 gate 要随 skill 版本一起人签）`);
-      else if (got.length !== want) err(p, 0, `${gid} 的 criteria 有 ${got.length} 条，发布快照是 ${want} 条`);
-      if (docGates[gid] && docGates[gid].join() !== got.join()) err(p, 0, `${gid} 的 criteria 与外部判据源不一致（本文件 ${got.length} 条，源 ${docGates[gid].length} 条）`);
+      else if (got !== want) err(p, 0, `${gid} 的 criteria 与发布快照不一致：\n  本文件 ${got || "（空）"}\n  快照   ${want}`);
+      if (!got.split(" ").includes("spec_set.signed")) err(p, 0, `${gid} 的 criteria 缺 core 判据 spec_set.signed`);
+      // 外部判据源：只比对本文件出现的 gate
+      if (docGates[gid] && docGates[gid] !== got) err(p, 0, `${gid} 的 criteria 与外部判据源不一致（本文件 ${got.split(" ").filter(Boolean).length} 条，源 ${docGates[gid].split(" ").filter(Boolean).length} 条）`);
     }
-    for (const gid of Object.keys(docGates)) if (!text.includes(`id: ${gid}`)) err(p, 0, `缺 gate：${gid}（判据源有，本文件没有）`);
 
     if (doc) {
-      const wantStages = docStages[key] || {};
-      for (const [sid, kinds] of Object.entries(wantStages)) {
-        if (!gotStages[sid]) err(p, 0, `缺 stage：${sid}（判据源有，本文件没有）`);
-        else if (gotStages[sid].join() !== kinds.join()) err(p, 0, `stage ${sid} 的 kinds 与判据源不一致`);
-      }
-      for (const sid of Object.keys(gotStages)) if (!wantStages[sid]) err(p, 0, `多出判据源里没有的 stage：${sid}`);
+      const want = docStages[key];
+      if (want && want !== gotSeq) err(p, 0, `stage 序列与外部判据源不一致：\n  本文件 ${gotSeq}\n  源     ${want}`);
       for (const [, gid] of gates) if (!docGates[gid]) err(p, 0, `多出判据源里没有的 gate：${gid}`);
     }
   }
-  if (!ext) console.log("（preset 校验：自洽 + 发布快照；要与外部设计稿逐条比对请传 --presets <文件>）");
+  if (!ext) console.log("（preset 校验：发布快照（stage 序列 + gate 集合 + criteria 逐条）；与设计稿比对请传 --presets <文件>）");
+}
+// 每份 preset 应含哪些 gate（与 skill 文档一致；改这里等于改发布快照）
+function getPresetGates(key) {
+  return {
+    waterfall: ["G_req_exit", "G_design_exit", "G_build_exit", "G_verify_exit", "G_deliver_exit"],
+    prototype: ["G_explore_exit", "G_harden_exit", "G_deliver_exit"],
+    incremental: ["G_req_design", "G_build_exit", "G_verify_exit", "G_integrate"],
+  }[key] || [];
 }
 
 const files = mdFiles();
 for (const p of files) checkTables(p, read(p));
 checkLedger(".sdo/台账.md"); checkSigns(); checkCards(); checkReadings();
-if (process.argv.includes("--presets")) checkPresets();
+if (ARGV.includes("--presets")) checkPresets();
 for (const w of WARN) console.log(`WARN  ${w}`);
 for (const e of ERR) console.log(`ERROR ${e}`);
 console.log(`\n检查完成：${files.length} 个 Markdown，${ERR.length} 个错误，${WARN.length} 个警告`);

@@ -13,5 +13,6 @@
 - verdict：pass / partial / fail
 - caveat：
 
-## overall
-<pass / partial / fail + 两条理由>
+## overall：<三选一>
+
+取值只能是：pass / partial / fail（partial 要写缺什么、何时补、谁认；别把三选一原样留在文件里）
