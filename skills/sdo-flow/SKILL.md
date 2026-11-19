@@ -112,7 +112,8 @@ whenToUse: >-
 node <skill>/scripts/check.mjs             # 台账/表格/签字/卡/读数（默认只查 .sdo/ 与带 SKILL.md 的 skill 目录）
 node <skill>/scripts/check.mjs --presets   # preset 与发布快照比对（可再传外部判据源文件）
 node <skill>/scripts/check.mjs --all       # 连仓库其它 .md 一起查（默认不查，免被别人的文档绊倒）
-node <skill>/scripts/gate.mjs             # 阶段门：把 .sdo/gates/<M>.md 与 preset 的 gate 逐条对账
+node <skill>/scripts/gate.mjs             # 阶段门：默认判所有勾选表（有 fail/缺项 ⇒ exit 1；无表/无 preset ⇒ 2）
+node <skill>/scripts/gate.mjs --list      # 只列 preset 的 gate 与现有勾选表，不判
 node <skill>/scripts/gate.mjs G_req_exit  # 只查一道 gate；--file 指定文件；--json 出机器可读
 node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图；任意视图加 --json
 ```
