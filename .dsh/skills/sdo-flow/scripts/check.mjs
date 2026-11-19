@@ -164,8 +164,10 @@ function checkPresets() {
       if (!gotStages[sid]) err(p, 0, `缺 stage：${sid}（设计有，本文件没有）`);
       else if (gotStages[sid].join() !== kinds.join()) err(p, 0, `stage ${sid} 的 kinds 与设计不一致（本文件 ${gotStages[sid].join("/")}，设计 ${kinds.join("/")}）`);
     }
-    for (const sid of Object.keys(gotStages)) if (!wantStages[sid]) warn(p, 0, `多出设计里没有的 stage：${sid}`);
+    for (const sid of Object.keys(gotStages)) if (!wantStages[sid]) err(p, 0, `多出设计里没有的 stage：${sid}`);
 
+    // 多出的 gate（设计里没有的 G_ 名）也要报
+    for (const m of text.matchAll(/id:\s*(G_[a-z_]+)/g)) if (!docGates[m[1]]) err(p, 0, `多出设计里没有的 gate：${m[1]}`);
     // gate：设计里的 gate 必须全部出现，且 criteria 逐条一致
     for (const [gid, want] of Object.entries(docGates)) {
       const mine = text.match(new RegExp("id:\\s*" + gid + "[^}]*?criteria:\\s*\\[([^\\]]*)\\]"));
