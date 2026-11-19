@@ -29,7 +29,9 @@
 
 不出现就先跑 `node <skill>/scripts/check.mjs`：它**始终会检查脚本自己所在的那个 skill 目录**的 frontmatter（即使 skill 装在用户级、不在项目里），会指出 `: ` 这类问题。`--presets` 也从脚本自身目录找 `presets/`，所以安装布局（`.dsh/skills/sdo-flow/`）与开发布局（`skills/sdo-flow/`）都能跑。
 
-**更新**：改了仓库里的 `skills/sdo-flow/` 之后，重新覆盖安装位置的目录即可（例如 `rm -rf .dsh/skills/sdo-flow && cp -r skills/sdo-flow .dsh/skills/sdo-flow`）；安装目录属于本机环境，不要提交进仓库。
+**更新**：改了仓库里的 `skills/sdo-flow/` 之后，重新覆盖安装位置的目录即可（例如 `rsync -a --delete skills/sdo-flow/ .dsh/skills/sdo-flow/`）；安装目录属于本机环境，不要提交进仓库。
+
+**每个里程碑收口后必须同步一次**：里程碑签字（例如 S12）落盘后，把已安装副本更新到该里程碑的提交，并核对一致——否则下一个会话加载的是旧流程。核对命令：`diff -r skills/sdo-flow .dsh/skills/sdo-flow` 无输出。同步时建议从提交导出而不是工作树直接拷，避免把进行中的卡带进安装目录：`git archive <commit> skills/sdo-flow | tar -x -C /tmp && rsync -a --delete /tmp/skills/sdo-flow/ .dsh/skills/sdo-flow/`。
 
 ### 2. 在项目里初始化
 
@@ -64,7 +66,7 @@ cp $SKILL/templates/board.md    .sdo/看板.md
 
 ## 检查器与快捷视图
 
-随包提供三个零依赖 Node 脚本：`check.mjs`（台账/表格/签字/卡/读数，`--presets` 比 preset 与发布快照）、`gate.mjs`（阶段门：`.sdo/gates/<M>.md` 与 preset 要求逐条对账，非零退出即不许过门）与 `view.mjs`（六个只读视图）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工，安装目录里的脚本随包一起拷。
+随包提供四个零依赖 Node 脚本：`check.mjs`（台账/表格/签字/卡/读数，`--presets` 比 preset 与发布快照）、`gate.mjs`（阶段门：`.sdo/gates/<M>.md` 与 preset 要求逐条对账，非零退出即不许过门）、`view.mjs`（六个只读视图）与 `ledger.mjs`（台账唯一写入口：`add`/`close` 只追加行、旧行不改，`list` 只读）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工，安装目录里的脚本随包一起拷。
 
 ## 适用与成本
 
