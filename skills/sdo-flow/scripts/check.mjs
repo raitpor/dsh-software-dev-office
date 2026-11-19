@@ -299,8 +299,28 @@ function getPresetGates(key) {
   }[key] || [];
 }
 
+// SKILL.md 的 YAML frontmatter：一个 ": " 就能让严格 YAML 解析失败，整个 skill 会被静默忽略
+function checkFrontmatter() {
+  for (const dir of skillDirs()) {
+    const p = `${dir}/SKILL.md`;
+    if (!exists(p)) continue;
+    const lines = read(p);
+    if (lines[0].trim() !== "---") { err(p, 1, "缺少 YAML frontmatter（首行应为 ---）"); continue; }
+    const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
+    if (end < 0) { err(p, 1, "frontmatter 没有结束的 ---"); continue; }
+    for (let i = 1; i < end; i++) {
+      const m = lines[i].match(/^([A-Za-z_][\w-]*):\s*(.*)$/);
+      if (!m) continue;
+      const v = m[2].trim();
+      if (!v || /^[>|]/.test(v) || /^["'].*["']$/.test(v)) continue;
+      if (/:\s/.test(v)) err(p, i + 1, `frontmatter 的 ${m[1]} 值里有「: 」，严格 YAML 会解析成嵌套映射 ⇒ 整个 skill 被忽略；改用 >- 块或加引号`);
+      if (/\s#/.test(v)) warn(p, i + 1, `frontmatter 的 ${m[1]} 值里有「 #」，可能是注释起点；建议用 >- 块`);
+    }
+  }
+}
 const files = mdFiles();
 for (const p of files) checkTables(p, read(p));
+checkFrontmatter();
 checkLedger(".sdo/台账.md"); checkSigns(); checkCards(); checkReadings();
 if (ARGV.includes("--presets")) checkPresets();
 for (const w of WARN) console.log(`WARN  ${w}`);
