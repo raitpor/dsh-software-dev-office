@@ -16,16 +16,13 @@ whenToUse: >-
 
 一句话：**文件是真源，账本代替事件表，问答代替签名，命令代替门禁。**
 
-## 0. 怎么装（任意 agent）
+## 0. 这是什么
 
-这套东西不绑定运行时：`SKILL.md` + `references/` 是给模型读的文本，`scripts/` 是可选的检查器。支持 skill 目录的 agent 把 `skills/sdo-flow/` 拷进去；只支持单一指令文件的把 `SKILL.md` 并进 `AGENTS.md`/`CLAUDE.md`；细节见 `references/08-移植到新仓库.md`。
-
-**装到哪里**：有 skill 目录的 agent 通常认“项目级”和“用户级”两处，把整个 `skills/sdo-flow/` 拷进去即可（项目级示例 `<项目根>/.dsh/skills/sdo-flow/`、`<项目根>/.agents/skills/sdo-flow/`；用户级见各自文档）。装完确认两件事：
-
-1. `SKILL.md` 的 YAML frontmatter **必须是合法 YAML**——`description`/`whenToUse` 里出现 `: `（冒号加空格）会被解析成嵌套映射，很多 agent 会**静默忽略整个 skill**（不报错）。多行值请用 `>-` 块标量。
-2. 落地后让 agent 复习一次技能列表；仍不出现就先跑 `node <skill>/scripts/check.mjs` 看 frontmatter 检查项。
+一套**纯文本**的项目管理流程：规则在 `SKILL.md` 与 `references/`，一步一文件，人证用问答选项，门禁用可复跑命令。它不假设任何运行时（插件、数据库、专用工具都不需要）。
 
 项目产物固定放 **`.sdo/`**：`00-意图.md`、`01-计划.md`、`cards/`、`sign/`、`readings/`、`review/`、`台账.md`。
+
+把它放进你的 agent 或另一个仓库的步骤，见仓库 `README.md`。
 
 ## 1. 何时用 / 何时不用
 
