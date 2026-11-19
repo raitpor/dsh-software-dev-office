@@ -64,7 +64,7 @@ cp $SKILL/templates/board.md    .sdo/看板.md
 
 ## 检查器与快捷视图
 
-随包提供两个零依赖 Node 脚本：`check.mjs`（台账/表格/签字/卡/读数，`--presets` 比 preset 与发布快照）与 `view.mjs`（六个只读视图）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工，安装目录里的脚本随包一起拷。
+随包提供三个零依赖 Node 脚本：`check.mjs`（台账/表格/签字/卡/读数，`--presets` 比 preset 与发布快照）、`gate.mjs`（阶段门：`.sdo/gates/<M>.md` 与 preset 要求逐条对账，非零退出即不许过门）与 `view.mjs`（六个只读视图）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工，安装目录里的脚本随包一起拷。
 
 ## 适用与成本
 
@@ -81,6 +81,7 @@ skills/sdo-flow/
   presets/            瀑布 / 快速原型 / 增量：阶段序列 + 每个出口的判据勾选表 + 可迁移 policy
   templates/          9 份模板：意图 / 计划 / 卡 / 台账 / 看板 / gates / 读数 / 评审 / 签字
   scripts/check.mjs   文本检查器（Node 零依赖；--presets 校验 preset 自洽与发布快照）
+  scripts/gate.mjs    阶段门检查（缺判据/空证据/占位判定/fail 未处置/partial 未被签接受 ⇒ 非零退出）
   scripts/view.mjs    六个只读视图，按文件拼给 agent 看
 .sdo/                 本项目自己的流程产物（意图 / 计划 / 卡 / 签字 / 读数 / 评审 / 偏差台账）
 ```

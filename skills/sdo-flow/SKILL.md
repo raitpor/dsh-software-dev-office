@@ -112,6 +112,8 @@ whenToUse: >-
 node <skill>/scripts/check.mjs             # 台账/表格/签字/卡/读数（默认只查 .sdo/ 与带 SKILL.md 的 skill 目录）
 node <skill>/scripts/check.mjs --presets   # preset 与发布快照比对（可再传外部判据源文件）
 node <skill>/scripts/check.mjs --all       # 连仓库其它 .md 一起查（默认不查，免被别人的文档绊倒）
+node <skill>/scripts/gate.mjs             # 阶段门：把 .sdo/gates/<M>.md 与 preset 的 gate 逐条对账
+node <skill>/scripts/gate.mjs G_req_exit  # 只查一道 gate；--file 指定文件；--json 出机器可读
 node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只读视图；任意视图加 --json
 ```
 
@@ -120,6 +122,7 @@ node <skill>/scripts/view.mjs state|queue|board|ledger|signs|plan   # 六个只�
 - 只查**格式与结构**，不判断证据真假；证据仍以“可复跑命令或 `文件:行`”为准。
 - 需要 `node`；没有时退回人工（人工核对列数、字段、签字三字段），并在签字文件写“检查方式：人工”。
 - 视图只读、只做拼接，不改产物。
+- `gate.mjs` 判四件事：preset 要求的判据是否都在表里、每条是否有判定、pass/partial 的证据是否为空或占位（如“无/看过了/—”）、有 fail 或 partial 时本表第 3 节是否有「签：」接受。它不判断证据真假，但会挡住“空证据 + pass”这种假绿。
 
 ## 12. 收卡/收门前自检
 

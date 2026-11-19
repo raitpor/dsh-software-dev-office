@@ -2,6 +2,8 @@
 
 > 用途：阶段出口勾选表：把某阶段 gate 的 criteria 逐条列出，供人勾选判读。**它不写 overall**——overall 属读数门，见 `readings.md`。
 
+> gate：`G_xxx`（本文件对应哪道 gate；一文件多 gate 时按 `## G_xxx` 分段）
+
 证据时点：<ISO> ｜ 被取证树：`<commit>` ｜ 命令：见下
 
 ## 1. 出口勾选表（对应 preset 的 `G_*`）
