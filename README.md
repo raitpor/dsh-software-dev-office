@@ -19,7 +19,7 @@
 .dsh/skills/sdo-flow/
   SKILL.md            入口：何时用/边界/目录约定/七步/人签协议/自检
   references/01…08    按需加载的细节（真源、判据、签字评审、计划卡、读数、台账、边界、移植）
-  scripts/check.py    文本检查器（台账/表格/签字/卡/读数；--presets 比对设计）
+  scripts/check.mjs   文本检查器（Node 零依赖；台账/表格/签字/卡/读数；--presets 比对设计）
   presets/            瀑布 / 快速原型 / 增量：阶段序列 + 出口判据表 + 等价 policy
   templates/          七份可直接拷贝的模板
 sdo/                  本仓库自己用这套流程时的产物（意图/计划/卡/台账/签字/读数）

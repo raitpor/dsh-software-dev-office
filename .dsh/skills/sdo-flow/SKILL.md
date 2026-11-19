@@ -102,10 +102,10 @@ sdo/
 ## 10. 文本检查器
 
 ```bash
-python3 .dsh/skills/sdo-flow/scripts/check.py            # 台账/表格/签字/卡/读数
-python3 .dsh/skills/sdo-flow/scripts/check.py --presets   # 再比对 preset 与设计文档
+node .dsh/skills/sdo-flow/scripts/check.mjs            # 台账/表格/签字/卡/读数
+node .dsh/skills/sdo-flow/scripts/check.mjs --presets   # 再比对 preset 与设计文档
 ```
-它只查**格式与结构**（列数、id 递增、必备字段、verdict 有没有写），不判断证据真假。
+零依赖、Windows/Linux 通用（宿主本身跑 Node，必有 `node`）。它只查**格式与结构**（列数、id 递增、必备字段、verdict 有没有写），不判断证据真假。
 收卡与出门前各跑一次；红了先修，别绕过。
 
 ## 11. 收卡/收门前自检
