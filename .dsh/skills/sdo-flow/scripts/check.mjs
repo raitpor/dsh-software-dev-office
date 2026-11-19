@@ -137,22 +137,44 @@ function checkPresets() {
   try {
     doc = execFileSync("git", ["show", "main:docs/08-方法论与策略.md"], { cwd: ROOT, encoding: "utf8" });
   } catch { return warn("presets", 0, "取不到 main:docs/08，跳过与设计的比对"); }
-  const gates = (text) => {
-    const out = {};
-    for (const m of text.matchAll(/(G_[a-z_]+):\s*\{([\s\S]*?)\}/g)) {
-      const cm = m[2].match(/criteria:\s*\[([\s\S]*?)\]/);
-      if (cm) out[m[1]] = [...cm[1].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
-    }
-    return out;
-  };
-  const want = gates(doc);
+
+  // 设计侧：① stage DAG 表（| `waterfall` | ... | `req[requirement] → ...` |）② §1.1 gate criteria
+  const docStages = {};
+  for (const m of doc.matchAll(/^\|\s*`(waterfall|prototype|incremental)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|/gm)) {
+    docStages[m[1]] = {};
+    for (const s of m[2].matchAll(/([a-z_]+)\[([^\]]*)\]/g)) docStages[m[1]][s[1]] = s[2].split(",").map((x) => x.trim()).filter(Boolean);
+  }
+  const docGates = {};
+  for (const m of doc.matchAll(/(G_[a-z_]+):\s*\{([\s\S]*?)\}/g)) {
+    const cm = m[2].match(/criteria:\s*\[([\s\S]*?)\]/);
+    if (cm) docGates[m[1]] = [...cm[1].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
+  }
+  const OWNER = { G_req_exit: "waterfall.md", G_design_exit: "waterfall.md", G_build_exit: "waterfall.md", G_verify_exit: "waterfall.md", G_deliver_exit: "waterfall.md", G_explore_exit: "prototype.md", G_harden_exit: "prototype.md", G_req_design: "incremental.md", G_integrate: "incremental.md" };
+
   for (const f of ["waterfall.md", "prototype.md", "incremental.md"]) {
+    const key = f.replace(".md", "");
     const p = `.dsh/skills/sdo-flow/presets/${f}`;
     const text = read(p).join("\n");
-    for (const m of text.matchAll(/id:\s*(G_[a-z_]+)[^}]*?criteria:\s*\[([^\]]*)\]/g)) {
-      const got = [...m[2].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
-      if (!want[m[1]]) { warn(p, 0, `${m[1]} 在 docs/08 里找不到`); continue; }
-      if (got.join() !== want[m[1]].join()) err(p, 0, `${m[1]} 的 criteria 与 docs/08 不一致（本文件 ${got.length} 条，设计 ${want[m[1]].length} 条）`);
+
+    // stage：文件必须恰好覆盖设计里的 stage 集合，kinds 一致
+    const gotStages = {};
+    for (const m of text.matchAll(/^###\s*`([a-z_]+)\[([^\]]*)\]`/gm)) gotStages[m[1]] = m[2].split(",").map((x) => x.trim()).filter(Boolean);
+    const wantStages = docStages[key] || {};
+    for (const [sid, kinds] of Object.entries(wantStages)) {
+      if (!gotStages[sid]) err(p, 0, `缺 stage：${sid}（设计有，本文件没有）`);
+      else if (gotStages[sid].join() !== kinds.join()) err(p, 0, `stage ${sid} 的 kinds 与设计不一致（本文件 ${gotStages[sid].join("/")}，设计 ${kinds.join("/")}）`);
+    }
+    for (const sid of Object.keys(gotStages)) if (!wantStages[sid]) warn(p, 0, `多出设计里没有的 stage：${sid}`);
+
+    // gate：设计里的 gate 必须全部出现，且 criteria 逐条一致
+    for (const [gid, want] of Object.entries(docGates)) {
+      const mine = text.match(new RegExp("id:\\s*" + gid + "[^}]*?criteria:\\s*\\[([^\\]]*)\\]"));
+      if (OWNER[gid] === f) {
+        if (!mine) { err(p, 0, `缺 gate：${gid}（设计有，本文件没有）`); continue; }
+      }
+      if (!mine) continue;
+      const got = [...mine[1].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
+      if (got.join() !== want.join()) err(p, 0, `${gid} 的 criteria 与 docs/08 不一致（本文件 ${got.length} 条，设计 ${want.length} 条）`);
     }
   }
 }
