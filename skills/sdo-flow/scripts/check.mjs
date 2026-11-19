@@ -3,7 +3,7 @@
 // 用法（项目内任意目录）：node <skill>/scripts/check.mjs [--presets [判据源文件]] [--all]
 // 退出码：0 全过；1 有错误；2 找不到 .sdo/。只读，不改文件。
 // 扫描范围：默认只查 .sdo/ 与本项目里带 SKILL.md 的 skill 目录（避让他人文档）；--all 才扫整个仓库。
-// --presets 不带参数：校验三份 preset 与发布快照（stage 集合、gate 集合、criteria 逐条名称）
+// --presets 不带参数：校验四份 preset 与发布快照（stage 集合、gate 集合、criteria 逐条名称）
 // --presets <文件>：与外部判据源逐条比对（可用设计稿 §1.1 原文）
 import fs from "node:fs";
 import path from "node:path";
@@ -300,13 +300,14 @@ function checkReadings() {
   }
 }
 
-const PRESET_FILES = ["waterfall.md", "prototype.md", "incremental.md"];
+const PRESET_FILES = ["waterfall.md", "prototype.md", "incremental.md", "agent-driven.md"];
 const KNOWN_KINDS = new Set(["requirement", "design", "implement", "review", "deliver", "verify", "vet", "docs"]);
 // 发布快照：与 skill 一起冻结（改它要一次人签，不允许悄悄放宽/换名）
 const SNAPSHOT_STAGES = {
   waterfall: "req[requirement] design[design] build[implement] verify[review] deliver[deliver]",
   prototype: "explore[implement] harden[requirement,design,implement,review] deliver[deliver]",
   incremental: "req_design[requirement,design] build[implement] verify[review] integrate[deliver]",
+  "agent-driven": "frame[requirement,design] build[implement] verify[verify] review[review] sign[vet] deliver[deliver]",
 };
 const SNAPSHOT_CRITERIA = {
   G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed",
@@ -318,6 +319,12 @@ const SNAPSHOT_CRITERIA = {
   G_harden_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound task.complete assumption.disposed mandate.revalidated review.round_bound review.required provenance.present",
   G_req_design: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound",
   G_integrate: "node.integration_listed design.code_matches mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
+  G_frame_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep node.acceptance_bound agent.plan_reviewed agent.write_scope_disjoint agent.cards_have_negative_cases",
+  G_agent_build_exit: "task.complete assumption.disposed mandate.revalidated spec_set.signed provenance.present assumption_set.signed agent.evidence_runnable agent.no_self_sign",
+  G_agent_verify_exit: "agent.checker_green agent.mutation_red agent.unverified_listed spec_set.signed provenance.present",
+  G_agent_review_exit: "review.round_bound review.required agent.reviewer_not_author agent.findings_disposed spec_set.signed provenance.present",
+  G_agent_sign_exit: "agent.human_signed agent.known_limits spec_set.signed assumption_set.signed provenance.present",
+  G_agent_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated agent.readings_frozen spec_set.signed provenance.present",
 };
 
 function checkPresets() {
@@ -379,8 +386,13 @@ function checkPresets() {
 
     if (doc) {
       const want = docStages[key];
-      if (want && want !== gotSeq) err(p, 0, `stage 序列与外部判据源不一致：\n  本文件 ${gotSeq}\n  源     ${want}`);
-      for (const [, gid] of gates) if (!docGates[gid]) err(p, 0, `多出判据源里没有的 gate：${gid}`);
+      if (!want) {
+        // 本 preset 是 skill 自己的扩展（设计稿里没有），只查发布快照，不比外部源
+        console.log(`（${key} 不在判据源里：本 preset 属 skill 扩展，跳过外部比对）`);
+      } else {
+        if (want !== gotSeq) err(p, 0, `stage 序列与外部判据源不一致：\n  本文件 ${gotSeq}\n  源     ${want}`);
+        for (const [, gid] of gates) if (!docGates[gid]) err(p, 0, `多出判据源里没有的 gate：${gid}`);
+      }
     }
   }
   if (!ext) console.log("（preset 校验：发布快照（stage 序列 + gate 集合 + criteria 逐条）；与设计稿比对请传 --presets <文件>）");
@@ -391,6 +403,7 @@ function getPresetGates(key) {
     waterfall: ["G_req_exit", "G_design_exit", "G_build_exit", "G_verify_exit", "G_deliver_exit"],
     prototype: ["G_explore_exit", "G_harden_exit", "G_deliver_exit"],
     incremental: ["G_req_design", "G_build_exit", "G_verify_exit", "G_integrate"],
+    "agent-driven": ["G_frame_exit", "G_agent_build_exit", "G_agent_verify_exit", "G_agent_review_exit", "G_agent_sign_exit", "G_agent_deliver_exit"],
   }[key] || [];
 }
 
