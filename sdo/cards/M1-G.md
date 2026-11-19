@@ -1,6 +1,6 @@
 # M1-G · 读数门（R1–R7）
 
-status: open ｜ owner: lead
+status: done ｜ owner: lead
 write_scope: [sdo/readings/, sdo/sign/]
 
 ## 意图
@@ -47,7 +47,7 @@ A2：R2 的“实跑”以本仓库自身走过七步为证据，不是另起一
 | C4 | `grep -c '时间：\\|选项：\\|被签对象：' sdo/sign/S-M1.md` | 3 | 缺字段 ⇒ 检查器红 |
 
 ## 判定
-见 `sdo/readings/M1.md`（overall 以该文件为准；门签后人确认）
+见 `sdo/readings/M1.md`（R1–R7，overall 以该文件为准）；门签见 `sdo/sign/S4.md`
 
 ## 评审
 - 第 1 轮：改完再审（C1 只数行首、C3 不绑 commit）
