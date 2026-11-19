@@ -116,7 +116,7 @@ function checkCards() {
   if (!fs.existsSync(path.join(ROOT, d))) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, text = read(p).join("\n");
-    for (const s of ["## 判据", "## 证据", "## 判定", "## 评审"]) if (!text.includes(s)) err(p, 0, `缺段落：${s}`);
+    for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
     if (!/^status:\s*(open|done)/m.test(text)) err(p, 0, "缺 status: open|done");
     if (!text.includes("判定")) err(p, 0, "缺「判定」段");
   }
