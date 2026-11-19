@@ -1,8 +1,8 @@
 # sdo-flow
 
-把 SDO 的项目管理流程做成一份**可携带的文本 skill**：意图 → 计划评审 → 卡 → 两轮评审 → 人签 → 读数门 → 偏差台账。
+把 SDO 的项目管理流程做成一份**可携带的文本 skill**：意图 → 计划评审 → 卡 → 多轮评审 → 人签 → 读数门 → 偏差台账。
 
-它不绑定任何 agent、插件或数据库：规则是 Markdown，人证是问答选项，门禁是判断清单 + 可复跑命令，检查器是一个零依赖 Node 脚本。仓库自己就是用这套流程做出来的（`.sdo/` 里是全过程）。
+它不绑定任何 agent、插件或数据库：规则是 Markdown，人证是问答选项，门禁是判断清单 + 可复跑命令，检查器是一个零依赖 Node 脚本。
 
 ## 两条边界先说清楚
 
@@ -17,7 +17,7 @@
 
 ### 1. 放进 agent
 
-- **支持 skill 目录的 agent**：把整个 `skills/sdo-flow/` 拷进它约定的 skills 目录（项目级或用户级，范围随你）。常见项目级位置如 `<项目根>/.dsh/skills/sdo-flow/`、`<项目根>/.agents/skills/sdo-flow/`；用户级位置见各自文档。
+- **支持 skill 目录的 agent**：把整个 `skills/sdo-flow/` 拷进它约定的 skills 目录（项目级或用户级，范围随你）。常见约定是 `<项目根>/<agent 的 skills 目录>/sdo-flow/`（例如 `.agents/skills/sdo-flow/`），用户级位置见各自文档。
 - **只有单一指令文件的 agent**：把 `SKILL.md` 并进 `AGENTS.md` / `CLAUDE.md`，`references/` 与 `templates/` 放同目录，脚本路径按实际位置改。
 
 **一个容易踩的坑**：`SKILL.md` 的 YAML frontmatter 必须是合法 YAML。`description` / `whenToUse` 的值里出现 `: `（冒号加空格）会被解析成嵌套映射，严格解析器直接报错，而多数加载器只记一条 warning 就**跳过整个 skill**——表现为“装了但加载不到”，且没有任何显式报错。多行值用 `>-` 块标量。
@@ -27,11 +27,7 @@
 1. agent 的技能列表里出现 `sdo-flow`；
 2. 能读到 `SKILL.md` 正文（随便抽读一节）。
 
-不出现就先跑 `node <skill>/scripts/check.mjs`：它**始终会检查脚本自己所在的那个 skill 目录**的 frontmatter（即使 skill 装在用户级、不在项目里），会指出 `: ` 这类问题。`--presets` 也从脚本自身目录找 `presets/`，所以安装布局（`.dsh/skills/sdo-flow/`）与开发布局（`skills/sdo-flow/`）都能跑。
-
-**更新**：改了仓库里的 `skills/sdo-flow/` 之后，重新覆盖安装位置的目录即可（例如 `rsync -a --delete skills/sdo-flow/ .dsh/skills/sdo-flow/`）；安装目录属于本机环境，不要提交进仓库。
-
-**每个里程碑收口后必须同步一次**：里程碑签字（例如 S12）落盘后，把已安装副本更新到该里程碑的提交，并核对一致——否则下一个会话加载的是旧流程。核对命令：`diff -r skills/sdo-flow .dsh/skills/sdo-flow` 无输出。同步时建议从提交导出而不是工作树直接拷，避免把进行中的卡带进安装目录：`git archive <commit> skills/sdo-flow | tar -x -C /tmp && rsync -a --delete /tmp/skills/sdo-flow/ .dsh/skills/sdo-flow/`。
+不出现就先跑 `node <skill>/scripts/check.mjs`：它**始终会检查脚本自己所在的那个 skill 目录**的 frontmatter（即使 skill 装在用户级、不在项目里），会指出 `: ` 这类问题。`--presets` 也从脚本自身目录找 `presets/`，所以装在项目里、装到用户级、或在仓库里直接跑，三种位置都能用。
 
 ### 2. 在项目里初始化
 
@@ -66,12 +62,12 @@ cp $SKILL/templates/board.md    .sdo/看板.md
 
 ## 检查器与快捷视图
 
-随包提供四个零依赖 Node 脚本：`check.mjs`（台账/表格/签字/卡/读数，`--presets` 比 preset 与发布快照）、`gate.mjs`（阶段门：`.sdo/gates/<M>.md` 与 preset 要求逐条对账，非零退出即不许过门）、`view.mjs`（六个只读视图）与 `ledger.mjs`（台账唯一写入口：`add`/`close` 只追加行、旧行不改，`list` 只读）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工，安装目录里的脚本随包一起拷。
+随包提供四个零依赖 Node 脚本（检查、阶段门、快捷视图、台账写入口）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工。
 
 ## 适用与成本
 
 - **值**：多会话、多 agent、要审计、要交接时——它把“谁在什么时候同意了什么”“为什么改了口径”落到文件与 git 历史里。
-- **不值**：一次性小改、单人当天收尾的活——每张卡固定要 5 份文件、两轮评审、追问人签，重型流程会压过事情本身。
+- **不值**：一次性小改、单人当天收尾的活——每张卡固定要几份文件、多轮评审、追问人签，重型流程会压过事情本身。
 - 若已有更严格的合规流程，不要两套并行。
 
 ## 目录
@@ -82,10 +78,7 @@ skills/sdo-flow/
   references/01…07    按需加载：真源与账本、判据与门禁、签字与评审、计划与卡、读数与里程碑门、偏差台账、边界与自证
   presets/            瀑布 / 快速原型 / 增量：阶段序列 + 每个出口的判据勾选表 + 可迁移 policy
   templates/          9 份模板：意图 / 计划 / 卡 / 台账 / 看板 / gates / 读数 / 评审 / 签字
-  scripts/check.mjs   文本检查器（Node 零依赖；--presets 校验 preset 自洽与发布快照）
-  scripts/gate.mjs    阶段门检查（缺判据/空证据/占位判定/fail 未处置/partial 未被签接受 ⇒ 非零退出）
-  scripts/view.mjs    六个只读视图，按文件拼给 agent 看
-.sdo/                 本项目自己的流程产物（意图 / 计划 / 卡 / 签字 / 读数 / 评审 / 偏差台账）
+  scripts/            check.mjs（文本检查）/ gate.mjs（阶段门）/ view.mjs（快捷视图）/ ledger.mjs（台账写入口）
 ```
 
 ## 已知边界
