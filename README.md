@@ -76,7 +76,7 @@ cp $SKILL/templates/board.md    .sdo/看板.md
 skills/sdo-flow/
   SKILL.md            入口：这是什么 / 边界 / 选 preset / 七步 / 人签 / 判据 / 台账 / 多轮评审 / 自检
   references/01…07    按需加载：真源与账本、判据与门禁、签字与评审、计划与卡、读数与里程碑门、偏差台账、边界与自证
-  presets/            瀑布 / 快速原型 / 增量：阶段序列 + 每个出口的判据勾选表 + 可迁移 policy
+  presets/            瀑布 / 快速原型 / 增量 / agent 驱动：阶段序列 + 每个出口的判据勾选表 + 可迁移 policy
   templates/          9 份模板：意图 / 计划 / 卡 / 台账 / 看板 / gates / 读数 / 评审 / 签字
   scripts/            check.mjs（文本检查）/ gate.mjs（阶段门）/ view.mjs（快捷视图）/ ledger.mjs（台账写入口）
 ```
