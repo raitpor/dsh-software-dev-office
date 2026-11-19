@@ -66,7 +66,7 @@
 
 | # | 判据 | 怎么判 |
 |---|---|---|
-| 30 | `review.round_bound` | 两轮制：第 1 轮判词 + 复认，绑同一棵树 |
+| 30 | `review.round_bound` | 多轮制、不设上限：每轮判词绑同一棵树，判「改完再审」就改完再复认，直到「可收卡」 |
 | 31 | `review.required` | 该抽的卡都抽到（抽样号对得上） |
 | 32 | `agent.reviewer_not_author` | 评审者 ≠ 作者（非作者即可，复用现有席位） |
 | 33 | `agent.findings_disposed` | P0/P1 逐条有修法或台账行，修完由原席位复认 |
