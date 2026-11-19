@@ -228,7 +228,8 @@ function checkCards() {
         }
         const filled = new Set();
         for (const r of evRows) {
-          const id = (r[0] || "").replace(/`/g, "").trim();
+          const rawId = (r[0] || "").replace(/`/g, "").trim();
+          const id = /^\d+$/.test(rawId) ? (r[1] || "").replace(/`/g, "").trim() : rawId;
           const rest = r.slice(1).map((x) => x.trim()).filter(Boolean).join(" ");
           // 证据行首格可写「C1」「C1–C3」「C1、C2」
           const rowIds = new Set();
@@ -268,7 +269,8 @@ function checkReadings() {
       }
     }
     if (!v) err(p, idx + 1, "overall 的取值必须是 pass/partial/fail（可同行，或写在紧接的下一行）");
-    if (/[<>]/.test(lines.join("\n"))) err(p, 0, "还有模板占位（<…>）：读数必须写实测值与命令，不留占位");
+    const body = lines.filter((l) => !l.trimStart().startsWith(">")).join("\n");
+    if (/<[^>\n]*>/.test(body)) err(p, 0, "还有模板占位（<…>）：读数必须写实测值与命令，不留占位");
     if (/\bTODO\b/.test(lines.join("\n"))) err(p, 0, "还有 TODO：读数必须给结论（未做就写 partial 并说明）");
     // 逐条读数：每个 `## R…` 段内必须有 verdict（overall 行不算）
     let cur = null; const secs = [];
