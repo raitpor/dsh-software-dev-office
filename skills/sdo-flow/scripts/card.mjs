@@ -4,11 +4,14 @@
 // 用法：
 //   node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:…,C2:…" [--scope "a,b"]
 //   node <skill>/scripts/card.mjs evidence <卡号|卡文件> --criterion C1 --cmd "<命令>" [--run [命令]]
+//   node <skill>/scripts/card.mjs mutation --card <卡号> --criterion C1 --mutate "<改坏命令>" --expect "<应红命令>"
 //
 // 纪律：同判据只允许一行；重复 evidence 原地更新；不传 --run 摘要写「未跑待复跑」；
 // 结果只能来自真跑（--run），脚本不接受手填 pass；所有失败 exit 2 且零写入。
+// mutation 只在临时副本里跑：改坏 → 应红 → 恢复 → 应绿；工作树与 .sdo 卡/签字不碰。
 
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 
@@ -94,7 +97,7 @@ function writeAtomic(file, text) {
 
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
-  if (!cmd) die("用法：card.mjs new|evidence [参数]（详见文件头）");
+  if (!cmd) die("用法：card.mjs new|evidence|mutation [参数]（详见文件头）");
   const flags = {};
   const positional = [];
   for (let i = 0; i < rest.length; i++) {
@@ -203,6 +206,12 @@ ${criteria.map((c) => `- ${c.id}：${c.text}`).join("\n")}
 |---|---|---|
 
 > 证据列只接受脚本生成：card.mjs evidence --run 写 exit=<code> 或「未跑待复跑」；手填 pass/ok/done/已通过/空 会被 check.mjs 拒。判定列由评审填 pass/partial/fail/未判。
+
+## 变异
+| 判据 | 变异动作 | 应红命令 | 结果 |
+|---|---|---|---|
+
+> 每条判据要么有一行真跑结果（expected=red actual=red），要么「变异动作」写「不可变异：<具体理由>」+「## 评审」写「不可变异确认 <判据>：<理由>」；M5-2 起的 done 卡强制。
 
 ## 判定
 待证据齐后填 pass / partial / fail。
@@ -346,11 +355,95 @@ function cmdEvidence(flags, positional) {
   process.exit(scriptExit);
 }
 
+function copyProject(src, dst) {
+  // 副本不含 .git/node_modules：mutation 只验证脚本行为，不依赖版本库。
+  const skip = new Set([".git", "node_modules"]);
+  fs.cpSync(src, dst, {
+    recursive: true,
+    verbatimSymlinks: true,
+    filter: (from) => {
+      const rel = path.relative(src, from);
+      return rel === "" || !skip.has(rel.split(path.sep)[0]);
+    },
+  });
+}
+
+function runShell(command, cwd) {
+  const result = spawnSync(command, {
+    cwd,
+    shell: true,
+    timeout: 300000,
+    encoding: "utf8",
+    maxBuffer: 4 * 1024 * 1024,
+  });
+  const out = `${result.stdout ?? ""}${result.stderr ?? ""}`.trim();
+  return { code: result.status ?? 1, out };
+}
+
+function cmdMutation(flags, positional) {
+  if (positional.length !== 0) die("用法：card.mjs mutation --card <卡号> --criterion C1 --mutate \"<改坏命令>\" --expect \"<应红命令>\"");
+  const cardId = typeof flags.card === "string" ? flags.card.trim() : "";
+  if (!/^M\d+-(?:\d+|G)$/.test(cardId)) die(`--card 不合法：${cardId || "（空）"}（如 M5-2）`);
+  const criterion = flags.criterion;
+  if (typeof criterion !== "string" || !/^C\d+$/.test(criterion)) die(`--criterion 不合法：${criterion ?? ""}（应为 C1）`);
+  const mutate = typeof flags.mutate === "string" ? flags.mutate.trim() : "";
+  const expect = typeof flags.expect === "string" ? flags.expect.trim() : "";
+  if (!mutate) die("mutation 缺必填参数 --mutate（在副本里改坏实现的命令）");
+  if (!expect) die("mutation 缺必填参数 --expect（改坏后应当非零的命令）");
+  const root = findRoot(process.cwd());
+  if (!root) die("找不到 .sdo/：请在本项目内运行");
+
+  // 绑定卡号只用于输出与判据校验；mutation 不写卡，证据由 evidence --cmd ... --run 记录。
+  const cardFile = cardPath(root, cardId);
+  if (!criterionIds(readCard(cardFile)).includes(criterion)) die(`卡 ${cardId} 无判据：${criterion}`);
+
+  const temp = fs.mkdtempSync(path.join(os.tmpdir(), "sdo-mutation-"));
+  const work = path.join(temp, "work");
+  const backup = path.join(temp, "backup");
+  let restored = false;
+  try {
+    copyProject(root, work);
+    copyProject(root, backup);
+
+    const mutated = runShell(mutate, work);
+    if (mutated.code !== 0) {
+      console.log("expected=red actual=?");
+      console.error(`mutation 命令本身失败（exit=${mutated.code}）：${mutated.out.slice(0, 400)}`);
+      process.exitCode = 1;
+      return;
+    }
+    const actual = runShell(expect, work);
+    const actualRed = actual.code !== 0;
+
+    fs.rmSync(work, { recursive: true, force: true });
+    fs.renameSync(backup, work);
+    restored = true;
+
+    const green = runShell(expect, work);
+    const restoredGreen = green.code === 0;
+
+    console.log(`card=${cardId} criterion=${criterion}`);
+    console.log(`expected=red actual=${actualRed ? "red" : "green"}`);
+    console.log(`restored=${restoredGreen ? "green" : "red"}`);
+    if (!actualRed || !restoredGreen) {
+      if (!actualRed) console.error(`变异后命令仍为绿（actual=green）：${actual.out.slice(0, 400)}`);
+      if (!restoredGreen) console.error(`恢复后命令仍红（restored=red）：${green.out.slice(0, 400)}`);
+      process.exitCode = 1;
+    }
+  } finally {
+    try {
+      if (!restored) fs.rmSync(work, { recursive: true, force: true });
+      fs.rmSync(temp, { recursive: true, force: true });
+    } catch { /* best-effort */ }
+  }
+}
+
 const { cmd, flags, positional } = parseArgs(process.argv.slice(2));
 try {
   if (cmd === "new") cmdNew(flags, positional);
   else if (cmd === "evidence") cmdEvidence(flags, positional);
-  else die(`未知命令：${cmd}（只允许 new|evidence）`);
+  else if (cmd === "mutation") cmdMutation(flags, positional);
+  else die(`未知命令：${cmd}（只允许 new|evidence|mutation）`);
 } catch (error) {
   fail(error instanceof Error ? error.message : String(error));
 }

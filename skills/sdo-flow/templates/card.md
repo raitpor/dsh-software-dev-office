@@ -37,6 +37,12 @@ A1：…；不成立 ⇒ …
 
 > 证据列只接受脚本生成：`card.mjs evidence --run` 写 `exit=<code>` 或「未跑待复跑」；手填 `pass`/`ok`/`done`/`已通过`/空 会被 `check.mjs` 拒。判定列只写 pass/partial/fail/未判，由评审据证据填。
 
+## 变异
+| 判据 | 变异动作 | 应红命令 | 结果 |
+|---|---|---|---|
+
+> 每条判据要么有一行真跑结果（`expected=red actual=red`），要么「变异动作」写「不可变异：<具体理由>」并在「## 评审」写「不可变异确认 <判据>：<理由>」；M5-2 起的 done 卡由 `check.mjs` 强制。
+
 ## 判定
 pass / partial / fail（partial 写缺口与补齐时点）
 

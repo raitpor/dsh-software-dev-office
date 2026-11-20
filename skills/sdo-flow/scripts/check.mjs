@@ -215,13 +215,47 @@ function evidenceTableInfo(lines) {
   return { line: head + 1, header, rows };
 }
 
+function mutationTableInfo(lines) {
+  const at = lines.findIndex((l) => /^##\s*变异(?:\s|$)/.test(l.trim()));
+  if (at < 0) return null;
+  let head = -1;
+  for (let i = at + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
+    const s = lines[i].trim();
+    if (s.startsWith("|") && !isSep(s)) { head = i; break; }
+  }
+  if (head < 0) return { line: at + 1, header: [], rows: [] };
+  const header = cells(lines[head]).map((x) => x.replace(/`/g, "").trim());
+  const rows = [];
+  for (let i = head + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
+    const s = lines[i].trim();
+    if (!s.startsWith("|") || isSep(s)) continue;
+    rows.push({ line: i + 1, cells: cells(s) });
+  }
+  return { line: head + 1, header, rows };
+}
+
+function mutationEnforced(cardId, planSets) {
+  // 只认计划真源与声明：M1–M4 卡表、变异校验基线声明除外；其余（含表外卡、M5+）一律强制。
+  if (!planSets.ok) return true;
+  if (planSets.legacy.has(cardId) || planSets.m4.has(cardId)) return false;
+  if (planSets.mutationBaseline.has(cardId)) return false;
+  return true;
+}
+
+function substantiveReason(text) {
+  const t = text.replace(/[。.，,；;：:、\s]/g, "");
+  if (t.length < 8) return false;
+  return !/(这个不好|差不多|没必要|不重要|看情况)/.test(t) && !/^(同意|认可|可以|无|行|ok)$/i.test(t);
+}
+
 function planCardSets() {
-  const legacy = new Set(), baseline = new Set(), strict = new Set(), all = new Set();
-  if (!exists(".sdo/01-计划.md")) return { legacy, baseline, strict, all, ok: false };
+  const legacy = new Set(), m4 = new Set(), baseline = new Set(), strict = new Set(), all = new Set();
+  const mutationBaseline = new Set();
+  if (!exists(".sdo/01-计划.md")) return { legacy, m4, baseline, strict, mutationBaseline, all, ok: false };
   const lines = read(".sdo/01-计划.md");
   let section = 1, col = -1;
   const seen = { 1: false, 2: false, 3: false, 4: false, 5: false };
-  const baselineDecl = [];
+  const baselineDecl = [], mutationDecl = [];
   for (const line of lines) {
     const h = line.match(/^##\s*M(\d+)/);
     if (h) { section = Number(h[1]); col = -1; continue; }
@@ -230,6 +264,12 @@ function planCardSets() {
       const at = Math.max(half, full);
       const tail = at >= 0 ? line.slice(at + 1) : "";
       for (const m of tail.matchAll(/M\d+-(?:\d+|G)/g)) baselineDecl.push(m[0]);
+    }
+    if (section === 5 && line.includes("变异校验基线卡")) {
+      const half = line.lastIndexOf(":"), full = line.lastIndexOf("：");
+      const at = Math.max(half, full);
+      const tail = at >= 0 ? line.slice(at + 1) : "";
+      for (const m of tail.matchAll(/M\d+-(?:\d+|G)/g)) mutationDecl.push(m[0]);
     }
     if (section < 1 || section > 5) continue;
     const raw = line.trim();
@@ -245,14 +285,31 @@ function planCardSets() {
     all.add(id);
     seen[section] = true;
     if (section <= 3) legacy.add(id);
-    else if (section === 4) baseline.add(id);
+    else if (section === 4) { baseline.add(id); m4.add(id); }
     else strict.add(id);
   }
   for (const id of baselineDecl) {
     if (!exists(`.sdo/cards/${id}.md`)) { warn(".sdo/01-计划.md", 0, `证据格式基线卡声明无效（无对应卡文件）：${id}`); continue; }
     baseline.add(id); all.add(id);
   }
-  return { legacy, baseline, strict, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
+  for (const id of mutationDecl) {
+    const cardRel = `.sdo/cards/${id}.md`;
+    if (!exists(cardRel)) { warn(".sdo/01-计划.md", 0, `变异校验基线卡声明无效（无对应卡文件）：${id}`); continue; }
+    const cardText = read(cardRel).join("\n");
+    if (!/^status:\s*done\b/m.test(cardText)) { warn(".sdo/01-计划.md", 0, `变异校验基线卡声明无效（卡未 done）：${id}`); continue; }
+    const signsDir = ".sdo/sign";
+    const signed = exists(signsDir) && fs.readdirSync(path.join(ROOT, signsDir))
+      .filter((f) => /^S[^/]+\.md$/.test(f))
+      .some((f) => read(`${signsDir}/${f}`).some((line) => {
+        const scope = line.match(/^-\s*范围[:：]\s*(.+)$/);
+        if (!scope) return false;
+        const first = scope[1].match(/^M\d+-(?:\d+|G)(?![\w-])/);
+        return first !== null && first[0] === id;
+      }));
+    if (!signed) { warn(".sdo/01-计划.md", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
+    mutationBaseline.add(id); all.add(id);
+  }
+  return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
 }
 
 function checkCards() {
@@ -339,6 +396,34 @@ function checkCards() {
       const rel = lines.findIndex((l) => /^##\s*评审(?:\s|$)/.test(l.trim()));
       const relText = rel >= 0 ? lines.slice(rel, rel + 20).join("\n") : "";
       if (!/评审者[:：]/.test(relText)) err(p, 0, "done 卡评审段缺「评审者」（须写明独立性；无第二席位时写「自审（非独立）」）");
+      if (mutationEnforced(cardId, planSets) && critSet.length) {
+        const mt = mutationTableInfo(lines);
+        if (!mt) {
+          for (const id of critSet) err(p, 0, `done 卡缺变异证据：${id}（补「## 变异」行，或「不可变异：理由」+评审确认）`);
+        } else {
+          const need = ["判据", "变异动作", "应红命令", "结果"];
+          const lost = need.filter((h) => !mt.header.includes(h));
+          if (lost.length) err(p, mt.line, `变异表表头缺字段：${lost.join("、")}（应为 | 判据 | 变异动作 | 应红命令 | 结果 |）`);
+          for (const id of critSet) {
+            const row = mt.rows.find((r) => (r.cells[0] || "").replace(/`/g, "").trim() === id);
+            if (!row) { err(p, 0, `判据缺变异证据：${id}（补 mutation 行，或「不可变异：理由」+评审确认）`); continue; }
+            const action = (row.cells[1] || "").trim();
+            const expectCmd = (row.cells[2] || "").trim();
+            const result = (row.cells[3] || "").trim();
+            if (!action) err(p, row.line, `变异行缺「变异动作」：${id}`);
+            if (!expectCmd) err(p, row.line, `变异行缺「应红命令」：${id}`);
+            if (/^不可变异\s*[：:]/.test(action)) {
+              const reason = action.replace(/^不可变异\s*[：:]\s*/, "").trim();
+              if (!substantiveReason(reason)) err(p, row.line, `不可变异缺具体理由：${id}`);
+              const cm = new RegExp(`不可变异确认\\s*${id}\\s*[：:]\\s*(.+)`).exec(relText);
+              if (!cm) err(p, row.line, `不可变异缺评审确认：${id}（评审段须写「不可变异确认 ${id}：理由」）`);
+              else if (!substantiveReason(cm[1].split("\n")[0])) err(p, row.line, `不可变异评审确认理由不足：${id}`);
+            } else if (!/expected=red/.test(result) || !/actual=red/.test(result)) {
+              err(p, row.line, `变异证据不足：${id}（结果列须含 expected=red actual=red）`);
+            }
+          }
+        }
+      }
     }
   }
 }
