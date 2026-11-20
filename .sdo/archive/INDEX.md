@@ -1,0 +1,7 @@
+# 归档索引
+
+| 里程碑 | 门签号 | 被签树 | 文件数 | 文件 sha256 | 状态 |
+|---|---|---|---|---|---|
+| M1 | S4 | c5593ed | 6 | {"cards/M1-0.md":"f4a38c24e83fe1dacc47316d5255889d22fe1e278cc0274f00a01b947e79ddd5","cards/M1-1.md":"b489c5b757cfe04b885a074b359ffdb976f08096329328cdc598298042474fc4","cards/M1-2.md":"7ed4c6ca2f2859dce56f64ce57b86e681f0ede01697b32edb3740f146e2eb8f9","cards/M1-G.md":"7e311940531bef52a6797f3f331c7607e041857ab8425fd39d99d20080cd9116","readings/M1.md":"2891a7617e0819228468ad40cc8889fe24fc88f5ffe46056974ebd1e207f1c8d","review/M1-计划.md":"d78dc78f1c07879aa8ca419c155eb9d8ad140899d441ee68e04c1dcb049cd293"} | 已归档 |
+| M2 | S8 | f7bb6e2 | 3 | {"cards/M2-0.md":"6ce467425a725068dcc60ad38e8b9fe411aa0da9f28c3a8a6e0bd43c0b04dc9a","readings/M2.md":"32bc8238913e82ccd364869ef602f7c6c6861934d177fb190bca6778208d5f8e","review/M2-审查.md":"09c36ff117c2dfbdc65223c68e4ac4027fafa6587098f76889c58a7d2d29a40e"} | 已归档 |
+| M3 | S12 | 14ababd | 4 | {"cards/M3-0.md":"2b12f7b7735deff6629df8a86576f5d8bb5d3eb8c21432abe8846955665a04fb","cards/M3-1.md":"cc58d99ebbc0aff8d69975372b7ad6febaca5d3a9b8abb8bf1e266062975cbcc","readings/M3.md":"f17ecbe323d59db288c7f8773a73b3a60dece3675efabdfabafab59fff97bd80","review/M3-审查.md":"fc3465b86e71fe3f171b02c4d0d8551f0dfedb0c7b32a3fd9eccd2bf9b3e569c"} | 已归档 |
