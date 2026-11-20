@@ -1,6 +1,6 @@
 # M6-G 读数门（R26–R30）+ 出口表 + 门签
 
-status: open
+status: done
 owner: lead
 write_scope: [skills/sdo-flow/scripts/check.mjs, .sdo/readings/, .sdo/sign/, .sdo/review/, .sdo/gates/, .sdo/milestones/M6.md]
 read_refs: [skills/sdo-flow/scripts/, .sdo/cards/, .sdo/台账.md]
@@ -44,22 +44,38 @@ release_touching：门签后 M6 段与五卡冻结，读数即最终证据。
 
 | 判据 | 命令与输出 | 判定 |
 |---|---|---|
-| C1 |  |  |
-| C2 |  |  |
-| C3 |  |  |
-| C4 |  |  |
+| C1 | exit=0; `.sdo/readings/M6.md` R26–R30 五节；`overall：pass` 与逐条一致（R26–R30 全 pass，无 partial） | pass |
+| C2 | exit=0; `node skills/sdo-flow/scripts/gate.mjs --milestone M6` → `门禁检查通过`（WARN 2 条：`assumption_set.signed` 为 core 判据、preset 未列，属预期）；出口表 verify 6 行 / deliver 7 行 | pass |
+| C3 | exit=0; 读数 `M6.md:3` 记被取证树 `853c8ee`，与门签被签对象一致；读数与出口表同批提交后 `git rev-parse HEAD` 记录在 S30 | pass |
+| C4 | exit=0; 无 partial（R26–R30 全 pass），故无需“明说 partial 并由人接受”；R30 的行为不可机检已写 caveat 与门签边界 | pass |
 
 ## 变异
 
-| 判据 | 变异 | 期望 |
-|---|---|---|
-|  |  |  |
+| 判据 | 变异动作 | 应红命令 | 结果 |
+|---|---|---|---|
+| C1 | 副本把 `overall：pass` 改成与逐条不一致（某条改 partial 而 overall 不动） | `check.mjs` | expected=red actual=red（`overall=pass 与逐条不一致`） |
+| C2 | 副本删掉 `## G_agent_deliver_exit` 整节 | `gate.mjs --milestone M6` | expected=red actual=red（找不到 gate 勾选表） |
+| C3 | 副本把读数里的被取证树改成别的 hash | 人工比对读数与 S30 被签对象 | expected=red actual=red（评审打回，机检不覆盖——已在边界写明） |
+| C4 | 副本把某条读数 verdict 改 partial 而 overall 保持 pass | `check.mjs` | expected=red actual=red（同 C1 机制） |
 
 ## 评审
 
-- 评审者：
-- 判定：
+- 评审者：`reviewer`（独立、只读、非作者）
+- 判定：可签字（第 2 轮）
+- 交集：第 1 轮「改完再审」（P1 首条报错顺序 + P2 六门口径 + P2 overall 自证）；第 2 轮「可签字」（读数、出口表、被签树三者一致）
+- 语义自检：C1/C4 的“读数与 overall 一致”由机检兜（逐条 verdict 与 overall 交叉校验）；但“读数是否真在冻结树上取、命令是否真跑过”机检验不了，只能靠 tree/时间戳与评审复跑——这一点已写进卡「已知边界」与门签边界。
+
+## 已知边界
+
+- 读数“在冻结树上取”由时间戳与被取证树声明保证，机检不比对工作树是否被改过（门签时以 `git status` 干净为准）。
+- 出口表的“证据”列是声明式引用，`gate.mjs` 只校验非空非占位，不打开文件核对行号。
+- R30 只证明文本存在，不证明行为被遵守。
+- 门签签收 `M6-G`，不覆盖 M6-0/M6-1 的实现质量（它们由本门签的“门卡收口”语义统一收口，见 D-109）。
 
 ## 判定
 
-- 待评。
+- C1 pass：`overall：pass` 与 R26–R30 逐条一致，无 partial。
+- C2 pass：出口表 12 行判据、`gate.mjs` 通过（2 条预期 WARN）。
+- C3 pass：读数记 `853c8ee`，与门签被签对象一致。
+- C4 pass：无 partial 需要接受；不可机检项已写 caveat。
+- 总体：pass（评审复核）。
