@@ -60,9 +60,15 @@ cp $SKILL/templates/board.md    .sdo/看板.md
 
 **多人/多会话**：一卡一文件，台账是唯一共享追加文件（冲突保留双方行、按 id 排序）；签字文件只由签字人写（代笔须人确认并注明）；评审者与作者不同分支/会话。
 
+## 维护（归档/恢复）
+
+台账分卷：活跃卷 `.sdo/台账.md`、归档卷 `.sdo/ledger/vol-<n>.md`，索引 `.sdo/.index/ledger.json`（volumes + open）。`ledger.mjs rotate --to .sdo/ledger/vol-1.md` 把整卷改名（内容仅更新卷头行）并新建空活跃卷，不删行；`reindex` 从正文重建索引；`list --open`/`view next`/`check` 只读活跃卷与索引里的未决项；`check` 单次线性扫**台账分卷**（活跃卷 + `ledger/vol-*`；`.sdo/archive/` 里程碑归档不扫）复核 `open/rows/first/last`，sha256 只证**各卷文本未变**。索引正确性以 `reindex` 为准，不写“哈希相等 ⇒ 索引与正文一致”。手改正文后跑 `reindex`，否则 `check` 报 `index_stale`。**操作性硬规则**：活跃卷 > 1000 行或里程碑收口时必须 `rotate`；`check` 对活跃卷 > 5000 行给 WARN「活跃卷过大，建议 rotate（大卷会让 add/view 变慢）」，WARN 不阻断。
+
+`archive.mjs archive <M>` 用 `git mv` 把里程碑的卡/评审/读数/出口表搬进 `.sdo/archive/<M>/`，索引写 `.sdo/archive/INDEX.md`（manifest 含逐文件 sha256）；`restore <M>` 搬回。前置校验只覆盖“文件都在、哈希对”；若 `git mv` 中途失败，可能留下半搬状态，按 `git status` 手工回退（`git mv` 已暂存，可逐个 `git mv` 回原位）。
+
 ## 检查器与快捷视图
 
-随包提供六个零依赖 Node 脚本（检查、阶段门、快捷视图、台账写入口、卡骨架/证据行、签字材料 draft）；`view.mjs next` 回答“现在能开工什么、还缺什么”；`check.mjs --plan` 查计划卡表与卡面的双向漂移（卡文件、依赖、write_scope、判据路径）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工。
+随包提供七个零依赖 Node 脚本（检查、阶段门、快捷视图、台账写入口、卡骨架/证据行/变异、签字材料 draft、里程碑归档）；`view.mjs next` 回答“现在能开工什么、还缺什么”；`check.mjs --plan` 查计划卡表与卡面的双向漂移（卡文件、依赖、write_scope、判据路径）。**用法属于流程的一部分，写在 `SKILL.md` §11**；这里只说明：需要 `node`，没有时退回人工。
 
 ## 适用与成本
 
@@ -78,7 +84,7 @@ skills/sdo-flow/
   references/01…07    按需加载：真源与账本、判据与门禁、签字与评审、计划与卡、读数与里程碑门、偏差台账、边界与自证
   presets/            瀑布 / 快速原型 / 增量 / agent 驱动：阶段序列 + 每个出口的判据勾选表 + 可迁移 policy
   templates/          9 份模板：意图 / 计划 / 卡 / 台账 / 看板 / gates / 读数 / 评审 / 签字
-  scripts/            check.mjs（文本检查）/ gate.mjs（阶段门）/ view.mjs（快捷视图，含 next）/ ledger.mjs（台账写入口）/ card.mjs（卡骨架与证据）/ sign.mjs（签字材料）
+  scripts/            check.mjs（文本检查）/ gate.mjs（阶段门）/ view.mjs（快捷视图，含 next、archive）/ ledger.mjs（台账写入口）/ card.mjs（卡骨架、证据、变异）/ sign.mjs（签字材料）/ archive.mjs（归档与恢复）
 ```
 
 ## 已知边界

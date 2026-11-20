@@ -102,15 +102,114 @@ function cards() {
   });
 }
 
-function ledger() {
-  const t = findTable(".sdo/台账.md", "id");
+function readLedgerIndex() {
+  const p = ".sdo/.index/ledger.json";
+  if (!exists(p)) return null;
+  try {
+    const idx = JSON.parse(read(p));
+    if (!idx || !Array.isArray(idx.volumes) || !Array.isArray(idx.open)) return null;
+    return idx;
+  } catch { return null; }
+}
+function ledgerRowsFrom(file) {
+  const t = findTable(file, "id");
   if (!t) return [];
   const idx = Object.fromEntries(t.header.map((h, i) => [h.replace(/`/g, ""), i]));
-  return t.rows.map((r) => ({
+  return t.rows.map((r, i) => ({
     id: (r[idx.id] || "").replace(/`/g, ""),
     kind: r[idx.kind] || "", where: r[idx["位置"]] || "", what: r[idx["现象"]] || "",
     why: r[idx["影响"]] || "", how: r[idx["处置"]] || "", status: r[idx["状态"]] || "",
+    file, line: t.at + i + 2,
   })).filter((r) => r.id);
+}
+/** 只按索引 open 读行：每条 open 有 line 时只取该行；缺 line 才回退整卷解析。 */
+function openRowsFromIndex() {
+  const idx = readLedgerIndex();
+  if (!idx || !Array.isArray(idx.open) || !idx.open.length) return null;
+  const byFile = new Map();
+  for (const o of idx.open) {
+    if (!o || typeof o.file !== "string") continue;
+    if (!exists(o.file)) { console.error(`索引 open 指向的卷不存在：${o.file}（跑 ledger.mjs reindex）`); process.exit(2); }
+    if (!byFile.has(o.file)) byFile.set(o.file, []);
+    byFile.get(o.file).push(o);
+  }
+  const out = [];
+  for (const [file, entries] of byFile) {
+    const ls = lines(file);
+    let header = null, hdrAt = -1;
+    for (let i = 0; i < ls.length; i++) {
+      if (!ls[i].trim().startsWith("|")) continue;
+      const h = cells(ls[i]);
+      if (h.some((x) => x.replace(/`/g, "").trim() === "id")) { header = h; hdrAt = i; break; }
+    }
+    if (!header) { console.error(`台账卷找不到表头：${file}`); process.exit(2); }
+    const at = Object.fromEntries(header.map((h, i) => [h.replace(/`/g, ""), i]));
+    const parsed = new Map();
+    let fallback = null;
+    for (const o of entries) {
+      let line = Number.isInteger(o.line) ? o.line : null;
+      if (!line) { fallback ??= ledgerRowsFrom(file); const hit = fallback.find((r) => r.id === o.id); if (hit) parsed.set(o.id, hit); continue; }
+      const raw = ls[line - 1];
+      if (!raw || !raw.trim().startsWith("|")) { fallback ??= ledgerRowsFrom(file); const hit = fallback.find((r) => r.id === o.id); if (hit) parsed.set(o.id, hit); continue; }
+      const c = cells(raw);
+      const gotId = (c[at.id] || "").replace(/`/g, "").trim();
+      if (gotId !== o.id) { console.error(`索引 open 行 ${o.id} 位置 ${file}:${line} 实际是 ${gotId || "空行"}（跑 ledger.mjs reindex）`); process.exit(2); }
+      const kind = c[at.kind] || "", status = c[at["状态"]] || "";
+      if (kind !== o.kind || !["open", "accepted"].includes(status)) { console.error(`索引 open 行 ${o.id} 的 kind/状态与正文不符（跑 ledger.mjs reindex）`); process.exit(2); }
+      parsed.set(o.id, {
+        id: gotId, kind, where: c[at["位置"]] || "",
+        what: c[at["现象"]] || "", why: c[at["影响"]] || "", how: c[at["处置"]] || "",
+        status, file, line,
+      });
+    }
+    for (const o of entries) { const r = parsed.get(o.id); if (r) out.push(r); }
+  }
+  return out;
+}
+function ledger() {
+  const idx = readLedgerIndex();
+  const base = ledgerRowsFrom(".sdo/台账.md");
+  if (!idx) return base;
+  const seen = new Set(base.map((r) => r.id));
+  for (const o of idx.open) {
+    if (seen.has(o.id)) continue;
+    if (!exists(o.file)) { console.error(`索引 open 指向的卷不存在：${o.file}（跑 ledger.mjs reindex）`); process.exit(2); }
+    const rows = ledgerRowsFrom(o.file);
+    const row = rows.find((r) => r.id === o.id);
+    if (row) { base.push(row); seen.add(row.id); }
+  }
+  return base;
+}
+function ledgerDetail(id) {
+  const rows = ledgerRowsFrom(".sdo/台账.md");
+  const close = rows.find((r) => (r.how || "").startsWith(`关闭 ${id}`));
+  const idx = readLedgerIndex();
+  let original = null;
+  if (idx) {
+    const o = idx.open.find((x) => x.id === id);
+    if (o) {
+      if (!exists(o.file)) { console.error(`索引 open 指向的卷不存在：${o.file}（跑 ledger.mjs reindex）`); process.exit(2); }
+      const hit = ledgerRowsFrom(o.file).find((r) => r.id === id);
+      if (hit) original = { file: o.file, line: hit.line, where: hit.where, what: hit.what, status: hit.status };
+    }
+  }
+  if (!original) {
+    const hit = rows.find((r) => r.id === id);
+    if (hit) original = { file: ".sdo/台账.md", line: hit.line, where: hit.where, what: hit.what, status: hit.status };
+  }
+  if (!original && close) {
+    const m = /^(.+):(\d+)$/.exec(close.where || "");
+    if (m) {
+      original = { file: m[1], line: Number(m[2]), where: "", what: "", status: "已关闭" };
+      const hit = ledgerRowsFrom(m[1]).find((r) => r.id === id);
+      if (hit) { original.where = hit.where; original.what = hit.what; original.status = hit.status; }
+    }
+  }
+  if (!original && !close) { console.error(`台账里没有：${id}`); process.exit(2); }
+  const out = [`# 台账行 ${id}`];
+  if (original) out.push(`- 原行：${original.file}:${original.line}（${original.status}）`, `- 位置：${original.where}`, `- 现象：${original.what}`);
+  if (close) out.push(`- 关闭行：.sdo/台账.md:${close.line}`, `- 处置：${close.how}`);
+  return out.join("\n");
 }
 
 function signs() {
@@ -197,10 +296,12 @@ function isOpenLedgerRow(row, closedIds = new Set()) {
 }
 function dnum(id) { const m = /^D-(\d+)$/.exec(id || ""); return m ? Number(m[1]) : NaN; }
 
-const CS = cards(), LG = ledger(), SG = signs(), RD = readings(), MS = milestone();
+const NEED_ALL_LEDGER = cmd !== "next";
+const CS = cards(), LG = NEED_ALL_LEDGER ? ledger() : [], SG = signs(), RD = readings(), MS = milestone();
 const openCards = CS.filter((c) => c.status !== "done");
 const CLOSED_IDS = closedLedgerIds(LG);
-const openLedger = LG.filter((r) => isOpenLedgerRow(r, CLOSED_IDS));
+const IDX_OPEN = openRowsFromIndex();
+const openLedger = IDX_OPEN ?? LG.filter((r) => isOpenLedgerRow(r, CLOSED_IDS));
 
 // ---- next 的解析辅助 ----
 function stripParens(s) {
@@ -418,6 +519,8 @@ const out = {
     return [`# 待办队列（${items.length}）`, "", ...(items.length ? items : ["- （空）"])].join("\n");
   },
   ledger() {
+    const positional = argv.filter((a) => !a.startsWith("--"));
+    if (positional.length > 1) return ledgerDetail(positional[1]);
     const rows = onlyOpen ? openLedger : LG;
     return [`# 台账（${rows.length}${onlyOpen ? " · 只看未修" : ""}）`, "", "| id | kind | 状态 | 位置 | 现象 | 处置 |", "|---|---|---|---|---|---|",
       ...rows.map((r) => `| ${r.id} | ${r.kind} | ${r.status} | ${r.where} | ${r.what} | ${r.how} |`)].join("\n");

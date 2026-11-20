@@ -104,6 +104,9 @@ node <skill>/scripts/check.mjs [--presets|--all]  # 台账/表格/签字/卡/读
 node <skill>/scripts/gate.mjs [--list|G_req_exit]  # 阶段门：默认判所有勾选表；--file/--json 可用；exit 1/2
 node <skill>/scripts/view.mjs <view>|next  # 六个只读视图；next=能开工什么（五节，未知状态 exit 1）；均支持 --json
 node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）
+node <skill>/scripts/ledger.mjs rotate --to .sdo/ledger/vol-1.md  # 文件级轮转：活跃卷改名归档 + 新建空活跃卷（不删行）
+node <skill>/scripts/ledger.mjs reindex                      # 从正文重建 .sdo/.index/ledger.json（索引丢了/手改后用）
+# 硬规则：活跃卷 >1000 行或里程碑收口时必须 rotate；check 对活跃卷 >5000 行 WARN（不阻断）
 node <skill>/scripts/card.mjs new|evidence                 # 卡骨架与证据行：同判据一行、重复原地更新；--run 真跑（30s 超时）
 node <skill>/scripts/sign.mjs draft --milestone M4          # 签字材料 draft：只出事实到 stdout、不写文件；退出码 0/1/2
 node <skill>/scripts/archive.mjs archive|restore M3  # 归档/恢复里程碑；git mv 搬运，索引含逐文件 sha256；check 只读索引

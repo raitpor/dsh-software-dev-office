@@ -63,6 +63,7 @@ function mdFiles() {
         if (e.name === ".git" || e.name === "node_modules" || e.name === "lib" || e.name === "dist") continue;
         const rel = dir ? `${dir}/${e.name}` : e.name;
         if (rel === ".sdo/archive" || rel.startsWith(".sdo/archive/")) continue;
+        if (rel === ".sdo/ledger" || rel.startsWith(".sdo/ledger/")) continue;
         if (e.isDirectory()) walk(rel);
         else if (e.name.endsWith(".md")) out.push(rel);
       }
@@ -135,18 +136,20 @@ function checkLedger(p) {
     }
   }
   if (hdrAt < 0) return err(p, 0, "找不到台账表头（含 id 的表）");
-  const seen = [];
+  const seen = new Set();
   const rows = [];
   const closedBy = new Set();
+  let lastId = "";
   for (let i = hdrAt + 2; i < lines.length; i++) {
     if (!lines[i].trim().startsWith("|")) continue;
     const c = cells(lines[i].trim());
     if (c.length !== 7) continue;
     const id = c[cols.id].replace(/`/g, "").trim();
     if (!/^D-\d+$/.test(id)) { err(p, i + 1, `id 不合法：${id}（应为 D-<数字>）`); continue; }
-    if (seen.includes(id)) err(p, i + 1, `id 重复：${id}`);
-    if (seen.length && +id.slice(2) <= +seen.at(-1).slice(2)) err(p, i + 1, `id 未递增：${id} 在 ${seen.at(-1)} 之后`);
-    seen.push(id);
+    if (seen.has(id)) err(p, i + 1, `id 重复：${id}`);
+    if (lastId && +id.slice(2) <= +lastId.slice(2)) err(p, i + 1, `id 未递增：${id} 在 ${lastId} 之后`);
+    lastId = id;
+    seen.add(id);
     if (!KINDS.has(c[cols.kind])) err(p, i + 1, `kind 不合法：${c[cols.kind]}`);
     if (!STATUS.has(c[cols.status])) err(p, i + 1, `状态不合法：${c[cols.status]}`);
     const fixText = (c[cols.how] || "").trim();
@@ -155,9 +158,116 @@ function checkLedger(p) {
     rows.push({ id, kind: c[cols.kind], status: c[cols.status], line: i + 1 });
     if (!c[cols.where]) err(p, i + 1, "位置为空");
   }
-  for (const r of rows) {
-    if (r.kind === "defect" && r.status === "open" && !closedBy.has(r.id)) {
-      warn(p, r.line, `${r.id} 是未修 defect`);
+  const defectWarns = rows.filter((r) => r.kind === "defect" && r.status === "open" && !closedBy.has(r.id));
+  for (const r of defectWarns.slice(0, 10)) warn(p, r.line, `${r.id} 是未修 defect`);
+  if (defectWarns.length > 10) warn(p, 0, `另有 ${defectWarns.length - 10} 条未修 defect 警告已折叠（共 ${defectWarns.length} 条）`);
+}
+
+function sha256Body(text) {
+  const lines = text.split(/\r?\n/);
+  const body = /^<!-- sdo-ledger-vol /.test(lines[0] || "") ? lines.slice(1).join("\n") : text;
+  return crypto.createHash("sha256").update(body, "utf8").digest("hex");
+}
+function volMeta(text) {
+  const m = /^<!-- sdo-ledger-vol rows=(\d+) first=(D-\d+|-) last=(D-\d+|-) sha256=([0-9a-f]{64}) -->$/.exec((text.split(/\r?\n/)[0] || "").trim());
+  return m ? { rows: Number(m[1]), first: m[2], last: m[3], sha256: m[4] } : null;
+}
+function volIds(text) {
+  const ls = text.split(/\r?\n/);
+  const ids = [];
+  for (const l of ls) {
+    if (!l.trim().startsWith("|")) continue;
+    const c = cells(l);
+    if (c.length !== 7) continue;
+    const id = c[0].replace(/`/g, "").trim();
+    if (/^D-\d+$/.test(id)) ids.push(id);
+  }
+  return ids;
+}
+function scanVolumeRows(text, file) {
+  const ls = text.split("\n");
+  let rows = 0, first = "-", last = "-";
+  const byId = new Map(), byLine = new Map();
+  for (let i = 0; i < ls.length; i++) {
+    const c = cells(ls[i]);
+    if (c.length !== 7) continue;
+    const id = c[0].replace(/`/g, "").trim();
+    if (!/^D-\d+$/.test(id)) continue;
+    rows++;
+    if (first === "-") first = id;
+    last = id;
+    const hit = { id, kind: c[1], status: c[6], how: c[5], file, line: i + 1 };
+    byId.set(id, hit);
+    byLine.set(i + 1, hit);
+  }
+  return { rows, first, last, byId, byLine };
+}
+
+function checkLedgerVolumes() {
+  const idxPath = ".sdo/.index/ledger.json";
+  if (!exists(idxPath)) {
+    let nonEmpty = false;
+    if (exists(".sdo/台账.md")) {
+      const ls = read(".sdo/台账.md");
+      for (const l of ls) {
+        if (!l.trim().startsWith("|")) continue;
+        const c = cells(l);
+        if (c.length === 7 && /^D-\d+$/.test(c[0].replace(/`/g, "").trim())) { nonEmpty = true; break; }
+      }
+    }
+    if (exists(".sdo/ledger")) {
+      try { nonEmpty = nonEmpty || fs.readdirSync(path.join(ROOT, ".sdo/ledger")).some((n) => /^vol-\d+\.md$/.test(n)); } catch { /* ignore */ }
+    }
+    if (nonEmpty) err(idxPath, 0, "index_stale：索引缺失（跑 ledger.mjs reindex）");
+    return;
+  }
+  let idx;
+  try {
+    idx = JSON.parse(fs.readFileSync(path.join(ROOT, idxPath), "utf8"));
+  } catch (e) {
+    return err(idxPath, 0, `索引不是合法 JSON：${e instanceof Error ? e.message : String(e)}（跑 ledger.mjs reindex）`);
+  }
+  if (!idx || !Array.isArray(idx.volumes) || !Array.isArray(idx.open)) return err(idxPath, 0, "索引结构不合法（需要 volumes/open）");
+  const paths = new Set();
+  let activeMeta = null;
+  const allRows = new Map();
+  const closedIds = new Set();
+  for (const v of idx.volumes) {
+    if (!v || typeof v.path !== "string" || !/^\.sdo\/(台账|ledger\/vol-\d+)\.md$/.test(v.path)) { err(idxPath, 0, "索引卷路径不合法"); continue; }
+    paths.add(v.path);
+    if (!exists(v.path)) { err(v.path, 0, "index_stale：索引中的卷文件不存在（跑 ledger.mjs reindex）"); continue; }
+    const text = fs.readFileSync(path.join(ROOT, v.path), "utf8");
+    const meta = volMeta(text);
+    if (!meta) { err(v.path, 1, "缺卷元数据注释（<!-- sdo-ledger-vol rows=… first=… last=… sha256=… -->）"); continue; }
+    if (v.path === ".sdo/台账.md") activeMeta = meta;
+    const scan = scanVolumeRows(text, v.path);
+    for (const id of scan.byId.keys()) allRows.set(id, scan.byId.get(id));
+    for (const hit of scan.byId.values()) { const m = /^关闭\s+(D-\d+)/.exec(hit.how); if (m) closedIds.add(m[1]); }
+    for (const k of ["rows", "first", "last"]) {
+      if (meta[k] !== scan[k]) err(v.path, 0, `index_stale：卷头 ${k}=${meta[k]} 与正文 ${scan[k]} 不符（跑 ledger.mjs reindex）`);
+      if (v[k] !== meta[k]) err(v.path, 0, `index_stale：索引 ${k}=${v[k]} 与卷头 ${meta[k]} 不符（跑 ledger.mjs reindex）`);
+    }
+    const sha = sha256Body(text);
+    if (v.sha256 !== meta.sha256) err(v.path, 0, `index_stale：索引 sha256=${v.sha256} 与卷头 ${meta.sha256} 不符（跑 ledger.mjs reindex）`);
+    if (v.sha256 !== sha) err(v.path, 0, `index_stale：卷头 sha256=${meta.sha256} 与实际 ${sha} 不符（跑 ledger.mjs reindex）`);
+  }
+  if (!paths.has(".sdo/台账.md")) err(idxPath, 0, "index_stale：索引缺活跃卷 .sdo/台账.md（跑 ledger.mjs reindex）");
+  if (activeMeta && activeMeta.rows > 5000) warn(".sdo/台账.md", 0, `活跃卷过大（rows=${activeMeta.rows}），建议 rotate（大卷会让 add/view 变慢）`);
+  const openIds = new Set();
+  for (const o of idx.open) {
+    if (!o || !/^D-\d+$/.test(o.id) || !["defect", "gap"].includes(o.kind) || typeof o.file !== "string" || !Number.isInteger(o.line)) { err(idxPath, 0, "索引 open 条目结构不合法"); continue; }
+    if (!paths.has(o.file)) { err(idxPath, 0, `index_stale：open 条目 ${o.id} 指向未登记卷 ${o.file}`); continue; }
+    if (openIds.has(o.id)) err(idxPath, 0, `索引 open 条目重复：${o.id}`);
+    openIds.add(o.id);
+    const hit = allRows.get(o.id);
+    if (!hit) { err(idxPath, 0, `index_stale：open 条目 ${o.id} 在正文中不存在（跑 ledger.mjs reindex）`); continue; }
+    if (hit.file !== o.file || hit.line !== o.line) err(idxPath, 0, `index_stale：open 条目 ${o.id} 位置 ${o.file}:${o.line} 与正文 ${hit.file}:${hit.line} 不符（跑 ledger.mjs reindex）`);
+    if (hit.kind !== o.kind) err(idxPath, 0, `index_stale：open 条目 ${o.id} kind=${o.kind} 与正文 ${hit.kind} 不符（跑 ledger.mjs reindex）`);
+    if (!["open", "accepted"].includes(hit.status) || closedIds.has(o.id)) err(idxPath, 0, `index_stale：open 条目 ${o.id} 正文状态=${hit.status} 不是未修（跑 ledger.mjs reindex）`);
+  }
+  for (const hit of allRows.values()) {
+    if (["defect", "gap"].includes(hit.kind) && ["open", "accepted"].includes(hit.status) && !closedIds.has(hit.id) && !openIds.has(hit.id)) {
+      err(idxPath, 0, `index_stale：正文未修行 ${hit.id} 不在索引 open（跑 ledger.mjs reindex）`);
     }
   }
 }
@@ -895,9 +1005,14 @@ if (ARGV.includes("--plan")) {
   checkPlan();
 }
 const files = mdFiles();
-for (const p of files) checkTables(p, read(p));
+const ledgerHasIndex = exists(".sdo/.index/ledger.json");
+for (const p of files) {
+  if (ledgerHasIndex && p === ".sdo/台账.md") continue; // 卷内容由索引 sha256 闭环，不逐行解析
+  checkTables(p, read(p));
+}
 checkFrontmatter();
-checkLedger(".sdo/台账.md"); checkSigns(); checkCards(); checkReadings(); checkArchive();
+if (!ledgerHasIndex) checkLedger(".sdo/台账.md");
+checkLedgerVolumes(); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
 for (const w of WARN) console.log(`WARN  ${w}`);
 for (const e of ERR) console.log(`ERROR ${e}`);
