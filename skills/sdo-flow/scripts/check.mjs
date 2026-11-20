@@ -1229,11 +1229,13 @@ function checkPlanRules(milestone, planPath) {
   const lines = raw.split("\n");
   const presetBase = baselineSegments(lines, "preset", planPath);
   const probeBase = baselineSegments(lines, "探底", planPath);
-  checkFrozenHash(raw, planPath);
+  // 顺序：先查“内容规则”（preset / 理由 / 探底 / 阶段），最后查冻结段 hash。
+  // 理由：改冻结段内容时 hash 必然变，若先报 hash，真正被违反的规则会被噪声盖住（R26 要求首条报错可指认）。
   let preset = "";
   if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
   if (!probeBase.has(milestone)) checkProbeLines(lines, planPath);
   if (preset) checkStageOrder(lines, planPath, preset);
+  checkFrozenHash(raw, planPath);
 }
 function checkR25Docs() {
   const ref = "skills/sdo-flow/references/03-签字与评审.md";
