@@ -249,6 +249,7 @@ function buildIndex(root) {
     .filter((r) => (r.kind === "defect" || r.kind === "gap") && (r.status === "open" || r.status === "accepted") && !closed.has(r.id))
     .map((r) => ({ id: r.id, kind: r.kind, file: r.file, line: r.line }));
   const idx = { volumes: vols, open, updated_at: null };
+  syncOpenRows(idx);
   idx.updated_at = updatedAt(root);
   return idx;
 }
@@ -258,6 +259,11 @@ function updatedAt(root) {
     try { max = Math.max(max, fs.statSync(path.join(root, rel)).mtimeMs); } catch { /* ignore */ }
   }
   return max ? new Date(max).toISOString() : null;
+}
+function syncOpenRows(idx) {
+  const count = new Map();
+  for (const o of idx.open) count.set(o.file, (count.get(o.file) || 0) + 1);
+  for (const v of idx.volumes) v.openRows = count.get(v.path) || 0;
 }
 function ensureIndex(root) {
   let idx = readIndex(root);
@@ -295,7 +301,7 @@ function refreshActive(root, vol, idx) {
   vol.stats = statsFromTable(vol.table, vol.body);
   writeVolume(vol);
   const at = idx.volumes.findIndex((v) => v.path === LEDGER);
-  const entry = { path: LEDGER, rows: vol.stats.rows, first: vol.stats.first, last: vol.stats.last, sha256: vol.stats.sha256 };
+  const entry = { path: LEDGER, rows: vol.stats.rows, first: vol.stats.first, last: vol.stats.last, sha256: vol.stats.sha256, openRows: 0 };
   if (at >= 0) idx.volumes[at] = entry;
   else idx.volumes.push(entry);
 }
@@ -340,6 +346,7 @@ function cmdAdd(root, flags) {
     const newRow = vol.table.rows[vol.table.rows.length - 1];
     idx.open.push({ id, kind: flags.kind, file: LEDGER, line: newRow ? newRow.line : null });
   }
+  syncOpenRows(idx);
   idx.updated_at = updatedAt(root);
   saveIndex(root, idx);
   console.log(`已追加 ${id}`);
@@ -378,6 +385,7 @@ function cmdClose(root, positional, flags) {
   appendRow(active, rowLine);
   refreshActive(root, active, idx);
   idx.open = idx.open.filter((o) => o.id !== id);
+  syncOpenRows(idx);
   idx.updated_at = updatedAt(root);
   saveIndex(root, idx);
   console.log(`已追加 ${closeId}（关闭 ${id}）`);
@@ -430,6 +438,7 @@ function cmdRotate(root, flags) {
   const empty = { rel: LEDGER, file: path.join(root, LEDGER), nl: "\n", body: EMPTY_BODY, stats: statsFor(EMPTY_BODY), table: tableOf(EMPTY_BODY) };
   writeVolume(empty);
   idx.volumes.push({ path: LEDGER, rows: 0, first: "-", last: "-", sha256: empty.stats.sha256 });
+  syncOpenRows(idx);
   idx.updated_at = updatedAt(root);
   saveIndex(root, idx);
   console.log(`已轮转：${LEDGER} → ${to}（新活跃卷 0 行）`);

@@ -62,7 +62,7 @@ cp $SKILL/templates/board.md    .sdo/看板.md
 
 ## 维护（归档/恢复）
 
-台账分卷：活跃卷 `.sdo/台账.md`、归档卷 `.sdo/ledger/vol-<n>.md`，索引 `.sdo/.index/ledger.json`（volumes + open）。`ledger.mjs rotate --to .sdo/ledger/vol-1.md` 把整卷改名（内容仅更新卷头行）并新建空活跃卷，不删行；`reindex` 从正文重建索引；`list --open`/`view next`/`check` 只读活跃卷与索引里的未决项；`check` 单次线性扫**台账分卷**（活跃卷 + `ledger/vol-*`；`.sdo/archive/` 里程碑归档不扫）复核 `open/rows/first/last`，sha256 只证**各卷文本未变**。索引正确性以 `reindex` 为准，不写“哈希相等 ⇒ 索引与正文一致”。手改正文后跑 `reindex`，否则 `check` 报 `index_stale`。**操作性硬规则**：活跃卷 > 1000 行或里程碑收口时必须 `rotate`；`check` 对活跃卷 > 5000 行给 WARN「活跃卷过大，建议 rotate（大卷会让 add/view 变慢）」，WARN 不阻断。
+台账分卷：活跃卷 `.sdo/台账.md`、归档卷 `.sdo/ledger/vol-<n>.md`，索引 `.sdo/.index/ledger.json`（volumes + open）。`ledger.mjs rotate --to .sdo/ledger/vol-1.md` 把整卷改名（内容仅更新卷头行）并新建空活跃卷，不删行；`reindex` 从正文重建索引；`list --open`/`view next`/`check` 只读活跃卷与索引里的未决项；`check` 单次线性扫**台账分卷**（活跃卷 + `ledger/vol-*`；`.sdo/archive/` 里程碑归档不扫）复核 `open/rows/first/last`，sha256 只证**各卷文本未变**。索引正确性以 `reindex` 为准，不写“哈希相等 ⇒ 索引与正文一致”。手改正文后跑 `reindex`，否则 `check` 报 `index_stale`。默认快路径只对 `openRows>0` 的卷逐行扫描；`check.mjs --deep` 不看 `openRows`、审计所有卷（体积小/发布前用，性能不作预算）。两者都依赖索引与正文同权限同盘，**防不了“正文+索引+哈希一起伪造”**；要判断历史真伪，以 git 追加历史为准（`git log` 反查）。**操作性硬规则**：活跃卷 > 1000 行或里程碑收口时必须 `rotate`；`check` 对活跃卷 > 5000 行给 WARN「活跃卷过大，建议 rotate（大卷会让 add/view 变慢）」，WARN 不阻断。
 
 `archive.mjs archive <M>` 用 `git mv` 把里程碑的卡/评审/读数/出口表搬进 `.sdo/archive/<M>/`，索引写 `.sdo/archive/INDEX.md`（manifest 含逐文件 sha256）；`restore <M>` 搬回。前置校验只覆盖“文件都在、哈希对”；若 `git mv` 中途失败，可能留下半搬状态，按 `git status` 手工回退（`git mv` 已暂存，可逐个 `git mv` 回原位）。
 
