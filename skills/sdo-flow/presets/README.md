@@ -2,7 +2,7 @@
 
 pre·set = 预先设定好的**阶段与出口判据**。前三份对应 SDO 设计里的三个内置 policy（`waterfall`、`prototype`、`incremental`）；第四份 `agent-driven` 是本 skill 的扩展，按 agent 开发的特点设计，**不在设计稿的目录内**，判据里标 `agent.` 的条目属流程自检项。
 
-选一个，抄进 `.sdo/01-计划.md` 的「阶段」段，之后按它排卡与收口。**不要**混用：一张卡只属于一条阶段序列。
+选一个，抄进 `.sdo/计划.md` 的「阶段」段，之后按它排卡与收口。**不要**混用：一张卡只属于一条阶段序列。
 
 选法：需求清楚且返工贵 ⇒ `waterfall`；需求不清先验证 ⇒ `prototype`；多线并行、人参与多 ⇒ `incremental`；产出主要由 agent 完成、人只在三个点介入 ⇒ `agent-driven`。
 

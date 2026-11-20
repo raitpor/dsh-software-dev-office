@@ -54,12 +54,25 @@ function cells(line) {
 const isSep = (l) => /^\s*\|[\s:|-]+\|\s*$/.test(l || "");
 
 // ---------- 计划：preset 与 gate 清单 ----------
-function planInfo() {
-  const p = ".sdo/01-计划.md";
+const MILESTONE_DIR = ".sdo/里程碑";
+function milestoneFiles() {
+  const d = path.join(ROOT, MILESTONE_DIR);
+  if (!fs.existsSync(d)) return [];
+  return fs.readdirSync(d).filter((f) => /^M\d+\.md$/.test(f)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
+}
+function milestonePreset(m) {
+  if (!m) return null;
+  const p = `${MILESTONE_DIR}/${m}.md`;
   if (!fs.existsSync(path.join(ROOT, p))) return null;
-  const text = read(p);
-  const preset = (text.match(/preset[:：]\s*`?([a-z-]+)`?/i) || [])[1] || null;
-  const gates = [...new Set([...text.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1]))];
+  return (read(p).match(/preset[:：]\s*`?([a-z-]+)`?/i) || [])[1] || null;
+}
+function planInfo() {
+  const files = milestoneFiles();
+  if (!files.length) return null;
+  const texts = files.map((f) => read(`${MILESTONE_DIR}/${f}`));
+  let preset = null;
+  for (const t of texts) { const m = t.match(/preset[:：]\s*`?([a-z-]+)`?/i); if (m) preset = m[1]; }
+  const gates = [...new Set(texts.flatMap((t) => [...t.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1])))];
   return { preset, gates };
 }
 
@@ -196,9 +209,11 @@ const problems = [], warnings = [], results = [];
 const targets = byFile ? [byFile] : gateFiles();
 if (!targets.length) die("没有 .sdo/gates/*.md");
 
-if (!plan?.preset) die("计划里没有写 preset：<name>（无法知道该 gate 要求哪些判据）");
-const critMap = presetCriteria(plan?.preset);
+if (!plan?.preset) die("里程碑文件里没有写 preset：<name>（无法知道该 gate 要求哪些判据）");
 for (const f of targets) {
+  const fm = /\.sdo\/gates\/(M\d+)\.md$/.exec(f);
+  const gatePreset = (fm && milestonePreset(fm[1])) || plan.preset;
+  const critMap = presetCriteria(gatePreset);
   if (!fs.existsSync(path.join(ROOT, f))) die(`文件不存在：${f}`);
   const text = read(f);
   const gids = wanted ? [wanted] : [...new Set([...text.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1]))];

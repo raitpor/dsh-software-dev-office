@@ -273,11 +273,16 @@ function archiveRows() {
 }
 
 function milestone() {
-  const plan = ".sdo/01-计划.md";
+  const plan = ".sdo/计划.md";
   if (!exists(plan)) return {};
   const m = read(plan).match(/^#\s*计划[:：]\s*(.+)$/m);
-  const rd = findTable(plan, "读数");
-  return { name: m ? m[1].trim() : "", readings: rd ? rd.rows.map((r) => ({ id: r[0], question: r[1], how: r[2] })) : [] };
+  return { name: m ? m[1].trim() : "", readings: [] };
+}
+const MILESTONE_DIR = ".sdo/里程碑";
+function milestoneFiles() {
+  const d = path.join(ROOT, MILESTONE_DIR);
+  if (!exists(MILESTONE_DIR) && !fs.existsSync(d)) return [];
+  return fs.readdirSync(d).filter((f) => /^M\d+\.md$/.test(f)).sort((a, b) => Number(a.match(/\d+/)[0]) - Number(b.match(/\d+/)[0]));
 }
 
 function closedLedgerIds(rows) {
@@ -329,31 +334,16 @@ function parseDeps(cellText) {
   return [...new Set(ids)];
 }
 function milestoneBlocks() {
-  const plan = ".sdo/01-计划.md";
-  if (!exists(plan)) return [];
-  const ls = lines(plan);
-  const starts = [];
-  for (let i = 0; i < ls.length; i++) {
-    const m = /^(#{1,2})\s*(?:追加里程碑[:：]\s*)?(M\d+)(?![\d.])\b/.exec(ls[i]);
-    if (m) starts.push({ line: i, id: m[2] });
-  }
-  return starts.map((s, k) => ({
-    id: s.id,
-    text: ls.slice(s.line, k + 1 < starts.length ? starts[k + 1].line : ls.length).join("\n"),
-  }));
+  return milestoneFiles().map((f) => ({ id: f.replace(/\.md$/, ""), text: read(`${MILESTONE_DIR}/${f}`) }));
+}
+function playMilestoneLines(milestoneId) {
+  const p = `${MILESTONE_DIR}/${milestoneId}.md`;
+  if (!exists(p)) return null;
+  return lines(p);
 }
 function planCardDeps(milestoneId) {
-  const plan = ".sdo/01-计划.md";
-  if (!exists(plan)) return { deps: new Map(), exists: false };
-  const ls = lines(plan);
-  const starts = [];
-  for (let i = 0; i < ls.length; i++) {
-    const m = /^(#{1,2})\s*(?:追加里程碑[:：]\s*)?(M\d+)(?![\d.])\b/.exec(ls[i]);
-    if (m) starts.push({ line: i, id: m[2] });
-  }
-  const at = starts.findIndex((s) => s.id === milestoneId);
-  if (at < 0) return { deps: new Map(), exists: false };
-  const seg = ls.slice(starts[at].line, at + 1 < starts.length ? starts[at + 1].line : ls.length);
+  const seg = playMilestoneLines(milestoneId);
+  if (!seg) return { deps: new Map(), exists: false };
   let header = null, headerLine = -1;
   for (let i = 0; i < seg.length - 1; i++) {
     if (!seg[i].trim().startsWith("|") || !isSep(seg[i + 1])) continue;
@@ -404,9 +394,9 @@ let nextExit = 0;
 function nextView(milestoneId) {
   const blocks = milestoneBlocks();
   const block = blocks.find((b) => b.id === milestoneId);
-  if (!block) { console.error(`找不到 ${milestoneId} 里程碑段：.sdo/01-计划.md`); process.exit(2); }
+  if (!block) { console.error(`找不到里程碑文件：${MILESTONE_DIR}/${milestoneId}.md`); process.exit(2); }
   const { deps: planDepsMap, exists: hasPlanTable } = planCardDeps(milestoneId);
-  if (!hasPlanTable) { console.error(`找不到 ${milestoneId} 卡表：.sdo/01-计划.md`); process.exit(2); }
+  if (!hasPlanTable) { console.error(`找不到 ${milestoneId} 卡表：${MILESTONE_DIR}/${milestoneId}.md`); process.exit(2); }
   const byId = new Map(CS.map((c) => [c.id, c]));
   const cardFaceDeps = new Map(CS.map((c) => [c.id, parseDeps(c.deps)]));
   if (hasPlanTable) {
@@ -530,10 +520,17 @@ const out = {
       ...SG.map((s) => `| ${s.file} | ${s.time} | ${s.option} | ${s.object} |`)].join("\n");
   },
   plan() {
-    const t = MS.readings || [];
-    return [`# 计划摘要：${MS.name || "(未命名)"}`, "", "| 读数 | 问题 | 怎么量 |", "|---|---|---|",
-      ...t.map((r) => `| ${r.id} | ${r.question} | ${r.how} |`), "",
-      `卡：${CS.length} 张（open ${openCards.length}）。完整卡表见 ${exists(".sdo/01-计划.md") ? ".sdo/01-计划.md" : "—"}。`].join("\n");
+    const p = ".sdo/计划.md";
+    if (!exists(p)) return "# 计划：项目级\n\n（没有 .sdo/计划.md）";
+    const ls = lines(p);
+    const out = ["# 计划：项目级", ""];
+    let inTable = false;
+    for (const l of ls) {
+      if (/^\|\s*里程碑\s*\|/.test(l)) { inTable = true; out.push(l); continue; }
+      if (inTable) { if (!l.trim().startsWith("|")) break; out.push(l); }
+    }
+    out.push("", `卡：${CS.length} 张（open ${openCards.length}）。里程碑文件：${milestoneFiles().join("、") || "—"}；完整卡表见各里程碑文件。`);
+    return out.join("\n");
   },
   archive() {
     const rows = archiveRows();

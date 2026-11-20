@@ -450,8 +450,11 @@ function checkArchive() {
 function planCardSets() {
   const legacy = new Set(), m4 = new Set(), baseline = new Set(), strict = new Set(), all = new Set();
   const mutationBaseline = new Set();
-  if (!exists(".sdo/01-计划.md")) return { legacy, m4, baseline, strict, mutationBaseline, all, ok: false };
-  const lines = read(".sdo/01-计划.md");
+  const mileFiles = fs.existsSync(path.join(ROOT, MILESTONE_DIR))
+    ? fs.readdirSync(path.join(ROOT, MILESTONE_DIR)).filter((f) => /^M\d+\.md$/.test(f)).sort()
+    : [];
+  if (!mileFiles.length) return { legacy, m4, baseline, strict, mutationBaseline, all, ok: false };
+  const lines = mileFiles.flatMap((f) => read(`${MILESTONE_DIR}/${f}`));
   let section = 1, col = -1;
   const seen = { 1: false, 2: false, 3: false, 4: false, 5: false };
   const baselineDecl = [], mutationDecl = [];
@@ -488,14 +491,14 @@ function planCardSets() {
     else strict.add(id);
   }
   for (const id of baselineDecl) {
-    if (!exists(`.sdo/cards/${id}.md`)) { warn(".sdo/01-计划.md", 0, `证据格式基线卡声明无效（无对应卡文件）：${id}`); continue; }
+    if (!exists(`.sdo/cards/${id}.md`)) { warn(".sdo/里程碑", 0, `证据格式基线卡声明无效（无对应卡文件）：${id}`); continue; }
     baseline.add(id); all.add(id);
   }
   for (const id of mutationDecl) {
     const cardRel = `.sdo/cards/${id}.md`;
-    if (!exists(cardRel)) { warn(".sdo/01-计划.md", 0, `变异校验基线卡声明无效（无对应卡文件）：${id}`); continue; }
+    if (!exists(cardRel)) { warn(".sdo/里程碑", 0, `变异校验基线卡声明无效（无对应卡文件）：${id}`); continue; }
     const cardText = read(cardRel).join("\n");
-    if (!/^status:\s*done\b/m.test(cardText)) { warn(".sdo/01-计划.md", 0, `变异校验基线卡声明无效（卡未 done）：${id}`); continue; }
+    if (!/^status:\s*done\b/m.test(cardText)) { warn(".sdo/里程碑", 0, `变异校验基线卡声明无效（卡未 done）：${id}`); continue; }
     const signsDir = ".sdo/sign";
     const signed = exists(signsDir) && fs.readdirSync(path.join(ROOT, signsDir))
       .filter((f) => /^S[^/]+\.md$/.test(f))
@@ -505,7 +508,7 @@ function planCardSets() {
         const first = scope[1].match(/^M\d+-(?:\d+|G)(?![\w-])/);
         return first !== null && first[0] === id;
       }));
-    if (!signed) { warn(".sdo/01-计划.md", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
+    if (!signed) { warn(".sdo/里程碑", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
     mutationBaseline.add(id); all.add(id);
   }
   return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
@@ -514,7 +517,7 @@ function planCardSets() {
 function checkCards() {
   const d = ".sdo/cards";
   const planSets = planCardSets();
-  if (!planSets.ok) warn(".sdo/01-计划.md", 0, "计划卡表解析失败，按严格口径检查");
+  if (!planSets.ok) warn(".sdo/里程碑", 0, "计划卡表解析失败，按严格口径检查");
   if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
@@ -826,14 +829,16 @@ function planMilestone() {
   return m;
 }
 
+const MILESTONE_DIR = ".sdo/里程碑";
+function milestonePath(m) { return `${MILESTONE_DIR}/${m}.md`; }
+function milestoneLines(m) {
+  const p = milestonePath(m);
+  if (!exists(p)) planExit2(`里程碑文件不存在：${p}`);
+  return { path: p, lines: read(p) };
+}
 function planSection(milestone) {
-  const lines = read(".sdo/01-计划.md");
-  const startRe = new RegExp(`^##\\s*${milestone}(?![\\d-])`);
-  const start = lines.findIndex((l) => startRe.test(l));
-  if (start < 0) planExit2(`.sdo/01-计划.md 里找不到里程碑段：${milestone}`);
-  let end = lines.length;
-  for (let i = start + 1; i < lines.length; i++) if (/^##\s*M\d+(?![\d-])/.test(lines[i])) { end = i; break; }
-  return { lines, start, end };
+  const { path, lines } = milestoneLines(milestone);
+  return { path, lines, start: 0, end: lines.length };
 }
 
 function stripNotes(s) {
@@ -869,14 +874,14 @@ function splitScope(cell) {
 }
 
 function planCardTable(milestone) {
-  const { lines, start, end } = planSection(milestone);
+  const { path: planPath, lines, start, end } = planSection(milestone);
   let head = -1;
   for (let i = start; i < end; i++) {
     if (!lines[i].trim().startsWith("|")) continue;
     const h = cells(lines[i]).map((x) => x.replace(/`/g, "").trim());
     if (h.includes("卡") && h.includes("依赖") && h.includes("写域")) { head = i; break; }
   }
-  if (head < 0) planExit2(`计划 ${milestone} 段没有卡表（卡/依赖/写域）`);
+  if (head < 0) planExit2(`${planPath} 没有卡表（卡/依赖/写域）`);
   const header = cells(lines[head]).map((x) => x.replace(/`/g, "").trim());
   const rows = [];
   for (let i = head + 1; i < end; i++) {
@@ -888,7 +893,7 @@ function planCardTable(milestone) {
     if (!/^M\d+-(?:\d+|G)$/.test(id)) continue;
     rows.push({ id, deps: c[header.indexOf("依赖")] || "", scope: c[header.indexOf("写域")] || "", line: i + 1 });
   }
-  if (!rows.length) planExit2(`计划 ${milestone} 段的卡表没有数据行`);
+  if (!rows.length) planExit2(`${planPath} 的卡表没有数据行`);
   return { lines, rows };
 }
 
@@ -955,10 +960,9 @@ function planCovers(pathRaw, scopes) {
 
 function checkPlan() {
   const milestone = planMilestone();
-  if (!exists(".sdo/01-计划.md")) planExit2("计划文件不存在：.sdo/01-计划.md");
   const table = planCardTable(milestone);
   const archivedIds = archivedCardIds();
-  const planPath = ".sdo/01-计划.md";
+  const planPath = milestonePath(milestone);
   const liveRows = table.rows.filter((r) => !archivedIds.has(r.id));
   const tableIds = new Set(liveRows.map((r) => r.id));
 
