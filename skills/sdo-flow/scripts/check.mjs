@@ -1024,7 +1024,7 @@ for (const p of files) {
 }
 checkFrontmatter();
 if (!ledgerHasIndex) checkLedger(".sdo/台账.md");
-checkLedgerVolumes(); checkSigns(); checkCards(); checkReadings(); checkArchive();
+checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
 for (const w of WARN) console.log(`WARN  ${w}`);
 for (const e of ERR) console.log(`ERROR ${e}`);
