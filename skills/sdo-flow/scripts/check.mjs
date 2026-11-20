@@ -1179,7 +1179,7 @@ function frozenHashRaw(raw) {
   const lines = raw.replace(/\n$/, "").split("\n").filter((l) => !/^hash:/.test(l) && !/^状态：/.test(l) && !/^- 追加签：/.test(l));
   return crypto.createHash("sha256").update(lines.join("\n") + "\n", "utf8").digest("hex");
 }
-function checkFrozenHash(raw, p) {
+function checkFrozenHash(raw, p, mid) {
   if (raw.startsWith("\uFEFF")) err(p, 1, "文件含 BOM（冻结段 hash 要求 UTF-8 无 BOM、LF）");
   if (raw.includes("\r")) err(p, 1, "文件含 CR（冻结段 hash 要求 LF）");
   const lines = raw.split("\n");
@@ -1189,16 +1189,19 @@ function checkFrozenHash(raw, p) {
   const actual = frozenHashRaw(raw);
   if (!expect) { err(p, 1, "冻结段 hash 缺失（hash:<sha256>）"); return; }
   // 与签字文件记录的冻结段 hash 交叉比对（记录行：`- 冻结段 hash：<sha256>`）
-  const signPath = ".sdo/sign/S27.md";
+  const signFile = planSignFile(mid);
   let recorded = "";
-  if (exists(signPath)) {
-    for (const l of read(signPath)) {
+  if (signFile) {
+    for (const l of read(path.join(".sdo/sign", signFile))) {
       if (!l.startsWith("- 冻结段 hash：")) continue;
       const m = l.match(/([0-9a-f]{64})/);
       if (m) recorded = m[1];
     }
   }
-  if (!recorded) err(p, 1, "S27 签字文件未记「- 冻结段 hash：」（无法交叉比对）");
+  if (!recorded) {
+    if (!signFile) err(p, 1, `本里程碑尚无计划签（S<n> 计划），无法交叉比对冻结段 hash：计划签时须记「- 冻结段 hash：<sha256>」`);
+    else err(p, 1, `${signFile} 未记「- 冻结段 hash：」（无法交叉比对；冻结段 hash 必须由本里程碑的计划签记录）`);
+  }
   if (expect === actual && (!recorded || recorded === actual)) return;
   const signs = lines.map((l) => l.match(/^- 追加签：S(\d+)-([A-Z])\s*$/)).filter(Boolean);
   for (const m of signs) {
@@ -1207,7 +1210,27 @@ function checkFrozenHash(raw, p) {
     const anchor = read(sp).find((l) => l.startsWith("- 被签对象：")) || "";
     if (anchor.includes(actual.slice(0, 8))) return;
   }
-  err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… S27=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
+  err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… 计划签=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
+}
+function planSignFile(mid) {
+  const dir = ".sdo/sign";
+  if (!exists(dir)) return "";
+  const re = new RegExp(`^S(\\d+)(?:-[A-Z])?\\.md$`);
+  const hits = [];
+  for (const f of fs.readdirSync(dir).filter((x) => re.test(x))) {
+    const lines = read(path.join(dir, f));
+    const title = lines[0] || "";
+    const scope = lines.find((l) => l.startsWith("- 范围：")) || "";
+    const n2 = String(mid).replace(/^M/, "");
+    const isPlan = new RegExp(`M${n2}\\s*计划`).test(title) || new RegExp(`M${n2}\\s*计划`).test(scope);
+    if (isPlan) hits.push({ f, n: Number(/^S(\d+)/.exec(f)[1]) });
+  }
+  if (!hits.length) return "";
+  hits.sort((a, b) => b.n - a.n);
+  for (const h of hits) {
+    if (read(path.join(dir, h.f)).some((l) => l.startsWith("- 冻结段 hash："))) return h.f;
+  }
+  return hits[0].f;
 }
 function checkStageOrder(lines, p, preset) {
   const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*阶段(（[^）]*）)?\s*$/.test(x.l));
@@ -1235,7 +1258,7 @@ function checkPlanRules(milestone, planPath) {
   if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
   if (!probeBase.has(milestone)) checkProbeLines(lines, planPath);
   if (preset) checkStageOrder(lines, planPath, preset);
-  checkFrozenHash(raw, planPath);
+  checkFrozenHash(raw, planPath, milestone);
 }
 function checkR25Docs() {
   const ref = "skills/sdo-flow/references/03-签字与评审.md";
