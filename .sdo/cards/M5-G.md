@@ -2,30 +2,30 @@
 
 status: open
 owner: lead
-write_scope: [`.sdo/readings/`, `.sdo/sign/`, `.sdo/review/`, `.sdo/notes/`, `.sdo/01-计划.md`（只改本段状态）]
+write_scope: [`.sdo/readings/`, `.sdo/sign/`, `.sdo/review/`, `.sdo/notes/`, `.sdo/gates/`, `.sdo/01-计划.md`（只改本段状态）]
 
 ## 意图
-在同一棵树上跑 R19–R25，出读数、记录 agent-driven preset 的使用不便，请人签门。
+在同一棵树上跑 R19–R25，出读数、写 M5 出口表、记录 agent-driven preset 的使用不便（由人确认讨论结论），请人签门。
 
 ## 风险标记
 
 risk_flags：无
 
 ## 对齐
-- 该做：逐条读数带命令与结果；使用笔记 ≥3 条并写讨论结论；门签前请独立评审。
-- 不该做：不把“跑过命令”写成“证明了业务正确”；不代填判定。
+- 该做：逐条读数带命令与结果；使用笔记 ≥3 条；门签前请独立评审；出口表 `.sdo/gates/M5.md` 由本卡产出。
+- 不该做：不把“跑过命令”写成“证明了业务正确”；不代填判定；不拿旧读数给新树签门。
 
 ## 判据
-| 判据 | 内容 | 证据怎么给 |
+| 判据 | 内容 | 证据怎么给（含反例） |
 |---|---|---|
-| C1 | R19 三类假绿全红 | 三个夹具各 exit 1，输出点名判据 |
-| C2 | R20 变异红证真跑 | 记录 expected/actual 与恢复 |
-| C3 | R21 归档效果：文件数与耗时下降 ≥40% | 归档前后数字各一组 |
-| C4 | R22 restore 可逆 | 恢复后 `check` 0 错、内容一致 |
-| C5 | R23 1 万/10 万行性能达标 | 两档三命令计时 |
-| C6 | R24 索引漂移检测与 reindex 恢复 | 两例各 exit 1，reindex 后 0 错 |
-| C7 | R25 使用笔记 ≥3 条具体不便，且与用户讨论过、结论落台账 | .sdo/notes/M5-使用笔记.md 有 ≥3 条；台账有 explain 行 |
-| C8 | 读数完整性与门前提 | `check.mjs` 每条 R 有 verdict、overall 与逐条一致；M5-0…M5-4 已收卡 |
+| C1 | R19 三类假绿全红 | 三个夹具各 exit 1 并点名判据；反例：任一为 exit 0 ⇒ 本判据 fail |
+| C2 | R20 变异红证真跑 | 记录 expected/actual 与恢复后的 exit；反例：只有结论没有两次输出 ⇒ fail |
+| C3 | R21 归档效果：扫描文件数下降 ≥10% 且不随里程碑增长 | 归档前后数字各一组；反例：数字不变 ⇒ fail |
+| C4 | R22 restore 可逆：逐文件 sha256 与 manifest 相等、`git status` 空 | 命令与输出；反例：任一文件哈希不等 ⇒ fail |
+| C5 | R23 1 万/10 万行性能达标（三次取中位） | 两档三命令计时、机器与 Node 版本；反例：超预算仍写 pass ⇒ 违反本卡 C1 精神，判 fail |
+| C6 | R24 索引漂移检测与 reindex 恢复（reindex 后 diff 为空） | 两例 exit 1、reindex 后 0 错；反例：reindex 后索引与正文仍不一致 ⇒ fail |
+| C7 | R25 使用笔记 ≥3 条具体不便（含复现与建议），门签时由人确认讨论结论并落台账 | 笔记 ≥3 条 + 台账有 explain 行；反例：只写“没问题”或模板占位 ⇒ fail |
+| C8 | 读数完整性与门前提 | `check` 每条 R 有 verdict、overall 与逐条一致、零 warn；M5-0…M5-4 已收卡；反例：任一卡未收 ⇒ fail |
 
 ## 假设
 A1：`/tmp` 跨界会被清空 ⇒ 所有夹具在单次调用内完成。
@@ -33,7 +33,7 @@ A2：合成数据只用于计时，不含真实项目内容。
 
 ## 预览
 预计改：见 `write_scope`。
-验：`node <skill>/scripts/check.mjs` 0 错；本卡判据逐条有证据。
+验：`node <skill>/scripts/check.mjs` 0 错 0 警；本卡判据逐条有证据。
 
 ## 准入
 依赖：M5-0、M5-1、M5-2、M5-3、M5-4
