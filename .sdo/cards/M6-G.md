@@ -31,12 +31,12 @@ release_touching：门签后 M6 段与五卡冻结，读数即最终证据。
 
 ## 判据
 
-| 编号 | 判据 | 反例 |
-|---|---|---|
-| C1 | R26–R30 逐条有命令、输出、判定；overall 由逐条推出 | 任一条缺输出 ⇒ `check` 红 |
-| C2 | 出口表 `.sdo/gates/M6.md` 覆盖 agent-driven 的六门，`gate.mjs` exit 0 | 缺一门的判据 ⇒ `gate.mjs` 红 |
-| C3 | 读数与门表引用同一被签树（提交后 `git rev-parse HEAD` 一致） | 读数里写的树 ≠ 提交树 ⇒ 评审打回 |
-| C4 | 两条 partial 若存在，必须在门签复述里明说并让人接受 | 悄悄改写成 pass ⇒ 评审打回 |
+| 编号 | 判据 | 类型 | 反例 |
+|---|---|---|---|
+| C1 | R26–R30 逐条有命令、输出、判定；`overall` 由逐条推出 | 语义 | 任一条判 `fail` 或 `partial`，而 overall 写 `pass` ⇒ `check` 红 |
+| C2 | 出口表 `.sdo/gates/M6.md` 覆盖 agent-driven 六门，`gate.mjs` exit 0 | 结构 | 缺一门判据 ⇒ `gate.mjs` 红 |
+| C3 | 读数与门表引用同一被签树（提交后 `git rev-parse HEAD` 一致） | 边界 | 读数里的树 ≠ 提交树 ⇒ 评审打回 |
+| C4 | 若存在 partial，门签复述必须明说并由人接受 | 语义 | 悄悄改写成 pass ⇒ 评审打回 |
 
 ## 证据
 
