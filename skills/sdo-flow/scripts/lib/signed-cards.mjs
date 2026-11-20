@@ -63,9 +63,23 @@ export function signedCardIds(signDir) {
   if (!signDir || !fs.existsSync(signDir)) return out;
   for (const f of fs.readdirSync(signDir).filter((x) => SIGN_FILE_RE.test(x))) {
     const lines = fs.readFileSync(path.join(signDir, f), "utf8").split(/\r?\n/);
+    // 卡签的标题含「收卡/卡签」时，范围行也允许用卡文件路径指名（`.sdo/cards/M7-0.md`）；
+    // 计划签标题不含该词，因此不会借此替卡签兜底。
+    const title = lines[0] || "";
+    const viaPath = /收卡|卡签/.test(title);
     for (const line of lines) {
       if (!/^\s*[-*+]\s*范围[:：]/.test(line)) continue;
-      for (const id of parseSignedScopes(line)) out.add(id);
+      const direct = parseSignedScopes(line);
+      for (const id of direct) out.add(id);
+      if (!viaPath) continue;
+      // 路径式卡签只认“本签文件的目标卡”：目标卡号取自标题与范围里的直接卡号；
+      // 提取不到目标卡、或路径卡号与目标卡不一致时一律忽略（防止借路径替别卡兜底）。
+      const targets = new Set([...title.matchAll(/(M\d+-(?:\d+|G))/g)].map((m) => m[1]));
+      for (const id of direct) targets.add(id);
+      if (targets.size === 0) continue;
+      for (const m of normalizeScope(line).matchAll(/\.sdo\/cards\/(M\d+-(?:\d+|G))\.md/g)) {
+        if (targets.has(m[1])) out.add(m[1]);
+      }
     }
   }
   return out;
