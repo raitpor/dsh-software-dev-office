@@ -2,7 +2,7 @@
 
 status: open
 owner: lead
-write_scope: [.sdo/readings/, .sdo/sign/, .sdo/review/, .sdo/gates/, .sdo/milestones/M6.md]
+write_scope: [skills/sdo-flow/scripts/check.mjs, .sdo/readings/, .sdo/sign/, .sdo/review/, .sdo/gates/, .sdo/milestones/M6.md]
 read_refs: [skills/sdo-flow/scripts/, .sdo/cards/, .sdo/台账.md]
 
 ## 意图
@@ -30,6 +30,8 @@ release_touching：门签后 M6 段与五卡冻结，读数即最终证据。
 依赖：M6-0、M6-1、M6-2、M6-3。
 
 ## 判据
+
+> 口径修订（采集前，见台账 D-132）：原 C2 写“覆盖 agent-driven 六门”，但本里程碑只经过 `verify`/`deliver` 两个出口（frame/build/sign 是产品交付阶段，本里程碑无对应交付物）；若硬凑六门，只能给四门填“不适用”假 partial。改为“覆盖本里程碑实际经过的出口（verify/deliver）且 `gate.mjs` exit 0”。
 
 | 编号 | 判据 | 类型 | 反例 |
 |---|---|---|---|
