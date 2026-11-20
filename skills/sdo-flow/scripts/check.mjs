@@ -958,11 +958,182 @@ function planCovers(pathRaw, scopes) {
   return scopes.some((s) => s.p === n.p || (s.dir && n.p.startsWith(`${s.p}/`)));
 }
 
+
+const PRESET_BLACKLIST = new Set(["无", "没有", "不适用", "不需要", "无所谓", "待补充", "略", "同上", "见上"]);
+
+function presetNames() {
+  return fs.readdirSync(path.join(ROOT, "skills/sdo-flow/presets"))
+    .filter((f) => f.endsWith(".md") && f !== "README.md")
+    .map((f) => f.replace(/\.md$/, ""));
+}
+function presetStages(name) {
+  const p = `skills/sdo-flow/presets/${name}.md`;
+  if (!exists(p)) return [];
+  return read(p).map((l) => l.match(/^###\s+`([a-z]+)\[/)).filter(Boolean).map((m) => m[1]);
+}
+function meaningfulLen(s) {
+  return String(s).replace(/[，。！？、；：,.!?;:\s"'“”‘’（）()《》<>【】\[\]-]/g, "").length;
+}
+// 解析“基线段”声明（如 `- preset 声明基线段（理由…）：M1、M2、M3`）。豁免只认声明，不认编号或文件名。
+function baselineSegments(lines, kind, p) {
+  const set = new Set();
+  const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*冻结段/.test(x.l));
+  if (heads.length !== 1) {
+    err(p, heads.length ? heads[1].i + 1 : 1, `冻结段小节须唯一（标题含“冻结段”，当前 ${heads.length} 处）`);
+    return set;
+  }
+  const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
+  const re = kind === "preset" ? /^- preset 声明基线段(（[^）]*）)?：/ : /^- 探底行基线段(（[^）]*）)?：/;
+  for (let i = sec.start; i < sec.end; i++) {
+    if (!re.test(lines[i])) continue;
+    const part = lines[i].slice(lines[i].lastIndexOf("：") + 1);
+    for (const m of part.matchAll(/M(\d+)/g)) set.add(`M${m[1]}`);
+  }
+  return set;
+}
+function sectionOf(lines, headingRe) {
+  const start = lines.findIndex((l) => headingRe.test(l));
+  if (start < 0) return null;
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) if (/^#{2,3}\s/.test(lines[i])) { end = i; break; }
+  return { start: start + 1, end };
+}
+function checkPresetDeclaration(lines, p) {
+  const hits = [];
+  let fence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) { fence = !fence; continue; }
+    if (fence) continue;
+    const m = lines[i].match(/^preset[:：]\s*(\S+)\s*$/);
+    if (m) hits.push({ name: m[1], line: i + 1 });
+  }
+  if (hits.length > 1) err(p, hits[1].line, `preset： 重复声明（第 ${hits[0].line} 行与第 ${hits[1].line} 行）`);
+  const preset = hits.length ? hits[0].name : "";
+  let reason = "", reasonLine = 0;
+  fence = false;
+  for (let i = 0; i < lines.length; i++) {
+    if (/^\s*```/.test(lines[i])) { fence = !fence; continue; }
+    if (fence) continue;
+    const r = lines[i].match(/^preset 选择理由[:：]\s*(.+)$/);
+    if (r) { reason = r[1]; reasonLine = i + 1; }
+  }
+  if (!preset) err(p, 1, "缺 preset： 声明（里程碑文件须写 preset：<名>）");
+  else if (!presetNames().includes(preset)) err(p, hits[0].line, `preset 不在 presets/ 清单（${preset}）`);
+  if (!reason) err(p, 1, "缺 preset 选择理由：（≥8 字、非套话）");
+  else if (meaningfulLen(reason) < 8 || PRESET_BLACKLIST.has(reason.trim())) {
+    err(p, reasonLine, `preset 选择理由过短或为套话：${reason.trim()}`);
+  }
+  return preset;
+}
+function checkProbeLines(lines, p) {
+  const readings = [];
+  const rdHeads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*读数\s*$/.test(x.l));
+  if (rdHeads.length !== 1) { err(p, rdHeads.length ? rdHeads[1].i + 1 : 1, `读数小节须唯一（标题以“读数”结尾，当前 ${rdHeads.length} 处）`); return; }
+  const rdSec = sectionOf(lines, /^#{2,3}\s+.*读数\s*$/);
+  const scan = rdSec ? lines.slice(rdSec.start, rdSec.end) : lines;
+  for (const l of scan) {
+    const m = l.match(/^\|\s*(R\d+)\s*\|/);
+    if (m) readings.push(m[1]);
+  }
+  const sec = sectionOf(lines, /^探底[：:]\s*$/);
+  const inList = new Map();
+  if (sec) {
+    for (let i = sec.start; i < sec.end; i++) {
+      const m = lines[i].match(/^-\s*探底\s*(R\d+)\s*[:：]/);
+      if (m) inList.set(m[1], i + 1);
+    }
+  }
+  for (const r of readings) {
+    if (!inList.has(r)) {
+      err(p, 1, `${r} 没有探底行（须在「探底：」列表内写 - 探底 ${r}：）`);
+    }
+  }
+}
+function frozenHashRaw(raw) {
+  const lines = raw.replace(/\n$/, "").split("\n").filter((l) => !/^hash:/.test(l) && !/^状态：/.test(l) && !/^- 追加签：/.test(l));
+  return crypto.createHash("sha256").update(lines.join("\n") + "\n", "utf8").digest("hex");
+}
+function checkFrozenHash(raw, p) {
+  if (raw.startsWith("\uFEFF")) err(p, 1, "文件含 BOM（冻结段 hash 要求 UTF-8 无 BOM、LF）");
+  if (raw.includes("\r")) err(p, 1, "文件含 CR（冻结段 hash 要求 LF）");
+  const lines = raw.split("\n");
+  let expect = "", hashLines = 0;
+  for (const l of lines) { const m = l.match(/^hash:([0-9a-f]{64})\s*$/); if (m) { expect = m[1]; hashLines++; } }
+  if (hashLines > 1) err(p, 1, `hash: 行重复（${hashLines} 处，应只有一处）`);
+  const actual = frozenHashRaw(raw);
+  if (!expect) { err(p, 1, "冻结段 hash 缺失（hash:<sha256>）"); return; }
+  // 与签字文件记录的冻结段 hash 交叉比对（记录行：`- 冻结段 hash：<sha256>`）
+  const signPath = ".sdo/sign/S27.md";
+  let recorded = "";
+  if (exists(signPath)) {
+    for (const l of read(signPath)) {
+      if (!l.startsWith("- 冻结段 hash：")) continue;
+      const m = l.match(/([0-9a-f]{64})/);
+      if (m) recorded = m[1];
+    }
+  }
+  if (!recorded) err(p, 1, "S27 签字文件未记「- 冻结段 hash：」（无法交叉比对）");
+  else if (expect !== recorded) err(p, 1, `hash: 行与 S27 签字记录不一致：文件=${expect.slice(0, 8)}… S27=${recorded.slice(0, 8)}…`);
+  if (expect === actual && (!recorded || recorded === actual)) return;
+  const signs = lines.map((l) => l.match(/^- 追加签：S(\d+)-([A-Z])\s*$/)).filter(Boolean);
+  for (const m of signs) {
+    const sp = `.sdo/sign/S${m[1]}-${m[2]}.md`;
+    if (!exists(sp)) continue;
+    const anchor = read(sp).find((l) => l.startsWith("- 被签对象：")) || "";
+    if (anchor.includes(actual.slice(0, 8))) return;
+  }
+  err(p, 1, `冻结段 hash 不一致：记录=${(expect || recorded).slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
+}
+function checkStageOrder(lines, p, preset) {
+  const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*阶段(（[^）]*）)?\s*$/.test(x.l));
+  if (heads.length > 1) { err(p, heads[1].i + 1, "阶段段重复（### 阶段 出现多次）"); return; }
+  const sec = heads.length ? sectionOf(lines, /^#{2,3}\s+.*阶段(（[^）]*）)?\s*$/) : null;
+  if (!sec) { err(p, 1, "缺阶段段（小节标题须以「阶段」结尾）"); return; }
+  const cands = lines.slice(sec.start, sec.end).map((l, i) => ({ l, i: sec.start + i })).filter((x) => x.l.includes("→") && /`[a-z]+`/.test(x.l));
+  if (!cands.length) { err(p, 1, "阶段段缺序列（`frame`→…）"); return; }
+  const expected = presetStages(preset);
+  for (const c of cands) {
+    const actual = [...c.l.matchAll(/`([a-z]+)`/g)].map((m) => m[1]);
+    if (expected.length && actual.join(">") !== expected.join(">")) {
+      err(p, c.i + 1, `阶段顺序与 preset 不一致：文件=[${actual.join("→")}] preset=[${expected.join("→")}]`);
+    }
+  }
+}
+function checkPlanRules(milestone, planPath) {
+  if (exists(`.sdo/archive/${milestone}`)) return;   // 已归档里程碑：历史树，不回溯新规则
+  const raw = fs.readFileSync(path.join(ROOT, planPath), "utf8");
+  const lines = raw.split("\n");
+  const presetBase = baselineSegments(lines, "preset", planPath);
+  const probeBase = baselineSegments(lines, "探底", planPath);
+  checkFrozenHash(raw, planPath);
+  let preset = "";
+  if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
+  if (!probeBase.has(milestone)) checkProbeLines(lines, planPath);
+  if (preset) checkStageOrder(lines, planPath, preset);
+}
+function checkAuthorizationText() {
+  const skillPath = "skills/sdo-flow/SKILL.md";
+  const skill = read(skillPath);
+  const sec = sectionOf(skill, /^##\s*5[.、]/);
+  const sec5 = sec ? skill.slice(sec.start, sec.end) : [];
+  const isComment = (l) => /^\s*(#|\/\/|<!--)/.test(l);
+  const ok5 = sec5.find((l) => !isComment(l) && l.includes("口头授权") && l.includes("流程放行") && (l.includes("≠") || l.includes("不等于")));
+  if (!ok5) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“口头授权≠流程放行”约束（须同一行、含 ≠ 或 不等于）");
+  const presetRule = sec5.find((l) => !isComment(l) && l.includes("preset") && l.includes("选择理由"));
+  if (!presetRule) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“每段自选 preset + 选择理由”");
+  const refPath = "skills/sdo-flow/references/07-边界与自证.md";
+  const ref = read(refPath);
+  const ok7 = ref.find((l) => !isComment(l) && l.includes("口头授权") && l.includes("流程放行") && (l.includes("≠") || l.includes("不等于")));
+  if (!ok7) err(refPath, 1, "缺“口头授权≠流程放行”边界（须同一行、含 ≠ 或 不等于）");
+}
+
 function checkPlan() {
   const milestone = planMilestone();
   const table = planCardTable(milestone);
   const archivedIds = archivedCardIds();
   const planPath = milestonePath(milestone);
+  const msLines = read(planPath);
+  checkPlanRules(milestone, planPath);
   const liveRows = table.rows.filter((r) => !archivedIds.has(r.id));
   const tableIds = new Set(liveRows.map((r) => r.id));
 
@@ -1034,6 +1205,7 @@ for (const p of files) {
   checkTables(p, read(p));
 }
 checkFrontmatter();
+checkAuthorizationText();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
