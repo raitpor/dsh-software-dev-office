@@ -36,7 +36,7 @@ A2：合成数据只用于计时，不含真实项目内容。
 验：`node <skill>/scripts/check.mjs` 0 错 0 警；本卡判据逐条有证据。
 
 ## 准入
-依赖：M5-0、M5-1、M5-2、M5-3、M5-4
+依赖：M5-0、M5-1、M5-2、M5-3、M5-4、M5-5
 
 ## 证据
 | 判据 | 命令 | 输出摘要 | 判定 |
@@ -48,7 +48,7 @@ A2：合成数据只用于计时，不含真实项目内容。
 | C5 | 单次 bash 合成三档，各三次中位：`ledger add` / `view next` / `check` | 10k 活跃 69.3/30.5/56.2 全达标；100k 全 open 435.4/199.6/468.5（add/check 超）；100k 归档(0 open)+200 活跃(100 open) 30.8/21.9/71.8 全达标 | partial |
 | C6 | `/tmp` 副本：改 D-1 状态不 reindex、删一行不 reindex、`reindex` 两次 | 前两例 exit 1 `index_stale`；两次 reindex stdout 与索引 sha 相同，check 0/0 | pass |
 | C7 | `.sdo/notes/M5-使用笔记.md` + 台账 D-100 | 6 条（原 4 + 新 2，含现象/复现/建议）；人确认待门签 | partial |
-| C8 | `check.mjs`、`check.mjs --plan --milestone M5`、`view next`、`gate.mjs`；S21–S25 | check 114 篇 0 错 0 警；--plan 0 漂移；view next 5 节；gate exit 0；S21–S25 已签（M5-2/3/4 已补 `status: done` 与回溯证据） | pass |
+| C8 | `check.mjs`、`check.mjs --plan --milestone M5`、`view next`、`gate.mjs`；S21–S25 | check 116 篇 0 错 0 警；--plan 0 漂移；view next 5 节；gate exit 0；S21–S25 已签（M5-2/3/4 已补 `status: done` 与回溯证据） | pass |
 
 ## 判定
 - C1 pass：三假绿均真红，消息点名判据。
@@ -58,7 +58,7 @@ A2：合成数据只用于计时，不含真实项目内容。
 - C5 **partial**：10k 全达标；100k 全 open add 435.4/check 468.5 超预算、view 199.6 过；100k 归档(0 open)+200 活跃(100 open) 30.8/21.9/71.8 全达标（check 按 openRows 跳过无未决归档卷）；缺口 D-95/D-98。
 - C6 pass：两处手改不 reindex 均 `index_stale` exit 1；reindex 两次幂等、check 恢复 0/0。
 - C7 **partial**：笔记 6 条、台账 D-100/D-103 已落；门签时的人类讨论确认尚未发生。
-- C8 pass：check 114 篇 0 错 0 警（check WARN=0；gate 2 条 WARN 属 CORE 与 preset 列表差异）、--plan 0 漂移、view next 5 节、gate exit 0；M5-0…M5-4 已 done 且 S21–S25 已签。
+- C8 pass：check 116 篇 0 错 0 警（check WARN=0；gate 2 条 WARN 属 CORE 与 preset 列表差异）、--plan 0 漂移、view next 5 节、gate exit 0；M5-0…M5-4 已 done 且 S21–S25 已签。
 - overall：partial（C5/C7），待门签 S26 由人决定接受或返工。
 
 ## 已知边界
