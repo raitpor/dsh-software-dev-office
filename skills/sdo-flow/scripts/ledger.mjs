@@ -16,7 +16,7 @@ import crypto from "node:crypto";
 const LEDGER = ".sdo/台账.md";
 const ARCHIVE_DIR = ".sdo/ledger";
 const INDEX = ".sdo/.index/ledger.json";
-const KINDS = new Set(["gap", "defect", "explain"]);
+const KINDS = new Set(["gap", "defect", "explain", "closed"]);
 const STATUSES = new Set(["open", "accepted", "fixed", "closed", "superseded"]);
 const HEADER_ALIAS = {
   id: "id", ID: "id",
@@ -34,7 +34,7 @@ const CLOSE_RE = /^关闭\s+(D-\d+)/;
 const EMPTY_BODY = [
   "# 偏差台账",
   "",
-  "> 用途：偏差台账：gap / defect / explain 三类记录，7 列。",
+  "> 用途：偏差台账：gap / defect / explain / closed 四类记录，7 列（closed = 关闭记录）。",
   "> 用法：`node <skill>/scripts/ledger.mjs add|close|list|rotate|reindex`；add/close 只追加 7 列行，旧行不改（append-only）。",
   "> 时间戳固定放「现象」列前缀（本表 7 列，不另设 at 列）。",
   "",
@@ -321,7 +321,7 @@ function appendRow(vol, rowLine) {
 }
 
 function cmdAdd(root, flags) {
-  if (!KINDS.has(flags.kind)) die(`未知/缺失 --kind：${flags.kind ?? ""}（只允许 gap|defect|explain）`);
+  if (!KINDS.has(flags.kind)) die(`未知/缺失 --kind：${flags.kind ?? ""}（只允许 gap|defect|explain|closed）`);
   const status = flags.status ?? "open";
   if (!STATUSES.has(status)) die(`未知 --status：${status}（只允许 ${[...STATUSES].join("|")}）`);
   for (const key of ["where", "what", "impact", "fix"]) {
@@ -375,7 +375,7 @@ function cmdClose(root, positional, flags) {
   const closeId = nextId(idx);
   const rowLine = buildRow(active.table.cols, {
     id: closeId,
-    kind: "explain",
+    kind: "closed",
     where: `${found.file}:${found.line}`,
     what: `${localStamp()} — 关闭 ${id}`,
     why: "关闭记录（append-only，旧行不改）",

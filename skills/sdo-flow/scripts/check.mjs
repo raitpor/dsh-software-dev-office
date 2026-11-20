@@ -25,7 +25,7 @@ const SELF = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // <ski
 const SELF_REL = path.relative(ROOT, SELF).split(path.sep).join("/");
 const ARGV = process.argv.slice(2);
 const ERR = [], WARN = [];
-const KINDS = new Set(["gap", "defect", "explain"]);
+const KINDS = new Set(["gap", "defect", "explain", "closed"]);
 const STATUS = new Set(["open", "accepted", "fixed", "closed", "superseded"]);
 const err = (p, l, m) => ERR.push(`${p}:${l}: ${m}`);
 const warn = (p, l, m) => WARN.push(`${p}:${l}: ${m}`);
@@ -154,7 +154,7 @@ function checkLedger(p) {
     if (!STATUS.has(c[cols.status])) err(p, i + 1, `状态不合法：${c[cols.status]}`);
     const fixText = (c[cols.how] || "").trim();
     const mClose = /^关闭\s+(D-\d+)/.exec(fixText);
-    if (mClose) closedBy.add(mClose[1]);
+    if (mClose || c[cols.kind] === "closed") closedBy.add(mClose ? mClose[1] : c[cols.id]);
     rows.push({ id, kind: c[cols.kind], status: c[cols.status], line: i + 1 });
     if (!c[cols.where]) err(p, i + 1, "位置为空");
   }
@@ -247,7 +247,13 @@ function checkLedgerVolumes(deep = false) {
       const scan = scanVolumeRows(text, v.path);
       scans.set(v.path, scan);
       for (const id of scan.byId.keys()) allRows.set(id, scan.byId.get(id));
-      for (const hit of scan.byId.values()) { const m = /^关闭\s+(D-\d+)/.exec(hit.how); if (m) closedIds.add(m[1]); }
+      for (const hit of scan.byId.values()) {
+        const m = /^关闭\s+(D-\d+)/.exec(hit.how); if (m) closedIds.add(m[1]);
+        if (deep) {
+          if (!KINDS.has(hit.kind)) err(hit.file, hit.line, `kind 不合法：${hit.kind}`);
+          if (!STATUS.has(hit.status)) err(hit.file, hit.line, `状态不合法：${hit.status}`);
+        }
+      }
       for (const k of ["rows", "first", "last"]) {
         if (meta[k] !== scan[k]) err(v.path, 0, `index_stale：卷头 ${k}=${meta[k]} 与正文 ${scan[k]} 不符（跑 ledger.mjs reindex）`);
         if (v[k] !== meta[k]) err(v.path, 0, `index_stale：索引 ${k}=${v[k]} 与卷头 ${meta[k]} 不符（跑 ledger.mjs reindex）`);
@@ -300,6 +306,7 @@ function checkSigns() {
   }
   let effective = 0;
   for (const f of files) {
+    if (!/^S\d+(?:-[A-Z])?\.md$/.test(f)) err(`${d}/${f}`, 0, "签字文件名必须是 S<编号>.md 或追加签 S<编号>-<A…Z>.md");
     const p = `${d}/${f}`, text = read(p).join("\n");
     for (const k of ["时间", "选项", "被签对象"]) {
       if (!new RegExp(`^\\s*-?\\s*${k}[:：]\\s*\\S`, "m").test(text)) err(p, 0, `缺字段或值为空：${k}（应写成「- ${k}：…」）`);
@@ -1023,7 +1030,7 @@ for (const p of files) {
   checkTables(p, read(p));
 }
 checkFrontmatter();
-if (!ledgerHasIndex) checkLedger(".sdo/台账.md");
+checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
 for (const w of WARN) console.log(`WARN  ${w}`);
