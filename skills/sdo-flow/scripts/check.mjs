@@ -195,27 +195,84 @@ function checkSigns() {
   if (files.length && effective === 0) err(d, 0, "没有生效签字（只有「不签」或占位）");
 }
 
+function evidenceTableInfo(lines) {
+  const at = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
+  if (at < 0) return null;
+  let head = -1;
+  for (let i = at + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
+    const s = lines[i].trim();
+    if (s.startsWith("|") && !isSep(s)) { head = i; break; }
+  }
+  if (head < 0) return null;
+  const header = cells(lines[head]).map((x) => x.replace(/`/g, "").trim());
+  const rows = [];
+  for (let i = head + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
+    const s = lines[i].trim();
+    if (!s.startsWith("|")) continue;
+    if (isSep(s)) continue;
+    rows.push({ line: i + 1, raw: s, cells: cells(s) });
+  }
+  return { line: head + 1, header, rows };
+}
+
+function planLegacyCardIds() {
+  const ids = new Set();
+  if (!exists(".sdo/01-计划.md")) return { ids, ok: false };
+  const lines = read(".sdo/01-计划.md");
+  let section = 1, col = -1;
+  const seen = { 1: false, 2: false, 3: false };
+  for (const line of lines) {
+    const h = line.match(/^##\s*M(\d+)/);
+    if (h) { section = Number(h[1]); col = -1; continue; }
+    if (section < 1 || section > 3) continue;
+    const raw = line.trim();
+    if (!raw.startsWith("|")) { col = -1; continue; }
+    const cs = cells(raw);
+    if (col < 0) {
+      col = cs.findIndex((x) => x.replace(/`/g, "").trim() === "卡");
+      continue;
+    }
+    if (isSep(raw)) continue;
+    const id = (cs[col] || "").replace(/`/g, "").trim();
+    if (/^M\d+-(?:\d+|G)$/.test(id)) { ids.add(id); seen[section] = true; }
+  }
+  return { ids, ok: seen[1] && seen[2] && seen[3] };
+}
+
 function checkCards() {
   const d = ".sdo/cards";
+  const legacyInfo = planLegacyCardIds();
+  if (!legacyInfo.ok) warn(".sdo/01-计划.md", 0, "计划卡表解析失败，按严格口径检查");
   if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
     for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
     const sm = text.match(/^status:\s*(open|in_progress|done)/m);
     if (!sm) err(p, 0, "缺 status: open|in_progress|done");
+    const legacy = legacyInfo.ids.has(f.replace(/\.md$/, ""));
     if (sm && sm[1] === "done") {
-      // 证据表至少一行数据（表头 + 分隔行之后）
-      const at = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
-      let rows = 0;
-      if (at >= 0) {
-        let inTbl = false;
-        for (let i = at + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
-          const s = lines[i].trim();
-          if (s.startsWith("|")) { if (inTbl && !isSep(s)) rows++; else inTbl = true; }
-          else if (s) inTbl = false;
+      const ev = evidenceTableInfo(lines);
+      if (!ev) warn(p, 0, "status: done 但证据表没有数据行");
+      if (ev) {
+        const hasVerdictCol = ev.header.includes("判定");
+        if (!legacy && !hasVerdictCol) {
+          err(p, ev.line, "证据表缺判定列（应为 | 判据 | 命令与输出 | 判定 |）");
+        }
+        const colCmd = ev.header.findIndex((h) => h.includes("命令"));
+        const colVerdict = ev.header.indexOf("判定");
+        if (!legacy && hasVerdictCol) {
+          for (const r of ev.rows) {
+            const rawId = (r.cells[0] || "").trim();
+            const id = rawId.replace(/`/g, "");
+            const cmd = (r.cells[colCmd] || "").trim();
+            const verdict = (r.cells[colVerdict] || "").trim();
+            if (!cmd && !verdict) { err(p, r.line, `证据行为空：${id || "（无判据号）"}`); continue; }
+            if (cmd && /^(?:pass|partial|fail|未判)$/.test(cmd)) err(p, r.line, `证据行只写判定，没有命令与输出：${id}`);
+            if (verdict && !/^(?:pass|partial|fail|未判)$/.test(verdict)) err(p, r.line, `判定值非法：${verdict}（只允许 pass/partial/fail/未判）：${id}`);
+            else if (!verdict) err(p, r.line, `证据行缺判定（pass/partial/fail/未判）：${id}`);
+          }
         }
       }
-      if (!rows) warn(p, 0, "status: done 但证据表没有数据行");
       // done 卡：判据段点名的每条 Cx，都要在证据表里有一行非空命令/文件:行
       const critSec = (() => {
         const a = lines.findIndex((l) => /^##\s*判据(?:\s|$)/.test(l.trim()));
@@ -229,30 +286,24 @@ function checkCards() {
       }
       for (const m of critSec.matchAll(/\bC(\d+)\b/g)) critIds.push(`C${m[1]}`);
       const critSet = [...new Set(critIds)];
-      if (critIds.length) {
-        const at2 = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
-        const evRows = [];
-        if (at2 >= 0) for (let i = at2 + 1; i < lines.length && !/^##\s/.test(lines[i]); i++) {
-          const s2 = lines[i].trim();
-          if (s2.startsWith("|") && !isSep(s2)) evRows.push(cells(s2));
-        }
+      if (critIds.length && ev) {
+        const colCmd = ev.header.findIndex((h) => h.includes("命令"));
         const filled = new Set();
-        for (const r of evRows) {
-          const rawId = (r[0] || "").replace(/`/g, "").trim();
-          const id = /^\d+$/.test(rawId) ? (r[1] || "").replace(/`/g, "").trim() : rawId;
-          const rest = r.slice(1).map((x) => x.trim()).filter(Boolean).join(" ");
-          // 证据行首格可写「C1」「C1–C3」「C1、C2」
+        for (const r of ev.rows) {
+          const rawId = (r.cells[0] || "").replace(/`/g, "").trim();
+          const id = /^\d+$/.test(rawId) ? (r.cells[1] || "").replace(/`/g, "").trim() : rawId;
+          const cmd = colCmd >= 0 ? (r.cells[colCmd] || "").trim() : r.cells.slice(1).map((x) => x.trim()).filter(Boolean).join(" ");
           const rowIds = new Set();
           for (const m of id.matchAll(/C(\d+)\s*[–—~-]\s*C?(\d+)/g)) for (let n = +m[1]; n <= +m[2]; n++) rowIds.add(`C${n}`);
           for (const m of id.matchAll(/C(\d+)/g)) rowIds.add(`C${m[1]}`);
-          if (rest && !/^[—–-]$/.test(rest)) for (const x of rowIds) if (critSet.includes(x)) filled.add(x);
+          if (cmd && !/^[—–-]$/.test(cmd)) for (const x of rowIds) if (critSet.includes(x)) filled.add(x);
         }
         const missing = critSet.filter((id) => !filled.has(id));
         if (missing.length) err(p, 0, `status: done 但判据没有可复跑证据：${missing.join("、")}（证据表每行须写命令或 文件:行）`);
       }
       const rel = lines.findIndex((l) => /^##\s*评审(?:\s|$)/.test(l.trim()));
       const relText = rel >= 0 ? lines.slice(rel, rel + 20).join("\n") : "";
-      if (!/评审者[:：]/.test(relText)) warn(p, 0, "评审段缺「评审者」（须写明独立性；无第二席位时写「自审（非独立）」）");
+      if (!/评审者[:：]/.test(relText)) err(p, 0, "done 卡评审段缺「评审者」（须写明独立性；无第二席位时写「自审（非独立）」）");
     }
   }
 }
