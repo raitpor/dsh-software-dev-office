@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import crypto from "node:crypto";
 
 function findRoot(start) {
   let d = start;
@@ -61,6 +62,7 @@ function mdFiles() {
       for (const e of entries) {
         if (e.name === ".git" || e.name === "node_modules" || e.name === "lib" || e.name === "dist") continue;
         const rel = dir ? `${dir}/${e.name}` : e.name;
+        if (rel === ".sdo/archive" || rel.startsWith(".sdo/archive/")) continue;
         if (e.isDirectory()) walk(rel);
         else if (e.name.endsWith(".md")) out.push(rel);
       }
@@ -246,6 +248,74 @@ function substantiveReason(text) {
   const t = text.replace(/[。.，,；;：:、\s]/g, "");
   if (t.length < 8) return false;
   return !/(这个不好|差不多|没必要|不重要|看情况)/.test(t) && !/^(同意|认可|可以|无|行|ok)$/i.test(t);
+}
+
+const ARCHIVE_INDEX = ".sdo/archive/INDEX.md";
+
+function archiveRows() {
+  if (!exists(ARCHIVE_INDEX)) return [];
+  const ls = read(ARCHIVE_INDEX);
+  const h = ls.findIndex((l) => l.trim().startsWith("|") && l.includes("里程碑"));
+  if (h < 0) { err(ARCHIVE_INDEX, 0, "归档索引缺少表头（里程碑/门签号/被签树/文件数/文件 sha256/状态）"); return []; }
+  const header = cells(ls[h]).map((x) => x.replace(/`/g, "").trim());
+  const ix = (name) => header.findIndex((h2) => h2 === name);
+  const rows = [];
+  for (let i = h + 1; i < ls.length; i++) {
+    const raw = ls[i].trim();
+    if (!raw.startsWith("|")) break;
+    if (isSep(raw)) continue;
+    const c = cells(raw);
+    const milestone = (c[ix("里程碑")] || "").trim();
+    if (!/^M\d+$/.test(milestone)) continue;
+    let manifest = {};
+    try { manifest = JSON.parse((c[ix("文件 sha256")] || "{}").replace(/`/g, "")); }
+    catch { err(ARCHIVE_INDEX, i + 1, `manifest 不是合法 JSON：${milestone}`); }
+    rows.push({ milestone, gate: c[ix("门签号")] || "-", tree: c[ix("被签树")] || "-", count: Number(c[ix("文件数")] || 0), manifest, status: (c[ix("状态")] || "").trim() });
+  }
+  return rows;
+}
+
+function archivedCardIds() {
+  const out = new Set();
+  for (const r of archiveRows()) {
+    if (r.status !== "已归档") continue;
+    for (const key of Object.keys(r.manifest)) {
+      const m = /^cards\/(M\d+-(?:\d+|G))\.md$/.exec(key);
+      if (m) out.add(m[1]);
+    }
+  }
+  return out;
+}
+
+function archiveFileCount(milestone) {
+  const dir = path.join(ROOT, `.sdo/archive/${milestone}`);
+  if (!fs.existsSync(dir)) return 0;
+  let n = 0;
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      if (e.isDirectory()) walk(path.join(d, e.name));
+      else n++;
+    }
+  };
+  walk(dir);
+  return n;
+}
+
+function checkArchive() {
+  for (const r of archiveRows()) {
+    const actualFiles = archiveFileCount(r.milestone);
+    if (r.status === "已归档" && actualFiles === 0) err(ARCHIVE_INDEX, 0, `归档状态与实际不符：${r.milestone}（已归档但归档目录为空/缺失）`);
+    if (r.status === "已恢复" && actualFiles > 0) err(ARCHIVE_INDEX, 0, `归档状态与实际不符：${r.milestone}（已恢复但归档目录仍有 ${actualFiles} 个文件）`);
+    if (r.status !== "已归档") continue;
+    const entries = Object.entries(r.manifest);
+    if (entries.length !== r.count) err(ARCHIVE_INDEX, 0, `文件数不符：${r.milestone} 索引 ${r.count} / manifest ${entries.length}`);
+    for (const [key, hash] of entries) {
+      const p = `.sdo/archive/${r.milestone}/${key}`;
+      if (!exists(p)) { err(p, 0, `归档文件缺失：${key}`); continue; }
+      const actual = crypto.createHash("sha256").update(fs.readFileSync(path.join(ROOT, p))).digest("hex");
+      if (actual !== hash) err(p, 0, `归档文件哈希不符：${key}`);
+    }
+  }
 }
 
 function planCardSets() {
@@ -758,22 +828,24 @@ function checkPlan() {
   const milestone = planMilestone();
   if (!exists(".sdo/01-计划.md")) planExit2("计划文件不存在：.sdo/01-计划.md");
   const table = planCardTable(milestone);
+  const archivedIds = archivedCardIds();
   const planPath = ".sdo/01-计划.md";
-  const tableIds = new Set(table.rows.map((r) => r.id));
+  const liveRows = table.rows.filter((r) => !archivedIds.has(r.id));
+  const tableIds = new Set(liveRows.map((r) => r.id));
 
   // C1 双向一致
   const cardIds = fs.readdirSync(path.join(ROOT, ".sdo/cards"))
     .filter((f) => new RegExp(`^${milestone}-(?:\\d+|G)\\.md$`).test(f))
     .map((f) => f.replace(/\.md$/, ""));
-  for (const r of table.rows) if (!exists(`.sdo/cards/${r.id}.md`)) err(planPath, r.line, `卡表有卡无文件：${r.id}`);
+  for (const r of liveRows) if (!exists(`.sdo/cards/${r.id}.md`)) err(planPath, r.line, `卡表有卡无文件：${r.id}`);
   for (const id of cardIds) if (!tableIds.has(id)) err(`.sdo/cards/${id}.md`, 1, `卡不在本里程碑卡表：${id}`);
 
   const infos = new Map();
-  for (const r of table.rows) infos.set(r.id, planCardInfo(r.id));
+  for (const r of liveRows) infos.set(r.id, planCardInfo(r.id));
   for (const id of cardIds) if (!infos.has(id)) infos.set(id, planCardInfo(id));
 
   // C2 依赖 / C3 路径 / C6 写域
-  for (const r of table.rows) {
+  for (const r of liveRows) {
     const info = infos.get(r.id);
     if (!info) continue;
     const planDeps = planParseDeps(r.deps);
@@ -825,7 +897,7 @@ if (ARGV.includes("--plan")) {
 const files = mdFiles();
 for (const p of files) checkTables(p, read(p));
 checkFrontmatter();
-checkLedger(".sdo/台账.md"); checkSigns(); checkCards(); checkReadings();
+checkLedger(".sdo/台账.md"); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
 for (const w of WARN) console.log(`WARN  ${w}`);
 for (const e of ERR) console.log(`ERROR ${e}`);

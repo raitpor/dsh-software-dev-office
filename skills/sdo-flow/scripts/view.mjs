@@ -150,6 +150,29 @@ function readings() {
   return out;
 }
 
+function archiveRows() {
+  const p = ".sdo/archive/INDEX.md";
+  if (!exists(p)) return [];
+  const ls = lines(p);
+  const h = ls.findIndex((l) => l.trim().startsWith("|") && l.includes("里程碑"));
+  if (h < 0) return [];
+  const header = cells(ls[h]).map((x) => x.replace(/`/g, "").trim());
+  const ix = (n) => header.findIndex((x) => x === n);
+  const out = [];
+  for (let i = h + 1; i < ls.length; i++) {
+    const raw = ls[i].trim();
+    if (!raw.startsWith("|")) break;
+    if (isSep(raw)) continue;
+    const c = cells(raw);
+    const milestone = (c[ix("里程碑")] || "").trim();
+    if (!/^M\d+$/.test(milestone)) continue;
+    let manifest = {};
+    try { manifest = JSON.parse((c[ix("文件 sha256")] || "{}").replace(/`/g, "")); } catch { manifest = {}; }
+    out.push({ milestone, gate: c[ix("门签号")] || "-", tree: c[ix("被签树")] || "-", count: c[ix("文件数")] || "", manifest, status: c[ix("状态")] || "" });
+  }
+  return out;
+}
+
 function milestone() {
   const plan = ".sdo/01-计划.md";
   if (!exists(plan)) return {};
@@ -409,11 +432,24 @@ const out = {
       ...t.map((r) => `| ${r.id} | ${r.question} | ${r.how} |`), "",
       `卡：${CS.length} 张（open ${openCards.length}）。完整卡表见 ${exists(".sdo/01-计划.md") ? ".sdo/01-计划.md" : "—"}。`].join("\n");
   },
+  archive() {
+    const rows = archiveRows();
+    const want = argv.filter((a) => !a.startsWith("--"))[1];
+    if (want) {
+      const r = rows.find((x) => x.milestone === want);
+      if (!r) { console.error(`归档里没有里程碑：${want}`); process.exit(2); }
+      return [`# 归档 ${r.milestone}`, `- 门签号：${r.gate}`, `- 被签树：${r.tree}`, `- 文件数：${r.count}`, `- 状态：${r.status}`, "",
+        "| 文件 | sha256 |", "|---|---|",
+        ...Object.entries(r.manifest).map(([k, v]) => `| ${k} | ${v} |`)].join("\n");
+    }
+    return [`# 归档（${rows.length}）`, "", "| 里程碑 | 门签号 | 被签树 | 文件数 | 状态 |", "|---|---|---|---|---|",
+      ...rows.map((r) => `| ${r.milestone} | ${r.gate} | ${r.tree} | ${r.count} | ${r.status} |`)].join("\n");
+  },
   next() { return nextView(milestoneArg).human; },
 }[cmd];
 
 if (!out) {
-  console.error(`未知视图：${cmd}。可用：state / board / queue / ledger / signs / plan / next`);
+  console.error(`未知视图：${cmd}。可用：state / board / queue / ledger / signs / plan / next / archive`);
   process.exit(2);
 }
 const nextResult = cmd === "next" ? nextView(milestoneArg) : null;
@@ -422,7 +458,7 @@ if (warnRagged.length && !asJson) console.error(`WARN  表列数不齐（已按�
 if (asJson) {
   const obj = cmd === "next"
     ? nextResult.json
-    : { command: cmd, milestone: MS.name, cards: CS, ledger: LG, signs: SG, readings: RD };
+    : { command: cmd, milestone: MS.name, cards: CS, ledger: LG, signs: SG, readings: RD, ...(cmd === "archive" ? { archive: archiveRows() } : {}) };
   console.log(JSON.stringify(obj, null, 2));
 } else console.log(data);
 if (cmd === "next" && nextExit !== 0) process.exit(nextExit);

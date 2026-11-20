@@ -106,6 +106,7 @@ node <skill>/scripts/view.mjs <view>|next  # 六个只读视图；next=能开工
 node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）
 node <skill>/scripts/card.mjs new|evidence                 # 卡骨架与证据行：同判据一行、重复原地更新；--run 真跑（30s 超时）
 node <skill>/scripts/sign.mjs draft --milestone M4          # 签字材料 draft：只出事实到 stdout、不写文件；退出码 0/1/2
+node <skill>/scripts/archive.mjs archive|restore M3  # 归档/恢复里程碑；git mv 搬运，索引含逐文件 sha256；check 只读索引
 node <skill>/scripts/check.mjs --plan [--milestone M4]  # 计划↔卡面漂移：卡表/依赖/写域/路径；漂移 exit 1，环境/参数 exit 2
 ```
 
