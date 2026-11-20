@@ -35,7 +35,7 @@ A1：…；不成立 ⇒ …
 | 判据 | 命令与输出 | 判定 |
 |---|---|---|
 
-> 命令与输出必须来自 `--run`（或写「未跑待复跑」）；判定只写 pass/partial/fail/未判，由评审据证据填，不许把命令/输出当判定。
+> 证据列只接受脚本生成：`card.mjs evidence --run` 写 `exit=<code>` 或「未跑待复跑」；手填 `pass`/`ok`/`done`/`已通过`/空 会被 `check.mjs` 拒。判定列只写 pass/partial/fail/未判，由评审据证据填。
 
 ## 判定
 pass / partial / fail（partial 写缺口与补齐时点）

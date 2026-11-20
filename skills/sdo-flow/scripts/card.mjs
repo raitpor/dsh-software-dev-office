@@ -13,12 +13,14 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const CARDS = ".sdo/cards";
-const EVIDENCE_HEADER = ["判据", "命令", "输出摘要", "改回去会怎样"];
+const EVIDENCE_HEADER = ["判据", "命令与输出", "判定"];
 const HEADER_ALIAS = {
   判据: "criterion",
   命令: "command",
   输出摘要: "summary",
   改回去会怎样: "revert",
+  命令与输出: "merged",
+  判定: "verdict",
 };
 const TIMEOUT_MS = 30000;
 const SUMMARY_LIMIT = 200;
@@ -197,10 +199,10 @@ ${flags.intent.trim()}
 ${criteria.map((c) => `- ${c.id}：${c.text}`).join("\n")}
 
 ## 证据
-| 判据 | 命令 | 输出摘要 | 改回去会怎样 |
-|---|---|---|---|
+| 判据 | 命令与输出 | 判定 |
+|---|---|---|
 
-> 结果必须来自 --run（或写「未跑待复跑」），不许手填 pass。
+> 证据列只接受脚本生成：card.mjs evidence --run 写 exit=<code> 或「未跑待复跑」；手填 pass/ok/done/已通过/空 会被 check.mjs 拒。判定列由评审填 pass/partial/fail/未判。
 
 ## 判定
 待证据齐后填 pass / partial / fail。
@@ -235,14 +237,14 @@ function headerMap(line) {
     const key = HEADER_ALIAS[names[i]];
     if (key !== undefined) map[key] = i;
   }
-  if (!EVIDENCE_HEADER.every((h) => HEADER_ALIAS[h] in map)) {
-    die(`证据表表头映射不到四列：${line.trim()}；需要 ${EVIDENCE_HEADER.join(" | ")}（不猜列）`);
+  if (!("criterion" in map) || (!("merged" in map) && !("command" in map && "summary" in map))) {
+    die(`证据表表头映射失败：${line.trim()}；需要「判据 | 命令与输出 | 判定」或「判据 | 命令 | 输出摘要 | 判定」（不猜列）`);
   }
   return map;
 }
 
 function buildRow(map, values) {
-  const width = Math.max(4, ...Object.values(map).map((i) => i + 1));
+  const width = Math.max(...Object.values(map).map((i) => i + 1));
   const out = Array(width).fill("");
   for (const [key, value] of Object.entries(values)) out[map[key]] = cell(value);
   return `| ${out.join(" | ")} |`;
@@ -278,8 +280,9 @@ function cmdEvidence(flags, positional) {
   if (positional.length !== 1) die("用法：card.mjs evidence <卡号|卡文件> --criterion C1 --cmd \"<命令>\" [--run [命令]]");
   const criterion = flags.criterion;
   if (typeof criterion !== "string" || !/^C\d+$/.test(criterion)) die(`--criterion 不合法：${criterion ?? ""}（应为 C1）`);
-  const runCmd = typeof flags.run === "string" ? flags.run : flags.cmd;
-  if (typeof runCmd !== "string" || runCmd.trim() === "") die("evidence 缺必填参数 --cmd（或 --run <命令>）");
+  const command = typeof flags.cmd === "string" ? flags.cmd.trim() : "";
+  if (command === "") die("evidence 缺必填参数 --cmd（--run 不会替代 --cmd）");
+  const runCmd = typeof flags.run === "string" ? flags.run : command;
   const root = findRoot(process.cwd());
   if (!root) die("找不到 .sdo/：请在本项目内运行");
   const file = cardPath(root, positional[0]);
@@ -303,9 +306,9 @@ function cmdEvidence(flags, positional) {
   let insertAt;
   if (!table.length) {
     const header = `| ${EVIDENCE_HEADER.join(" | ")} |`;
-    const sep = "|---|---|---|---|";
+    const sep = "|---|---|---|";
     lines.splice(sec + 1, 0, header, sep);
-    map = { criterion: 0, command: 1, summary: 2, revert: 3 };
+    map = { criterion: 0, merged: 1, verdict: 2 };
     tableLines = [sec + 1, sec + 2];
     insertAt = sec + 3;
   } else {
@@ -321,12 +324,12 @@ function cmdEvidence(flags, positional) {
     }
     if (matches.length === 1) {
       const row = cells(lines[matches[0]]);
-      const width = Math.max(4, ...Object.values(map).map((i) => i + 1), row.length);
+      const width = Math.max(...Object.values(map).map((i) => i + 1));
       const out = Array(width).fill("");
       for (let i = 0; i < width; i++) out[i] = row[i] ?? "";
       out[map.criterion] = criterion;
-      out[map.command] = cell(runCmd);
-      out[map.summary] = cell(summary);
+      if (map.merged !== undefined) out[map.merged] = cell(`${summary}；${command}`);
+      else { out[map.command] = cell(command); out[map.summary] = cell(summary); }
       lines[matches[0]] = `| ${out.join(" | ")} |`;
       writeAtomic(file, lines.join("\n"));
       console.log(`已更新 ${criterion}（${path.relative(process.cwd(), file)}）`);
@@ -334,7 +337,9 @@ function cmdEvidence(flags, positional) {
     }
     insertAt = tableLines[tableLines.length - 1] + 1;
   }
-  const row = buildRow(map, { criterion, command: runCmd, summary, revert: "" });
+  const row = buildRow(map, map.merged !== undefined
+    ? { criterion, merged: `${summary}；${command}` }
+    : { criterion, command, summary });
   lines.splice(insertAt, 0, row);
   writeAtomic(file, lines.join("\n"));
   console.log(`已记录 ${criterion}（${path.relative(process.cwd(), file)}）`);

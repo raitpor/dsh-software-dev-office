@@ -215,16 +215,23 @@ function evidenceTableInfo(lines) {
   return { line: head + 1, header, rows };
 }
 
-function planLegacyCardIds() {
-  const ids = new Set();
-  if (!exists(".sdo/01-计划.md")) return { ids, ok: false };
+function planCardSets() {
+  const legacy = new Set(), baseline = new Set(), strict = new Set(), all = new Set();
+  if (!exists(".sdo/01-计划.md")) return { legacy, baseline, strict, all, ok: false };
   const lines = read(".sdo/01-计划.md");
   let section = 1, col = -1;
-  const seen = { 1: false, 2: false, 3: false };
+  const seen = { 1: false, 2: false, 3: false, 4: false, 5: false };
+  const baselineDecl = [];
   for (const line of lines) {
     const h = line.match(/^##\s*M(\d+)/);
     if (h) { section = Number(h[1]); col = -1; continue; }
-    if (section < 1 || section > 3) continue;
+    if (section === 5 && line.includes("证据格式基线卡")) {
+      const half = line.lastIndexOf(":"), full = line.lastIndexOf("：");
+      const at = Math.max(half, full);
+      const tail = at >= 0 ? line.slice(at + 1) : "";
+      for (const m of tail.matchAll(/M\d+-(?:\d+|G)/g)) baselineDecl.push(m[0]);
+    }
+    if (section < 1 || section > 5) continue;
     const raw = line.trim();
     if (!raw.startsWith("|")) { col = -1; continue; }
     const cs = cells(raw);
@@ -234,27 +241,55 @@ function planLegacyCardIds() {
     }
     if (isSep(raw)) continue;
     const id = (cs[col] || "").replace(/`/g, "").trim();
-    if (/^M\d+-(?:\d+|G)$/.test(id)) { ids.add(id); seen[section] = true; }
+    if (!/^M\d+-(?:\d+|G)$/.test(id)) continue;
+    all.add(id);
+    seen[section] = true;
+    if (section <= 3) legacy.add(id);
+    else if (section === 4) baseline.add(id);
+    else strict.add(id);
   }
-  return { ids, ok: seen[1] && seen[2] && seen[3] };
+  for (const id of baselineDecl) {
+    if (!exists(`.sdo/cards/${id}.md`)) { warn(".sdo/01-计划.md", 0, `证据格式基线卡声明无效（无对应卡文件）：${id}`); continue; }
+    baseline.add(id); all.add(id);
+  }
+  return { legacy, baseline, strict, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
 }
 
 function checkCards() {
   const d = ".sdo/cards";
-  const legacyInfo = planLegacyCardIds();
-  if (!legacyInfo.ok) warn(".sdo/01-计划.md", 0, "计划卡表解析失败，按严格口径检查");
+  const planSets = planCardSets();
+  if (!planSets.ok) warn(".sdo/01-计划.md", 0, "计划卡表解析失败，按严格口径检查");
   if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
     for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
     const sm = text.match(/^status:\s*(open|in_progress|done)/m);
     if (!sm) err(p, 0, "缺 status: open|in_progress|done");
-    const legacy = legacyInfo.ids.has(f.replace(/\.md$/, ""));
+    const cardId = f.replace(/\.md$/, "");
+    let legacy = false, baseline = false, strictResult = true;
+    if (planSets.ok) {
+      if (planSets.legacy.has(cardId)) { legacy = true; strictResult = false; }
+      else if (planSets.baseline.has(cardId)) { baseline = true; strictResult = false; }
+    }
     if (sm && sm[1] === "done") {
       const ev = evidenceTableInfo(lines);
       if (!ev) warn(p, 0, "status: done 但证据表没有数据行");
       if (ev) {
         const hasVerdictCol = ev.header.includes("判定");
+        if (strictResult && hasVerdictCol) {
+          const resultCol = ev.header.includes("输出摘要") ? ev.header.indexOf("输出摘要")
+            : ev.header.includes("命令与输出") ? ev.header.indexOf("命令与输出") : -1;
+          if (resultCol >= 0) {
+            for (const r of ev.rows) {
+              const id = (r.cells[ev.header.indexOf("判据")] || "").replace(/`/g, "").trim();
+              if (!id) continue;
+              const value = (r.cells[resultCol] || "").trim();
+              if (!/^exit=\d+(?:;|$)/.test(value) && !/^未跑待复跑(?:；|$)/.test(value)) {
+                err(p, r.line, `证据结果列不是脚本形态（需 exit=<code> 或「未跑待复跑」）：${id}`);
+              }
+            }
+          }
+        }
         if (!legacy && !hasVerdictCol) {
           err(p, ev.line, "证据表缺判定列（应为 | 判据 | 命令与输出 | 判定 |）");
         }
@@ -267,7 +302,7 @@ function checkCards() {
             const cmd = (r.cells[colCmd] || "").trim();
             const verdict = (r.cells[colVerdict] || "").trim();
             if (!cmd && !verdict) { err(p, r.line, `证据行为空：${id || "（无判据号）"}`); continue; }
-            if (cmd && /^(?:pass|partial|fail|未判)$/.test(cmd)) err(p, r.line, `证据行只写判定，没有命令与输出：${id}`);
+            if (!baseline && cmd && /^(?:pass|partial|fail|未判)$/.test(cmd)) err(p, r.line, `证据行只写判定，没有命令与输出：${id}`);
             if (verdict && !/^(?:pass|partial|fail|未判)$/.test(verdict)) err(p, r.line, `判定值非法：${verdict}（只允许 pass/partial/fail/未判）：${id}`);
             else if (!verdict) err(p, r.line, `证据行缺判定（pass/partial/fail/未判）：${id}`);
           }
