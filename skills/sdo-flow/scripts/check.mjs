@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import { signedCardIds, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 
 function findRoot(start) {
   let d = start;
@@ -306,7 +307,7 @@ function checkSigns() {
   }
   let effective = 0;
   for (const f of files) {
-    if (!/^S\d+(?:-[A-Z])?\.md$/.test(f)) err(`${d}/${f}`, 0, "签字文件名必须是 S<编号>.md 或追加签 S<编号>-<A…Z>.md");
+    if (!SIGN_FILE_RE.test(f)) err(`${d}/${f}`, 0, "签字文件名必须是 S<编号>.md 或追加签 S<编号>-<A…Z>.md");
     const p = `${d}/${f}`, text = read(p).join("\n");
     for (const k of ["时间", "选项", "被签对象"]) {
       if (!new RegExp(`^\\s*-?\\s*${k}[:：]\\s*\\S`, "m").test(text)) err(p, 0, `缺字段或值为空：${k}（应写成「- ${k}：…」）`);
@@ -499,15 +500,7 @@ function planCardSets() {
     if (!exists(cardRel)) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（无对应卡文件）：${id}`); continue; }
     const cardText = read(cardRel).join("\n");
     if (!/^status:\s*done\b/m.test(cardText)) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（卡未 done）：${id}`); continue; }
-    const signsDir = ".sdo/sign";
-    const signed = exists(signsDir) && fs.readdirSync(path.join(ROOT, signsDir))
-      .filter((f) => /^S[^/]+\.md$/.test(f))
-      .some((f) => read(`${signsDir}/${f}`).some((line) => {
-        const scope = line.match(/^-\s*范围[:：]\s*(.+)$/);
-        if (!scope) return false;
-        const first = scope[1].match(/^M\d+-(?:\d+|G)(?![\w-])/);
-        return first !== null && first[0] === id;
-      }));
+    const signed = signedCardIds(path.join(ROOT, ".sdo/sign")).has(id);
     if (!signed) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
     mutationBaseline.add(id); all.add(id);
   }

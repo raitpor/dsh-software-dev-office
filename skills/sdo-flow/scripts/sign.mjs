@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { signedCardIds } from "./lib/signed-cards.mjs";
 
 const SIGN_FORBIDDEN = /建议签|可以签|可签|推荐签|我认为|判定[:：]|选项[:：]签|签署者[:：]|✅|⚠️/;
 
@@ -140,18 +141,153 @@ function collectSignedFiles(root, milestone, sectionText) {
   return [...files].filter((p) => !p.endsWith("/")).sort();
 }
 
+const BATCH_MAX = 3;
+const BATCH_BLACKLIST = new Set(["无", "没有", "不适用", "不需要", "无所谓", "待补充", "略", "同上", "见上"]);
+const MILESTONE_DIR = ".sdo/milestones";
+
+function milestoneCards(root, milestone) {
+  const file = path.join(root, MILESTONE_DIR, `${milestone}.md`);
+  if (!fs.existsSync(file)) die(`找不到 ${MILESTONE_DIR}/${milestone}.md`);
+  const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+  let header = null, at = -1;
+  for (let i = 0; i < lines.length - 1; i++) {
+    if (!lines[i].trim().startsWith("|") || !/^\s*\|[\s:|-]+\|\s*$/.test(lines[i + 1])) continue;
+    const h = cells(lines[i]);
+    if (h.some((x) => x.includes("卡"))) { header = h; at = i; break; }
+  }
+  if (!header) die(`${MILESTONE_DIR}/${milestone}.md 缺卡表`);
+  const col = header.findIndex((h) => h.includes("卡"));
+  const ids = [];
+  for (let i = at + 2; i < lines.length && lines[i].trim().startsWith("|"); i++) {
+    if (/^\s*\|[\s:|-]+\|\s*$/.test(lines[i])) continue;
+    const id = (cells(lines[i])[col] || "").replace(/`/g, "").trim();
+    if (/^M\d+-(?:\d+|G)$/.test(id)) ids.push(id);
+  }
+  return ids;
+}
+function cardStatus(root, id) {
+  const file = path.join(root, ".sdo/cards", `${id}.md`);
+  if (!fs.existsSync(file)) return null;
+  const m = /^status:\s*(\S+)/m.exec(fs.readFileSync(file, "utf8"));
+  return m ? m[1] : null;
+}
+function cells(line) {
+  let t = line.trim();
+  if (t.startsWith("|")) t = t.slice(1);
+  if (t.endsWith("|")) t = t.slice(0, -1);
+  const out = []; let cur = "", code = false;
+  for (let i = 0; i < t.length; i++) {
+    const ch = t[i];
+    if (ch === "`") { code = !code; cur += ch; continue; }
+    if (ch === "|" && !code) { out.push(cur); cur = ""; continue; }
+    cur += ch;
+  }
+  out.push(cur);
+  return out.map((x) => x.trim());
+}
+function meaningfulLen(s) {
+  return String(s).replace(/[，。！？、；：,.!?;:\s"'“”‘’（）()《》<>【】\[\]-]/g, "").length;
+}
+function extractVerdict(root, cardId) {
+  const file = path.join(root, ".sdo/cards", `${cardId}.md`);
+  if (!fs.existsSync(file)) return "待人工复核（卡面评审段无判词）";
+  const lines = fs.readFileSync(file, "utf8").split(/\r?\n/);
+  const a = lines.findIndex((l) => /^##\s*评审(?:\s|$)/.test(l.trim()));
+  if (a < 0) return "待人工复核（卡面评审段无判词）";
+  let b = lines.findIndex((l, i) => i > a && /^##\s/.test(l.trim()));
+  if (b < 0) b = lines.length;
+  let verdict = null;
+  for (const line of lines.slice(a + 1, b)) {
+    const m = /^-\s*判定[:：]\s*\*{0,2}(可收卡|可提交|改完再审|拒绝)\*{0,2}\s*(?:（[^）]*）|\([^)]*\))?\s*$/.exec(line);
+    if (m) verdict = m[1];
+  }
+  return verdict ?? "待人工复核（卡面评审段无判词）";
+}
+function buildDraft(index, cardId, commit, verdict) {
+  const target = commit ? `commit ${commit}` : "无 git（无法锚定 commit）";
+  const boundary = "本次仅为签字草案；证据与读数由人复核，草案不落盘。";
+  return [
+    `### 草案 ${index} · ${cardId}`,
+    `- 范围：${cardId}`,
+    `- 被签对象：${target}`,
+    `- 判定：${verdict}`,
+    `- 已知边界：${boundary}`,
+  ].join("\n");
+}
+function validateDraft(text, index, cardId) {
+  const bad = (msg) => die(`第 ${index} 份草案不合法：${msg}`);
+  const lines = text.split(/\r?\n/);
+  if (lines.length > 8) bad(`行数 ${lines.length} > 8`);
+  const fields = {
+    范围: lines.find((l) => l.startsWith("- 范围：")),
+    被签对象: lines.find((l) => l.startsWith("- 被签对象：")),
+    判定: lines.find((l) => l.startsWith("- 判定：")),
+    已知边界: lines.find((l) => l.startsWith("- 已知边界：")),
+  };
+  for (const [k, v] of Object.entries(fields)) if (!v) bad(`缺「${k}」`);
+  if (!fields.范围.includes(cardId)) bad("范围未含卡号");
+  const target = fields.被签对象.slice("- 被签对象：".length).trim();
+  if (!/无 git/.test(target) && !/[0-9a-f]{7,40}/i.test(target)) bad("被签对象缺 commit（7–40 位）");
+  const verdict = fields.判定.slice("- 判定：".length).trim();
+  if (!verdict) bad("判定为空");
+  if (/^待填写/.test(verdict)) bad(`判定不能是「待填写」：${verdict}`);
+  const boundary = fields.已知边界.slice("- 已知边界：".length).trim();
+  if (meaningfulLen(boundary) < 8 || BATCH_BLACKLIST.has(boundary)) bad(`已知边界过短或为套话：${boundary}`);
+}
+function batch(root, milestone, cardsArg) {
+  const ids = milestoneCards(root, milestone);
+  let selected;
+  if (cardsArg !== null) {
+    selected = cardsArg.split(",").map((x) => x.trim()).filter(Boolean);
+    if (selected.length > BATCH_MAX) die(`一次最多 ${BATCH_MAX} 张卡；收到 ${selected.length} 张，请拆批`);
+    for (const id of selected) {
+      if (!/^M\d+-(?:\d+|G)$/.test(id)) die(`--cards 含非法卡号：${id}`);
+      if (cardStatus(root, id) === null) die(`--cards 含不存在的卡：${id}`);
+      if (!ids.includes(id)) die(`--cards 含不属于里程碑 ${milestone} 的卡：${id}`);
+    }
+  } else {
+    const signed = signedCardIds(path.join(root, ".sdo/sign"));
+    selected = ids.filter((id) => cardStatus(root, id) === "done" && !signed.has(id)).slice(0, BATCH_MAX);
+  }
+  if (selected.length === 0) {
+    console.log(`本批无可签卡（done 且未签收，里程碑 ${milestone}）`);
+    return;
+  }
+  const hasGit = gitText(root, ["rev-parse", "--is-inside-work-tree"]) === "true";
+  const head = hasGit ? gitText(root, ["rev-parse", "HEAD"]) : null;
+  const commit = head && /^[0-9a-f]{7,40}$/i.test(head) ? head : null;
+  const drafts = selected.map((id, i) => {
+    const text = buildDraft(i + 1, id, commit, extractVerdict(root, id));
+    validateDraft(text, i + 1, id);
+    return text;
+  });
+  console.log(drafts.join("\n\n"));
+}
+
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
-  if (!cmd) die("用法：sign.mjs draft --milestone M4");
-  if (cmd !== "draft") die(`未知命令：${cmd}（只允许 draft）`);
-  let milestone = "";
-  for (let i = 0; i < rest.length; i++) {
-    if (rest[i] === "--milestone" && i + 1 < rest.length) milestone = rest[++i];
-    else if (rest[i].startsWith("--")) die(`未知参数：${rest[i]}`);
-    else die(`多余参数：${rest[i]}`);
+  if (!cmd) die("用法：sign.mjs draft --milestone M4 | sign.mjs batch M6 [--cards M6-0,M6-1]");
+  if (cmd === "draft") {
+    let milestone = "";
+    for (let i = 0; i < rest.length; i++) {
+      if (rest[i] === "--milestone" && i + 1 < rest.length) milestone = rest[++i];
+      else if (rest[i].startsWith("--")) die(`未知参数：${rest[i]}`);
+      else die(`多余参数：${rest[i]}`);
+    }
+    if (!/^M\d+$/.test(milestone)) die("缺少或非法 --milestone（应为 M4）");
+    return { cmd, milestone, cards: null };
   }
-  if (!/^M\d+$/.test(milestone)) die("缺少或非法 --milestone（应为 M4）");
-  return milestone;
+  if (cmd === "batch") {
+    const milestone = rest[0];
+    if (!milestone || !/^M\d+$/.test(milestone)) die("用法：sign.mjs batch <M> [--cards M6-0,M6-1]");
+    let cards = null;
+    for (let i = 1; i < rest.length; i++) {
+      if (rest[i] === "--cards" && i + 1 < rest.length) cards = rest[++i];
+      else die(`未知参数：${rest[i]}`);
+    }
+    return { cmd, milestone, cards };
+  }
+  die(`未知命令：${cmd}（只允许 draft/batch）`);
 }
 
 function draft(root, milestone) {
@@ -248,7 +384,8 @@ function draft(root, milestone) {
   process.exit(dirty || mismatched.length || reading.invalid ? 1 : 0);
 }
 
-const milestone = parseArgs(process.argv.slice(2));
+const parsed = parseArgs(process.argv.slice(2));
 const root = findRoot(process.cwd());
 if (!root) die("找不到 .sdo/：请在本项目内运行");
-draft(root, milestone);
+if (parsed.cmd === "draft") draft(root, parsed.milestone);
+else batch(root, parsed.milestone, parsed.cards);
