@@ -28,7 +28,7 @@ const cmd = argv.find((a) => !a.startsWith("--")) || "state";
 const asJson = argv.includes("--json");
 const onlyOpen = argv.includes("--open");
 const mi = argv.indexOf("--milestone");
-const milestoneArg = mi >= 0 ? argv[mi + 1] : "M4";
+let milestoneArg = mi >= 0 ? argv[mi + 1] : "";
 if (mi >= 0 && (!milestoneArg || milestoneArg.startsWith("--") || !/^M\d+$/.test(milestoneArg))) { console.error("--milestone 需要一个里程碑号（如 M4）"); process.exit(2); }
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
@@ -304,6 +304,13 @@ function dnum(id) { const m = /^D-(\d+)$/.exec(id || ""); return m ? Number(m[1]
 
 const NEED_ALL_LEDGER = cmd !== "next";
 const CS = cards(), LG = NEED_ALL_LEDGER ? ledger() : [], SG = signs(), RD = readings(), MS = milestone();
+if (cmd === "next" && mi < 0) {
+  const ids = milestoneBlocks().map((b) => b.id).filter((x) => /^M\d+$/.test(x))
+    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))).reverse();
+  const open = ids.find((id) => !SG.some((sg) => signForMilestone(sg, id, "门")));
+  if (!open) { console.log("无进行中里程碑"); process.exit(0); }
+  milestoneArg = open;
+}
 const openCards = CS.filter((c) => c.status !== "done");
 const CLOSED_IDS = closedLedgerIds(LG);
 const IDX_OPEN = openRowsFromIndex();
@@ -381,13 +388,15 @@ function signForMilestone(sg, id, kind) {
   const m = /^M(\d+)$/.exec(id);
   if (!m) return false;
   const n = m[1];
+  const title = String(sg.title || "").replace(/^#\s*/, "").trim();
   if (kind === "计划") {
-    return new RegExp(`^S[\\d-]+\\s*·\\s*M${n}\\s*计划`).test(sg.title)
-      || new RegExp(`^S[\\d-]+\\s*·\\s*计划签字（M${n}）`).test(sg.title);
+    return new RegExp(`^(?:签字\\s*)?S[\\d-]+\\s*·\\s*M${n}\\s*计划`).test(title)
+      || new RegExp(`^S[\\d-]+\\s*·\\s*计划签字（M${n}）`).test(title);
   }
   if (kind === "门") {
-    return new RegExp(`^S[\\d-]+\\s*·\\s*M${n}\\s*门`).test(sg.title)
-      || new RegExp(`^S[\\d-]+\\s*M${n}\\s*门签`).test(sg.title);
+    return new RegExp(`^S[\\d-]+\\s*·\\s*M${n}\\s*门`).test(title)
+      || new RegExp(`^S[\\d-]+\\s*M${n}\\s*门签`).test(title)
+      || new RegExp(`^(?:签字\\s*)?S[\\d-]+\\s*[（(]\\s*M${n}\\s*门`).test(title);
   }
   return false;
 }
@@ -398,6 +407,7 @@ function nextView(milestoneId) {
   if (!block) { console.error(`找不到里程碑文件：${MILESTONE_DIR}/${milestoneId}.md`); process.exit(2); }
   const { deps: planDepsMap, exists: hasPlanTable } = planCardDeps(milestoneId);
   if (!hasPlanTable) { console.error(`找不到 ${milestoneId} 卡表：${MILESTONE_DIR}/${milestoneId}.md`); process.exit(2); }
+  const ownCards = CS.filter((c) => c.id.startsWith(`${milestoneId}-`));
   const byId = new Map(CS.map((c) => [c.id, c]));
   const cardFaceDeps = new Map(CS.map((c) => [c.id, parseDeps(c.deps)]));
   if (hasPlanTable) {
@@ -418,7 +428,7 @@ function nextView(milestoneId) {
     return false;
   };
   const ready = [], blocked = [], signing = [], filesPending = [], inProgress = [], unknown = [];
-  for (const c of CS) {
+  for (const c of ownCards) {
     if (c.status === "done") {
       if (!signedSet.has(c.id)) signing.push(c.id);
     } else if (c.status === "open") {
@@ -432,7 +442,7 @@ function nextView(milestoneId) {
       unknown.push(`${c.id} · status=${c.status}`);
     }
   }
-  for (const b of milestoneBlocks()) {
+  for (const b of milestoneBlocks().filter((x) => x.id === milestoneId)) {
     const st = /^\s*(?:[-*]\s*)?状态[:：]\s*(.+)$/m.exec(b.text);
     if (!st) { unknown.push(`${b.id} · 计划段缺「状态：」行`); continue; }
     const planSign = SG.find((s) => signForMilestone(s, b.id, "计划"));
@@ -442,7 +452,7 @@ function nextView(milestoneId) {
   }
   for (const c of CS) {
     const g = /^M(\d+)-G$/.exec(c.id);
-    if (g && gateInfo.has(c.id)) filesPending.push(`${c.id}：已由 M${g[1]} 门签 ${gateInfo.get(c.id).sign} 收口`);
+    if (g && g[1] === milestoneId.slice(1) && gateInfo.has(c.id)) filesPending.push(`${c.id}：已由 M${g[1]} 门签 ${gateInfo.get(c.id).sign} 收口`);
   }
   const ledgerOpen = [...openLedger].sort((a, b) => {
     const x = dnum(a.id), y = dnum(b.id);

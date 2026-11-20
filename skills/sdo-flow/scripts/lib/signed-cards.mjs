@@ -1,9 +1,45 @@
 // 共享签字判定：签文件正文只认行首 `- 范围：<卡号>`（卡号后允许说明文字）。
-// 供 sign.mjs（batch 选卡）与 check.mjs（变异基线签字引用）共用，避免两份口径漂移。
+// 供 sign.mjs（batch 选卡）、check.mjs（变异基线/门签收口）与 view.mjs（next 待签收）共用。
 import fs from "node:fs";
 import path from "node:path";
 
 export const SIGN_FILE_RE = /^S\d+(?:-[A-Z])?\.md$/;
+
+// 去掉 Markdown 清单符、反引号、加粗后，取「范围」后的正文。
+export function normalizeScope(line) {
+  let t = String(line).replace(/^\s*[-*+]\s*/, "");
+  t = t.replace(/\*\*/g, "").replace(/`/g, "").trim();
+  const m = /^范围[:：]\s*(.*)$/.exec(t);
+  return (m ? m[1] : t).trim();
+}
+
+function addCard(out, milestone, n, maybeG) {
+  out.add(maybeG ? `M${milestone}-G` : `M${milestone}-${n}`);
+}
+
+// 列举展开只在范围行含「收卡」或「门签」时生效：计划签里列举卡号不算卡签收。
+export function parseSignedScopes(line) {
+  const out = new Set();
+  const text = normalizeScope(line);
+  if (!text) return out;
+  // 计划签（`M9 计划…`）一律不产生卡签/门签：即使正文写了「收卡」或「M9 里程碑门」。
+  if (/^M\d+\s*计划/.test(text)) return out;
+  const gate = /^M(\d+)\s*里程碑门/.exec(text);
+  if (gate) out.add(`M${gate[1]}-G`);
+  const semantic = /收卡|门签/.test(text);
+  if (!semantic) {
+    const first = /^M(\d+)-(?:(\d+)|G)(?![\w-])/.exec(text);
+    if (first) addCard(out, first[1], first[2], first[2] === undefined);
+    return out;
+  }
+  const lead = /^M(\d+)-(?:(\d+)|G)(?![\w-])/.exec(text);
+  if (lead) addCard(out, lead[1], lead[2], lead[2] === undefined);
+  for (const m of text.matchAll(/M(\d+)-(\d+)\s*(?:…|\.\.\.|—|~|至)\s*M\1-(\d+)/g)) {
+    const a = Number(m[2]), b = Number(m[3]);
+    for (let i = Math.min(a, b); i <= Math.max(a, b); i++) out.add(`M${m[1]}-${i}`);
+  }
+  return out;
+}
 
 export function gateSignInfo(signDir) {
   const out = new Map();
@@ -12,7 +48,8 @@ export function gateSignInfo(signDir) {
     const lines = fs.readFileSync(path.join(signDir, f), "utf8").split(/\r?\n/);
     const num = /^S(\d+)/.exec(f);
     for (const line of lines) {
-      const m = /^-\s*范围[:：]\s*M(\d+)\s*里程碑门/.exec(line);
+      const text = normalizeScope(line);
+      const m = /^M(\d+)\s*里程碑门/.exec(text);
       if (!m) continue;
       const id = `M${m[1]}-G`;
       if (!out.has(id)) out.set(id, { milestone: `M${m[1]}`, sign: `S${num ? num[1] : "?"}`, file: f });
@@ -27,12 +64,8 @@ export function signedCardIds(signDir) {
   for (const f of fs.readdirSync(signDir).filter((x) => SIGN_FILE_RE.test(x))) {
     const lines = fs.readFileSync(path.join(signDir, f), "utf8").split(/\r?\n/);
     for (const line of lines) {
-      const scope = line.match(/^-\s*范围[:：]\s*(.+)$/);
-      if (!scope) continue;
-      const first = scope[1].match(/^M\d+-(?:\d+|G)(?![\w-])/);
-      if (first) out.add(first[0]);
-      const gate = /^M(\d+)\s*里程碑门/.exec(scope[1].trim());
-      if (gate) out.add(`M${gate[1]}-G`);
+      if (!/^\s*[-*+]\s*范围[:：]/.test(line)) continue;
+      for (const id of parseSignedScopes(line)) out.add(id);
     }
   }
   return out;
