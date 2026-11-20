@@ -278,7 +278,7 @@ function milestone() {
   const m = read(plan).match(/^#\s*计划[:：]\s*(.+)$/m);
   return { name: m ? m[1].trim() : "", readings: [] };
 }
-const MILESTONE_DIR = ".sdo/里程碑";
+const MILESTONE_DIR = ".sdo/milestones";
 function milestoneFiles() {
   const d = path.join(ROOT, MILESTONE_DIR);
   if (!exists(MILESTONE_DIR) && !fs.existsSync(d)) return [];

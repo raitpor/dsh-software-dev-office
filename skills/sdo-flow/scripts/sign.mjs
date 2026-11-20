@@ -136,7 +136,7 @@ function collectSignedFiles(root, milestone, sectionText) {
     }
   }
   if (fs.existsSync(path.join(root, ".sdo/计划.md"))) files.add(".sdo/计划.md");
-  if (fs.existsSync(path.join(root, `.sdo/里程碑/${milestone}.md`))) files.add(`.sdo/里程碑/${milestone}.md`);
+  if (fs.existsSync(path.join(root, `.sdo/milestones/${milestone}.md`))) files.add(`.sdo/milestones/${milestone}.md`);
   return [...files].filter((p) => !p.endsWith("/")).sort();
 }
 
@@ -155,8 +155,8 @@ function parseArgs(argv) {
 }
 
 function draft(root, milestone) {
-  const planPath = path.join(root, `.sdo/里程碑/${milestone}.md`);
-  if (!fs.existsSync(planPath)) die(`找不到 .sdo/里程碑/${milestone}.md`);
+  const planPath = path.join(root, `.sdo/milestones/${milestone}.md`);
+  if (!fs.existsSync(planPath)) die(`找不到 .sdo/milestones/${milestone}.md`);
   const section = { text: fs.readFileSync(planPath, "utf8"), start: 0 };
 
   const hasGit = gitText(root, ["rev-parse", "--is-inside-work-tree"]) === "true";
@@ -196,7 +196,7 @@ function draft(root, milestone) {
   const selfLines = [];
   const emitSelf = (line) => { out.push(line); selfLines.push(line); };
   emitSelf(dirty || mismatched.length ? "DIRTY" : "CLEAN");
-  emitSelf(`里程碑：${milestone}（.sdo/里程碑/${milestone}.md）`);
+  emitSelf(`里程碑：${milestone}（.sdo/milestones/${milestone}.md）`);
   const reading = readOverall(root, milestone);
   const readingPath = `.sdo/readings/${milestone}.md`;
   if (reading.missing) {

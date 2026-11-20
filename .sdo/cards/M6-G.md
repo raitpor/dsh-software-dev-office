@@ -2,7 +2,7 @@
 
 status: open
 owner: lead
-write_scope: [.sdo/readings/, .sdo/sign/, .sdo/review/, .sdo/gates/, .sdo/里程碑/M6.md]
+write_scope: [.sdo/readings/, .sdo/sign/, .sdo/review/, .sdo/gates/, .sdo/milestones/M6.md]
 read_refs: [skills/sdo-flow/scripts/, .sdo/cards/, .sdo/台账.md]
 
 ## 意图

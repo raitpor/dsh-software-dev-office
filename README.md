@@ -41,7 +41,7 @@ mkdir -p .sdo/cards .sdo/sign .sdo/readings .sdo/review .sdo/gates
 # 2) 起步三件（这一步就能跑检查器）
 cp $SKILL/templates/意图.md        .sdo/意图.md
 cp $SKILL/templates/计划.md        .sdo/计划.md
-mkdir -p .sdo/里程碑 && cp $SKILL/templates/里程碑.md .sdo/里程碑/M1.md   # 每个里程碑一个文件
+mkdir -p .sdo/milestones && cp $SKILL/templates/milestone.md .sdo/milestones/M1.md   # 每个里程碑一个文件
 cp $SKILL/templates/台账.md     .sdo/台账.md
 
 # 3) 第一次写卡时再加（每张一份）

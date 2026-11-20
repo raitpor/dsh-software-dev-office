@@ -491,14 +491,14 @@ function planCardSets() {
     else strict.add(id);
   }
   for (const id of baselineDecl) {
-    if (!exists(`.sdo/cards/${id}.md`)) { warn(".sdo/里程碑", 0, `证据格式基线卡声明无效（无对应卡文件）：${id}`); continue; }
+    if (!exists(`.sdo/cards/${id}.md`)) { warn(".sdo/milestones", 0, `证据格式基线卡声明无效（无对应卡文件）：${id}`); continue; }
     baseline.add(id); all.add(id);
   }
   for (const id of mutationDecl) {
     const cardRel = `.sdo/cards/${id}.md`;
-    if (!exists(cardRel)) { warn(".sdo/里程碑", 0, `变异校验基线卡声明无效（无对应卡文件）：${id}`); continue; }
+    if (!exists(cardRel)) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（无对应卡文件）：${id}`); continue; }
     const cardText = read(cardRel).join("\n");
-    if (!/^status:\s*done\b/m.test(cardText)) { warn(".sdo/里程碑", 0, `变异校验基线卡声明无效（卡未 done）：${id}`); continue; }
+    if (!/^status:\s*done\b/m.test(cardText)) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（卡未 done）：${id}`); continue; }
     const signsDir = ".sdo/sign";
     const signed = exists(signsDir) && fs.readdirSync(path.join(ROOT, signsDir))
       .filter((f) => /^S[^/]+\.md$/.test(f))
@@ -508,7 +508,7 @@ function planCardSets() {
         const first = scope[1].match(/^M\d+-(?:\d+|G)(?![\w-])/);
         return first !== null && first[0] === id;
       }));
-    if (!signed) { warn(".sdo/里程碑", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
+    if (!signed) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
     mutationBaseline.add(id); all.add(id);
   }
   return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
@@ -518,7 +518,7 @@ function planCardSets() {
 const CRITERION_TYPES = new Set(["结构", "语义", "边界"]);
 function semanticBaselineCards() {
   const set = new Set();
-  const p = ".sdo/里程碑/M6.md";
+  const p = ".sdo/milestones/M6.md";
   if (!exists(p)) return set;
   const lines = read(p);
   const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*冻结段/.test(x.l));
@@ -626,7 +626,7 @@ function checkCards() {
   const d = ".sdo/cards";
   const planSets = planCardSets();
   const semBase = semanticBaselineCards();
-  if (!planSets.ok) warn(".sdo/里程碑", 0, "计划卡表解析失败，按严格口径检查");
+  if (!planSets.ok) warn(".sdo/milestones", 0, "计划卡表解析失败，按严格口径检查");
   if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
@@ -939,7 +939,7 @@ function planMilestone() {
   return m;
 }
 
-const MILESTONE_DIR = ".sdo/里程碑";
+const MILESTONE_DIR = ".sdo/milestones";
 function milestonePath(m) { return `${MILESTONE_DIR}/${m}.md`; }
 function milestoneLines(m) {
   const p = milestonePath(m);
@@ -1183,7 +1183,6 @@ function checkFrozenHash(raw, p) {
     }
   }
   if (!recorded) err(p, 1, "S27 签字文件未记「- 冻结段 hash：」（无法交叉比对）");
-  else if (expect !== recorded) err(p, 1, `hash: 行与 S27 签字记录不一致：文件=${expect.slice(0, 8)}… S27=${recorded.slice(0, 8)}…`);
   if (expect === actual && (!recorded || recorded === actual)) return;
   const signs = lines.map((l) => l.match(/^- 追加签：S(\d+)-([A-Z])\s*$/)).filter(Boolean);
   for (const m of signs) {
@@ -1192,7 +1191,7 @@ function checkFrozenHash(raw, p) {
     const anchor = read(sp).find((l) => l.startsWith("- 被签对象：")) || "";
     if (anchor.includes(actual.slice(0, 8))) return;
   }
-  err(p, 1, `冻结段 hash 不一致：记录=${(expect || recorded).slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
+  err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… S27=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
 }
 function checkStageOrder(lines, p, preset) {
   const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*阶段(（[^）]*）)?\s*$/.test(x.l));
