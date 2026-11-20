@@ -9,7 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
-import { signedCardIds, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
+import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 
 function findRoot(start) {
   let d = start;
@@ -555,6 +555,24 @@ function criterionTable(lines, p) {
   }
   return { line: h + 1, header, rows };
 }
+function checkCriterionScripts(cardId, p, lines) {
+  for (const name of ["判据", "证据"]) {
+    const sec = sectionOf(lines, new RegExp(`^##\\s*${name}\\s*$`));
+    if (!sec) continue;
+    for (let i = sec.start; i < sec.end; i++) {
+      for (const span of lines[i].matchAll(/`([^`]+)`/g)) {
+        for (const m of span[1].matchAll(/(?:^|[\s"'`])((?:\.{0,2}\/|\/|[A-Za-z0-9_.-]+\/)*scripts\/[A-Za-z0-9_./-]+\.mjs)/g)) {
+          const raw = m[1];
+          if (/[<>]/.test(raw)) continue; // 模板占位 <skill>/...
+          const rel = raw.replace(/^["'`]+|["'`]+$/g, "").replace(/^\.\//, "");
+          const abs = path.isAbsolute(rel) ? rel : path.join(ROOT, rel);
+          if (!fs.existsSync(abs)) err(p, i + 1, `判据点名的脚本不存在（卡 ${cardId}）：${rel}`);
+        }
+      }
+    }
+  }
+}
+
 function checkSemanticCriteria(cardId, p, lines, done, semBase) {
   if (semBase.has(cardId)) return;
   const t = criterionTable(lines, p);
@@ -634,6 +652,11 @@ function checkCards() {
       else if (planSets.baseline.has(cardId)) { baseline = true; strictResult = false; }
     }
     if (sm && sm[1] === "done") {
+      checkCriterionScripts(cardId, p, lines);
+      const gateSigned = gateSignInfo(path.join(ROOT, ".sdo/sign")).get(cardId);
+      if (/^M\d+-G$/.test(cardId) && !signedCardIds(path.join(ROOT, ".sdo/sign")).has(cardId) && !gateSigned) {
+        err(p, 1, `status: done 但未签收（门卡须有 M 门签或卡号签收）：${cardId}`);
+      }
       const ev = evidenceTableInfo(lines);
       if (!ev) warn(p, 0, "status: done 但证据表没有数据行");
       if (ev) {
@@ -1202,7 +1225,6 @@ function checkStageOrder(lines, p, preset) {
   }
 }
 function checkPlanRules(milestone, planPath) {
-  if (exists(`.sdo/archive/${milestone}`)) return;   // 已归档里程碑：历史树，不回溯新规则
   const raw = fs.readFileSync(path.join(ROOT, planPath), "utf8");
   const lines = raw.split("\n");
   const presetBase = baselineSegments(lines, "preset", planPath);
@@ -1213,6 +1235,15 @@ function checkPlanRules(milestone, planPath) {
   if (!probeBase.has(milestone)) checkProbeLines(lines, planPath);
   if (preset) checkStageOrder(lines, planPath, preset);
 }
+function checkR25Docs() {
+  const ref = "skills/sdo-flow/references/03-签字与评审.md";
+  if (!read(ref).some((l) => /^#{2,3}\s+.*评审席位失败/.test(l))) err(ref, 1, "缺「评审席位失败」小节标题（R25 C2）");
+  const tpl = "skills/sdo-flow/templates/review.md";
+  for (const field of ["席位", "失败处置"]) {
+    if (!read(tpl).some((l) => new RegExp(`^-\\s*${field}[:：]`).test(l))) err(tpl, 0, `模板缺字段：${field}`);
+  }
+}
+
 function checkAuthorizationText() {
   const skillPath = "skills/sdo-flow/SKILL.md";
   const skill = read(skillPath);
@@ -1231,6 +1262,10 @@ function checkAuthorizationText() {
 
 function checkPlan() {
   const milestone = planMilestone();
+  if (!exists(milestonePath(milestone)) && exists(`.sdo/archive/${milestone}`)) {
+    console.log(`WARN  ${milestonePath(milestone)}:0: 已归档，跳过`);
+    process.exit(0);
+  }
   const table = planCardTable(milestone);
   const archivedIds = archivedCardIds();
   const planPath = milestonePath(milestone);
@@ -1308,6 +1343,7 @@ for (const p of files) {
 }
 checkFrontmatter();
 checkAuthorizationText();
+checkR25Docs();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();

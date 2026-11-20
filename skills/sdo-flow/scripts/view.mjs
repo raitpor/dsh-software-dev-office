@@ -10,6 +10,7 @@
 //   next    现在能开工什么（可开工/被依赖卡住/待签收/待签文件/未修台账）
 import fs from "node:fs";
 import path from "node:path";
+import { signedCardIds, gateSignInfo } from "./lib/signed-cards.mjs";
 
 function findRoot(start) {
   let d = start;
@@ -407,6 +408,8 @@ function nextView(milestoneId) {
       if (a !== b) console.error(`对照：${id} 卡面「依赖：${cdeps.join("、") || "无"}」≠ 计划表「${pdeps.join("、") || "无"}」，以计划表为准`);
     }
   }
+  const signedSet = signedCardIds(path.join(ROOT, ".sdo/sign"));
+  const gateInfo = gateSignInfo(path.join(ROOT, ".sdo/sign"));
   const depSatisfied = (id) => {
     const c = byId.get(id);
     if (c) return c.status === "done";
@@ -417,7 +420,7 @@ function nextView(milestoneId) {
   const ready = [], blocked = [], signing = [], filesPending = [], inProgress = [], unknown = [];
   for (const c of CS) {
     if (c.status === "done") {
-      if (!SG.some((s) => signMatchesCard(s, c.id, "收卡"))) signing.push(c.id);
+      if (!signedSet.has(c.id)) signing.push(c.id);
     } else if (c.status === "open") {
       const ds = planDepsMap.get(c.id) ?? [];
       const unmet = ds.filter((d) => !depSatisfied(d));
@@ -436,6 +439,10 @@ function nextView(milestoneId) {
     const gateSign = SG.find((s) => signForMilestone(s, b.id, "门"));
     filesPending.push(`${b.id} 计划：${planSign ? `已签 ${signNumber(planSign)}` : "待签"}`);
     filesPending.push(`${b.id} 门：${gateSign ? `已签 ${signNumber(gateSign)}` : "待签"}`);
+  }
+  for (const c of CS) {
+    const g = /^M(\d+)-G$/.exec(c.id);
+    if (g && gateInfo.has(c.id)) filesPending.push(`${c.id}：已由 M${g[1]} 门签 ${gateInfo.get(c.id).sign} 收口`);
   }
   const ledgerOpen = [...openLedger].sort((a, b) => {
     const x = dnum(a.id), y = dnum(b.id);
