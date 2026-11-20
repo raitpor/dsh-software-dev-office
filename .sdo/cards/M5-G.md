@@ -25,7 +25,7 @@ risk_flags：无
 | C5 | R23 1 万/10 万行性能达标（三次取中位） | 两档三命令计时、机器与 Node 版本；反例：超预算仍写 pass ⇒ 违反本卡 C1 精神，判 fail |
 | C6 | R24 索引漂移检测与 reindex 恢复（reindex 后 diff 为空） | 两例 exit 1、reindex 后 0 错；反例：reindex 后索引与正文仍不一致 ⇒ fail |
 | C7 | R25 使用笔记 ≥3 条具体不便（含复现与建议），门签时由人确认讨论结论并落台账 | 笔记 ≥3 条 + 台账有 explain 行；反例：只写“没问题”或模板占位 ⇒ fail |
-| C8 | 读数完整性与门前提 | `check` 每条 R 有 verdict、overall 与逐条一致、零 warn；M5-0…M5-4 已收卡；反例：任一卡未收 ⇒ fail |
+| C8 | 读数完整性与门前提 | `check` 每条 R 有 verdict、overall 与逐条一致、零 warn；**`.sdo/gates/M5.md` 存在且 `gate.mjs` 对它 exit 0**；M5-0…M5-4 已收卡；反例：删出口表 ⇒ `gate.mjs` exit 2 且本判据 fail；任一卡未收 ⇒ fail |
 
 ## 假设
 A1：`/tmp` 跨界会被清空 ⇒ 所有夹具在单次调用内完成。
