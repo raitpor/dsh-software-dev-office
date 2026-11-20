@@ -1,0 +1,50 @@
+{
+  "volumes": [
+    {
+      "path": ".sdo/台账.md",
+      "rows": 97,
+      "first": "D-1",
+      "last": "D-98",
+      "sha256": "d8bb1a1643816feb0b28f106a54ad47ae5ca9d11ace0cbe1a87b98b20e8a15c3"
+    }
+  ],
+  "open": [
+    {
+      "id": "D-1",
+      "kind": "defect",
+      "file": ".sdo/台账.md",
+      "line": 6
+    },
+    {
+      "id": "D-21",
+      "kind": "defect",
+      "file": ".sdo/台账.md",
+      "line": 26
+    },
+    {
+      "id": "D-36",
+      "kind": "defect",
+      "file": ".sdo/台账.md",
+      "line": 41
+    },
+    {
+      "id": "D-37",
+      "kind": "defect",
+      "file": ".sdo/台账.md",
+      "line": 42
+    },
+    {
+      "id": "D-38",
+      "kind": "gap",
+      "file": ".sdo/台账.md",
+      "line": 43
+    },
+    {
+      "id": "D-95",
+      "kind": "gap",
+      "file": ".sdo/台账.md",
+      "line": 99
+    }
+  ],
+  "updated_at": "2026-11-20T06:56:41.122Z"
+}
