@@ -514,9 +514,118 @@ function planCardSets() {
   return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
 }
 
+
+const CRITERION_TYPES = new Set(["结构", "语义", "边界"]);
+function semanticBaselineCards() {
+  const set = new Set();
+  const p = ".sdo/里程碑/M6.md";
+  if (!exists(p)) return set;
+  const lines = read(p);
+  const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*冻结段/.test(x.l));
+  if (heads.length !== 1) {
+    err(p, heads.length ? heads[1].i + 1 : 1, `冻结段小节须唯一（标题含“冻结段”，当前 ${heads.length} 处）`);
+    return set;
+  }
+  const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
+  if (!sec) return set;
+  for (let i = sec.start; i < sec.end; i++) {
+    if (!/^- 语义判据基线卡(（[^）]*）)?：/.test(lines[i])) continue;
+    const part = lines[i].slice(lines[i].lastIndexOf("：") + 1);
+    for (const m of part.matchAll(/M\d+-(?:\d+|G)/g)) set.add(m[0]);
+  }
+  return set;
+}
+function criterionTable(lines, p) {
+  const a = lines.findIndex((l) => /^##\s*判据(?:\s|$)/.test(l.trim()));
+  if (a < 0) return null;
+  let b = lines.findIndex((l, i) => i > a && /^##\s/.test(l.trim()));
+  if (b < 0) b = lines.length;
+  const cand = [];
+  for (let i = a + 1; i < b; i++) {
+    if (!/^\|/.test(lines[i])) continue;
+    const first = (cells(lines[i])[0] || "").replace(/`/g, "").trim();
+    if (first === "编号") cand.push(i);
+  }
+  if (cand.length > 1) { err(p, cand[1] + 1, `判据表重复（段内出现 ${cand.length} 个表头，只允许一个）`); return null; }
+  const h = cand.length ? cand[0] : -1;
+  if (h < 0) return null;
+  const header = cells(lines[h]);
+  if (header.join("|") !== "编号|判据|类型|反例") {
+    err(p, h + 1, `判据表表头须为 | 编号 | 判据 | 类型 | 反例 |（当前：${header.join(" | ")}）`);
+    return null;
+  }
+  if (!/^\|\s*:?-{2,}/.test((lines[h + 1] || "").trim())) { err(p, h + 2, "判据表缺分隔行（| --- |）"); return null; }
+  const rows = [];
+  for (let i = h + 2; i < b && /^\|/.test(lines[i]); i++) {
+    if (cells(lines[i]).length !== header.length) err(p, i + 1, `判据表列数 ${cells(lines[i]).length} ≠ 表头 ${header.length}`);
+    rows.push({ line: i + 1, cells: cells(lines[i]) });
+  }
+  return { line: h + 1, header, rows };
+}
+function checkSemanticCriteria(cardId, p, lines, done, semBase) {
+  if (semBase.has(cardId)) return;
+  const t = criterionTable(lines, p);
+  if (!t) { err(p, 1, "缺判据表（编号/判据/类型/反例）"); return; }
+  const ti = t.header.indexOf("类型");
+  if (ti < 0) { err(p, t.line, "判据表缺「类型」列（结构/语义/边界）"); return; }
+  for (const r of t.rows) {
+    const id = (r.cells[0] || "").replace(/`/g, "").trim();
+    const v = (r.cells[ti] || "").trim();
+    if (!CRITERION_TYPES.has(v)) err(p, r.line, `判据类型非法：${v || "（空）"}（只允许 结构/语义/边界）：${id}`);
+  }
+  if (!done) return;
+  const semantic = t.rows.some((r) => (r.cells[ti] || "").trim() === "语义");
+  // 「语义：不适用」只认「判据」或「判定」段内、唯一的行；写在意图/证据注里不算
+  const secRange = (name) => {
+    const a0 = lines.findIndex((l) => new RegExp("^##\\s*" + name + "(?:\\s|$)").test(l.trim()));
+    if (a0 < 0) return null;
+    let b0 = lines.findIndex((l, i) => i > a0 && /^##\s/.test(l.trim()));
+    if (b0 < 0) b0 = lines.length;
+    return [a0, b0];
+  };
+  const ranges = [secRange("判据"), secRange("判定")].filter(Boolean);
+  const naHits = [];
+  for (const [a0, b0] of ranges) {
+    for (let i = a0; i < b0; i++) if (/^语义：不适用[（(].+[）)]\s*$/.test((lines[i] || "").trim())) naHits.push(i);
+  }
+  if (naHits.length > 1) err(p, naHits[1] + 1, `「语义：不适用」只能出现一次（当前 ${naHits.length} 次）`);
+  const naLine = naHits.length ? naHits[0] : -1;
+  if (!semantic && naLine < 0) {
+    err(p, 1, `status: done 但没有任何「语义」判据（也没有 语义：不适用（理由））：${cardId}`);
+    return;
+  }
+  if (!semantic && naLine >= 0) {
+    const reason = lines[naLine].trim().replace(/^语义：不适用[（(]/, "").replace(/[）)]$/, "").trim();
+    if (meaningfulLen(reason) < 8 || PRESET_BLACKLIST.has(reason)) {
+      err(p, naLine + 1, `语义不适用理由过短或为套话：${reason || "（空）"}`);
+      return;
+    }
+  }
+  if (semantic) {
+    const a = lines.findIndex((l) => /^##\s*评审(?:\s|$)/.test(l.trim()));
+    let b = lines.length;
+    if (a >= 0) { const n = lines.findIndex((l, i) => i > a && /^##\s/.test(l.trim())); if (n >= 0) b = n; }
+    let inComment = false;
+    const hits = [];
+    for (let i = a + 1; i < b; i++) {
+      let l = (lines[i] || "").trim();
+      if (inComment) { if (l.includes("-->")) inComment = false; continue; }
+      if (l.startsWith("<!--")) { if (!l.includes("-->")) inComment = true; continue; }
+      l = l.replace(/<!--.*?-->/g, "").trim();
+      if (/^-\s*语义自检：/.test(l)) hits.push({ i, body: l.replace(/^-\s*语义自检：/, "").trim() });
+    }
+    if (!hits.length) { err(p, a >= 0 ? a + 1 : 1, `status: done 且有语义判据，但评审段缺「- 语义自检：」：${cardId}`); return; }
+    for (const h of hits) {
+      if (!/C\d+/.test(h.body)) err(p, h.i + 1, `语义自检须点名被复跑的判据号（C<n>）：${cardId}`);
+      else if (meaningfulLen(h.body) < 8 || PRESET_BLACKLIST.has(h.body)) err(p, h.i + 1, `语义自检内容过短或为套话：${cardId}`);
+    }
+  }
+}
+
 function checkCards() {
   const d = ".sdo/cards";
   const planSets = planCardSets();
+  const semBase = semanticBaselineCards();
   if (!planSets.ok) warn(".sdo/里程碑", 0, "计划卡表解析失败，按严格口径检查");
   if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
@@ -525,6 +634,7 @@ function checkCards() {
     const sm = text.match(/^status:\s*(open|in_progress|done)/m);
     if (!sm) err(p, 0, "缺 status: open|in_progress|done");
     const cardId = f.replace(/\.md$/, "");
+    checkSemanticCriteria(cardId, p, lines, !!(sm && sm[1] === "done"), semBase);
     let legacy = false, baseline = false, strictResult = true;
     if (planSets.ok) {
       if (planSets.legacy.has(cardId)) { legacy = true; strictResult = false; }
