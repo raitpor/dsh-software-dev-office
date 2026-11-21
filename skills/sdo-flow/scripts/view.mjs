@@ -98,9 +98,59 @@ function cards() {
     const R = lastVerdict ? [null, lastVerdict] : null;
     const rel = text.match(/^\s*[-*]?\s*评审者[:：][ \t]*([^\n|]*)/m);
     const accepted = /可收卡|可提交/.test(text);
+    const refsLine = text.match(/^references:\s*(.*)$/m);
+    const refs = refsLine ? [...refsLine[1].matchAll(/R-\d+/g)].map((m) => m[0]) : [];
     return { id: f.replace(/\.md$/, ""), status: st ? st[1] : "?", owner: owner ? owner[1].trim() : "", deps: deps ? deps[1].trim() : "",
-      review: R ? R[1].trim() : "", reviewer: rel ? rel[1].trim() : "", accepted };
+      review: R ? R[1].trim() : "", reviewer: rel ? rel[1].trim() : "", accepted,
+      refs, refsDeclared: Boolean(refsLine) };
   });
+}
+
+function requirements() {
+  const p = ".sdo/baseline/requirement.md";
+  if (!exists(p)) return [];
+  return lines(p).map((l) => {
+    const m = l.match(/^###\s+(R-\d+)\s+(.+?)\s*$/);
+    return m ? { id: m[1], title: m[2] } : null;
+  }).filter(Boolean);
+}
+
+const TRACE_DEST_RE = /^(M8-\d+ C\d+|不采纳)$/;
+
+function traceView() {
+  const reqs = requirements();
+  const reqById = new Map(reqs.map((r) => [r.id, r]));
+  const byReq = new Map(reqs.map((r) => [r.id, []]));
+  const dangling = [];
+  let edges = 0;
+  for (const c of CS) {
+    for (const id of c.refs) {
+      edges++;
+      if (!byReq.has(id)) { dangling.push({ id, card: c.id }); continue; }
+      byReq.get(id).push(c.id);
+    }
+  }
+  const covered = reqs.filter((r) => (byReq.get(r.id) || []).length > 0).length;
+  const orphanCards = CS.filter((c) => c.refs.length === 0);
+  const orphanReqs = reqs.filter((r) => (byReq.get(r.id) || []).length === 0);
+  const out = ["# trace（`references:` 原型；只认卡面，不解析判据正文）", "", "## 需求引用"];
+  if (!reqs.length) out.push("- （没有 .sdo/baseline/requirement.md 或没有 R-xx）");
+  for (const r of reqs) out.push(`- ${r.id} ${r.title} ← ${(byReq.get(r.id) || []).join("、") || "（无）"}`);
+  out.push("", "## 计数",
+    `需求数：${reqs.length}`,
+    `已覆盖：${covered}`,
+    `卡数：${CS.length}`,
+    `引用边数：${edges}`,
+    `孤儿卡数：${orphanCards.length}`,
+    `断链引用数：${dangling.length}`,
+    `未覆盖需求数：${orphanReqs.length}`);
+  out.push("", "## 孤儿卡");
+  out.push(orphanCards.length ? orphanCards.map((c) => `- ${c.id}（无 references: 行或为空）`).join("\n") : "孤儿：无");
+  out.push("", "## 断链引用");
+  out.push(dangling.length ? dangling.map((d) => `- ${d.id} ← ${d.card}（需求不存在）`).join("\n") : "断链：无");
+  out.push("", "## 孤儿需求");
+  out.push(orphanReqs.length ? orphanReqs.map((r) => `- ${r.id} ${r.title}`).join("\n") : "孤儿：无");
+  return out.join("\n");
 }
 
 function readLedgerIndex() {
@@ -562,11 +612,12 @@ const out = {
     return [`# 归档（${rows.length}）`, "", "| 里程碑 | 门签号 | 被签树 | 文件数 | 状态 |", "|---|---|---|---|---|",
       ...rows.map((r) => `| ${r.milestone} | ${r.gate} | ${r.tree} | ${r.count} | ${r.status} |`)].join("\n");
   },
+  trace() { return traceView(); },
   next() { return nextView(milestoneArg).human; },
 }[cmd];
 
 if (!out) {
-  console.error(`未知视图：${cmd}。可用：state / board / queue / ledger / signs / plan / next / archive`);
+  console.error(`未知视图：${cmd}。可用：state / board / queue / ledger / signs / plan / next / archive / trace`);
   process.exit(2);
 }
 const nextResult = cmd === "next" ? nextView(milestoneArg) : null;

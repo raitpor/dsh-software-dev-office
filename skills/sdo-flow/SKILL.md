@@ -106,7 +106,7 @@ whenToUse: >-
 ```bash
 node <skill>/scripts/check.mjs [--presets|--all]  # 台账/表格/签字/卡/读数；--presets 比对快照，--all 连仓库其它 .md
 node <skill>/scripts/gate.mjs [--list|G_req_exit]  # 阶段门：默认判所有勾选表；--file/--json 可用；exit 1/2
-node <skill>/scripts/view.mjs <view>|next  # 六个只读视图；next=能开工什么（五节，未知状态 exit 1）；均支持 --json
+node <skill>/scripts/view.mjs <view>|next  # 七个只读视图；next=能开工什么（五节，未知状态 exit 1）；trace=需求→卡引用原型；均支持 --json
 node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）
 node <skill>/scripts/ledger.mjs rotate --to .sdo/ledger/vol-1.md  # 文件级轮转：活跃卷改名归档 + 新建空活跃卷（不删行）
 node <skill>/scripts/ledger.mjs reindex                      # 从正文重建 .sdo/.index/ledger.json（索引丢了/手改后用）
