@@ -104,9 +104,11 @@ function localStamp(now = new Date()) {
   return `${now.getFullYear()}-${p(now.getMonth() + 1)}-${p(now.getDate())}T${p(now.getHours())}:${p(now.getMinutes())}${sign}${p(Math.floor(abs / 60))}:${p(abs % 60)}`;
 }
 
+const USAGE = "用法：ledger.mjs add|close|list|rotate|reindex [参数]（详见文件头；--help 看用法）";
 function parseArgs(argv) {
   const [cmd, ...rest] = argv;
-  if (!cmd) die("用法：ledger.mjs add|close|list|rotate|reindex [参数]（详见文件头）");
+  if (argv.includes("--help") || argv.includes("-h")) { console.log(USAGE); process.exit(0); }
+  if (!cmd) die(USAGE);
   const flags = {};
   const positional = [];
   for (let i = 0; i < rest.length; i++) {
@@ -335,7 +337,8 @@ function appendRow(vol, rowLine) {
 
 function cmdAdd(root, flags) {
   if (!KINDS.has(flags.kind)) die(`未知/缺失 --kind：${flags.kind ?? ""}（只允许 gap|defect|explain|closed）`);
-  const status = flags.status ?? "open";
+  // explain 是“说明”不是待修项：未显式给 --status 时默认 closed；显式 --status open 仍允许。
+  const status = flags.status ?? (flags.kind === "explain" ? "closed" : "open");
   if (!STATUSES.has(status)) die(`未知 --status：${status}（只允许 ${[...STATUSES].join("|")}）`);
   for (const key of ["where", "what", "impact", "fix"]) {
     if (typeof flags[key] !== "string" || flags[key].trim() === "") die(`add 缺必填参数 --${key}`);
@@ -412,16 +415,17 @@ function cmdList(root, flags) {
     if (!vol) continue;
     for (const row of vol.table.rows) all.push({ ...row, file: rel });
   }
-  if (flags.open) {
-    const closed = closedIdsOf(all);
-    // 直接以正文为准过滤：explain 的 open 行（如 D-164）也要出现，
-    // 不依赖旧索引里只收 gap/defect 的缓存。
-    for (const row of all) {
-      if (isUnresolvedRow(row, closed)) console.log(`| ${row.cells.map(cell).join(" | ")} |`);
-    }
-    return;
+  let limit = Number.POSITIVE_INFINITY;
+  if (flags.limit !== undefined) {
+    if (!/^\d+$/.test(String(flags.limit)) || Number(flags.limit) <= 0) die("--limit 需要一个正整数（如 --limit 5；0 与 abc 都不合法）");
+    limit = Number(flags.limit);
   }
-  for (const row of all) {
+  const rows = flags.open
+    ? (() => { const closed = closedIdsOf(all); return all.filter((row) => isUnresolvedRow(row, closed)); })()
+    : all;
+  // 直接以正文为准过滤：explain 的 open 行（如 D-164）也要出现，
+  // 不依赖旧索引里只收 gap/defect 的缓存。
+  for (const row of Number.isFinite(limit) ? rows.slice(0, limit) : rows) {
     console.log(`| ${row.cells.map(cell).join(" | ")} |`);
   }
 }
@@ -466,8 +470,21 @@ function cmdReindex(root) {
   console.log(`已重建索引：${idx.volumes.length} 卷 / ${idx.open.length} 未决`);
 }
 
+const ALLOWED_FLAGS = {
+  add: new Set(["kind", "where", "what", "impact", "fix", "status"]),
+  close: new Set(["fix"]),
+  list: new Set(["open", "limit"]),
+  rotate: new Set(["to"]),
+  reindex: new Set(),
+};
 const { cmd, flags, positional } = parseArgs(process.argv.slice(2));
 try {
+  if (ALLOWED_FLAGS[cmd]) {
+    for (const key of Object.keys(flags)) {
+      if (key === "open") continue; // 布尔开关，独立解析
+      if (!ALLOWED_FLAGS[cmd].has(key)) die(`未知参数 --${key}（${cmd} 只接受 ${[...ALLOWED_FLAGS[cmd]].map((k) => "--" + k).join(" ") || "无参数"}）`);
+    }
+  }
   const root = findRoot(process.cwd());
   if (!root) die("找不到 .sdo/：请在本项目内运行（台账脚本只读写 .sdo/）");
   if (cmd === "add") cmdAdd(root, flags);

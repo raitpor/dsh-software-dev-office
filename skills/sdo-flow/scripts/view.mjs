@@ -28,12 +28,31 @@ function findRoot(start) {
 const ROOT = findRoot(process.cwd());
 if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先按 sdo-flow 初始化"); process.exit(2); }
 const argv = process.argv.slice(2);
+const KNOWN_FLAGS = new Set(["--json", "--open", "--milestone", "--limit", "--help", "-h"]);
+for (const a of argv) {
+  if (a.startsWith("-") && !KNOWN_FLAGS.has(a)) { console.error(`未知参数 ${a}（view 只接受 --json/--open/--milestone/--limit/--help）`); process.exit(2); }
+}
+if (argv.includes("--help") || argv.includes("-h")) {
+  console.log("用法：node <skill>/scripts/view.mjs next|state|signs|queue|ledger [--milestone M9] [--json] [--open] [--limit N]");
+  process.exit(0);
+}
 const cmd = argv.find((a) => !a.startsWith("--")) || "state";
 const asJson = argv.includes("--json");
 const onlyOpen = argv.includes("--open");
 const mi = argv.indexOf("--milestone");
 let milestoneArg = mi >= 0 ? argv[mi + 1] : "";
 if (mi >= 0 && (!milestoneArg || milestoneArg.startsWith("--") || !/^M\d+$/.test(milestoneArg))) { console.error("--milestone 需要一个里程碑号（如 M4）"); process.exit(2); }
+// --limit N：只显示前 N 条（默认不截断）；0/非整数/缺值 ⇒ exit 2（M9-4 C3）。
+const li = argv.indexOf("--limit");
+let limit = Number.POSITIVE_INFINITY;
+if (li >= 0) {
+  const raw = argv[li + 1];
+  if (raw === undefined || raw.startsWith("--") || !/^\d+$/.test(raw) || Number(raw) <= 0) {
+    console.error("--limit 需要一个正整数（如 --limit 5；0 与 abc 都不合法）");
+    process.exit(2);
+  }
+  limit = Number(raw);
+}
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 const lines = (p) => read(p).split(/\r?\n/);
@@ -572,14 +591,16 @@ const out = {
       if (!r.overall) items.push(`- [读数] ${r.file} 缺 overall（要独立一行：## overall：pass/partial/fail）`);
       else if (r.items.some((i) => !i.verdict)) items.push(`- [读数] ${r.file} 有读数行缺 verdict`);
     }
-    return [`# 待办队列（${items.length}）`, "", ...(items.length ? items : ["- （空）"])].join("\n");
+    const shown = Number.isFinite(limit) ? items.slice(0, limit) : items;
+    return [`# 待办队列（${items.length}${Number.isFinite(limit) ? ` · 显示前 ${shown.length}` : ""}）`, "", ...(shown.length ? shown : ["- （空）"])].join("\n");
   },
   ledger() {
     const positional = argv.filter((a) => !a.startsWith("--"));
     if (positional.length > 1) return ledgerDetail(positional[1]);
     const rows = onlyOpen ? openLedger : LG;
-    return [`# 台账（${rows.length}${onlyOpen ? " · 只看未修" : ""}）`, "", "| id | kind | 状态 | 位置 | 现象 | 处置 |", "|---|---|---|---|---|---|",
-      ...rows.map((r) => `| ${r.id} | ${r.kind} | ${r.status} | ${r.where} | ${r.what} | ${r.how} |`)].join("\n");
+    const shown = Number.isFinite(limit) ? rows.slice(0, limit) : rows;
+    return [`# 台账（${rows.length}${onlyOpen ? " · 只看未修" : ""}${Number.isFinite(limit) ? ` · 显示前 ${shown.length}` : ""}）`, "", "| id | kind | 状态 | 位置 | 现象 | 处置 |", "|---|---|---|---|---|---|",
+      ...shown.map((r) => `| ${r.id} | ${r.kind} | ${r.status} | ${r.where} | ${r.what} | ${r.how} |`)].join("\n");
   },
   signs() {
     return [`# 签字（${SG.length}）`, "", "| 文件 | 时间 | 选项 | 被签对象 |", "|---|---|---|---|",

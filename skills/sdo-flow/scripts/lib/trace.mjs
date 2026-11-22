@@ -164,14 +164,18 @@ const ORPHAN_BASELINE_TITLE = "孤儿卡基线段";
 
 // 只有「已签」的里程碑文件里的声明才有效：签名记录的冻结段 hash 必须等于当前文件实算值，
 // 或存在一条追加签、其被签对象含当前实算值前 8 位。未签草稿里的声明一律不生效。
-function planIndexSigned(root, mid) {
+// 计划索引里里程碑的“状态”列（整表最后一列）：唯一实现，check/archive/view 共用。
+export function planIndexStatus(root, mid) {
   const pf = path.join(root, ".sdo/计划.md");
-  if (!fs.existsSync(pf)) return false;
+  if (!fs.existsSync(pf)) return "";
   const row = fs.readFileSync(pf, "utf8").split("\n").find((l) => l.startsWith(`| ${mid} |`));
-  if (!row) return false;
+  if (!row) return "";
   const cells = row.split("|").map((c) => c.trim());
-  const status = cells[cells.length - 2] || "";
-  return /已签|已收口|已归档/.test(status);
+  return cells[cells.length - 2] || "";
+}
+
+export function planIndexSigned(root, mid) {
+  return /已签|已收口|已归档/.test(planIndexStatus(root, mid));
 }
 
 function isSignedMilestone(root, mid) {

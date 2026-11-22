@@ -9,6 +9,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { readArchiveIndex, writeArchiveIndex } from "./lib/archive.mjs";
+import { planIndexStatus } from "./lib/trace.mjs";
 
 function findRoot(start) {
   let d = start;
@@ -21,6 +22,12 @@ function findRoot(start) {
 }
 const ROOT = findRoot(process.cwd());
 if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行"); process.exit(2); }
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("用法：node <skill>/scripts/archive.mjs archive <M3> | restore <M3>");
+  console.log("  archive：把已收口里程碑搬进 .sdo/archive/<M>/（要求门签 + 计划索引状态含「已收口/已归档」）");
+  console.log("  restore：把已归档里程碑搬回 .sdo/（先校验 manifest 逐文件 sha256）");
+  process.exit(0);
+}
 const INDEX = ".sdo/archive/INDEX.md";
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
@@ -72,6 +79,11 @@ function archive(m) {
   const gi = gateInfo(m);
   if (gi.gate === "-" || gi.tree === "-") {
     console.error(`milestone_not_gated：里程碑 ${m} 没有可识别的门签/被签树（.sdo/sign 里须有范围含「${m} 里程碑门」的签字并记「被签对象」），拒绝归档未收口里程碑`);
+    process.exit(1);
+  }
+  const planStatus = planIndexStatus(ROOT, m);
+  if (!/已收口|已归档/.test(planStatus)) {
+    console.error(`milestone_not_gated：里程碑 ${m} 有门签，但计划索引状态=${planStatus || "-"}，未含「已收口/已归档」——门签文本不足以证明收口（D-175）`);
     process.exit(1);
   }
   const files = sourceFiles(m);

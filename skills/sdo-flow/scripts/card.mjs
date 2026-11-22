@@ -438,7 +438,12 @@ function cmdMutation(flags, positional) {
   }
 }
 
-const { cmd, flags, positional } = parseArgs(process.argv.slice(2));
+const ARGV = process.argv.slice(2);
+if (ARGV.includes("--help") || ARGV.includes("-h")) {
+  console.log("用法：node <skill>/scripts/card.mjs new|evidence|mutation [参数]（详见文件头）");
+  process.exit(0);
+}
+const { cmd, flags, positional } = parseArgs(ARGV);
 try {
   if (cmd === "new") cmdNew(flags, positional);
   else if (cmd === "evidence") cmdEvidence(flags, positional);

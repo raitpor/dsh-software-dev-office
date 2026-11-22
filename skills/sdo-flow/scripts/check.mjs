@@ -10,9 +10,10 @@ import { frozenHashRaw } from "./lib/frozen.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 import { sortSigns } from "./lib/signs.mjs";
-import { analyzeTrace } from "./lib/trace.mjs";
+import { analyzeTrace, planIndexStatus } from "./lib/trace.mjs";
 import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
 import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity, orphanArchiveDirs, ARCHIVE_STATUSES } from "./lib/archive.mjs";
 import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
@@ -312,7 +313,7 @@ function checkLedgerVolumes(deep = false) {
   if (sumOpen !== idx.open.length) err(idxPath, 0, `index_stale：各卷 openRows 之和=${sumOpen} 与索引 open 条目数=${idx.open.length} 不符（跑 ledger.mjs reindex）`);
   const openIds = new Set();
   for (const o of idx.open) {
-    if (!o || !/^D-\d+$/.test(o.id) || !["defect", "gap"].includes(o.kind) || typeof o.file !== "string" || !Number.isInteger(o.line)) { err(idxPath, 0, "索引 open 条目结构不合法"); continue; }
+    if (!o || !/^D-\d+$/.test(o.id) || !["defect", "gap", "explain"].includes(o.kind) || typeof o.file !== "string" || !Number.isInteger(o.line)) { err(idxPath, 0, "索引 open 条目结构不合法"); continue; }
     if (!paths.has(o.file)) { err(idxPath, 0, `index_stale：open 条目 ${o.id} 指向未登记卷 ${o.file}`); continue; }
     if (openIds.has(o.id)) err(idxPath, 0, `索引 open 条目重复：${o.id}`);
     openIds.add(o.id);
@@ -632,6 +633,121 @@ function checkSemanticCriteria(cardId, p, lines, done, semBase) {
       if (!/C\d+/.test(h.body)) err(p, h.i + 1, `语义自检须点名被复跑的判据号（C<n>）：${cardId}`);
       else if (meaningfulLen(h.body) < 8 || PRESET_BLACKLIST.has(h.body)) err(p, h.i + 1, `语义自检内容过短或为套话：${cardId}`);
     }
+  }
+}
+
+// M9-4 C1：活跃卡 open 而所属里程碑已门签/已收口 ⇒ card_state_mismatch。
+// 只扫 .sdo/cards/（归档卡已搬走，不回溯——M9 边界 5）；门卡（*-G）由门签本身证明收口，不参与。
+// P3 口径（二选一取“卡面写边界”）：所有 *-G 门卡都不要求在 cards/ 里保持 active；M5-G 是历史先例
+// （M5 收口时按设计留 open 以免触发变异回溯，随 M5 归档视为关闭，见 D-171），不单独收窄到 M5-G。
+function checkCardStateMismatch() {
+  const d = ".sdo/cards";
+  if (!exists(d)) return;
+  const gates = gateSignInfo(path.join(ROOT, ".sdo/sign"));
+  for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
+    const id = f.replace(/\.md$/, "");
+    if (/-G$/.test(id)) continue;
+    const p = `${d}/${f}`;
+    const lines = read(p);
+    const text = lines.join("\n");
+    const sm = /^status:\s*(\w+)/m.exec(text);
+    if (!sm || sm[1] !== "open") continue;
+    const mm = /^(M\d+)-/.exec(id);
+    if (!mm) continue;
+    const mid = mm[1];
+    const planStatus = planIndexStatus(ROOT, mid);
+    const closed = gates.has(`${mid}-G`) || /已收口|已归档/.test(planStatus);
+    if (!closed) continue;
+    const line = lines.findIndex((l) => /^status:/.test(l)) + 1;
+    err(p, line || 1, `card_state_mismatch：${id} 仍是 status: open，但 ${mid} 已门签/已收口（计划状态=${planStatus || "-"}；归档卡不回溯，见 M9 边界 5）`);
+  }
+}
+
+function gitKnownCommit(sha) {
+  try {
+    execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: ROOT, stdio: "ignore" });
+    return true;
+  } catch { return false; }
+}
+
+// 从「被签对象」行提取 commit 声明：裸 hex（S34-A 那种整行只有 hash）或 commit <hex>。
+// 文件哈希（sha256 `…`）不算 commit 声明。
+function commitClaims(value) {
+  const out = new Set();
+  const bare = /^`?([0-9a-f]{7,40})`?(?=$|[\s（(])/i.exec(value);
+  if (bare) out.add(bare[1]);
+  for (const m of value.matchAll(/commit\s*`?([0-9a-f]{7,40})`?/gi)) out.add(m[1]);
+  return [...out];
+}
+
+// P2-1：无冻结段 hash 的旧式追加签不静默跳过——必须在 M9.md 冻结段的「旧式签白名单」里显式登记；
+// 该行是冻结段正文的一部分（参与 frozenHashRaw），增删条目即改 hash、须人签追加签，不能自授权。
+function legacySignWhitelist() {
+  const p = path.join(ROOT, ".sdo/milestones/M9.md");
+  if (!fs.existsSync(p)) return new Set();
+  const m = /^-\s*旧式签白名单.*$/m.exec(fs.readFileSync(p, "utf8"));
+  return new Set(m ? (m[0].match(/S\d+-[A-Z]/g) || []) : []);
+}
+
+// M9-4 C2：追加签双锚点（旧/新 hash 都要对得上）+ 被签对象 commit 必须已知。
+function checkAppendSignAnchors() {
+  const sd = ".sdo/sign";
+  if (!exists(sd)) return;
+  for (const f of fs.readdirSync(path.join(ROOT, sd)).filter((x) => /^S\d+-[A-Z]\.md$/.test(x)).sort()) {
+    const p = `${sd}/${f}`;
+    const ls = read(p);
+    const i = ls.findIndex((l) => /^-\s*被签对象[:：]/.test(l));
+    if (i < 0) continue;
+    const value = ls[i].replace(/^-\s*被签对象[:：]\s*/, "").trim();
+    for (const sha of commitClaims(value)) {
+      if (!gitKnownCommit(sha)) err(p, i + 1, `signed_tree_unknown：被签对象声明的 commit ${sha} 不是本仓库的已知 commit（无法证明“签的就是当前树”）`);
+    }
+  }
+  // P2-1：枚举缺冻结段 hash 的旧式追加签；未登记白名单 ⇒ 报错（不再静默 continue）。
+  const whitelist = legacySignWhitelist();
+  for (const f of fs.readdirSync(path.join(ROOT, sd)).filter((x) => /^S\d+-[A-Z]\.md$/.test(x)).sort()) {
+    const ls = read(`${sd}/${f}`);
+    const text = ls.join("\n");
+    const hasHashLine = ls.some((l) => /^-\s*冻结段 hash[:：]/.test(l)) || /冻结段 hash\s*`?[0-9a-f]{64}`?/.test(text);
+    if (hasHashLine) continue;
+    const id = f.replace(/\.md$/, "");
+    if (whitelist.has(id)) continue;
+    err(`${sd}/${f}`, 1, `signed_anchor_mismatch：旧式追加签 ${id} 缺冻结段 hash 且未登记白名单（.sdo/milestones/M9.md 冻结段「旧式签白名单」，该行参与 hash，增删须追加签）`);
+  }
+  const md = path.join(ROOT, ".sdo/milestones");
+  if (!fs.existsSync(md)) return;
+  for (const f of fs.readdirSync(md).filter((x) => /^M\d+\.md$/.test(x)).sort()) {
+    const mid = f.replace(/\.md$/, "");
+    const raw = fs.readFileSync(path.join(md, f), "utf8");
+    const actual = frozenHashRaw(raw);
+    const planFile = planSignFile(mid);
+    let prev = "";
+    if (planFile) {
+      const hm = read(path.join(sd, planFile)).join("\n").match(/^-\s*冻结段 hash[:：]\s*`?([0-9a-f]{64})`?/m);
+      if (hm) prev = hm[1];
+    }
+    const appendEntries = [];
+    for (const [idx, l] of raw.split(/\r?\n/).entries()) {
+      const am = /^- 追加签：S(\d+)-([A-Z])\s*$/.exec(l);
+      if (am) appendEntries.push({ idx, num: Number(am[1]), letter: am[2], sf: `S${am[1]}-${am[2]}.md` });
+    }
+    // P2-2：链按签号数值+字母排序（S42-A → S42-B → …），不依赖冻结段里行的书写顺序。
+    appendEntries.sort((a, b) => (a.num - b.num) || a.letter.localeCompare(b.letter));
+    for (const { idx, sf } of appendEntries) {
+      const sp = `${sd}/${sf}`;
+      if (!exists(sp)) { err(`.sdo/milestones/${f}`, idx + 1, `追加签文件缺失：${sp}`); continue; }
+      const sl = read(sp);
+      const ni = sl.findIndex((x) => /^-\s*冻结段 hash[:：]/.test(x));
+      const embedded = (sl.find((x) => /^-\s*被签对象[:：]/.test(x)) || "").match(/冻结段 hash\s*`?([0-9a-f]{64})`?/);
+      const newHash = (ni >= 0 ? ((/^-\s*冻结段 hash[:：]\s*`?([0-9a-f]{64})`?/.exec(sl[ni]) || [])[1] || "") : (embedded ? embedded[1] : ""));
+      if (!newHash) continue; // 旧式追加签（只记被签对象，不记冻结 hash）：保留兼容，不参与双锚点
+      const oi = sl.findIndex((x) => /^-\s*(?:上一版|前序) hash[:：]/.test(x));
+      const oldHash = oi < 0 ? "" : ((/`?([0-9a-f]{8,64})`?/.exec(sl[oi].replace(/^-\s*(?:上一版|前序) hash[:：]\s*/, "")) || [])[1] || "");
+      if (!oldHash) { err(sp, oi < 0 ? 1 : oi + 1, `signed_anchor_mismatch：追加签 ${sf} 只有新 hash，缺「上一版 hash：」（双锚点：旧/新都必须记）`); continue; }
+      if (prev && !prev.startsWith(oldHash) && !oldHash.startsWith(prev)) err(sp, oi + 1, `signed_anchor_mismatch：旧 hash ${oldHash.slice(0, 8)} 与链条上一版 ${prev.slice(0, 8)} 不符（${mid}）`);
+      prev = newHash;
+    }
+    if (prev && prev !== actual) err(`.sdo/milestones/${f}`, 0, `signed_anchor_mismatch：最新追加签新 hash=${prev.slice(0, 8)}… 与文件实算=${actual.slice(0, 8)}… 不符（${mid}）`);
   }
 }
 
@@ -1300,10 +1416,11 @@ function checkFrozenHash(raw, p, mid) {
 }
 function planSignFile(mid) {
   const dir = ".sdo/sign";
-  if (!exists(dir)) return "";
+  const abs = path.join(ROOT, dir);
+  if (!fs.existsSync(abs)) return "";
   const re = new RegExp(`^S(\\d+)(?:-[A-Z])?\\.md$`);
   const hits = [];
-  for (const f of fs.readdirSync(dir).filter((x) => re.test(x))) {
+  for (const f of fs.readdirSync(abs).filter((x) => re.test(x))) {
     const lines = read(path.join(dir, f));
     const title = lines[0] || "";
     const scope = lines.find((l) => l.startsWith("- 范围：")) || "";
@@ -1637,7 +1754,7 @@ checkBaselineTemplate();
 checkBaselineArtifacts();
 checkCardTemplateDecisions();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
-checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
+checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkCardStateMismatch(); checkAppendSignAnchors(); checkReadings(); checkArchive();
 checkCriterionBasis();
 if (ARGV.includes("--presets")) checkPresets();
 if (ARGV.includes("--js")) {

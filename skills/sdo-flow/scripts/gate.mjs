@@ -16,6 +16,11 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const ARGV = process.argv.slice(2);
+if (ARGV.some((a) => a === "--help" || a === "-h")) {
+  console.log("用法：node <skill>/scripts/gate.mjs [--list] [G_xxx] [--file <path>] [--json]");
+  console.log("  对账 .sdo/gates/ 勾选表与计划 preset：0=全 pass 或 partial 已人签接受；1=有 fail/缺项/缺签；2=用法/环境错误");
+  process.exit(0);
+}
 const JSON_OUT = ARGV.includes("--json");
 const die = (msg) => { console.error(`ERROR ${msg}`); process.exit(2); };
 

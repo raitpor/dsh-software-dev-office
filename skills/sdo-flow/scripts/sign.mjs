@@ -384,6 +384,10 @@ function draft(root, milestone) {
   process.exit(dirty || mismatched.length || reading.invalid ? 1 : 0);
 }
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log("用法：node <skill>/scripts/sign.mjs draft <M> | batch <M> --cards <卡号…>（详见文件头）");
+  process.exit(0);
+}
 const parsed = parseArgs(process.argv.slice(2));
 const root = findRoot(process.cwd());
 if (!root) die("找不到 .sdo/：请在本项目内运行");
