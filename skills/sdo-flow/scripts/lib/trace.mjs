@@ -209,6 +209,19 @@ export function analyzeTrace(root) {
       const bad = rows.find((r) => !testRef(r.command));
       if (bad) issues.push({ code: "trace_test_unverifiable", file: c.file, line: bad.line, message: `${c.id} ${cid} 证据不是可复跑命令或脚本:行` });
     }
+    const tsec = c.lines.findIndex((l) => /^##\s*临时决策\s*$/.test(l));
+    if (tsec < 0) {
+      issues.push({ code: "pending_change_request", file: c.file, line: 1, message: `${c.id} 缺「## 临时决策」段` });
+    } else {
+      let end = c.lines.length;
+      for (let i = tsec + 1; i < c.lines.length; i++) if (/^##\s/.test(c.lines[i])) { end = i; break; }
+      for (let i = tsec + 1; i < end; i++) {
+        const l = c.lines[i].trim();
+        if (!/^[-*+]\s+/.test(l)) continue;
+        if (/^[-*+]\s*(?:已结清|结清[:：]|无)/.test(l)) continue;
+        issues.push({ code: "pending_change_request", file: c.file, line: i + 1, message: `${c.id} 有未结清临时决策` });
+      }
+    }
     const concl = exploreConclusions(root, c);
     if (c.id === "M8-0") {
       if (concl.length < 3) issues.push({ code: "explore_conclusion_malformed", file: c.file, line: 1, message: `探索结论行数 ${concl.length} < 3` });

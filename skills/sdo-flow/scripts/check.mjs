@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
+import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
@@ -1142,7 +1143,9 @@ function baselineSegments(lines, kind, p) {
     return set;
   }
   const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
-  const re = kind === "preset" ? /^- preset 声明基线段(（[^）]*）)?：/ : /^- 探底行基线段(（[^）]*）)?：/;
+  const re = kind === "preset" ? /^- preset 声明基线段(（[^）]*）)?：/
+    : kind === "baseline" ? /^- 基线版本绑定基线段(（[^）]*）)?：/
+    : /^- 探底行基线段(（[^）]*）)?：/;
   for (let i = sec.start; i < sec.end; i++) {
     if (!re.test(lines[i])) continue;
     const part = lines[i].slice(lines[i].lastIndexOf("：") + 1);
@@ -1280,6 +1283,127 @@ function checkStageOrder(lines, p, preset) {
     }
   }
 }
+function checkCardTemplateDecisions() {
+  const p = "skills/sdo-flow/templates/card.md";
+  if (!exists(p)) return;
+  if (!read(p).some((l) => /^##\s*临时决策\s*$/.test(l))) err(p, 1, "卡模板缺「## 临时决策」段（M8-2 C6）");
+}
+
+function ledgerIds() {
+  const ids = new Set();
+  const files = [".sdo/台账.md"];
+  const dir = ".sdo/ledger";
+  if (exists(dir) && fs.statSync(path.join(ROOT, dir)).isDirectory()) {
+    for (const f of fs.readdirSync(path.join(ROOT, dir)).sort()) {
+      if (/^vol-\d+\.md$/.test(f)) files.push(`${dir}/${f}`);
+    }
+  }
+  for (const f of files) {
+    if (!exists(f)) continue;
+    for (const l of read(f)) {
+      const m = /^\|\s*(D-\d+)\s*\|/.exec(l.trim());
+      if (m) ids.add(m[1]);
+    }
+  }
+  return ids;
+}
+
+function checkBaselineArtifacts() {
+  for (const name of BASELINE_FILES) {
+    const p = `.sdo/baseline/${name}`;
+    if (!exists(p)) err(p, 1, `基线缺文件：${name}（要求四份：${BASELINE_FILES.join("、")}）`);
+  }
+  const arch = exists(".sdo/baseline/architecture.md") ? read(".sdo/baseline/architecture.md") : [];
+  const adrIdx = arch.map((l, i) => ({ l, i })).filter((x) => /^##\s+ADR-\d+[：:]/.test(x.l));
+  if (!adrIdx.length) err(".sdo/baseline/architecture.md", 1, "缺 ADR（须 ## ADR-<n>：<标题>）");
+  for (const a of adrIdx) {
+    let end = arch.length;
+    for (let i = a.i + 1; i < arch.length; i++) if (/^##\s/.test(arch[i])) { end = i; break; }
+    const body = arch.slice(a.i + 1, end).join("\n");
+    for (const f of ["决策", "备选", "后果"]) {
+      if (!new RegExp(`^-\\s*${f}[:：]`, "m").test(body)) err(".sdo/baseline/architecture.md", a.i + 1, `ADR 缺字段：${f}`);
+    }
+  }
+  const ts = exists(".sdo/baseline/test-strategy.md") ? read(".sdo/baseline/test-strategy.md") : [];
+  const th = ts.findIndex((l) => /^\|\s*变更类型\s*\|\s*测试技术\s*\|/.test(l.trim()));
+  if (th < 0) err(".sdo/baseline/test-strategy.md", 1, "缺测试策略表头（| 变更类型 | 测试技术 |）");
+  else {
+    let rows = 0;
+    for (let i = th + 1; i < ts.length && ts[i].trim().startsWith("|"); i++) {
+      if (!/^\|[\s:|-]+\|$/.test(ts[i].trim())) rows++;
+    }
+    if (rows < 3) err(".sdo/baseline/test-strategy.md", th + 1, `测试策略表少于 3 行（当前 ${rows}）`);
+  }
+  const qr = exists(".sdo/baseline/quality-risk.md") ? read(".sdo/baseline/quality-risk.md") : [];
+  if (!qr.some((l) => /^##\s*质量属性\s*$/.test(l))) err(".sdo/baseline/quality-risk.md", 1, "缺「## 质量属性」");
+  if (!qr.some((l) => /^##\s*风险登记\s*$/.test(l))) err(".sdo/baseline/quality-risk.md", 1, "缺「## 风险登记」");
+  const req = exists(".sdo/baseline/requirement.md") ? read(".sdo/baseline/requirement.md") : [];
+  const rIdx = req.map((l, i) => ({ l, i })).filter((x) => /^###\s+R-\d+\s/.test(x.l.trim()));
+  if (rIdx.length < 3) err(".sdo/baseline/requirement.md", 1, `baseline_requirement_malformed：需求条目 ${rIdx.length} < 3（须 ### R-<n> <标题>）`);
+  for (const r of rIdx) {
+    let end = req.length;
+    for (let i = r.i + 1; i < req.length; i++) if (/^#{1,3}\s/.test(req[i])) { end = i; break; }
+    if (!req.slice(r.i + 1, end).some((l) => /^-\s*验收[:：]/.test(l.trim()))) {
+      err(".sdo/baseline/requirement.md", r.i + 1, `baseline_requirement_malformed：${r.l.trim()} 缺「验收：」`);
+    }
+  }
+}
+
+function checkBaselineTemplate() {
+  const tpl = "skills/sdo-flow/templates/baseline.md";
+  if (!exists(tpl)) { err(tpl, 1, "baseline_template_malformed：模板缺失"); return; }
+  const t = read(tpl).join("\n");
+  const bad = [];
+  for (const name of BASELINE_FILES) if (!t.includes(name)) bad.push(`缺小节：${name}`);
+  if (!/验收[:：]/.test(t)) bad.push("requirement 段缺「验收：」");
+  for (const f of ["决策", "备选", "后果"]) if (!new RegExp(`${f}[:：]`).test(t)) bad.push(`架构段缺「${f}：」`);
+  if (!t.includes("| 变更类型 | 测试技术 |")) bad.push("测试策略表头");
+  if (!/^##\s*质量属性\s*$/m.test(t)) bad.push("质量属性小节");
+  if (!/^##\s*风险登记\s*$/m.test(t)) bad.push("风险登记小节");
+  if (bad.length) err(tpl, 1, `baseline_template_malformed：${bad.join("；")}`);
+}
+
+function checkBaselineBinding(milestone, raw, p) {
+  const lines = raw.split("\n");
+  const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
+  if (!sec) return;
+  const scan = lines.slice(sec.start, sec.end);
+  const cur = baselineHash(ROOT);
+  const hits = scan.map((l, i) => ({ l, i: sec.start + i })).filter((x) => /^-\s*基线 hash[:：]/ .test(x.l));
+  if (!hits.length) {
+    err(p, sec.start + 1, `baseline_drift：里程碑冻结段缺「基线 hash：(64 hex)」（当前基线 ${cur}；声明写法：- 基线 hash：${cur}）`);
+    return;
+  }
+  if (hits.length > 1) { err(p, hits[1].i + 1, `基线 hash 行重复（${hits.length} 处）`); return; }
+  const m = /^-\s*基线 hash[:：]\s*([0-9a-f]{64})\s*$/.exec(hits[0].l.trim());
+  if (!m) { err(p, hits[0].i + 1, "基线 hash 格式错（应为 - 基线 hash：<64 位小写 hex>）"); return; }
+  const old = m[1];
+  if (old === cur) return;
+  const ex = scan.map((l, i) => ({ l, i: sec.start + i })).find((x) => /^-\s*基于旧基线[:：]/.test(x.l));
+  if (!ex) {
+    err(p, hits[0].i + 1, `baseline_drift：旧=${old} 新=${cur}（声明写法：- 基于旧基线：${old.slice(0, 8)}（≥8 字理由））`);
+    return;
+  }
+  const em = /^-\s*基于旧基线[:：]\s*([0-9a-f]{8,64})\s*[（(](.+)[）)]\s*$/.exec(ex.l.trim());
+  const 写法 = `- 基于旧基线：${old.slice(0, 8)}（变更请求：D-<n>；理由：<≥8 字>）`;
+  if (!em) { err(p, ex.i + 1, `baseline_drift：基于旧基线声明格式错（应为 ${写法}）`); return; }
+  const inner = em[2].trim();
+  const dm = /变更请求[:：]\s*(D-\d+)/.exec(inner);
+  const rm = /理由[:：]\s*(.+)$/.exec(inner);
+  if (!dm || !rm) { err(p, ex.i + 1, `baseline_drift：基于旧基线缺「变更请求：D-<n>」或「理由：<≥8 字>」（应为 ${写法}）`); return; }
+  if (!ledgerIds().has(dm[1])) { err(p, ex.i + 1, `baseline_drift：变更请求 ${dm[1]} 不在台账`); return; }
+  const reason = rm[1].trim();
+  if (em[1] !== old.slice(0, 8)) {
+    err(p, ex.i + 1, `baseline_drift：基于旧基线前缀 ${em[1]} 与声明 hash 旧值 ${old.slice(0, 8)} 不符`);
+    return;
+  }
+  if (meaningfulLen(reason) < 8 || PRESET_BLACKLIST.has(reason)) {
+    err(p, ex.i + 1, `baseline_drift：基于旧基线理由过短或为套话：${reason}`);
+    return;
+  }
+  console.log(`计划：基线漂移由「基于旧基线」放行 ${old.slice(0, 8)}→${cur.slice(0, 8)}（变更请求 ${dm[1]}；${reason}）`);
+}
+
 function checkPlanRules(milestone, planPath) {
   const raw = fs.readFileSync(path.join(ROOT, planPath), "utf8");
   const lines = raw.split("\n");
@@ -1287,10 +1411,12 @@ function checkPlanRules(milestone, planPath) {
   const probeBase = baselineSegments(lines, "探底", planPath);
   // 顺序：先查“内容规则”（preset / 理由 / 探底 / 阶段），最后查冻结段 hash。
   // 理由：改冻结段内容时 hash 必然变，若先报 hash，真正被违反的规则会被噪声盖住（R26 要求首条报错可指认）。
+  const baselineVersionBase = baselineSegments(lines, "baseline", planPath);
   let preset = "";
   if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
   if (!probeBase.has(milestone)) checkProbeLines(lines, planPath);
   if (preset) checkStageOrder(lines, planPath, preset);
+  if (!baselineVersionBase.has(milestone)) checkBaselineBinding(milestone, raw, planPath);
   checkFrozenHash(raw, planPath, milestone);
 }
 function checkR25Docs() {
@@ -1394,7 +1520,7 @@ function checkTrace() {
   const t = analyzeTrace(ROOT);
   const js = ARGV.includes("--js");
   if (js) {
-    const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, explore_conclusion_malformed: 5 };
+    const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, pending_change_request: 5, explore_conclusion_malformed: 6 };
     const issues = [...t.issues].sort((a, b) => (rank[a.code] ?? 9) - (rank[b.code] ?? 9))
       .map((i) => ({ code: i.code, id: i.id ?? (/^(R-\d+|M\d+-[\w-]+)/.exec(i.message) || [])[1] ?? null, file: i.file }));
     console.log(JSON.stringify({ ok: issues.length === 0, counts: { requirements: t.counts.requirements, covered: t.counts.covered, cardRefs: t.counts.edges, orphanRequirements: t.counts.orphanRequirements, orphanCards: t.counts.orphanCards }, issues }));
@@ -1405,7 +1531,7 @@ function checkTrace() {
   console.log(`卡引用数：${t.counts.edges}`);
   console.log(`孤儿需求数：${t.counts.orphanRequirements}`);
   console.log(`孤儿卡数：${t.counts.orphanCards}`);
-  const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, explore_conclusion_malformed: 5 };
+  const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, pending_change_request: 5, explore_conclusion_malformed: 6 };
   const issues = [...t.issues].sort((a, b) => (rank[a.code] ?? 9) - (rank[b.code] ?? 9));
   for (const i of issues) err(i.file, i.line, `${i.code}：${i.message}`);
   for (const e of ERR) console.log(`ERROR ${e}`);
@@ -1428,6 +1554,9 @@ for (const p of files) {
 checkFrontmatter();
 checkAuthorizationText();
 checkR25Docs();
+checkBaselineTemplate();
+checkBaselineArtifacts();
+checkCardTemplateDecisions();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
