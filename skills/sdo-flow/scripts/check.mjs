@@ -12,6 +12,8 @@ import crypto from "node:crypto";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
 import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
+import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity, orphanArchiveDirs, ARCHIVE_STATUSES } from "./lib/archive.mjs";
+import { currentMilestone } from "./lib/preset.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
@@ -414,34 +416,9 @@ function substantiveReason(text) {
   return !/(这个不好|差不多|没必要|不重要|看情况)/.test(t) && !/^(同意|认可|可以|无|行|ok)$/i.test(t);
 }
 
-const ARCHIVE_INDEX = ".sdo/archive/INDEX.md";
-
-function archiveRows() {
-  if (!exists(ARCHIVE_INDEX)) return [];
-  const ls = read(ARCHIVE_INDEX);
-  const h = ls.findIndex((l) => l.trim().startsWith("|") && l.includes("里程碑"));
-  if (h < 0) { err(ARCHIVE_INDEX, 0, "归档索引缺少表头（里程碑/门签号/被签树/文件数/文件 sha256/状态）"); return []; }
-  const header = cells(ls[h]).map((x) => x.replace(/`/g, "").trim());
-  const ix = (name) => header.findIndex((h2) => h2 === name);
-  const rows = [];
-  for (let i = h + 1; i < ls.length; i++) {
-    const raw = ls[i].trim();
-    if (!raw.startsWith("|")) break;
-    if (isSep(raw)) continue;
-    const c = cells(raw);
-    const milestone = (c[ix("里程碑")] || "").trim();
-    if (!/^M\d+$/.test(milestone)) continue;
-    let manifest = {};
-    try { manifest = JSON.parse((c[ix("文件 sha256")] || "{}").replace(/`/g, "")); }
-    catch { err(ARCHIVE_INDEX, i + 1, `manifest 不是合法 JSON：${milestone}`); }
-    rows.push({ milestone, gate: c[ix("门签号")] || "-", tree: c[ix("被签树")] || "-", count: Number(c[ix("文件数")] || 0), manifest, status: (c[ix("状态")] || "").trim() });
-  }
-  return rows;
-}
-
 function archivedCardIds() {
   const out = new Set();
-  for (const r of archiveRows()) {
+  for (const r of archiveRows(ROOT)) {
     if (r.status !== "已归档") continue;
     for (const key of Object.keys(r.manifest)) {
       const m = /^cards\/(M\d+-(?:\d+|G))\.md$/.exec(key);
@@ -466,20 +443,7 @@ function archiveFileCount(milestone) {
 }
 
 function checkArchive() {
-  for (const r of archiveRows()) {
-    const actualFiles = archiveFileCount(r.milestone);
-    if (r.status === "已归档" && actualFiles === 0) err(ARCHIVE_INDEX, 0, `归档状态与实际不符：${r.milestone}（已归档但归档目录为空/缺失）`);
-    if (r.status === "已恢复" && actualFiles > 0) err(ARCHIVE_INDEX, 0, `归档状态与实际不符：${r.milestone}（已恢复但归档目录仍有 ${actualFiles} 个文件）`);
-    if (r.status !== "已归档") continue;
-    const entries = Object.entries(r.manifest);
-    if (entries.length !== r.count) err(ARCHIVE_INDEX, 0, `文件数不符：${r.milestone} 索引 ${r.count} / manifest ${entries.length}`);
-    for (const [key, hash] of entries) {
-      const p = `.sdo/archive/${r.milestone}/${key}`;
-      if (!exists(p)) { err(p, 0, `归档文件缺失：${key}`); continue; }
-      const actual = crypto.createHash("sha256").update(fs.readFileSync(path.join(ROOT, p))).digest("hex");
-      if (actual !== hash) err(p, 0, `归档文件哈希不符：${key}`);
-    }
-  }
+  for (const i of assertArchivedIntegrity(ROOT)) err(i.path, i.line, i.msg);
 }
 
 function planCardSets() {
@@ -538,7 +502,7 @@ function planCardSets() {
     if (!signed) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
     mutationBaseline.add(id); all.add(id);
   }
-  return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[1] && seen[2] && seen[3] && seen[4] && seen[5] };
+  return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[4] && seen[5] };
 }
 
 
@@ -978,7 +942,7 @@ function planExit2(msg) { console.error(msg); process.exit(2); }
 
 function planMilestone() {
   const rest = ARGV.filter((a) => a !== "--plan");
-  let m = "M4";
+  let m = currentMilestone(ROOT) || "M4";
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--milestone") {
       if (!rest[i + 1] || rest[i + 1].startsWith("--")) planExit2("--milestone 需要一个值（如 M4）");
@@ -1446,9 +1410,23 @@ function checkAuthorizationText() {
 
 function checkPlan() {
   const milestone = planMilestone();
-  if (!exists(milestonePath(milestone)) && exists(`.sdo/archive/${milestone}`)) {
-    console.log(`WARN  ${milestonePath(milestone)}:0: 已归档，跳过`);
+  if (archiveEntry(ROOT, milestone)) {
+    console.log(`${milestone} 已归档（.sdo/archive/${milestone}/）`);
     process.exit(0);
+  }
+  const idxRow = archiveRows(ROOT).find((r) => r.milestone === milestone);
+  if (idxRow && !ARCHIVE_STATUSES.includes(idxRow.status)) {
+    console.log(`ERROR .sdo/archive/INDEX.md:0: archive_index_invalid：${milestone} 的 INDEX 状态非法（${idxRow.status}；只认 已归档/已恢复）`);
+    console.log(`\n检查完成（--plan ${milestone}）：1 个漂移`);
+    process.exit(1);
+  }
+  if (orphanArchiveDirs(ROOT).includes(milestone)) {
+    console.log(`ERROR .sdo/archive/INDEX.md:0: archive_orphan_directory：${milestone} 归档目录有文件但 INDEX 无对应行（先补 INDEX 或 restore）`);
+    console.log(`\n检查完成（--plan ${milestone}）：1 个漂移`);
+    process.exit(1);
+  }
+  if (!exists(milestonePath(milestone))) {
+    planExit2(`里程碑文件不存在：${milestonePath(milestone)}`);
   }
   const table = planCardTable(milestone);
   const archivedIds = archivedCardIds();

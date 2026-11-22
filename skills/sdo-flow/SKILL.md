@@ -113,7 +113,7 @@ node <skill>/scripts/ledger.mjs reindex                      # 从正文重建 .
 # 硬规则：活跃卷 >1000 行或里程碑收口时必须 rotate；check 对活跃卷 >5000 行 WARN（不阻断）
 node <skill>/scripts/card.mjs new|evidence                 # 卡骨架与证据行：同判据一行、重复原地更新；--run 真跑（30s 超时）
 node <skill>/scripts/sign.mjs draft --milestone M4          # 签字材料 draft：只出事实到 stdout、不写文件；退出码 0/1/2
-node <skill>/scripts/archive.mjs archive|restore M3  # 归档/恢复里程碑；git mv 搬运，索引含逐文件 sha256；check 只读索引
+node <skill>/scripts/archive.mjs archive|restore M3  # 归档/恢复里程碑；git mv 搬五类（含 milestones/M3.md→milestone.md），INDEX 是登记处；check 只读索引
 node <skill>/scripts/check.mjs --plan [--milestone M4]  # 计划↔卡面漂移：卡表/依赖/写域/路径；漂移 exit 1，环境/参数 exit 2
 node <skill>/scripts/check.mjs --deep                        # 审计：逐行扫所有卷（默认只扫 openRows>0 的卷）
 node <skill>/scripts/check.mjs --trace --js                  # 追溯链机器可读：{ok,counts,issues}；--trace 与 --plan/--deep 互斥

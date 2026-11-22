@@ -12,6 +12,8 @@ import fs from "node:fs";
 import path from "node:path";
 import { signedCardIds, gateSignInfo } from "./lib/signed-cards.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
+import { readArchiveIndex } from "./lib/archive.mjs";
+import { currentMilestone } from "./lib/preset.mjs";
 
 function findRoot(start) {
   let d = start;
@@ -331,9 +333,7 @@ function dnum(id) { const m = /^D-(\d+)$/.exec(id || ""); return m ? Number(m[1]
 const NEED_ALL_LEDGER = cmd !== "next";
 const CS = cards(), LG = NEED_ALL_LEDGER ? ledger() : [], SG = signs(), RD = readings(), MS = milestone();
 if (cmd === "next" && mi < 0) {
-  const ids = milestoneBlocks().map((b) => b.id).filter((x) => /^M\d+$/.test(x))
-    .sort((a, b) => Number(a.slice(1)) - Number(b.slice(1))).reverse();
-  const open = ids.find((id) => !SG.some((sg) => signForMilestone(sg, id, "门")));
+  const open = currentMilestone(ROOT);
   if (!open) { console.log("无进行中里程碑"); process.exit(0); }
   milestoneArg = open;
 }
@@ -368,12 +368,21 @@ function parseDeps(cellText) {
   return [...new Set(ids)];
 }
 function milestoneBlocks() {
-  return milestoneFiles().map((f) => ({ id: f.replace(/\.md$/, ""), text: read(`${MILESTONE_DIR}/${f}`) }));
+  const blocks = new Map();
+  for (const f of milestoneFiles()) blocks.set(f.replace(/\.md$/, ""), { id: f.replace(/\.md$/, ""), text: read(`${MILESTONE_DIR}/${f}`) });
+  for (const r of readArchiveIndex(ROOT)) {
+    if (r.status !== "已归档" || blocks.has(r.milestone)) continue;
+    const p = `.sdo/archive/${r.milestone}/milestone.md`;
+    if (exists(p)) blocks.set(r.milestone, { id: r.milestone, text: read(p) });
+  }
+  return [...blocks.values()].sort((a, b) => Number(a.id.slice(1)) - Number(b.id.slice(1)));
 }
 function playMilestoneLines(milestoneId) {
   const p = `${MILESTONE_DIR}/${milestoneId}.md`;
-  if (!exists(p)) return null;
-  return lines(p);
+  if (exists(p)) return lines(p);
+  const ap = `.sdo/archive/${milestoneId}/milestone.md`;
+  if (exists(ap)) return lines(ap);
+  return null;
 }
 function planCardDeps(milestoneId) {
   const seg = playMilestoneLines(milestoneId);
