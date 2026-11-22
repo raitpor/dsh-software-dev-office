@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { signedCardIds, gateSignInfo } from "./lib/signed-cards.mjs";
+import { analyzeTrace } from "./lib/trace.mjs";
 
 function findRoot(start) {
   let d = start;
@@ -106,50 +107,25 @@ function cards() {
   });
 }
 
-function requirements() {
-  const p = ".sdo/baseline/requirement.md";
-  if (!exists(p)) return [];
-  return lines(p).map((l) => {
-    const m = l.match(/^###\s+(R-\d+)\s+(.+?)\s*$/);
-    return m ? { id: m[1], title: m[2] } : null;
-  }).filter(Boolean);
-}
-
-const TRACE_DEST_RE = /^(M8-\d+ C\d+|不采纳)$/;
-
 function traceView() {
-  const reqs = requirements();
-  const reqById = new Map(reqs.map((r) => [r.id, r]));
-  const byReq = new Map(reqs.map((r) => [r.id, []]));
-  const dangling = [];
-  let edges = 0;
-  for (const c of CS) {
-    for (const id of c.refs) {
-      edges++;
-      if (!byReq.has(id)) { dangling.push({ id, card: c.id }); continue; }
-      byReq.get(id).push(c.id);
-    }
-  }
-  const covered = reqs.filter((r) => (byReq.get(r.id) || []).length > 0).length;
-  const orphanCards = CS.filter((c) => c.refs.length === 0);
-  const orphanReqs = reqs.filter((r) => (byReq.get(r.id) || []).length === 0);
+  const t = analyzeTrace(ROOT);
   const out = ["# trace（`references:` 原型；只认卡面，不解析判据正文）", "", "## 需求引用"];
-  if (!reqs.length) out.push("- （没有 .sdo/baseline/requirement.md 或没有 R-xx）");
-  for (const r of reqs) out.push(`- ${r.id} ${r.title} ← ${(byReq.get(r.id) || []).join("、") || "（无）"}`);
+  if (!t.requirements.length) out.push("- （没有 .sdo/baseline/requirement.md 或没有 R-xx）");
+  for (const r of t.requirements) out.push(`- ${r.id} ${r.title} ← ${(t.byReq.get(r.id) || []).join("、") || "（无）"}`);
   out.push("", "## 计数",
-    `需求数：${reqs.length}`,
-    `已覆盖：${covered}`,
-    `卡数：${CS.length}`,
-    `引用边数：${edges}`,
-    `孤儿卡数：${orphanCards.length}`,
-    `断链引用数：${dangling.length}`,
-    `未覆盖需求数：${orphanReqs.length}`);
+    `需求数：${t.counts.requirements}`,
+    `已覆盖：${t.counts.covered}`,
+    `卡数：${t.cards.length}`,
+    `引用边数：${t.counts.edges}`,
+    `孤儿卡数：${t.counts.orphanCards}`,
+    `断链引用数：${t.counts.dangling}`,
+    `未覆盖需求数：${t.counts.orphanRequirements}`);
   out.push("", "## 孤儿卡");
-  out.push(orphanCards.length ? orphanCards.map((c) => `- ${c.id}（无 references: 行或为空）`).join("\n") : "孤儿：无");
+  out.push(t.orphanCards.length ? t.orphanCards.map((c) => `- ${c.id}（无 references: 行或为空）`).join("\n") : "孤儿：无");
   out.push("", "## 断链引用");
-  out.push(dangling.length ? dangling.map((d) => `- ${d.id} ← ${d.card}（需求不存在）`).join("\n") : "断链：无");
+  out.push(t.dangling.length ? t.dangling.map((d) => `- ${d.id} ← ${d.card}（需求不存在）`).join("\n") : "断链：无");
   out.push("", "## 孤儿需求");
-  out.push(orphanReqs.length ? orphanReqs.map((r) => `- ${r.id} ${r.title}`).join("\n") : "孤儿：无");
+  out.push(t.orphanReqs.length ? t.orphanReqs.map((r) => `- ${r.id} ${r.title}`).join("\n") : "孤儿：无");
   return out.join("\n");
 }
 

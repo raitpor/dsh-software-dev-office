@@ -10,6 +10,24 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
+import { analyzeTrace } from "./lib/trace.mjs";
+
+const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
+
+  --plan              检查计划段（里程碑/preset/冻结 hash/阶段顺序等）
+  --milestone M<n>    配合 --plan 指定里程碑
+  --trace             追溯链检查：需求←→卡←→判据←→测试（默认只判 done 卡）
+  --presets [文件]    校验 preset 与发布快照，或与外部判据源比对
+  --deep              台账卷全量审计（逐行扫所有卷；默认仅扫 openRows>0 的卷）
+  --js                机器可读输出：--trace 时 {ok,counts,issues[]}，否则 {ok,errors,warnings}
+  --all               扫描整个仓库（默认只扫 .sdo/ 与技能目录）
+  --help, -h          显示本用法
+退出码：0 全过；1 有错误；2 参数/环境错误。
+注意：--trace 与 --plan 互斥；--trace 与 --deep 互斥（--deep 只作用于台账卷校验）。`;
+if (process.argv.slice(2).includes("--help") || process.argv.slice(2).includes("-h")) {
+  console.log(USAGE);
+  process.exit(0);
+}
 
 function findRoot(start) {
   let d = start;
@@ -25,6 +43,21 @@ if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先�
 const SELF = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // <skill> 目录（脚本可在项目外）
 const SELF_REL = path.relative(ROOT, SELF).split(path.sep).join("/");
 const ARGV = process.argv.slice(2);
+const KNOWN_FLAGS = new Set(["--plan", "--milestone", "--trace", "--deep", "--presets", "--all", "--js"]);
+for (const a of ARGV) {
+  if (a.startsWith("--") && !KNOWN_FLAGS.has(a)) {
+    console.error(`未知参数：${a}`);
+    process.exit(2);
+  }
+}
+if (ARGV.includes("--trace") && ARGV.includes("--plan")) {
+  console.error("--trace 与 --plan 不能同时使用");
+  process.exit(2);
+}
+if (ARGV.includes("--trace") && ARGV.includes("--deep")) {
+  console.error("--trace 与 --deep 不能同时使用（--deep 只作用于台账卷校验）");
+  process.exit(2);
+}
 const ERR = [], WARN = [];
 const KINDS = new Set(["gap", "defect", "explain", "closed"]);
 const STATUS = new Set(["open", "accepted", "fixed", "closed", "superseded"]);
@@ -1357,8 +1390,34 @@ function checkPlan() {
   process.exit(ERR.length ? 1 : 0);
 }
 
+function checkTrace() {
+  const t = analyzeTrace(ROOT);
+  const js = ARGV.includes("--js");
+  if (js) {
+    const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, explore_conclusion_malformed: 5 };
+    const issues = [...t.issues].sort((a, b) => (rank[a.code] ?? 9) - (rank[b.code] ?? 9))
+      .map((i) => ({ code: i.code, id: i.id ?? (/^(R-\d+|M\d+-[\w-]+)/.exec(i.message) || [])[1] ?? null, file: i.file }));
+    console.log(JSON.stringify({ ok: issues.length === 0, counts: { requirements: t.counts.requirements, covered: t.counts.covered, cardRefs: t.counts.edges, orphanRequirements: t.counts.orphanRequirements, orphanCards: t.counts.orphanCards }, issues }));
+    process.exit(issues.length ? 1 : 0);
+  }
+  console.log(`需求数：${t.counts.requirements}`);
+  console.log(`已覆盖数：${t.counts.covered}`);
+  console.log(`卡引用数：${t.counts.edges}`);
+  console.log(`孤儿需求数：${t.counts.orphanRequirements}`);
+  console.log(`孤儿卡数：${t.counts.orphanCards}`);
+  const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, explore_conclusion_malformed: 5 };
+  const issues = [...t.issues].sort((a, b) => (rank[a.code] ?? 9) - (rank[b.code] ?? 9));
+  for (const i of issues) err(i.file, i.line, `${i.code}：${i.message}`);
+  for (const e of ERR) console.log(`ERROR ${e}`);
+  console.log(`\n检查完成（--trace）：${issues.length} 个问题`);
+  process.exit(issues.length ? 1 : 0);
+}
+
 if (ARGV.includes("--plan")) {
   checkPlan();
+}
+if (ARGV.includes("--trace")) {
+  checkTrace();
 }
 const files = mdFiles();
 const ledgerHasIndex = exists(".sdo/.index/ledger.json");
@@ -1372,7 +1431,11 @@ checkR25Docs();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
 if (ARGV.includes("--presets")) checkPresets();
-for (const w of WARN) console.log(`WARN  ${w}`);
-for (const e of ERR) console.log(`ERROR ${e}`);
-console.log(`\n检查完成：${files.length} 个 Markdown，${ERR.length} 个错误，${WARN.length} 个警告`);
+if (ARGV.includes("--js")) {
+  console.log(JSON.stringify({ ok: ERR.length === 0, errors: ERR, warnings: WARN }));
+} else {
+  for (const w of WARN) console.log(`WARN  ${w}`);
+  for (const e of ERR) console.log(`ERROR ${e}`);
+  console.log(`\n检查完成：${files.length} 个 Markdown，${ERR.length} 个错误，${WARN.length} 个警告`);
+}
 process.exit(ERR.length ? 1 : 0);

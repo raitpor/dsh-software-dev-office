@@ -116,7 +116,12 @@ node <skill>/scripts/sign.mjs draft --milestone M4          # 签字材料 draft
 node <skill>/scripts/archive.mjs archive|restore M3  # 归档/恢复里程碑；git mv 搬运，索引含逐文件 sha256；check 只读索引
 node <skill>/scripts/check.mjs --plan [--milestone M4]  # 计划↔卡面漂移：卡表/依赖/写域/路径；漂移 exit 1，环境/参数 exit 2
 node <skill>/scripts/check.mjs --deep                        # 审计：逐行扫所有卷（默认只扫 openRows>0 的卷）
+node <skill>/scripts/check.mjs --trace --js                  # 追溯链机器可读：{ok,counts,issues}；--trace 与 --plan/--deep 互斥
+node <skill>/scripts/check.mjs --help                        # 用法与退出码；--js 单独输出 {ok,errors,warnings}
 ```
+
+
+`check --trace` 的读法：四码按固定顺序 `trace_orphan_requirement` → `trace_dangling_ref` → `trace_duplicate_claim` → `trace_orphan_test`（另有 `trace_test_unverifiable`、`explore_conclusion_malformed`），命中任一即 exit 1，但一次报全；`trace_orphan_test` 只报“证据行缺失/命令为空”，有文本但不合口径报 `trace_test_unverifiable`，两码互斥。`--trace` 与 `--plan` 互斥，未知 flag exit 2。`需求数/已覆盖数/卡引用数/孤儿需求数/孤儿卡数` 五行证明真的扫过。默认只对 `done` 卡强制闭合，open 卡只列不判。`测试引用基线段`（M8.5）里列出的历史里程碑 done 卡不回溯判测试引用；基线段只认 `.sdo/milestones/M8.md` 的行首声明。
 
 `<skill>` 是这套流程包的实际目录（例如 `skills/sdo-flow`）。**收卡与出门前各跑一次**；红了先修，别绕过。
 
