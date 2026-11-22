@@ -6,6 +6,7 @@
 // --presets 不带参数：校验四份 preset 与发布快照（stage 集合、gate 集合、criteria 逐条名称）
 // --presets <文件>：与外部判据源逐条比对（可用设计稿 §1.1 原文）
 import fs from "node:fs";
+import { frozenHashRaw } from "./lib/frozen.mjs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
@@ -1257,10 +1258,7 @@ function checkProbeLines(lines, p) {
     }
   }
 }
-function frozenHashRaw(raw) {
-  const lines = raw.replace(/\n$/, "").split("\n").filter((l) => !/^hash:/.test(l) && !/^状态：/.test(l) && !/^- 追加签：/.test(l));
-  return crypto.createHash("sha256").update(lines.join("\n") + "\n", "utf8").digest("hex");
-}
+
 function checkFrozenHash(raw, p, mid) {
   if (raw.startsWith("\uFEFF")) err(p, 1, "文件含 BOM（冻结段 hash 要求 UTF-8 无 BOM、LF）");
   if (raw.includes("\r")) err(p, 1, "文件含 CR（冻结段 hash 要求 LF）");

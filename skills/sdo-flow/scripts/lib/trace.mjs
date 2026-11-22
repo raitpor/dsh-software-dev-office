@@ -2,6 +2,7 @@
 // view.mjs trace 与 check.mjs --trace 都从这里取数据，禁止各自再写正则。
 import fs from "node:fs";
 import path from "node:path";
+import { frozenHashRaw } from "./frozen.mjs";
 
 export const TEST_BASELINE_TITLE = "测试引用基线段";
 export const MEANINGLESS_REASONS = new Set([
@@ -159,6 +160,74 @@ function exploreConclusions(root, card) {
   }));
 }
 
+const ORPHAN_BASELINE_TITLE = "孤儿卡基线段";
+
+// 只有「已签」的里程碑文件里的声明才有效：签名记录的冻结段 hash 必须等于当前文件实算值，
+// 或存在一条追加签、其被签对象含当前实算值前 8 位。未签草稿里的声明一律不生效。
+function planIndexSigned(root, mid) {
+  const pf = path.join(root, ".sdo/计划.md");
+  if (!fs.existsSync(pf)) return false;
+  const row = fs.readFileSync(pf, "utf8").split("\n").find((l) => l.startsWith(`| ${mid} |`));
+  if (!row) return false;
+  const cells = row.split("|").map((c) => c.trim());
+  const status = cells[cells.length - 2] || "";
+  return /已签|已收口|已归档/.test(status);
+}
+
+function isSignedMilestone(root, mid) {
+  if (!planIndexSigned(root, mid)) return false;
+  const mf = path.join(root, ".sdo/milestones", `${mid}.md`);
+  if (!fs.existsSync(mf)) return false;
+  const raw = fs.readFileSync(mf, "utf8");
+  const actual = frozenHashRaw(raw);
+  const dir = path.join(root, ".sdo/sign");
+  if (!fs.existsSync(dir)) return false;
+  const n = String(mid).replace(/^M/, "");
+  const signFiles = fs.readdirSync(dir).filter((x) => /^S\d+(?:-[A-Z])?\.md$/.test(x));
+  for (const f of signFiles) {
+    const ls = fs.readFileSync(path.join(dir, f), "utf8").split("\n");
+    const title = ls[0] || "";
+    const scope = ls.find((l) => l.startsWith("- 范围：")) || "";
+    const isPlan = new RegExp(`M${n}\\s*计划`).test(title) || new RegExp(`M${n}\\s*计划`).test(scope);
+    if (!isPlan) continue;
+    const rec = ls.find((l) => l.startsWith("- 冻结段 hash：")) || "";
+    const m = /([0-9a-f]{64})/.exec(rec);
+    if (m && m[1] === actual) return true;
+  }
+  for (const l of raw.split("\n")) {
+    const m = /^- 追加签：S(\d+)-([A-Z])\s*$/.exec(l);
+    if (!m) continue;
+    const sp = path.join(dir, `S${m[1]}-${m[2]}.md`);
+    if (!fs.existsSync(sp)) continue;
+    const anchor = fs.readFileSync(sp, "utf8").split("\n").find((x) => x.startsWith("- 被签对象：")) || "";
+    if (anchor.includes(actual.slice(0, 8))) return true;
+  }
+  return false;
+}
+
+function orphanBaseline(root) {
+  const dir = path.join(root, ".sdo/milestones");
+  const set = new Set();
+  if (!fs.existsSync(dir)) return set;
+  const signed = new Set();
+  for (const f of fs.readdirSync(dir).filter((x) => /^M\d+\.md$/.test(x))) {
+    const mid = f.slice(0, -3);
+    if (isSignedMilestone(root, mid)) signed.add(mid);
+  }
+  for (const mid of signed) {
+    const ls = fs.readFileSync(path.join(dir, `${mid}.md`), "utf8").split("\n");
+    for (const l of ls) {
+      const m = new RegExp(`^-\\s*${ORPHAN_BASELINE_TITLE}[（(][^）)]*[）)]\\s*[:：]\\s*(.+)$`).exec(l);
+      if (!m) continue;
+      for (const tok of m[1].split(/[、,，\s]+/)) {
+        const k = /^M(\d+)$/.exec(tok.trim());
+        if (k) set.add(k[1]);
+      }
+    }
+  }
+  return set;
+}
+
 export function analyzeTrace(root) {
   const reqs = readRequirements(root).items;
   const cards = readCards(root);
@@ -179,6 +248,12 @@ export function analyzeTrace(root) {
   const covered = reqs.filter((r) => (byReq.get(r.id) || []).length > 0).length;
   const orphanReqs = reqs.filter((r) => (byReq.get(r.id) || []).length === 0);
   const issues = [];
+  for (const c of cards) {
+    if (c.status !== "done" || c.refs.length > 0) continue;
+    const mn = /^M(\d+)-/.exec(c.id);
+    if (mn && orphanBaseline(root).has(mn[1])) continue; // 豁免只来自里程碑冻结段的声明行，不按编号写死
+    issues.push({ code: "trace_orphan_card", file: c.file, line: 1, message: `${c.id} 是 done 卡但没有 references:（无法追溯到需求）` });
+  }
   const reqLine = new Map(reqs.map((r) => [r.id, r.line]));
   for (const r of orphanReqs) issues.push({ code: "trace_orphan_requirement", file: ".sdo/baseline/requirement.md", line: r.line, message: `${r.id} 无任何卡引用` });
   for (const d of dangling) issues.push({ code: "trace_dangling_ref", file: d.file, line: 1, message: `${d.id}（${d.card}）不在需求基线` });

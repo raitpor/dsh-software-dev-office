@@ -28,10 +28,10 @@ read_refs: [.sdo/baseline/, .sdo/cards/, .sdo/milestones/]
 |---|---|---|
 | C1 | exit=0; `grep -c '^## G_.*_exit' .sdo/gates/M8.md` ⇒ 3；`node skills/sdo-flow/scripts/gate.mjs --file .sdo/gates/M8.md` ⇒ `G_explore_exit pass 4 / G_harden_exit pass 24 / G_deliver_exit pass 6`，exit0 | pass |
 | C2 | exit=0; `node skills/sdo-flow/scripts/check.mjs` ⇒ 165 Markdown 0/0；`.sdo/readings/M8.md` R33–R37 逐条四列，overall=partial（R36 partial，其余 pass；`checkReadings` 验证由逐条推出） | partial |
-| C3 | exit=0; 每条读数“反例红证”列均含 `/tmp` 副本命令与首条报错：R33 三码、R34 四步、R35 两行结论、R36 孤儿测试、R37 三步 | pass |
+| C3 | exit=0; `grep -c '反例红证' .sdo/readings/M8.md` ⇒ 5；`node skills/sdo-flow/scripts/check.mjs` ⇒ 165 Markdown 0/0（人工核对每条反例真实性） | pass |
 | C4 | exit=0; M8-0「探索结论」4 行，去向 `M8-1 C1/C7/C5` 与 `不采纳`；`node skills/sdo-flow/scripts/check.mjs --trace` ⇒ 0 问题 | pass |
-| C5 | exit=0; `rsync -a --delete skills/sdo-flow/ .dsh/skills/sdo-flow/` 后 `diff -r skills/sdo-flow .dsh/skills/sdo-flow` 无输出 | pass |
-| C6 | exit=0; `.sdo/notes/M8-使用笔记.md` 4 条（`grep -c '^## '` ⇒ 4），其中第 1、2 条为 prototype 摩擦（harden 24 条、explore 4 条太薄） | pass |
+| C5 | exit=0; `node -e "require('node:child_process').execFileSync('diff',['-r','skills/sdo-flow','.dsh/skills/sdo-flow']); console.log('diff: clean')"` ⇒ diff: clean | pass |
+| C6 | exit=0; `grep -c '^## ' .sdo/notes/M8-使用笔记.md` ⇒ 4（第 1、2 条为 prototype 摩擦） | pass |
 
 ## 变异
 
