@@ -231,6 +231,23 @@ function volumeFiles(root) {
   }
   return out;
 }
+const TERMINAL_STATUSES = new Set(["fixed", "closed", "superseded"]);
+// 未修口径（与 view.mjs 的 isOpenLedgerRow 一致）：
+// status=open 的任何 kind（含 explain 的“待处置说明”）+ gap/defect（accepted 也算未决）。
+function isUnresolvedRow(row, closed = new Set()) {
+  if (!row || TERMINAL_STATUSES.has(row.status)) return false;
+  if (closed.has(row.id)) return false;
+  return row.status === "open" || row.kind === "defect" || row.kind === "gap";
+}
+function closedIdsOf(rows) {
+  const closed = new Set();
+  for (const row of rows) {
+    const m = CLOSE_RE.exec(row.how);
+    if (m) closed.add(m[1]);
+  }
+  return closed;
+}
+
 function buildIndex(root) {
   const vols = [];
   const all = [];
@@ -240,13 +257,9 @@ function buildIndex(root) {
     vols.push({ path: rel, rows: vol.stats.rows, first: vol.stats.first, last: vol.stats.last, sha256: vol.stats.sha256 });
     for (const row of vol.table.rows) all.push({ ...row, file: rel });
   }
-  const closed = new Set();
-  for (const row of all) {
-    const m = CLOSE_RE.exec(row.how);
-    if (m) closed.add(m[1]);
-  }
+  const closed = closedIdsOf(all);
   const open = all
-    .filter((r) => (r.kind === "defect" || r.kind === "gap") && (r.status === "open" || r.status === "accepted") && !closed.has(r.id))
+    .filter((r) => isUnresolvedRow(r, closed))
     .map((r) => ({ id: r.id, kind: r.kind, file: r.file, line: r.line }));
   const idx = { volumes: vols, open, updated_at: null };
   syncOpenRows(idx);
@@ -342,7 +355,7 @@ function cmdAdd(root, flags) {
   });
   appendRow(vol, rowLine);
   refreshActive(root, vol, idx);
-  if ((flags.kind === "defect" || flags.kind === "gap") && (status === "open" || status === "accepted")) {
+  if (isUnresolvedRow({ kind: flags.kind, status })) {
     const newRow = vol.table.rows[vol.table.rows.length - 1];
     idx.open.push({ id, kind: flags.kind, file: LEDGER, line: newRow ? newRow.line : null });
   }
@@ -392,29 +405,24 @@ function cmdClose(root, positional, flags) {
 }
 
 function cmdList(root, flags) {
-  const idx = readIndex(root);
-  if (flags.open && idx) {
-    const cache = new Map();
-    for (const entry of idx.open) {
-      if (!cache.has(entry.file)) cache.set(entry.file, readVolume(root, entry.file));
-      const vol = cache.get(entry.file);
-      if (!vol) { console.error(`索引 open 指向的卷不存在：${entry.file}（跑 ledger.mjs reindex）`); process.exit(2); }
-      const row = vol.table.rows.find((r) => r.id === entry.id);
-      if (!row) { console.error(`索引 open 行 ${entry.id} 在 ${entry.file} 中找不到（跑 ledger.mjs reindex）`); process.exit(2); }
-      if (Number.isInteger(entry.line) && row.line !== entry.line) { console.error(`索引 open 行 ${entry.id} 位置 ${entry.file}:${entry.line} 与正文 :${row.line} 不符（跑 ledger.mjs reindex）`); process.exit(2); }
-      if (row.kind !== entry.kind || !["open", "accepted"].includes(row.status)) { console.error(`索引 open 行 ${entry.id} 的 kind/状态与正文不符（跑 ledger.mjs reindex）`); process.exit(2); }
-      console.log(`| ${row.cells.map(cell).join(" | ")} |`);
+  const vols = volumeFiles(root);
+  const all = [];
+  for (const rel of vols) {
+    const vol = readVolume(root, rel);
+    if (!vol) continue;
+    for (const row of vol.table.rows) all.push({ ...row, file: rel });
+  }
+  if (flags.open) {
+    const closed = closedIdsOf(all);
+    // 直接以正文为准过滤：explain 的 open 行（如 D-164）也要出现，
+    // 不依赖旧索引里只收 gap/defect 的缓存。
+    for (const row of all) {
+      if (isUnresolvedRow(row, closed)) console.log(`| ${row.cells.map(cell).join(" | ")} |`);
     }
     return;
   }
-  for (const rel of volumeFiles(root)) {
-    const vol = readVolume(root, rel);
-    if (!vol) continue;
-    for (const row of vol.table.rows) {
-      if (flags.open && !(row.kind === "defect" || row.kind === "gap")) continue;
-      if (flags.open && !["open", "accepted"].includes(row.status)) continue;
-      console.log(`| ${row.cells.map(cell).join(" | ")} |`);
-    }
+  for (const row of all) {
+    console.log(`| ${row.cells.map(cell).join(" | ")} |`);
   }
 }
 

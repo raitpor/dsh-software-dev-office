@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { signedCardIds, gateSignInfo } from "./lib/signed-cards.mjs";
+import { signLabel, sortSigns, isMilestoneGateSign } from "./lib/signs.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
 import { readArchiveIndex } from "./lib/archive.mjs";
 import { currentMilestone } from "./lib/preset.mjs";
@@ -243,7 +244,7 @@ function ledgerDetail(id) {
 
 function signs() {
   if (!exists(".sdo/sign")) return [];
-  return fs.readdirSync(path.join(ROOT, ".sdo/sign")).filter((f) => f.endsWith(".md")).sort().map((f) => {
+  const parsed = fs.readdirSync(path.join(ROOT, ".sdo/sign")).filter((f) => f.endsWith(".md")).map((f) => {
     const text = read(`.sdo/sign/${f}`);
     const time = text.match(/^\s*(?:[-*]\s*)?时间[:：]\s*(.+)$/m);
     const opt = text.match(/^\s*(?:[-*]\s*)?选项[:：]\s*(.+)$/m);
@@ -253,6 +254,8 @@ function signs() {
     return { file: `.sdo/sign/${f}`, time: time ? time[1].trim() : "", option: opt ? opt[1].trim() : "", object: obj ? obj[1].trim() : "",
       title: title ? title[1].trim() : "", scope: scopes.join("；") };
   });
+  // 最近签字按 S<n> 数值排序（S9 < S41），不是文件名字典序。
+  return sortSigns(parsed, (s) => s.file);
 }
 
 function readings() {
@@ -324,9 +327,11 @@ function closedLedgerIds(rows) {
 }
 function isOpenLedgerRow(row, closedIds = new Set()) {
   if (!row) return false;
-  if (row.kind !== "defect" && row.kind !== "gap") return false;
   if (["fixed", "closed", "superseded"].includes(row.status)) return false;
-  return !closedIds.has(row.id);
+  if (closedIds.has(row.id)) return false;
+  // 未修口径：status=open 的任何 kind（含 explain 的“待处置说明”）+
+  // gap/defect（accepted 也算未决，展示时单独一列，不混进“未修”）。
+  return row.status === "open" || row.kind === "defect" || row.kind === "gap";
 }
 function dnum(id) { const m = /^D-(\d+)$/.exec(id || ""); return m ? Number(m[1]) : NaN; }
 
@@ -340,7 +345,13 @@ if (cmd === "next" && mi < 0) {
 const openCards = CS.filter((c) => c.status !== "done");
 const CLOSED_IDS = closedLedgerIds(LG);
 const IDX_OPEN = openRowsFromIndex();
-const openLedger = IDX_OPEN ?? LG.filter((r) => isOpenLedgerRow(r, CLOSED_IDS));
+const bodyOpen = LG.filter((r) => isOpenLedgerRow(r, CLOSED_IDS));
+const openById = new Map();
+for (const r of IDX_OPEN ?? []) openById.set(r.id, r);
+for (const r of bodyOpen) openById.set(r.id, r);
+const openLedger = [...openById.values()].sort((a, b) => dnum(a.id) - dnum(b.id));
+const unresolvedLedger = openLedger.filter((r) => r.status !== "accepted");
+const acceptedLedger = openLedger.filter((r) => r.status === "accepted");
 
 // ---- next 的解析辅助 ----
 function stripParens(s) {
@@ -415,10 +426,6 @@ function signMatchesCard(sg, id, word) {
   }
   return false;
 }
-function signNumber(sg) {
-  const m = /(S\d+)/.exec(`${sg.file} ${sg.title}`);
-  return m ? m[1] : "?";
-}
 function signForMilestone(sg, id, kind) {
   const m = /^M(\d+)$/.exec(id);
   if (!m) return false;
@@ -428,11 +435,7 @@ function signForMilestone(sg, id, kind) {
     return new RegExp(`^(?:签字\\s*)?S[\\d-]+\\s*·\\s*M${n}\\s*计划`).test(title)
       || new RegExp(`^S[\\d-]+\\s*·\\s*计划签字（M${n}）`).test(title);
   }
-  if (kind === "门") {
-    return new RegExp(`^S[\\d-]+\\s*·\\s*M${n}\\s*门`).test(title)
-      || new RegExp(`^S[\\d-]+\\s*M${n}\\s*门签`).test(title)
-      || new RegExp(`^(?:签字\\s*)?S[\\d-]+\\s*[（(]\\s*M${n}\\s*门`).test(title);
-  }
+  if (kind === "门") return isMilestoneGateSign(sg, id);
   return false;
 }
 let nextExit = 0;
@@ -482,8 +485,8 @@ function nextView(milestoneId) {
     if (!st) { unknown.push(`${b.id} · 计划段缺「状态：」行`); continue; }
     const planSign = SG.find((s) => signForMilestone(s, b.id, "计划"));
     const gateSign = SG.find((s) => signForMilestone(s, b.id, "门"));
-    filesPending.push(`${b.id} 计划：${planSign ? `已签 ${signNumber(planSign)}` : "待签"}`);
-    filesPending.push(`${b.id} 门：${gateSign ? `已签 ${signNumber(gateSign)}` : "待签"}`);
+    filesPending.push(`${b.id} 计划：${planSign ? `已签 ${signLabel(planSign)}` : "待签"}`);
+    filesPending.push(`${b.id} 门：${gateSign ? `已签 ${signLabel(gateSign)}` : "待签"}`);
   }
   for (const c of CS) {
     const g = /^M(\d+)-G$/.exec(c.id);
@@ -494,6 +497,12 @@ function nextView(milestoneId) {
     if (Number.isNaN(x) || Number.isNaN(y)) return a.id.localeCompare(b.id);
     return x - y;
   });
+  // C4：本里程碑没有可开工卡时，明确下一里程碑，不只写“无”。
+  const milestoneNum = Number(/^M(\d+)$/.exec(milestoneId)?.[1]);
+  const nextMilestone = Number.isFinite(milestoneNum) ? `M${milestoneNum + 1}` : "";
+  const nextMilestoneHint = ready.length === 0 && nextMilestone
+    ? `${nextMilestone}（${exists(`${MILESTONE_DIR}/${nextMilestone}.md`) ? "已建" : "未建"}）`
+    : "";
   const sections = [
     ["可开工", ready],
     ["被依赖卡住", blocked],
@@ -508,9 +517,13 @@ function nextView(milestoneId) {
   }
   nextExit = unknown.length ? 1 : 0;
   const json = { command: "next", 可开工: ready, 被依赖卡住: blocked, 待签收: signing, 待签文件: filesPending,
-    未修台账: ledgerOpen.map((r) => r.id), 进行中: inProgress, 未知状态: unknown };
+    未修台账: ledgerOpen.map((r) => r.id), 进行中: inProgress, 未知状态: unknown, 下一里程碑: nextMilestoneHint || null };
   const human = [`# next（${milestoneId}）`, ""];
-  for (const [name, items] of sections) human.push(`## ${name}`, ...(items.length ? items.map((x) => `- ${x}`) : ["无"]), "");
+  for (const [name, items] of sections) {
+    const body = items.length ? items.map((x) => `- ${x}`) : ["无"];
+    if (name === "可开工" && nextMilestoneHint) body.push(`- 下一里程碑：${nextMilestoneHint}`);
+    human.push(`## ${name}`, ...body, "");
+  }
   for (const [name, items] of extras) {
     if (!items.length) continue;
     human.push(`## ${name}`, ...items.map((x) => (name === "进行中" ? `[进行中] ${x}` : `未知状态：${x}`)), "");
@@ -531,13 +544,14 @@ const out = {
     return [
       `# 状态总览：${ms}`, "",
       `- 卡：${CS.length} 张（done ${CS.length - openCards.length} / open ${openCards.length}）`,
-      `- 台账：${LG.length} 条（未修 ${openLedger.length}）`,
+      `- 台账：${LG.length} 条（未修 ${unresolvedLedger.length} / accepted ${acceptedLedger.length}）`,
       `- 签字：${SG.length} 份${SG.length ? `（最近 ${SG.at(-1).file}）` : ""}`,
       `- 读数：${RD.length ? RD.map((r) => `${r.file}=${r.overall || "?"}`).join("，") : "还没有读数"}`,
       "",
       ...(openCards.length ? ["## 待开工", ...openCards.map((c) => `- ${c.id} · ${c.status}${c.owner ? ` · ${c.owner}` : ""}`)] : ["## 待开工", "- （无）"]),
       "",
-      ...(openLedger.length ? ["## 未修台账", ...openLedger.map((r) => `- ${r.id} [${r.kind}/${r.status}] ${r.what}`)] : ["## 未修台账", "- （无）"]),
+      ...(unresolvedLedger.length ? ["## 未修台账", ...unresolvedLedger.map((r) => `- ${r.id} [${r.kind}/${r.status}] ${r.what}`)] : ["## 未修台账", "- （无）"]),
+      ...(acceptedLedger.length ? ["", "## 已接受（accepted，单列）", ...acceptedLedger.map((r) => `- ${r.id} [${r.kind}/${r.status}] ${r.what}`)] : []),
     ].join("\n");
   },
   board() {

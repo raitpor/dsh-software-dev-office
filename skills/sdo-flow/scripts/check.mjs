@@ -11,6 +11,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
+import { sortSigns } from "./lib/signs.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
 import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
 import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity, orphanArchiveDirs, ARCHIVE_STATUSES } from "./lib/archive.mjs";
@@ -1289,8 +1290,11 @@ function checkFrozenHash(raw, p, mid) {
   for (const m of signs) {
     const sp = `.sdo/sign/S${m[1]}-${m[2]}.md`;
     if (!exists(sp)) continue;
-    const anchor = read(sp).find((l) => l.startsWith("- 被签对象：")) || "";
-    if (anchor.includes(actual.slice(0, 8))) return;
+    const spLines = read(sp);
+    const anchors = spLines.filter((l) => l.startsWith("- 被签对象：")).join("\n");
+    // 追加签正文里也可以直接记新冻结段 hash（`- 冻结段 hash：`）：它同样由人签，且本行引用即绑定
+    const hashNotes = spLines.filter((l) => l.startsWith("- 冻结段 hash：")).join("\n");
+    if (anchors.includes(actual.slice(0, 8)) || hashNotes.includes(actual.slice(0, 8))) return;
   }
   err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… 计划签=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
 }
@@ -1305,14 +1309,15 @@ function planSignFile(mid) {
     const scope = lines.find((l) => l.startsWith("- 范围：")) || "";
     const n2 = String(mid).replace(/^M/, "");
     const isPlan = new RegExp(`M${n2}\\s*计划`).test(title) || new RegExp(`M${n2}\\s*计划`).test(scope);
-    if (isPlan) hits.push({ f, n: Number(/^S(\d+)/.exec(f)[1]) });
+    if (isPlan) hits.push({ f });
   }
   if (!hits.length) return "";
-  hits.sort((a, b) => b.n - a.n);
-  for (const h of hits) {
-    if (read(path.join(dir, h.f)).some((l) => l.startsWith("- 冻结段 hash："))) return h.f;
+  // 签字号数值序的唯一实现在 lib/signs.mjs（view.mjs 共用），这里不另写比较器。
+  const sorted = sortSigns(hits, (h) => h.f);
+  for (let i = sorted.length - 1; i >= 0; i--) {
+    if (read(path.join(dir, sorted[i].f)).some((l) => l.startsWith("- 冻结段 hash："))) return sorted[i].f;
   }
-  return hits[0].f;
+  return sorted[sorted.length - 1].f;
 }
 function checkStageOrder(lines, p, preset) {
   const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*阶段(（[^）]*）)?\s*$/.test(x.l));
