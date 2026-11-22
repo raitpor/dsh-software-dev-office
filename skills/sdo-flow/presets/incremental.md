@@ -4,7 +4,7 @@
 
 ## 出口勾选表
 
-### `req_design[requirement,design]` 出口 `G_req_design`（14 条）
+### `req_design[requirement,design]` 出口 `G_req_design`（16 条）
 
 | # | 判据 |
 |---|---|
@@ -22,14 +22,16 @@
 | 12 | `design.no_spec_creep` |
 | 13 | `design.alternatives_declared` |
 | 14 | `node.acceptance_bound` |
+| 15 | `requirement.baseline_present`（依据：§12.2） |
+| 16 | `design.artifacts_present`（依据：§12.1） |
 
 ### `build[implement]` 出口 `G_build_exit`（6 条）
 
 `task.complete`、`assumption.disposed`、`mandate.revalidated`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
 
-### `verify[review]` 出口 `G_verify_exit`（5 条）
+### `verify[review]` 出口 `G_verify_exit`（6 条）
 
-`review.round_bound`、`review.required`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
+`review.round_bound`、`review.required`、`spec_set.signed`、`provenance.present`、`assumption_set.signed`、`trace.test_linked`（依据：§12.2）
 
 ### `integrate[deliver]` 出口 `G_integrate`（6 条）
 
@@ -53,8 +55,8 @@ policy:
     - { id: verify,     kinds: [review],             after: [build] }
     - { id: integrate,  kinds: [deliver],            after: [verify] }
   gates:
-    req_design: [{ id: G_req_design, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, provenance.present, stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound] }]
+    req_design: [{ id: G_req_design, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, provenance.present, stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound, requirement.baseline_present, design.artifacts_present] }]
     build:      [{ id: G_build_exit, policy_mode: all_of, waivable: false, criteria: [task.complete, assumption.disposed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
-    verify:     [{ id: G_verify_exit, policy_mode: all_of, waivable: false, criteria: [review.round_bound, review.required, spec_set.signed, provenance.present, assumption_set.signed] }]
+    verify:     [{ id: G_verify_exit, policy_mode: all_of, waivable: false, criteria: [review.round_bound, review.required, spec_set.signed, provenance.present, assumption_set.signed, trace.test_linked] }]
     integrate:  [{ id: G_integrate, policy_mode: all_of, waivable: false, criteria: [node.integration_listed, design.code_matches, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
 ```

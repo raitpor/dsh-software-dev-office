@@ -8,7 +8,7 @@
 
 `task.complete`（含可复跑的观察命令）、`spec_set.signed`、`provenance.present`、`assumption_set.signed`
 
-### `harden[requirement,design,implement,review]` 出口 `G_harden_exit`（19 条，全量）
+### `harden[requirement,design,implement,review]` 出口 `G_harden_exit`（23 条，全量）
 
 | # | 判据 |
 |---|---|
@@ -31,6 +31,10 @@
 | 17 | `review.round_bound` |
 | 18 | `review.required` |
 | 19 | `provenance.present`（core） |
+| 20 | `requirement.baseline_present`（依据：§12.2） |
+| 21 | `design.artifacts_present`（依据：§12.1） |
+| 22 | `test.design_present`（依据：§12.2） |
+| 23 | `trace.requirement_covered` + `trace.test_linked`（依据：§12.2） |
 
 ### `deliver[deliver]` 出口 `G_deliver_exit`（6 条）
 
@@ -53,6 +57,6 @@ policy:
     - { id: deliver, kinds: [deliver], after: [harden] }
   gates:
     explore: [{ id: G_explore_exit, policy_mode: all_of, waivable: false, criteria: [task.complete, spec_set.signed, provenance.present, assumption_set.signed] }]
-    harden:  [{ id: G_harden_exit, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound, task.complete, assumption.disposed, mandate.revalidated, review.round_bound, review.required, provenance.present] }]
+    harden:  [{ id: G_harden_exit, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, stage.design_traceable, design.covers_spec, design.no_spec_creep, design.alternatives_declared, node.acceptance_bound, task.complete, assumption.disposed, mandate.revalidated, review.round_bound, review.required, provenance.present, requirement.baseline_present, design.artifacts_present, test.design_present, trace.requirement_covered, trace.test_linked] }]
     deliver: [{ id: G_deliver_exit, policy_mode: all_of, waivable: false, criteria: [design.code_matches, node.integration_listed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed] }]
 ```

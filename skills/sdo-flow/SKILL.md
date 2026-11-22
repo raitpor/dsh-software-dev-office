@@ -38,7 +38,7 @@ whenToUse: >-
 | `incremental` | 多条线并行 | 需求+设计→实现→评审→集成 |
 | `agent-driven` | 一个 agent 主导实现、人只做签字与门禁 | 定框→实现→验证→评审→签字→交付 |
 
-写进当前里程碑文件 `.sdo/milestones/<M>.md` 的「阶段」段（并写 `preset：` 与 `preset 选择理由：`）；每段结束过出口判据表，没过不开下一段。`agent-driven` 的 46 条判据里有 13 条 `agent.*` 是**流程自检项**（看 agent 行为，不看业务正确性）。细节见 `presets/`。
+写进当前里程碑文件 `.sdo/milestones/<M>.md` 的「阶段」段（并写 `preset：` 与 `preset 选择理由：`）；每段结束过出口判据表，没过不开下一段。`agent-driven` 的 46 条判据里有 13 条 `agent.*` 是**流程自检项**（看 agent 行为，不看业务正确性）。细节见 `presets/`。**改 `presets/*.md` 前，先把仍在使用旧 preset 的活跃里程碑归档**；当前里程碑若就是变更发起者，须在其冻结段写 `preset 变更发起里程碑：M<n>`（恰好一行、未归档、且是当前里程碑）。`check --presets` 会点名未归档的使用者（`preset_change_requires_archive`），声明非法报 `preset_initiator_invalid`。
 
 ## 4. 目录约定（签后可追加，签前可改）
 
@@ -104,7 +104,7 @@ whenToUse: >-
 ## 11. 检查器与快捷视图（门禁用）
 
 ```bash
-node <skill>/scripts/check.mjs [--presets|--all]  # 台账/表格/签字/卡/读数；--presets 比对快照，--all 连仓库其它 .md
+node <skill>/scripts/check.mjs [--presets|--all]  # 台账/表格/签字/卡/读数；--presets 比对快照（改 preset 前先归档使用者；含 preset_change_requires_archive / preset_initiator_invalid / criterion_without_basis / basis_section_missing），--all 连仓库其它 .md
 node <skill>/scripts/gate.mjs [--list|G_req_exit]  # 阶段门：默认判所有勾选表；--file/--json 可用；exit 1/2
 node <skill>/scripts/view.mjs <view>|next  # 七个只读视图；next=能开工什么（五节，未知状态 exit 1）；trace=需求→卡引用原型；均支持 --json
 node <skill>/scripts/ledger.mjs add|close|list              # 台账唯一写入口：add/close 只追加行、旧行不改；list 只读（--open）

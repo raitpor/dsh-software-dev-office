@@ -13,7 +13,7 @@ import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mj
 import { analyzeTrace } from "./lib/trace.mjs";
 import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
 import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity, orphanArchiveDirs, ARCHIVE_STATUSES } from "./lib/archive.mjs";
-import { currentMilestone } from "./lib/preset.mjs";
+import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
@@ -812,6 +812,12 @@ function checkReadings() {
 const PRESET_FILES = ["waterfall.md", "prototype.md", "incremental.md", "agent-driven.md"];
 const KNOWN_KINDS = new Set(["requirement", "design", "implement", "review", "deliver", "verify", "vet", "docs"]);
 // 发布快照：与 skill 一起冻结（改它要一次人签，不允许悄悄放宽/换名）
+const SNAPSHOT_PRESET_SHA = {
+  waterfall: "59e3da1cf7a04a131877da5c6e96e34cd87a56b90740bed7eccbce8f4616c756",
+  prototype: "fd6462cd6eb0e0f67d5a1076ee0575bae82052cb56ce6682b4e686d73c0a7358",
+  incremental: "13228780675864ac746a22892add51c961507d8493ba3ac1a85509c9c1307125",
+  "agent-driven": "e21d3cb9cff0ea0e6d026864b0acd628b34aee1629cee9cf6b9c2af69842197e",
+};
 const SNAPSHOT_STAGES = {
   waterfall: "req[requirement] design[design] build[implement] verify[review] deliver[deliver]",
   prototype: "explore[implement] harden[requirement,design,implement,review] deliver[deliver]",
@@ -819,22 +825,77 @@ const SNAPSHOT_STAGES = {
   "agent-driven": "frame[requirement,design] build[implement] verify[verify] review[review] sign[vet] deliver[deliver]",
 };
 const SNAPSHOT_CRITERIA = {
-  G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed",
-  G_design_exit: "stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound spec_set.signed provenance.present assumption_set.signed",
+  G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed requirement.baseline_present",
+  G_design_exit: "stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound spec_set.signed provenance.present assumption_set.signed design.artifacts_present",
   G_build_exit: "task.complete assumption.disposed mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
-  G_verify_exit: "review.round_bound review.required spec_set.signed provenance.present assumption_set.signed",
+  G_verify_exit: "review.round_bound review.required spec_set.signed provenance.present assumption_set.signed trace.test_linked",
   G_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
   G_explore_exit: "task.complete spec_set.signed provenance.present assumption_set.signed",
-  G_harden_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound task.complete assumption.disposed mandate.revalidated review.round_bound review.required provenance.present",
-  G_req_design: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound",
+  G_harden_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound task.complete assumption.disposed mandate.revalidated review.round_bound review.required provenance.present requirement.baseline_present design.artifacts_present test.design_present trace.requirement_covered trace.test_linked",
+  G_req_design: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound requirement.baseline_present design.artifacts_present",
   G_integrate: "node.integration_listed design.code_matches mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
-  G_frame_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep node.acceptance_bound agent.plan_reviewed agent.write_scope_disjoint agent.cards_have_negative_cases",
+  G_frame_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep node.acceptance_bound agent.plan_reviewed agent.write_scope_disjoint agent.cards_have_negative_cases requirement.baseline_present design.artifacts_present",
   G_agent_build_exit: "task.complete assumption.disposed mandate.revalidated spec_set.signed provenance.present assumption_set.signed agent.evidence_runnable agent.no_self_sign",
-  G_agent_verify_exit: "agent.checker_green agent.mutation_red agent.unverified_listed spec_set.signed provenance.present",
+  G_agent_verify_exit: "agent.checker_green agent.mutation_red agent.unverified_listed spec_set.signed provenance.present trace.test_linked",
   G_agent_review_exit: "review.round_bound review.required agent.reviewer_not_author agent.findings_disposed spec_set.signed provenance.present",
   G_agent_sign_exit: "agent.human_signed agent.known_limits spec_set.signed assumption_set.signed provenance.present",
   G_agent_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated agent.readings_frozen spec_set.signed provenance.present",
 };
+
+function presetChangeGate(changed) {
+  const msg = (m) => ERR.push(`presets:0: ${m}`);
+  const cur = currentMilestone(ROOT);
+  const p = cur ? `.sdo/milestones/${cur}.md` : "";
+  const activeOf = () => {
+    const out = [];
+    for (const preset of changed) for (const id of activeMilestonesUsing(ROOT, preset)) out.push({ preset, id });
+    return out;
+  };
+  const invalid = (why) => msg(`preset_initiator_invalid：${why}`);
+  const heads = p && exists(p) ? read(p).map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*冻结段/.test(x.l)) : [];
+  if (p && exists(p) && heads.length !== 1) return invalid("冻结段小节须唯一");
+  const lines = p && exists(p) ? read(p) : [];
+  const sec = lines.length ? sectionOf(lines, /^#{2,3}\s+.*冻结段/) : null;
+  const hits = [];
+  if (sec) for (let i = sec.start; i < sec.end; i++) {
+    const m = lines[i].match(/^-\s*(?:\*\*)?preset 变更发起里程碑[:：]\s*M(\d+)/);
+    if (m) hits.push({ m: `M${m[1]}`, line: i + 1 });
+  }
+  if (hits.length > 1) return invalid(`「preset 变更发起里程碑」须恰好一行（当前 ${hits.length} 行）`);
+  if (hits.length === 0) {
+    const act = activeOf().filter((x) => !archiveEntry(ROOT, x.id));
+    if (!act.length) return msg("需人签更新发布快照（无活跃里程碑使用旧 preset；未声明发起者，按空集放行）");
+    return invalid(`未声明「preset 变更发起里程碑」，但仍有活跃里程碑使用旧 preset：${act.map((x) => x.id).join("、")}`);
+  }
+  const init = hits[0].m;
+  if (archiveEntry(ROOT, init)) return invalid(`发起里程碑 ${init} 已归档`);
+  if (cur !== init) return invalid(`发起里程碑 ${init} 不是当前里程碑（${cur || "无"}）`);
+  const remaining = activeOf().filter((x) => x.id !== init && !archiveEntry(ROOT, x.id));
+  if (remaining.length) {
+    const byPreset = new Map();
+    for (const x of remaining) { if (!byPreset.has(x.preset)) byPreset.set(x.preset, []); byPreset.get(x.preset).push(x.id); }
+    const parts = [...byPreset.entries()].map(([pr, ids]) => `${pr}: ${ids.join("、")}`);
+    return msg(`preset_change_requires_archive：${parts.join("；")}（先归档，再更新发布快照；发起者 ${init} 已扣除）`);
+  }
+  msg("需人签更新发布快照（已无活跃里程碑使用旧 preset；人签后同步 SNAPSHOT 常量）");
+}
+
+const NEW_CRITERIA = ["requirement.baseline_present", "design.artifacts_present", "test.design_present", "trace.requirement_covered", "trace.test_linked"];
+function checkCriterionBasis() {
+  const intent = read(".sdo/意图.md");
+  const sections = new Set([...intent.join("\n").matchAll(/^###\s+12\.(\d+)\b/gm)].map((m) => m[1]));
+  for (const f of PRESET_FILES) {
+    const p = `presets/${f}`;
+    const lines = read(`skills/sdo-flow/${p}`);
+    for (const crit of NEW_CRITERIA) {
+      if (!lines.some((l) => l.includes(crit))) continue;
+      const hit = lines.map((l, i) => ({ l, i })).find((x) => x.l.includes(crit) && /依据[:：]\s*§12\.\d+/.test(x.l));
+      if (!hit) { err(p, 0, `criterion_without_basis：${crit} 缺「依据：§12.<n>」`); continue; }
+      const n = (hit.l.match(/依据[:：]\s*§12\.(\d+)/) || [])[1];
+      if (!sections.has(n)) err(p, hit.i + 1, `basis_section_missing：${crit} 的依据 §12.${n} 不在 .sdo/意图.md §12 小节里`);
+    }
+  }
+}
 
 function checkPresets() {
   const i = ARGV.indexOf("--presets");
@@ -844,6 +905,8 @@ function checkPresets() {
     if (!fs.existsSync(path.resolve(ROOT, ext))) return err("presets", 0, `判据源不存在：${ext}`);
     doc = fs.readFileSync(path.resolve(ROOT, ext), "utf8");
   }
+  const errStart = ERR.length;
+  const changed = new Set();
   const docStages = {}, docGates = {};
   if (doc) {
     for (const m of doc.matchAll(/^\|\s*`(waterfall|prototype|incremental)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|/gm)) {
@@ -862,6 +925,11 @@ function checkPresets() {
     const key = f.replace(".md", "");
     const p = `presets/${f}`;
     const text = fs.readFileSync(path.join(SELF, "presets", f), "utf8");
+    const sha = crypto.createHash("sha256").update(text, "utf8").digest("hex");
+    if (sha !== SNAPSHOT_PRESET_SHA[key]) {
+      changed.add(key);
+      err(p, 0, `preset 内容 hash 与发布快照不一致（${sha.slice(0, 8)}… ≠ ${SNAPSHOT_PRESET_SHA[key].slice(0, 8)}…）：任何文字改动都要人签更新快照`);
+    }
 
     const gotStages = {};
     for (const m of text.matchAll(/^###\s*`([a-z_]+)\[([^\]]*)\]`/gm)) {
@@ -875,19 +943,25 @@ function checkPresets() {
 
     const gotSeq = Object.entries(gotStages).map(([id, ks]) => `${id}[${ks.join(",")}]`).join(" ");
     const wantSeq = SNAPSHOT_STAGES[key];
+    if (gotSeq !== wantSeq) changed.add(key);
     if (gotSeq !== wantSeq) err(p, 0, `stage 序列与发布快照不一致（多/少/改名/换 kinds 都要人签）：\n  本文件 ${gotSeq || "（空）"}\n  快照   ${wantSeq}`);
 
     const gates = [...text.matchAll(/id:\s*(G_[a-z_]+)([^}]*)criteria:\s*\[([^\]]*)\]/g)];
     if (!gates.length) err(p, 0, "没有任何 gate（id/criteria）");
     const gateIds = gates.map(([, gid]) => gid).sort();
     const wantGates = Object.keys(SNAPSHOT_CRITERIA).filter((g) => getPresetGates(key).includes(g)).sort();
+    if (gateIds.join() !== wantGates.join()) changed.add(key);
     if (gateIds.join() !== wantGates.join()) err(p, 0, `gate 集合与发布快照不一致：本文件 [${gateIds.join(", ") || "空"}]，快照应为 [${wantGates.join(", ")}]`);
 
+    const flattened = gates.flatMap(([, , , body]) => [...body.matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]));
+    const newOnes = flattened.filter((x) => NEW_CRITERIA.includes(x));
+    const dup = newOnes.find((x, i) => newOnes.indexOf(x) !== i);
+    if (dup) err(p, 0, `同一 preset 内判据重复：${dup}（同一条款每门只该出现一次）`);
     for (const [, gid, , body] of gates) {
       const got = [...body.matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]).join(" ");
       const want = SNAPSHOT_CRITERIA[gid];
       if (want === undefined) err(p, 0, `gate ${gid} 不在发布快照里（新 gate 要随 skill 版本一起人签）`);
-      else if (got !== want) err(p, 0, `${gid} 的 criteria 与发布快照不一致：\n  本文件 ${got || "（空）"}\n  快照   ${want}`);
+      else if (got !== want) { changed.add(key); err(p, 0, `${gid} 的 criteria 与发布快照不一致：\n  本文件 ${got || "（空）"}\n  快照   ${want}`); }
       if (!got.split(" ").includes("spec_set.signed")) err(p, 0, `${gid} 的 criteria 缺 core 判据 spec_set.signed`);
       // 外部判据源：只比对本文件出现的 gate
       if (docGates[gid] && docGates[gid] !== got) err(p, 0, `${gid} 的 criteria 与外部判据源不一致（本文件 ${got.split(" ").filter(Boolean).length} 条，源 ${docGates[gid].split(" ").filter(Boolean).length} 条）`);
@@ -902,6 +976,14 @@ function checkPresets() {
         if (want !== gotSeq) err(p, 0, `stage 序列与外部判据源不一致：\n  本文件 ${gotSeq}\n  源     ${want}`);
         for (const [, gid] of gates) if (!docGates[gid]) err(p, 0, `多出判据源里没有的 gate：${gid}`);
       }
+    }
+  }
+  if (changed.size) {
+    const gateStart = ERR.length;
+    presetChangeGate(changed);
+    if (ERR.length > gateStart) {
+      const gateErrors = ERR.splice(gateStart);
+      ERR.splice(errStart, 0, ...gateErrors);
     }
   }
   if (!ext) console.log("（preset 校验：发布快照（stage 序列 + gate 集合 + criteria 逐条）；与设计稿比对请传 --presets <文件>）");
@@ -1537,6 +1619,7 @@ checkBaselineArtifacts();
 checkCardTemplateDecisions();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkReadings(); checkArchive();
+checkCriterionBasis();
 if (ARGV.includes("--presets")) checkPresets();
 if (ARGV.includes("--js")) {
   console.log(JSON.stringify({ ok: ERR.length === 0, errors: ERR, warnings: WARN }));
