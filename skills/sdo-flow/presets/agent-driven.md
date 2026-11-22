@@ -40,6 +40,7 @@
 | 16 | `agent.cards_have_negative_cases` | 每张卡的判据都写了反例（改回去会怎样） |
 | 17 | `requirement.baseline_present`（依据：§12.2） | 需求基线存在且验收口径可核 |
 | 18 | `design.artifacts_present`（依据：§12.1） | 设计产物（ADR）齐全 |
+| 19 | `requirement.claimed_or_na`（依据：§12.2） | 里程碑有「认领需求：」行，或写「需求：无（理由）」 |
 
 ### `build[implement]` 出口 `G_agent_build_exit`
 
@@ -64,6 +65,7 @@
 | 28 | `spec_set.signed`（core） | 同上 |
 | 29 | `provenance.present`（core） | 同上 |
 | 30 | `trace.test_linked`（依据：§12.2） | done 卡判据能追到测试引用 |
+| 31 | `trace.card_coverage`（依据：§12.2） | `--trace` 的 orphanCards=0 且无 trace_dangling_ref |
 
 ### `review[review]` 出口 `G_agent_review_exit`
 
@@ -129,9 +131,9 @@ policy:
     - { id: sign,    kinds: [vet],                 after: [review] }
     - { id: deliver, kinds: [deliver],             after: [sign] }
   gates:
-    frame:   [{ id: G_frame_exit, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, provenance.present, stage.design_traceable, design.covers_spec, design.no_spec_creep, node.acceptance_bound, agent.plan_reviewed, agent.write_scope_disjoint, agent.cards_have_negative_cases, requirement.baseline_present, design.artifacts_present] }]
+    frame:   [{ id: G_frame_exit, policy_mode: all_of, waivable: false, criteria: [stage.requirement_complete, intent.restated_consistent, alignment.examples_present, spec_set.signed, scope.present, intent.explicit_for_risk, redteam.disposed, assumption_set.signed, provenance.present, stage.design_traceable, design.covers_spec, design.no_spec_creep, node.acceptance_bound, agent.plan_reviewed, agent.write_scope_disjoint, agent.cards_have_negative_cases, requirement.baseline_present, design.artifacts_present, requirement.claimed_or_na] }]
     build:   [{ id: G_agent_build_exit, policy_mode: all_of, waivable: false, criteria: [task.complete, assumption.disposed, mandate.revalidated, spec_set.signed, provenance.present, assumption_set.signed, agent.evidence_runnable, agent.no_self_sign] }]
-    verify:  [{ id: G_agent_verify_exit, policy_mode: all_of, waivable: false, criteria: [agent.checker_green, agent.mutation_red, agent.unverified_listed, spec_set.signed, provenance.present, trace.test_linked] }]
+    verify:  [{ id: G_agent_verify_exit, policy_mode: all_of, waivable: false, criteria: [agent.checker_green, agent.mutation_red, agent.unverified_listed, spec_set.signed, provenance.present, trace.test_linked, trace.card_coverage] }]
     review:  [{ id: G_agent_review_exit, policy_mode: all_of, waivable: false, criteria: [review.round_bound, review.required, agent.reviewer_not_author, agent.findings_disposed, spec_set.signed, provenance.present] }]
     sign:    [{ id: G_agent_sign_exit, policy_mode: all_of, waivable: false, criteria: [agent.human_signed, agent.known_limits, spec_set.signed, assumption_set.signed, provenance.present] }]
     deliver: [{ id: G_agent_deliver_exit, policy_mode: all_of, waivable: false, criteria: [design.code_matches, node.integration_listed, mandate.revalidated, agent.readings_frozen, spec_set.signed, provenance.present] }]

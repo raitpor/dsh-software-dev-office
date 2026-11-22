@@ -69,6 +69,11 @@ function archive(m) {
     console.error(`archive_milestone_missing：里程碑 ${m} 没有 .sdo/milestones/${m}.md（不归档无正文的里程碑）`);
     process.exit(1);
   }
+  const gi = gateInfo(m);
+  if (gi.gate === "-" || gi.tree === "-") {
+    console.error(`milestone_not_gated：里程碑 ${m} 没有可识别的门签/被签树（.sdo/sign 里须有范围含「${m} 里程碑门」的签字并记「被签对象」），拒绝归档未收口里程碑`);
+    process.exit(1);
+  }
   const files = sourceFiles(m);
   if (!files.length) { console.error(`里程碑 ${m} 没有可归档文件`); process.exit(1); }
   const destDir = `.sdo/archive/${m}`;
@@ -87,7 +92,6 @@ function archive(m) {
     catch (e) { console.error(`git mv 失败：${src}\n${String(e.stderr || e.message).trim()}`); process.exit(1); }
     manifest[key] = sha256(dst);
   }
-  const gi = gateInfo(m);
   const rows = readArchiveIndex(ROOT).filter((r) => r.milestone !== m);
   rows.push({ milestone: m, gate: gi.gate, tree: gi.tree, count: String(files.length), manifest, status: "已归档" });
   rows.sort((a, b) => a.milestone.localeCompare(b.milestone, undefined, { numeric: true }));

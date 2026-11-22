@@ -458,6 +458,7 @@ function planCardSets() {
   let section = 1, col = -1;
   const seen = { 1: false, 2: false, 3: false, 4: false, 5: false };
   const baselineDecl = [], mutationDecl = [];
+  let sawAny = false;
   for (const line of lines) {
     const h = line.match(/^##\s*M(\d+)/);
     if (h) { section = Number(h[1]); col = -1; continue; }
@@ -473,7 +474,7 @@ function planCardSets() {
       const tail = at >= 0 ? line.slice(at + 1) : "";
       for (const m of tail.matchAll(/M\d+-(?:\d+|G)/g)) mutationDecl.push(m[0]);
     }
-    if (section < 1 || section > 5) continue;
+    if (section < 1) continue;
     const raw = line.trim();
     if (!raw.startsWith("|")) { col = -1; continue; }
     const cs = cells(raw);
@@ -485,6 +486,7 @@ function planCardSets() {
     const id = (cs[col] || "").replace(/`/g, "").trim();
     if (!/^M\d+-(?:\d+|G)$/.test(id)) continue;
     all.add(id);
+    sawAny = true;
     seen[section] = true;
     if (section <= 3) legacy.add(id);
     else if (section === 4) { baseline.add(id); m4.add(id); }
@@ -503,7 +505,7 @@ function planCardSets() {
     if (!signed) { warn(".sdo/milestones", 0, `变异校验基线卡声明无效（无签字文件引用该卡）：${id}`); continue; }
     mutationBaseline.add(id); all.add(id);
   }
-  return { legacy, m4, baseline, strict, mutationBaseline, all, ok: seen[4] && seen[5] };
+  return { legacy, m4, baseline, strict, mutationBaseline, all, ok: sawAny };
 }
 
 
@@ -814,10 +816,10 @@ const PRESET_FILES = ["waterfall.md", "prototype.md", "incremental.md", "agent-d
 const KNOWN_KINDS = new Set(["requirement", "design", "implement", "review", "deliver", "verify", "vet", "docs"]);
 // 发布快照：与 skill 一起冻结（改它要一次人签，不允许悄悄放宽/换名）
 const SNAPSHOT_PRESET_SHA = {
-  waterfall: "59e3da1cf7a04a131877da5c6e96e34cd87a56b90740bed7eccbce8f4616c756",
-  prototype: "fd6462cd6eb0e0f67d5a1076ee0575bae82052cb56ce6682b4e686d73c0a7358",
+  waterfall: "ffa2c322c0e767ce1a139907992fe11fa804945c417cd629bf3e7ab55d91d787",
+  prototype: "eb435464abd1795728fee62dfbf45c16d2b906c06adec5f760ac1705fa1c5c1c",
   incremental: "13228780675864ac746a22892add51c961507d8493ba3ac1a85509c9c1307125",
-  "agent-driven": "e21d3cb9cff0ea0e6d026864b0acd628b34aee1629cee9cf6b9c2af69842197e",
+  "agent-driven": "38272083a7a71e43848b4fbbf69578ecdbbedbd0bd00d0ad1775dcba85fa412b",
 };
 const SNAPSHOT_STAGES = {
   waterfall: "req[requirement] design[design] build[implement] verify[review] deliver[deliver]",
@@ -826,18 +828,18 @@ const SNAPSHOT_STAGES = {
   "agent-driven": "frame[requirement,design] build[implement] verify[verify] review[review] sign[vet] deliver[deliver]",
 };
 const SNAPSHOT_CRITERIA = {
-  G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed requirement.baseline_present",
-  G_design_exit: "stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound spec_set.signed provenance.present assumption_set.signed design.artifacts_present",
+  G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed requirement.baseline_present requirement.claimed_or_na",
+  G_design_exit: "stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound spec_set.signed provenance.present assumption_set.signed design.artifacts_present trace.card_coverage",
   G_build_exit: "task.complete assumption.disposed mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
   G_verify_exit: "review.round_bound review.required spec_set.signed provenance.present assumption_set.signed trace.test_linked",
   G_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
   G_explore_exit: "task.complete spec_set.signed provenance.present assumption_set.signed",
-  G_harden_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound task.complete assumption.disposed mandate.revalidated review.round_bound review.required provenance.present requirement.baseline_present design.artifacts_present test.design_present trace.requirement_covered trace.test_linked",
+  G_harden_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound task.complete assumption.disposed mandate.revalidated review.round_bound review.required provenance.present requirement.baseline_present design.artifacts_present test.design_present trace.requirement_covered trace.test_linked requirement.claimed_or_na trace.card_coverage",
   G_req_design: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep design.alternatives_declared node.acceptance_bound requirement.baseline_present design.artifacts_present",
   G_integrate: "node.integration_listed design.code_matches mandate.revalidated spec_set.signed provenance.present assumption_set.signed",
-  G_frame_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep node.acceptance_bound agent.plan_reviewed agent.write_scope_disjoint agent.cards_have_negative_cases requirement.baseline_present design.artifacts_present",
+  G_frame_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed assumption_set.signed provenance.present stage.design_traceable design.covers_spec design.no_spec_creep node.acceptance_bound agent.plan_reviewed agent.write_scope_disjoint agent.cards_have_negative_cases requirement.baseline_present design.artifacts_present requirement.claimed_or_na",
   G_agent_build_exit: "task.complete assumption.disposed mandate.revalidated spec_set.signed provenance.present assumption_set.signed agent.evidence_runnable agent.no_self_sign",
-  G_agent_verify_exit: "agent.checker_green agent.mutation_red agent.unverified_listed spec_set.signed provenance.present trace.test_linked",
+  G_agent_verify_exit: "agent.checker_green agent.mutation_red agent.unverified_listed spec_set.signed provenance.present trace.test_linked trace.card_coverage",
   G_agent_review_exit: "review.round_bound review.required agent.reviewer_not_author agent.findings_disposed spec_set.signed provenance.present",
   G_agent_sign_exit: "agent.human_signed agent.known_limits spec_set.signed assumption_set.signed provenance.present",
   G_agent_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated agent.readings_frozen spec_set.signed provenance.present",
@@ -881,7 +883,7 @@ function presetChangeGate(changed) {
   msg("需人签更新发布快照（已无活跃里程碑使用旧 preset；人签后同步 SNAPSHOT 常量）");
 }
 
-const NEW_CRITERIA = ["requirement.baseline_present", "design.artifacts_present", "test.design_present", "trace.requirement_covered", "trace.test_linked"];
+const NEW_CRITERIA = ["requirement.baseline_present", "design.artifacts_present", "test.design_present", "trace.requirement_covered", "trace.test_linked", "requirement.claimed_or_na", "trace.card_coverage"];
 function checkCriterionBasis() {
   const intent = read(".sdo/意图.md");
   const sections = new Set([...intent.join("\n").matchAll(/^###\s+12\.(\d+)\b/gm)].map((m) => m[1]));
@@ -1448,9 +1450,23 @@ function checkBaselineBinding(milestone, raw, p) {
   console.log(`计划：基线漂移由「基于旧基线」放行 ${old.slice(0, 8)}→${cur.slice(0, 8)}（变更请求 ${dm[1]}；${reason}）`);
 }
 
+function checkRequirementClaim(lines, planPath) {
+  const claim = lines.some((l) => /^认领需求[:：]\s*\S/.test(l.trim()));
+  if (claim) return;
+  const na = lines.map((l) => l.trim()).find((l) => /^需求[:：]\s*无\s*[（(][^）)]+[）)]/.test(l));
+  if (na) {
+    const reason = (na.match(/[（(]([^）)]+)[）)]/) || [])[1] || "";
+    if (substantiveReason(reason)) return;
+    err(planPath, 1, `requirement_missing：需求：无（理由）的理由不够具体（${reason}）`);
+    return;
+  }
+  err(planPath, 1, "requirement_missing：缺「认领需求：」行且无「需求：无（理由）」");
+}
+
 function checkPlanRules(milestone, planPath) {
   const raw = fs.readFileSync(path.join(ROOT, planPath), "utf8");
   const lines = raw.split("\n");
+  checkRequirementClaim(lines, planPath);
   const presetBase = baselineSegments(lines, "preset", planPath);
   const probeBase = baselineSegments(lines, "探底", planPath);
   // 顺序：先查“内容规则”（preset / 理由 / 探底 / 阶段），最后查冻结段 hash。
@@ -1491,7 +1507,7 @@ function checkAuthorizationText() {
 function checkPlan() {
   const milestone = planMilestone();
   if (archiveEntry(ROOT, milestone)) {
-    console.log(`${milestone} 已归档（.sdo/archive/${milestone}/）`);
+    console.log(`${milestone} 已归档，跳过（.sdo/archive/${milestone}/）`);
     process.exit(0);
   }
   const idxRow = archiveRows(ROOT).find((r) => r.milestone === milestone);
