@@ -52,6 +52,10 @@ read_refs: [.sdo/milestones/M9.md, .sdo/gates/]
 | C3 | exit=0; pass | 4 条摩擦，每条现象/命令/结论 |
 | C4 | exit=0; pass | 已安装副本同步后 `diff -r` 无输出（`.dsh/` 由 Lead 复核） |
 
+## 临时决策
+
+无。
+
 ## 协作偏差
 
 - 台账 D-186 曾不在原 write_scope；已由追加签 S42-F 把 `.sdo/台账.md` 补进卡面与计划卡表写域，现在不再是越界。
