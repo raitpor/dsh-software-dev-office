@@ -76,7 +76,7 @@ agent-driven : frame → build → verify → review → sign → deliver
 
 1. **立项**：产物 `.sdo/意图.md`（六节）与 S1 意图签。命令：`cp <skill>/templates/意图.md .sdo/意图.md` 后填；`node <skill>/scripts/check.mjs`。判据：人签问答通过、意图六节齐全、check 0 错。常见错：没签就开工；把愿望当可判目标。
 
-2. **基线**：产物 `.sdo/baseline/` 四份（requirement/architecture/test-strategy/quality-risk）。`templates/baseline.md` 是**一个含四小节的模板**，必须拆成四个文件；命令序列：
+2. **基线**：产物 `.sdo/baseline/` 四份（requirement/architecture/test-strategy/quality-risk）。**首选命令**：`node <skill>/scripts/baseline.mjs init`——生成四份**成品骨架**（各自最小合法，建完 `check` 0 错），并读 `templates/baseline.md` 做标题覆盖校验（模板标题 ⊆ 内置骨架，模板新增标题未同步 ⇒ `baseline_template_drift` exit 2 零写入）；已存在的文件跳过。手工路线（产物是骨架，需自行补成可判结构）：`templates/baseline.md` 是**一个含四小节的模板**，必须拆成四个文件；命令序列：
    ```bash
    mkdir -p .sdo/baseline
    awk '/^## 1\. requirement\.md/{on=1;next}/^## 2\./{on=0}on' <skill>/templates/baseline.md > .sdo/baseline/requirement.md
@@ -87,7 +87,7 @@ agent-driven : frame → build → verify → review → sign → deliver
    ```
    各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签。
 
-3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；**`.sdo/计划.md` 里要手动加一行本里程碑的索引行**（七列，表头见 `templates/计划.md`；示例：`| M1 | 主题 | incremental | 待签 | — | milestones/M1.md | 进行中 |`），漏了它 `view next`/门签都会找不到里程碑；**卡文件建好后保持 `status: open`**——`done` 会触发收卡规则（S1 人签、语义自检、证据与变异），冷启动阶段先别置 done；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
+3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、门禁与判据、卡表、写域、阶段、冻结段）与计划签。**首选命令**：`node <skill>/scripts/milestone.mjs new <M> --topic "<主题>"`——硬编码生成六段骨架（`.0`–`.5`，冻结段带 `- 门禁：`/`- 判据：` 占位，**不写 `preset` 字段、不碰 `.sdo/计划.md`**）；`node <skill>/scripts/milestone.mjs freeze <M>` 就地把冻结段 `hash:` 行写成 64 位（幂等，二次执行不变）。它**不会**替你加计划索引行；**`.sdo/计划.md` 里要手动加一行本里程碑的索引行**（七列，表头见 `templates/计划.md`；示例：`| M1 | 主题 | incremental | 待签 | — | milestones/M1.md | 进行中 |`），漏了它 `view next`/门签都会找不到里程碑；**卡文件建好后保持 `status: open`**——`done` 会触发收卡规则（S1 人签、语义自检、证据与变异），冷启动阶段先别置 done；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
 
    冻结段 hash 行的**精确形态**：独立一行、ASCII 冒号、无前缀、不加粗：
 
