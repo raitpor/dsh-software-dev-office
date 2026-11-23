@@ -464,13 +464,45 @@ function checkArchive() {
   for (const i of assertArchivedIntegrity(ROOT)) err(i.path, i.line, i.msg);
 }
 
+function planIndexMilestones() {
+  const p = ".sdo/计划.md";
+  if (!exists(p)) return [];
+  const out = [];
+  let inTable = false, mCol = -1;
+  for (const line of read(p)) {
+    const raw = line.trim();
+    if (!raw.startsWith("|")) { inTable = false; mCol = -1; continue; }
+    const cs = cells(raw);
+    if (!inTable) {
+      mCol = cs.findIndex((x) => x.replace(/`/g, "").trim() === "里程碑");
+      if (mCol >= 0) inTable = true;
+      continue;
+    }
+    if (isSep(raw)) continue;
+    const id = (cs[mCol] || "").replace(/`/g, "").trim();
+    if (/^M\d+$/.test(id)) out.push(id);
+  }
+  return out;
+}
+
 function planCardSets() {
   const legacy = new Set(), m4 = new Set(), baseline = new Set(), strict = new Set(), all = new Set();
   const mutationBaseline = new Set();
   const mileFiles = fs.existsSync(path.join(ROOT, MILESTONE_DIR))
     ? fs.readdirSync(path.join(ROOT, MILESTONE_DIR)).filter((f) => /^M\d+\.md$/.test(f)).sort()
     : [];
-  if (!mileFiles.length) return { legacy, m4, baseline, strict, mutationBaseline, all, ok: false };
+  const planIdx = planIndexMilestones();
+  const mileSet = new Set(mileFiles.map((f) => f.replace(/\.md$/, "")));
+  for (const id of planIdx) {
+    if (!mileSet.has(id) && !archiveEntry(ROOT, id)) {
+      err(MILESTONE_DIR, 0, `计划索引有 ${id} 但 .sdo/milestones/${id}.md 不存在（milestone_file_missing）`);
+    }
+  }
+  if (!mileFiles.length) {
+    // 索引为空且目录为空：新项目合法空状态；索引有行但文件缺失已在上面报 milestone_file_missing。
+    const hasDir = fs.existsSync(path.join(ROOT, MILESTONE_DIR));
+    return { legacy, m4, baseline, strict, mutationBaseline, all, ok: hasDir };
+  }
   const lines = mileFiles.flatMap((f) => read(`${MILESTONE_DIR}/${f}`));
   let section = 1, col = -1;
   const seen = { 1: false, 2: false, 3: false, 4: false, 5: false };

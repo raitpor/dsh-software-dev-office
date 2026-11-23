@@ -55,7 +55,7 @@ whenToUse: >-
   看板.md             可选：view.mjs board 生成，或手写
 ```
 
-模板在 `templates/`，第一次用直接拷出来改。
+模板在 `templates/`。空项目可直接运行 `node <skill>/scripts/init.mjs` 一次建好 `.sdo/` 的 18 项骨架（4 顶层文件 + baseline 四份 + 10 个目录）；幂等，`--dry-run` 只预览、`--force` 覆盖前打印清单。
 
 ## 5. 八步主循环（每步：产物 / 命令 / 判据 / 常见错）
 
