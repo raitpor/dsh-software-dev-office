@@ -1822,6 +1822,27 @@ function freezeSectionLines(lines) {
   const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
   return sec ? { start: sec.start, end: sec.end, lines } : null;
 }
+function milestoneGateAccepted(mid) {
+  const n = String(mid).replace(/^M/, "");
+  const dir = path.join(ROOT, ".sdo/sign");
+  if (!fs.existsSync(dir)) return false;
+  const hits = [];
+  for (const f of fs.readdirSync(dir).filter((x) => SIGN_FILE_RE.test(x))) {
+    const lines = read(path.join(".sdo/sign", f));
+    const head = lines.slice(0, 3).join("\n");
+    if (!new RegExp(`M${n}\\s*(?:里程碑)?门`).test(head)) continue;
+    hits.push({ file: f, lines });
+  }
+  if (!hits.length) return false;
+  hits.sort((a, b) => {
+    const na = (a.file.match(/^S(\d+)/) || [])[1], nb = (b.file.match(/^S(\d+)/) || [])[1];
+    return Number(na) - Number(nb);
+  });
+  const latest = hits[hits.length - 1].lines.join("\n");
+  const opt = latest.match(/^\s*-?\s*选项[:：]\s*(.+)$/m);
+  return Boolean(opt && /^\s*(?:\*\*|`)?\s*签[:：]/.test(opt[1].trim()));
+}
+
 let exemptionCache = null;
 function declarationExemption() {
   if (exemptionCache) return exemptionCache;
@@ -1852,6 +1873,7 @@ function declarationExemption() {
           if (!/^M\d+$/.test(t)) { malformed = { src: fp, line: i + 1, why: `非法里程碑号：${t}` }; continue; }
           const num = Number(t.slice(1));
           if (num >= srcNum) continue; // 声明方不能豁免自己或更新的里程碑
+          if (!milestoneGateAccepted(t)) continue; // 被豁免者必须已过门（门签判定为接受）
           ids.add(t);
           sources.set(t, fp);
         }
@@ -1882,11 +1904,11 @@ function checkDeclarations(lines, p, mid) {
   const exSrc = exemption.sources.get(mid);
   const srcNote = exSrc ? `（声明豁免来自 ${path.relative(ROOT, exSrc)})` : "";
   if (gateLine < 0 || gateVal.trim() === "") {
-    if (legacyExempt) warn(p, 1, `gate_criteria_undeclared_legacy：${mid} 缺「- 门禁：」；历史签，不追溯${srcNote}`);
+    if (legacyExempt) warn(p, 1, `gate_criteria_undeclared_legacy：${mid} 缺「- 门禁：」；历史签，不追溯；该里程碑已过门，不回改${srcNote}`);
     else err(p, 1, missMsg + "（缺「- 门禁：」）");
   }
   if (critLine < 0 || critVal.trim() === "") {
-    if (legacyExempt) warn(p, 1, `gate_criteria_undeclared_legacy：${mid} 缺「- 判据：」；历史签，不追溯${srcNote}`);
+    if (legacyExempt) warn(p, 1, `gate_criteria_undeclared_legacy：${mid} 缺「- 判据：」；历史签，不追溯；该里程碑已过门，不回改${srcNote}`);
     else err(p, 1, missMsg + "（缺「- 判据：」）");
   }
   const gateIds = [...new Set([...gateVal.matchAll(/G_[a-z0-9_]+/g)].map((x) => x[0]))];
