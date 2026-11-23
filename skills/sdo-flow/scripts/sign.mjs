@@ -387,7 +387,10 @@ function draft(root, milestone) {
 }
 
 if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
-  console.log("用法：node <skill>/scripts/sign.mjs draft <M> | batch <M> --cards <卡号…>（详见文件头）");
+  console.log(`用法：
+  node <skill>/scripts/sign.mjs draft --milestone <M>
+  node <skill>/scripts/sign.mjs batch <M> [--cards <卡号,卡号>]
+示例：node <skill>/scripts/sign.mjs draft --milestone M10`);
   process.exit(0);
 }
 const parsed = parseArgs(process.argv.slice(2));

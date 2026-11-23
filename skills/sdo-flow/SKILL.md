@@ -102,7 +102,12 @@ agent-driven : frame → build → verify → review → sign → deliver
 ```
 
 判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
-4. **开卡**：产物 `.sdo/cards/<M>-<n>.md`。命令：`node <skill>/scripts/card.mjs new <M>-<n> --owner … --intent … --criteria "C1:结构:文字;C2:语义:文字"`；`--criteria` 每项是 `编号:类型:文字`（类型只 `结构`/`语义`/`边界`），多项用**分号**分隔，**禁止半角逗号**（逗号会被当成项内文字）。卡面 `write_scope` 与计划卡表写域同形：值不加引号、每项一个仓库相对路径，`skills/sdo-flow/` 下的文件可写相对该目录的路径（检查器按 `skills/sdo-flow/` 归一）。判据：判据表含「类型」列（结构/语义/边界）、写域与准入清楚、每条判据可判死。常见错：判据写“做好/合理”；缺准入依赖；用引号/逗号写 `--criteria`。
+4. **开卡**：产物 `.sdo/cards/<M>-<n>.md`。命令：`node <skill>/scripts/card.mjs new <M>-<n> --owner … --intent … --criteria "C1:结构:文字;C2:语义:文字"`；`--criteria` 每项是 `编号:类型:文字`（类型只 `结构`/`语义`/`边界`），多项用**分号**分隔，**禁止半角逗号**（逗号会被当成项内文字）。卡面 `write_scope` 与计划卡表写域同形：值不加引号、每项一个仓库相对路径，`skills/sdo-flow/` 下的文件可写相对该目录的路径（检查器按 `skills/sdo-flow/` 归一）。反例：写裸文件名 `calc.js` 会被计划侧归一成 `skills/sdo-flow/calc.js`，卡面再带引号 `"calc.js"` 会把引号并入 token，两边对不上。
+正例（同一 token）：
+- 计划卡表写域：`skills/sdo-flow/scripts/check.mjs`
+- 卡面：`write_scope: [skills/sdo-flow/scripts/check.mjs]`
+
+判据：判据表含「类型」列（结构/语义/边界）、写域与准入清楚、每条判据可判死。常见错：判据写“做好/合理”；缺准入依赖；用引号/逗号写 `--criteria`。
 5. **执行**：产物实现文件 + 脚本证据。命令：`node <skill>/scripts/card.mjs evidence <卡> --criterion C1 --cmd '<命令>' --run`。判据：证据列以 `exit=<code>` 开头、写域外先问、一卡两笔提交。常见错：手填 `pass`/`ok`；用“我试过”代替可复跑命令。
 6. **评审**：产物评审记录、判定、变异表。命令：`node <skill>/scripts/card.mjs mutation --card <卡> --criterion C1 --mutate '<改坏>' --expect '<应红命令>'`。判据：评审者非作者、判词三选一、有语义判据的 done 卡写 `- 语义自检：`、每条判据有 `expected=red actual=red` 或“不可变异+理由+确认”。常见错：改完再审后不复认；只看历史行不看最后判词。
 7. **收卡/人签**：产物 `.sdo/sign/S<n>.md` + 卡 status done。`sign.mjs draft` **在有 git 的仓库里需要可解析的 `git HEAD`——先 `git commit` 再 draft**（未提交改动不会进入被签对象）；**没有 git 时不阻塞**：输出「无 git（无法锚定 commit）」的锚点并 exit 0，此时被签对象只能靠逐文件 sha256。命令：`node <skill>/scripts/sign.mjs draft --milestone <M>` 取材料；`cp <skill>/templates/sign.md .sdo/sign/S<n>.md`，把 `<n>` 换成下一个编号（规则：`ls .sdo/sign | sort -V | tail -1` 取最大号；**新签** +1，如 S52 后写 `S53.md`；**追加签**用同号加字母 `S<n>-<A>`，不是继续加号），`范围`/`被签对象`/`判定`/`已知边界` 照 draft 填，`- 冻结段 hash：` **唯一来源是第 3 步 `--print-frozen-hash`**（draft 里的同名行只作核对，不一致以 `--print-frozen-hash` 为准并报错停下）；再由真人确认。判据：四要素齐全（范围/被签对象/判定/已知边界）、签署者是人、签后树不再动。常见错：模型自签；代笔无确认；“我问过”写成“签过”。
