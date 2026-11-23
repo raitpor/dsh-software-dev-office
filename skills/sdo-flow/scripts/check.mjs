@@ -98,7 +98,7 @@ function skillDirs() {
     if (depth >= 3) return;
     for (const e of entries) {
       if (!e.isDirectory()) continue;
-      if (["node_modules", ".git", "lib", "dist"].includes(e.name)) continue;
+      if (["node_modules", ".git", "lib", "dist", ".tmp", ".work"].includes(e.name)) continue;
       walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
     }
   })("", 0);

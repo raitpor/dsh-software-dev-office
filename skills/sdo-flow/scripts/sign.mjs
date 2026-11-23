@@ -283,13 +283,14 @@ function parseArgs(argv) {
     const flags = {};
     for (let i = 0; i < rest.length; i++) {
       const a = rest[i];
-      if (["--kind", "--milestone", "--scope"].includes(a) && i + 1 < rest.length) flags[a.slice(2)] = rest[++i];
+      if (a === "--force") flags.force = true;
+      else if (["--kind", "--milestone", "--scope"].includes(a) && i + 1 < rest.length) flags[a.slice(2)] = rest[++i];
       else die(`未知参数：${a}`);
     }
     const milestone = flags.milestone || "";
     if (!/^M\d+$/.test(milestone)) die("缺少或非法 --milestone（应为 M11）");
     if (!flags.scope) die("缺少 --scope（这份签覆盖到哪）");
-    return { cmd, milestone, kind: flags.kind || "计划", scope: flags.scope };
+    return { cmd, milestone, kind: flags.kind || "计划", scope: flags.scope, force: flags.force === true };
   }
   if (cmd === "batch") {
     const milestone = rest[0];
@@ -314,18 +315,38 @@ function signNumber(root) {
   return max + 1;
 }
 
-function signNew(root, milestone, kind, scope) {
+function signNew(root, milestone, kind, scope, force = false) {
   const signDir = path.join(root, ".sdo/sign");
   const absMilestone = path.join(root, `.sdo/milestones/${milestone}.md`);
   if (!fs.existsSync(absMilestone)) die(`找不到 .sdo/milestones/${milestone}.md`);
   // 同一里程碑+同一 kind 已有签文件则跳过（幂等）
+  let existing = null;
   if (fs.existsSync(signDir)) for (const f of fs.readdirSync(signDir)) {
     if (!/^S\d+(?:-[A-Z])?\.md$/.test(f)) continue;
-    const text = fs.readFileSync(path.join(signDir, f), "utf8");
-    if (text.includes("generated-by: sign.mjs new") && text.includes(`- 范围：${scope}`) && text.split(/\r?\n/)[0].includes(`${milestone} ${kind}`)) {
-      console.log(`已存在同范围生成的${kind}签，跳过：.sdo/sign/${f}`);
-      process.exit(0);
+    const p = path.join(signDir, f);
+    const text = fs.readFileSync(p, "utf8");
+    const title = text.split(/\r?\n/)[0];
+    const titleOk = new RegExp(`(?:^|\\s|·)\\s*${milestone}\\s+${kind}(?:\\s|$)`).test(title);
+    if (text.includes("generated-by: sign.mjs new") && text.includes(`- 范围：${scope}`) && titleOk) {
+      existing = { p, text, f };
+      break;
     }
+  }
+  if (existing && !force) {
+    console.log(`已存在同范围生成的${kind}签，跳过：.sdo/sign/${existing.f}`);
+    process.exit(0);
+  }
+  if (existing && force) {
+    let verdict = "";
+    for (const line of existing.text.split(/\r?\n/)) {
+      const vm = /^\s*-\s*判定\s*[:：]\s*(.*)$/.exec(line.trim());
+      if (vm) verdict = vm[1].trim();
+    }
+    if (verdict && !/^(待填|待签)/.test(verdict)) {
+      console.error(`sign_already_signed：.sdo/sign/${existing.f} 已有判定「${verdict}」，拒绝覆盖`);
+      process.exit(2);
+    }
+    console.log(`将覆盖：.sdo/sign/${existing.f}（未人签草案）`);
   }
   const check = path.join(path.dirname(fileURLToPath(import.meta.url)), "check.mjs");
   const hr = spawnSync(process.execPath, [check, "--plan", "--milestone", milestone, "--print-frozen-hash"], { cwd: root, encoding: "utf8" });
@@ -338,8 +359,8 @@ function signNew(root, milestone, kind, scope) {
   const title = kind === "计划" ? `# S${n} · ${milestone} 计划` : `# S${n} · ${milestone} ${kind}`;
   const text = [title, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：commit \`${head}\``, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");
   fs.mkdirSync(signDir, { recursive: true });
-  const rel = `.sdo/sign/S${n}.md`;
-  console.log(`将写：${rel}`);
+  const rel = existing ? `.sdo/sign/${existing.f}` : `.sdo/sign/S${n}.md`;
+  if (!existing) console.log(`将写：${rel}`);
   fs.writeFileSync(path.join(root, rel), text);
   console.log(`下一步：人填判定/边界/签署者后，node <skill>/scripts/check.mjs --plan --milestone ${milestone}`);
   process.exit(0);
@@ -453,4 +474,4 @@ const root = findRoot(process.cwd());
 if (!root) die("找不到 .sdo/：请在本项目内运行");
 if (parsed.cmd === "draft") draft(root, parsed.milestone);
 else if (parsed.cmd === "batch") batch(root, parsed.milestone, parsed.cards);
-else signNew(root, parsed.milestone, parsed.kind, parsed.scope);
+else signNew(root, parsed.milestone, parsed.kind, parsed.scope, parsed.force);

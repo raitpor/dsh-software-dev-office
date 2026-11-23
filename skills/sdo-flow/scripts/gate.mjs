@@ -184,7 +184,7 @@ function signatureAcceptsPartial(file, text) {
 }
 
 
-function initGate(mid) {
+function initGate(mid, force = false) {
   if (!/^M\d+$/.test(mid || "")) { console.error("用法：gate.mjs init <M>"); process.exit(2); }
   const mfile = path.join(ROOT, `.sdo/milestones/${mid}.md`);
   if (!fs.existsSync(mfile)) { console.error(`找不到 .sdo/milestones/${mid}.md`); process.exit(2); }
@@ -203,7 +203,8 @@ function initGate(mid) {
   if (!gates.length || !criteria.length) { console.error(`gate_criteria_undeclared：${mid} 门禁/判据声明为空`); process.exit(1); }
   const rel = `.sdo/gates/${mid}.md`;
   const out = path.join(ROOT, rel);
-  if (fs.existsSync(out)) { console.log(`已存在，跳过：${rel}`); process.exit(0); }
+  if (fs.existsSync(out) && !force) { console.log(`已存在，跳过：${rel}`); process.exit(0); }
+  if (fs.existsSync(out) && force) console.log(`将覆盖：${rel}`);
   const t = [`# 出口勾选表：${mid} 阶段门`, "", `> 由 gate.mjs init 按冻结段声明生成；人填判定与证据后 gate --file。`, ""];
   for (const g of gates) {
     const gc = maps.found ? maps.byGate.get(g) : criteria;
@@ -241,7 +242,7 @@ function declaredMappingsInfo(mid) {
 
 // ---------- 主流程 ----------
 const plan = planInfo();
-if (ARGV[0] === "init") initGate(ARGV[1]);
+if (ARGV[0] === "init") initGate(ARGV[1], ARGV.includes("--force"));
 const byFile = ARGV.includes("--file") ? ARGV[ARGV.indexOf("--file") + 1] : null;
 const wanted = ARGV.find((a) => /^G_[a-z0-9_]+$/.test(a)) || null;
 

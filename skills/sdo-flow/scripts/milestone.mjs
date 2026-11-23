@@ -33,10 +33,12 @@ function usage() {
   console.log(`用法：
   node <skill>/scripts/milestone.mjs new <M> --topic <主题>
   node <skill>/scripts/milestone.mjs declare <M> --gates G_a,G_b --criteria c1,c2 [--map "G_a=c1,c2;G_b=c3"]
+  node <skill>/scripts/milestone.mjs declare --list
   node <skill>/scripts/milestone.mjs freeze <M>
 
 new 生成 .sdo/milestones/<M>.md 六段骨架（冻结段含「门禁：」「判据：」占位），并尝试追加计划索引行。
 declare 只重写冻结段的门禁/判据/门禁判据；不写 hash（freeze 单独跑）。
+declare --list 只读打印合法门名与判据池（可直接抄进 declare）。
 freeze 就地写/替换 hash:<64hex> 行；二次执行不变。`);
 }
 
@@ -45,6 +47,7 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") out.help = true;
+    else if (a === "--list") out.list = true;
     else if (a === "--topic" || a === "--gates" || a === "--criteria" || a === "--map") {
       const v = argv[++i];
       if (v === undefined) die(`${a} 缺值`);
@@ -137,6 +140,51 @@ function appendPlanIndex(root, milestone, topic, rel) {
   console.log(`将写：${planRel} 索引行（${milestone}）`);
 }
 
+function listDeclarations(skillRoot) {
+  const gates = new Set();
+  const criteria = new Set();
+  const CORE = ["spec_set.signed", "assumption_set.signed", "provenance.present"];
+  const addText = (text) => {
+    let fenced = false;
+    for (const raw of text.split(/\r?\n/)) {
+      let line = raw;
+      if (/^\s*```/.test(line)) { fenced = !fenced; continue; }
+      if (fenced) continue;
+      if (line.includes("<!--")) line = line.slice(0, line.indexOf("<!--"));
+      if (!line.trim()) continue;
+      for (const m of line.matchAll(/G_[a-z0-9_]+/g)) {
+        const g = m[0];
+        if (/^G_(id|x|a|b)$/.test(g) || /^G_xxx/.test(g)) continue;
+        gates.add(g);
+      }
+      for (const m of line.matchAll(/`([a-z_]+\.[a-z_]+)`/g)) criteria.add(m[1]);
+    }
+  };
+  const dirs = [path.join(skillRoot, "presets"), path.join(skillRoot, "references")];
+  for (const dir of dirs) {
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md")).sort()) {
+      if (dir.endsWith("references") && f !== "02-判据与门禁.md") continue;
+      addText(fs.readFileSync(path.join(dir, f), "utf8"));
+    }
+  }
+  const core = CORE.filter((c) => criteria.has(c));
+  const pool = [...criteria].filter((c) => !core.includes(c)).sort();
+  const gs = [...gates].sort();
+  console.log(`合法门（${gs.length}，来自 presets 出口 / references/02）：`);
+  for (const g of gs) console.log(`  ${g}`);
+  console.log("");
+  console.log(`core 三条强制判据（${core.length}）：`);
+  for (const c of core) console.log(`  ${c}`);
+  console.log("");
+  console.log(`启发式判据池（${pool.length}，来自 presets 判据列 / references/02）：`);
+  for (const c of pool) console.log(`  ${c}`);
+  console.log("");
+  console.log("可直接抄（示例）：");
+  console.log(`  node <skill>/scripts/milestone.mjs declare <M> --gates ${gs.slice(0, 4).join(",")} --criteria ${CORE.join(",")}`);
+  console.log(`  （按门映射：--map "G_a=c1,c2;G_b=c3"）`);
+}
+
 function cmdDeclare(root, args) {
   const milestone = args._[0];
   if (!milestone) die("缺里程碑号（如 M11）");
@@ -220,7 +268,8 @@ function main() {
   if (args.help || args._.length === 0) { usage(); if (args.help) process.exit(0); die("缺子命令"); }
   const [cmd, ...rest] = args._;
   args._ = rest;
-  const { projectRoot } = resolvePaths();
+  const { projectRoot, skillRoot } = resolvePaths();
+  if (cmd === "declare" && args.list) { listDeclarations(skillRoot); process.exit(0); }
   if (!projectRoot) die("找不到 .sdo/（请从项目根或子目录运行；先跑 init.mjs）");
   if (cmd === "new") cmdNew(projectRoot, args);
   else if (cmd === "declare") cmdDeclare(projectRoot, args);
