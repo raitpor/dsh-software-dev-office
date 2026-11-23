@@ -85,7 +85,7 @@ agent-driven : frame → build → verify → review → sign → deliver
    node --input-type=module -e "import {baselineHash} from '<skill>/scripts/lib/hash.mjs';console.log(baselineHash(process.cwd()))"
    ```
    各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签。
-3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
+3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；**`.sdo/计划.md` 里要手动加一行本里程碑的索引行**（格式照 `templates/计划.md` 的里程碑表：`| M1 | 主题 | preset | 待签 | .sdo/milestones/M1.md | — |`），漏了它 `view next`/门签都会找不到里程碑；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
 
    冻结段 hash 行的**精确形态**：独立一行、ASCII 冒号、无前缀、不加粗：
 
