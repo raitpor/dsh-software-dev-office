@@ -34,6 +34,15 @@ whenToUse: >-
 | `incremental` | 多条线并行 | 需求+设计→实现→评审→集成 |
 | `agent-driven` | 一个 agent 主导实现、人只做签字与门禁 | 定框→实现→验证→评审→签字→交付 |
 
+**英文阶段 id（与 `presets/*.md` 的 `### <stage>` 同名同序，写里程碑「阶段」段时必须用这些）**：
+
+```text
+waterfall    : req → design → build → verify → deliver
+prototype    : explore → harden → deliver
+incremental  : req_design → build → verify → integrate
+agent-driven : frame → build → verify → review → sign → deliver
+```
+
 写进当前里程碑文件 `.sdo/milestones/<M>.md` 的「阶段」段（并写 `preset：` 与 `preset 选择理由：`）；每段结束过出口判据表，没过不开下一段。`agent-driven` 的 51 条判据里有 13 条 `agent.*` 是**流程自检项**（看 agent 行为，不看业务正确性；数量随 preset 演进，以 `presets/agent-driven.md` 为准）。细节见 `presets/`。**改 `presets/*.md` 前，先把仍在使用旧 preset 的活跃里程碑归档**；当前里程碑若就是变更发起者，须在其冻结段写 `preset 变更发起里程碑：M<n>`（恰好一行、未归档、且是当前里程碑）。`check --presets` 会点名未归档的使用者（`preset_change_requires_archive`），声明非法报 `preset_initiator_invalid`。
 
 ## 4. 目录约定（签后可追加，签前可改）
@@ -70,7 +79,15 @@ whenToUse: >-
    node --input-type=module -e "import {baselineHash} from '<skill>/scripts/lib/hash.mjs';console.log(baselineHash(process.cwd()))"
    ```
    各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签。
-3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
+3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
+
+   冻结段 hash 行的**精确形态**：独立一行、ASCII 冒号、无前缀、不加粗：
+
+   ```text
+   hash:<64 位小写十六进制>
+   ```
+
+   不是 `- hash:`，不是 `hash：`（全角），不是表格行。**除这一行外不要再出现任何其它 hash 行**（`- hash:`、表格行、全角冒号都算）：检查器只认 canonical 行，额外行会被忽略——被忽略不等于合规。迭代法：**先删掉该行** → 跑 `--print-frozen-hash` 得到 H → 追加 `hash:H` → 再跑一次 `--print-frozen-hash` 复核（应仍为 H）。判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
 4. **开卡**：产物 `.sdo/cards/<M>-<n>.md`。命令：`node <skill>/scripts/card.mjs new <M>-<n> --owner … --intent … --criteria …`。判据：判据表含「类型」列（结构/语义/边界）、写域与准入清楚、每条判据可判死。常见错：判据写“做好/合理”；缺准入依赖。
 5. **执行**：产物实现文件 + 脚本证据。命令：`node <skill>/scripts/card.mjs evidence <卡> --criterion C1 --cmd '<命令>' --run`。判据：证据列以 `exit=<code>` 开头、写域外先问、一卡两笔提交。常见错：手填 `pass`/`ok`；用“我试过”代替可复跑命令。
 6. **评审**：产物评审记录、判定、变异表。命令：`node <skill>/scripts/card.mjs mutation --card <卡> --criterion C1 --mutate '<改坏>' --expect '<应红命令>'`。判据：评审者非作者、判词三选一、有语义判据的 done 卡写 `- 语义自检：`、每条判据有 `expected=red actual=red` 或“不可变异+理由+确认”。常见错：改完再审后不复认；只看历史行不看最后判词。

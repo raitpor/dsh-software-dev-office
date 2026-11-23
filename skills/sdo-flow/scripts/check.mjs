@@ -1433,10 +1433,24 @@ function checkFrozenHash(raw, p, mid) {
   if (raw.includes("\r")) err(p, 1, "文件含 CR（冻结段 hash 要求 LF）");
   const lines = raw.split("\n");
   let expect = "", hashLines = 0;
-  for (const l of lines) { const m = l.match(/^hash:([0-9a-f]{64})\s*$/); if (m) { expect = m[1]; hashLines++; } }
+  const hashCandidates = [];
+  for (const l of lines) {
+    const m = l.match(/^hash:([0-9a-f]{64})\s*$/);
+    if (m) { expect = m[1]; hashLines++; }
+    const hm = /^\s*(?:[-*]\s*)?(?:冻结段\s*)?hash\s*[:：]\s*([0-9a-f]{0,64})?\s*$/i.exec(l);
+    if (hm) hashCandidates.push(l);
+  }
   if (hashLines > 1) err(p, 1, `hash: 行重复（${hashLines} 处，应只有一处）`);
   const actual = frozenHashRaw(raw);
-  if (!expect) { err(p, 1, "冻结段 hash 缺失（hash:<sha256>）"); return; }
+  if (!expect) {
+    if (hashCandidates.length === 0) {
+      err(p, 1, "冻结段 hash 行缺失（应为独立一行：hash:<64hex>）");
+    } else {
+      const val = (hashCandidates[0].match(/([0-9a-f]{64})/) || [])[1];
+      err(p, 1, `冻结段 hash 不匹配（期望 ${actual.slice(0, 8)}… 实际 ${val ? `${val.slice(0, 8)}…` : "整行格式不符"}）`);
+    }
+    return;
+  }
   // 与签字文件记录的冻结段 hash 交叉比对（记录行：`- 冻结段 hash：<sha256>`）
   const signFile = planSignFile(mid);
   let recorded = "";
@@ -1462,7 +1476,11 @@ function checkFrozenHash(raw, p, mid) {
     const hashNotes = spLines.filter((l) => l.startsWith("- 冻结段 hash：")).join("\n");
     if (anchors.includes(actual.slice(0, 8)) || hashNotes.includes(actual.slice(0, 8))) return;
   }
-  err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… 计划签=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
+  if (expect !== actual) {
+    err(p, 1, `冻结段 hash 不匹配（期望 ${actual.slice(0, 8)}… 实际 ${expect.slice(0, 8)}…；无有效追加签）`);
+  } else {
+    err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… 计划签=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
+  }
 }
 function planSignFile(mid) {
   const dir = ".sdo/sign";
