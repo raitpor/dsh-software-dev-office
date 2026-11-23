@@ -2,11 +2,11 @@
   "volumes": [
     {
       "path": ".sdo/台账.md",
-      "rows": 229,
+      "rows": 240,
       "first": "D-1",
-      "last": "D-233",
-      "sha256": "a484e89d6d6fa76282bf1c982816cae0a90be877a46fc8c4677880c4874b01e6",
-      "openRows": 21
+      "last": "D-244",
+      "sha256": "58e70b6bf232a561461c45714d1a62c4e14cf07703dc71caf18d965473bcae4a",
+      "openRows": 25
     }
   ],
   "open": [
@@ -135,7 +135,31 @@
       "kind": "gap",
       "file": ".sdo/台账.md",
       "line": 206
+    },
+    {
+      "id": "D-235",
+      "kind": "gap",
+      "file": ".sdo/台账.md",
+      "line": 237
+    },
+    {
+      "id": "D-236",
+      "kind": "gap",
+      "file": ".sdo/台账.md",
+      "line": 238
+    },
+    {
+      "id": "D-237",
+      "kind": "gap",
+      "file": ".sdo/台账.md",
+      "line": 239
+    },
+    {
+      "id": "D-239",
+      "kind": "explain",
+      "file": ".sdo/台账.md",
+      "line": 241
     }
   ],
-  "updated_at": "2026-11-23T07:18:17.075Z"
+  "updated_at": "2026-11-23T08:08:46.736Z"
 }
