@@ -37,7 +37,7 @@ function usage() {
   node <skill>/scripts/milestone.mjs freeze <M>
 
 new 生成 .sdo/milestones/<M>.md 六段骨架（冻结段含「门禁：」「判据：」占位），并尝试追加计划索引行。
-declare 只重写冻结段的门禁/判据/门禁判据；不写 hash（freeze 单独跑）。
+declare 只重写冻结段的门禁/判据/门禁判据；不写 hash（freeze 单独跑）；--dry-run 只打印将写内容。
 declare --list 只读打印合法门名与判据池（可直接抄进 declare）。
 freeze 就地写/替换 hash:<64hex> 行；二次执行不变。`);
 }
@@ -48,6 +48,7 @@ function parse(argv) {
     const a = argv[i];
     if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--list") out.list = true;
+    else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--topic" || a === "--gates" || a === "--criteria" || a === "--map") {
       const v = argv[++i];
       if (v === undefined) die(`${a} 缺值`);
@@ -174,7 +175,7 @@ function listDeclarations(skillRoot) {
   console.log(`合法门（${gs.length}，来自 presets 出口 / references/02）：`);
   for (const g of gs) console.log(`  ${g}`);
   console.log("");
-  console.log(`core 三条强制判据（${core.length}）：`);
+  console.log(`core 三条强制判据（${core.length}；declare 会把它们自动并入 --criteria 的「判据：」与每个映射门，不必手写）：`);
   for (const c of core) console.log(`  ${c}`);
   console.log("");
   console.log(`启发式判据池（${pool.length}，来自 presets 判据列 / references/02）：`);
@@ -190,9 +191,11 @@ function cmdDeclare(root, args) {
   if (!milestone) die("缺里程碑号（如 M11）");
   if (!/^M\d+$/.test(milestone)) die(`里程碑号不合法：${milestone}`);
   const gates = (args.gates ?? "").trim();
-  const criteria = (args.criteria ?? "").trim();
+  const CORE = ["spec_set.signed", "assumption_set.signed", "provenance.present"];
+  const criteriaRaw = (args.criteria ?? "").trim();
+  const criteria = [...CORE, ...criteriaRaw.split(",").map((x) => x.trim()).filter((c) => c && !CORE.includes(c))].join(",");
   if (!gates) die("declare 缺必填参数 --gates");
-  if (!criteria) die("declare 缺必填参数 --criteria");
+  if (!criteriaRaw && !(args.map ?? "").trim()) die("declare 缺必填参数 --criteria（或 --map）");
   const rel = `.sdo/milestones/${milestone}.md`;
   const file = path.join(root, rel);
   if (!fs.existsSync(file)) die(`里程碑文件不存在：${rel}`);
@@ -204,7 +207,7 @@ function cmdDeclare(root, args) {
   if (end < 0) end = lines.length;
   const decl = [
     `- 门禁：${gates.split(",").map((x) => x.trim()).filter(Boolean).join(" → ")}`,
-    `- 判据：${criteria.split(",").map((x) => x.trim()).filter(Boolean).join("、")}`,
+    `- 判据：${[...CORE, ...criteriaRaw.split(",").map((x) => x.trim()).filter((c) => c && !CORE.includes(c))].join("、")}`,
   ];
   const map = (args.map ?? "").trim();
   if (map) {
@@ -212,7 +215,9 @@ function cmdDeclare(root, args) {
       const eq = item.indexOf("=");
       if (eq < 0) die(`--map 格式错：${item}（应为 G_a=c1,c2;G_b=c3）`);
       const gid = item.slice(0, eq).trim();
-      const cs = item.slice(eq + 1).split(",").map((x) => x.trim()).filter(Boolean).join(", ");
+      if (!gates.split(",").map((x) => x.trim()).includes(gid)) die(`--map 的门 ${gid} 不在 --gates：${gates}`);
+      const own = item.slice(eq + 1).split(",").map((x) => x.trim()).filter(Boolean);
+      const cs = [...CORE, ...own.filter((c) => !CORE.includes(c))].join(", ");
       decl.push(`- 门禁判据：${gid} = ${cs}`);
     }
   }
@@ -222,7 +227,12 @@ function cmdDeclare(root, args) {
     kept.push(lines[i]);
   }
   const next = [...lines.slice(0, start + 1), ...decl, ...kept, ...lines.slice(end)].join("\n");
-  console.log(`将写：${rel}（冻结段门禁/判据/门禁判据；不写 hash）`);
+  console.log(`将写：${rel}（冻结段门禁/判据/门禁判据；core 三条自动并入 --criteria 与每个映射门；不写 hash）`);
+  for (const line of decl) console.log(`  ${line}`);
+  if (args.dryRun) {
+    console.log(`下一步：node <skill>/scripts/milestone.mjs freeze ${milestone}`);
+    return;
+  }
   writeAtomic(file, next);
   console.log(`下一步：node <skill>/scripts/milestone.mjs freeze ${milestone}`);
 }

@@ -16,6 +16,7 @@ import { analyzeTrace, planIndexStatus } from "./lib/trace.mjs";
 import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
 import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity, orphanArchiveDirs, ARCHIVE_STATUSES } from "./lib/archive.mjs";
 import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
+import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
@@ -1867,6 +1868,33 @@ function checkAuthorizationText() {
   if (!ok7) err(refPath, 1, "缺“口头授权≠流程放行”边界（须同一行、含 ≠ 或 不等于）");
 }
 
+
+function planSignUnsigned(mid) {
+  const dir = path.join(ROOT, ".sdo/sign");
+  if (!fs.existsSync(dir)) return null;
+  const n2 = String(mid).replace(/^M/, "");
+  const hits = [];
+  for (const f of fs.readdirSync(dir).filter((x) => /^S\d+(?:-[A-Z])?\.md$/.test(x))) {
+    const lines = read(path.join(".sdo/sign", f));
+    const title = lines[0] || "";
+    const scope = lines.find((l) => l.startsWith("- 范围：")) || "";
+    if (!(new RegExp(`M${n2}\\s*计划`).test(title) || new RegExp(`M${n2}\\s*计划`).test(scope))) continue;
+    hits.push({ f });
+  }
+  if (!hits.length) return null;
+  const rank = (f) => {
+    const m = /^S(\d+)(?:-([A-Z]))?\.md$/.exec(f);
+    return m ? [Number(m[1]), m[2] ? m[2].charCodeAt(0) : 0] : [Infinity, 0];
+  };
+  hits.sort((a, b) => {
+    const ra = rank(a.f), rb = rank(b.f);
+    return ra[0] - rb[0] || ra[1] - rb[1];
+  });
+  const latest = hits[hits.length - 1].f;
+  const verdict = parseVerdict(read(path.join(".sdo/sign", latest)));
+  return { file: latest, unsigned: isUnsignedVerdict(verdict) };
+}
+
 function checkPlan() {
   const milestone = planMilestone();
   if (archiveEntry(ROOT, milestone)) {
@@ -1954,6 +1982,10 @@ function checkPlan() {
   }
 
   for (const e of ERR) console.log(`ERROR ${e}`);
+  const unsigned = planSignUnsigned(milestone);
+  if (unsigned && unsigned.unsigned) {
+    console.log(`WARN plan_sign_unsigned：计划签仍是草案（${unsigned.file}），0 漂移只证明与草案记录一致，不能作为签前判据`);
+  }
   console.log(`\n检查完成（--plan ${milestone}）：${ERR.length} 个漂移`);
   process.exit(ERR.length ? 1 : 0);
 }
@@ -2002,6 +2034,10 @@ checkCardTemplateDecisions();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
 checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkCardStateMismatch(); checkAppendSignAnchors(); checkReadings(); checkArchive(); checkHandwritingSuspicion();
 checkCriterionBasis();
+const activeUnsigned = currentMilestone(ROOT) ? planSignUnsigned(currentMilestone(ROOT)) : null;
+if (activeUnsigned && activeUnsigned.unsigned) {
+  warn(`.sdo/sign/${activeUnsigned.file}`, 0, `plan_sign_unsigned：计划签仍是草案，0 漂移只证明与草案记录一致，不能作为签前判据`);
+}
 if (ARGV.includes("--presets")) checkPresets();
 if (ARGV.includes("--js")) {
   console.log(JSON.stringify({ ok: ERR.length === 0, errors: ERR, warnings: WARN }));

@@ -9,6 +9,7 @@ import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
+import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { spawnSync } from "node:child_process";
 import { signedCardIds } from "./lib/signed-cards.mjs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
@@ -47,6 +48,17 @@ function git(root, args, opts = {}) {
 function gitText(root, args) {
   const out = git(root, args);
   return typeof out === "string" ? out.trim() : null;
+}
+
+// C3：项目根必须是 git 仓库根本身；不向上借外层仓库的 HEAD/工作树。
+function projectGitRoot(root) {
+  const top = gitText(root, ["rev-parse", "--show-toplevel"]);
+  if (top === null) return false;
+  try {
+    return fs.realpathSync(root) === fs.realpathSync(top);
+  } catch {
+    return false;
+  }
 }
 
 function readPlanSection(plan, milestone) {
@@ -255,7 +267,7 @@ function batch(root, milestone, cardsArg) {
     console.log(`本批无可签卡（done 且未签收，里程碑 ${milestone}）`);
     return;
   }
-  const hasGit = gitText(root, ["rev-parse", "--is-inside-work-tree"]) === "true";
+  const hasGit = projectGitRoot(root);
   const head = hasGit ? gitText(root, ["rev-parse", "HEAD"]) : null;
   const commit = head && /^[0-9a-f]{7,40}$/i.test(head) ? head : null;
   const drafts = selected.map((id, i) => {
@@ -337,12 +349,8 @@ function signNew(root, milestone, kind, scope, force = false) {
     process.exit(0);
   }
   if (existing && force) {
-    let verdict = "";
-    for (const line of existing.text.split(/\r?\n/)) {
-      const vm = /^\s*-\s*判定\s*[:：]\s*(.*)$/.exec(line.trim());
-      if (vm) verdict = vm[1].trim();
-    }
-    if (verdict && !/^(待填|待签)/.test(verdict)) {
+    const verdict = parseVerdict(existing.text.split(/\r?\n/));
+    if (verdict && !isUnsignedVerdict(verdict)) {
       console.error(`sign_already_signed：.sdo/sign/${existing.f} 已有判定「${verdict}」，拒绝覆盖`);
       process.exit(2);
     }
@@ -353,8 +361,8 @@ function signNew(root, milestone, kind, scope, force = false) {
   if (hr.status !== 0) die(`无法取得冻结段 hash（check --print-frozen-hash exit ${hr.status}）：${(hr.stderr || hr.stdout || "").trim()}`);
   const hash = (hr.stdout || "").trim().split(/\r?\n/)[0];
   if (!/^[0-9a-f]{64}$/.test(hash)) die(`--print-frozen-hash 输出不是 64 位 hex：${hash}`);
-  const head = gitText(root, ["rev-parse", "HEAD"]);
-  if (!head) die("当前不是 git 工作树或没有 HEAD：sign new 需要被签对象 commit（先 git commit）");
+  const head = projectGitRoot(root) ? gitText(root, ["rev-parse", "HEAD"]) : null;
+  if (!head) die("项目根不是独立 git 仓库或没有 HEAD（项目根必须等于 git 根，不借用外层仓库）：sign new 需要被签对象 commit（先 git commit）");
   const n = signNumber(root);
   const title = kind === "计划" ? `# S${n} · ${milestone} 计划` : `# S${n} · ${milestone} ${kind}`;
   const text = [title, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：commit \`${head}\``, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");
@@ -371,7 +379,7 @@ function draft(root, milestone) {
   if (!fs.existsSync(planPath)) die(`找不到 .sdo/milestones/${milestone}.md`);
   const section = { text: fs.readFileSync(planPath, "utf8"), start: 0 };
 
-  const hasGit = gitText(root, ["rev-parse", "--is-inside-work-tree"]) === "true";
+  const hasGit = projectGitRoot(root);
   const head = hasGit ? gitText(root, ["rev-parse", "HEAD"]) : null;
   if (hasGit && !head) die("git 仓库没有 HEAD（先提交，或补 .git）");
   const porcelain = hasGit ? (gitText(root, ["status", "--porcelain"]) ?? "") : "";
