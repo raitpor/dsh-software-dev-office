@@ -196,6 +196,7 @@ function cmdNew(flags, positional) {
 status: open
 owner: ${flags.owner.trim()}
 write_scope: ${scope}
+- 视角：未声明
 
 ## 意图
 ${flags.intent.trim()}
