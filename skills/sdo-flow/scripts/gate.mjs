@@ -13,7 +13,7 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { resolvePaths, skillPath } from "./lib/paths.mjs";
 
 const ARGV = process.argv.slice(2);
 if (ARGV.some((a) => a === "--help" || a === "-h")) {
@@ -24,18 +24,10 @@ if (ARGV.some((a) => a === "--help" || a === "-h")) {
 const JSON_OUT = ARGV.includes("--json");
 const die = (msg) => { console.error(`ERROR ${msg}`); process.exit(2); };
 
-function findRoot(start = process.cwd()) {
-  let d = path.resolve(start);
-  for (;;) {
-    if (fs.existsSync(path.join(d, ".sdo"))) return d;
-    const up = path.dirname(d);
-    if (up === d) return null;
-    d = up;
-  }
-}
-const ROOT = findRoot();
-if (!ROOT) die("找不到 .sdo/（请在项目内运行，或先建 .sdo/）");
-const SELF = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
+const PATHS = resolvePaths(process.cwd());
+const ROOT = PATHS.projectRoot;
+if (!ROOT) die("找不到 .sdo/（请在项目内运行；下一步：按 README 建 .sdo/ 与 意图.md/台账.md）");
+const SKILL_ROOT = PATHS.skillRoot;
 const rel = (p) => path.relative(ROOT, p).split(path.sep).join("/");
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");
 
@@ -83,7 +75,7 @@ function planInfo() {
 
 function presetCriteria(preset) {
   if (!preset) return null;
-  const f = path.join(SELF, "presets", `${preset}.md`);
+  const f = path.join(SKILL_ROOT, "presets", `${preset}.md`);
   if (!fs.existsSync(f)) return null;
   const text = fs.readFileSync(f, "utf8");
   const out = {};

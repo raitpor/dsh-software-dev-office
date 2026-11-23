@@ -15,18 +15,10 @@ import { signLabel, sortSigns, isMilestoneGateSign } from "./lib/signs.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
 import { readArchiveIndex } from "./lib/archive.mjs";
 import { currentMilestone } from "./lib/preset.mjs";
+import { resolvePaths } from "./lib/paths.mjs";
 
-function findRoot(start) {
-  let d = start;
-  for (;;) {
-    if (fs.existsSync(path.join(d, ".sdo"))) return d;
-    const up = path.dirname(d);
-    if (up === d) return null;
-    d = up;
-  }
-}
-const ROOT = findRoot(process.cwd());
-if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先按 sdo-flow 初始化"); process.exit(2); }
+const ROOT = resolvePaths(process.cwd()).projectRoot;
+if (!ROOT) { console.error("找不到 .sdo/：请在项目内运行；下一步：按 README 建 .sdo/ 与 意图.md/台账.md"); process.exit(2); }
 const argv = process.argv.slice(2);
 const KNOWN_FLAGS = new Set(["--json", "--open", "--milestone", "--limit", "--help", "-h"]);
 for (const a of argv) {

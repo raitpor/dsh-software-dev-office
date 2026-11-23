@@ -8,7 +8,6 @@
 import fs from "node:fs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
@@ -17,6 +16,7 @@ import { analyzeTrace, planIndexStatus } from "./lib/trace.mjs";
 import { baselineHash, BASELINE_FILES } from "./lib/hash.mjs";
 import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity, orphanArchiveDirs, ARCHIVE_STATUSES } from "./lib/archive.mjs";
 import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
+import { resolvePaths, skillPath } from "./lib/paths.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
@@ -36,19 +36,12 @@ if (process.argv.slice(2).includes("--help") || process.argv.slice(2).includes("
   process.exit(0);
 }
 
-function findRoot(start) {
-  let d = start;
-  for (;;) {
-    if (fs.existsSync(path.join(d, ".sdo"))) return d;
-    const up = path.dirname(d);
-    if (up === d) return null;
-    d = up;
-  }
-}
-const ROOT = findRoot(process.cwd());
-if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先按 sdo-flow 初始化"); process.exit(2); }
-const SELF = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // <skill> 目录（脚本可在项目外）
-const SELF_REL = path.relative(ROOT, SELF).split(path.sep).join("/");
+const PATHS = resolvePaths(process.cwd());
+const ROOT = PATHS.projectRoot;
+if (!ROOT) { console.error("找不到 .sdo/：请在项目内运行；下一步：按 README 建 .sdo/ 与 意图.md/台账.md"); process.exit(2); }
+const SKILL_ROOT = PATHS.skillRoot;
+const SKILL_REL = (() => { const r = path.relative(ROOT, SKILL_ROOT).split(path.sep).join("/"); return r && !r.startsWith("..") ? r : SKILL_ROOT; })();
+const SKILL_ABS = SKILL_ROOT; // 下一步命令一律用绝对路径：在项目子目录里跑也成立
 const ARGV = process.argv.slice(2);
 const KNOWN_FLAGS = new Set(["--plan", "--milestone", "--trace", "--deep", "--presets", "--all", "--js", "--print-frozen-hash"]);
 for (const a of ARGV) {
@@ -61,6 +54,18 @@ if (ARGV.includes("--trace") && ARGV.includes("--plan")) {
   console.error("--trace 与 --plan 不能同时使用");
   process.exit(2);
 }
+// CLI 局部错误码：SDO_E_MISSING_* 只用于“缺文件”这一类启动前错误，不进码表；
+// M10-4 references 同步时登记到 references/08 的错误码清单（本卡不建码表）。
+const preflightMissing = (rel, next, code) => {
+  if (fs.existsSync(path.join(ROOT, rel))) return;
+  console.error(`缺少 ${rel}；下一步：${next}（或按 README 手建）`);
+  console.error(`错误码：${code}`);
+  process.exit(2);
+};
+preflightMissing(".sdo/意图.md", `cp ${SKILL_ABS}/templates/意图.md ${path.join(ROOT, ".sdo/意图.md")}`, "SDO_E_MISSING_INTENT");
+preflightMissing(".sdo/台账.md", `cp ${SKILL_ABS}/templates/台账.md ${path.join(ROOT, ".sdo/台账.md")}`, "SDO_E_MISSING_LEDGER");
+for (const f of BASELINE_FILES) preflightMissing(`.sdo/baseline/${f}`, `cp ${SKILL_ABS}/templates/baseline.md ${path.join(ROOT, ".sdo/baseline/" + f)} 并填齐`, "SDO_E_MISSING_BASELINE");
+
 if (ARGV.includes("--trace") && ARGV.includes("--deep")) {
   console.error("--trace 与 --deep 不能同时使用（--deep 只作用于台账卷校验）");
   process.exit(2);
@@ -70,8 +75,17 @@ const KINDS = new Set(["gap", "defect", "explain", "closed"]);
 const STATUS = new Set(["open", "accepted", "fixed", "closed", "superseded"]);
 const err = (p, l, m) => ERR.push(`${p}:${l}: ${m}`);
 const warn = (p, l, m) => WARN.push(`${p}:${l}: ${m}`);
-const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8").split(/\r?\n/);
-const exists = (p) => fs.existsSync(path.join(ROOT, p));
+const SKILL_PREFIX = "skills/sdo-flow/";
+function readPath(p) {
+  const local = path.join(ROOT, p);
+  if (p.startsWith(SKILL_PREFIX)) {
+    const bundled = path.join(SKILL_ROOT, p.slice(SKILL_PREFIX.length));
+    if (fs.existsSync(bundled)) return bundled;
+  }
+  return local;
+}
+const read = (p) => fs.readFileSync(readPath(p), "utf8").split(/\r?\n/);
+const exists = (p) => fs.existsSync(readPath(p));
 
 // 找到项目内所有“带 SKILL.md 的 skill 目录”（最多下探 3 层）
 function skillDirs() {
@@ -88,7 +102,7 @@ function skillDirs() {
       walk(dir ? `${dir}/${e.name}` : e.name, depth + 1);
     }
   })("", 0);
-  if (SELF_REL && !SELF_REL.startsWith("..") && !out.includes(SELF_REL)) out.push(SELF_REL);
+  if (SKILL_REL && !SKILL_REL.startsWith("..") && !out.includes(SKILL_REL)) out.push(SKILL_REL);
   return out;
 }
 
@@ -569,7 +583,7 @@ function checkCriterionScripts(cardId, p, lines) {
           const raw = m[1];
           if (/[<>]/.test(raw)) continue; // 模板占位 <skill>/...
           const rel = raw.replace(/^["'`]+|["'`]+$/g, "").replace(/^\.\//, "");
-          const abs = path.isAbsolute(rel) ? rel : path.join(ROOT, rel);
+          const abs = path.isAbsolute(rel) ? rel : readPath(rel);
           if (!fs.existsSync(abs)) err(p, i + 1, `判据点名的脚本不存在（卡 ${cardId}）：${rel}`);
         }
       }
@@ -1048,7 +1062,7 @@ function checkPresets() {
   for (const f of PRESET_FILES) {
     const key = f.replace(".md", "");
     const p = `presets/${f}`;
-    const text = fs.readFileSync(path.join(SELF, "presets", f), "utf8");
+    const text = fs.readFileSync(path.join(SKILL_ROOT, "presets", f), "utf8");
     const sha = crypto.createHash("sha256").update(text, "utf8").digest("hex");
     if (sha !== SNAPSHOT_PRESET_SHA[key]) {
       changed.add(key);
@@ -1124,7 +1138,7 @@ function getPresetGates(key) {
 
 // SKILL.md 的 YAML frontmatter：一个 ": " 就能让严格 YAML 解析失败，整个 skill 会被静默忽略
 function checkFrontmatter() {
-  const dirs = [SELF, ...skillDirs().map((d) => path.join(ROOT, d))];
+  const dirs = [SKILL_ROOT, ...skillDirs().map((d) => path.join(ROOT, d))];
   for (const dir of [...new Set(dirs)]) {
     const abs = path.join(dir, "SKILL.md");
     const p = path.relative(ROOT, abs).split(path.sep).join("/") || "SKILL.md";
@@ -1292,7 +1306,7 @@ function planCovers(pathRaw, scopes) {
 const PRESET_BLACKLIST = new Set(["无", "没有", "不适用", "不需要", "无所谓", "待补充", "略", "同上", "见上"]);
 
 function presetNames() {
-  return fs.readdirSync(path.join(ROOT, "skills/sdo-flow/presets"))
+  return fs.readdirSync(path.join(SKILL_ROOT, "presets"))
     .filter((f) => f.endsWith(".md") && f !== "README.md")
     .map((f) => f.replace(/\.md$/, ""));
 }
