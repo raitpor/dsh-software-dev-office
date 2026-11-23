@@ -112,7 +112,7 @@ function parseGateFile(file, gateId) {
     const c = cells(l);
     if (!c.length) continue;
     if (/^(#|判据|编号)$/.test(c[0]) || /判据说明/.test(c[1] || "")) { idx = headerIndex(c); continue; } // 表头
-    rows.push(c);
+    rows.push({ cells: c, line: i + 1 });
   }
   return { rows, idx };
 }
@@ -146,14 +146,14 @@ function checkGate(file, gateId, wantCriteria, problems, warnings) {
   if (idx.evidence < 0) { problems.push(`${file}: ${gateId} 的表头里没有“证据/命令/复跑/依据”列（不能从别的列猜）`); return { rows: [], fails: [], partials: [] }; }
   const seen = new Map();
   for (const r of rows) {
-    const j = judgeRow(r, idx);
+    const j = judgeRow(r.cells, idx);
     if (!j.crit) {
       // 允许“说明行”（没有判据名），但判定列必须有值，否则算缺项
       if (!j.verdict) problems.push(`${file}: 有一行既没有判据名也没有判定`);
       continue;
     }
     if (seen.has(j.crit)) warnings.push(`${file}: 判据重复出现 ${j.crit}`);
-    seen.set(j.crit, j);
+    seen.set(j.crit, { ...j, line: r.line });
   }
   for (const [crit, j] of seen) {
     if (!j.verdict) problems.push(`${file}: ${crit} 没有判定（pass/partial/fail）`);
@@ -202,28 +202,60 @@ if (ARGV.includes("--list")) {
   process.exit(0);
 }
 
+// M11-3：冻结段「- 判据：」是唯一真源；门表必须覆盖声明里的每条判据。
+function declaredCriteriaInfo(mid) {
+  const p = `.sdo/milestones/${mid}.md`;
+  if (!fs.existsSync(path.join(ROOT, p))) return { found: false, criteria: [] };
+  const lines = read(p).split(/\r?\n/);
+  const sec = lines.findIndex((l) => /^#{2,3}\s+.*冻结段/.test(l));
+  if (sec < 0) return { found: false, criteria: [] };
+  const end = lines.findIndex((l, i) => i > sec && /^#{2,3}\s+/.test(l));
+  const body = lines.slice(sec, end < 0 ? lines.length : end);
+  const line = body.find((l) => /^-\s*判据[:：]/.test(l));
+  if (!line) return { found: true, criteria: [] };
+  return { found: true, criteria: [...new Set(line.replace(/^-\s*判据[:：]/, "").split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean))] };
+}
+
 const problems = [], warnings = [], results = [];
 const targets = byFile ? [byFile] : gateFiles();
 if (!targets.length) die("没有 .sdo/gates/*.md");
 
-if (!plan?.preset) die("里程碑文件里没有写 preset：<name>（无法知道该 gate 要求哪些判据）");
+
 for (const f of targets) {
   const fm = /\.sdo\/gates\/(M\d+)\.md$/.exec(f);
-  const gatePreset = (fm && milestonePreset(fm[1])) || plan.preset;
+  const gatePreset = fm ? milestonePreset(fm[1]) : plan.preset;
   const critMap = presetCriteria(gatePreset);
   if (!fs.existsSync(path.join(ROOT, f))) die(`文件不存在：${f}`);
   const text = read(f);
   const gids = wanted ? [wanted] : [...new Set([...text.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1]))];
   if (!gids.length) { problems.push(`${f}: 找不到 gate id（应写 G_xxx）`); continue; }
   if (wanted && !new RegExp(`\\b${wanted}\\b`).test(text)) { problems.push(`${f}: 找不到 gate ${wanted}（文件里没有这个 id）`); continue; }
+  const decl = fm ? declaredCriteriaInfo(fm[1]) : { found: false, criteria: [] };
+  const declared = decl.criteria;
+  for (const c of declared) {
+    if (!new RegExp(`\\b${c.replace(/\./g, "\\.")}\\b`).test(text)) problems.push(`${f}: missing_declared_criterion：缺声明判据 ${c}（milestone 冻结段「判据：」要求）`);
+  }
+  const hasDeclaration = declared.length > 0;
+  if (!hasDeclaration && !gatePreset) problems.push(`${f}: gate_criteria_undeclared：${fm ? fm[1] : "?"} 冻结段没有「- 判据：」声明，且无 preset 可降级（不静默放宽）`);
+  const tableCrits = new Map();
   for (const gid of gids) {
-    const want = critMap?.[gid] || null;
+    const want = hasDeclaration ? null : (critMap?.[gid] || null);
     const r = checkGate(f, gid, want, problems, warnings);
+    if (r && r.rows.length) {
+      for (const row of r.rows) {
+        if (!tableCrits.has(row.crit)) tableCrits.set(row.crit, row.line);
+      }
+    }
     if (r && r.rows.length) {
       if ((r.partials.length || r.fails.length) && !signatureAcceptsPartial(f, text))
         problems.push(`${f}: ${gid} 有 ${r.fails.length ? "fail" : "partial"} 项（${[...r.fails, ...r.partials].join("、")}）但本表第 3 节没有「选项：签：…」接受它`);
       results.push({ file: f, gate: gid, pass: r.rows.filter((x) => x.verdict === "pass").length, partial: r.partials.length, fail: r.fails.length });
     }
+  }
+  if (hasDeclaration) {
+    const declaredSet = new Set(declared);
+    const extra = [...tableCrits.entries()].filter(([crit]) => !declaredSet.has(crit)).map(([crit, line]) => `${crit}（第 ${line} 行）`);
+    if (extra.length) problems.push(`${f}: criteria_table_mismatch：门表判据不在冻结段声明：${extra.join("、")}`);
   }
 }
 

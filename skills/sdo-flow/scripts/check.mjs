@@ -1156,7 +1156,15 @@ function checkPresets() {
       ERR.splice(errStart, 0, ...gateErrors);
     }
   }
-  if (!ext) console.log("（preset 校验：发布快照（stage 序列 + gate 集合 + criteria 逐条）；与设计稿比对请传 --presets <文件>）");
+  if (ERR.length > errStart) {
+    const raised = ERR.splice(errStart);
+    for (const m of raised) {
+      // 只有“与发布快照不一致”降级为 WARN；preset 文件自身结构错仍阻断。
+      if (/与发布快照不一致/.test(m)) WARN.push(m);
+      else ERR.push(m);
+    }
+  }
+  if (!ext) console.log("（preset 校验：快照不一致仅 WARN；结构错仍 ERR；与设计稿比对请传 --presets <文件>）");
 }
 // 每份 preset 应含哪些 gate（与 skill 文档一致；改这里等于改发布快照）
 function getPresetGates(key) {
@@ -1542,7 +1550,7 @@ function checkFrozenHash(raw, p, mid) {
     if (anchors.includes(actual.slice(0, 8)) || hashNotes.includes(actual.slice(0, 8))) return;
   }
   if (expect !== actual) {
-    err(p, 1, `冻结段 hash 不匹配（期望 ${actual.slice(0, 8)}… 实际 ${expect.slice(0, 8)}…；无有效追加签）`);
+    err(p, 1, `signed_anchor_mismatch：冻结段 hash 不匹配（期望 ${actual.slice(0, 8)}… 实际 ${expect.slice(0, 8)}…；无有效追加签）`);
   } else {
     err(p, 1, `冻结段 hash 不一致：文件=${expect.slice(0, 8)}… 计划签=${(recorded || "-").slice(0, 8)}… 实算=${actual.slice(0, 8)}…（无有效追加签）`);
   }
@@ -1737,6 +1745,63 @@ function checkRequirementClaim(lines, planPath) {
   err(planPath, 1, "requirement_missing：缺「认领需求：」行且无「需求：无（理由）」");
 }
 
+// M11-3：冻结段「- 门禁：」「- 判据：」是唯一真源；M12 起强制，M1–M11 已签为历史。
+function isNewDeclarationMilestone(mid) {
+  return !originalPlanSigned(mid);
+}
+function allPresetGateIds() {
+  const dir = path.join(SKILL_ROOT, "presets");
+  const out = new Set();
+  if (!fs.existsSync(dir)) return out;
+  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md"))) {
+    for (const m of fs.readFileSync(path.join(dir, f), "utf8").matchAll(/\b(G_[a-z_]+)\b/g)) out.add(m[1]);
+  }
+  return out;
+}
+function allPresetCriteriaNames() {
+  const dir = path.join(SKILL_ROOT, "presets");
+  const out = new Set();
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md"))) {
+      for (const m of fs.readFileSync(path.join(dir, f), "utf8").matchAll(/[a-z_]+\.[a-z_]+/g)) out.add(m[0]);
+    }
+  }
+  for (const extra of ["gate.signed", "readings.recorded", "review.independent"]) out.add(extra);
+  return out;
+}
+function freezeSectionLines(lines) {
+  const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
+  return sec ? { start: sec.start, end: sec.end, lines } : null;
+}
+function checkDeclarations(lines, p, mid) {
+  if (!isNewDeclarationMilestone(mid)) return;
+  const sec = freezeSectionLines(lines);
+  if (!sec) {
+    err(p, 1, "frozen_hash_missing：找不到「## 冻结段」小节，无法读取门禁/判据声明（声明不读，不回退整文件）");
+    return;
+  }
+  let gateLine = -1, critLine = -1, gateVal = "", critVal = "";
+  for (let i = sec.start; i < sec.end; i++) {
+    const g = lines[i].match(/^-\s*门禁[:：]\s*(.+)$/);
+    if (g) { gateLine = i + 1; gateVal = g[1]; }
+    const c = lines[i].match(/^-\s*判据[:：]\s*(.+)$/);
+    if (c) { critLine = i + 1; critVal = c[1]; }
+  }
+  if (gateLine < 0 || gateVal.trim() === "") err(p, 1, "gate_criteria_undeclared：冻结段缺「- 门禁：<gate 序列>」声明（不设默认集）");
+  if (critLine < 0 || critVal.trim() === "") err(p, 1, "gate_criteria_undeclared：冻结段缺「- 判据：<判据列表>」声明（不设默认集）");
+  const gateIds = [...new Set([...gateVal.matchAll(/G_[a-z_]+/g)].map((x) => x[0]))];
+  const knownGates = allPresetGateIds();
+  for (const id of gateIds) if (!knownGates.has(id)) err(p, gateLine, `gate_unknown：门禁「${id}」不在 presets 的已知门集合（勿自编）`);
+  const critNames = [...new Set(critVal.split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean))];
+  const knownCrit = allPresetCriteriaNames();
+  for (const c of critNames) if (!knownCrit.has(c)) err(p, critLine, `criterion_not_whitelisted：判据「${c}」不在启发式判据池（presets 正文正则扫描，非权威白名单；如确为合法新码需先补 presets 或白名单）`);
+  for (let i = sec.start; i < sec.end; i++) {
+    if (/^preset\s*[:：]/.test(lines[i]) || /^preset\s+选择理由\s*[:：]/.test(lines[i])) {
+      err(p, i + 1, `preset_field_removed：新签里程碑真源不得再写 preset 字段（${lines[i].trim()}）；preset 只是参考模板`);
+    }
+  }
+}
+
 function checkPlanRules(milestone, planPath) {
   const raw = fs.readFileSync(path.join(ROOT, planPath), "utf8");
   const lines = raw.split("\n");
@@ -1747,9 +1812,13 @@ function checkPlanRules(milestone, planPath) {
   // 理由：改冻结段内容时 hash 必然变，若先报 hash，真正被违反的规则会被噪声盖住（R26 要求首条报错可指认）。
   const baselineVersionBase = baselineSegments(lines, "baseline", planPath);
   let preset = "";
-  if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
+  if (isNewDeclarationMilestone(milestone)) {
+    checkDeclarations(lines, planPath, milestone);
+  } else {
+    if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
+    if (preset) checkStageOrder(lines, planPath, preset);
+  }
   if (!probeBase.has(milestone)) checkProbeLines(lines, planPath);
-  if (preset) checkStageOrder(lines, planPath, preset);
   if (!baselineVersionBase.has(milestone)) checkBaselineBinding(milestone, raw, planPath);
   checkFrozenHash(raw, planPath, milestone);
 }
