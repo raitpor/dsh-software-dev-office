@@ -115,7 +115,7 @@ function mdFiles() {
       let entries;
       try { entries = fs.readdirSync(path.join(ROOT, dir), { withFileTypes: true }); } catch { return; }
       for (const e of entries) {
-        if (e.name === ".git" || e.name === "node_modules" || e.name === "lib" || e.name === "dist") continue;
+        if (e.name === ".git" || e.name === "node_modules" || e.name === "lib" || e.name === "dist" || e.name === ".tmp" || e.name === ".work") continue;
         const rel = dir ? `${dir}/${e.name}` : e.name;
         if (rel === ".sdo/archive" || rel.startsWith(".sdo/archive/")) continue;
         if (rel === ".sdo/ledger" || rel.startsWith(".sdo/ledger/")) continue;
@@ -273,14 +273,14 @@ function checkLedgerVolumes(deep = false) {
     if (exists(".sdo/ledger")) {
       try { nonEmpty = nonEmpty || fs.readdirSync(path.join(ROOT, ".sdo/ledger")).some((n) => /^vol-\d+\.md$/.test(n)); } catch { /* ignore */ }
     }
-    if (nonEmpty) err(idxPath, 0, "index_stale：索引缺失（跑 ledger.mjs reindex）");
+    if (nonEmpty) err(idxPath, 0, "index_stale：索引缺失；下一步：node <skill>/scripts/ledger.mjs reindex");
     return;
   }
   let idx;
   try {
     idx = JSON.parse(fs.readFileSync(path.join(ROOT, idxPath), "utf8"));
   } catch (e) {
-    return err(idxPath, 0, `索引不是合法 JSON：${e instanceof Error ? e.message : String(e)}（跑 ledger.mjs reindex）`);
+    return err(idxPath, 0, `索引不是合法 JSON：${e instanceof Error ? e.message : String(e)}；下一步：node <skill>/scripts/ledger.mjs reindex`);
   }
   if (!idx || !Array.isArray(idx.volumes) || !Array.isArray(idx.open)) return err(idxPath, 0, "索引结构不合法（需要 volumes/open）");
   const paths = new Set();
@@ -290,9 +290,9 @@ function checkLedgerVolumes(deep = false) {
   const closedIds = new Set();
   for (const v of idx.volumes) {
     if (!v || typeof v.path !== "string" || !/^\.sdo\/(台账|ledger\/vol-\d+)\.md$/.test(v.path)) { err(idxPath, 0, "索引卷路径不合法"); continue; }
-    if (!Number.isInteger(v.openRows) || v.openRows < 0) { err(idxPath, 0, `index_stale：卷 ${v.path} 缺 openRows（跑 ledger.mjs reindex）`); continue; }
+    if (!Number.isInteger(v.openRows) || v.openRows < 0) { err(idxPath, 0, `index_stale：卷 ${v.path} 缺 openRows；下一步：node <skill>/scripts/ledger.mjs reindex`); continue; }
     paths.add(v.path);
-    if (!exists(v.path)) { err(v.path, 0, "index_stale：索引中的卷文件不存在（跑 ledger.mjs reindex）"); continue; }
+    if (!exists(v.path)) { err(v.path, 0, "index_stale：索引中的卷文件不存在；下一步：node <skill>/scripts/ledger.mjs reindex"); continue; }
     const text = fs.readFileSync(path.join(ROOT, v.path), "utf8");
     const meta = volMeta(text);
     if (!meta) { err(v.path, 1, "缺卷元数据注释（<!-- sdo-ledger-vol rows=… first=… last=… sha256=… -->）"); continue; }
@@ -310,22 +310,22 @@ function checkLedgerVolumes(deep = false) {
         }
       }
       for (const k of ["rows", "first", "last"]) {
-        if (meta[k] !== scan[k]) err(v.path, 0, `index_stale：卷头 ${k}=${meta[k]} 与正文 ${scan[k]} 不符（跑 ledger.mjs reindex）`);
-        if (v[k] !== meta[k]) err(v.path, 0, `index_stale：索引 ${k}=${v[k]} 与卷头 ${meta[k]} 不符（跑 ledger.mjs reindex）`);
+        if (meta[k] !== scan[k]) err(v.path, 0, `index_stale：卷头 ${k}=${meta[k]} 与正文 ${scan[k]} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
+        if (v[k] !== meta[k]) err(v.path, 0, `index_stale：索引 ${k}=${v[k]} 与卷头 ${meta[k]} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
       }
     } else {
       for (const k of ["rows", "first", "last"]) {
-        if (v[k] !== meta[k]) err(v.path, 0, `index_stale：索引 ${k}=${v[k]} 与卷头 ${meta[k]} 不符（跑 ledger.mjs reindex）`);
+        if (v[k] !== meta[k]) err(v.path, 0, `index_stale：索引 ${k}=${v[k]} 与卷头 ${meta[k]} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
       }
     }
     const sha = sha256Body(text);
-    if (v.sha256 !== meta.sha256) err(v.path, 0, `index_stale：索引 sha256=${v.sha256} 与卷头 ${meta.sha256} 不符（跑 ledger.mjs reindex）`);
-    if (v.sha256 !== sha) err(v.path, 0, `index_stale：卷头 sha256=${meta.sha256} 与实际 ${sha} 不符（跑 ledger.mjs reindex）`);
+    if (v.sha256 !== meta.sha256) err(v.path, 0, `index_stale：索引 sha256=${v.sha256} 与卷头 ${meta.sha256} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
+    if (v.sha256 !== sha) err(v.path, 0, `index_stale：卷头 sha256=${meta.sha256} 与实际 ${sha} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
   }
-  if (!paths.has(".sdo/台账.md")) err(idxPath, 0, "index_stale：索引缺活跃卷 .sdo/台账.md（跑 ledger.mjs reindex）");
+  if (!paths.has(".sdo/台账.md")) err(idxPath, 0, "index_stale：索引缺活跃卷 .sdo/台账.md；下一步：node <skill>/scripts/ledger.mjs reindex");
   if (activeMeta && activeMeta.rows > 5000) warn(".sdo/台账.md", 0, `活跃卷过大（rows=${activeMeta.rows}），建议 rotate（大卷会让 add/view 变慢）`);
   const sumOpen = idx.volumes.reduce((acc, v) => acc + (Number.isInteger(v.openRows) ? v.openRows : 0), 0);
-  if (sumOpen !== idx.open.length) err(idxPath, 0, `index_stale：各卷 openRows 之和=${sumOpen} 与索引 open 条目数=${idx.open.length} 不符（跑 ledger.mjs reindex）`);
+  if (sumOpen !== idx.open.length) err(idxPath, 0, `index_stale：各卷 openRows 之和=${sumOpen} 与索引 open 条目数=${idx.open.length} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
   const openIds = new Set();
   for (const o of idx.open) {
     if (!o || !/^D-\d+$/.test(o.id) || !["defect", "gap", "explain"].includes(o.kind) || typeof o.file !== "string" || !Number.isInteger(o.line)) { err(idxPath, 0, "索引 open 条目结构不合法"); continue; }
@@ -333,14 +333,14 @@ function checkLedgerVolumes(deep = false) {
     if (openIds.has(o.id)) err(idxPath, 0, `索引 open 条目重复：${o.id}`);
     openIds.add(o.id);
     const hit = allRows.get(o.id);
-    if (!hit) { err(idxPath, 0, `index_stale：open 条目 ${o.id} 所在卷未标记 openRows 或卷内无此 id（跑 ledger.mjs reindex）`); continue; }
-    if (hit.file !== o.file || hit.line !== o.line) err(idxPath, 0, `index_stale：open 条目 ${o.id} 位置 ${o.file}:${o.line} 与正文 ${hit.file}:${hit.line} 不符（跑 ledger.mjs reindex）`);
-    if (hit.kind !== o.kind) err(idxPath, 0, `index_stale：open 条目 ${o.id} kind=${o.kind} 与正文 ${hit.kind} 不符（跑 ledger.mjs reindex）`);
-    if (!["open", "accepted"].includes(hit.status) || closedIds.has(o.id)) err(idxPath, 0, `index_stale：open 条目 ${o.id} 正文状态=${hit.status} 不是未修（跑 ledger.mjs reindex）`);
+    if (!hit) { err(idxPath, 0, `index_stale：open 条目 ${o.id} 所在卷未标记 openRows 或卷内无此 id；下一步：node <skill>/scripts/ledger.mjs reindex`); continue; }
+    if (hit.file !== o.file || hit.line !== o.line) err(idxPath, 0, `index_stale：open 条目 ${o.id} 位置 ${o.file}:${o.line} 与正文 ${hit.file}:${hit.line} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
+    if (hit.kind !== o.kind) err(idxPath, 0, `index_stale：open 条目 ${o.id} kind=${o.kind} 与正文 ${hit.kind} 不符；下一步：node <skill>/scripts/ledger.mjs reindex`);
+    if (!["open", "accepted"].includes(hit.status) || closedIds.has(o.id)) err(idxPath, 0, `index_stale：open 条目 ${o.id} 正文状态=${hit.status} 不是未修；下一步：node <skill>/scripts/ledger.mjs reindex`);
   }
   for (const hit of allRows.values()) {
     if (["defect", "gap"].includes(hit.kind) && ["open", "accepted"].includes(hit.status) && !closedIds.has(hit.id) && !openIds.has(hit.id)) {
-      err(idxPath, 0, `index_stale：正文未修行 ${hit.id} 不在索引 open（跑 ledger.mjs reindex）`);
+      err(idxPath, 0, `index_stale：正文未修行 ${hit.id} 不在索引 open；下一步：node <skill>/scripts/ledger.mjs reindex`);
     }
   }
 }

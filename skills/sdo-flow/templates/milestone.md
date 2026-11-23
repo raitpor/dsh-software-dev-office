@@ -38,6 +38,6 @@
 - 冻结判据：`check --plan --milestone <M>` 0 漂移
 - 门禁：<G_req_design → G_build_exit → G_verify_exit → G_integrate>
 - 判据：<声明判据列表>
-<!-- 可选：- 门禁判据：G_req_design = c1, c2（按门映射；不写则按全局判据并集） -->
+<!-- 应写映射：- 门禁判据：G_req_design = c1, c2（一行一门；不写则并集闭合，每个门会列出全部判据，极长且容易误填） -->
 - 基线 hash：<64 位>
 hash:<64 位>

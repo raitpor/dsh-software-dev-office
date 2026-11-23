@@ -3,6 +3,7 @@
 //
 // 用法：
 //   node <skill>/scripts/milestone.mjs new <M> --topic <主题>
+//   node <skill>/scripts/milestone.mjs declare <M> --gates G_a,G_b --criteria c1,c2 [--map "G_a=c1,c2;G_b=c3"]
 //   node <skill>/scripts/milestone.mjs freeze <M>
 //
 // new 硬编码六段骨架；不读模板、不接 --preset、不写 preset： 字段。
@@ -31,9 +32,11 @@ function writeAtomic(file, text) {
 function usage() {
   console.log(`用法：
   node <skill>/scripts/milestone.mjs new <M> --topic <主题>
+  node <skill>/scripts/milestone.mjs declare <M> --gates G_a,G_b --criteria c1,c2 [--map "G_a=c1,c2;G_b=c3"]
   node <skill>/scripts/milestone.mjs freeze <M>
 
-new 生成 .sdo/milestones/<M>.md 六段骨架（冻结段含「门禁：」「判据：」占位）。
+new 生成 .sdo/milestones/<M>.md 六段骨架（冻结段含「门禁：」「判据：」占位），并尝试追加计划索引行。
+declare 只重写冻结段的门禁/判据/门禁判据；不写 hash（freeze 单独跑）。
 freeze 就地写/替换 hash:<64hex> 行；二次执行不变。`);
 }
 
@@ -42,10 +45,10 @@ function parse(argv) {
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a === "--help" || a === "-h") out.help = true;
-    else if (a === "--topic") {
+    else if (a === "--topic" || a === "--gates" || a === "--criteria" || a === "--map") {
       const v = argv[++i];
-      if (v === undefined) die("--topic 缺值");
-      out.topic = v;
+      if (v === undefined) die(`${a} 缺值`);
+      out[a.slice(2)] = v;
     } else if (a.startsWith("--")) die(`未知参数：${a}（用 --help 看用法）`);
     else out._.push(a);
   }
@@ -92,9 +95,88 @@ function skeleton(milestone, topic, baseHash) {
 - 冻结判据：\`check --plan --milestone ${milestone}\` 0 漂移
 - 门禁：<G_req_design → G_build_exit → G_verify_exit → G_integrate>
 - 判据：<声明判据列表>
-<!-- 可选：- 门禁判据：G_req_design = c1, c2（按门映射；不写则按全局判据并集） -->
+<!-- 有门表时必须写映射：- 门禁判据：G_req_design = c1, c2（一行一门；不写会用全局并集灌满每个门） -->
 - 基线 hash：${baseHash}
 `;
+}
+
+
+function planCells(line) {
+  return line.trim().replace(/^\|/, "").replace(/\|$/, "").split("|").map((x) => x.trim());
+}
+
+function appendPlanIndex(root, milestone, topic, rel) {
+  const planRel = ".sdo/计划.md";
+  const file = path.join(root, planRel);
+  if (!fs.existsSync(file)) {
+    console.log(`计划文件不存在：${planRel}（不创建）；下一步：先建计划，再在里程碑表加一行索引`);
+    return;
+  }
+  const raw = fs.readFileSync(file, "utf8");
+  const lines = raw.split(/\r?\n/);
+  const h = lines.findIndex((l) => /^\|\s*里程碑\s*\|/.test(l) && l.includes("主题") && l.includes("状态"));
+  if (h < 0) { console.log(`计划文件里找不到里程碑索引表：${planRel}（跳过自动索引）`); return; }
+  const header = planCells(lines[h]);
+  if (!header.includes("里程碑") || !header.includes("状态")) return;
+  let last = h + 1;
+  while (last + 1 < lines.length && lines[last + 1].trim().startsWith("|")) last++;
+  const exists = lines.slice(h + 2, last + 1).some((l) => planCells(l)[header.indexOf("里程碑")] === milestone);
+  if (exists) { console.log(`计划索引已有 ${milestone}，跳过`); return; }
+  const values = {
+    里程碑: milestone,
+    主题: topic,
+    preset: "—",
+    计划签: "—",
+    门签: "—",
+    里程碑文件: rel,
+    状态: "待签",
+  };
+  const row = `| ${header.map((c) => values[c] ?? "—").join(" | ")} |`;
+  lines.splice(last + 1, 0, row);
+  writeAtomic(file, lines.join("\n") + "\n");
+  console.log(`将写：${planRel} 索引行（${milestone}）`);
+}
+
+function cmdDeclare(root, args) {
+  const milestone = args._[0];
+  if (!milestone) die("缺里程碑号（如 M11）");
+  if (!/^M\d+$/.test(milestone)) die(`里程碑号不合法：${milestone}`);
+  const gates = (args.gates ?? "").trim();
+  const criteria = (args.criteria ?? "").trim();
+  if (!gates) die("declare 缺必填参数 --gates");
+  if (!criteria) die("declare 缺必填参数 --criteria");
+  const rel = `.sdo/milestones/${milestone}.md`;
+  const file = path.join(root, rel);
+  if (!fs.existsSync(file)) die(`里程碑文件不存在：${rel}`);
+  const raw = fs.readFileSync(file, "utf8");
+  const lines = raw.split(/\r?\n/);
+  const start = lines.findIndex((l) => /^#{2,3}\s+.*冻结段/.test(l));
+  if (start < 0) die(`找不到「## 冻结段」：${rel}`);
+  let end = lines.findIndex((l, i) => i > start && /^#{2,3}\s+/.test(l));
+  if (end < 0) end = lines.length;
+  const decl = [
+    `- 门禁：${gates.split(",").map((x) => x.trim()).filter(Boolean).join(" → ")}`,
+    `- 判据：${criteria.split(",").map((x) => x.trim()).filter(Boolean).join("、")}`,
+  ];
+  const map = (args.map ?? "").trim();
+  if (map) {
+    for (const item of map.split(";").map((x) => x.trim()).filter(Boolean)) {
+      const eq = item.indexOf("=");
+      if (eq < 0) die(`--map 格式错：${item}（应为 G_a=c1,c2;G_b=c3）`);
+      const gid = item.slice(0, eq).trim();
+      const cs = item.slice(eq + 1).split(",").map((x) => x.trim()).filter(Boolean).join(", ");
+      decl.push(`- 门禁判据：${gid} = ${cs}`);
+    }
+  }
+  const kept = [];
+  for (let i = start + 1; i < end; i++) {
+    if (/^-\s*(门禁|判据|门禁判据)[:：]/.test(lines[i])) continue;
+    kept.push(lines[i]);
+  }
+  const next = [...lines.slice(0, start + 1), ...decl, ...kept, ...lines.slice(end)].join("\n");
+  console.log(`将写：${rel}（冻结段门禁/判据/门禁判据；不写 hash）`);
+  writeAtomic(file, next);
+  console.log(`下一步：node <skill>/scripts/milestone.mjs freeze ${milestone}`);
 }
 
 function cmdNew(root, args) {
@@ -111,7 +193,8 @@ function cmdNew(root, args) {
   const hash = frozenHashRaw(base);
   writeAtomic(file, `${base}hash:${hash}\n`);
   console.log(`已生成 ${rel}（hash:${hash.slice(0, 8)}…）`);
-  console.log(`下一步：在 .sdo/计划.md 的里程碑表里加一行索引（见 templates/计划.md）；然后 node <skill>/scripts/check.mjs --plan --milestone ${milestone}；需要核对 hash 时加 --print-frozen-hash`);
+  appendPlanIndex(root, milestone, topic, rel);
+  console.log(`下一步：node <skill>/scripts/check.mjs --plan --milestone ${milestone}；需要核对 hash 时加 --print-frozen-hash`);
 }
 
 function cmdFreeze(root, args) {
@@ -140,8 +223,9 @@ function main() {
   const { projectRoot } = resolvePaths();
   if (!projectRoot) die("找不到 .sdo/（请从项目根或子目录运行；先跑 init.mjs）");
   if (cmd === "new") cmdNew(projectRoot, args);
+  else if (cmd === "declare") cmdDeclare(projectRoot, args);
   else if (cmd === "freeze") cmdFreeze(projectRoot, args);
-  else die(`未知子命令：${cmd}（只支持 new / freeze）`);
+  else die(`未知子命令：${cmd}（只支持 new / declare / freeze）`);
 }
 
 main();

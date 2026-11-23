@@ -2,7 +2,7 @@
 // card.mjs — 卡骨架与证据行（M4-1）。零依赖 Node ESM；只改 .sdo/cards/。
 //
 // 用法：
-//   node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:结构:文字;C2:语义:文字" [--scope "a,b"]
+//   node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:结构:文字;C2:语义:文字" [--write-scope "a,b"] [--depends "M11-0、M11-1"] [--scope "a,b"]
 //     --criteria 多项用分号（; 或 ；）分隔；每项是 编号:类型:文字，类型只 结构/语义/边界；禁止半角逗号。
 //   node <skill>/scripts/card.mjs evidence <卡号|卡文件> --criterion C1 --cmd "<命令>" [--run [命令]]
 //   node <skill>/scripts/card.mjs mutation --card <卡号> --criterion C1 --mutate "<改坏命令>" --expect "<应红命令>"
@@ -182,9 +182,11 @@ function cmdNew(flags, positional) {
     if (typeof flags[key] !== "string" || flags[key].trim() === "") die(`new 缺必填参数 --${key}`);
   }
   const criteria = parseCriteria(flags.criteria);
-  const scope = typeof flags.scope === "string" && flags.scope.trim() !== ""
-    ? `[${flags.scope.split(",").map((x) => x.trim()).filter(Boolean).join(", ")}]`
+  const scopeRaw = typeof flags["write-scope"] === "string" ? flags["write-scope"] : flags.scope;
+  const scope = typeof scopeRaw === "string" && scopeRaw.trim() !== ""
+    ? `[${scopeRaw.split(",").map((x) => x.trim()).filter(Boolean).join(", ")}]`
     : "[]";
+  const depends = typeof flags.depends === "string" ? flags.depends.trim() : "";
   const root = findRoot(process.cwd());
   if (!root) die("找不到 .sdo/：请在本项目内运行");
   const dir = path.join(root, CARDS);
@@ -206,7 +208,7 @@ ${flags.intent.trim()}
 | 编号 | 判据 | 类型 | 反例 |
 |---|---|---|---|
 ${criteria.map((c) => `| ${c.id} | ${c.text} | ${c.type} | 待补反例（用一条命令证明会红） |`).join("\n")}
-
+${depends ? `\n## 准入\n\n依赖：${depends}\n` : ""}
 ## 证据
 | 判据 | 命令与输出 | 判定 |
 |---|---|---|
@@ -447,7 +449,7 @@ function cmdMutation(flags, positional) {
 const ARGV = process.argv.slice(2);
 if (ARGV.includes("--help") || ARGV.includes("-h")) {
   console.log(`用法：
-  node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:结构:文字;C2:语义:文字"
+  node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:结构:文字;C2:语义:文字" [--write-scope "a,b"] [--depends "M11-0、M11-1"]
     多项用分号（; 或 ；），禁止半角逗号；类型只 结构/语义/边界
   node <skill>/scripts/card.mjs evidence <卡号|卡文件> --criterion C1 --cmd "<命令>" [--run [命令]]
   node <skill>/scripts/card.mjs mutation --card <卡号> --criterion C1 --mutate "<改坏命令>" --expect "<应红命令>"`);
