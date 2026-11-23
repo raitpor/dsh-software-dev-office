@@ -58,7 +58,7 @@ function gateInfo(m) {
   for (const f of fs.readdirSync(path.join(ROOT, ".sdo/sign")).filter((x) => x.endsWith(".md")).sort().reverse()) {
     const text = read(`.sdo/sign/${f}`);
     const title = (text.match(/^#\s*(.+)$/m) || [])[1] || "";
-    if (!new RegExp(`\\b${m}\\s*门`).test(title)) continue;
+    if (!new RegExp(`\\b${m}\\s*(?:里程碑\\s*)?门(?=$|[\\s（(·])`).test(title)) continue;
     const sn = (title.match(/^S[\d-]+/i) || f.match(/^S\d+/i) || [])[0] || f.replace(/\.md$/, "");
     const direct = (text.match(/被签对象[:：]\s*`?([0-9a-f]{7,40})`?/i) || [])[1];
     const fallback = (text.match(/commit\s+`?([0-9a-f]{7,40})`?/i) || [])[1];

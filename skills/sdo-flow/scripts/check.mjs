@@ -683,7 +683,10 @@ function commitClaims(value) {
 // P2-1：无冻结段 hash 的旧式追加签不静默跳过——必须在 M9.md 冻结段的「旧式签白名单」里显式登记；
 // 该行是冻结段正文的一部分（参与 frozenHashRaw），增删条目即改 hash、须人签追加签，不能自授权。
 function legacySignWhitelist() {
-  const p = path.join(ROOT, ".sdo/milestones/M9.md");
+  // 先活跃、后归档：冻结段白名单可能随里程碑正文被归档搬走。
+  // 检查器必须跟着走，否则归档会把旧式签变成假红（M10-0，D-192）。
+  let p = path.join(ROOT, ".sdo/milestones/M9.md");
+  if (!fs.existsSync(p)) p = path.join(ROOT, ".sdo/archive/M9/milestone.md");
   if (!fs.existsSync(p)) return new Set();
   const m = /^-\s*旧式签白名单.*$/m.exec(fs.readFileSync(p, "utf8"));
   return new Set(m ? (m[0].match(/S\d+-[A-Z]/g) || []) : []);
