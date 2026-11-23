@@ -17,7 +17,7 @@ import { resolvePaths, skillPath } from "./lib/paths.mjs";
 
 const ARGV = process.argv.slice(2);
 if (ARGV.some((a) => a === "--help" || a === "-h")) {
-  console.log("用法：node <skill>/scripts/gate.mjs [--list] [G_xxx] [--file <path>] [--json]");
+  console.log("用法：node <skill>/scripts/gate.mjs init <M> | [--list] [G_xxx] [--file <path>] [--json]");
   console.log("  对账 .sdo/gates/ 勾选表与计划 preset：0=全 pass 或 partial 已人签接受；1=有 fail/缺项/缺签；2=用法/环境错误");
   process.exit(0);
 }
@@ -69,7 +69,7 @@ function planInfo() {
   const texts = files.map((f) => read(`${MILESTONE_DIR}/${f}`));
   let preset = null;
   for (const t of texts) { const m = t.match(/preset[:：]\s*`?([a-z-]+)`?/i); if (m) preset = m[1]; }
-  const gates = [...new Set(texts.flatMap((t) => [...t.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1])))];
+  const gates = [...new Set(texts.flatMap((t) => [...t.matchAll(/\b(G_[a-z0-9_]+)\b/g)].map((m) => m[1])))];
   return { preset, gates };
 }
 
@@ -79,7 +79,7 @@ function presetCriteria(preset) {
   if (!fs.existsSync(f)) return null;
   const text = fs.readFileSync(f, "utf8");
   const out = {};
-  for (const m of text.matchAll(/id:\s*(G_[a-z_]+)([^}]*?)criteria:\s*\[([^\]]*)\]/g)) {
+  for (const m of text.matchAll(/id:\s*(G_[a-z0-9_]+)([^}]*?)criteria:\s*\[([^\]]*)\]/g)) {
     out[m[1]] = [...m[3].matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]);
   }
   return Object.keys(out).length ? out : null;
@@ -101,7 +101,7 @@ function parseGateFile(file, gateId) {
     // 单 gate 文件允许不写 gate id（模板默认）：整份当作该 gate 的表
     if (!hits.length) { start = 0; end = lines.length; }
     start = Math.min(...hits);
-    const next = lines.findIndex((l, i) => i > start && /^##\s/.test(l.trim()) && /\bG_[a-z_]+\b/.test(l));
+    const next = lines.findIndex((l, i) => i > start && /^##\s/.test(l.trim()) && /\bG_[a-z0-9_]+\b/.test(l));
     end = next < 0 ? lines.length : next;
   }
   const rows = [];
@@ -183,10 +183,67 @@ function signatureAcceptsPartial(file, text) {
   return /^\s*[-*]?\s*选项[：:]\s*[*_`]*\s*签[：:]\s*[*_`]*\s*接受/m.test(sec);
 }
 
+
+function initGate(mid) {
+  if (!/^M\d+$/.test(mid || "")) { console.error("用法：gate.mjs init <M>"); process.exit(2); }
+  const mfile = path.join(ROOT, `.sdo/milestones/${mid}.md`);
+  if (!fs.existsSync(mfile)) { console.error(`找不到 .sdo/milestones/${mid}.md`); process.exit(2); }
+  const lines = fs.readFileSync(mfile, "utf8").split(/\r?\n/);
+  const sec = lines.findIndex((l) => /^#{2,3}\s+.*冻结段/.test(l));
+  if (sec < 0) { console.error(`里程碑 ${mid} 找不到「冻结段」小节`); process.exit(2); }
+  const end = lines.findIndex((l, i) => i > sec && /^#{2,3}\s+/.test(l));
+  const body = lines.slice(sec, end < 0 ? lines.length : end);
+  const gl = body.find((l) => /^-\s*门禁[:：]/.test(l));
+  const cl = body.find((l) => /^-\s*判据[:：]/.test(l));
+  if (!gl || !cl) { console.error(`gate_criteria_undeclared：${mid} 冻结段缺「- 门禁：」或「- 判据：」`); process.exit(1); }
+  const declaredGates = gl.replace(/^-\s*门禁[:：]/, "").split(/→|->/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean);
+  const criteria = cl.replace(/^-\s*判据[:：]/, "").split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean);
+  const maps = declaredMappingsInfo(mid);
+  const gates = maps.found ? [...maps.byGate.keys()] : declaredGates;
+  if (!gates.length || !criteria.length) { console.error(`gate_criteria_undeclared：${mid} 门禁/判据声明为空`); process.exit(1); }
+  const rel = `.sdo/gates/${mid}.md`;
+  const out = path.join(ROOT, rel);
+  if (fs.existsSync(out)) { console.log(`已存在，跳过：${rel}`); process.exit(0); }
+  const t = [`# 出口勾选表：${mid} 阶段门`, "", `> 由 gate.mjs init 按冻结段声明生成；人填判定与证据后 gate --file。`, ""];
+  for (const g of gates) {
+    const gc = maps.found ? maps.byGate.get(g) : criteria;
+    t.push(`## ${g}`, "", "| # | 判据 | 判据说明 | 证据（命令/文件:行） | 判定 |", "|---|---|---|---|---|");
+    gc.forEach((c, i) => t.push(`| ${i + 1} | ${c} | 待填 | 待填 | 待判 |`));
+    t.push("");
+  }
+  fs.mkdirSync(path.dirname(out), { recursive: true });
+  console.log(`将写：${rel}（${gates.length} 门 / ${maps.found ? [...maps.byGate.values()].reduce((n, a) => n + a.length, 0) : criteria.length} 判据${maps.found ? "，按门映射" : ""}）`);
+  fs.writeFileSync(out, t.join("\n"));
+  console.log(`下一步：填判定/证据后 node <skill>/scripts/gate.mjs --file ${rel}`);
+  process.exit(0);
+}
+
+function declaredMappingsInfo(mid) {
+  const p = `.sdo/milestones/${mid}.md`;
+  if (!fs.existsSync(path.join(ROOT, p))) return { found: false, byGate: new Map() };
+  const lines = read(p).split(/\r?\n/);
+  const sec = lines.findIndex((l) => /^#{2,3}\s+.*冻结段/.test(l));
+  if (sec < 0) return { found: false, byGate: new Map() };
+  const end = lines.findIndex((l, i) => i > sec && /^#{2,3}\s+/.test(l));
+  const byGate = new Map();
+  for (const line of lines.slice(sec, end < 0 ? lines.length : end)) {
+    const mm = /^-\s*门禁判据[:：]\s*(.*)$/.exec(line);
+    if (!mm) continue;
+    const body = mm[1].trim();
+    const eq = body.indexOf("=");
+    if (eq < 0) continue;
+    const gid = body.slice(0, eq).trim();
+    const cs = body.slice(eq + 1).split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean);
+    if (/^G_[a-z0-9_]+$/.test(gid) && !byGate.has(gid)) byGate.set(gid, cs);
+  }
+  return { found: byGate.size > 0, byGate };
+}
+
 // ---------- 主流程 ----------
 const plan = planInfo();
+if (ARGV[0] === "init") initGate(ARGV[1]);
 const byFile = ARGV.includes("--file") ? ARGV[ARGV.indexOf("--file") + 1] : null;
-const wanted = ARGV.find((a) => /^G_[a-z_]+$/.test(a)) || null;
+const wanted = ARGV.find((a) => /^G_[a-z0-9_]+$/.test(a)) || null;
 
 if (ARGV.includes("--list")) {
   const crit = presetCriteria(plan?.preset);
@@ -227,20 +284,34 @@ for (const f of targets) {
   const critMap = presetCriteria(gatePreset);
   if (!fs.existsSync(path.join(ROOT, f))) die(`文件不存在：${f}`);
   const text = read(f);
-  const gids = wanted ? [wanted] : [...new Set([...text.matchAll(/\b(G_[a-z_]+)\b/g)].map((m) => m[1]))];
+  const gids = wanted ? [wanted] : [...new Set([...text.matchAll(/^##\s+(G_[a-z0-9_]+)\s*$/gm)].map((m) => m[1]))];
   if (!gids.length) { problems.push(`${f}: 找不到 gate id（应写 G_xxx）`); continue; }
   if (wanted && !new RegExp(`\\b${wanted}\\b`).test(text)) { problems.push(`${f}: 找不到 gate ${wanted}（文件里没有这个 id）`); continue; }
   const decl = fm ? declaredCriteriaInfo(fm[1]) : { found: false, criteria: [] };
   const declared = decl.criteria;
-  for (const c of declared) {
-    if (!new RegExp(`\\b${c.replace(/\./g, "\\.")}\\b`).test(text)) problems.push(`${f}: missing_declared_criterion：缺声明判据 ${c}（milestone 冻结段「判据：」要求）`);
+  const maps = fm ? declaredMappingsInfo(fm[1]) : { found: false, byGate: new Map() };
+  if (maps.found) {
+    for (const gid of maps.byGate.keys()) if (!gids.includes(gid)) problems.push(`${f}: missing_declared_criterion：${gid} 门节缺失（本门映射：${(maps.byGate.get(gid)||[]).join(", ")}）`);
+    for (const gid of gids) if (!maps.byGate.has(gid)) problems.push(`${f}: criteria_table_mismatch：${gid} 门不在冻结段映射（映射门：${[...maps.byGate.keys()].join(", ")}）`);
+  }
+  if (!maps.found) for (const c of declared) {
+    if (!new RegExp(`\b${c.replace(/\./g, "\\.")}\b`).test(text)) problems.push(`${f}: missing_declared_criterion：缺声明判据 ${c}（milestone 冻结段「判据：」要求）`);
   }
   const hasDeclaration = declared.length > 0;
   if (!hasDeclaration && !gatePreset) problems.push(`${f}: gate_criteria_undeclared：${fm ? fm[1] : "?"} 冻结段没有「- 判据：」声明，且无 preset 可降级（不静默放宽）`);
   const tableCrits = new Map();
   for (const gid of gids) {
-    const want = hasDeclaration ? null : (critMap?.[gid] || null);
+    if (maps.found && !maps.byGate.has(gid)) continue;
+    const want = maps.found ? null : (hasDeclaration ? null : (critMap?.[gid] || null));
     const r = checkGate(f, gid, want, problems, warnings);
+    if (maps.found) {
+      const expect = maps.byGate.get(gid);
+      if (expect) {
+        const seen = new Set((r?.rows || []).map((x) => x.crit));
+        for (const c of expect) if (!seen.has(c)) problems.push(`${f}: missing_declared_criterion：${gid} 缺映射判据 ${c}（本门映射：${expect.join(", ")}）`);
+        for (const c of seen) if (!expect.includes(c)) problems.push(`${f}: criteria_table_mismatch：${gid} 门表判据不在映射：${c}（本门映射：${expect.join(", ")}）`);
+      }
+    }
     if (r && r.rows.length) {
       for (const row of r.rows) {
         if (!tableCrits.has(row.crit)) tableCrits.set(row.crit, row.line);
@@ -252,7 +323,7 @@ for (const f of targets) {
       results.push({ file: f, gate: gid, pass: r.rows.filter((x) => x.verdict === "pass").length, partial: r.partials.length, fail: r.fails.length });
     }
   }
-  if (hasDeclaration) {
+  if (hasDeclaration && !maps.found) {
     const declaredSet = new Set(declared);
     const extra = [...tableCrits.entries()].filter(([crit]) => !declaredSet.has(crit)).map(([crit, line]) => `${crit}（第 ${line} 行）`);
     if (extra.length) problems.push(`${f}: criteria_table_mismatch：门表判据不在冻结段声明：${extra.join("、")}`);

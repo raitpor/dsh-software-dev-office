@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import crypto from "node:crypto";
+import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 import { signedCardIds } from "./lib/signed-cards.mjs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
@@ -278,6 +279,18 @@ function parseArgs(argv) {
     if (!/^M\d+$/.test(milestone)) die("缺少或非法 --milestone（应为 M4）");
     return { cmd, milestone, cards: null };
   }
+  if (cmd === "new") {
+    const flags = {};
+    for (let i = 0; i < rest.length; i++) {
+      const a = rest[i];
+      if (["--kind", "--milestone", "--scope"].includes(a) && i + 1 < rest.length) flags[a.slice(2)] = rest[++i];
+      else die(`未知参数：${a}`);
+    }
+    const milestone = flags.milestone || "";
+    if (!/^M\d+$/.test(milestone)) die("缺少或非法 --milestone（应为 M11）");
+    if (!flags.scope) die("缺少 --scope（这份签覆盖到哪）");
+    return { cmd, milestone, kind: flags.kind || "计划", scope: flags.scope };
+  }
   if (cmd === "batch") {
     const milestone = rest[0];
     if (!milestone || !/^M\d+$/.test(milestone)) die("用法：sign.mjs batch <M> [--cards M6-0,M6-1]");
@@ -288,7 +301,48 @@ function parseArgs(argv) {
     }
     return { cmd, milestone, cards };
   }
-  die(`未知命令：${cmd}（只允许 draft/batch）`);
+  die(`未知命令：${cmd}（只允许 draft/batch/new）`);
+}
+
+function signNumber(root) {
+  const dir = path.join(root, ".sdo/sign");
+  let max = 0;
+  if (fs.existsSync(dir)) for (const f of fs.readdirSync(dir)) {
+    const m = /^S(\d+)(?:-[A-Z])?\.md$/.exec(f);
+    if (m) max = Math.max(max, Number(m[1]));
+  }
+  return max + 1;
+}
+
+function signNew(root, milestone, kind, scope) {
+  const signDir = path.join(root, ".sdo/sign");
+  const absMilestone = path.join(root, `.sdo/milestones/${milestone}.md`);
+  if (!fs.existsSync(absMilestone)) die(`找不到 .sdo/milestones/${milestone}.md`);
+  // 同一里程碑+同一 kind 已有签文件则跳过（幂等）
+  if (fs.existsSync(signDir)) for (const f of fs.readdirSync(signDir)) {
+    if (!/^S\d+(?:-[A-Z])?\.md$/.test(f)) continue;
+    const text = fs.readFileSync(path.join(signDir, f), "utf8");
+    if (text.includes("generated-by: sign.mjs new") && text.includes(`- 范围：${scope}`) && text.split(/\r?\n/)[0].includes(`${milestone} ${kind}`)) {
+      console.log(`已存在同范围生成的${kind}签，跳过：.sdo/sign/${f}`);
+      process.exit(0);
+    }
+  }
+  const check = path.join(path.dirname(fileURLToPath(import.meta.url)), "check.mjs");
+  const hr = spawnSync(process.execPath, [check, "--plan", "--milestone", milestone, "--print-frozen-hash"], { cwd: root, encoding: "utf8" });
+  if (hr.status !== 0) die(`无法取得冻结段 hash（check --print-frozen-hash exit ${hr.status}）：${(hr.stderr || hr.stdout || "").trim()}`);
+  const hash = (hr.stdout || "").trim().split(/\r?\n/)[0];
+  if (!/^[0-9a-f]{64}$/.test(hash)) die(`--print-frozen-hash 输出不是 64 位 hex：${hash}`);
+  const head = gitText(root, ["rev-parse", "HEAD"]);
+  if (!head) die("当前不是 git 工作树或没有 HEAD：sign new 需要被签对象 commit（先 git commit）");
+  const n = signNumber(root);
+  const title = kind === "计划" ? `# S${n} · ${milestone} 计划` : `# S${n} · ${milestone} ${kind}`;
+  const text = [title, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：commit \`${head}\``, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");
+  fs.mkdirSync(signDir, { recursive: true });
+  const rel = `.sdo/sign/S${n}.md`;
+  console.log(`将写：${rel}`);
+  fs.writeFileSync(path.join(root, rel), text);
+  console.log(`下一步：人填判定/边界/签署者后，node <skill>/scripts/check.mjs --plan --milestone ${milestone}`);
+  process.exit(0);
 }
 
 function draft(root, milestone) {
@@ -390,6 +444,7 @@ if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
   console.log(`用法：
   node <skill>/scripts/sign.mjs draft --milestone <M>
   node <skill>/scripts/sign.mjs batch <M> [--cards <卡号,卡号>]
+  node <skill>/scripts/sign.mjs new --kind 计划 --milestone <M> --scope <文本>
 示例：node <skill>/scripts/sign.mjs draft --milestone M10`);
   process.exit(0);
 }
@@ -397,4 +452,5 @@ const parsed = parseArgs(process.argv.slice(2));
 const root = findRoot(process.cwd());
 if (!root) die("找不到 .sdo/：请在本项目内运行");
 if (parsed.cmd === "draft") draft(root, parsed.milestone);
-else batch(root, parsed.milestone, parsed.cards);
+else if (parsed.cmd === "batch") batch(root, parsed.milestone, parsed.cards);
+else signNew(root, parsed.milestone, parsed.kind, parsed.scope);

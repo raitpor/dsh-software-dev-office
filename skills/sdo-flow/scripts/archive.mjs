@@ -20,14 +20,14 @@ function findRoot(start) {
     d = up;
   }
 }
-const ROOT = findRoot(process.cwd());
-if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行"); process.exit(2); }
 if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
   console.log("用法：node <skill>/scripts/archive.mjs archive <M3> | restore <M3>");
   console.log("  archive：把已收口里程碑搬进 .sdo/archive/<M>/（要求门签 + 计划索引状态含「已收口/已归档」）");
   console.log("  restore：把已归档里程碑搬回 .sdo/（先校验 manifest 逐文件 sha256）");
   process.exit(0);
 }
+const ROOT = findRoot(process.cwd());
+if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行"); process.exit(2); }
 const INDEX = ".sdo/archive/INDEX.md";
 const exists = (p) => fs.existsSync(path.join(ROOT, p));
 const read = (p) => fs.readFileSync(path.join(ROOT, p), "utf8");

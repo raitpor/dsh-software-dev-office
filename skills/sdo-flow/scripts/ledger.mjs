@@ -477,6 +477,15 @@ const ALLOWED_FLAGS = {
   rotate: new Set(["to"]),
   reindex: new Set(),
 };
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log(`用法：
+  node <skill>/scripts/ledger.mjs add --kind <gap|defect|explain> --where <位置> --what <现象> --impact <影响> --fix <处置> [--status <状态>]
+  node <skill>/scripts/ledger.mjs close <D-n> --fix <处置>
+  node <skill>/scripts/ledger.mjs list [--open]
+  node <skill>/scripts/ledger.mjs rotate --to .sdo/ledger/vol-1.md
+  node <skill>/scripts/ledger.mjs reindex`);
+  process.exit(0);
+}
 const { cmd, flags, positional } = parseArgs(process.argv.slice(2));
 try {
   if (ALLOWED_FLAGS[cmd]) {

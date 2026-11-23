@@ -5,6 +5,11 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolveSkillRoot } from "./lib/paths.mjs";
 
+if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
+  console.log(`用法：node <skill>/scripts/init.mjs [--root <dir>] [--dry-run] [--force]`);
+  process.exit(0);
+}
+
 const args = process.argv.slice(2);
 const has = (f) => args.includes(f);
 const rootArg = args.includes("--root") ? args[args.indexOf("--root") + 1] : ".";

@@ -92,6 +92,7 @@ function skeleton(milestone, topic, baseHash) {
 - 冻结判据：\`check --plan --milestone ${milestone}\` 0 漂移
 - 门禁：<G_req_design → G_build_exit → G_verify_exit → G_integrate>
 - 判据：<声明判据列表>
+<!-- 可选：- 门禁判据：G_req_design = c1, c2（按门映射；不写则按全局判据并集） -->
 - 基线 hash：${baseHash}
 `;
 }

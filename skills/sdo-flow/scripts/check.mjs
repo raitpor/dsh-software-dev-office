@@ -1789,12 +1789,32 @@ function checkDeclarations(lines, p, mid) {
   }
   if (gateLine < 0 || gateVal.trim() === "") err(p, 1, "gate_criteria_undeclared：冻结段缺「- 门禁：<gate 序列>」声明（不设默认集）");
   if (critLine < 0 || critVal.trim() === "") err(p, 1, "gate_criteria_undeclared：冻结段缺「- 判据：<判据列表>」声明（不设默认集）");
-  const gateIds = [...new Set([...gateVal.matchAll(/G_[a-z_]+/g)].map((x) => x[0]))];
+  const gateIds = [...new Set([...gateVal.matchAll(/G_[a-z0-9_]+/g)].map((x) => x[0]))];
   const knownGates = allPresetGateIds();
   for (const id of gateIds) if (!knownGates.has(id)) err(p, gateLine, `gate_unknown：门禁「${id}」不在 presets 的已知门集合（勿自编）`);
   const critNames = [...new Set(critVal.split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean))];
   const knownCrit = allPresetCriteriaNames();
   for (const c of critNames) if (!knownCrit.has(c)) err(p, critLine, `criterion_not_whitelisted：判据「${c}」不在启发式判据池（presets 正文正则扫描，非权威白名单；如确为合法新码需先补 presets 或白名单）`);
+  // 可选「按门映射」：- 门禁判据：G_id = c1, c2。无映射时保持全局并集闭合。
+  const criteriaSet = new Set(critNames);
+  const mappedGates = new Set();
+  for (let i = sec.start; i < sec.end; i++) {
+    const mm = lines[i].match(/^-\s*门禁判据[:：]\s*(.*)$/);
+    if (!mm) continue;
+    const body = mm[1].trim();
+    const eq = body.indexOf("=");
+    const gid = (eq < 0 ? body : body.slice(0, eq)).trim();
+    if (!/^G_[a-z0-9_]+$/.test(gid)) {
+      err(p, i + 1, `gate_id_invalid：门禁判据行必须以 G_<小写字母数字下划线> = 开头（实际：${gid || "空"}）`);
+      continue;
+    }
+    if (mappedGates.has(gid)) { err(p, i + 1, `gate_criteria_duplicate：门禁判据重复声明 ${gid}`); continue; }
+    mappedGates.add(gid);
+    if (!gateIds.includes(gid)) err(p, i + 1, `gate_not_declared：门禁判据映射门「${gid}」不在冻结段「- 门禁：」声明序列`);
+    const list = eq < 0 ? [] : body.slice(eq + 1).split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean);
+    if (list.length === 0) err(p, i + 1, `gate_id_invalid：门禁判据映射「${gid}」的判据列表为空（应写 G_id = c1, c2）`);
+    for (const c of list) if (!criteriaSet.has(c)) err(p, i + 1, `declared_criterion_unknown：门禁判据映射里的「${c}」不在全局「- 判据：」集合`);
+  }
   for (let i = sec.start; i < sec.end; i++) {
     if (/^preset\s*[:：]/.test(lines[i]) || /^preset\s+选择理由\s*[:：]/.test(lines[i])) {
       err(p, i + 1, `preset_field_removed：新签里程碑真源不得再写 preset 字段（${lines[i].trim()}）；preset 只是参考模板`);

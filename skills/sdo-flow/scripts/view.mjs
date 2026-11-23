@@ -17,8 +17,6 @@ import { readArchiveIndex } from "./lib/archive.mjs";
 import { currentMilestone } from "./lib/preset.mjs";
 import { resolvePaths } from "./lib/paths.mjs";
 
-const ROOT = resolvePaths(process.cwd()).projectRoot;
-if (!ROOT) { console.error("找不到 .sdo/：请在项目内运行；下一步：按 README 建 .sdo/ 与 意图.md/台账.md"); process.exit(2); }
 const argv = process.argv.slice(2);
 const KNOWN_FLAGS = new Set(["--json", "--open", "--milestone", "--limit", "--help", "-h"]);
 for (const a of argv) {
@@ -28,6 +26,8 @@ if (argv.includes("--help") || argv.includes("-h")) {
   console.log("用法：node <skill>/scripts/view.mjs next|state|signs|queue|ledger [--milestone M9] [--json] [--open] [--limit N]");
   process.exit(0);
 }
+const ROOT = resolvePaths(process.cwd()).projectRoot;
+if (!ROOT) { console.error("找不到 .sdo/：请在项目内运行；下一步：按 README 建 .sdo/ 与 意图.md/台账.md"); process.exit(2); }
 const cmd = argv.find((a) => !a.startsWith("--")) || "state";
 const asJson = argv.includes("--json");
 const onlyOpen = argv.includes("--open");
