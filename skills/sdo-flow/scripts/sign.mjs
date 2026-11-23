@@ -362,7 +362,7 @@ function signNew(root, milestone, kind, scope, force = false) {
   const hash = (hr.stdout || "").trim().split(/\r?\n/)[0];
   if (!/^[0-9a-f]{64}$/.test(hash)) die(`--print-frozen-hash 输出不是 64 位 hex：${hash}`);
   const head = projectGitRoot(root) ? gitText(root, ["rev-parse", "HEAD"]) : null;
-  if (!head) die("项目根不是独立 git 仓库或没有 HEAD（项目根必须等于 git 根，不借用外层仓库）：sign new 需要被签对象 commit（先 git commit）");
+  if (!head) die("项目根不是独立 git 仓库或没有 HEAD（项目根必须等于 git 根，不借用外层仓库）：sign new 需要被签对象 commit（下一步：git init && git add -A && git commit -m init）");
   const n = signNumber(root);
   const title = kind === "计划" ? `# S${n} · ${milestone} 计划` : `# S${n} · ${milestone} ${kind}`;
   const text = [title, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：commit \`${head}\``, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");

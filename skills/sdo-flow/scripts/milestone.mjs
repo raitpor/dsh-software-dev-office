@@ -15,6 +15,7 @@ import path from "node:path";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
 import { baselineHash } from "./lib/hash.mjs";
+import { loadCriteriaPool, CORE_CRITERIA } from "./lib/criteria-pool.mjs";
 
 function die(message) {
   console.error(message);
@@ -142,47 +143,20 @@ function appendPlanIndex(root, milestone, topic, rel) {
 }
 
 function listDeclarations(skillRoot) {
-  const gates = new Set();
-  const criteria = new Set();
-  const CORE = ["spec_set.signed", "assumption_set.signed", "provenance.present"];
-  const addText = (text) => {
-    let fenced = false;
-    for (const raw of text.split(/\r?\n/)) {
-      let line = raw;
-      if (/^\s*```/.test(line)) { fenced = !fenced; continue; }
-      if (fenced) continue;
-      if (line.includes("<!--")) line = line.slice(0, line.indexOf("<!--"));
-      if (!line.trim()) continue;
-      for (const m of line.matchAll(/G_[a-z0-9_]+/g)) {
-        const g = m[0];
-        if (/^G_(id|x|a|b)$/.test(g) || /^G_xxx/.test(g)) continue;
-        gates.add(g);
-      }
-      for (const m of line.matchAll(/`([a-z_]+\.[a-z_]+)`/g)) criteria.add(m[1]);
-    }
-  };
-  const dirs = [path.join(skillRoot, "presets"), path.join(skillRoot, "references")];
-  for (const dir of dirs) {
-    if (!fs.existsSync(dir)) continue;
-    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md")).sort()) {
-      if (dir.endsWith("references") && f !== "02-判据与门禁.md") continue;
-      addText(fs.readFileSync(path.join(dir, f), "utf8"));
-    }
-  }
-  const core = CORE.filter((c) => criteria.has(c));
-  const pool = [...criteria].filter((c) => !core.includes(c)).sort();
-  const gs = [...gates].sort();
-  console.log(`合法门（${gs.length}，来自 presets 出口 / references/02）：`);
+  const { gates: gs, criteria } = loadCriteriaPool(skillRoot);
+  const core = CORE_CRITERIA.filter((c) => criteria.includes(c));
+  const pool = criteria.filter((c) => !core.includes(c));
+  console.log(`合法门（${gs.length}，来自 presets 出口）：`);
   for (const g of gs) console.log(`  ${g}`);
   console.log("");
   console.log(`core 三条强制判据（${core.length}；declare 会把它们自动并入 --criteria 的「判据：」与每个映射门，不必手写）：`);
   for (const c of core) console.log(`  ${c}`);
   console.log("");
-  console.log(`启发式判据池（${pool.length}，来自 presets 判据列 / references/02）：`);
+  console.log(`启发式判据池（${pool.length}，来自 presets 判据列；与 check 同源）：`);
   for (const c of pool) console.log(`  ${c}`);
   console.log("");
   console.log("可直接抄（示例）：");
-  console.log(`  node <skill>/scripts/milestone.mjs declare <M> --gates ${gs.slice(0, 4).join(",")} --criteria ${CORE.join(",")}`);
+  console.log(`  node <skill>/scripts/milestone.mjs declare <M> --gates ${gs.slice(0, 4).join(",")} --criteria ${CORE_CRITERIA.join(",")}`);
   console.log(`  （按门映射：--map "G_a=c1,c2;G_b=c3"）`);
 }
 

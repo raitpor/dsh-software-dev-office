@@ -292,6 +292,35 @@ function runCommand(command, root) {
   return { summary: summarize(`exit=${code}; ${tail}${reason}`), code: code === 0 ? 0 : 1 };
 }
 
+function evidenceCommandPlacement(command, criterion) {
+  if (!command.includes("|")) return { cellText: command, needsBlock: false };
+  return { cellText: `见命令块 ${criterion}`, needsBlock: true };
+}
+
+function upsertEvidenceCommandBlock(lines, sec, criterion, command, resultSummary) {
+  const em = /^exit=(\d+)/.exec(resultSummary || "");
+  const fenceLine = `\`\`\`bash 命令块 ${criterion} exit=${em ? em[1] : 0}`;
+  const heading = `#### ${criterion} 命令`;
+  let at = -1;
+  for (let i = sec + 1; i < lines.length; i++) {
+    if (/^##\s/.test(lines[i].trim())) break;
+    if (lines[i].trim() === heading) { at = i; break; }
+  }
+  const block = [heading, "", fenceLine, command, "```", ""];
+  if (at < 0) {
+    let end = lines.length;
+    for (let i = sec + 1; i < lines.length; i++) if (/^##\s/.test(lines[i].trim())) { end = i; break; }
+    while (end > sec + 1 && lines[end - 1].trim() === "") end--;
+    lines.splice(end, 0, "", ...block);
+    return;
+  }
+  let fence = at + 2;
+  while (fence < lines.length && !lines[fence].trim().startsWith("```")) fence++;
+  if (fence < lines.length) fence++;
+  while (fence < lines.length && !/^##\s/.test(lines[fence].trim()) && !/^####\s/.test(lines[fence].trim())) fence++;
+  lines.splice(at, fence - at, ...block);
+}
+
 function cmdEvidence(flags, positional) {
   // 写域：只写目标卡文件。A3 例外：显式不做 owner 校验（单人/单 agent 场景），但 done 卡仍拒写。
   if (positional.length !== 1) die("用法：card.mjs evidence <卡号|卡文件> --criterion C1 --cmd \"<命令>\" [--run [命令]]");
@@ -300,6 +329,7 @@ function cmdEvidence(flags, positional) {
   const command = typeof flags.cmd === "string" ? flags.cmd.trim() : "";
   if (command === "") die("evidence 缺必填参数 --cmd（--run 不会替代 --cmd）");
   const runCmd = typeof flags.run === "string" ? flags.run : command;
+  const placement = evidenceCommandPlacement(command, criterion);
   const root = findRoot(process.cwd());
   if (!root) die("找不到 .sdo/：请在本项目内运行");
   const file = cardPath(root, positional[0]);
@@ -345,9 +375,10 @@ function cmdEvidence(flags, positional) {
       const out = Array(width).fill("");
       for (let i = 0; i < width; i++) out[i] = row[i] ?? "";
       out[map.criterion] = criterion;
-      if (map.merged !== undefined) out[map.merged] = cell(`${summary}；${command}`);
-      else { out[map.command] = cell(command); out[map.summary] = cell(summary); }
+      if (map.merged !== undefined) out[map.merged] = cell(`${summary}；${placement.cellText}`);
+      else { out[map.command] = cell(placement.cellText); out[map.summary] = cell(summary); }
       lines[matches[0]] = `| ${out.join(" | ")} |`;
+      if (placement.needsBlock) upsertEvidenceCommandBlock(lines, sec, criterion, command, summary);
       writeAtomic(file, lines.join("\n"));
       console.log(`已更新 ${criterion}（${path.relative(process.cwd(), file)}）`);
       process.exit(scriptExit);
@@ -355,9 +386,10 @@ function cmdEvidence(flags, positional) {
     insertAt = tableLines[tableLines.length - 1] + 1;
   }
   const row = buildRow(map, map.merged !== undefined
-    ? { criterion, merged: `${summary}；${command}` }
-    : { criterion, command, summary });
+    ? { criterion, merged: `${summary}；${placement.cellText}` }
+    : { criterion, command: placement.cellText, summary });
   lines.splice(insertAt, 0, row);
+  if (placement.needsBlock) upsertEvidenceCommandBlock(lines, sec, criterion, command, summary);
   writeAtomic(file, lines.join("\n"));
   console.log(`已记录 ${criterion}（${path.relative(process.cwd(), file)}）`);
   process.exit(scriptExit);

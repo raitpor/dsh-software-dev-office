@@ -18,6 +18,7 @@ import { readArchiveIndex as archiveRows, archiveEntry, assertArchivedIntegrity,
 import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
 import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
+import { loadCriteriaPool } from "./lib/criteria-pool.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
@@ -400,6 +401,69 @@ function evidenceTableInfo(lines) {
     rows.push({ line: i + 1, raw: s, cells: cells(s) });
   }
   return { line: head + 1, header, rows };
+}
+
+function evidenceBlockInfo(lines) {
+  const secAt = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
+  if (secAt < 0) return [];
+  let secEnd = lines.length;
+  for (let i = secAt + 1; i < lines.length; i++) if (/^##\s/.test(lines[i].trim())) { secEnd = i; break; }
+  const blocks = [];
+  for (let i = secAt + 1; i < secEnd; i++) {
+    const m = /^```bash\s+命令块\s+(\S+)\s+exit=(\S+)\s*$/.exec(lines[i].trim());
+    if (!m) continue;
+    const body = [];
+    let j = i + 1;
+    for (; j < secEnd && lines[j].trim() !== "```"; j++) body.push(lines[j]);
+    blocks.push({ id: m[1], exitText: m[2], line: i + 1, body: body.join("\n") });
+    i = j;
+  }
+  return blocks;
+}
+
+function checkEvidenceBlocks(cardPath, lines) {
+  const blocks = evidenceBlockInfo(lines);
+  const ev = evidenceTableInfo(lines);
+  const refs = [];
+  if (ev) {
+    for (const r of ev.rows) {
+      const criterion = (r.cells[0] || "").replace(/`/g, "").trim();
+      for (const m of r.raw.matchAll(/见命令块\s+(\S+)/g)) {
+        const rawId = m[1].replace(/[，。；、,;：:].*$/, "").trim();
+        const em = /exit=(\d+)/.exec(r.raw);
+        refs.push({ id: rawId, criterion, line: r.line, exit: em ? Number(em[1]) : null });
+      }
+    }
+  }
+  const seen = new Set();
+  for (const b of blocks) {
+    if (!/^C\d+$/.test(b.id)) { err(cardPath, b.line, `evidence_block_id_invalid：命令块 id「${b.id}」不合法（应 ^C\\d+$）`); continue; }
+    if (!/^\d+$/.test(b.exitText)) { err(cardPath, b.line, `evidence_block_mismatch：命令块 ${b.id} 的 exit=「${b.exitText}」不是整数`); continue; }
+    b.exit = Number(b.exitText);
+    if (seen.has(b.id)) err(cardPath, b.line, `evidence_block_duplicate：命令块 ${b.id} 重复`);
+    seen.add(b.id);
+    if (!b.body.trim() || /^\s*(?:<[^>]+>|待填|TODO|TBD)\s*$/i.test(b.body)) err(cardPath, b.line, `evidence_block_empty：命令块 ${b.id} 为空或占位`);
+  }
+  const firstRefLine = new Map();
+  for (const r of refs) {
+    if (!/^C\d+$/.test(r.id)) { err(cardPath, r.line, `evidence_block_id_invalid：引用「见命令块 ${r.id}」的 id 不合法（应 ^C\\d+$）`); continue; }
+    if (r.criterion !== r.id) err(cardPath, r.line, `evidence_block_wrong_criterion：第 ${r.line} 行判据 ${r.criterion || "（空）"} 引用了块 ${r.id}`);
+    const prior = firstRefLine.get(r.id);
+    if (prior !== undefined && prior !== r.line) err(cardPath, r.line, `evidence_block_duplicate_reference：块 ${r.id} 已被第 ${prior} 行引用，第 ${r.line} 行再次引用`);
+    else firstRefLine.set(r.id, r.line);
+    if (!seen.has(r.id)) err(cardPath, r.line, `evidence_block_missing：表格引用「见命令块 ${r.id}」但卡内没有这个块`);
+  }
+  for (const b of blocks) {
+    if (!/^C\d+$/.test(b.id)) continue;
+    if (!firstRefLine.has(b.id)) err(cardPath, b.line, `evidence_block_unreferenced：命令块 ${b.id} 没有被证据表引用`);
+  }
+  for (const r of refs) {
+    if (!/^C\d+$/.test(r.id)) continue;
+    const b = blocks.find((x) => x.id === r.id && /^\d+$/.test(x.exitText));
+    if (!b) continue;
+    if (r.exit === null) err(cardPath, r.line, `evidence_block_mismatch：引用 ${r.id} 的证据行没有可解析的 exit=<n> 结果`);
+    else if (r.exit !== b.exit) err(cardPath, r.line, `evidence_block_mismatch：块 ${r.id} 声明 exit=${b.exit}，表格结果 exit=${r.exit}`);
+  }
 }
 
 function mutationTableInfo(lines) {
@@ -810,6 +874,7 @@ function checkCards() {
   if (!exists(d)) return warn(d, 0, "还没有卡（里程碑早期可接受）");
   for (const f of fs.readdirSync(path.join(ROOT, d)).filter((x) => x.endsWith(".md")).sort()) {
     const p = `${d}/${f}`, lines = read(p), text = lines.join("\n");
+    checkEvidenceBlocks(p, lines);
     for (const s of ["判据", "证据", "判定", "评审"]) if (!new RegExp("^##\\s*" + s + "(?:\\s|$)", "m").test(text)) err(p, 0, `缺段落：## ${s}`);
     const sm = text.match(/^status:\s*(open|in_progress|done)/m);
     if (!sm) err(p, 0, "缺 status: open|in_progress|done");
@@ -1747,49 +1812,83 @@ function checkRequirementClaim(lines, planPath) {
 }
 
 // M11-3：冻结段「- 门禁：」「- 判据：」是唯一真源；M12 起强制，M1–M11 已签为历史。
-function isNewDeclarationMilestone(mid) {
-  return !originalPlanSigned(mid);
-}
 function allPresetGateIds() {
-  const dir = path.join(SKILL_ROOT, "presets");
-  const out = new Set();
-  if (!fs.existsSync(dir)) return out;
-  for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md"))) {
-    for (const m of fs.readFileSync(path.join(dir, f), "utf8").matchAll(/\b(G_[a-z_]+)\b/g)) out.add(m[1]);
-  }
-  return out;
+  return new Set(loadCriteriaPool(SKILL_ROOT).gates);
 }
 function allPresetCriteriaNames() {
-  const dir = path.join(SKILL_ROOT, "presets");
-  const out = new Set();
-  if (fs.existsSync(dir)) {
-    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md"))) {
-      for (const m of fs.readFileSync(path.join(dir, f), "utf8").matchAll(/[a-z_]+\.[a-z_]+/g)) out.add(m[0]);
-    }
-  }
-  for (const extra of ["gate.signed", "readings.recorded", "review.independent"]) out.add(extra);
-  return out;
+  return new Set(loadCriteriaPool(SKILL_ROOT).criteria);
 }
 function freezeSectionLines(lines) {
   const sec = sectionOf(lines, /^#{2,3}\s+.*冻结段/);
   return sec ? { start: sec.start, end: sec.end, lines } : null;
 }
+let exemptionCache = null;
+function declarationExemption() {
+  if (exemptionCache) return exemptionCache;
+  const dir = path.join(ROOT, ".sdo/milestones");
+  const ids = new Set();
+  const sources = new Map();
+  let found = false, malformed = null;
+  if (fs.existsSync(dir)) {
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md")).sort()) {
+      const srcMid = /^(M\d+)\.md$/.exec(f);
+      if (!srcMid) continue;
+      const srcId = srcMid[1];
+      if (!originalPlanSigned(srcId)) continue; // 未签计划不能授予豁免
+      const fp = path.join(dir, f);
+      const ls = fs.readFileSync(fp, "utf8").split(/\r?\n/);
+      const sec = freezeSectionLines(ls);
+      if (!sec) continue;
+      for (let i = sec.start; i < sec.end; i++) {
+        const m = ls[i].match(/^-\s*声明豁免[:：]\s*(.*)$/);
+        if (!m) continue;
+        found = true;
+        const raw = m[1].trim();
+        if (raw.includes("*")) { malformed = { src: fp, line: i + 1, why: "不得使用通配 *" }; continue; }
+        const toks = raw.split(/[、,，]/).map((x) => x.trim()).filter(Boolean);
+        if (toks.length === 0) { malformed = { src: fp, line: i + 1, why: "豁免列表为空" }; continue; }
+        const srcNum = Number(srcId.slice(1));
+        for (const t of toks) {
+          if (!/^M\d+$/.test(t)) { malformed = { src: fp, line: i + 1, why: `非法里程碑号：${t}` }; continue; }
+          const num = Number(t.slice(1));
+          if (num >= srcNum) continue; // 声明方不能豁免自己或更新的里程碑
+          ids.add(t);
+          sources.set(t, fp);
+        }
+      }
+    }
+  }
+  exemptionCache = { found, ids, sources, malformed };
+  return exemptionCache;
+}
+
 function checkDeclarations(lines, p, mid) {
-  if (!isNewDeclarationMilestone(mid)) return;
   const sec = freezeSectionLines(lines);
   if (!sec) {
     err(p, 1, "frozen_hash_missing：找不到「## 冻结段」小节，无法读取门禁/判据声明（声明不读，不回退整文件）");
     return;
   }
   let gateLine = -1, critLine = -1, gateVal = "", critVal = "";
+  const exemption = declarationExemption();
+  if (exemption.malformed) err(exemption.malformed.src, exemption.malformed.line, `gate_criteria_undeclared_legacy_malformed：${exemption.malformed.why}`);
+  const legacyExempt = exemption.found && exemption.ids.has(mid) && !exemption.malformed;
   for (let i = sec.start; i < sec.end; i++) {
     const g = lines[i].match(/^-\s*门禁[:：]\s*(.+)$/);
     if (g) { gateLine = i + 1; gateVal = g[1]; }
     const c = lines[i].match(/^-\s*判据[:：]\s*(.+)$/);
     if (c) { critLine = i + 1; critVal = c[1]; }
   }
-  if (gateLine < 0 || gateVal.trim() === "") err(p, 1, "gate_criteria_undeclared：冻结段缺「- 门禁：<gate 序列>」声明（不设默认集）");
-  if (critLine < 0 || critVal.trim() === "") err(p, 1, "gate_criteria_undeclared：冻结段缺「- 判据：<判据列表>」声明（不设默认集）");
+  const missMsg = "gate_criteria_undeclared：冻结段缺声明（不设默认集）";
+  const exSrc = exemption.sources.get(mid);
+  const srcNote = exSrc ? `（声明豁免来自 ${path.relative(ROOT, exSrc)})` : "";
+  if (gateLine < 0 || gateVal.trim() === "") {
+    if (legacyExempt) warn(p, 1, `gate_criteria_undeclared_legacy：${mid} 缺「- 门禁：」；历史签，不追溯${srcNote}`);
+    else err(p, 1, missMsg + "（缺「- 门禁：」）");
+  }
+  if (critLine < 0 || critVal.trim() === "") {
+    if (legacyExempt) warn(p, 1, `gate_criteria_undeclared_legacy：${mid} 缺「- 判据：」；历史签，不追溯${srcNote}`);
+    else err(p, 1, missMsg + "（缺「- 判据：」）");
+  }
   const gateIds = [...new Set([...gateVal.matchAll(/G_[a-z0-9_]+/g)].map((x) => x[0]))];
   const knownGates = allPresetGateIds();
   for (const id of gateIds) if (!knownGates.has(id)) err(p, gateLine, `gate_unknown：门禁「${id}」不在 presets 的已知门集合（勿自编）`);
@@ -1833,9 +1932,11 @@ function checkPlanRules(milestone, planPath) {
   // 理由：改冻结段内容时 hash 必然变，若先报 hash，真正被违反的规则会被噪声盖住（R26 要求首条报错可指认）。
   const baselineVersionBase = baselineSegments(lines, "baseline", planPath);
   let preset = "";
-  if (isNewDeclarationMilestone(milestone)) {
-    checkDeclarations(lines, planPath, milestone);
-  } else {
+  checkDeclarations(lines, planPath, milestone);
+  const hasDecl = freezeSectionLines(lines) ? lines.slice(freezeSectionLines(lines).start, freezeSectionLines(lines).end).some((l) => /^-\s*(?:门禁|判据)[:：]/.test(l)) : false;
+  const ex = declarationExemption();
+  const legacyOnly = ex.ids.has(milestone) && !hasDecl && !ex.malformed;
+  if (!hasDecl && legacyOnly) {
     if (!presetBase.has(milestone)) preset = checkPresetDeclaration(lines, planPath);
     if (preset) checkStageOrder(lines, planPath, preset);
   }
@@ -1935,6 +2036,7 @@ function checkPlan() {
   for (const r of liveRows) if (!exists(`.sdo/cards/${r.id}.md`)) err(planPath, r.line, `卡表有卡无文件：${r.id}`);
   for (const id of cardIds) if (!tableIds.has(id)) err(`.sdo/cards/${id}.md`, 1, `卡不在本里程碑卡表：${id}`);
 
+  for (const id of cardIds) checkEvidenceBlocks(`.sdo/cards/${id}.md`, read(`.sdo/cards/${id}.md`));
   const infos = new Map();
   for (const r of liveRows) infos.set(r.id, planCardInfo(r.id));
   for (const id of cardIds) if (!infos.has(id)) infos.set(id, planCardInfo(id));
@@ -1986,6 +2088,7 @@ function checkPlan() {
   if (unsigned && unsigned.unsigned) {
     console.log(`WARN plan_sign_unsigned：计划签仍是草案（${unsigned.file}），0 漂移只证明与草案记录一致，不能作为签前判据`);
   }
+  for (const w of WARN) console.log(`WARN  ${w}`);
   console.log(`\n检查完成（--plan ${milestone}）：${ERR.length} 个漂移`);
   process.exit(ERR.length ? 1 : 0);
 }
