@@ -39,29 +39,68 @@ whenToUse: >-
 ## 4. 目录约定（签后可追加，签前可改）
 ```
 .sdo/
-  意图.md             立项：目标/非目标/三条保证/判据/假设/待确认
-  计划.md             项目级计划：里程碑索引、签字约定、preset 选择规则、共享写域总则
-  milestones/<M>.md       每个里程碑的全部计划内容：判死读数、preset 与阶段、卡表与依赖、写域补充、冻结段
-  cards/<M>-<n>.md    一卡一文件（必需四段：判据/证据/判定/评审；其余建议段）
-  台账.md             偏差台账：gap / defect / explain，7 列
-  sign/<S号>.md       人签记录（复述 + 选项 + 时间 + 被签对象）
-  readings/<M>.md     里程碑读数（命令 + 输出摘要 + verdict）
-  review/<M>-计划.md  计划评审记录
-  gates/<M>.md        阶段出口勾选表（与读数分开：读数门要 overall）
-  notes/<M>-使用笔记.md  preset 使用体验与改进建议（M5 起）
-  看板.md             卡板快照（可选；view.mjs board 现生成也行）
+  意图.md             第 1 步建：cp templates/意图.md 后手填
+  计划.md             第 3 步建：cp templates/计划.md 后手填
+  milestones/<M>.md       第 3 步建：cp templates/milestone.md .sdo/milestones/<M>.md 后手填
+  cards/<M>-<n>.md    第 4 步建：card.mjs new 生成
+  baseline/           第 2 步建：mkdir + 从 templates/baseline.md 拆四份（见下）
+  archive/<M>/        收口后：archive.mjs archive <M> 搬五类
+  ledger/vol-<n>.md   轮转时：ledger.mjs rotate --to … 生成
+  台账.md             第 1 步建：cp templates/台账.md
+  sign/<S号>.md       第 7 步人签时建：cp templates/sign.md .sdo/sign/S<n>.md 后填
+  readings/<M>.md     第 8 步建：cp templates/readings.md .sdo/readings/<M>.md
+  review/<M>-计划.md  第 3 步建：cp templates/review.md .sdo/review/<M>-计划.md
+  gates/<M>.md        第 8 步建：cp templates/gates.md .sdo/gates/<M>.md
+  notes/<M>-使用笔记.md  M5 起可选：手写preset 使用体验
+  看板.md             可选：view.mjs board 生成，或手写
 ```
 
 模板在 `templates/`，第一次用直接拷出来改。
 
-## 5. 七步主循环
-1. **立项**：写 `意图.md`；复述给真人、问签（§6）；**没签不动工**。
-2. **计划**：写 `.sdo/计划.md` + `.sdo/milestones/M<n>.md`；每个里程碑在 `### M<n>.4 阶段` 自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话；不设项目默认值），卡表写在里程碑文件里；按 `references/04` 做计划评审；改完请人签。**口头授权≠流程放行**：口头说“可以开工”不算计划签或卡签，流程放行只认签字文件/明确裁定的等价记录。
-3. **开卡**：一卡一文件；判据可判死、假设、预览、准入。判据表必须有「类型」列，值只 `结构`/`语义`/`边界`；done 卡至少一条 `语义`，或写 `语义：不适用（理由）`（理由去标点 ≥8 字、非套话）；有语义判据的 done 卡，评审段写 `- 语义自检：…`（评审填，写清复跑了哪条语义判据）。证据表分「命令与输出」「判定」——**证据只接受脚本生成**（`card.mjs evidence --run` 写 `exit=<code>` 或「未跑待复跑」；手填 `pass`/`ok`/`done`/`已通过`/空 会被拒）；判定由评审填。M5-2 起 done 卡每条判据还要有「## 变异」行（`expected=red actual=red`）或「不可变异：理由」+评审确认；`card.mjs mutation` 在临时副本跑，不碰工作树。
-4. **执行**：按卡改；写域外先问；**一卡两笔提交**（产物一笔、卡与台账一笔）；无 git 时写「提交：无（无版本库）」并说明靠 mtime 审计。
-5. **多轮评审**：每轮判「可收卡 / 改完再审 / 拒绝」；done 卡每条判据有合法判定，评审段有「评审者：」；改完送同一席位复认，**轮数不设上限**，直到「可收卡」（`references/03`）。**评审后只要动了文件就必须再送一轮**——「改完即可签」不是判词，评审只对它能看见的树负责；签字前最后一轮必须是「可签」且此后零改动。
-6. **人签收卡**：复述 + 三选项；签完写 `.sdo/sign/S<n>.md`，卡置 done。
-7. **里程碑门**：跑读数（`references/05`）写 `.sdo/readings/<M>.md`；请人签门，partial 也照写。
+## 5. 八步主循环（每步：产物 / 命令 / 判据 / 常见错）
+
+1. **立项**：产物 `.sdo/意图.md`（六节）与 S1 意图签。命令：`cp <skill>/templates/意图.md .sdo/意图.md` 后填；`node <skill>/scripts/check.mjs`。判据：人签问答通过、意图六节齐全、check 0 错。常见错：没签就开工；把愿望当可判目标。
+2. **基线**：产物 `.sdo/baseline/` 四份（requirement/architecture/test-strategy/quality-risk）。`templates/baseline.md` 是**一个含四小节的模板**，必须拆成四个文件；命令序列：
+   ```bash
+   mkdir -p .sdo/baseline
+   awk '/^## 1\. requirement\.md/{on=1;next}/^## 2\./{on=0}on' <skill>/templates/baseline.md > .sdo/baseline/requirement.md
+   awk '/^## 2\. architecture\.md/{on=1;next}/^## 3\./{on=0}on' <skill>/templates/baseline.md > .sdo/baseline/architecture.md
+   awk '/^## 3\. test-strategy\.md/{on=1;next}/^## 4\./{on=0}on' <skill>/templates/baseline.md > .sdo/baseline/test-strategy.md
+   awk '/^## 4\. quality-risk\.md/{on=1;next}on' <skill>/templates/baseline.md > .sdo/baseline/quality-risk.md
+   node --input-type=module -e "import {baselineHash} from '<skill>/scripts/lib/hash.mjs';console.log(baselineHash(process.cwd()))"
+   ```
+   各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签。
+3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
+4. **开卡**：产物 `.sdo/cards/<M>-<n>.md`。命令：`node <skill>/scripts/card.mjs new <M>-<n> --owner … --intent … --criteria …`。判据：判据表含「类型」列（结构/语义/边界）、写域与准入清楚、每条判据可判死。常见错：判据写“做好/合理”；缺准入依赖。
+5. **执行**：产物实现文件 + 脚本证据。命令：`node <skill>/scripts/card.mjs evidence <卡> --criterion C1 --cmd '<命令>' --run`。判据：证据列以 `exit=<code>` 开头、写域外先问、一卡两笔提交。常见错：手填 `pass`/`ok`；用“我试过”代替可复跑命令。
+6. **评审**：产物评审记录、判定、变异表。命令：`node <skill>/scripts/card.mjs mutation --card <卡> --criterion C1 --mutate '<改坏>' --expect '<应红命令>'`。判据：评审者非作者、判词三选一、有语义判据的 done 卡写 `- 语义自检：`、每条判据有 `expected=red actual=red` 或“不可变异+理由+确认”。常见错：改完再审后不复认；只看历史行不看最后判词。
+7. **收卡/人签**：产物 `.sdo/sign/S<n>.md` + 卡 status done。命令：`node <skill>/scripts/sign.mjs draft --milestone <M>` 取材料；`cp <skill>/templates/sign.md .sdo/sign/S<n>.md`，把 `<n>` 换成下一个编号（规则：`ls .sdo/sign | sort -V | tail -1` 取最大号；**新签** +1，如 S52 后写 `S53.md`；**追加签**用同号加字母 `S<n>-<A>`，不是继续加号），`范围`/`被签对象`/`判定`/`已知边界` 照 draft 填，`- 冻结段 hash：` **唯一来源是第 3 步 `--print-frozen-hash`**（draft 里的同名行只作核对，不一致以 `--print-frozen-hash` 为准并报错停下）；再由真人确认。判据：四要素齐全（范围/被签对象/判定/已知边界）、签署者是人、签后树不再动。常见错：模型自签；代笔无确认；“我问过”写成“签过”。
+8. **读数/门**：产物 `.sdo/readings/<M>.md`、`.sdo/gates/<M>.md`、门签。命令：`cp <skill>/templates/readings.md .sdo/readings/<M>.md`（替换每行 `<M>`/`<命令>`/verdict）；`cp <skill>/templates/gates.md .sdo/gates/<M>.md`（替换 `<M>`、`<preset>`、`<gate-id>` 并按 preset criteria 逐条复制行）；然后 `node <skill>/scripts/check.mjs --trace`；`node <skill>/scripts/gate.mjs --file .sdo/gates/<M>.md`。判据：读数 overall 与逐条一致、gate exit 0、门签标题必须是 `# 签字 S<n> · M<n> 里程碑门`。常见错：partial 改写成 pass；没跑 `--trace` 就送门。
+
+**不可机检项的归因**：语义正确性、架构合理性等机器证明不了的东西，由评审与人签负责；发现不了不是流程失败，不许因此返工流程——只补判据、补评审，不许把 partial 改成 pass。
+
+### 5.1 基线四份与四向闭合
+`requirement.md` 每条需求写成 `### R-<号> <标题>`，下面必须有 `- 验收：<可判语句>`；`architecture.md` 每个决策写成 `## ADR-<号>：<标题>`（含决策/备选/后果）；`test-strategy.md` 用「变更类型 | 测试技术」表；`quality-risk.md` 必须有「质量属性」「风险登记」两节。四份的哈希由 `scripts/lib/hash.mjs` 统一计算，写进里程碑冻结段的 `- 基线 hash：<64 位>`，基线一改就要追加签。
+常见码与改法：
+
+| 码 | 触发条件 | 怎么改 |
+|---|---|---|
+| `baseline_requirement_malformed` | `.sdo/baseline/requirement.md` 少于 3 条 `### R-<号>`，或某条缺 `- 验收：` | 补足三条需求并逐条写验收 |
+| `baseline_template_malformed` | `templates/baseline.md` 缺失，或缺四小节/ADR 三字段/测试表头/质量风险小节/`- 验收：` 字段 | 修模板本身（不是改项目里的基线） |
+| `basis_section_missing` | 新判据写了 `依据：§12.<n>`，但 `.sdo/意图.md` §12 没有该小节 | 补意图 §12 小节，或改判据依据编号 |
+| `trace_orphan_card` | 活跃 done 卡没有 `references:`；已签里程碑冻结段声明「孤儿卡基线段」的历史卡豁免 | 给卡写 `references: [R-xx]`（或按里程碑 `认领需求：` 登记） |
+
+需求、设计、实现、测试靠 `check --trace` 四向闭合：`trace_orphan_requirement`（需求没人认领）→ `trace_dangling_ref`（卡引用了不存在的需求）→ `trace_duplicate_claim`（同一里程碑多卡争认领）→ `trace_orphan_test`（done 卡没有可复跑测试引用）；另有 `trace_orphan_card`（done 卡没有 `references:`）与 `trace_test_unverifiable`（有文本但不合口径）。卡面用 `references: [R-01]` 认领，里程碑用 `认领需求：` 行登记；门签前 `--trace` 必须 0 问题。
+
+### 5.2 六条硬约束锚点（评审只核锚点与自足性）
+| # | 硬约束 | SKILL 锚点 | references 锚点 |
+|---|---|---|---|
+| 1 | 不代签：签字只由真人做 | §6 人签协议 | `references/03` §2 问答即签字 |
+| 2 | “改完再审”不是判词 | §9 评审（判词三选一） | `references/03` §3 多轮评审 |
+| 3 | 证据只由脚本写 | §5 第 5 步（`evidence --run`） | `references/04` §2 卡面字段（证据） |
+| 4 | 口头授权 ≠ 流程放行 | §5 第 3 步（只认签字文件） | `references/04` §1 计划评审 |
+| 5 | 判据表必须有「类型」列 | §5 第 4 步（结构/语义/边界） | `references/04` §2 卡面字段 |
+| 6 | done 卡要有变异证据 | §5 第 6 步（`expected=red actual=red`） | `references/03` §4 变异红证 |
 
 ## 6. 人签协议（唯一合法的人证方式）
 - 用 agent 的“提问并给选项”能力（不同的 agent 名字不同；只能纯文本对话时就写三个编号选项让对方回数字），选项固定三种：**签：复述准确** / **改：复述不准（请指出）** / **不签：先不做**。
@@ -111,6 +150,7 @@ node <skill>/scripts/check.mjs --plan [--milestone M4]|--deep|--trace --js|--hel
 
 `view state` 走索引，索引损坏/不一致 ⇒ exit 2（要一致性）；`ledger list --open` 直接读正文，索引坏了仍可用（要可用性）。这是 S45 边界 2。
 `<skill>` 是这套流程包的实际目录（例如 `skills/sdo-flow`）。**收卡与出门前各跑一次**；红了先修，别绕过。
+路径优先级：项目内 `skills/sdo-flow` 优先，否则用脚本自身目录；两处并存以项目内为准。缺 `.sdo/意图.md`、`.sdo/台账.md` 或 `.sdo/baseline/*.md` 时，脚本输出 `SDO_E_MISSING_*` 与可复制的 `cp` 命令，不用读源码。
 
 - 只查**格式与结构**，不判断证据真假；证据仍以“可复跑命令或 `文件:行`”为准。
 - 需要 `node`；没有时退回人工（核对列数、字段、签字三字段），并在签字文件写“检查方式：人工”。
