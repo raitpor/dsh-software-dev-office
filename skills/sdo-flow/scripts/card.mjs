@@ -2,7 +2,8 @@
 // card.mjs — 卡骨架与证据行（M4-1）。零依赖 Node ESM；只改 .sdo/cards/。
 //
 // 用法：
-//   node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:…,C2:…" [--scope "a,b"]
+//   node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:结构:文字;C2:语义:文字" [--scope "a,b"]
+//     --criteria 多项用分号（; 或 ；）分隔；每项是 编号:类型:文字，类型只 结构/语义/边界；禁止半角逗号。
 //   node <skill>/scripts/card.mjs evidence <卡号|卡文件> --criterion C1 --cmd "<命令>" [--run [命令]]
 //   node <skill>/scripts/card.mjs mutation --card <卡号> --criterion C1 --mutate "<改坏命令>" --expect "<应红命令>"
 //
@@ -126,17 +127,18 @@ function parseArgs(argv) {
 }
 
 function parseCriteria(raw) {
-  if (typeof raw !== "string" || raw.trim() === "") die("new 缺必填参数 --criteria（如 \"C1:…,C2:…\"）");
-  const items = raw.split(",").map((x) => x.trim()).filter(Boolean);
+  if (typeof raw !== "string" || raw.trim() === "") die("new 缺必填参数 --criteria（如 \"C1:结构:文字;C2:语义:文字\"）");
+  if (raw.includes(",")) die("--criteria 禁止半角逗号（,）；多项请用分号（; 或 ；）分隔");
+  const items = raw.split(/[;；]/).map((x) => x.trim()).filter(Boolean);
   if (!items.length) die("--criteria 为空");
   const seen = new Set();
   const list = [];
   for (const item of items) {
-    const m = /^(C\d+)\s*[:：]\s*(.+)$/.exec(item);
-    if (!m) die(`判据格式不合法：${item}（应为 C1:文本）`);
+    const m = /^(C\d+)\s*[:：]\s*(?:(结构|语义|边界)\s*[:：]\s*)?(.+)$/.exec(item);
+    if (!m) die(`判据格式不合法：${item}（应为 C1:结构:文字）`);
     if (seen.has(m[1])) die(`判据重复：${m[1]}`);
     seen.add(m[1]);
-    list.push({ id: m[1], text: m[2].trim() });
+    list.push({ id: m[1], type: m[2] || "结构", text: m[3].trim() });
   }
   return list;
 }
@@ -202,7 +204,7 @@ ${flags.intent.trim()}
 
 | 编号 | 判据 | 类型 | 反例 |
 |---|---|---|---|
-${criteria.map((c) => `| ${c.id} | ${c.text} | 结构 | 待补反例（用一条命令证明会红） |`).join("\n")}
+${criteria.map((c) => `| ${c.id} | ${c.text} | ${c.type} | 待补反例（用一条命令证明会红） |`).join("\n")}
 
 ## 证据
 | 判据 | 命令与输出 | 判定 |
@@ -443,7 +445,11 @@ function cmdMutation(flags, positional) {
 
 const ARGV = process.argv.slice(2);
 if (ARGV.includes("--help") || ARGV.includes("-h")) {
-  console.log("用法：node <skill>/scripts/card.mjs new|evidence|mutation [参数]（详见文件头）");
+  console.log(`用法：
+  node <skill>/scripts/card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria "C1:结构:文字;C2:语义:文字"
+    多项用分号（; 或 ；），禁止半角逗号；类型只 结构/语义/边界
+  node <skill>/scripts/card.mjs evidence <卡号|卡文件> --criterion C1 --cmd "<命令>" [--run [命令]]
+  node <skill>/scripts/card.mjs mutation --card <卡号> --criterion C1 --mutate "<改坏命令>" --expect "<应红命令>"`);
   process.exit(0);
 }
 const { cmd, flags, positional } = parseArgs(ARGV);
