@@ -54,5 +54,5 @@ preset 选择理由：<≥8 字，说明为什么这条流程合适、不选别�
 - 被签对象：<40 位 commit>（**首次提交前**写「待首次提交后填」，签前必须换成真 commit）
 - 冻结判据：`check --plan --milestone <M>` 0 漂移；计划评审记录存在
 - 基线 hash：<64 位>（**这行是基线**，别和下一行混；取法：跑一次 `--plan`，把 `baseline_drift` 报错里「当前基线 …」那串 64 位复制过来）
-hash:<冻结段 hash：跑 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash` 得 64 位>
-<!-- 上面 hash: 行必须是独立一行、ASCII 冒号、无前缀、不加粗；上一行的括注要删掉，只留 hash:<64 位十六进制>。 -->
+hash:<64 位>
+<!-- 上面 hash:<64 位> 的取值：跑 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`，把输出的 64 位十六进制粘进尖括号；该行必须是独立一行、ASCII 冒号、无前缀、不加粗、不含任何说明文字。 -->
