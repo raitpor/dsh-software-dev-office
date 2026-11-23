@@ -75,6 +75,7 @@ agent-driven : frame → build → verify → review → sign → deliver
 ## 5. 八步主循环（每步：产物 / 命令 / 判据 / 常见错）
 
 1. **立项**：产物 `.sdo/意图.md`（六节）与 S1 意图签。命令：`cp <skill>/templates/意图.md .sdo/意图.md` 后填；`node <skill>/scripts/check.mjs`。判据：人签问答通过、意图六节齐全、check 0 错。常见错：没签就开工；把愿望当可判目标。
+
 2. **基线**：产物 `.sdo/baseline/` 四份（requirement/architecture/test-strategy/quality-risk）。`templates/baseline.md` 是**一个含四小节的模板**，必须拆成四个文件；命令序列：
    ```bash
    mkdir -p .sdo/baseline
@@ -85,6 +86,7 @@ agent-driven : frame → build → verify → review → sign → deliver
    node --input-type=module -e "import {baselineHash} from '<skill>/scripts/lib/hash.mjs';console.log(baselineHash(process.cwd()))"
    ```
    各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签。
+
 3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、preset、卡表、写域、冻结段）与计划签；**`.sdo/计划.md` 里要手动加一行本里程碑的索引行**（七列，表头见 `templates/计划.md`；示例：`| M1 | 主题 | incremental | 待签 | — | milestones/M1.md | 进行中 |`），漏了它 `view next`/门签都会找不到里程碑；**卡文件建好后保持 `status: open`**——`done` 会触发收卡规则（S1 人签、语义自检、证据与变异），冷启动阶段先别置 done；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
 
    冻结段 hash 行的**精确形态**：独立一行、ASCII 冒号、无前缀、不加粗：
@@ -95,22 +97,28 @@ agent-driven : frame → build → verify → review → sign → deliver
 
    不是 `- hash:`，不是 `hash：`（全角），不是表格行。**除这一行外不要再出现任何其它 hash 行**（`- hash:`、表格行、全角冒号都算）：检查器只认 canonical 行，额外行会被忽略——被忽略不等于合规。迭代法：**先删掉该行** → 跑 `--print-frozen-hash` 得到 H → 追加 `hash:H` → 再跑一次 `--print-frozen-hash` 复核（应仍为 H）。读数表前写「探底：」段，逐行列出与读数表 `R<n>` 对齐的探底动作：
 
-```text
-探底：
-- 探底 R44：在 `/tmp` 空项目跑 `init.mjs`，记录卡点数与额外读文件数
-- 探底 R45：`/tmp` 副本跑 `check --plan`，记录能否拿到完整冻结段 hash
-```
+   ```text
+   探底：
+   - 探底 R44：在 `/tmp` 空项目跑 `init.mjs`，记录卡点数与额外读文件数
+   - 探底 R45：`/tmp` 副本跑 `check --plan`，记录能否拿到完整冻结段 hash
+   ```
 
-判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
+   判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
+
 4. **开卡**：产物 `.sdo/cards/<M>-<n>.md`。命令：`node <skill>/scripts/card.mjs new <M>-<n> --owner … --intent … --criteria "C1:结构:文字;C2:语义:文字"`；`--criteria` 每项是 `编号:类型:文字`（类型只 `结构`/`语义`/`边界`），多项用**分号**分隔，**禁止半角逗号**（逗号会被当成项内文字）。卡面 `write_scope` 与计划卡表写域同形：值不加引号、每项一个仓库相对路径，`skills/sdo-flow/` 下的文件可写相对该目录的路径（检查器按 `skills/sdo-flow/` 归一）。反例：写裸文件名 `calc.js` 会被计划侧归一成 `skills/sdo-flow/calc.js`，卡面再带引号 `"calc.js"` 会把引号并入 token，两边对不上。
-正例（同一 token）：
-- 计划卡表写域：`skills/sdo-flow/scripts/check.mjs`
-- 卡面：`write_scope: [skills/sdo-flow/scripts/check.mjs]`
 
-判据：判据表含「类型」列（结构/语义/边界）、写域与准入清楚、每条判据可判死。常见错：判据写“做好/合理”；缺准入依赖；用引号/逗号写 `--criteria`。
+  正例（同一 token）：
+  - 计划卡表写域：`skills/sdo-flow/scripts/check.mjs`
+  - 卡面：`write_scope: [skills/sdo-flow/scripts/check.mjs]`
+
+  判据：判据表含「类型」列（结构/语义/边界）、写域与准入清楚、每条判据可判死。常见错：判据写“做好/合理”；缺准入依赖；用引号/逗号写 `--criteria`。
+
 5. **执行**：产物实现文件 + 脚本证据。命令：`node <skill>/scripts/card.mjs evidence <卡> --criterion C1 --cmd '<命令>' --run`。判据：证据列以 `exit=<code>` 开头、写域外先问、一卡两笔提交。常见错：手填 `pass`/`ok`；用“我试过”代替可复跑命令。
+
 6. **评审**：产物评审记录、判定、变异表。命令：`node <skill>/scripts/card.mjs mutation --card <卡> --criterion C1 --mutate '<改坏>' --expect '<应红命令>'`。判据：评审者非作者、判词三选一、有语义判据的 done 卡写 `- 语义自检：`、每条判据有 `expected=red actual=red` 或“不可变异+理由+确认”。常见错：改完再审后不复认；只看历史行不看最后判词。
+
 7. **收卡/人签**：产物 `.sdo/sign/S<n>.md` + 卡 status done。`sign.mjs draft` **在有 git 的仓库里需要可解析的 `git HEAD`——先 `git commit` 再 draft**（未提交改动不会进入被签对象）；**没有 git 时不阻塞**：输出「无 git（无法锚定 commit）」的锚点并 exit 0，此时被签对象只能靠逐文件 sha256。命令：`node <skill>/scripts/sign.mjs draft --milestone <M>` 取材料；`cp <skill>/templates/sign.md .sdo/sign/S<n>.md`，把 `<n>` 换成下一个编号（规则：`ls .sdo/sign | sort -V | tail -1` 取最大号；**新签** +1，如 S52 后写 `S53.md`；**追加签**用同号加字母 `S<n>-<A>`，不是继续加号），`范围`/`被签对象`/`判定`/`已知边界` 照 draft 填，`- 冻结段 hash：` **唯一来源是第 3 步 `--print-frozen-hash`**（draft 里的同名行只作核对，不一致以 `--print-frozen-hash` 为准并报错停下）；再由真人确认。判据：四要素齐全（范围/被签对象/判定/已知边界）、签署者是人、签后树不再动。常见错：模型自签；代笔无确认；“我问过”写成“签过”。
+
 8. **读数/门**：产物 `.sdo/readings/<M>.md`、`.sdo/gates/<M>.md`、门签。命令：`cp <skill>/templates/readings.md .sdo/readings/<M>.md`（替换每行 `<M>`/`<命令>`/verdict）；`cp <skill>/templates/gates.md .sdo/gates/<M>.md`（替换 `<M>`、`<preset>`、`<gate-id>` 并按 preset criteria 逐条复制行）；然后 `node <skill>/scripts/check.mjs --trace`；`node <skill>/scripts/gate.mjs --file .sdo/gates/<M>.md`。判据：读数 overall 与逐条一致、gate exit 0、门签标题必须是 `# 签字 S<n> · M<n> 里程碑门`。常见错：partial 改写成 pass；没跑 `--trace` 就送门。
 
 **不可机检项的归因**：语义正确性、架构合理性等机器证明不了的东西，由评审与人签负责；发现不了不是流程失败，不许因此返工流程——只补判据、补评审，不许把 partial 改成 pass。
