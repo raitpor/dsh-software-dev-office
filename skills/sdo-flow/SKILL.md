@@ -85,7 +85,7 @@ agent-driven : frame → build → verify → review → sign → deliver
    awk '/^## 4\. quality-risk\.md/{on=1;next}on' <skill>/templates/baseline.md > .sdo/baseline/quality-risk.md
    node --input-type=module -e "import {baselineHash} from '<skill>/scripts/lib/hash.mjs';console.log(baselineHash(process.cwd()))"
    ```
-   各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签。
+   各节取模板对应编号段。**拆出来的是骨架，不是成品**：删掉 ```` ```markdown ```` / ```` ``` ```` 围栏、把 `<...>` 占位换成真实内容；`requirement.md` 至少 3 条 `### R-<号>` 且每条带 `- 验收：`，`architecture.md` 至少 1 条 `## ADR-1：`（数字编号，不是 `<n>`），`test-strategy.md` 保留表头并填 ≥3 行，`quality-risk.md` 的「质量属性」「风险登记」各 ≥1 条。填完后把算出的 `- 基线 hash：<64 位>` 写进当前里程碑冻结段。判据：check 校验四份格式与 hash；里程碑读到同一 hash。常见错：跳过基线直接写计划；改了基线却不追加签；骨架里的 `<...>` 未替换 ⇒ `structural_placeholder_left`。
 
 3. **计划**：产物 `.sdo/计划.md` + `.sdo/milestones/<M>.md`（读数、门禁与判据、卡表、写域、阶段、冻结段）与计划签。**首选命令**：`node <skill>/scripts/milestone.mjs new <M> --topic "<主题>"`——硬编码生成六段骨架（`.0`–`.5`，冻结段带 `- 门禁：`/`- 判据：` 占位，**不写 `preset` 字段、不碰 `.sdo/计划.md`**）；`node <skill>/scripts/milestone.mjs freeze <M>` 就地把冻结段 `hash:` 行写成 64 位（幂等，二次执行不变）。它**不会**替你加计划索引行；**`.sdo/计划.md` 里要手动加一行本里程碑的索引行**（七列，表头见 `templates/计划.md`；示例：`| M1 | 主题 | incremental | 待签 | — | milestones/M1.md | 进行中 |`），漏了它 `view next`/门签都会找不到里程碑；**卡文件建好后保持 `status: open`**——`done` 会触发收卡规则（S1 人签、语义自检、证据与变异），冷启动阶段先别置 done；每个里程碑在阶段段自选 `preset：<名>` 并写 `preset 选择理由：`（≥8 字、非套话）。**口头授权≠流程放行**。命令：`node <skill>/scripts/check.mjs --plan --milestone <M>`；要在里程碑冻结段写 `hash:` 时，用 `node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`（`--print-frozen-hash` 只与 `--plan` 同用，输出完整 64 位）。
 
@@ -103,7 +103,7 @@ agent-driven : frame → build → verify → review → sign → deliver
    - 探底 R45：`/tmp` 副本跑 `check --plan`，记录能否拿到完整冻结段 hash
    ```
 
-   判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词。
+   判据：0 漂移、计划评审记录存在、人签 S<n>。常见错：把口头“可以开工”当放行；把“改完再审”当判词；门禁/判据/阶段/hash 留 `<...>` ⇒ `structural_placeholder_left`；写中文/未知阶段 id ⇒ `phase_unknown`；已签里程碑缺 hash 行 ⇒ `frozen_hash_missing`。
 
 4. **开卡**：产物 `.sdo/cards/<M>-<n>.md`。命令：`node <skill>/scripts/card.mjs new <M>-<n> --owner … --intent … --criteria "C1:结构:文字;C2:语义:文字"`；`--criteria` 每项是 `编号:类型:文字`（类型只 `结构`/`语义`/`边界`），多项用**分号**分隔，**禁止半角逗号**（逗号会被当成项内文字）。卡面 `write_scope` 与计划卡表写域同形：值不加引号、每项一个仓库相对路径，`skills/sdo-flow/` 下的文件可写相对该目录的路径（检查器按 `skills/sdo-flow/` 归一）。反例：写裸文件名 `calc.js` 会被计划侧归一成 `skills/sdo-flow/calc.js`，卡面再带引号 `"calc.js"` 会把引号并入 token，两边对不上。
 

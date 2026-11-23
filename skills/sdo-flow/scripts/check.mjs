@@ -1345,7 +1345,72 @@ function presetNames() {
 function presetStages(name) {
   const p = `skills/sdo-flow/presets/${name}.md`;
   if (!exists(p)) return [];
-  return read(p).map((l) => l.match(/^###\s+`([a-z]+)\[/)).filter(Boolean).map((m) => m[1]);
+  return read(p).map((l) => l.match(/^###\s+`([a-z_]+)\[/)).filter(Boolean).map((m) => m[1]);
+}
+function allPresetStageIds() {
+  const ids = new Set();
+  for (const name of presetNames()) for (const id of presetStages(name)) ids.add(id);
+  return ids;
+}
+
+const STRUCT_FIELD_RE = /^\s*(?:[-*]\s*)?(hash|状态|认领需求|门禁|判据|基线\s*hash|探底\s*R\d+)\s*[:：]\s*(.*)$/;
+function placeholderValue(v) { return /^<[^<>]+>$/.test(v.trim()); }
+function placeholderHint(field, file, mid) {
+  if (file.includes("/baseline/")) return `应该用：node ${SKILL_REL}/scripts/baseline.mjs init`;
+  if (/基线\s*hash/i.test(field)) return "应该用：见 SKILL.md 步 2（baseline.mjs init 后按 --plan 报错里的“当前基线”填写）";
+  if (/^hash$/i.test(field.trim())) return `应该用：node ${SKILL_REL}/scripts/milestone.mjs freeze ${mid}`;
+  if (file === ".sdo/计划.md") return "应该用：按 .sdo/计划.md 的里程碑表填写该行（见 SKILL.md 步 3）";
+  if (/门禁|判据/.test(field)) return `应该用：按 SKILL.md 步 3 填写，或重跑 milestone.mjs new ${mid} 重建骨架`;
+  return "应该用：按 SKILL.md 对应步骤填写该结构性字段";
+}
+
+function checkHandwritingSuspicion(target) {
+  const stageIds = allPresetStageIds();
+  const mdir = path.join(ROOT, ".sdo/milestones");
+  let mfiles = fs.existsSync(mdir) ? fs.readdirSync(mdir).filter((f) => /^M\d+\.md$/.test(f)).sort() : [];
+  if (target) mfiles = mfiles.filter((f) => f === `${target}.md`);
+  for (const f of mfiles) {
+    const rel = `.sdo/milestones/${f}`;
+    const mid = f.replace(/\.md$/, "");
+    const lines = read(rel);
+    for (let i = 0; i < lines.length; i++) {
+      const m = STRUCT_FIELD_RE.exec(lines[i]);
+      if (!m || !placeholderValue(m[2])) continue;
+      err(rel, i + 1, `structural_placeholder_left：${m[1].replace(/\s+/g, " ")} 仍是「${m[2].trim()}」占位；${placeholderHint(m[1], rel, mid)}`);
+    }
+    if (originalPlanSigned(mid) && !lines.some((l) => /^hash\s*[:：]/.test(l))) {
+      err(rel, 1, `frozen_hash_missing：已签里程碑缺冻结段 hash 行；应该用：node ${SKILL_REL}/scripts/milestone.mjs freeze ${mid}`);
+    }
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^阶段序列\s*[:：]/.test(lines[i])) continue;
+      const ids = [...lines[i].matchAll(/`([^`]+)`/g)].map((x) => x[1]);
+      for (const id of ids) {
+        if (!stageIds.has(id)) err(rel, i + 1, `phase_unknown：阶段序列里的「${id}」不是任何 preset 的阶段 id；应该用：在阶段序列里写 presets/ 里的英文阶段 id（见 SKILL.md §3）`);
+      }
+    }
+  }
+  const planRel = ".sdo/计划.md";
+  if (exists(planRel)) {
+    const lines = read(planRel);
+    for (let i = 0; i < lines.length; i++) {
+      if (!/^\|\s*M\d+\s*\|/.test(lines[i])) continue;
+      for (const cell of cells(lines[i])) {
+        if (!placeholderValue(cell)) continue;
+        err(planRel, i + 1, `structural_placeholder_left：计划索引行仍有「${cell.trim()}」占位；应该用：按 .sdo/计划.md 的里程碑表填写该行（见 SKILL.md 步 2）`);
+      }
+    }
+  }
+  const bdir = path.join(ROOT, ".sdo/baseline");
+  const bfiles = fs.existsSync(bdir) ? fs.readdirSync(bdir).filter((f) => f.endsWith(".md")).sort() : [];
+  for (const f of bfiles) {
+    const rel = `.sdo/baseline/${f}`;
+    const lines = read(rel);
+    for (let i = 0; i < lines.length; i++) {
+      const m = /^\s*(?:[-*]\s*)?(基线\s*hash|hash)\s*[:：]\s*(.*)$/.exec(lines[i]);
+      if (!m || !placeholderValue(m[2])) continue;
+      err(rel, i + 1, `structural_placeholder_left：${m[1].replace(/\s+/g, " ")} 仍是「${m[2].trim()}」占位；应该用：node ${SKILL_REL}/scripts/baseline.mjs init`);
+    }
+  }
 }
 function meaningfulLen(s) {
   return String(s).replace(/[，。！？、；：,.!?;:\s"'“”‘’（）()《》<>【】\[\]-]/g, "").length;
@@ -1504,6 +1569,25 @@ function planSignFile(mid) {
   }
   return sorted[sorted.length - 1].f;
 }
+// frozen_hash_missing 的“已签”只认原始计划签（S<数字>.md）；追加签 S<n>-A 不冒充。
+function originalPlanSigned(mid) {
+  const dir = path.join(ROOT, ".sdo/sign");
+  if (!fs.existsSync(dir)) return false;
+  const n = String(mid).replace(/^M/, "");
+  for (const f of fs.readdirSync(dir)) {
+    if (!/^S\d+\.md$/.test(f)) continue;
+    const lines = read(path.join(".sdo/sign", f));
+    const title = lines[0] || "";
+    const scope = lines.find((l) => l.startsWith("- 范围：")) || "";
+    const points = new RegExp(`M${n}\\s*计划`).test(title) || new RegExp(`M${n}\\s*计划`).test(scope);
+    if (!points) continue;
+    const verdict = (lines.find((l) => l.startsWith("- 判定：")) || "").replace(/^- 判定：/, "").trim();
+    const hasHash = lines.some((l) => /^- 冻结段 hash：\s*[0-9a-f]{64}\s*$/.test(l));
+    if (/^(?:接受|签)/.test(verdict) && hasHash) return true;
+  }
+  return false;
+}
+
 function checkStageOrder(lines, p, preset) {
   const heads = lines.map((l, i) => ({ l, i })).filter((x) => /^#{2,3}\s+.*阶段(（[^）]*）)?\s*$/.test(x.l));
   if (heads.length > 1) { err(p, heads[1].i + 1, "阶段段重复（### 阶段 出现多次）"); return; }
@@ -1513,7 +1597,7 @@ function checkStageOrder(lines, p, preset) {
   if (!cands.length) { err(p, 1, "阶段段缺序列（`frame`→…）"); return; }
   const expected = presetStages(preset);
   for (const c of cands) {
-    const actual = [...c.l.matchAll(/`([a-z]+)`/g)].map((m) => m[1]);
+    const actual = [...c.l.matchAll(/`([a-z_]+)`/g)].map((m) => m[1]);
     if (expected.length && actual.join(">") !== expected.join(">")) {
       err(p, c.i + 1, `阶段顺序与 preset 不一致：文件=[${actual.join("→")}] preset=[${expected.join("→")}]`);
     }
@@ -1723,6 +1807,7 @@ function checkPlan() {
   const planPath = milestonePath(milestone);
   const msLines = read(planPath);
   checkPlanRules(milestone, planPath);
+  checkHandwritingSuspicion(milestone);
   const liveRows = table.rows.filter((r) => !archivedIds.has(r.id));
   const tableIds = new Set(liveRows.map((r) => r.id));
 
@@ -1826,7 +1911,7 @@ checkBaselineTemplate();
 checkBaselineArtifacts();
 checkCardTemplateDecisions();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
-checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkCardStateMismatch(); checkAppendSignAnchors(); checkReadings(); checkArchive();
+checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkCardStateMismatch(); checkAppendSignAnchors(); checkReadings(); checkArchive(); checkHandwritingSuspicion();
 checkCriterionBasis();
 if (ARGV.includes("--presets")) checkPresets();
 if (ARGV.includes("--js")) {
