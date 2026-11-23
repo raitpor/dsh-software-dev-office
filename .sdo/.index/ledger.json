@@ -2,11 +2,11 @@
   "volumes": [
     {
       "path": ".sdo/台账.md",
-      "rows": 184,
+      "rows": 185,
       "first": "D-1",
-      "last": "D-186",
-      "sha256": "f97c11613aae99d8b1d0d80161406bee76b881937a016708db4ed5a655aa1f95",
-      "openRows": 18
+      "last": "D-187",
+      "sha256": "b5052d1a4bf570e13c9b89fb5aa530e486554186834c69413623315bb6a15a74",
+      "openRows": 19
     }
   ],
   "open": [
@@ -117,7 +117,13 @@
       "kind": "gap",
       "file": ".sdo/台账.md",
       "line": 178
+    },
+    {
+      "id": "D-187",
+      "kind": "explain",
+      "file": ".sdo/台账.md",
+      "line": 190
     }
   ],
-  "updated_at": "2026-11-22T14:54:56.782Z"
+  "updated_at": "2026-11-23T00:49:13.097Z"
 }
