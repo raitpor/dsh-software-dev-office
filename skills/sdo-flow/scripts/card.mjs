@@ -175,7 +175,7 @@ function cardStatus(text) {
 function cmdNew(flags, positional) {
   if (positional.length !== 1) die("用法：card.mjs new <M>-<n> --owner <席位> --intent <意图> --criteria \"C1:…,C2:…\"");
   const id = positional[0];
-  if (!/^[A-Za-z][\w-]*-\d+$/.test(id)) die(`卡号不合法：${id}（应为 M-<数字>）`);
+  if (!/^[A-Za-z][\w-]*-(?:\d+|G)$/.test(id)) die(`卡号不合法：${id}（应为 M-<数字> 或 M<n>-G）`);
   for (const key of ["owner", "intent"]) {
     if (typeof flags[key] !== "string" || flags[key].trim() === "") die(`new 缺必填参数 --${key}`);
   }
@@ -199,7 +199,10 @@ write_scope: ${scope}
 ${flags.intent.trim()}
 
 ## 判据
-${criteria.map((c) => `- ${c.id}：${c.text}`).join("\n")}
+
+| 编号 | 判据 | 类型 | 反例 |
+|---|---|---|---|
+${criteria.map((c) => `| ${c.id} | ${c.text} | 结构 | 待补反例（用一条命令证明会红） |`).join("\n")}
 
 ## 证据
 | 判据 | 命令与输出 | 判定 |

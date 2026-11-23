@@ -21,6 +21,7 @@ import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
   --plan              检查计划段（里程碑/preset/冻结 hash/阶段顺序等）
+  --print-frozen-hash 须与 --plan --milestone <M> 同用：只打印完整 64 位冻结段 hash 并 exit 0（只读）；单独使用无意义（会走默认检查路径）
   --milestone M<n>    配合 --plan 指定里程碑
   --trace             追溯链检查：需求←→卡←→判据←→测试（默认只判 done 卡）
   --presets [文件]    校验 preset 与发布快照，或与外部判据源比对
@@ -49,7 +50,7 @@ if (!ROOT) { console.error("找不到 .sdo/：请在本项目内运行，或先�
 const SELF = path.dirname(path.dirname(fileURLToPath(import.meta.url))); // <skill> 目录（脚本可在项目外）
 const SELF_REL = path.relative(ROOT, SELF).split(path.sep).join("/");
 const ARGV = process.argv.slice(2);
-const KNOWN_FLAGS = new Set(["--plan", "--milestone", "--trace", "--deep", "--presets", "--all", "--js"]);
+const KNOWN_FLAGS = new Set(["--plan", "--milestone", "--trace", "--deep", "--presets", "--all", "--js", "--print-frozen-hash"]);
 for (const a of ARGV) {
   if (a.startsWith("--") && !KNOWN_FLAGS.has(a)) {
     console.error(`未知参数：${a}`);
@@ -1146,7 +1147,7 @@ function checkFrontmatter() {
 function planExit2(msg) { console.error(msg); process.exit(2); }
 
 function planMilestone() {
-  const rest = ARGV.filter((a) => a !== "--plan");
+  const rest = ARGV.filter((a) => a !== "--plan" && a !== "--print-frozen-hash");
   let m = currentMilestone(ROOT) || "M4";
   for (let i = 0; i < rest.length; i++) {
     if (rest[i] === "--milestone") {
@@ -1648,6 +1649,10 @@ function checkPlan() {
   }
   if (!exists(milestonePath(milestone))) {
     planExit2(`里程碑文件不存在：${milestonePath(milestone)}`);
+  }
+  if (ARGV.includes("--print-frozen-hash")) {
+    console.log(frozenHashRaw(read(milestonePath(milestone)).join("\n")));
+    process.exit(0);
   }
   const table = planCardTable(milestone);
   const archivedIds = archivedCardIds();

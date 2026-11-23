@@ -10,6 +10,7 @@ import path from "node:path";
 import crypto from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { signedCardIds } from "./lib/signed-cards.mjs";
+import { frozenHashRaw } from "./lib/frozen.mjs";
 
 const SIGN_FORBIDDEN = /建议签|可以签|可签|推荐签|我认为|判定[:：]|选项[:：]签|签署者[:：]|✅|⚠️/;
 
@@ -333,6 +334,7 @@ function draft(root, milestone) {
   const emitSelf = (line) => { out.push(line); selfLines.push(line); };
   emitSelf(dirty || mismatched.length ? "DIRTY" : "CLEAN");
   emitSelf(`里程碑：${milestone}（.sdo/milestones/${milestone}.md）`);
+  emitSelf(`冻结段 hash：${frozenHashRaw(section.text)}`);
   const reading = readOverall(root, milestone);
   const readingPath = `.sdo/readings/${milestone}.md`;
   if (reading.missing) {
