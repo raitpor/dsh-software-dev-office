@@ -115,6 +115,8 @@ agent-driven : frame → build → verify → review → sign → deliver
 
 5. **执行**：产物实现文件 + 脚本证据。命令：`node <skill>/scripts/card.mjs evidence <卡> --criterion C1 --cmd '<命令>' --run`。判据：证据列以 `exit=<code>` 开头、写域外先问、一卡两笔提交。常见错：手填 `pass`/`ok`；用“我试过”代替可复跑命令。
 
+   **黑盒复核（可选，按需开席）**：何时开——卡涉及交互/文档可读性/新命令，或计划评审判「需要外部视角」时；用 `templates/blackbox-task.md` 生成任务书，交给**无上下文**席位只读 `skills/sdo-flow/` 与任务指定的目标产物；产出放 `.sdo/notes/<里程碑>-黑盒记录-<n>.md`（原文保留、不改写）。视角问题由无上下文席位回答，**结论由评审者下**（黑盒不替代白盒）；n=1 只证记录存在且原文未改，不证视角逐项被回答。
+
 6. **评审**：产物评审记录、判定、变异表。命令：`node <skill>/scripts/card.mjs mutation --card <卡> --criterion C1 --mutate '<改坏>' --expect '<应红命令>'`。判据：评审者非作者、判词三选一、有语义判据的 done 卡写 `- 语义自检：`、每条判据有 `expected=red actual=red` 或“不可变异+理由+确认”。常见错：改完再审后不复认；只看历史行不看最后判词。
 
 7. **收卡/人签**：**git 是可选的**：有 git 时被签对象写 `git:<sha>`（需 HEAD/commit）；**没有 git 也能签**，`sign.mjs new` 写 `tree:<内容指纹>`（纯 Node，规则见 `lib/fingerprint.mjs`），不需要 `git init`，也不把外层仓库当锚点。产物 `.sdo/sign/S<n>.md` + 卡 status done。`sign.mjs draft` 有 git 时需要可解析的 `git HEAD`（先 commit）；无 git 时正常输出 `版本：tree:<指纹>`，不阻断。首行 `CLEAN`/`DIRTY`（仅 git 工作树脏检查）不变；锚点行：`SAME`/`DIFF`（tree 同/异）、`SAME`/`AHEAD n`/`BEHIND n`（git）、`NO_ANCHOR`（无锚点或两形态不匹配）；**形态不匹配绝不静默 SAME**。命令：`node <skill>/scripts/sign.mjs draft --milestone <M>` 取材料；`cp <skill>/templates/sign.md .sdo/sign/S<n>.md`，把 `<n>` 换成下一个编号（规则：`ls .sdo/sign | sort -V | tail -1` 取最大号；**新签** +1，如 S52 后写 `S53.md`；**追加签**用同号加字母 `S<n>-<A>`，不是继续加号），`范围`/`被签对象`/`判定`/`已知边界` 照 draft 填，`- 冻结段 hash：` **唯一来源是第 3 步 `--print-frozen-hash`**（draft 里的同名行只作核对，不一致以 `--print-frozen-hash` 为准并报错停下）；再由真人确认。判据：四要素齐全（范围/被签对象/判定/已知边界）、签署者是人、签后树不再动。前置：`--write-scope` 命中的文件必须**已存在且已入库**（有 git 时先 `git add/commit` 再 `sign.mjs draft`）；`TREE_MISMATCH`/`DIRTY` 报错末尾带「下一步：…」，照它做。常见错：模型自签；代笔无确认；“我问过”写成“签过”。

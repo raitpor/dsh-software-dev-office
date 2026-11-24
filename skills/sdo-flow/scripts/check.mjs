@@ -1944,7 +1944,7 @@ function checkDeclarations(lines, p, mid) {
   for (const id of gateIds) if (!knownGates.has(id)) err(p, gateLine, `gate_unknown：门禁「${id}」不在 presets 的已知门集合（勿自编）`);
   const critNames = [...new Set(critVal.split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean))];
   const knownCrit = allPresetCriteriaNames();
-  for (const c of critNames) if (!knownCrit.has(c)) err(p, critLine, `criterion_not_whitelisted：判据「${c}」不在启发式判据池（presets 正文正则扫描，非权威白名单；如确为合法新码需先补 presets 或白名单）`);
+  for (const c of critNames) if (!knownCrit.has(c)) err(p, critLine, `criterion_not_whitelisted：判据「${c}」不在启发式判据池（池由 lib/criteria-pool.mjs 维护，说明由 lib/criteria-doc.mjs 维护；如确为合法新码需同步两处）`);
   // 可选「按门映射」：- 门禁判据：G_id = c1, c2。无映射时保持全局并集闭合。
   const criteriaSet = new Set(critNames);
   const mappedGates = new Set();

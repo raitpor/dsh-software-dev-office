@@ -14,10 +14,12 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
+import { describeCriterion } from "./lib/criteria-doc.mjs";
+import { loadCriteriaPool } from "./lib/criteria-pool.mjs";
 
 const ARGV = process.argv.slice(2);
 if (ARGV.some((a) => a === "--help" || a === "-h")) {
-  console.log("用法：node <skill>/scripts/gate.mjs init <M> | [--list] [G_xxx] [--file <path>] [--json]");
+  console.log("用法：node <skill>/scripts/gate.mjs init <M> [--check] [--force] | [--list] [G_xxx] [--file <path>] [--json]");
   console.log("  对账 .sdo/gates/ 勾选表与计划 preset：0=全 pass 或 partial 已人签接受；1=有 fail/缺项/缺签；2=用法/环境错误");
   process.exit(0);
 }
@@ -184,7 +186,7 @@ function signatureAcceptsPartial(file, text) {
 }
 
 
-function initGate(mid, force = false) {
+function initGate(mid, force = false, checkOnly = false) {
   if (!/^M\d+$/.test(mid || "")) { console.error("用法：gate.mjs init <M>"); process.exit(2); }
   const mfile = path.join(ROOT, `.sdo/milestones/${mid}.md`);
   if (!fs.existsSync(mfile)) { console.error(`找不到 .sdo/milestones/${mid}.md`); process.exit(2); }
@@ -195,22 +197,40 @@ function initGate(mid, force = false) {
   const body = lines.slice(sec, end < 0 ? lines.length : end);
   const gl = body.find((l) => /^-\s*门禁[:：]/.test(l));
   const cl = body.find((l) => /^-\s*判据[:：]/.test(l));
-  if (!gl || !cl) { console.error(`gate_criteria_undeclared：${mid} 冻结段缺「- 门禁：」或「- 判据：」`); process.exit(1); }
+  if (!gl || !cl) { console.error(`gate_criteria_undeclared：${mid} 冻结段缺「- 门禁：」或「- 判据：」（先跑 milestone.mjs declare，再 freeze）`); process.exit(2); }
   const declaredGates = gl.replace(/^-\s*门禁[:：]/, "").split(/→|->/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean);
   const criteria = cl.replace(/^-\s*判据[:：]/, "").split(/、|,/).map((x) => x.trim().replace(/`/g, "")).filter(Boolean);
   const maps = declaredMappingsInfo(mid);
   const gates = maps.found ? [...maps.byGate.keys()] : declaredGates;
-  if (!gates.length || !criteria.length) { console.error(`gate_criteria_undeclared：${mid} 门禁/判据声明为空`); process.exit(1); }
+  if (!gates.length || !criteria.length || criteria.some((c) => !/^[a-z_]+\.[a-z_]+$/.test(c))) {
+    console.error(`gate_criteria_undeclared：${mid} 门禁/判据声明为空或仍是占位符（先跑 milestone.mjs declare，再 freeze）`);
+    process.exit(2);
+  }
+  const known = new Set(loadCriteriaPool(SKILL_ROOT).criteria);
+  const unknown = criteria.find((c) => !known.has(c));
+  if (unknown) {
+    console.error(`criterion_unknown：${unknown} 不在权威判据池；用 gate.mjs init ${mid} --criteria 从 --list 里选`);
+    process.exit(2);
+  }
   const rel = `.sdo/gates/${mid}.md`;
   const out = path.join(ROOT, rel);
-  if (fs.existsSync(out) && !force) { console.log(`已存在，跳过：${rel}`); process.exit(0); }
-  if (fs.existsSync(out) && force) console.log(`将覆盖：${rel}`);
+  if (fs.existsSync(out) && !force && !checkOnly) { console.log(`已存在，跳过：${rel}`); process.exit(0); }
+  if (fs.existsSync(out) && force && !checkOnly) console.log(`将覆盖：${rel}`);
   const t = [`# 出口勾选表：${mid} 阶段门`, "", `> 由 gate.mjs init 按冻结段声明生成；人填判定与证据后 gate --file。`, ""];
   for (const g of gates) {
     const gc = maps.found ? maps.byGate.get(g) : criteria;
-    t.push(`## ${g}`, "", "| # | 判据 | 判据说明 | 证据（命令/文件:行） | 判定 |", "|---|---|---|---|---|");
-    gc.forEach((c, i) => t.push(`| ${i + 1} | ${c} | 待填 | 待填 | 待判 |`));
+    t.push(`## ${g}`, "", "| 编号 | 判据 | 说明 | 判定 | 证据 |", "|---|---|---|---|---|");
+    gc.forEach((c, i) => {
+      let description;
+      try { description = describeCriterion(SKILL_ROOT, c); }
+      catch { console.error(`criterion_unknown：${c} 不在权威判据池；用 gate.mjs init ${mid} --criteria 从 --list 里选`); process.exit(2); }
+      t.push(`| ${i + 1} | ${c} | ${description} | 待判 | 待填 |`);
+    });
     t.push("");
+  }
+  if (checkOnly) {
+    console.log(t.join("\n"));
+    process.exit(0);
   }
   fs.mkdirSync(path.dirname(out), { recursive: true });
   console.log(`将写：${rel}（${gates.length} 门 / ${maps.found ? [...maps.byGate.values()].reduce((n, a) => n + a.length, 0) : criteria.length} 判据${maps.found ? "，按门映射" : ""}）`);
@@ -242,7 +262,7 @@ function declaredMappingsInfo(mid) {
 
 // ---------- 主流程 ----------
 const plan = planInfo();
-if (ARGV[0] === "init") initGate(ARGV[1], ARGV.includes("--force"));
+if (ARGV[0] === "init") initGate(ARGV[1], ARGV.includes("--force"), ARGV.includes("--check"));
 const byFile = ARGV.includes("--file") ? ARGV[ARGV.indexOf("--file") + 1] : null;
 const wanted = ARGV.find((a) => /^G_[a-z0-9_]+$/.test(a)) || null;
 
