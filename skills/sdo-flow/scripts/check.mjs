@@ -8,6 +8,7 @@
 import fs from "node:fs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
 import path from "node:path";
+import { parseEvidenceBlocks } from "./lib/evidence.mjs";
 import { execFileSync } from "node:child_process";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 import { sortSigns } from "./lib/signs.mjs";
@@ -404,21 +405,7 @@ function evidenceTableInfo(lines) {
 }
 
 function evidenceBlockInfo(lines) {
-  const secAt = lines.findIndex((l) => /^##\s*证据(?:\s|$)/.test(l.trim()));
-  if (secAt < 0) return [];
-  let secEnd = lines.length;
-  for (let i = secAt + 1; i < lines.length; i++) if (/^##\s/.test(lines[i].trim())) { secEnd = i; break; }
-  const blocks = [];
-  for (let i = secAt + 1; i < secEnd; i++) {
-    const m = /^```bash\s+命令块\s+(\S+)\s+exit=(\S+)\s*$/.exec(lines[i].trim());
-    if (!m) continue;
-    const body = [];
-    let j = i + 1;
-    for (; j < secEnd && lines[j].trim() !== "```"; j++) body.push(lines[j]);
-    blocks.push({ id: m[1], exitText: m[2], line: i + 1, body: body.join("\n") });
-    i = j;
-  }
-  return blocks;
+  return parseEvidenceBlocks(lines);
 }
 
 function checkEvidenceBlocks(cardPath, lines) {

@@ -12,6 +12,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { signedCardIds, gateSignInfo } from "./lib/signed-cards.mjs";
 import { signLabel, sortSigns, isMilestoneGateSign } from "./lib/signs.mjs";
+import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { analyzeTrace } from "./lib/trace.mjs";
 import { readArchiveIndex } from "./lib/archive.mjs";
 import { currentMilestone } from "./lib/preset.mjs";
@@ -262,8 +263,10 @@ function signs() {
     const obj = text.match(/^\s*(?:[-*]\s*)?被签对象[:：]\s*(.+)$/m);
     const title = text.match(/^#\s*(.+)$/m);
     const scopes = [...text.matchAll(/^\s*(?:[-*]\s*)?范围[:：]\s*(.+)$/gm)].map((m) => m[1].trim());
+    const verdict = parseVerdict(text.split(/\r?\n/));
     return { file: `.sdo/sign/${f}`, time: time ? time[1].trim() : "", option: opt ? opt[1].trim() : "", object: obj ? obj[1].trim() : "",
-      title: title ? title[1].trim() : "", scope: scopes.join("；") };
+      title: title ? title[1].trim() : "", scope: scopes.join("；"), verdict,
+      signed: Boolean(verdict) && !isUnsignedVerdict(verdict) };
   });
   // 最近签字按 S<n> 数值排序（S9 < S41），不是文件名字典序。
   return sortSigns(parsed, (s) => s.file);
@@ -494,8 +497,8 @@ function nextView(milestoneId) {
   for (const b of milestoneBlocks().filter((x) => x.id === milestoneId)) {
     const st = /^\s*(?:[-*]\s*)?状态[:：]\s*(.+)$/m.exec(b.text);
     if (!st) { unknown.push(`${b.id} · 计划段缺「状态：」行`); continue; }
-    const planSign = SG.find((s) => signForMilestone(s, b.id, "计划"));
-    const gateSign = SG.find((s) => signForMilestone(s, b.id, "门"));
+    const planSign = SG.find((s) => signForMilestone(s, b.id, "计划") && s.signed);
+    const gateSign = SG.find((s) => signForMilestone(s, b.id, "门") && s.signed);
     filesPending.push(`${b.id} 计划：${planSign ? `已签 ${signLabel(planSign)}` : "待签"}`);
     filesPending.push(`${b.id} 门：${gateSign ? `已签 ${signLabel(gateSign)}` : "待签"}`);
   }

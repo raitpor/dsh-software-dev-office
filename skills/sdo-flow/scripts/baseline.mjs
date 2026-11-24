@@ -11,6 +11,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
+import { assertNotInsideSkill } from "./lib/guard.mjs";
 
 const FILES = ["requirement.md", "architecture.md", "test-strategy.md", "quality-risk.md"];
 
@@ -121,6 +122,8 @@ function main() {
   if (argv.length !== 1 || argv[0] !== "init") die("用法：baseline.mjs init（只支持 init）");
   const { projectRoot, skillRoot } = resolvePaths();
   if (!projectRoot) die("找不到 .sdo/（请从项目根或子目录运行；先跑 init.mjs）");
+  assertNotInsideSkill(projectRoot, skillRoot, "baseline.mjs init");
+  assertNotInsideSkill(process.cwd(), skillRoot, "baseline.mjs init");
   const tpl = skillPath(skillRoot, "templates/baseline.md");
   if (!fs.existsSync(tpl)) die(`模板不存在：${tpl}`);
   const tplText = fs.readFileSync(tpl, "utf8");

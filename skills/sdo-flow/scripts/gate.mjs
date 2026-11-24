@@ -156,7 +156,7 @@ function checkGate(file, gateId, wantCriteria, problems, warnings) {
     seen.set(j.crit, { ...j, line: r.line });
   }
   for (const [crit, j] of seen) {
-    if (!j.verdict) problems.push(`${file}: ${crit} 没有判定（pass/partial/fail）`);
+    if (!j.verdict) problems.push(`${file}:${j.line}: ${crit} 没有判定；填 pass/partial/fail，证据列必填（命令或 文件:行）`);
     else if (j.verdict === "pass" && (!j.evidence || PLACEHOLDERS.test(j.evidence.trim())))
       problems.push(`${file}: ${crit} 判 pass 但证据为空/占位（证据必须是命令或 文件:行）`);
     else if (j.verdict === "partial" && (!j.evidence || PLACEHOLDERS.test(j.evidence.trim())))
@@ -164,7 +164,7 @@ function checkGate(file, gateId, wantCriteria, problems, warnings) {
     else if (j.verdict === "fail") problems.push(`${file}: ${crit} 判 fail`);
   }
   if (wantCriteria) {
-    for (const c of wantCriteria) if (!seen.has(c)) problems.push(`${file}: 缺判据 ${c}（preset 的 gate 要求）`);
+    for (const c of wantCriteria) if (!seen.has(c)) problems.push(`${file}: 缺判据 ${c}（preset 的 gate 要求；本表未出现该判据名）`);
     for (const c of seen.keys()) if (!wantCriteria.includes(c)) warnings.push(`${file}: 多出 preset 没有的判据 ${c}`);
   }
   for (const c of CORE) {

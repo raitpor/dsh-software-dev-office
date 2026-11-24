@@ -200,15 +200,39 @@ owner: ${flags.owner.trim()}
 write_scope: ${scope}
 - 视角：未声明
 
+## 临时决策
+
+- 无
+
 ## 意图
 ${flags.intent.trim()}
+
+## 风险标记
+
+- 无
+
+## 对齐
+
+- 待填（与意图逐条对齐）
 
 ## 判据
 
 | 编号 | 判据 | 类型 | 反例 |
 |---|---|---|---|
 ${criteria.map((c) => `| ${c.id} | ${c.text} | ${c.type} | 待补反例（用一条命令证明会红） |`).join("\n")}
-${depends ? `\n## 准入\n\n依赖：${depends}\n` : ""}
+
+## 假设
+
+- 待填（假设不成立时怎么停）
+
+## 预览
+
+- 待填（改哪些文件、怎么验证）
+
+## 准入
+
+依赖：${depends || "无"}
+
 ## 证据
 | 判据 | 命令与输出 | 判定 |
 |---|---|---|
@@ -226,6 +250,10 @@ ${depends ? `\n## 准入\n\n依赖：${depends}\n` : ""}
 
 ## 评审
 - 评审者：待派（非作者、只读）
+
+## 收口
+
+- [ ] 证据与判定填齐　- [ ] 变异证据或「不可变异+理由+评审确认」　- [ ] check / --plan / --trace 全绿　- [ ] 报告交人签
 `;
   writeAtomic(file, content);
   console.log(`已创建 ${id}（${path.relative(process.cwd(), file)}）`);

@@ -397,13 +397,15 @@ function signNew(root, milestone, kind, scope, force = false) {
   const head = hasGit ? gitText(root, ["rev-parse", "HEAD"]) : null;
   if (hasGit && !head) die("git 仓库没有 HEAD（先提交，或补 .git）；无 git 时可写 tree: 指纹");
   const target = hasGit ? `git:${head}` : `tree:${treeForMilestone(root, milestone)}`;
-  const n = signNumber(root);
+  const fileN = existing ? Number(/^S(\d+)/.exec(existing.f)[1]) : signNumber(root);
+  const n = fileN;
   const title = kind === "计划" ? `# S${n} · ${milestone} 计划` : `# S${n} · ${milestone} ${kind}`;
   const text = [title, `- 里程碑：${milestone}`, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：${target}`, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");
   fs.mkdirSync(signDir, { recursive: true });
   const rel = existing ? `.sdo/sign/${existing.f}` : `.sdo/sign/S${n}.md`;
   if (!existing) console.log(`将写：${rel}`);
   fs.writeFileSync(path.join(root, rel), text);
+  if (existing) console.log(`已重写 S${fileN}（覆盖未人签草案）`);
   console.log(`下一步：人填判定/边界/签署者后，node <skill>/scripts/check.mjs --plan --milestone ${milestone}`);
   process.exit(0);
 }
@@ -503,6 +505,9 @@ function draft(root, milestone) {
   if (mismatched.length) {
     out.push("TREE_MISMATCH");
     out.push(...mismatched.map((p) => `  ${p}`));
+    out.push("下一步：先把列出的被签文件提交进 HEAD（git add -A && git commit），再重跑 sign.mjs draft；若已签草案过期，用 sign.mjs new --force 重锚。");
+  } else if (dirty) {
+    out.push("下一步：先提交工作树（git add -A && git commit），再重跑 sign.mjs draft。");
   }
   const text = out.join("\n");
   const badSelf = selfLines.find((line) => SIGN_FORBIDDEN.test(line));

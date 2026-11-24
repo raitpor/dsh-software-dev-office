@@ -1,6 +1,7 @@
 // 追溯链解析单点：需求、卡面 references:、里程碑认领需求、卡证据表、探索结论。
 // view.mjs trace 与 check.mjs --trace 都从这里取数据，禁止各自再写正则。
 import fs from "node:fs";
+import { parseEvidenceBlocks, blockForCriterion } from "./evidence.mjs";
 import path from "node:path";
 import { frozenHashRaw } from "./frozen.mjs";
 
@@ -133,9 +134,16 @@ function baselineMilestones(root) {
   return new Set([...after.matchAll(/M(\d+)/g)].map((m) => `M${m[1]}`));
 }
 
-function testRef(command) {
+function testRef(command, card, criterion) {
   const c = command.replace(/`/g, "").trim();
   if (!c) return false;
+  // M11-10 证据块：引用块必须与这一行的判据号绑定，且块内 exit 可解析。
+  const marker = /见命令块\s*(C\d+)/.exec(c);
+  if (marker) {
+    if (!criterion || marker[1] !== criterion) return false;
+    const blocks = card && Array.isArray(card.lines) ? parseEvidenceBlocks(card.lines) : [];
+    return Boolean(blockForCriterion(blocks, criterion));
+  }
   if (/(?:^|[\s;；`])(?:node\b|test -f\b|grep\b|sha256sum\b|git\b|npm\b)/.test(c)) return true;
   const p = c.match(/(?:^|\s)((?:skills\/sdo-flow\/scripts|test|probe)\/[^\s:;`]+):\d+/);
   return Boolean(p);
@@ -285,7 +293,7 @@ export function analyzeTrace(root) {
       if (!rows.length) { issues.push({ code: "trace_orphan_test", file: c.file, line: 1, message: `${c.id} ${cid} 缺证据行` }); continue; }
       const empty = rows.find((r) => !r.command);
       if (empty) { issues.push({ code: "trace_orphan_test", file: c.file, line: empty.line, message: `${c.id} ${cid} 证据命令为空` }); continue; }
-      const bad = rows.find((r) => !testRef(r.command));
+      const bad = rows.find((r) => !testRef(r.command, c, cid));
       if (bad) issues.push({ code: "trace_test_unverifiable", file: c.file, line: bad.line, message: `${c.id} ${cid} 证据不是可复跑命令或脚本:行` });
     }
     const tsec = c.lines.findIndex((l) => /^##\s*临时决策\s*$/.test(l));

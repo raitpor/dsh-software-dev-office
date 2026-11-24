@@ -4,6 +4,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { resolveSkillRoot } from "./lib/paths.mjs";
+import { assertNotInsideSkill } from "./lib/guard.mjs";
 
 if (process.argv.slice(2).some((a) => a === "--help" || a === "-h")) {
   console.log(`用法：node <skill>/scripts/init.mjs [--root <dir>] [--dry-run] [--force]`);
@@ -15,6 +16,7 @@ const has = (f) => args.includes(f);
 const rootArg = args.includes("--root") ? args[args.indexOf("--root") + 1] : ".";
 const ROOT = path.resolve(process.cwd(), rootArg || ".");
 const SKILL = resolveSkillRoot(ROOT).root;
+assertNotInsideSkill(ROOT, SKILL, "init.mjs");
 const DRY = has("--dry-run");
 const FORCE = has("--force");
 const name = path.basename(ROOT) || "project";
@@ -61,12 +63,17 @@ const files = {
 ## 9. 需求
 - R-01：在 .sdo/baseline/requirement.md 里写三条真实需求。
 
-## 12. 判据依据（preset 机检锚点）
-### 12.1 需求与基线
-需求、基线与 trace 的依据见本节。
+## 12. 判据依据索引（供新判据引用）
 
-### 12.2 设计与测试
-设计、实现与测试的依据见本节。
+> 新判据写 \`（依据：§12.<n>）\` 时，\`<n>\` 必须是本节真实存在的小节号；否则 \`check\` 报 \`basis_section_missing\`。
+
+### 12.1 流程状态可读
+
+状态、判定与证据只出现在文本里，不靠口头记忆。
+
+### 12.2 门禁与读数可复跑
+
+每条门禁/读数都能用仓库内命令复跑，并给出反例红证。
 `,
   "计划.md": `# 计划：项目级
 
