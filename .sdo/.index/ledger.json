@@ -4,8 +4,8 @@
       "path": ".sdo/台账.md",
       "rows": 267,
       "first": "D-1",
-      "last": "D-272",
-      "sha256": "d46ab01683eec0eb673a5fd4fa8562935aad838db231f435d420f06524457b98",
+      "last": "D-273",
+      "sha256": "57087404287d596d5df7e62611d76849714afea088c5c9c01c11be92ee44e9e5",
       "openRows": 28
     }
   ],
@@ -173,11 +173,11 @@
       "line": 271
     },
     {
-      "id": "D-272",
+      "id": "D-273",
       "kind": "gap",
       "file": ".sdo/台账.md",
-      "line": 273
+      "line": 274
     }
   ],
-  "updated_at": "2026-11-24T08:46:36.180Z"
+  "updated_at": "2026-11-24T09:01:48.824Z"
 }
