@@ -8,7 +8,9 @@ export function parseVerdict(lines) {
   return verdict;
 }
 
+// 未签 = 空串或前缀「待填/待签/未判」（保留 M11-7 的 `待填（草稿）` 宽松）；
+// 其余（接受/拒绝/partial/任意其它串）一律按已签处理，是保守边界。
 export function isUnsignedVerdict(value) {
   const v = String(value ?? "").trim();
-  return v === "" || /^(待填|待签)/.test(v);
+  return v === "" || /^(待填|待签|未判)/.test(v);
 }

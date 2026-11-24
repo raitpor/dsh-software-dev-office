@@ -800,6 +800,8 @@ function checkAppendSignAnchors() {
     const value = ls[i].replace(/^-\s*被签对象[:：]\s*/, "").trim();
     const tm = /^tree:([0-9a-f]{32,64})$/i.exec(value);
     if (tm) {
+      // C2：未人签的草案不参与 tree 锚点比对（与 sign.mjs 共用的未签判定）；commit 形态仍做已知性校验。
+      if (isUnsignedVerdict(parseVerdict(ls))) continue;
       // tree 形态：必须用与 sign.mjs 相同的排除项重算当前指纹并比对。
       const text = ls.join("\n");
       let mid = null;
@@ -1680,8 +1682,11 @@ function originalPlanSigned(mid) {
     const points = new RegExp(`M${n}\\s*计划`).test(title) || new RegExp(`M${n}\\s*计划`).test(scope);
     if (!points) continue;
     const verdict = (lines.find((l) => l.startsWith("- 判定：")) || "").replace(/^- 判定：/, "").trim();
+    const option = (lines.find((l) => l.startsWith("- 选项：")) || "").replace(/^- 选项：/, "").trim();
     const hasHash = lines.some((l) => /^- 冻结段 hash：\s*[0-9a-f]{64}\s*$/.test(l));
-    if (/^(?:接受|签)/.test(verdict) && hasHash) return true;
+    // 旧式签（S49 等）没有「- 判定：」行，以「- 选项：签…」表示签署；仅用于历史识别。
+    const oldSigned = verdict === "" && /^签/.test(option);
+    if ((/^(?:接受|签)/.test(verdict) || oldSigned) && hasHash) return true;
   }
   return false;
 }
@@ -1961,9 +1966,27 @@ function checkDeclarations(lines, p, mid) {
     if (list.length === 0) err(p, i + 1, `gate_id_invalid：门禁判据映射「${gid}」的判据列表为空（应写 G_id = c1, c2）`);
     for (const c of list) if (!criteriaSet.has(c)) err(p, i + 1, `declared_criterion_unknown：门禁判据映射里的「${c}」不在全局「- 判据：」集合`);
   }
-  for (let i = sec.start; i < sec.end; i++) {
-    if (/^preset\s*[:：]/.test(lines[i]) || /^preset\s+选择理由\s*[:：]/.test(lines[i])) {
-      err(p, i + 1, `preset_field_removed：新签里程碑真源不得再写 preset 字段（${lines[i].trim()}）；preset 只是参考模板`);
+  if (!originalPlanSigned(mid)) {
+    for (let i = 0; i < lines.length; i++) {
+      if (/^-?\s*preset\s*[:：]/.test(lines[i]) || /^-?\s*preset\s+选择理由\s*[:：]/.test(lines[i])) {
+        err(p, i + 1, `preset_field_removed：新签里程碑真源不得再写 preset 字段（${lines[i].trim()}）；preset 只是参考模板`);
+      }
+    }
+  }
+}
+
+function checkPresetFieldRemovedActive() {
+  const dir = ".sdo/milestones";
+  if (!exists(dir)) return;
+  for (const f of fs.readdirSync(path.join(ROOT, dir)).filter((x) => /^M\d+\.md$/.test(x)).sort()) {
+    const mid = f.replace(/\.md$/, "");
+    if (originalPlanSigned(mid)) continue; // 已签历史记录：只兼容读取，不追溯
+    const p = `${dir}/${f}`;
+    const lines = read(p);
+    for (let i = 0; i < lines.length; i++) {
+      if (/^-?\s*preset\s*[:：]/.test(lines[i]) || /^-?\s*preset\s+选择理由\s*[:：]/.test(lines[i])) {
+        err(p, i + 1, `preset_field_removed：新签里程碑真源不得再写 preset 字段（${lines[i].trim()}）；preset 只是参考模板`);
+      }
     }
   }
 }
@@ -2007,8 +2030,8 @@ function checkAuthorizationText() {
   const isComment = (l) => /^\s*(#|\/\/|<!--)/.test(l);
   const ok5 = sec5.find((l) => !isComment(l) && l.includes("口头授权") && l.includes("流程放行") && (l.includes("≠") || l.includes("不等于")));
   if (!ok5) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“口头授权≠流程放行”约束（须同一行、含 ≠ 或 不等于）");
-  const presetRule = sec5.find((l) => !isComment(l) && l.includes("preset") && l.includes("选择理由"));
-  if (!presetRule) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“每段自选 preset + 选择理由”");
+  const presetRule = sec5.find((l) => !isComment(l) && l.includes("preset") && l.includes("抄写参考"));
+  if (!presetRule) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“preset 只作抄写参考、不写进真源”约束");
   const refPath = "skills/sdo-flow/references/07-边界与自证.md";
   const ref = read(refPath);
   const ok7 = ref.find((l) => !isComment(l) && l.includes("口头授权") && l.includes("流程放行") && (l.includes("≠") || l.includes("不等于")));
@@ -2186,7 +2209,7 @@ checkBaselineTemplate();
 checkBaselineArtifacts();
 checkCardTemplateDecisions();
 checkLedger(".sdo/台账.md"); // 活跃卷始终做行级校验（关账/kind/status/id）；归档卷在 --deep 下同样校验
-checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkCardStateMismatch(); checkAppendSignAnchors(); checkReadings(); checkArchive(); checkHandwritingSuspicion();
+checkLedgerVolumes(ARGV.includes("--deep")); checkSigns(); checkCards(); checkCardStateMismatch(); checkAppendSignAnchors(); checkReadings(); checkArchive(); checkHandwritingSuspicion(); checkPresetFieldRemovedActive();
 checkCriterionBasis();
 const activeUnsigned = currentMilestone(ROOT) ? planSignUnsigned(currentMilestone(ROOT)) : null;
 if (activeUnsigned && activeUnsigned.unsigned) {
