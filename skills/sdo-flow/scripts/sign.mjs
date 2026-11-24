@@ -7,12 +7,12 @@
 
 import fs from "node:fs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { fileURLToPath } from "node:url";
 import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { spawnSync } from "node:child_process";
 import { signedCardIds } from "./lib/signed-cards.mjs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
+import { treeFingerprint, sha256Hex, signatureExcludes } from "./lib/fingerprint.mjs";
 
 const SIGN_FORBIDDEN = /建议签|可以签|可签|推荐签|我认为|判定[:：]|选项[:：]签|签署者[:：]|✅|⚠️/;
 
@@ -32,7 +32,7 @@ function findRoot(start) {
 }
 
 function sha256(data) {
-  return crypto.createHash("sha256").update(data).digest("hex");
+  return sha256Hex(data);
 }
 
 function git(root, args, opts = {}) {
@@ -119,9 +119,42 @@ function lastLedgerRow(root) {
   return null;
 }
 
+function anchorFromText(text) {
+  const line = (text.match(/被签对象[：:][^\n]*/g) || []).pop() || "";
+  const git = /git:([0-9a-fA-F]{7,40})/.exec(line);
+  if (git) return { kind: "git", value: git[1] };
+  const tree = /tree:([0-9a-fA-F]{32,64})/.exec(line);
+  if (tree) return { kind: "tree", value: tree[1] };
+  const commit = /commit\s*`?([0-9a-fA-F]{7,40})`?/.exec(line) || /`([0-9a-fA-F]{7,40})`/.exec(line);
+  return commit ? { kind: "git", value: commit[1] } : null;
+}
+
 function milestoneAnchor(sectionText) {
-  const m = /被签对象[：:][^\n]*?`([0-9a-fA-F]{7,40})`/.exec(sectionText);
-  return m ? m[1] : null;
+  return anchorFromText(sectionText);
+}
+
+function treeForMilestone(root, milestoneId) {
+  return treeFingerprint(root, { exclude: signatureExcludes(milestoneId) });
+}
+
+function latestSignAnchor(root, milestoneId) {
+  const dir = path.join(root, ".sdo", "sign");
+  let names = [];
+  try { names = fs.readdirSync(dir).filter((n) => /^S\d+(?:-[A-Z])?\.md$/.test(n)); } catch { return null; }
+  names.sort((a, b) => {
+    const na = Number((/^S(\d+)/.exec(a) || [0, 0])[1]);
+    const nb = Number((/^S(\d+)/.exec(b) || [0, 0])[1]);
+    if (na !== nb) return na - nb;
+    return a.localeCompare(b);
+  });
+  const num = String(milestoneId).replace(/^M/, "");
+  for (let i = names.length - 1; i >= 0; i -= 1) {
+    const text = fs.readFileSync(path.join(dir, names[i]), "utf8");
+    if (!text.includes(`M${num} 计划`)) continue;
+    const a = anchorFromText(text);
+    if (a) return a;
+  }
+  return null;
 }
 
 function collectSignedFiles(root, milestone, sectionText) {
@@ -217,8 +250,7 @@ function extractVerdict(root, cardId) {
   }
   return verdict ?? "待人工复核（卡面评审段无判词）";
 }
-function buildDraft(index, cardId, commit, verdict) {
-  const target = commit ? `commit ${commit}` : "无 git（无法锚定 commit）";
+function buildDraft(index, cardId, target, verdict) {
   const boundary = "本次仅为签字草案；证据与读数由人复核，草案不落盘。";
   return [
     `### 草案 ${index} · ${cardId}`,
@@ -241,7 +273,7 @@ function validateDraft(text, index, cardId) {
   for (const [k, v] of Object.entries(fields)) if (!v) bad(`缺「${k}」`);
   if (!fields.范围.includes(cardId)) bad("范围未含卡号");
   const target = fields.被签对象.slice("- 被签对象：".length).trim();
-  if (!/无 git/.test(target) && !/[0-9a-f]{7,40}/i.test(target)) bad("被签对象缺 commit（7–40 位）");
+  if (!/^(?:git:[0-9a-f]{7,40}|tree:[0-9a-f]{32,64}|无 git)/i.test(target)) bad("被签对象须为 git:<sha> 或 tree:<指纹>");
   const verdict = fields.判定.slice("- 判定：".length).trim();
   if (!verdict) bad("判定为空");
   if (/^待填写/.test(verdict)) bad(`判定不能是「待填写」：${verdict}`);
@@ -269,9 +301,9 @@ function batch(root, milestone, cardsArg) {
   }
   const hasGit = projectGitRoot(root);
   const head = hasGit ? gitText(root, ["rev-parse", "HEAD"]) : null;
-  const commit = head && /^[0-9a-f]{7,40}$/i.test(head) ? head : null;
+  const target = hasGit && head ? `git:${head}` : `tree:${treeForMilestone(root, milestone)}`;
   const drafts = selected.map((id, i) => {
-    const text = buildDraft(i + 1, id, commit, extractVerdict(root, id));
+    const text = buildDraft(i + 1, id, target, extractVerdict(root, id));
     validateDraft(text, i + 1, id);
     return text;
   });
@@ -361,11 +393,13 @@ function signNew(root, milestone, kind, scope, force = false) {
   if (hr.status !== 0) die(`无法取得冻结段 hash（check --print-frozen-hash exit ${hr.status}）：${(hr.stderr || hr.stdout || "").trim()}`);
   const hash = (hr.stdout || "").trim().split(/\r?\n/)[0];
   if (!/^[0-9a-f]{64}$/.test(hash)) die(`--print-frozen-hash 输出不是 64 位 hex：${hash}`);
-  const head = projectGitRoot(root) ? gitText(root, ["rev-parse", "HEAD"]) : null;
-  if (!head) die("项目根不是独立 git 仓库或没有 HEAD（项目根必须等于 git 根，不借用外层仓库）：sign new 需要被签对象 commit（下一步：git init && git add -A && git commit -m init）");
+  const hasGit = projectGitRoot(root);
+  const head = hasGit ? gitText(root, ["rev-parse", "HEAD"]) : null;
+  if (hasGit && !head) die("git 仓库没有 HEAD（先提交，或补 .git）；无 git 时可写 tree: 指纹");
+  const target = hasGit ? `git:${head}` : `tree:${treeForMilestone(root, milestone)}`;
   const n = signNumber(root);
   const title = kind === "计划" ? `# S${n} · ${milestone} 计划` : `# S${n} · ${milestone} ${kind}`;
-  const text = [title, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：commit \`${head}\``, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");
+  const text = [title, `- 里程碑：${milestone}`, "", `- 时间：${new Date().toISOString()}`, `- 被签对象：${target}`, `- 冻结段 hash：${hash}`, "- 判定：待填", "- 已知边界：待填", "- 签署者：待填", `- 范围：${scope}`, "- 选项：签：复述准确｜改：复述不准（请指出）｜不签：先不做", "- 方式：本人", "- 检查方式：本人", "", "<!-- generated-by: sign.mjs new -->", ""].join("\n");
   fs.mkdirSync(signDir, { recursive: true });
   const rel = existing ? `.sdo/sign/${existing.f}` : `.sdo/sign/S${n}.md`;
   if (!existing) console.log(`将写：${rel}`);
@@ -384,17 +418,23 @@ function draft(root, milestone) {
   if (hasGit && !head) die("git 仓库没有 HEAD（先提交，或补 .git）");
   const porcelain = hasGit ? (gitText(root, ["status", "--porcelain"]) ?? "") : "";
   const dirty = porcelain.split(/\r?\n/).filter(Boolean).length > 0;
-  const anchorRaw = milestoneAnchor(section.text);
-  let anchor = null;
-  if (hasGit && anchorRaw) {
-    const resolved = gitText(root, ["rev-parse", "--verify", `${anchorRaw}^{commit}`]);
-    if (resolved) anchor = resolved;
-  }
+  const anchor = milestoneAnchor(section.text) || latestSignAnchor(root, milestone);
+  const currentTree = hasGit ? null : treeForMilestone(root, milestone);
   let relation = "NO_ANCHOR";
-  if (hasGit && anchor && head) {
-    const ahead = Number(gitText(root, ["rev-list", "--count", `${anchor}..${head}`]) ?? "0");
-    const behind = Number(gitText(root, ["rev-list", "--count", `${head}..${anchor}`]) ?? "0");
-    relation = ahead === 0 && behind === 0 ? "SAME" : ahead > 0 ? `AHEAD ${ahead}` : `BEHIND ${behind}`;
+  if (anchor) {
+    if (anchor.kind === "tree") {
+      if (hasGit) relation = "NO_ANCHOR";
+      else relation = anchor.value === currentTree ? "SAME" : "DIFF";
+    } else if (!hasGit) {
+      relation = "NO_ANCHOR";
+    } else {
+      const resolved = gitText(root, ["rev-parse", "--verify", `${anchor.value}^{commit}`]);
+      if (resolved && head) {
+        const ahead = Number(gitText(root, ["rev-list", "--count", `${resolved}..${head}`]) ?? "0");
+        const behind = Number(gitText(root, ["rev-list", "--count", `${head}..${resolved}`]) ?? "0");
+        relation = ahead === 0 && behind === 0 ? "SAME" : ahead > 0 ? `AHEAD ${ahead}` : `BEHIND ${behind}`;
+      }
+    }
   }
 
   const signed = collectSignedFiles(root, milestone, section.text);
@@ -436,18 +476,20 @@ function draft(root, milestone) {
   if (ledger) out.push(`台账（原文）：${ledger.line} @ .sdo/台账.md:${ledger.lineNo}`);
   else emitSelf("台账：无");
   if (!hasGit) {
-    out.push("NO_GIT");
-    out.push("版本：无法核对版本（当前目录不是 git 工作树）");
+    out.push(`版本：tree:${currentTree}`);
+    out.push(`锚点：${anchor ? `${anchor.kind}:${anchor.value}` : "无"}`);
+    out.push(`锚点对照：${relation}`);
+    out.push("工作树：按内容指纹比较（无 git）");
   } else {
     out.push(`HEAD：${head}`);
-    out.push(`锚点：${anchorRaw ?? "无"}`);
+    out.push(`锚点：${anchor ? `${anchor.kind}:${anchor.value}` : "无"}`);
     out.push(`锚点对照：${relation}`);
     out.push(`工作树：${dirty ? "DIRTY" : "干净"}`);
     if (dirty) out.push(...porcelain.split(/\r?\n/).filter(Boolean).map((l) => `  ${l}`));
-    const base = anchor ?? head;
+    const base = anchor && anchor.kind === "git" ? anchor.value : head;
     const stat = gitText(root, ["diff", "--stat", `${base}..HEAD`]) || "";
     const commits = gitText(root, ["log", "--oneline", `${base}..HEAD`]) || "";
-    out.push(`改动范围（${anchor ? `${anchor}..HEAD` : "HEAD"}）：`);
+    out.push(`改动范围（${anchor && anchor.kind === "git" ? `${anchor.value}..HEAD` : "HEAD"}）：`);
     out.push(stat || "无");
     if (commits) out.push("提交范围：", ...commits.split(/\r?\n/).map((l) => `  ${l}`));
     else out.push("提交范围：无");

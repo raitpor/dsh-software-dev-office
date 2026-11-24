@@ -8,7 +8,6 @@
 import fs from "node:fs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
 import path from "node:path";
-import crypto from "node:crypto";
 import { execFileSync } from "node:child_process";
 import { signedCardIds, gateSignInfo, SIGN_FILE_RE } from "./lib/signed-cards.mjs";
 import { sortSigns } from "./lib/signs.mjs";
@@ -19,6 +18,7 @@ import { currentMilestone, activeMilestonesUsing } from "./lib/preset.mjs";
 import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
 import { loadCriteriaPool } from "./lib/criteria-pool.mjs";
+import { treeFingerprint, sha256Hex, signatureExcludes } from "./lib/fingerprint.mjs";
 
 const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
 
@@ -223,7 +223,7 @@ function checkLedger(p) {
 function sha256Body(text) {
   const lines = text.split(/\r?\n/);
   const body = /^<!-- sdo-ledger-vol /.test(lines[0] || "") ? lines.slice(1).join("\n") : text;
-  return crypto.createHash("sha256").update(body, "utf8").digest("hex");
+  return sha256Hex(body);
 }
 function volMeta(text) {
   const m = /^<!-- sdo-ledger-vol rows=(\d+) first=(D-\d+|-) last=(D-\d+|-) sha256=([0-9a-f]{64}) -->$/.exec((text.split(/\r?\n/)[0] || "").trim());
@@ -808,12 +808,46 @@ function legacySignWhitelist() {
 function checkAppendSignAnchors() {
   const sd = ".sdo/sign";
   if (!exists(sd)) return;
-  for (const f of fs.readdirSync(path.join(ROOT, sd)).filter((x) => /^S\d+-[A-Z]\.md$/.test(x)).sort()) {
+  // 常规签与追加签都可能写 tree: 形态；两类都要比对内容指纹。
+  for (const f of fs.readdirSync(path.join(ROOT, sd)).filter((x) => /^S\d+(?:-[A-Z])?\.md$/.test(x)).sort()) {
     const p = `${sd}/${f}`;
     const ls = read(p);
     const i = ls.findIndex((l) => /^-\s*被签对象[:：]/.test(l));
     if (i < 0) continue;
     const value = ls[i].replace(/^-\s*被签对象[:：]\s*/, "").trim();
+    const tm = /^tree:([0-9a-f]{32,64})$/i.exec(value);
+    if (tm) {
+      // tree 形态：必须用与 sign.mjs 相同的排除项重算当前指纹并比对。
+      const text = ls.join("\n");
+      let mid = null;
+      // 优先级：显式 - 里程碑： > 标题 > 范围里的最后一个 M<n>（范围惯例末尾才是真对象）。
+      const explicitM = /^-\s*里程碑[:：]\s*(M\d+)\s*$/m.exec(text);
+      if (explicitM) mid = explicitM[1];
+      if (mid === null) {
+        const titleM = /^#\s*S\d+(?:-[A-Z])?\s*·\s*M(\d+)\b/m.exec(text);
+        if (titleM) mid = `M${titleM[1]}`;
+      }
+      if (mid === null) {
+        const allRangeM = [...text.matchAll(/-\s*范围[:：][^\n]*?\bM(\d+)\b/gi)];
+        if (allRangeM.length > 0) mid = `M${allRangeM[allRangeM.length - 1][1]}`;
+      }
+      if (mid === null) {
+        const id = f.replace(/\.md$/, "");
+        for (const mf of fs.readdirSync(path.join(ROOT, ".sdo/milestones")).filter((x) => /^M\d+\.md$/.test(x))) {
+          const raw = fs.readFileSync(path.join(ROOT, ".sdo/milestones", mf), "utf8");
+          if (raw.includes(`- 追加签：${id}`)) { mid = mf.replace(/\.md$/, ""); break; }
+        }
+      }
+      if (mid === null) {
+        err(p, i + 1, `signed_anchor_mismatch：tree 签 ${f} 无法确定所属里程碑（范围/标题/追加签行均未命中）`);
+        continue;
+      }
+      const current = treeFingerprint(ROOT, { exclude: signatureExcludes(mid) });
+      if (current !== tm[1]) {
+        err(p, i + 1, `signed_anchor_mismatch：tree 指纹与签名记录不符（签 tree:${tm[1]}，现 tree:${current}）`);
+      }
+      continue;
+    }
     for (const sha of commitClaims(value)) {
       if (!gitKnownCommit(sha)) err(p, i + 1, `signed_tree_unknown：被签对象声明的 commit ${sha} 不是本仓库的已知 commit（无法证明“签的就是当前树”）`);
     }
@@ -1161,7 +1195,7 @@ function checkPresets() {
     const key = f.replace(".md", "");
     const p = `presets/${f}`;
     const text = fs.readFileSync(path.join(SKILL_ROOT, "presets", f), "utf8");
-    const sha = crypto.createHash("sha256").update(text, "utf8").digest("hex");
+    const sha = sha256Hex(text);
     if (sha !== SNAPSHOT_PRESET_SHA[key]) {
       changed.add(key);
       err(p, 0, `preset 内容 hash 与发布快照不一致（${sha.slice(0, 8)}… ≠ ${SNAPSHOT_PRESET_SHA[key].slice(0, 8)}…）：任何文字改动都要人签更新快照`);
