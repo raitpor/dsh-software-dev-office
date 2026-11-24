@@ -17,14 +17,15 @@ import { analyzeTrace } from "./lib/trace.mjs";
 import { readArchiveIndex } from "./lib/archive.mjs";
 import { currentMilestone } from "./lib/preset.mjs";
 import { resolvePaths } from "./lib/paths.mjs";
+import { parseLedgerRows, formatColumnDiagnostics } from "./lib/ledger-rows.mjs";
 
 const argv = process.argv.slice(2);
-const KNOWN_FLAGS = new Set(["--json", "--open", "--milestone", "--limit", "--help", "-h"]);
+const KNOWN_FLAGS = new Set(["--json", "--open", "--milestone", "--limit", "--ledger-columns", "--help", "-h"]);
 for (const a of argv) {
-  if (a.startsWith("-") && !KNOWN_FLAGS.has(a)) { console.error(`未知参数 ${a}（view 只接受 --json/--open/--milestone/--limit/--help）`); process.exit(2); }
+  if (a.startsWith("-") && !KNOWN_FLAGS.has(a)) { console.error(`未知参数 ${a}（view 只接受 --json/--open/--milestone/--limit/--ledger-columns/--help）`); process.exit(2); }
 }
 if (argv.includes("--help") || argv.includes("-h")) {
-  console.log("用法：node <skill>/scripts/view.mjs next|state|signs|queue|ledger [--milestone M9] [--json] [--open] [--limit N]");
+  console.log("用法：node <skill>/scripts/view.mjs next|state|signs|queue|ledger [--milestone M9] [--json] [--open] [--limit N] [--ledger-columns]\n  --ledger-columns  诊断：按列打印台账行归一结果");
   process.exit(0);
 }
 const ROOT = resolvePaths(process.cwd()).projectRoot;
@@ -76,6 +77,7 @@ function cells(line) {
 const isSep = (l) => l !== undefined && /^\s*\|[\s:|-]+\|\s*$/.test(l);
 
 const warnRagged = [];
+const ledgerMalformed = [];
 /** 抽出文件里的表（列数不齐的行补齐并在末尾提示，不再整表丢弃） */
 function tables(p) {
   const ls = lines(p); const out = [];
@@ -154,14 +156,20 @@ function readLedgerIndex() {
   } catch { return null; }
 }
 function ledgerRowsFrom(file) {
-  const t = findTable(file, "id");
-  if (!t) return [];
+  if (!exists(file)) return [];
+  const t = parseLedgerRows(read(file));
+  if (!t.header.length) return [];
+  if (file === ".sdo/台账.md") {
+    for (const m of t.malformed) {
+      const msg = `${file}:${m.line}: ${m.id || "（无 id）"} 列数 ${m.cells.length} < 表头 ${t.header.length}`;
+      if (!ledgerMalformed.includes(msg)) ledgerMalformed.push(msg);
+    }
+  }
   const idx = Object.fromEntries(t.header.map((h, i) => [h.replace(/`/g, ""), i]));
-  return t.rows.map((r, i) => ({
-    id: (r[idx.id] || "").replace(/`/g, ""),
-    kind: r[idx.kind] || "", where: r[idx["位置"]] || "", what: r[idx["现象"]] || "",
-    why: r[idx["影响"]] || "", how: r[idx["处置"]] || "", status: r[idx["状态"]] || "",
-    file, line: t.at + i + 2,
+  return t.rows.map((r) => ({
+    id: r.id, kind: r.kind, where: r.cells[idx["位置"]] || "", what: r.cells[idx["现象"]] || "",
+    why: r.cells[idx["影响"]] || "", how: r.cells[idx["处置"]] || "", status: r.cells[idx["状态"]] || "",
+    file, line: r.line, columns: r.cells.length,
   })).filter((r) => r.id);
 }
 /** 只按索引 open 读行：每条 open 有 line 时只取该行；缺 line 才回退整卷解析。 */
@@ -552,6 +560,10 @@ function nextView(milestoneId) {
   return { human: rendered, json };
 }
 
+if (argv.includes("--ledger-columns")) {
+  console.log(formatColumnDiagnostics(exists(".sdo/台账.md") ? read(".sdo/台账.md") : ""));
+  process.exit(0);
+}
 const out = {
   state() {
     const ms = MS.name || "(未命名)";
@@ -638,6 +650,9 @@ if (!out) {
 const nextResult = cmd === "next" ? nextView(milestoneArg) : null;
 const data = cmd === "next" ? nextResult.human : out();
 if (warnRagged.length && !asJson) console.error(`WARN  表列数不齐（已按表头补齐，跑 check.mjs 修）：\n  ${warnRagged.join("\n  ")}`);
+if (!asJson) {
+  for (const m of ledgerMalformed) console.error(`WARN  ${m}（历史行不改；追加 explain 留痕）`);
+}
 if (asJson) {
   const obj = cmd === "next"
     ? nextResult.json

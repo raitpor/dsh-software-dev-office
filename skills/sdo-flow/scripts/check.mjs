@@ -20,8 +20,9 @@ import { parseVerdict, isUnsignedVerdict } from "./lib/verdict.mjs";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
 import { loadCriteriaPool } from "./lib/criteria-pool.mjs";
 import { treeFingerprint, sha256Hex, signatureExcludes } from "./lib/fingerprint.mjs";
+import { parseLedgerRows, formatColumnDiagnostics } from "./lib/ledger-rows.mjs";
 
-const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all]
+const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n>] [--trace] [--presets [判据源]] [--deep] [--js] [--all] [--ledger-columns]
 
   --plan              检查计划段（里程碑/preset/冻结 hash/阶段顺序等）
   --print-frozen-hash 须与 --plan --milestone <M> 同用：只打印完整 64 位冻结段 hash 并 exit 0（只读）；单独使用无意义（会走默认检查路径）
@@ -29,6 +30,7 @@ const USAGE = `用法：node <skill>/scripts/check.mjs [--plan] [--milestone M<n
   --trace             追溯链检查：需求←→卡←→判据←→测试（默认只判 done 卡）
   --presets [文件]    校验 preset 与发布快照，或与外部判据源比对
   --deep              台账卷全量审计（逐行扫所有卷；默认仅扫 openRows>0 的卷）
+  --ledger-columns     诊断：按列打印台账行归一结果
   --js                机器可读输出：--trace 时 {ok,counts,issues[]}，否则 {ok,errors,warnings}
   --all               扫描整个仓库（默认只扫 .sdo/ 与技能目录）
   --help, -h          显示本用法
@@ -46,7 +48,7 @@ const SKILL_ROOT = PATHS.skillRoot;
 const SKILL_REL = (() => { const r = path.relative(ROOT, SKILL_ROOT).split(path.sep).join("/"); return r && !r.startsWith("..") ? r : SKILL_ROOT; })();
 const SKILL_ABS = SKILL_ROOT; // 下一步命令一律用绝对路径：在项目子目录里跑也成立
 const ARGV = process.argv.slice(2);
-const KNOWN_FLAGS = new Set(["--plan", "--milestone", "--trace", "--deep", "--presets", "--all", "--js", "--print-frozen-hash"]);
+const KNOWN_FLAGS = new Set(["--plan", "--milestone", "--trace", "--deep", "--presets", "--all", "--js", "--print-frozen-hash", "--ledger-columns"]);
 for (const a of ARGV) {
   if (a.startsWith("--") && !KNOWN_FLAGS.has(a)) {
     console.error(`未知参数：${a}`);
@@ -179,42 +181,36 @@ const alias = { id: "id", ID: "id", kind: "kind", 类型: "kind", 位置: "where
 
 function checkLedger(p) {
   if (!exists(p)) return err(p, 0, "缺文件");
-  const lines = read(p);
-  let hdrAt = -1; const cols = {};
-  for (let i = 0; i < lines.length; i++) {
-    const s = lines[i].trim();
-    if (s.startsWith("|") && /id/i.test(s)) {
-      const hdr = cells(s);
-      if (hdr.length !== 7) return err(p, i + 1, `表头 ${hdr.length} 列，应为 7 列（id/kind/位置/现象/影响/处置/状态）`);
-      hdr.forEach((h, idx) => { if (alias[h]) cols[alias[h]] = idx; });
-      if (!["id", "kind", "where", "what", "how", "status"].every((k) => k in cols)) {
-        return err(p, i + 1, "表头缺列");
-      }
-      hdrAt = i; break;
-    }
+  const parsed = parseLedgerRows(read(p).join("\n"));
+  const hdr = parsed.header;
+  if (hdr.length !== 7) return err(p, 0, `表头 ${hdr.length} 列，应为 7 列（id/kind/位置/现象/影响/处置/状态）`);
+  const cols = {};
+  hdr.forEach((h, idx) => { if (alias[h]) cols[alias[h]] = idx; });
+  if (!["id", "kind", "where", "what", "how", "status"].every((k) => k in cols)) {
+    return err(p, 0, "表头缺列");
   }
-  if (hdrAt < 0) return err(p, 0, "找不到台账表头（含 id 的表）");
+  for (const bad of parsed.malformed) {
+    warn(p, bad.line, `${bad.id || "（无 id）"} 列数 ${bad.cells.length} < 表头 ${hdr.length}（历史行不改；追加 explain 留痕）`);
+  }
   const seen = new Set();
   const rows = [];
   const closedBy = new Set();
   let lastId = "";
-  for (let i = hdrAt + 2; i < lines.length; i++) {
-    if (!lines[i].trim().startsWith("|")) continue;
-    const c = cells(lines[i].trim());
-    if (c.length !== 7) continue;
-    const id = c[cols.id].replace(/`/g, "").trim();
-    if (!/^D-\d+$/.test(id)) { err(p, i + 1, `id 不合法：${id}（应为 D-<数字>）`); continue; }
-    if (seen.has(id)) err(p, i + 1, `id 重复：${id}`);
-    if (lastId && +id.slice(2) <= +lastId.slice(2)) err(p, i + 1, `id 未递增：${id} 在 ${lastId} 之后`);
+  for (const r of parsed.rows) {
+    const c = r.cells;
+    const id = r.id;
+    if (!/^D-\d+$/.test(id)) { err(p, r.line, `id 不合法：${id}（应为 D-<数字>）`); continue; }
+    if (seen.has(id)) err(p, r.line, `id 重复：${id}`);
+    if (lastId && +id.slice(2) <= +lastId.slice(2)) err(p, r.line, `id 未递增：${id} 在 ${lastId} 之后`);
     lastId = id;
     seen.add(id);
-    if (!KINDS.has(c[cols.kind])) err(p, i + 1, `kind 不合法：${c[cols.kind]}`);
-    if (!STATUS.has(c[cols.status])) err(p, i + 1, `状态不合法：${c[cols.status]}`);
+    if (!KINDS.has(c[cols.kind])) err(p, r.line, `kind 不合法：${c[cols.kind]}`);
+    if (!STATUS.has(c[cols.status])) err(p, r.line, `状态不合法：${c[cols.status]}`);
     const fixText = (c[cols.how] || "").trim();
     const mClose = /^关闭\s+(D-\d+)/.exec(fixText);
     if (mClose || c[cols.kind] === "closed") closedBy.add(mClose ? mClose[1] : c[cols.id]);
-    rows.push({ id, kind: c[cols.kind], status: c[cols.status], line: i + 1 });
-    if (!c[cols.where]) err(p, i + 1, "位置为空");
+    rows.push({ id, kind: c[cols.kind], status: c[cols.status], line: r.line });
+    if (!c[cols.where]) err(p, r.line, "位置为空");
   }
   const defectWarns = rows.filter((r) => r.kind === "defect" && r.status === "open" && !closedBy.has(r.id));
   for (const r of defectWarns.slice(0, 10)) warn(p, r.line, `${r.id} 是未修 defect`);
@@ -2168,6 +2164,11 @@ function checkTrace() {
 
 if (ARGV.includes("--plan")) {
   checkPlan();
+}
+if (ARGV.includes("--ledger-columns")) {
+  const text = exists(".sdo/台账.md") ? read(".sdo/台账.md").join("\n") : "";
+  console.log(formatColumnDiagnostics(text));
+  process.exit(0);
 }
 if (ARGV.includes("--trace")) {
   checkTrace();
