@@ -2,10 +2,10 @@
   "volumes": [
     {
       "path": ".sdo/台账.md",
-      "rows": 255,
+      "rows": 256,
       "first": "D-1",
-      "last": "D-259",
-      "sha256": "cf6bab42039856feb56ce2dfb43fcb5d20a0a1b49d0e2e35cbdcf0837d0f7ffb",
+      "last": "D-260",
+      "sha256": "78cf1dd1c5725c80e05f1ff2f626157e2e5ee41b2db1fc84e9bec2c488b0fa33",
       "openRows": 26
     }
   ],
@@ -167,5 +167,5 @@
       "line": 261
     }
   ],
-  "updated_at": "2026-11-24T00:42:50.466Z"
+  "updated_at": "2026-11-24T00:53:50.164Z"
 }
