@@ -296,7 +296,7 @@ for (const f of targets) {
     for (const gid of gids) if (!maps.byGate.has(gid)) problems.push(`${f}: criteria_table_mismatch：${gid} 门不在冻结段映射（映射门：${[...maps.byGate.keys()].join(", ")}）`);
   }
   if (!maps.found) for (const c of declared) {
-    if (!new RegExp(`\b${c.replace(/\./g, "\\.")}\b`).test(text)) problems.push(`${f}: missing_declared_criterion：缺声明判据 ${c}（milestone 冻结段「判据：」要求）`);
+    if (!new RegExp(`\\b${c.replace(/\./g, "\\.")}\\b`).test(text)) problems.push(`${f}: missing_declared_criterion：缺声明判据 ${c}（milestone 冻结段「判据：」要求）`);
   }
   const hasDeclaration = declared.length > 0;
   if (!hasDeclaration && !gatePreset) problems.push(`${f}: gate_criteria_undeclared：${fm ? fm[1] : "?"} 冻结段没有「- 判据：」声明，且无 preset 可降级（不静默放宽）`);

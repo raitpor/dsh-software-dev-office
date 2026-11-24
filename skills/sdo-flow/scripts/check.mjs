@@ -886,6 +886,13 @@ function checkAppendSignAnchors() {
       const sp = `${sd}/${sf}`;
       if (!exists(sp)) { err(`.sdo/milestones/${f}`, idx + 1, `追加签文件缺失：${sp}`); continue; }
       const sl = read(sp);
+      const scopeText = (sl.find((x) => /^-\s*范围[:：]/.test(x)) || sl[0] || "").replace(/^-\s*范围[:：]\s*/, "").trim();
+      // 只按“卡号形状”排除卡级追加签；范围是 M11、长句说明、无范围行都按计划级完整校验（宁可严）。
+      const isCardLevel = /^M\d+-\d+(?:\s|$)/.test(scopeText);
+      if (isCardLevel) {
+        if (!sl.some((x) => /^-\s*判定[:：]\s*\S/.test(x))) err(sp, 1, `卡级追加签 ${sf} 缺判定（不参与冻结 hash 链条，但须有判定）`);
+        continue;
+      }
       const ni = sl.findIndex((x) => /^-\s*冻结段 hash[:：]/.test(x));
       const embedded = (sl.find((x) => /^-\s*被签对象[:：]/.test(x)) || "").match(/冻结段 hash\s*`?([0-9a-f]{64})`?/);
       const newHash = (ni >= 0 ? ((/^-\s*冻结段 hash[:：]\s*`?([0-9a-f]{64})`?/.exec(sl[ni]) || [])[1] || "") : (embedded ? embedded[1] : ""));
