@@ -34,12 +34,12 @@ function usage() {
   console.log(`用法：
   node <skill>/scripts/milestone.mjs new <M> --topic <主题>
   node <skill>/scripts/milestone.mjs declare <M> --gates G_a,G_b --criteria c1,c2 [--map "G_a=c1,c2;G_b=c3"]
-  node <skill>/scripts/milestone.mjs declare --list
+  node <skill>/scripts/milestone.mjs declare --list [--preset <name>]
   node <skill>/scripts/milestone.mjs freeze <M>
 
 new 生成 .sdo/milestones/<M>.md 六段骨架（冻结段含「门禁：」「判据：」占位），并尝试追加计划索引行。
 declare 只重写冻结段的门禁/判据/门禁判据；不写 hash（freeze 单独跑）；--dry-run 只打印将写内容。
-declare --list 只读打印合法门名与判据池（可直接抄进 declare）。
+declare --list 只读打印合法门名与判据池（可直接抄进 declare）；加 --preset <name> 打印该 preset 的组合与逐门判据映射（从 presets/*.md 解析，可直接抄 --map）。
 freeze 就地写/替换 hash:<64hex> 行；二次执行不变。`);
 }
 
@@ -49,6 +49,7 @@ function parse(argv) {
     const a = argv[i];
     if (a === "--help" || a === "-h") out.help = true;
     else if (a === "--list") out.list = true;
+    else if (a === "--preset") { const v = argv[++i]; if (v === undefined) die("--preset 缺值"); out.preset = v; }
     else if (a === "--dry-run") out.dryRun = true;
     else if (a === "--topic" || a === "--gates" || a === "--criteria" || a === "--map") {
       const v = argv[++i];
@@ -142,7 +143,34 @@ function appendPlanIndex(root, milestone, topic, rel) {
   console.log(`将写：${planRel} 索引行（${milestone}）`);
 }
 
-function listDeclarations(skillRoot) {
+function presetMap(skillRoot, name) {
+  const file = skillPath(skillRoot, `presets/${name}.md`);
+  if (!fs.existsSync(file)) die(`未知 preset：${name}（可选：${fs.readdirSync(path.join(skillRoot, "presets")).filter((f) => f.endsWith(".md") && f !== "README.md").map((f) => f.slice(0, -3)).join("、")}）`);
+  const lines = fs.readFileSync(file, "utf8").split("\n");
+  const stages = [];
+  const gates = new Map();
+  let inStages = false;
+  for (const line of lines) {
+    if (/^  stages:\s*$/.test(line)) { inStages = true; continue; }
+    if (inStages && /^  gates:\s*$/.test(line)) { inStages = false; continue; }
+    if (inStages) {
+      const m = line.match(/^    - \{ id: ([a-z_]+),/);
+      if (m) { stages.push(m[1]); continue; }
+    }
+    const g = line.match(/^\s+[a-z_]+:\s*\[\{ id: (G_[a-z_]+),.*?criteria: \[([^\]]*)\]/);
+    if (g) gates.set(g[1], g[2].split(",").map((x) => x.trim()).filter(Boolean));
+  }
+  if (!stages.length || !gates.size) die(`preset ${name} 解析不出 stages/gates（检查格式）`);
+  console.log(`组合：${name}（阶段 ${stages.join("→")}）`);
+  for (const st of stages) {
+    const gid = [...gates.keys()].find((id) => id === `G_${name.replace(/-/g, "_")}_${st}`) || [...gates.keys()].find((id) => id.includes(`_${st}`));
+    if (!gid) { console.log(`（${st} 无门）`); continue; }
+    console.log(`${gid} = ${(gates.get(gid) || []).join(", ")}`);
+  }
+}
+
+function listDeclarations(skillRoot, presetName) {
+  if (presetName) { presetMap(skillRoot, presetName); return; }
   const { gates: gs, criteria } = loadCriteriaPool(skillRoot);
   const core = CORE_CRITERIA.filter((c) => criteria.includes(c));
   const pool = criteria.filter((c) => !core.includes(c));
@@ -253,7 +281,7 @@ function main() {
   const [cmd, ...rest] = args._;
   args._ = rest;
   const { projectRoot, skillRoot } = resolvePaths();
-  if (cmd === "declare" && args.list) { listDeclarations(skillRoot); process.exit(0); }
+  if (cmd === "declare" && args.list) { listDeclarations(skillRoot, args.preset); process.exit(0); }
   if (!projectRoot) die("找不到 .sdo/（请从项目根或子目录运行；先跑 init.mjs）");
   if (cmd === "new") cmdNew(projectRoot, args);
   else if (cmd === "declare") cmdDeclare(projectRoot, args);
