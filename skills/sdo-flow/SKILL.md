@@ -34,8 +34,8 @@ node skills/sdo-flow/scripts/check.mjs           # 每次改完都跑；绿=可�
 2. **基线**：`baseline.mjs init` 建四份；基线只引用不复制（引 R/ADR 编号）。
 3. **计划**：`.sdo/计划.md` 加里程碑索引行（7 列），`milestone new` 后填六段：认领、读数+探底、卡表、共享写域、阶段序列（preset 仅作抄写参考，真源不写 `preset：` 字段）、冻结段。
 4. **计划评审**：非作者评审八项自检（见 01 §3）；问题写 `.sdo/review/`；判词三档。
-5. **冻结与计划签**：六段填完 → `milestone.mjs freeze`（同时更新 `hash:` 与 `- 基线 hash：`）→ `check.mjs --plan --milestone <M>` 0 漂移 → `sign.mjs new --kind 计划` → 人签 → `check`。改基线或改六段后必须重冻。
-6. **建卡**：`card.mjs new`（写域/判据/视角骨架）→ 认领 → 开工；一卡一提交。
+5. **冻结与计划签**：六段填完 → `milestone.mjs freeze`（同时更新 `hash:` 与 `- 基线 hash：`）→ `check.mjs --plan --milestone <M>` 0 漂移 → 建卡骨架 + `readings.mjs init` + `gate.mjs init`→ `sign.mjs new --kind 计划` → 人签 → `check`。提前建过签就 `sign.mjs new --force` 重取锚点；`draft` 的 `DIFF` 只是草案态，`CLEAN` 也只说明草案可签、**不等于已签**，签前必须 `SAME`。改基线或改六段后必须重冻。
+6. **建卡**：`card.mjs new`（写域/判据/视角骨架）→ 认领 → 开工；一卡一提交。读数门卡 `M<n>-G` 由人在 `gate.mjs init` 后按需 `card.mjs new`，不自动生成。
 7. **实现与证据**：`card.mjs evidence --run` 逐判据留 `exit=`；变异用 `card.mjs mutation` 或卡面表。
 8. **卡评审**：≥1 轮，作者之外；每轮三档判词；修完再审，不设上限。
 9. **读数门**：`readings.mjs init` 后填 R*（真路径）；`gate.mjs init` 四门表；门签用「选项：签：接受」放行 partial。
