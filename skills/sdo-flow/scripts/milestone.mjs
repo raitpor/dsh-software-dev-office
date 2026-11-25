@@ -265,10 +265,17 @@ function cmdFreeze(root, args) {
   const file = path.join(root, rel);
   if (!fs.existsSync(file)) die(`里程碑文件不存在：${rel}`);
   const raw = fs.readFileSync(file, "utf8");
-  const hash = frozenHashRaw(raw);
+  const baseHash = baselineHash(root);
+  let withBase = raw;
+  if (/^-\s*基线 hash：.*$/m.test(withBase)) {
+    withBase = withBase.replace(/^-\s*基线 hash：.*$/m, `- 基线 hash：${baseHash}`);
+  } else {
+    withBase = `${withBase.replace(/\n?$/, "\n")}- 基线 hash：${baseHash}\n`;
+  }
+  const hash = frozenHashRaw(withBase);
   let next;
-  if (/^hash:.*$/m.test(raw)) next = raw.replace(/^hash:.*$/m, `hash:${hash}`);
-  else next = `${raw.replace(/\n?$/, "\n")}hash:${hash}\n`;
+  if (/^hash:.*$/m.test(withBase)) next = withBase.replace(/^hash:.*$/m, `hash:${hash}`);
+  else next = `${withBase.replace(/\n?$/, "\n")}hash:${hash}\n`;
   console.log(`将写：${rel}`);
   writeAtomic(file, next);
   console.log(`已更新 ${rel} 的 hash:${hash.slice(0, 8)}…`);
