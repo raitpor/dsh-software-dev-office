@@ -1,6 +1,6 @@
 # 流程 preset（生命周期）
 
-pre·set = 预先设定好的**阶段与出口判据**。前三份对应 SDO 设计里的三个内置 policy（`waterfall`、`prototype`、`incremental`）；第四份 `agent-driven` 是本 skill 的扩展，按 agent 开发的特点设计，**不在设计稿的目录内**，判据里标 `agent.` 的条目属流程自检项。
+pre·set = 预先设定好的**阶段与出口判据**。前三份对应 SDO 设计里的三个内置 policy（`waterfall`、`prototype`、`incremental`）；第四份 `agent-driven` 是本 skill 的扩展，按 agent 开发的特点设计，**不在设计稿的目录内**，判据里标 `agent.` 的条目属流程自检项；第五份 `repair` 由 M13.6 计划定稿，是维修型流程的参考快照。
 
 选一个，抄进 `.sdo/计划.md` 的「阶段」段，之后按它排卡与收口。**不要**混用：一张卡只属于一条阶段序列。
 
@@ -12,6 +12,7 @@ pre·set = 预先设定好的**阶段与出口判据**。前三份对应 SDO 设
 | `prototype` | 先做原型、再决定要不要产品化 | `explore[implement] → harden[requirement,design,implement,review] → deliver[deliver]` |
 | `incremental` | 多条线并行、分批交付 | `req_design[requirement,design] → build[implement] → verify[review] → integrate[deliver]` |
 | `agent-driven` | 主要产出由 agent 完成、人只做三个决定点（立项/计划签、抽样评审、收口签） | `frame[requirement,design] → build[implement] → verify[verify] → review[review] → sign[vet] → deliver[deliver]` |
+| `repair` | 已有系统的缺陷修复/小改动；没有新需求与新设计 | `diagnose[implement] → fix[implement] → verify[review] → integrate[deliver]` |
 
 ## 怎么执行（勾选表就是门禁）
 
@@ -22,3 +23,7 @@ pre·set = 预先设定好的**阶段与出口判据**。前三份对应 SDO 设
 - 全局 core 三条（`spec_set.signed`、`assumption_set.signed`、`provenance.present`）在每个出口都要过。
   判定方式：`spec_set.signed` = 计划已人签（S 号）；`assumption_set.signed` = 意图 §7 假设表已随该签确认且每条写“不成立怎么办”；`provenance.present` = 每个判定都有命令或 `文件:行`。
 
+
+新增 preset = 同时改 `check.mjs` 的 `SNAPSHOT_PRESET_SHA` / `SNAPSHOT_STAGES` / `SNAPSHOT_CRITERIA` 三张表（等于一次人签）；只加文件会被 `preset 不在发布快照清单` 拒。
+
+反过来，**同时改 preset 与快照**是合法的“重新声明”，机器不报错——所以它等同于改代码，必须走人签/代码评审；快照表就是这份声明的人签记录。

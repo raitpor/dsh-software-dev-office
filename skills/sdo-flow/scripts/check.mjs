@@ -1084,7 +1084,6 @@ function checkReadings() {
   }
 }
 
-const PRESET_FILES = ["waterfall.md", "prototype.md", "incremental.md", "agent-driven.md"];
 const KNOWN_KINDS = new Set(["requirement", "design", "implement", "review", "deliver", "verify", "vet", "docs"]);
 // 发布快照：与 skill 一起冻结（改它要一次人签，不允许悄悄放宽/换名）
 const SNAPSHOT_PRESET_SHA = {
@@ -1092,12 +1091,16 @@ const SNAPSHOT_PRESET_SHA = {
   prototype: "eb435464abd1795728fee62dfbf45c16d2b906c06adec5f760ac1705fa1c5c1c",
   incremental: "13228780675864ac746a22892add51c961507d8493ba3ac1a85509c9c1307125",
   "agent-driven": "38272083a7a71e43848b4fbbf69578ecdbbedbd0bd00d0ad1775dcba85fa412b",
+  repair: "713f83c040d7be21bb4d7f8c481a29946c56bf9867d81a07f032f15fb5a5ffb0",
 };
+const PRESET_FILES = Object.keys(SNAPSHOT_PRESET_SHA).map((k) => `${k}.md`).sort();
+// 发布快照里的 preset 是权威清单；磁盘上多出的 .md（README 除外）单独报错，不进入解析。
 const SNAPSHOT_STAGES = {
   waterfall: "req[requirement] design[design] build[implement] verify[review] deliver[deliver]",
   prototype: "explore[implement] harden[requirement,design,implement,review] deliver[deliver]",
   incremental: "req_design[requirement,design] build[implement] verify[review] integrate[deliver]",
   "agent-driven": "frame[requirement,design] build[implement] verify[verify] review[review] sign[vet] deliver[deliver]",
+  repair: "diagnose[implement] fix[implement] verify[review] integrate[deliver]",
 };
 const SNAPSHOT_CRITERIA = {
   G_req_exit: "stage.requirement_complete intent.restated_consistent alignment.examples_present spec_set.signed scope.present intent.explicit_for_risk redteam.disposed provenance.present assumption_set.signed requirement.baseline_present requirement.claimed_or_na",
@@ -1115,10 +1118,16 @@ const SNAPSHOT_CRITERIA = {
   G_agent_review_exit: "review.round_bound review.required agent.reviewer_not_author agent.findings_disposed spec_set.signed provenance.present",
   G_agent_sign_exit: "agent.human_signed agent.known_limits spec_set.signed assumption_set.signed provenance.present",
   G_agent_deliver_exit: "design.code_matches node.integration_listed mandate.revalidated agent.readings_frozen spec_set.signed provenance.present",
+  G_repair_diagnose: "spec_set.signed assumption_set.signed provenance.present requirement.claimed_or_na scope.present node.acceptance_bound assumption.disposed",
+  G_repair_fix: "spec_set.signed assumption_set.signed provenance.present task.complete trace.test_linked agent.mutation_red agent.write_scope_disjoint",
+  G_repair_verify: "spec_set.signed assumption_set.signed provenance.present review.required review.round_bound review.independent agent.reviewer_not_author agent.checker_green agent.findings_disposed agent.evidence_runnable agent.no_self_sign agent.unverified_listed",
+  G_repair_integrate: "spec_set.signed assumption_set.signed provenance.present gate.signed node.integration_listed mandate.revalidated readings.recorded agent.known_limits",
 };
 
-function presetChangeGate(changed) {
+function presetChangeGate(changed, changedGates = [], changedStages = new Map()) {
   const msg = (m) => ERR.push(`presets:0: ${m}`);
+  const stageText = [...changedStages.values()].join("；");
+  const detail = () => `变更项：preset=${[...changed].join("、") || "（无）"}${stageText ? `；stages: ${stageText}` : ""}${changedGates.length ? `；gate=${changedGates.join("、")}` : ""}`;
   const cur = currentMilestone(ROOT);
   const p = cur ? `.sdo/milestones/${cur}.md` : "";
   const activeOf = () => {
@@ -1139,7 +1148,7 @@ function presetChangeGate(changed) {
   if (hits.length > 1) return invalid(`「preset 变更发起里程碑」须恰好一行（当前 ${hits.length} 行）`);
   if (hits.length === 0) {
     const act = activeOf().filter((x) => !archiveEntry(ROOT, x.id));
-    if (!act.length) return msg("需人签更新发布快照（无活跃里程碑使用旧 preset；未声明发起者，按空集放行）");
+    if (!act.length) return msg(`发布快照已变：需人签更新 SNAPSHOT_PRESET_SHA（${detail()}）`);
     return invalid(`未声明「preset 变更发起里程碑」，但仍有活跃里程碑使用旧 preset：${act.map((x) => x.id).join("、")}`);
   }
   const init = hits[0].m;
@@ -1152,7 +1161,7 @@ function presetChangeGate(changed) {
     const parts = [...byPreset.entries()].map(([pr, ids]) => `${pr}: ${ids.join("、")}`);
     return msg(`preset_change_requires_archive：${parts.join("；")}（先归档，再更新发布快照；发起者 ${init} 已扣除）`);
   }
-  msg("需人签更新发布快照（已无活跃里程碑使用旧 preset；人签后同步 SNAPSHOT 常量）");
+  msg(`发布快照已变：需人签更新 SNAPSHOT_PRESET_SHA（${detail()}）`);
 }
 
 const NEW_CRITERIA = ["requirement.baseline_present", "design.artifacts_present", "test.design_present", "trace.requirement_covered", "trace.test_linked", "requirement.claimed_or_na", "trace.card_coverage"];
@@ -1162,12 +1171,23 @@ function checkCriterionBasis() {
   for (const f of PRESET_FILES) {
     const p = `presets/${f}`;
     const lines = read(`skills/sdo-flow/${p}`);
-    for (const crit of NEW_CRITERIA) {
-      if (!lines.some((l) => l.includes(crit))) continue;
-      const hit = lines.map((l, i) => ({ l, i })).find((x) => x.l.includes(crit) && /依据[:：]\s*§12\.\d+/.test(x.l));
-      if (!hit) { err(p, 0, `criterion_without_basis：${crit} 缺「依据：§12.<n>」`); continue; }
-      const n = (hit.l.match(/依据[:：]\s*§12\.(\d+)/) || [])[1];
-      if (!sections.has(n)) err(p, hit.i + 1, `basis_section_missing：${crit} 的依据 §12.${n} 不在 .sdo/意图.md §12 小节里`);
+    // 负面/不适用小节是“明确排除”的判据，不是本 preset 使用的门禁判据；
+    // 不给这些行要求 §12 依据（否则会把排除项当成使用项）。
+    const excluded = new Set();
+    for (const headingRe of [/^##\s+.*不适用/, /^##\s+.*负面清单/]) {
+      const sec = sectionOf(lines, headingRe);
+      if (!sec) continue;
+      for (let i = sec.start; i < sec.end; i++) excluded.add(i);
+    }
+    const rowRe = /^\|\s*\d+\s*\|\s*`([a-z_]+\.[a-z_]+)`/;
+    for (let i = 0; i < lines.length; i++) {
+      if (excluded.has(i)) continue;
+      const rm = rowRe.exec(lines[i]);
+      if (!rm || !NEW_CRITERIA.includes(rm[1])) continue;
+      const crit = rm[1];
+      const n = (lines[i].match(/依据[:：]\s*§12\.(\d+)/) || [])[1];
+      if (!n) { err(p, i + 1, `criterion_without_basis：${crit} 缺「依据：§12.<n>」`); continue; }
+      if (!sections.has(n)) err(p, i + 1, `basis_section_missing：${crit} 的依据 §12.${n} 不在 .sdo/意图.md §12 小节里`);
     }
   }
 }
@@ -1182,6 +1202,14 @@ function checkPresets() {
   }
   const errStart = ERR.length;
   const changed = new Set();
+  const changedGates = new Set();
+  const changedStages = new Map();
+  const presetsDir = path.join(SKILL_ROOT, "presets");
+  const knownPresetFiles = new Set(PRESET_FILES);
+  for (const f of fs.readdirSync(presetsDir).sort()) {
+    if (!f.endsWith(".md") || f === "README.md" || knownPresetFiles.has(f)) continue;
+    err(`presets/${f}`, 0, `preset 不在发布快照清单：${f.replace(/\.md$/, "")}`);
+  }
   const docStages = {}, docGates = {};
   if (doc) {
     for (const m of doc.matchAll(/^\|\s*`(waterfall|prototype|incremental)`\s*\|[^|]*\|\s*`([^`]+)`\s*\|/gm)) {
@@ -1199,6 +1227,7 @@ function checkPresets() {
   for (const f of PRESET_FILES) {
     const key = f.replace(".md", "");
     const p = `presets/${f}`;
+    if (!fs.existsSync(path.join(SKILL_ROOT, "presets", f))) { err(p, 0, `发布快照清单里的 preset 文件缺失：${f}`); continue; }
     const text = fs.readFileSync(path.join(SKILL_ROOT, "presets", f), "utf8");
     const sha = sha256Hex(text);
     if (sha !== SNAPSHOT_PRESET_SHA[key]) {
@@ -1218,8 +1247,12 @@ function checkPresets() {
 
     const gotSeq = Object.entries(gotStages).map(([id, ks]) => `${id}[${ks.join(",")}]`).join(" ");
     const wantSeq = SNAPSHOT_STAGES[key];
-    if (gotSeq !== wantSeq) changed.add(key);
-    if (gotSeq !== wantSeq) err(p, 0, `stage 序列与发布快照不一致（多/少/改名/换 kinds 都要人签）：\n  本文件 ${gotSeq || "（空）"}\n  快照   ${wantSeq}`);
+    if (gotSeq !== wantSeq) {
+      changed.add(key);
+      const ids = (x) => [...x.matchAll(/([a-z_]+)\[/g)].map((m) => m[1]).join(",");
+      changedStages.set(key, `${ids(gotSeq)}→${ids(wantSeq)}`);
+      err(p, 0, `stage 序列与发布快照不一致（多/少/改名/换 kinds 都要人签）：\n  本文件 ${gotSeq || "（空）"}\n  快照   ${wantSeq}`);
+    }
 
     const gates = [...text.matchAll(/id:\s*(G_[a-z_]+)([^}]*)criteria:\s*\[([^\]]*)\]/g)];
     if (!gates.length) err(p, 0, "没有任何 gate（id/criteria）");
@@ -1236,7 +1269,7 @@ function checkPresets() {
       const got = [...body.matchAll(/[a-z_]+\.[a-z_]+/g)].map((x) => x[0]).join(" ");
       const want = SNAPSHOT_CRITERIA[gid];
       if (want === undefined) err(p, 0, `gate ${gid} 不在发布快照里（新 gate 要随 skill 版本一起人签）`);
-      else if (got !== want) { changed.add(key); err(p, 0, `${gid} 的 criteria 与发布快照不一致：\n  本文件 ${got || "（空）"}\n  快照   ${want}`); }
+      else if (got !== want) { changed.add(key); changedGates.add(gid); err(p, 0, `gate_criteria_snapshot_mismatch：${gid} 的 criteria 与发布快照（修订需重签）不符：\n  本文件 ${got || "（空）"}\n  快照   ${want}`); }
       if (!got.split(" ").includes("spec_set.signed")) err(p, 0, `${gid} 的 criteria 缺 core 判据 spec_set.signed`);
       // 外部判据源：只比对本文件出现的 gate
       if (docGates[gid] && docGates[gid] !== got) err(p, 0, `${gid} 的 criteria 与外部判据源不一致（本文件 ${got.split(" ").filter(Boolean).length} 条，源 ${docGates[gid].split(" ").filter(Boolean).length} 条）`);
@@ -1255,7 +1288,7 @@ function checkPresets() {
   }
   if (changed.size) {
     const gateStart = ERR.length;
-    presetChangeGate(changed);
+    presetChangeGate(changed, [...changedGates].sort(), changedStages);
     if (ERR.length > gateStart) {
       const gateErrors = ERR.splice(gateStart);
       ERR.splice(errStart, 0, ...gateErrors);
@@ -1278,6 +1311,7 @@ function getPresetGates(key) {
     prototype: ["G_explore_exit", "G_harden_exit", "G_deliver_exit"],
     incremental: ["G_req_design", "G_build_exit", "G_verify_exit", "G_integrate"],
     "agent-driven": ["G_frame_exit", "G_agent_build_exit", "G_agent_verify_exit", "G_agent_review_exit", "G_agent_sign_exit", "G_agent_deliver_exit"],
+    repair: ["G_repair_diagnose", "G_repair_fix", "G_repair_verify", "G_repair_integrate"],
   }[key] || [];
 }
 
