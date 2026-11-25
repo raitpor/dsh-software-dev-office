@@ -90,7 +90,7 @@
 
 1. **“不适用”怎么写**：`gate.mjs` 的判定列只认 `pass/partial/fail`，没有 N/A 位。维修若没有新增假设（基线假设已由 core 的 `assumption_set.signed` 保证），`assumption.disposed` 填 **pass**，并在说明列写「不适用：本次无新增假设，基线假设见 `assumption_set.signed`」，由门签人签确认；不许为了“看起来做了”去编一条假设再处置。说明列必须带证据锚点（例如 `git diff <维修前树> -- .sdo/baseline/` 无新增假设节，或基线假设的 `文件:行`），无锚点的“不适用”门签人不得签。
 2. **`agent.checker_green` 的口径**：按“**0 错**，且错/警数**不比维修前基线多**”判；WARN 本身不构成 fail（本仓就长期有 1 条历史 WARN），否则维修项目只能靠造假绿通过。
-3. **`review.independent` 在维修门里是“对齐正常流程”的保留项**：它的实质要求由 `agent.reviewer_not_author`（身份）与 `agent.no_self_sign`（不代签）覆盖；见 `references/03`。
+3. **`review.independent` 在维修门里是“对齐正常流程”的保留项**：它的实质要求由 `agent.reviewer_not_author`（身份）与 `agent.no_self_sign`（不代签）覆盖；见 `references/04` §2（门与 preset 清单）与 `03` §5（评审与签字）。
 
 ## 与 incremental 的差异
 

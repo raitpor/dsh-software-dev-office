@@ -1,6 +1,6 @@
-// 判据说明的唯一来源：gate init 的「说明」列与 references/02 的说明表都从这里生成。
+// 判据说明的唯一来源：gate init 的「说明」列与 references/04 §1 的说明表都从这里生成。
 // 池本身仍由 lib/criteria-pool.mjs 维护（快照 15 门 / 3 core / 41 启发式，见 milestone declare --list），
-// 本文件只负责「每条判据一句说明」与生成表格；禁止在 gate.mjs / references/02 手抄第二份。
+// 本文件只负责「每条判据一句说明」与生成表格；禁止在 gate.mjs / references/04 §1 手抄第二份。
 import fs from "node:fs";
 import path from "node:path";
 import { loadCriteriaPool, CORE_CRITERIA } from "./criteria-pool.mjs";

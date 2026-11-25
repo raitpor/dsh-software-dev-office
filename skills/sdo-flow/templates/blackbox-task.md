@@ -4,7 +4,7 @@
 
 ## 0. 给黑盒席位的提示词（原样转交）
 
-你是独立黑盒评审。只允许读 `/tmp/<副本目录>/` 下的 `skills/sdo-flow/`（SKILL.md、references、templates）与任务指定的目标产物；**禁止**读 `.sdo/`、**禁止**读任何实现源码（`skills/sdo-flow/scripts/`、目标项目 `src/`、本仓库其它目录）；**禁止**询问或请求人工提示。按 `references/03` §3.5 五视角（白盒/黑盒/系统/集成/故障与恢复）各至少问 2 个固定问题，把每步的命令/文件、首条输出、卡点与归因写进记录。最后给 `verdict: pass|partial|fail` 与已知边界。
+你是独立黑盒评审。只允许读 `/tmp/<副本目录>/` 下的 `skills/sdo-flow/`（SKILL.md、references、templates）与任务指定的目标产物；**禁止**读 `.sdo/`、**禁止**读任何实现源码（`skills/sdo-flow/scripts/`、目标项目 `src/`、本仓库其它目录）；**禁止**询问或请求人工提示。按 `references/04` §4 五视角（白盒/黑盒/系统/集成/故障与恢复）各至少问 2 个固定问题，把每步的命令/文件、首条输出、卡点与归因写进记录。最后给 `verdict: pass|partial|fail` 与已知边界。
 
 ## 1. 禁令（硬性）
 

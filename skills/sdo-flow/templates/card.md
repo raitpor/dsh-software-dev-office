@@ -21,7 +21,7 @@ risk_flags：`high_risk` / `sampled` / `release_touching`（有任一 ⇒ 不许
 ## 对齐
 - 该做：…
 - 不该做：…
-- 视角：未声明（白盒/黑盒/系统/集成/故障与恢复，见 references/03 §3.5）
+- 视角：未声明（白盒/黑盒/系统/集成/故障与恢复，见 references/04 §4）
 
 ## 判据
 

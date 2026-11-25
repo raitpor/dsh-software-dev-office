@@ -1,5 +1,5 @@
 // 判据/门禁池的唯一来源：--list 与 check 都 import 这里，禁止各自扫文档。
-// 真源口径：presets/*.md 的停用/阶段/出口表；references/02 只用于人工说明。
+// 真源口径：presets/*.md 的停用/阶段/出口表；references/04 §1 只用于人工说明。
 import fs from "node:fs";
 import path from "node:path";
 

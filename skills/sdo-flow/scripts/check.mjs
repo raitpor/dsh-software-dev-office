@@ -60,7 +60,7 @@ if (ARGV.includes("--trace") && ARGV.includes("--plan")) {
   process.exit(2);
 }
 // CLI 局部错误码：SDO_E_MISSING_* 只用于“缺文件”这一类启动前错误，不进码表；
-// M10-4 references 同步时登记到 references/08 的错误码清单（本卡不建码表）。
+// M10-4 references 同步时登记到 references/04 §3 的错误码清单（本卡不建码表）。
 const preflightMissing = (rel, next, code) => {
   if (fs.existsSync(path.join(ROOT, rel))) return;
   console.error(`缺少 ${rel}；下一步：${next}（或按 README 手建）`);
@@ -1091,7 +1091,7 @@ const SNAPSHOT_PRESET_SHA = {
   prototype: "eb435464abd1795728fee62dfbf45c16d2b906c06adec5f760ac1705fa1c5c1c",
   incremental: "13228780675864ac746a22892add51c961507d8493ba3ac1a85509c9c1307125",
   "agent-driven": "38272083a7a71e43848b4fbbf69578ecdbbedbd0bd00d0ad1775dcba85fa412b",
-  repair: "713f83c040d7be21bb4d7f8c481a29946c56bf9867d81a07f032f15fb5a5ffb0",
+  repair: "e6c36858c7edfe7114cbabba7a8f4922f68b4d3e40321637a7b50d16d3a297b7",
 };
 const PRESET_FILES = Object.keys(SNAPSHOT_PRESET_SHA).map((k) => `${k}.md`).sort();
 // 发布快照里的 preset 是权威清单；磁盘上多出的 .md（README 除外）单独报错，不进入解析。
@@ -2088,8 +2088,11 @@ function checkPlanRules(milestone, planPath) {
   if (!baselineVersionBase.has(milestone)) checkBaselineBinding(milestone, raw, planPath);
   checkFrozenHash(raw, planPath, milestone);
 }
+const DOC_REVIEW_SEAT_FAILURE = "skills/sdo-flow/references/01-流程说明.md";
+const DOC_AUTH_BOUNDARY = "skills/sdo-flow/references/04-参考资源.md";
+
 function checkR25Docs() {
-  const ref = "skills/sdo-flow/references/03-签字与评审.md";
+  const ref = DOC_REVIEW_SEAT_FAILURE;
   if (!read(ref).some((l) => /^#{2,3}\s+.*评审席位失败/.test(l))) err(ref, 1, "缺「评审席位失败」小节标题（R25 C2）");
   const tpl = "skills/sdo-flow/templates/review.md";
   for (const field of ["席位", "失败处置"]) {
@@ -2107,7 +2110,7 @@ function checkAuthorizationText() {
   if (!ok5) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“口头授权≠流程放行”约束（须同一行、含 ≠ 或 不等于）");
   const presetRule = sec5.find((l) => !isComment(l) && l.includes("preset") && l.includes("抄写参考"));
   if (!presetRule) err(skillPath, sec ? sec.start + 1 : 1, "§5 缺“preset 只作抄写参考、不写进真源”约束");
-  const refPath = "skills/sdo-flow/references/07-边界与自证.md";
+  const refPath = DOC_AUTH_BOUNDARY;
   const ref = read(refPath);
   const ok7 = ref.find((l) => !isComment(l) && l.includes("口头授权") && l.includes("流程放行") && (l.includes("≠") || l.includes("不等于")));
   if (!ok7) err(refPath, 1, "缺“口头授权≠流程放行”边界（须同一行、含 ≠ 或 不等于）");
