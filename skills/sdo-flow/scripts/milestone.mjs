@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { resolvePaths, skillPath } from "./lib/paths.mjs";
 import { frozenHashRaw } from "./lib/frozen.mjs";
-import { baselineHash } from "./lib/hash.mjs";
+import { BASELINE_FILES, baselineHash } from "./lib/hash.mjs";
 import { loadCriteriaPool, CORE_CRITERIA } from "./lib/criteria-pool.mjs";
 
 function die(message) {
@@ -68,7 +68,7 @@ function skeleton(milestone, topic, baseHash) {
 
 ### ${milestone}.0 认领需求
 
-需求：无（本里程碑尚未认领需求，待计划评审时填写）
+认领需求：无（本里程碑尚未认领需求，待计划评审时填写）
 
 ### ${milestone}.1 里程碑与判死读数
 
@@ -254,7 +254,7 @@ function cmdNew(root, args) {
   writeAtomic(file, `${base}hash:${hash}\n`);
   console.log(`已生成 ${rel}（hash:${hash.slice(0, 8)}…）`);
   appendPlanIndex(root, milestone, topic, rel);
-  console.log(`下一步：node <skill>/scripts/check.mjs --plan --milestone ${milestone}；需要核对 hash 时加 --print-frozen-hash`);
+  console.log(`下一步：node <skill>/scripts/check.mjs --plan --milestone ${milestone}；需要核对 hash 时加 node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`);
 }
 
 function cmdFreeze(root, args) {
@@ -264,13 +264,21 @@ function cmdFreeze(root, args) {
   const rel = `.sdo/milestones/${milestone}.md`;
   const file = path.join(root, rel);
   if (!fs.existsSync(file)) die(`里程碑文件不存在：${rel}`);
+  for (const name of BASELINE_FILES) {
+    if (!fs.existsSync(path.join(root, ".sdo/baseline", name))) {
+      die(`缺基线文件：.sdo/baseline/${name}（先跑 node <skill>/scripts/baseline.mjs init，再 freeze）`);
+    }
+  }
   const raw = fs.readFileSync(file, "utf8");
   const baseHash = baselineHash(root);
   let withBase = raw;
   if (/^-\s*基线 hash：.*$/m.test(withBase)) {
     withBase = withBase.replace(/^-\s*基线 hash：.*$/m, `- 基线 hash：${baseHash}`);
   } else {
-    withBase = `${withBase.replace(/\n?$/, "\n")}- 基线 hash：${baseHash}\n`;
+    const m = /^hash:.*$/m.exec(withBase);
+    const line = `- 基线 hash：${baseHash}\n`;
+    if (m) withBase = `${withBase.slice(0, m.index)}${line}${withBase.slice(m.index)}`;
+    else withBase = `${withBase.replace(/\n?$/, "\n")}${line}`;
   }
   const hash = frozenHashRaw(withBase);
   let next;
@@ -279,7 +287,7 @@ function cmdFreeze(root, args) {
   console.log(`将写：${rel}`);
   writeAtomic(file, next);
   console.log(`已更新 ${rel} 的 hash:${hash.slice(0, 8)}…`);
-  console.log(`下一步：node <skill>/scripts/check.mjs --plan --milestone ${milestone}；需要复核时用 --print-frozen-hash`);
+  console.log(`下一步：node <skill>/scripts/check.mjs --plan --milestone ${milestone}；需要复核时用 node <skill>/scripts/check.mjs --plan --milestone <M> --print-frozen-hash`);
 }
 
 function main() {
