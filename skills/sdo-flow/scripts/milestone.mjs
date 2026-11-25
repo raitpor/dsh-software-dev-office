@@ -281,6 +281,7 @@ function main() {
   const [cmd, ...rest] = args._;
   args._ = rest;
   const { projectRoot, skillRoot } = resolvePaths();
+  if (args.preset && !args.list) die("--preset 只能与 --list 同用（示例：declare --list --preset repair）");
   if (cmd === "declare" && args.list) { listDeclarations(skillRoot, args.preset); process.exit(0); }
   if (!projectRoot) die("找不到 .sdo/（请从项目根或子目录运行；先跑 init.mjs）");
   if (cmd === "new") cmdNew(projectRoot, args);
