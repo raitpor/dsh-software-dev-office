@@ -758,6 +758,10 @@ function checkCardStateMismatch() {
   }
 }
 
+function hasGitRepository() {
+  try { execFileSync("git", ["rev-parse", "--git-dir"], { cwd: ROOT, stdio: "ignore" }); return true; }
+  catch { return false; }
+}
 function gitKnownCommit(sha) {
   try {
     execFileSync("git", ["cat-file", "-e", `${sha}^{commit}`], { cwd: ROOT, stdio: "ignore" });
@@ -772,6 +776,9 @@ function commitClaims(value) {
   const bare = /^`?([0-9a-f]{7,40})`?(?=$|[\s（(])/i.exec(value);
   if (bare) out.add(bare[1]);
   for (const m of value.matchAll(/commit\s*`?([0-9a-f]{7,40})`?/gi)) out.add(m[1]);
+  // M11-11 之后签的 git:<sha> 形态（D-270）。只认整行值以 git: 开头，避免在说明文字里顺带抓到 git:<sha>。
+  const gitAtStart = /^\s*`?git\s*:\s*`?([0-9a-f]{7,40})`?/i.exec(value);
+  if (gitAtStart) out.add(gitAtStart[1]);
   return [...out];
 }
 
@@ -833,7 +840,13 @@ function checkAppendSignAnchors() {
       }
       continue;
     }
-    for (const sha of commitClaims(value)) {
+    const gitForm = /^git\s*:/i.test(value);
+    const claims = commitClaims(value);
+    if (gitForm && !hasGitRepository()) {
+      err(p, i + 1, `signed_tree_unknown：被签对象声明 git:<sha> 形态，但当前项目不是 git 仓库（无 .git）；无 git 项目应写 tree:<指纹>（M11-11），不能静默放行`);
+      continue;
+    }
+    for (const sha of claims) {
       if (!gitKnownCommit(sha)) err(p, i + 1, `signed_tree_unknown：被签对象声明的 commit ${sha} 不是本仓库的已知 commit（无法证明“签的就是当前树”）`);
     }
   }
@@ -1875,6 +1888,8 @@ function milestoneGateAccepted(mid) {
 let exemptionCache = null;
 function declarationExemption() {
   if (exemptionCache) return exemptionCache;
+  // D-272：只扫活跃 .sdo/milestones。声明方归档后失去声明资格（不降 WARN 放行）；
+  // 若被豁免者本身也已归档，由 checkPlan 的 archiveEntry 分支走「已归档，跳过」。
   const dir = path.join(ROOT, ".sdo/milestones");
   const ids = new Set();
   const sources = new Map();
@@ -1913,6 +1928,25 @@ function declarationExemption() {
   return exemptionCache;
 }
 
+function archivedExemptionSource(mid) {
+  const base = path.join(ROOT, ".sdo/archive");
+  if (!fs.existsSync(base)) return null;
+  for (const d of fs.readdirSync(base).sort()) {
+    const f = path.join(base, d, "milestone.md");
+    if (!fs.existsSync(f)) continue;
+    const ls = fs.readFileSync(f, "utf8").split(/\r?\n/);
+    const sec = freezeSectionLines(ls);
+    if (!sec) continue;
+    for (let i = sec.start; i < sec.end; i++) {
+      const m = /^-\s*声明豁免[:：]\s*(.*)$/.exec(ls[i]);
+      if (!m) continue;
+      const toks = m[1].split(/[、,，]/).map((x) => x.trim()).filter(Boolean);
+      if (toks.includes(mid)) return d;
+    }
+  }
+  return null;
+}
+
 function checkDeclarations(lines, p, mid) {
   const sec = freezeSectionLines(lines);
   if (!sec) {
@@ -1930,6 +1964,13 @@ function checkDeclarations(lines, p, mid) {
     if (c) { critLine = i + 1; critVal = c[1]; }
   }
   const missMsg = "gate_criteria_undeclared：冻结段缺声明（不设默认集）";
+  if (!legacyExempt && (gateLine < 0 || critLine < 0 || gateVal.trim() === "" || critVal.trim() === "")) {
+    const archSrc = archivedExemptionSource(mid);
+    if (archSrc) {
+      err(p, 1, `gate_criteria_undeclared_legacy_source_archived：原声明源 ${archSrc} 已归档，豁免失效（恢复已归档里程碑会因此红，属预期；需重新声明并追加签）`);
+      return;
+    }
+  }
   const exSrc = exemption.sources.get(mid);
   const srcNote = exSrc ? `（声明豁免来自 ${path.relative(ROOT, exSrc)})` : "";
   if (gateLine < 0 || gateVal.trim() === "") {
@@ -2169,11 +2210,11 @@ function checkTrace() {
     const rank = { trace_orphan_requirement: 0, trace_dangling_ref: 1, trace_duplicate_claim: 2, trace_orphan_test: 3, trace_test_unverifiable: 4, pending_change_request: 5, explore_conclusion_malformed: 6 };
     const issues = [...t.issues].sort((a, b) => (rank[a.code] ?? 9) - (rank[b.code] ?? 9))
       .map((i) => ({ code: i.code, id: i.id ?? (/^(R-\d+|M\d+-[\w-]+)/.exec(i.message) || [])[1] ?? null, file: i.file }));
-    console.log(JSON.stringify({ ok: issues.length === 0, counts: { requirements: t.counts.requirements, covered: t.counts.covered, cardRefs: t.counts.edges, orphanRequirements: t.counts.orphanRequirements, orphanCards: t.counts.orphanCards }, issues }));
+    console.log(JSON.stringify({ ok: issues.length === 0, counts: { requirements: t.counts.requirements, covered: t.counts.covered, coveredHistorical: t.counts.coveredHistorical, activeRefs: t.counts.activeRefs, cardRefs: t.counts.cardRefs ?? t.counts.edges, edges: t.counts.edges, orphanRequirements: t.counts.orphanRequirements, orphanCards: t.counts.orphanCards }, issues }));
     process.exit(issues.length ? 1 : 0);
   }
   console.log(`需求数：${t.counts.requirements}`);
-  console.log(`已覆盖数：${t.counts.covered}`);
+  console.log(`已覆盖数：${t.counts.covered}${t.counts.coveredHistorical ? `（另有 ${t.counts.coveredHistorical} 条仅有归档引用，不计入活跃覆盖）` : ""}`);
   console.log(`卡引用数：${t.counts.edges}`);
   console.log(`孤儿需求数：${t.counts.orphanRequirements}`);
   console.log(`孤儿卡数：${t.counts.orphanCards}`);

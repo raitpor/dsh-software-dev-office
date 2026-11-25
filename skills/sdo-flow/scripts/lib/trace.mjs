@@ -107,6 +107,26 @@ export function readCards(root) {
   });
 }
 
+// C3/D-273：归档卡只作为“需求仍被历史引用”的来源，用于孤儿检测；
+// 不进入 cards/orphanCards/claims/签字链与门禁的活跃判定（A1）。
+export function readArchivedCardRefs(root) {
+  const base = path.join(root, ".sdo/archive");
+  if (!fs.existsSync(base)) return [];
+  const out = [];
+  for (const m of fs.readdirSync(base).sort()) {
+    const dir = path.join(base, m, "cards");
+    if (!fs.existsSync(dir)) continue;
+    for (const f of fs.readdirSync(dir).filter((x) => x.endsWith(".md")).sort()) {
+      const text = fs.readFileSync(path.join(dir, f), "utf8");
+      const refsLine = /^references:\s*(.*)$/m.exec(text);
+      if (!refsLine) continue;
+      const refs = [...refsLine[1].matchAll(/R-\d+/g)].map((x) => x[0]);
+      if (refs.length) out.push({ id: f.slice(0, -3), file: `.sdo/archive/${m}/cards/${f}`, refs });
+    }
+  }
+  return out;
+}
+
 export function readClaims(root) {
   const dir = path.join(root, ".sdo/milestones");
   if (!fs.existsSync(dir)) return [];
@@ -246,19 +266,27 @@ export function analyzeTrace(root) {
   const claims = readClaims(root);
   const reqIds = new Set(reqs.map((r) => r.id));
   const byReq = new Map(reqs.map((r) => [r.id, []]));
+  const byReqAll = new Map(reqs.map((r) => [r.id, []]));
   const dangling = [];
   let edges = 0;
+  const archivedRefs = readArchivedCardRefs(root);
   for (const c of cards) {
     if (!c.refsDeclared) continue;
     for (const id of c.refs) {
       edges++;
       if (!reqIds.has(id)) { dangling.push({ id, card: c.id, file: c.file }); continue; }
       byReq.get(id).push(c.id);
+      byReqAll.get(id).push(c.id);
     }
+  }
+  // 归档卡引用只进入 byReqAll（孤儿需求判定）；不计 activeRefs、不进 cards/dangling/引用卡列表。
+  for (const c of archivedRefs) {
+    for (const id of c.refs) if (reqIds.has(id)) byReqAll.get(id).push(c.id);
   }
   const orphanCards = cards.filter((c) => c.refs.length === 0);
   const covered = reqs.filter((r) => (byReq.get(r.id) || []).length > 0).length;
-  const orphanReqs = reqs.filter((r) => (byReq.get(r.id) || []).length === 0);
+  const coveredHistorical = reqs.filter((r) => (byReq.get(r.id) || []).length === 0 && (byReqAll.get(r.id) || []).length > 0).length;
+  const orphanReqs = reqs.filter((r) => (byReqAll.get(r.id) || []).length === 0);
   const issues = [];
   for (const c of cards) {
     if (c.status !== "done" || c.refs.length > 0) continue;
@@ -331,7 +359,7 @@ export function analyzeTrace(root) {
     }
   }
   return {
-    requirements: reqs, cards, claims, counts: { requirements: reqs.length, covered, edges, orphanRequirements: orphanReqs.length, orphanCards: orphanCards.length, dangling: dangling.length },
-    byReq, orphanCards, orphanReqs, dangling, issues,
+    requirements: reqs, cards, claims, counts: { requirements: reqs.length, covered, coveredHistorical, edges, activeRefs: edges, orphanRequirements: orphanReqs.length, orphanCards: orphanCards.length, dangling: dangling.length },
+    byReq, byReqAll, orphanCards, orphanReqs, dangling, issues,
   };
 }

@@ -138,7 +138,7 @@ function judgeRow(cellsArr, idx) {
 }
 
 const CORE = ["spec_set.signed", "assumption_set.signed", "provenance.present"];
-const PLACEHOLDERS = /^(|<.*>|—|-|无|略|无证据|todo|tbd|待补|看过了)$/i;
+const PLACEHOLDERS = /^(|<.*>|—|-|无|略|无证据|todo|tbd|待补|待填|待判|看过了)$/i;
 
 function checkGate(file, gateId, wantCriteria, problems, warnings) {
   const parsed = parseGateFile(file, gateId);

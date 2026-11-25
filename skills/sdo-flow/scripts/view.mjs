@@ -131,7 +131,7 @@ function traceView() {
   for (const r of t.requirements) out.push(`- ${r.id} ${r.title} ← ${(t.byReq.get(r.id) || []).join("、") || "（无）"}`);
   out.push("", "## 计数",
     `需求数：${t.counts.requirements}`,
-    `已覆盖：${t.counts.covered}`,
+    `已覆盖：${t.counts.covered}${t.counts.coveredHistorical ? `（另有 ${t.counts.coveredHistorical} 条仅有归档引用，不计入活跃覆盖）` : ""}`,
     `卡数：${t.cards.length}`,
     `引用边数：${t.counts.edges}`,
     `孤儿卡数：${t.counts.orphanCards}`,
